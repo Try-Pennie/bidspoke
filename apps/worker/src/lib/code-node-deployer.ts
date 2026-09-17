@@ -53,10 +53,29 @@ export function isWorkerNotFoundError(err: unknown): boolean {
  * (payload, steps, env, execution) contract as the old per-node worker plus
  * the synthesized `trigger` / `process` locals.
  */
+/** How much of a non-2xx body the sandbox keeps for the engine's block page detector (#1265). */
+export const BLOCK_CAPTURE_BODY_HEAD_BYTES = 8192
+
+/**
+ * A script that declares its own `fetch` at top level would turn the injected `fetch`
+ * parameter into a syntax error at deploy, so it is refused here, at build time, by name.
+ * Measured 2026-09-17: no live script does this; every one calls the bare global.
+ */
+const DECLARES_OWN_FETCH = /^\s*(?:const|let|var|function|async\s+function)\s+fetch\b/m
+
 export function buildBundledWorkerScript(scripts: Array<{ namespace: string; script: string }>): string {
+  for (const { namespace, script } of scripts) {
+    if (DECLARES_OWN_FETCH.test(script)) {
+      throw new Error(`code node "${namespace}" declares its own fetch at top level; the sandbox provides fetch, so rename that declaration`)
+    }
+  }
   const entries = scripts.map(({ namespace, script }) => {
     const indented = script.split('\n').map((l) => `      ${l}`).join('\n')
-    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution, console, props) => {
+    // `fetch` is a per-invocation parameter, like `console`: it shadows the global inside
+    // the script, so every non-2xx response the script fetches is recorded for THIS
+    // invocation only (#1265). A wrapper on the global would be shared by every lead the
+    // isolate is serving at once.
+    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution, console, props, fetch) => {
       const trigger = { payload }
       const process = { env }
       props = props || {}
@@ -110,13 +129,56 @@ function makeConsole() {
   }
 }
 
-// Run a single registered script by namespace, capturing its console output.
-async function runOne(ns, payload, steps, env, execution) {
-  const fn = scripts[ns]
-  if (!fn) throw new Error('script not found: ' + ns)
-  const c = makeConsole()
-  const output = await fn(payload, steps, env, execution, c.api)
-  return { output, logs: c.captured }
+// Per-call fetch capture (#1265). The script gets this as its \`fetch\`; it forwards to
+// the platform's fetch and records every non-2xx response: host, status, the content type,
+// the Cloudflare headers and a bounded head of the body. It holds NO rule about what a
+// block page is: the engine's one detector decides, so the two halves cannot drift. The
+// head is read from a clone through a reader and cancelled at the cap, so the script keeps
+// its whole body and a large page never buffers in full.
+const BLOCK_CAPTURE_BODY_HEAD_BYTES = ${BLOCK_CAPTURE_BODY_HEAD_BYTES}
+function makeFetch() {
+  const records = []
+  async function bodyHead(res) {
+    const clone = res.clone()
+    if (!clone.body || typeof clone.body.getReader !== 'function') {
+      const text = await clone.text()
+      return text.slice(0, BLOCK_CAPTURE_BODY_HEAD_BYTES)
+    }
+    const reader = clone.body.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    try {
+      while (text.length < BLOCK_CAPTURE_BODY_HEAD_BYTES) {
+        const { done, value } = await reader.read()
+        if (done) break
+        text += decoder.decode(value, { stream: true })
+      }
+    } finally {
+      // Not awaited: on a tee'd body the cancel promise settles only once the script has
+      // consumed ITS branch, so awaiting it here would hold the wrapper (measured in Node
+      // 26: a 1MB body hung the await; the read itself took 1ms). Cancelling releases this
+      // branch's buffer; the script's branch is untouched.
+      try { void reader.cancel().catch(() => {}) } catch {}
+    }
+    return text.slice(0, BLOCK_CAPTURE_BODY_HEAD_BYTES)
+  }
+  async function record(input, res) {
+    const url = typeof input === 'string' ? input : (input && typeof input === 'object' && typeof input.url === 'string') ? input.url : String(input)
+    let host = url
+    try { host = new URL(url).host } catch {}
+    const header = (name) => { try { return res.headers && typeof res.headers.get === 'function' ? res.headers.get(name) : null } catch { return null } }
+    let head = ''
+    try { head = await bodyHead(res) } catch {}
+    records.push({ host, url, status: res.status, contentType: header('content-type'), cfRay: header('cf-ray'), cfMitigated: header('cf-mitigated'), bodyHead: head })
+  }
+  const api = async (input, init) => {
+    const res = await globalThis.fetch(input, init)
+    if (res && typeof res.status === 'number' && (res.status < 200 || res.status >= 300)) {
+      try { await record(input, res) } catch {}
+    }
+    return res
+  }
+  return { records, api }
 }
 
 // Detect a code-node sentinel in a returned value. Matches the engine's
@@ -150,19 +212,20 @@ export default {
         const props = entry.props || {}
         const startMs = Date.now()
         const c = makeConsole()
+        const f = makeFetch()
         try {
           const fn = scripts[namespace]
           if (!fn) throw new Error('script not found: ' + namespace)
-          const output = await fn(payload, stepsCtx, env, execution, c.api, props)
+          const output = await fn(payload, stepsCtx, env, execution, c.api, props, f.api)
           const durationMs = Date.now() - startMs
           const sentinel = detectSentinel(output)
           stepsCtx[namespace] = { output: output ?? null, status: 'completed' }
-          results.push({ namespace, status: 'completed', output: output ?? null, logs: c.captured, durationMs, sentinel })
+          results.push({ namespace, status: 'completed', output: output ?? null, logs: c.captured, blocks: f.records, durationMs, sentinel })
           // Stop the chain on any sentinel — main worker decides what happens next
           if (sentinel) break
         } catch (err) {
           const durationMs = Date.now() - startMs
-          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), errorName: err && err.name ? err.name : (err ? err.constructor.name : 'Error'), logs: c.captured, durationMs })
+          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), errorName: err && err.name ? err.name : (err ? err.constructor.name : 'Error'), logs: c.captured, blocks: f.records, durationMs })
           break
         }
       }
@@ -180,9 +243,10 @@ export default {
     }
     const { payload, steps, env, execution, props } = await request.json()
     const c = makeConsole()
+    const f = makeFetch()
     try {
-      const output = await fn(payload, steps, env, execution, c.api, props || {})
-      return Response.json({ __bsv: 1, output: output ?? null, logs: c.captured })
+      const output = await fn(payload, steps, env, execution, c.api, props || {}, f.api)
+      return Response.json({ __bsv: 1, output: output ?? null, logs: c.captured, blocks: f.records })
     } catch (err) {
       // Surface the real script error as a 500 JSON response so the engine's
       // dispatchWithFallback treats it as bundle-present-with-error and reports
@@ -191,7 +255,7 @@ export default {
       // Report the thrown error's constructor name so the engine can fail a
       // deterministic programming error fast instead of retrying it (#458).
       const name = err && err.name ? err.name : (err ? err.constructor.name : 'Error')
-      return new Response(JSON.stringify({ __bsv: 1, error: message, name: name, logs: c.captured }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ __bsv: 1, error: message, name: name, logs: c.captured, blocks: f.records }), { status: 500, headers: { 'Content-Type': 'application/json' } })
     }
   }
 }`

@@ -34,7 +34,10 @@
  * nothing in this repo can check the Scout half: that script lives in the workflow
  * definition in the database, so a change to the names here does not reach it and
  * no scan can see the omission. What does report it is the field-presence check,
- * which is how the block was found in the first place, four days in.
+ * which is how the block was found in the first place, four days in, and since #1265
+ * the block page detector: the Scout script's sandbox records every non-2xx response it
+ * fetches, and the worker recognises a block page and alerts on the first sighting
+ * (docs/partner-block-pages.md).
  */
 
 /** The three Achieve hosts behind one firewall, so a block on one names the others (#1265). */

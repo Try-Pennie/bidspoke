@@ -18,6 +18,27 @@ export interface CodeSandboxEnvelope {
   logs?: unknown
   error?: string
   name?: string
+  /** Non-2xx responses the script fetched, recorded by the sandbox for the engine's block
+   *  page detector (#1265). Absent from a bundle built before the capture existed. */
+  blocks?: unknown
+}
+
+/** One non-2xx response a code node's script fetched, as the sandbox records it. */
+export interface SandboxBlockRecord {
+  host: string
+  url: string
+  status: number
+  contentType: string | null
+  cfRay: string | null
+  cfMitigated: string | null
+  bodyHead: string
+}
+
+export function readBlockRecords(raw: unknown): SandboxBlockRecord[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  return raw.filter((r): r is SandboxBlockRecord =>
+    !!r && typeof r === 'object' && typeof (r as SandboxBlockRecord).url === 'string' && typeof (r as SandboxBlockRecord).status === 'number',
+  )
 }
 
 export function isCodeEnvelope(v: unknown): v is CodeSandboxEnvelope {
@@ -25,11 +46,11 @@ export function isCodeEnvelope(v: unknown): v is CodeSandboxEnvelope {
 }
 
 export type ParsedCodeResponse =
-  | { ok: true; output: unknown; logs?: StepLogEntry[] }
+  | { ok: true; output: unknown; logs?: StepLogEntry[]; blocks?: SandboxBlockRecord[] }
   /** `errorName` is the thrown error's constructor name, present only on
    *  envelope-aware bundles. The classifier uses it to fail a deterministic
    *  programming error fast rather than retrying it (#458). */
-  | { ok: false; error: string; errorName?: string; logs?: StepLogEntry[] }
+  | { ok: false; error: string; errorName?: string; logs?: StepLogEntry[]; blocks?: SandboxBlockRecord[] }
 
 /**
  * Parse a code-sandbox response body into either its output or its error.
@@ -46,14 +67,15 @@ export function parseCodeSandboxResponse(ok: boolean, text: string): ParsedCodeR
   }
   const envelope = isCodeEnvelope(parsed) ? parsed : null
   const logs = envelope && Array.isArray(envelope.logs) ? (envelope.logs as StepLogEntry[]) : undefined
+  const blocks = envelope ? readBlockRecords(envelope.blocks) : undefined
 
   if (!ok) {
     const error = envelope ? (envelope.error ?? text) : extractLegacyError(text)
     const errorName = envelope && typeof envelope.name === 'string' ? envelope.name : undefined
-    return { ok: false, error, errorName, logs }
+    return { ok: false, error, errorName, logs, blocks }
   }
 
-  return { ok: true, output: envelope ? (envelope.output ?? null) : parsed, logs }
+  return { ok: true, output: envelope ? (envelope.output ?? null) : parsed, logs, blocks }
 }
 
 /** A pre-envelope bundle reports a script error as a bare `{error}` body. */

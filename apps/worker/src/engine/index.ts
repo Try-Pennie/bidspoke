@@ -44,6 +44,8 @@ import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
 import { drainBlockSightings } from './block-sightings'
+import { noteSandboxBlocks } from './nodes/code'
+import { readBlockRecords, type SandboxBlockRecord } from './code-response'
 import { reportPartnerBlock, resolveSlackForBlockAlert, type PartnerBlockDeps } from '../lib/partner-block-alert'
 import { makeAlertClaims } from '../lib/alert-claim'
 import { getSlackConnection } from '../lib/slack'
@@ -1389,6 +1391,10 @@ export async function walkGraph(
           // hot path for a chain of ~3-5 nodes.
           const chainResolvedInput = buildCodeStepInput(chainNode, ctx)
           logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
+          // The bundle's raw records for this step become sightings through the one detector
+          // (#1265); the chain response came straight from JSON, so the records are re-read.
+          noteSandboxBlocks(ctx, chainNode.namespace, ctx.codeBundleName ?? codeBundleName(ctx.trigger.workflow_id), readBlockRecords(r.blocks))
+          forwardBlockSightings(undefined)
           stepOrder++
           if (r.status === 'completed') lastOutput = r.output
 
@@ -1916,6 +1922,9 @@ interface ChainStepResult {
   durationMs: number
   sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
   logs?: import('../types').StepLogEntry[]
+  /** Non-2xx responses the step's script fetched, from the sandbox capture (#1265). Absent
+   *  on a bundle built before the capture existed and on the legacy per-node path. */
+  blocks?: SandboxBlockRecord[]
 }
 
 /**
@@ -2084,13 +2093,14 @@ export async function executeCodeChain(
             errorName: parsedRes.errorName,
             durationMs,
             logs: parsedRes.logs,
+            blocks: parsedRes.blocks,
           })
           break
         }
         const output = parsedRes.output
         const sentinel = detectSentinel(output)
         recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
-        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined, logs: parsedRes.logs })
+        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined, logs: parsedRes.logs, blocks: parsedRes.blocks })
         if (sentinel) break
       } catch (err) {
         const durationMs = Date.now() - startMs

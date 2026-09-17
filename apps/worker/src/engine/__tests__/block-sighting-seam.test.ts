@@ -22,6 +22,7 @@ vi.mock('../nodes/index', () => ({ executeNode: vi.fn() }))
 import { walkGraph } from '../index'
 import { executeNode } from '../nodes/index'
 import { buildContext } from '../context'
+import { ACHIEVE_CLOUDFLARE_BLOCK_PAGE } from '../../lib/__tests__/fixtures/achieve-cloudflare-block-page'
 
 const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
 const supabase = {} as unknown as SupabaseClient
@@ -81,5 +82,35 @@ describe('walkGraph forwards partner block sightings (#1265)', () => {
       .mockResolvedValueOnce({ output: null })
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
     await expect(walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env)).resolves.toBeDefined()
+  })
+})
+
+describe('walkGraph forwards sightings from the bundled code chain path (#1265)', () => {
+  it('turns a chain step\'s raw records into a sighting named as that code step', async () => {
+    const record = { host: 'oauth.prd.ffngcp.com', url: 'https://oauth.prd.ffngcp.com/v1/token', status: 403, contentType: 'text/html', cfRay: 'a369312f2f2faa85-EWR', cfMitigated: null, bodyHead: ACHIEVE_CLOUDFLARE_BLOCK_PAGE.slice(0, 8192) }
+    const chainEnv = {
+      PII_REDACTION_FIELDS: '',
+      DYNAMIC_WORKER_LOADER: {
+        get: () => ({
+          fetch: async (url: string) => url.includes('/execute-chain')
+            ? Response.json({ __bsv: 1, results: [
+                { namespace: 'scout', status: 'completed', output: { status: 403 }, durationMs: 1, blocks: [record] },
+                { namespace: 'after', status: 'completed', output: 2, durationMs: 1, blocks: [] },
+              ] })
+            : new Response('not expected', { status: 500 }),
+        }),
+      },
+    } as unknown as Env
+    const nodes: NodeDefinition[] = [
+      { id: 'a', namespace: 'scout', type: 'code', config: { script: 'return 1' } } as NodeDefinition,
+      { id: 'b', namespace: 'after', type: 'code', config: { script: 'return 2' } } as NodeDefinition,
+    ]
+    const definition = { nodes, edges: [{ id: 'e', source: 'a', target: 'b' }], trigger: { type: 'http_webhook', config: {} } } as unknown as WorkflowDefinition
+    const seen: PartnerBlockSighting[] = []
+    const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
+    await walkGraph(ctx, definition, 'exec-1', new Date().toISOString(), supabase, chainEnv, '', [], undefined, (s) => { seen.push(s) })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ host: 'oauth.prd.ffngcp.com', vendor: 'cloudflare', seenIn: 'code:scout' })
+    expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
   })
 })
