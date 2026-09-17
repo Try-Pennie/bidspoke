@@ -7,6 +7,8 @@ import {
   recordAlert,
   clearCondition,
   describeRepeat,
+  touchCondition,
+  backoffCooldownKey,
 } from '../alert-backoff'
 
 const NOW = Date.parse('2026-09-13T12:00:00.000Z')
@@ -146,5 +148,23 @@ describe('describeRepeat', () => {
   it('does not claim an age it could not compute', () => {
     const text = describeRepeat({ since: 'not a date', alerts: 1 }, NOW)
     expect(text).not.toMatch(/NaN/)
+  })
+})
+
+describe('touchCondition (#1274)', () => {
+  it('re-arms the record\'s expiry without changing what it says', async () => {
+    const kv = fakeKv()
+    const standing = await recordAlert(kv, 'k', null, NOW, { conditionTtlSeconds: 3600 })
+    await touchCondition(kv, 'k', standing, 7200)
+    expect(await readCondition(kv, 'k')).toEqual(standing)
+    expect(kv.ttls.get('k:condition')).toBe(7200)
+  })
+
+  it('does not touch the cooldown, which belongs to the reminder schedule', async () => {
+    const kv = fakeKv()
+    const standing = await recordAlert(kv, 'k', null, NOW)
+    const before = kv.ttls.get(backoffCooldownKey('k'))
+    await touchCondition(kv, 'k', standing, 7200)
+    expect(kv.ttls.get(backoffCooldownKey('k'))).toBe(before)
   })
 })

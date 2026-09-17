@@ -14,13 +14,19 @@
  * page rule already makes the response transient; retries and partner overrides are
  * untouched). It never posts on a test run or in local dev, the rule every engine alert
  * follows (#547): the event line is the evidence those runs leave. And it posts no
- * all-clear: a block that lifts produces no sighting, so nothing here can see it; the
- * scheduled reachability probe (#1274) owns transitions on the same key, and the standing
- * record expires on its own so a block from weeks ago is never described as still standing.
+ * all-clear: a block that lifts produces no sighting, so nothing here can see it. The
+ * scheduled reachability probe (#1274) owns the all-clear, and it can only announce one
+ * for an incident it knows about, so this reporter ARMS it for either observer: on every
+ * sighting, posted or suppressed, it records the running end of the incident and keeps
+ * the recovery marker alive from the first sighting. A block a lead saw first (the common
+ * case) therefore still gets its all-clear, and a lead sighting extends the incident. The
+ * standing record is re-armed on every sighting too, so a five day block keeps its
+ * first-seen time rather than lapsing at the 25h expiry.
  */
 import type { PartnerBlockSighting } from '../types'
 import type { AlertClaims } from './alert-claim'
-import { inCooldown, readCondition, recordAlert, describeRepeat, type BackoffKv } from './alert-backoff'
+import { inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, type BackoffKv } from './alert-backoff'
+import { keepAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { sendPartnerBlockAlert, type PartnerBlockAlertPayload } from './slack'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { formatErr } from './format-error'
@@ -33,13 +39,24 @@ export const POST_RETRY_HOLD_SECONDS = 3 * 60
 
 export const PARTNER_BLOCK_KEY_PREFIX = 'partner-block'
 
+/** The recovery marker family the probe's all-clear reads; written here for either observer (#1274). */
+export const PARTNER_REACHABILITY_RECOVERY_PREFIX = 'partner-reachability'
+
+/** The `seenIn` the scheduled probe reports under; the Slack wording and the docs' log query read it too. */
+export const PROBE_SEEN_IN = 'probe'
+
 export type PartnerBlockOutcome = 'posted' | 'logged' | 'cooldown' | 'claimed_elsewhere' | 'no_slack' | 'post_failed'
 
 export interface PartnerBlockDeps {
-  kv: BackoffKv
+  kv: BackoffKv & RecoveryKv
   claims: AlertClaims | undefined
-  /** The org's Slack connection, or null when there is none to post to. */
-  resolveSlack: () => Promise<{ bot_token: string; default_channel: string } | null>
+  /**
+   * Every Slack connection the alert goes to, empty when there is none. A list because the
+   * probe (#1274) has no org of its own and posts to every org holding a connection, all
+   * inside the one claim: a loop calling this reporter once per org would be refused for
+   * every org after the first.
+   */
+  resolveSlack: () => Promise<Array<{ bot_token: string; default_channel: string }>>
   send?: typeof sendPartnerBlockAlert
   now?: () => number
   log?: (line: string) => void
@@ -50,9 +67,10 @@ export interface PartnerBlockDeps {
 
 export interface PartnerBlockRunContext {
   orgId: string
-  workflowId: string
-  workflowName: string | null
-  traceId: string
+  /** Absent for the scheduled probe, which runs no workflow; logged as `-`. */
+  workflowId?: string
+  workflowName?: string | null
+  traceId?: string
 }
 
 export const partnerBlockKey = (host: string) => `${PARTNER_BLOCK_KEY_PREFIX}:${host}`
@@ -104,9 +122,20 @@ export async function reportPartnerBlock(
   log(
     `[partner-block] event=partner_block_page host=${sighting.host} status=${sighting.status} vendor=${sighting.vendor}` +
       ` body_ray=${sighting.bodyRayId ?? '-'} edge_ray=${sighting.edgeRayId ?? '-'} markers=${JSON.stringify(sighting.markers)}` +
-      ` seen_in=${sighting.seenIn} workflow=${run.workflowId} trace=${run.traceId}${deps.silent ? ' silent=true' : ''}`,
+      ` seen_in=${sighting.seenIn} workflow=${run.workflowId ?? '-'} trace=${run.traceId ?? '-'}${deps.silent ? ' silent=true' : ''}`,
   )
   if (deps.silent) return 'logged'
+
+  // Arm the all-clear and extend the incident on EVERY sighting, before any gate below can
+  // return early (#1274). The running end moves to now; the recovery marker keeps the
+  // condition's first-seen time; the standing record is re-armed with the same content.
+  const nowMs = now()
+  await markSpikeSeen(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, nowMs)
+  const standingNow = await readCondition(deps.kv, key)
+  if (standingNow) {
+    await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, standingNow.since)
+    await touchCondition(deps.kv, key, standingNow, PARTNER_BLOCK_CONDITION_TTL_SECONDS)
+  }
 
   if ((await inCooldown(deps.kv, key)) || (await deps.kv.get(retryHoldKey(sighting.host))) !== null) return 'cooldown'
 
@@ -116,15 +145,14 @@ export async function reportPartnerBlock(
     if (deps.claims) await deps.claims.release(key)
   }
 
-  const slack = await deps.resolveSlack()
-  if (!slack) {
+  const targets = await deps.resolveSlack()
+  if (targets.length === 0) {
     log(`[partner-block] no Slack connection for org ${run.orgId}, so the block on ${sighting.host} was logged but not posted`)
     await release()
     return 'no_slack'
   }
 
-  const nowMs = now()
-  const standing = await readCondition(deps.kv, key)
+  const standing = standingNow
   const alsoBlocked: string[] = []
   for (const sibling of sighting.siblingHosts ?? []) {
     if (sibling === sighting.host) continue
@@ -149,7 +177,12 @@ export async function reportPartnerBlock(
     at: nowMs,
   }
 
-  const ts = await send(slack, slack.default_channel, payload)
+  // Every connection inside the one claim; delivered if any accepted it.
+  let ts: string | null = null
+  for (const slack of targets) {
+    const one = await send(slack, slack.default_channel, payload)
+    if (one !== null && ts === null) ts = one
+  }
   if (ts === null) {
     log(`[partner-block] Slack post failed for ${sighting.host}; holding further attempts for ${POST_RETRY_HOLD_SECONDS}s`)
     await deps.kv.put(retryHoldKey(sighting.host), '1', { expirationTtl: POST_RETRY_HOLD_SECONDS })
@@ -157,6 +190,7 @@ export async function reportPartnerBlock(
     return 'post_failed'
   }
 
-  await recordAlert(deps.kv, key, standing, nowMs, { conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS })
+  const next = await recordAlert(deps.kv, key, standing, nowMs, { conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS })
+  await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since)
   return 'posted'
 }

@@ -8,7 +8,8 @@ import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
-import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
+import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
@@ -20,6 +21,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { runPartnerReachabilityCheck, fetchProbe, liveSenders, resolveSlackForEveryOrg } from './lib/partner-reachability'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
@@ -173,6 +175,12 @@ export interface Env {
   // locally" for guards that would otherwise fire real production alerts from
   // local testing (e.g. the GitHub-backup-failure Slack alert).
   LOCAL_DEV?: string
+
+  // 'on' lets the partner reachability probe (#1274) post to Slack. Anything else
+  // is observe mode: the probe runs every five minutes and logs what it would
+  // have posted, so its setup is proven on real traffic before a page can be
+  // false. Set in wrangler.toml [vars]; #1396 flips it after the observe day.
+  PARTNER_PROBE_ALERTS?: string
 
   // Set to 'true' ONLY in apps/worker/.dev.vars, alongside LOCAL_DEV, to opt a
   // local session into writing to the remote (production) Supabase project.
@@ -701,6 +709,39 @@ export default {
             }
           })
           .catch((e) => console.error('[workflow-schedule] check failed:', e))
+      )
+    } else if (event.cron === '*/5 * * * *') {
+      // Partner reachability probe (#1274): asks each partner host whether a
+      // firewall block page is standing, every five minutes, and owns the
+      // all-clear on the same key the lead path reports on. Lives in
+      // lib/partner-reachability.ts so every transition is reachable from a test.
+      // Both heartbeat stamps on every exit path (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, 'partner-reachability')
+            .catch((e) => console.error('[partner-reachability] heartbeat write failed:', e))
+            .then(() => runPartnerReachabilityCheck({
+              kv: env.IDEMPOTENCY,
+              claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+              env: env as unknown as Record<string, string | undefined>,
+              probe: (target) => fetchProbe(target),
+              resolveSlack: () => resolveSlackForEveryOrg({
+                supabase,
+                getConnection: getSlackConnection,
+                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+                log: (line) => console.error(line),
+              }),
+              senders: liveSenders,
+              now: Date.now,
+              log: (line) => console.log(line),
+            }))
+            .then((s) => {
+              console.log(`[partner-reachability] mode=${s.mode} probed=${s.probed} reachable=${s.reachable} blocked=${s.blocked} unreachable=${s.unreachable} unmeasured=${s.unmeasured} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
+              if (s.errors.length) console.error(`[partner-reachability] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error('[partner-reachability] check failed:', e)),
+          'partner-reachability',
+        ),
       )
     } else if (event.cron === '*/15 * * * *') {
       // Drive the scheduled workflows the worker also watches (#1058). GitHub

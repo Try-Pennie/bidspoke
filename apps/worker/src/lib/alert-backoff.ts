@@ -63,6 +63,9 @@ export interface StandingCondition {
 const conditionKey = (key: string) => `${key}:condition`
 const cooldownKeyFor = (key: string) => `${key}:cooldown`
 
+/** The cooldown key for a family key, for a caller that settles a recovery and must name it (#1274). */
+export const backoffCooldownKey = cooldownKeyFor
+
 /** The gap before the next reminder, given how many have already gone out. */
 export function intervalSecondsFor(alertsAlreadySent: number): number {
   const last = BACKOFF_STEPS_SECONDS.length - 1
@@ -122,6 +125,23 @@ export async function recordAlert(
   await kv.put(conditionKey(key), JSON.stringify(next), { expirationTtl: opts.conditionTtlSeconds ?? CONDITION_TTL_SECONDS })
   await kv.put(cooldownKeyFor(key), '1', { expirationTtl: intervalSecondsFor(next.alerts - 1) })
   return next
+}
+
+/**
+ * Re-arm a standing record's expiry without changing what it says (#1274).
+ *
+ * A family whose record expires on its own (a partner block, 25h) is refreshed only when a
+ * reminder posts, and the third reminder step is 24h, so an hour of Slack trouble at that
+ * step let the record lapse mid block and restart the schedule at 6h with the age reset.
+ * Now every SIGHTING of the condition re-arms it, and the reminder schedule is untouched.
+ */
+export async function touchCondition(
+  kv: BackoffKv,
+  key: string,
+  standing: StandingCondition,
+  ttlSeconds: number,
+): Promise<void> {
+  await kv.put(conditionKey(key), JSON.stringify(standing), { expirationTtl: ttlSeconds })
 }
 
 /** Forget a condition, so its next occurrence starts again at the shortest gap. */

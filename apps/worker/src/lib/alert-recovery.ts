@@ -61,6 +61,29 @@ export function activeKey(prefix: string, id: string): string {
 }
 
 /**
+ * Keep the recovery marker alive from a KNOWN start, on every sighting (#1274).
+ *
+ * `markAlerted` pins the start of an incident by never overwriting, but its marker
+ * expires after a day and a partner block has lasted five. A condition that is
+ * re-observed keeps re-writing the same start time with a fresh TTL, so the marker
+ * outlives the block without the start moving. An existing EARLIER start wins, so
+ * a caller holding a later time cannot move it forward either.
+ */
+export async function keepAlerted(
+  kv: RecoveryKv,
+  prefix: string,
+  id: string,
+  alertedAtIso: string,
+): Promise<void> {
+  const key = recoveryKey(prefix, id)
+  const existing = await kv.get(key)
+  const existingMs = existing ? Date.parse(existing) : NaN
+  const givenMs = Date.parse(alertedAtIso)
+  const keep = Number.isFinite(existingMs) && (!Number.isFinite(givenMs) || existingMs <= givenMs) ? existing! : alertedAtIso
+  await kv.put(key, keep, { expirationTtl: RECOVERY_TTL_SECONDS })
+}
+
+/**
  * Record that an alert delivered, so a later healthy check knows to announce the
  * recovery.
  *

@@ -377,11 +377,14 @@ export async function executeWorkflow(
   const blockDeps: PartnerBlockDeps = {
     kv: env.IDEMPOTENCY,
     claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-    resolveSlack: () => resolveSlackForBlockAlert(
-      org_id,
-      () => getSlackConnection(supabase, org_id),
-      () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
-    ),
+    resolveSlack: async () => {
+      const conn = await resolveSlackForBlockAlert(
+        org_id,
+        () => getSlackConnection(supabase, org_id),
+        () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+      )
+      return conn ? [conn] : []
+    },
     silent: options.isTest === true || !!env.LOCAL_DEV,
     appUrl: env.APP_URL,
   }

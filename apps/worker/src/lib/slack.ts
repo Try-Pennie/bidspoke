@@ -2072,9 +2072,10 @@ export interface PartnerBlockAlertPayload {
   edgeRayId: string | null
   markers: string[]
   seenIn: string
-  workflowId: string
-  workflowName: string | null
-  traceId: string
+  /** Absent when the sighting came from the scheduled reachability probe (#1274), which runs no workflow. */
+  workflowId?: string
+  workflowName?: string | null
+  traceId?: string
   appUrl: string
   /** describeRepeat's sentence while the block stands, null on the first post. */
   repeat: string | null
@@ -2100,10 +2101,14 @@ export async function sendPartnerBlockAlert(
   const header = payload.vendor === 'cloudflare'
     ? `Cloudflare is blocking Bidspoke's calls to ${payload.host}`
     : `${payload.host} answered ${payload.status} with an HTML page instead of data`
-  const workflow = payload.workflowName ? `${payload.workflowName} (${payload.workflowId.slice(0, 8)})` : payload.workflowId
+  // The probe has no workflow: its sentence names the probe and the message carries no
+  // execution link, because there is no execution to open (#1274).
+  const fromProbe = payload.workflowId === undefined
+  const workflow = payload.workflowName ? `${payload.workflowName} (${(payload.workflowId ?? '').slice(0, 8)})` : (payload.workflowId ?? '')
+  const who = fromProbe ? 'The scheduled reachability probe\'s GET' : `A call from ${workflow}, step \`${payload.seenIn}\`,`
   const what = payload.vendor === 'cloudflare'
-    ? `A call from ${workflow}, step \`${payload.seenIn}\`, to ${where} came back as HTTP ${payload.status} with a Cloudflare block page (${payload.markers.join(', ')}) instead of the partner's answer. Every request to that host is failing the same way while this lasts.`
-    : `A call from ${workflow}, step \`${payload.seenIn}\`, to ${where} came back as HTTP ${payload.status} with an HTML page where JSON was expected. The page carries none of the markers a Cloudflare block or challenge page has, so what is refusing it was not measured.`
+    ? `${who} to ${where} came back as HTTP ${payload.status} with a Cloudflare block page (${payload.markers.join(', ')}) instead of the partner's answer. Every request to that host is failing the same way while this lasts.`
+    : `${who} to ${where} came back as HTTP ${payload.status} with an HTML page where JSON was expected. The page carries none of the markers a Cloudflare block or challenge page has, so what is refusing it was not measured.`
   const ids = [
     payload.bodyRayId ? `Ray ID on the page (the one their firewall log holds): \`${payload.bodyRayId}\`` : null,
     payload.edgeRayId ? `Ray ID of the edge in front of the host${payload.ownProxy ? ', which is ours' : ''}: \`${payload.edgeRayId}\`` : null,
@@ -2128,6 +2133,122 @@ export async function sendPartnerBlockAlert(
       },
     })
   }
-  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/workflows/${payload.workflowId}/executions?trace=${encodeURIComponent(payload.traceId)}|Open the execution>` } })
+  if (!fromProbe) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/workflows/${payload.workflowId}/executions?trace=${encodeURIComponent(payload.traceId ?? '')}|Open the execution>` } })
+  }
+  return postMessage(slack.bot_token, channel, blocks, header)
+}
+
+export interface PartnerUnreachableAlertPayload {
+  host: string
+  /** The failure text or code from the probe's last look. */
+  reason: string
+  /** ISO time the host was first seen not answering in this incident. */
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/**
+ * A partner host that has not answered the reachability probe for its whole window (#1274).
+ * Deliberately not called a block: the probe measured silence, not a refusal, and a
+ * network level block looks exactly like a partner that is down.
+ */
+export async function sendPartnerUnreachableAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: PartnerUnreachableAlertPayload,
+): Promise<string | null> {
+  const header = `${payload.host} is not answering Bidspoke's calls`
+  const lines = [
+    `The scheduled reachability probe has had no answer from \`${payload.host}\` since ${etTime(Date.parse(payload.since))}. The last look failed with: \`${payload.reason}\`. Leads that call this host are failing the same way while this lasts.`,
+  ]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* check the partner\'s status page first. If the partner is up for everyone else, this is the shape of a block at the network level rather than a page, so ask them whether Cloudflare\'s shared Workers address is being dropped. An all-clear follows here once the host has answered for 30 minutes.',
+      },
+    },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, header)
+}
+
+export interface ProbeControlAlertPayload {
+  host: string
+  /** Whether the control has ever read blocked since deploy. Changes the remedy entirely. */
+  everPassed: boolean
+  status: number | null
+  bodyHead: string
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/**
+ * The reachability probe's positive control is not reading as a block (#1274). Two
+ * wordings and two remedies: a control that has NEVER passed since deploy means the rule
+ * was never created, and one that passed and then stopped means the rule was removed or
+ * the block page changed under the detector (L11, L622).
+ */
+export async function sendProbeControlAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: ProbeControlAlertPayload,
+): Promise<string | null> {
+  const measured = `It answered ${payload.status === null ? 'nothing' : `HTTP ${payload.status}`} with: \`${payload.bodyHead.slice(0, 120) || '(empty)'}\`.`
+  const header = payload.everPassed
+    ? 'The block detector stopped seeing the block it should see'
+    : 'The block detector has never seen the block it should see'
+  const what = payload.everPassed
+    ? `\`${payload.host}\` is deliberately blocked by a firewall rule on our own zone so that every probe run proves the detector can recognise a block. It stopped reading as blocked at ${etTime(Date.parse(payload.since))}. ${measured}`
+    : `\`${payload.host}\` is meant to be blocked by a firewall rule on our own zone so that every probe run proves the detector can recognise a block. It has never once read as blocked since this deploy. ${measured}`
+  const fix = payload.everPassed
+    ? '*How to fix:* two causes, check in this order. The WAF custom rule on trypennie.dev blocking `http.host eq "block-probe.trypennie.dev"` was removed or disabled: open the Cloudflare dashboard, Security, WAF, Custom rules, and confirm it is there and enabled. Or Cloudflare changed the block page and the detector\'s markers no longer match: open the host in a browser and compare what it shows with the markers in html-error-summary.ts.'
+    : '*How to fix:* create the rule. In the Cloudflare dashboard for trypennie.dev, open Security, WAF, Custom rules, add a rule with the expression `http.host eq "block-probe.trypennie.dev"` and the action Block, then open the host in a browser: it should show the "Sorry, you have been blocked" page. Until it does, the detector\'s ability to see a block is unproven.'
+  const lines = [what]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, header)
+}
+
+export interface ProbeBrokenAlertPayload {
+  reason: string
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/**
+ * The reachability probe cannot fetch anything, its own control included (#1274). Posted
+ * INSTEAD of one outage per partner, because a reading that says everything is dead is
+ * first evidence about the measurement (L438).
+ */
+export async function sendProbeBrokenAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: ProbeBrokenAlertPayload,
+): Promise<string | null> {
+  const header = 'The partner reachability probe cannot fetch'
+  const lines = [
+    `Since ${etTime(Date.parse(payload.since))} the probe's own control host has not answered at all, so nothing it reports about the partners can be trusted and their readings are being held. The last look failed with: \`${payload.reason}\`.`,
+  ]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: '*How to fix:* open the worker\'s logs and search for `event=partner_probe`. If every host reads unreachable with the same error, the worker\'s outbound fetch is failing: check Cloudflare\'s status page and the worker\'s subrequest usage. Leads are unaffected unless they fail too, which the failure alerts report separately.' } },
+  ]
   return postMessage(slack.bot_token, channel, blocks, header)
 }
