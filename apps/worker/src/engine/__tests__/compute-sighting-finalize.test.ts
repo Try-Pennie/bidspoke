@@ -16,7 +16,12 @@ describe('computeSightingFinalize (#353)', () => {
   it('extracts winner, bid cents, enrichment and a successful outcome for a bid_group win', () => {
     const steps: Record<string, StepOutput> = {
       create_prospect: { status: 'completed', output: { body: { id: 'sf-123' } } },
-      equifax_credit_report: { status: 'completed', output: { status: 'success', score: 720 } },
+      // The Engine workflow's real output shape (#1379): the score sits inside the report,
+      // never at the top level, and the status word is the one the node itself emits.
+      equifax_credit_report: {
+        status: 'completed',
+        output: { status: 'completed', consumers: { equifaxUSConsumerCreditReport: [{ models: [{ score: '720' }] }] } },
+      },
       bid_node: {
         status: 'completed',
         output: {
@@ -44,7 +49,7 @@ describe('computeSightingFinalize (#353)', () => {
     expect(out.partners_attempted).toBe(2)
     expect(out.partners_responded).toBe(1)
     expect(out.prospect_id).toBe('sf-123')
-    expect(out.equifax_status).toBe('success')
+    expect(out.equifax_status).toBe('completed')
     expect(out.equifax_score).toBe(720)
     expect(out.reject_reason).toBeNull() // a winner means no rejection
     expect(out.outcome).toBe('successful') // passed through a success namespace

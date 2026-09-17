@@ -115,14 +115,39 @@ export function findEquifaxReport(
   ctx: ExecutionContext,
   namespace: string = DEFAULT_REPORT_NAMESPACE
 ): EquifaxReport | null {
-  const output = ctx.steps?.[namespace]?.output as Record<string, unknown> | undefined
-  if (!output || typeof output !== 'object') return null
+  return readEquifaxReportOutput(ctx.steps?.[namespace]?.output)
+}
 
-  // Main Flow nests one level deeper than the Engine workflow. Check both, in that order.
-  const nested = output.data as Record<string, unknown> | null | undefined
-  const consumers =
-    (nested && typeof nested === 'object' ? nested.consumers : undefined) ?? output.consumers
-  if (!consumers || typeof consumers !== 'object') return null
+/**
+ * The two shapes the equifax_credit_report step's output takes, resolved in ONE place.
+ *
+ * Main Flow nests the report and its status one level deeper under `data` than the Engine
+ * workflow does. Every reader of that step must go through here: the sightings writer kept
+ * its own copy of "where the report lives", read only the flat shape, and recorded a null
+ * score with an invented 'success' status on 87,954 Main Flow sightings before anyone
+ * noticed (#1379).
+ */
+function equifaxOutputLevels(output: unknown): Record<string, unknown>[] {
+  if (!output || typeof output !== 'object') return []
+  const top = output as Record<string, unknown>
+  const nested = top.data
+  return nested && typeof nested === 'object' ? [nested as Record<string, unknown>, top] : [top]
+}
+
+/** The status string the step's output carries at either level, or null when it has none. */
+export function readEquifaxOutputStatus(output: unknown): string | null {
+  for (const level of equifaxOutputLevels(output)) {
+    if (typeof level.status === 'string') return level.status
+  }
+  return null
+}
+
+/** The report inside a step output of either shape, or null when there is none. */
+export function readEquifaxReportOutput(output: unknown): EquifaxReport | null {
+  const consumers = equifaxOutputLevels(output)
+    .map((level) => level.consumers)
+    .find((c) => c && typeof c === 'object')
+  if (!consumers) return null
 
   const raw = (consumers as Record<string, unknown>).equifaxUSConsumerCreditReport
   const report = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | undefined
