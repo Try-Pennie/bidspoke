@@ -382,10 +382,11 @@ jobs:
             exit 0
           fi
 
-          # Both prerendered and edge-rendered routes, all public so the gate
-          # does not redirect them to /login and leave us reading a redirect
-          # instead of a page.
-          ROUTES="/login /access-denied /dev/nodes /docs"
+          # The one shared route list (#901): the Deploy Pages job measures
+          # propagation on the same routes, so the grace this check applies is
+          # calibrated against the routes it samples.
+          . .github/scripts/pages-routes.sh
+          ROUTES="$PAGES_ROUTES"
 
           # The same paths that gate Deploy Pages in deploy.yml. Asking a
           # different question than the deploy asks is exactly what made the
@@ -441,6 +442,15 @@ jobs:
           INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
 
+          # Age of the newest successful Pages upload (#901), for the propagation
+          # grace: a Pages deploy goes on propagating per route after its run has
+          # completed, which the in-flight gate cannot see. Same three answers
+          # as the in-flight query, same reason. Asked and logged on every run
+          # even while the grace is 0, so the query is seen working in
+          # production before the day the grace is set.
+          LAST_SUCCESS_AGE=$(bash .github/scripts/deploy-last-success-age.sh)
+          echo "last_success_age=${LAST_SUCCESS_AGE}" >> "$GITHUB_OUTPUT"
+
       - name: Decide and alert
         id: pages_alert
         # Its own failure boundary (#1065). This step alerts and then exits 1;
@@ -470,7 +480,8 @@ jobs:
           # route, and each must arrive as its own argument.
           # shellcheck disable=SC2086
           DECISION=$(bash .github/scripts/pages-drift-decision.sh \
-            '${{ steps.sample.outputs.inflight_age }}' $OBSERVATIONS)
+            '${{ steps.sample.outputs.inflight_age }}' \
+            '--last-success-age=${{ steps.sample.outputs.last_success_age }}' $OBSERVATIONS)
           echo "decision=$DECISION observations=$OBSERVATIONS"
 
           case "$DECISION" in
@@ -479,6 +490,9 @@ jobs:
               exit 0 ;;
             deploy-in-flight)
               echo "::notice::A deploy is still running, so some routes are expected to be behind. The next run judges the settled state."
+              exit 0 ;;
+            deploy-propagating)
+              echo "::notice::The newest Pages upload finished within the propagation grace, so some routes are expected to be behind. The next run judges the settled state."
               exit 0 ;;
             alert-behind|alert-stuck-deploy)
               HEADLINE='*The site is serving an older build*'
@@ -490,6 +504,12 @@ jobs:
               # 2026-08-19 while the site was deploying perfectly normally.
               HEADLINE='*The site drift check cannot tell whether a deploy is running*'
               DETAIL=$(printf 'These routes are not yet serving `%s` (`%s`), and the query that asks whether a Deploy is still in flight could not be answered. A site that is simply mid deploy therefore cannot be told apart from one serving a genuinely older build.\n\n*How to fix:* open the run and read the `deploy-inflight` line, which says why the query failed. The job needs `actions: read` to ask GitHub for in-flight runs, and this repository grants the workflow token only contents and packages by default.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
+            alert-propagation-unknown)
+              # Distinct from alert-behind for the same reason as
+              # alert-inflight-unknown: a broken query must not send the reader
+              # after a deploy that was never the problem (#901).
+              HEADLINE='*The site drift check cannot tell whether a deploy just finished*'
+              DETAIL=$(printf 'These routes are not yet serving `%s` (`%s`), a propagation grace is in force, and the query that asks when the last Pages upload finished could not be answered. A site that is simply still propagating therefore cannot be told apart from one serving a genuinely older build.\n\n*How to fix:* open the run and read the `deploy-last-success` line, which says why the query failed.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
             alert-unstamped)
               HEADLINE='*The site cannot say which build it is serving*'
               DETAIL=$(printf 'At least one route answered with no usable build stamp (`%s`), so a stranded site can no longer be detected at all. This means `NEXT_PUBLIC_COMMIT_SHA` is not reaching the Pages build.\n\n*How to fix:* check the Build (next-on-pages) step in deploy.yml still sets it. It is inlined at compile time, so it has to be on the build step, not the upload.' "$OBSERVATIONS") ;;

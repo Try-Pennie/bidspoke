@@ -15,10 +15,18 @@
 # edge-rendered functions, and hands every reading to this script.
 #
 # Usage:
-#   pages-drift-decision.sh <inflight_age_seconds|""|unavailable> [<path>=<state> ...]
+#   pages-drift-decision.sh <inflight_age_seconds|""|unavailable> [--last-success-age=<seconds|""|unavailable>] [<path>=<state> ...]
 #
 # `unavailable` means the in-flight query could not be answered at all, which is
 # a different fact from an idle pipeline and gets its own outcome (#899).
+#
+# `--last-success-age` is how long ago the newest successful Pages upload
+# finished, from deploy-last-success-age.sh, with the same three states (#901).
+# It is a named option rather than a second positional age because two ages of
+# the same type are transposable at the call site, and a reversed call would
+# silently ask a different question (L455). While
+# PAGES_PROPAGATION_GRACE_SECONDS is above zero, a route that is behind is
+# excused if that age is at most the grace, as `deploy-propagating`.
 #
 #   state is one of:
 #     current      the route served the latest apps/web commit
@@ -27,10 +35,10 @@
 #     unknown      the route named a commit this repository does not have
 #     unreachable  the route could not be fetched at all
 #
-# Prints exactly one word: `ok`, `deploy-in-flight`, `alert-behind`,
-# `alert-stuck-deploy`, `alert-inflight-unknown`, `alert-unstamped`,
-# `alert-unknown-commit`, `alert-unreachable`, `alert-no-samples`, or
-# `alert-malformed`. The reason, naming the route
+# Prints exactly one word: `ok`, `deploy-in-flight`, `deploy-propagating`,
+# `alert-behind`, `alert-stuck-deploy`, `alert-inflight-unknown`,
+# `alert-propagation-unknown`, `alert-unstamped`, `alert-unknown-commit`,
+# `alert-unreachable`, `alert-no-samples`, or `alert-malformed`. The reason, naming the route
 # responsible, goes to stderr. Always exits 0; the caller acts on the word.
 #
 # THE FAIL-SAFE DIRECTION IS AN ALERT, and each of the ways this can go wrong is
@@ -60,8 +68,24 @@ set -uo pipefail
 # while still catching one that has genuinely wedged. Matches the worker gate.
 MAX_INFLIGHT_SECONDS=${MAX_INFLIGHT_SECONDS:-900}
 
+# How long after a Pages upload a route may still serve the previous build
+# before that counts as stranded (#901). ZERO UNTIL MEASURED: the deploy's
+# propagation sampler (pages-propagation-sample.sh) logs per-route flip times on
+# every Pages deploy, and the constant is set from several of those readings,
+# never from one or from a guess (L656, L172). Zero is the OFF value (L72), so
+# forgetting to set it leaves the check exactly as strict as it was. The issue
+# that sets it from the samples is #1394. The in-flight ceiling above bounds it:
+# a grace longer than a whole deploy is not a propagation window, and on an
+# hourly cadence it would hide a stranded site for most of an hour.
+PAGES_PROPAGATION_GRACE_SECONDS=${PAGES_PROPAGATION_GRACE_SECONDS:-0}
+
 INFLIGHT_AGE="${1-}"
 shift || true
+
+# Distinct from an empty age on purpose (L168): an age nobody supplied must not
+# be read as "no deploy to excuse" when a grace is in force.
+LAST_SUCCESS_AGE=''
+LAST_SUCCESS_SUPPLIED=no
 
 decide() {
   printf '%s\n' "$1"
@@ -81,6 +105,11 @@ SAMPLES=0
 
 for OBSERVATION in "$@"; do
   case "$OBSERVATION" in
+    --last-success-age=*)
+      LAST_SUCCESS_AGE="${OBSERVATION#--last-success-age=}"
+      LAST_SUCCESS_SUPPLIED=yes
+      continue ;;
+    --*) decide alert-malformed "option '${OBSERVATION}' is not one this script takes" ;;
     *=*) ;;
     *) decide alert-malformed "observation '${OBSERVATION}' is not <path>=<state>, so the sample cannot be read" ;;
   esac
@@ -98,6 +127,13 @@ for OBSERVATION in "$@"; do
     *) decide alert-malformed "route ${ROUTE} reported state '${STATE}', which is not one of current, behind, unstamped, unknown or unreachable" ;;
   esac
 done
+
+case "$PAGES_PROPAGATION_GRACE_SECONDS" in
+  *[!0-9]*) decide alert-malformed "PAGES_PROPAGATION_GRACE_SECONDS '${PAGES_PROPAGATION_GRACE_SECONDS}' is not a whole number of seconds, so the check is misconfigured" ;;
+esac
+if [ "$PAGES_PROPAGATION_GRACE_SECONDS" -gt "$MAX_INFLIGHT_SECONDS" ]; then
+  decide alert-malformed "PAGES_PROPAGATION_GRACE_SECONDS is ${PAGES_PROPAGATION_GRACE_SECONDS}s, above the ${MAX_INFLIGHT_SECONDS}s in-flight ceiling, so it is not a propagation window and the check is misconfigured"
+fi
 
 if [ "$SAMPLES" -eq 0 ]; then
   decide alert-no-samples "no routes were sampled at all, so this check measured nothing and cannot vouch for the site"
@@ -152,6 +188,31 @@ if [ -n "$INFLIGHT_AGE" ]; then
   fi
 
   decide deploy-in-flight "a deploy started ${INFLIGHT_AGE}s ago is still running, so these routes are expected to be behind for now: ${BEHIND}"
+fi
+
+# The propagation grace (#901), consulted only once no deploy is in flight: a
+# run still going is the earlier and stronger fact. Inert while the grace is 0,
+# and then the age is not even looked at, so a broken query cannot page a check
+# that would excuse nothing anyway.
+if [ "$PAGES_PROPAGATION_GRACE_SECONDS" -gt 0 ]; then
+  if [ "$LAST_SUCCESS_SUPPLIED" = no ]; then
+    decide alert-propagation-unknown "these routes are behind, a ${PAGES_PROPAGATION_GRACE_SECONDS}s propagation grace is in force, and the age of the last Pages upload was not supplied, so a site still settling cannot be told from a stranded one: ${BEHIND}"
+  fi
+  # The #899 shape again: a failed query must be its own outcome, never read as
+  # "no recent upload" (which pages) or as "recent upload" (which stays quiet).
+  if [ "$LAST_SUCCESS_AGE" = "unavailable" ]; then
+    decide alert-propagation-unknown "these routes are behind, a ${PAGES_PROPAGATION_GRACE_SECONDS}s propagation grace is in force, and whether a Pages upload finished recently could not be determined (read the deploy-last-success line), so a site still settling cannot be told from a stranded one: ${BEHIND}"
+  fi
+  if [ -n "$LAST_SUCCESS_AGE" ]; then
+    case "$LAST_SUCCESS_AGE" in
+      *[!0-9]*) decide alert-malformed "last Pages upload age '${LAST_SUCCESS_AGE}' is not a whole number of seconds, so it cannot be trusted to excuse these stale routes: ${BEHIND}" ;;
+    esac
+    if [ "$LAST_SUCCESS_AGE" -le "$PAGES_PROPAGATION_GRACE_SECONDS" ]; then
+      decide deploy-propagating "the newest Pages upload finished ${LAST_SUCCESS_AGE}s ago, within the ${PAGES_PROPAGATION_GRACE_SECONDS}s propagation grace, so these routes are expected to be behind for now: ${BEHIND}"
+    fi
+    decide alert-behind "no deploy is running, the newest Pages upload finished ${LAST_SUCCESS_AGE}s ago, past the ${PAGES_PROPAGATION_GRACE_SECONDS}s propagation grace, and these routes are serving an older commit: ${BEHIND}"
+  fi
+  decide alert-behind "no deploy is running, no recent Pages upload succeeded that could still be propagating, and these routes are serving an older commit: ${BEHIND}"
 fi
 
 decide alert-behind "no deploy is running and these routes are serving an older commit: ${BEHIND}"
