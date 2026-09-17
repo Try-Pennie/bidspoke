@@ -43,7 +43,7 @@ import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
-import { drainBlockSightings } from './block-sightings'
+import { drainBlockSightings, noteCarriedBlockSightings } from './block-sightings'
 import { noteSandboxBlocks } from './nodes/code'
 import { readBlockRecords, type SandboxBlockRecord } from './code-response'
 import { reportPartnerBlock, resolveSlackForBlockAlert, type PartnerBlockDeps } from '../lib/partner-block-alert'
@@ -1081,6 +1081,7 @@ export async function walkGraph(
         )
         output = result.output
         lastOutput = output
+        forwardBlockSightings(result)
 
         // Children cut off by the parent's timeout never get their own step log
         // written (runParallelChild was abandoned). Synthesize one so clicking
@@ -1100,6 +1101,7 @@ export async function walkGraph(
       } catch (err) {
         stepStatus = 'failed'
         errorMessage = formatErr(err)
+        forwardBlockSightings(err)
         // A parallel failure the children didn't reach a verdict on (a timeout, a
         // structural error, a mix of outcomes) is operational, never a clean
         // business rejection, so give it a real type and let the failure alert
@@ -1819,6 +1821,9 @@ export async function runParallelChild(
       output = result.output
       stepLogs = result.logs
       resolvedInput = result.resolvedInput ?? null
+      // A child's result never reaches the walker's step handling, so anything it carries
+      // is noted on the context for the parallel step itself to drain (#1265).
+      noteCarriedBlockSightings(ctx, result)
 
       // Early-response and early-exit sentinels don't make sense inside a
       // parallel block — you can't respond or exit the workflow while sibling
@@ -1835,6 +1840,8 @@ export async function runParallelChild(
     } catch (err) {
       stepStatus = 'failed'
       errorMessage = formatErr(err)
+      // The block swallows this error, so its sightings would be lost with it (#1265).
+      noteCarriedBlockSightings(ctx, err)
       // #486: classifyStepError honors a PartnerApiError's own errorType. The
       // hand-rolled Response-or-transport ternary this replaces never checked for
       // one, so a partner's authoritative verdict (from its

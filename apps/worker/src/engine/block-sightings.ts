@@ -62,6 +62,18 @@ export function drainBlockSightings(ctx: ExecutionContext): PartnerBlockSighting
   return out
 }
 
+/**
+ * Move sightings carried on a result or error onto the context. A parallel child's result
+ * and error never reach the walker's step handling (the parallel block settles them), so
+ * the child runner notes them here and the block's own step drains them.
+ */
+export function noteCarriedBlockSightings(ctx: ExecutionContext, carrier: unknown): void {
+  if (!carrier || typeof carrier !== 'object') return
+  const carried = (carrier as { blockSightings?: unknown }).blockSightings
+  if (!Array.isArray(carried)) return
+  for (const sighting of carried as PartnerBlockSighting[]) noteBlockSighting(ctx, sighting)
+}
+
 /** Attach a sighting to an error about to be thrown from code with no context in scope. */
 export function attachBlockSighting<E extends object>(err: E, sighting: PartnerBlockSighting | null): E {
   if (!sighting) return err
