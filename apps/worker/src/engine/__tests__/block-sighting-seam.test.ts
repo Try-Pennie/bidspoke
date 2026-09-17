@@ -114,3 +114,34 @@ describe('walkGraph forwards sightings from the bundled code chain path (#1265)'
     expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
   })
 })
+
+describe('walkGraph forwards sightings from parallel children (#1265)', () => {
+  function parallelDefinition(): WorkflowDefinition {
+    const nodes: NodeDefinition[] = [
+      { id: 'p', namespace: 'fan_out', type: 'parallel', config: { wait_for: 'all', on_child_error: 'continue', timeout_ms: 15000 } } as NodeDefinition,
+      { id: 'c', namespace: 'child_call', type: 'webhook', config: { retries: 0 } } as NodeDefinition,
+    ]
+    return { nodes, edges: [{ id: 'e0', source: 'p', target: 'c', source_handle: 'child-0' }], trigger: { type: 'http_webhook', config: {} } } as unknown as WorkflowDefinition
+  }
+
+  it('a child that noted a sighting on the context is reported even when the parallel block ends the walk', async () => {
+    vi.mocked(executeNode).mockImplementationOnce(async (_node, c) => {
+      ;(c.blockSightings ??= []).push(sighting('oauth.prd.ffngcp.com'))
+      return { output: { ok: false } }
+    })
+    const seen: PartnerBlockSighting[] = []
+    const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
+    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) })
+    expect(seen.map((s) => s.host)).toEqual(['oauth.prd.ffngcp.com'])
+  })
+
+  it('a child that threw an error carrying sightings is reported although the parallel block swallowed the error', async () => {
+    const err = new Error('Salesforce token fetch failed (403)') as Error & { blockSightings?: PartnerBlockSighting[] }
+    err.blockSightings = [sighting('pennie.my.salesforce.com')]
+    vi.mocked(executeNode).mockRejectedValueOnce(err)
+    const seen: PartnerBlockSighting[] = []
+    const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
+    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) })
+    expect(seen.map((s) => s.host)).toEqual(['pennie.my.salesforce.com'])
+  })
+})
