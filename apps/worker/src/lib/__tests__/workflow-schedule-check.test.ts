@@ -359,3 +359,124 @@ describe('one failure must not silence the rest (L71)', () => {
     expect(sendWorkflowScheduleAlert).toHaveBeenCalled()
   })
 })
+
+describe('runWorkflowScheduleWatch: a GitHub rate limit that clears on its own (#1367)', () => {
+  // GitHub's request limit is counted per account and resets every hour, so a
+  // run that is blind only because of it usually reads normally an hour later.
+  // Paging on the first one is noise (L36). A limit still there on the next
+  // hourly run has outlasted a reset, and that is worth saying.
+
+  const RESET = String(NOW / 1000 + 600)
+  const limited = () =>
+    new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1.' }), {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': RESET },
+    })
+
+  /** Repository readable; every runs lookup rate limited, except files given a run time. */
+  const runsLimited = (healthy: Record<string, string> = {}) =>
+    vi.fn(async (url: string | URL) => {
+      const href = String(url)
+      if (/\/repos\/[^/]+\/[^/]+$/.test(href)) return new Response('{}', { status: 200 })
+      const file = href.match(/workflows\/([^/]+)\/runs/)?.[1] ?? ''
+      if (file in healthy) {
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              { created_at: healthy[file], conclusion: 'success', event: 'schedule' },
+              { created_at: healthy[file], conclusion: 'success', event: 'schedule' },
+            ],
+          }),
+          { status: 200 },
+        )
+      }
+      return limited()
+    }) as unknown as typeof fetch
+
+  const repoLimited = () => vi.fn(async () => limited()) as unknown as typeof fetch
+
+  /** A KV double that records the lifetime of every write. */
+  const ttlKv = () => {
+    const store = new Map<string, string>()
+    const ttls: (number | undefined)[] = []
+    return Object.assign(
+      {
+        get: vi.fn(async (k: string) => store.get(k) ?? null),
+        put: vi.fn(async (k: string, v: string, o?: { expirationTtl?: number }) => {
+          store.set(k, v)
+          ttls.push(o?.expirationTtl)
+        }),
+      },
+      { ttls },
+    ) as unknown as KVNamespace & { ttls: (number | undefined)[] }
+  }
+
+  const orgs = () => fakeSupabase([{ organization_id: 'org-1' }])
+
+  it('holds the alert on the first hour that is only rate limited, and still reports the verdict', async () => {
+    const kv = ttlKv()
+    const results = await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW, runsLimited())
+    expect(messages()).toBe(0)
+    expect(results.every((r) => r.status === 'unreadable' && r.alerted === false)).toBe(true)
+    expect(kv.ttls, 'the hold must lapse before a later, unrelated hour').toEqual([90 * 60])
+  })
+
+  it('alerts when the next hourly run is still rate limited', async () => {
+    const kv = ttlKv()
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW, runsLimited())
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW + 3_600_000, runsLimited())
+    expect(messages()).toBe(1)
+  })
+
+  it('does not hold when a real problem sits beside the rate limit', async () => {
+    const [first, second] = WATCHED_WORKFLOWS
+    expect(second, 'this case needs two watched workflows').toBeDefined()
+    // One workflow is rate limited, the other has genuinely stopped running.
+    const results = await runWorkflowScheduleWatch(
+      orgs(),
+      ttlKv(),
+      ENV,
+      NOW,
+      runsLimited({ [second.file]: iso(NOW - second.staleMs - 3_600_000) }),
+    )
+    expect(results.find((r) => r.file === first.file)?.status).toBe('unreadable')
+    expect(results.find((r) => r.file === second.file)?.status).toBe('stale')
+    expect(messages()).toBe(1)
+  })
+
+  it('holds a rate limited repository check the same way', async () => {
+    const kv = ttlKv()
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW, repoLimited())
+    expect(messages()).toBe(0)
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW + 3_600_000, repoLimited())
+    expect(messages()).toBe(1)
+  })
+
+  it('does not hold a repository check GitHub refused for another reason', async () => {
+    const refused = vi.fn(async () => new Response('nope', { status: 404 })) as unknown as typeof fetch
+    await runWorkflowScheduleWatch(orgs(), ttlKv(), ENV, NOW, refused)
+    expect(messages()).toBe(1)
+  })
+
+  it('alerts rather than holding when the hold cannot be read (L42)', async () => {
+    const kv = {
+      get: vi.fn(async () => {
+        throw new Error('kv down')
+      }),
+      put: vi.fn(async () => undefined),
+    } as unknown as KVNamespace
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW, runsLimited())
+    expect(messages()).toBe(1)
+  })
+
+  it('alerts rather than holding when the hold cannot be recorded, or the next hour would hold again', async () => {
+    const kv = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => {
+        throw new Error('kv down')
+      }),
+    } as unknown as KVNamespace
+    await runWorkflowScheduleWatch(orgs(), kv, ENV, NOW, runsLimited())
+    expect(messages()).toBe(1)
+  })
+})
