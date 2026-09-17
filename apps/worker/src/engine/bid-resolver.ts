@@ -22,6 +22,7 @@ import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { partnerCredentialValue } from '../lib/partner-credential'
 import { applyOutboundMapping } from '../lib/field-mapper'
 import { containsHtmlDocument } from '../lib/html-error-summary'
+import { noteBlockSighting, sightingFromResponse } from './block-sightings'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -258,6 +259,11 @@ async function callBidApi(
   // needs (#756): an HTML document means the request died at an edge and was
   // never processed, so it is transient whatever status came back.
   const responseText = await res.text().catch(() => '')
+  // Noted BEFORE the response_classification override below (#1265): an override decides
+  // how the failure is classified, never whether a firewall block page was seen.
+  if (!res.ok) {
+    noteBlockSighting(ctx, sightingFromResponse(partner.api_endpoint!, res.status, responseText, res.headers, `partner:${partner.slug}`))
+  }
   let raw: unknown = null
   try {
     raw = responseText.length > 0 ? JSON.parse(responseText) : null

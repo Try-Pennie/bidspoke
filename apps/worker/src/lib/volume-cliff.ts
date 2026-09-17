@@ -93,7 +93,7 @@ async function rememberSlackConnections(
   }
 }
 
-async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: string): Promise<Map<string, SlackConnection>> {
+export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: string): Promise<Map<string, SlackConnection>> {
   const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
   if (!blob) return new Map()
   try {

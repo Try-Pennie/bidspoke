@@ -43,6 +43,13 @@ import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
+import { drainBlockSightings } from './block-sightings'
+import { noteSandboxBlocks } from './nodes/code'
+import { readBlockRecords, type SandboxBlockRecord } from './code-response'
+import { reportPartnerBlock, resolveSlackForBlockAlert, type PartnerBlockDeps } from '../lib/partner-block-alert'
+import { makeAlertClaims } from '../lib/alert-claim'
+import { getSlackConnection } from '../lib/slack'
+import { readLastGoodSlackConnections } from '../lib/volume-cliff'
 import { matchesMutedSignal } from '../lib/failure-rate'
 import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
@@ -54,8 +61,7 @@ import type {
   StepStatus,
   ErrorType,
   WorkflowDefinition,
-  ResolvedStepInput,
-} from '../types'
+  ResolvedStepInput, PartnerBlockSighting } from '../types'
 
 // Pull resolvedInput off a thrown error if the executor attached one. Mirrors
 // the existing `(err as { logs?: ... }).logs` pattern used a few lines below
@@ -365,9 +371,31 @@ export async function executeWorkflow(
   // (the end-of-run handlers already chain on this same promise's catch).
   await idempotencyProcessingPromise.catch(() => {})
 
+  // Partner block sightings (#1265) are reported in the background from here, the one
+  // place the Cloudflare context, the Supabase client and the Worker Env are all in hand.
+  // Test runs and local dev log the event and post nothing, like every engine alert (#547).
+  const blockDeps: PartnerBlockDeps = {
+    kv: env.IDEMPOTENCY,
+    claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+    resolveSlack: () => resolveSlackForBlockAlert(
+      org_id,
+      () => getSlackConnection(supabase, org_id),
+      () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+    ),
+    silent: options.isTest === true || !!env.LOCAL_DEV,
+    appUrl: env.APP_URL,
+  }
+  const onBlockSighting = (sighting: PartnerBlockSighting): void => {
+    executionCtx.waitUntil(
+      reportPartnerBlock(blockDeps, { orgId: org_id, workflowId, workflowName: workflow_name, traceId: ctx.trigger.trace_id }, sighting)
+        .catch((e: unknown) => console.error(`[partner-block] report failed trace=${ctx.trigger.trace_id}: ${formatErr(e)}`)),
+    )
+  }
+
   const walkPromise = walkGraph(
     ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue,
-    (r) => earlyResponseResolve(r)
+    (r) => earlyResponseResolve(r),
+    onBlockSighting
   )
 
   // Swallow walk errors here — they're re-caught below after awaiting. Raw
@@ -920,8 +948,28 @@ export async function walkGraph(
   env: Env,
   workflowVersionId = '',
   stepLogQueue: StepLogEntry[] = [],
-  onRespondEarly?: (response: WalkGraphResult) => void
+  onRespondEarly?: (response: WalkGraphResult) => void,
+  // Partner block sightings (#1265) ride on a step's result or thrown error and are handed
+  // here, the one place both are in hand, so reporting never runs inside a node. The
+  // callback is the caller's background reporter; its own failure must not touch the walk.
+  onBlockSighting?: (sighting: PartnerBlockSighting) => void
 ): Promise<WalkGraphResult> {
+  const forwardBlockSightings = (carrier: unknown): void => {
+    // Two carriers: the step's result or thrown error, and the context collector a reader
+    // notes into when it has neither (the dedup check). Drained every time so a sighting is
+    // reported once, against the step that saw it.
+    const noted = drainBlockSightings(ctx)
+    if (!onBlockSighting) return
+    const carried = carrier && typeof carrier === 'object' ? (carrier as { blockSightings?: unknown }).blockSightings : undefined
+    const sightings = [...(Array.isArray(carried) ? (carried as PartnerBlockSighting[]) : []), ...noted]
+    for (const sighting of sightings) {
+      try {
+        onBlockSighting(sighting)
+      } catch (e) {
+        console.error(`[partner-block] sighting callback failed trace=${ctx.trigger.trace_id}: ${formatErr(e)}`)
+      }
+    }
+  }
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
   let lastOutput: unknown = null
@@ -1170,11 +1218,13 @@ export async function walkGraph(
           const result = await executePartnerBidNode(childNode, ctx, env, supabase)
           attemptOutput = result.output as import('./nodes/partner-bid').PartnerBidOutput
           attemptResolvedInput = result.resolvedInput ?? null
+          forwardBlockSightings(result)
         } catch (err) {
           attemptStatus = 'failed'
           attemptError = formatErr(err)
           attemptErrorType = classifyStepError(err)
           attemptResolvedInput = extractResolvedInput(err)
+          forwardBlockSightings(err)
         }
 
         recordStepOutput(ctx, childNamespace, { output: attemptOutput, status: attemptStatus, error: attemptError, error_type: attemptErrorType })
@@ -1341,6 +1391,10 @@ export async function walkGraph(
           // hot path for a chain of ~3-5 nodes.
           const chainResolvedInput = buildCodeStepInput(chainNode, ctx)
           logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
+          // The bundle's raw records for this step become sightings through the one detector
+          // (#1265); the chain response came straight from JSON, so the records are re-read.
+          noteSandboxBlocks(ctx, chainNode.namespace, ctx.codeBundleName ?? codeBundleName(ctx.trigger.workflow_id), readBlockRecords(r.blocks))
+          forwardBlockSightings(undefined)
           stepOrder++
           if (r.status === 'completed') lastOutput = r.output
 
@@ -1435,6 +1489,7 @@ export async function walkGraph(
       lastOutput = output
       stepLogs = result.logs
       resolvedInput = result.resolvedInput ?? null
+      forwardBlockSightings(result)
 
       // Early exit / respond sentinels from translated Pipedream patterns:
       //   { response } alone          → respond + exit ($.respond() + $.flow.exit())
@@ -1491,6 +1546,7 @@ export async function walkGraph(
       // script's logs are still persisted (often the most useful debug signal).
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
+      forwardBlockSightings(err)
       // Same pattern for resolved input — executors that build the outbound
       // payload before fetch (Salesforce, Partner Bid, etc.) attach the
       // resolved values to thrown errors so failed steps don't show blank input.
@@ -1866,6 +1922,9 @@ interface ChainStepResult {
   durationMs: number
   sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
   logs?: import('../types').StepLogEntry[]
+  /** Non-2xx responses the step's script fetched, from the sandbox capture (#1265). Absent
+   *  on a bundle built before the capture existed and on the legacy per-node path. */
+  blocks?: SandboxBlockRecord[]
 }
 
 /**
@@ -2034,13 +2093,14 @@ export async function executeCodeChain(
             errorName: parsedRes.errorName,
             durationMs,
             logs: parsedRes.logs,
+            blocks: parsedRes.blocks,
           })
           break
         }
         const output = parsedRes.output
         const sentinel = detectSentinel(output)
         recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
-        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined, logs: parsedRes.logs })
+        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined, logs: parsedRes.logs, blocks: parsedRes.blocks })
         if (sentinel) break
       } catch (err) {
         const durationMs = Date.now() - startMs

@@ -35,6 +35,85 @@ export function containsHtmlDocument(text: string): boolean {
 }
 
 /**
+ * A partner's firewall answering with a block page instead of data (#1265).
+ *
+ * Achieve's Cloudflare firewall refused every call from the worker for five days with a 403
+ * HTML page and nothing recognised it. The rule here is deliberately narrow, because the
+ * obvious evidence is not evidence: EVERY response that passes through Cloudflare carries a
+ * `cf-ray` header, and Cloudflare's own origin-error pages (502, 504, 520 to 526) carry a
+ * Ray ID and the word "cloudflare" too, while meaning the partner's server is down rather
+ * than that it is blocking us. Both live buyers' endpoints are proxy workers on our own
+ * zone, so the header Ray ID on those responses is ours, not the partner's.
+ *
+ * So a block is recognised only on the markers a block or challenge page carries, the
+ * Ray ID is read from the page BODY (the author's, the one the partner's firewall log
+ * holds) and the header Ray ID is reported separately as the edge in front of the host.
+ * A 403 HTML page with none of those markers is reported as exactly that, an HTML page
+ * where data was expected, with `vendor: 'unknown'`, so the alert can claim only what
+ * was measured. Anything else returns null and the HTML page rule alone applies.
+ */
+export interface BlockPage {
+  status: number
+  vendor: 'cloudflare' | 'unknown'
+  /** From the page body: the author's Ray ID, the one to quote to the partner. */
+  bodyRayId: string | null
+  /** From the cf-ray header: the edge in front of the host we called. */
+  edgeRayId: string | null
+  /** The markers that made this a block, for the alert and the log line. */
+  markers: string[]
+}
+
+type HeaderReader = { get(name: string): string | null } | Record<string, string>
+
+const BLOCK_BODY_MARKERS: ReadonlyArray<{ marker: string; test: RegExp }> = [
+  { marker: 'Sorry, you have been blocked', test: /sorry, you have been blocked/i },
+  { marker: 'Attention Required | Cloudflare', test: /attention required!?\s*\|\s*cloudflare/i },
+  // Cloudflare's access-denied error codes: 1006/1007/1008 IP banned, 1010 browser
+  // signature banned, 1012 access denied, 1020 firewall rule.
+  { marker: 'Cloudflare error code 10xx', test: /error code:?\s*10(?:06|07|08|10|12|20)\b/i },
+  { marker: 'Cloudflare challenge page', test: /just a moment|checking your browser|cf-chl/i },
+]
+
+const RAY_ID_IN_TEXT = /ray id:?\s*([0-9a-f]{16})\b/i
+
+function readHeader(headers: HeaderReader | undefined, name: string): string | null {
+  if (!headers) return null
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    return (headers as { get(name: string): string | null }).get(name)
+  }
+  const record = headers as Record<string, string>
+  const key = Object.keys(record).find((k) => k.toLowerCase() === name)
+  return key === undefined ? null : record[key]
+}
+
+export function detectBlockPage(
+  status: number,
+  bodyText: string | null | undefined,
+  headers?: HeaderReader,
+): BlockPage | null {
+  if (status < 400) return null
+  if (typeof bodyText !== 'string' || bodyText.length === 0 || !containsHtmlDocument(bodyText)) return null
+
+  const visible = extractVisibleText(bodyText)
+  const markers = BLOCK_BODY_MARKERS.filter(({ test }) => test.test(visible) || test.test(bodyText)).map(({ marker }) => marker)
+  const mitigated = readHeader(headers, 'cf-mitigated')
+  if (mitigated) markers.push(`cf-mitigated: ${mitigated}`)
+
+  let vendor: BlockPage['vendor']
+  if (markers.length > 0) vendor = 'cloudflare'
+  else if (status === 403) vendor = 'unknown'
+  else return null
+
+  return {
+    status,
+    vendor,
+    bodyRayId: RAY_ID_IN_TEXT.exec(visible)?.[1]?.toLowerCase() ?? null,
+    edgeRayId: readHeader(headers, 'cf-ray'),
+    markers,
+  }
+}
+
+/**
  * Returns `message` unchanged unless it contains an HTML document, in which case
  * the document is replaced by its readable text plus a note of how many bytes
  * were collapsed. Any prefix the caller built ("Salesforce API error (400): ")

@@ -27,6 +27,7 @@ import { isNotFoundError } from '../../lib/api-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
 import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
+import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid, effectiveResolverType } from '../bid-resolver'
@@ -695,7 +696,7 @@ const DEDUP_TIMEOUT_MS = 5000
 // endpoint would otherwise re-submit every duplicate (potentially double-charged)
 // with no signal. (Whether dedup should fail open vs closed is a separate
 // product decision — see issue notes — not changed here.)
-async function checkDedup(
+export async function checkDedup(
   endpoint: string,
   ctx: ExecutionContext,
   slug: string,
@@ -712,6 +713,10 @@ async function checkDedup(
       signal: controller.signal,
     })
     if (!res.ok) {
+      // The body is read only to recognise a firewall block page (#1265); the fail-open
+      // answer below is unchanged and is its own question (#1388).
+      const text = await res.text().catch(() => '')
+      noteBlockSighting(ctx, sightingFromResponse(endpoint, res.status, text, res.headers, `dedup:${slug}`))
       log({ event: 'dedup_check_failed', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: slug, reason: 'non_2xx', http_status: res.status })
       return false
     }

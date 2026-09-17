@@ -9,7 +9,37 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput,
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { formatErr } from '../../lib/format-error'
-import { parseCodeSandboxResponse } from '../code-response'
+import { parseCodeSandboxResponse, type SandboxBlockRecord } from '../code-response'
+import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
+
+/**
+ * Bundles built before the sandbox recorded non-2xx responses (#1265) answer with no
+ * `blocks` key at all, which would otherwise read exactly like a bundle that saw nothing.
+ * Counted once per bundle per isolate so coverage is measurable in the logs, and the
+ * post-deploy check is "this line reaches zero", not "no blocks were seen".
+ */
+const bundlesWithoutCapture = new Set<string>()
+
+export function noteSandboxBlocks(
+  ctx: ExecutionContext,
+  namespace: string,
+  bundleName: string,
+  records: SandboxBlockRecord[] | undefined,
+): void {
+  if (records === undefined) {
+    if (!bundlesWithoutCapture.has(bundleName)) {
+      bundlesWithoutCapture.add(bundleName)
+      console.log(`[code-node] event=code_bundle_without_block_capture workflow=${ctx.trigger.workflow_id} bundle=${bundleName} namespace=${namespace}`)
+    }
+    return
+  }
+  for (const r of records) {
+    const headers = {
+      get: (name: string) => (name === 'cf-ray' ? r.cfRay : name === 'cf-mitigated' ? r.cfMitigated : name === 'content-type' ? r.contentType : null),
+    }
+    noteBlockSighting(ctx, sightingFromResponse(r.url, r.status, r.bodyHead, headers, `code:${namespace}`))
+  }
+}
 import { hasDynamicStepsAccess, extractReferencedNamespaces } from '@bidspoke/references'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
@@ -165,6 +195,7 @@ export async function executeCodeNode(
   // it unwraps the {__bsv: 1, output, logs} envelope and decides output-vs-error
   // from res.ok alone, so an error body can never be read as output (#460).
   const parsedRes = parseCodeSandboxResponse(res.ok, text)
+  noteSandboxBlocks(ctx, node.namespace, ctx.codeBundleName ?? codeBundleName(ctx.trigger.workflow_id), parsedRes.blocks)
 
   if (!parsedRes.ok) {
     const err = new Error(parsedRes.error) as Error & {

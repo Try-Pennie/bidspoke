@@ -26,6 +26,7 @@ import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
 import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
+import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -82,7 +83,12 @@ export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: s
 
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`Salesforce token fetch failed (${res.status}): ${text}`)
+    // No execution context here, so a block page rides on the error (#1265). A token
+    // endpoint is exactly the kind of host a firewall blocks first.
+    throw attachBlockSighting(
+      new Error(`Salesforce token fetch failed (${res.status}): ${text}`),
+      sightingFromResponse(`${instanceUrl}/services/oauth2/token`, res.status, text, res.headers, 'salesforce:token'),
+    )
   }
 
   const data = await parseJson<{ access_token: string }>(res)
@@ -334,6 +340,8 @@ export async function executeSalesforceNode(
     if (isEdgeErrorPage) {
       console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=${operation} target=${targetLabel} trace=${ctx.trigger.trace_id}`)
     }
+    // A firewall block page on the instance is noted for the engine to report (#1265).
+    noteBlockSighting(ctx, sightingFromResponse(instanceUrl, res.status, responseText, res.headers, node.namespace))
     const isTransient = res.status === 429 || res.status >= 500 || matchesTransient || isEdgeErrorPage
     if (!isTransient) err.permanent = true
 
@@ -718,7 +726,7 @@ async function fetchQueryPage(
       console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=query_page trace=${opts.traceId}`)
     }
     if (!(res.status === 429 || res.status >= 500 || isEdgeErrorPage)) err.permanent = true
-    throw err
+    throw attachBlockSighting(err, sightingFromResponse(opts.instanceUrl, res.status, text, res.headers, 'salesforce:query_page'))
   }
   try {
     return JSON.parse(text)

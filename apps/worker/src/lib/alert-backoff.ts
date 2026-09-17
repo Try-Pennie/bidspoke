@@ -110,12 +110,16 @@ export async function recordAlert(
   key: string,
   standing: StandingCondition | null,
   nowMs: number,
+  // A family whose condition is only ever re-observed by a NEW occurrence (a partner block
+  // page, #1265) has no probe to clear it, so its record must expire on its own rather
+  // than describe a block from weeks ago as still standing. Defaults to the shared TTL.
+  opts: { conditionTtlSeconds?: number } = {},
 ): Promise<StandingCondition> {
   const next: StandingCondition = {
     since: standing?.since ?? new Date(nowMs).toISOString(),
     alerts: (standing?.alerts ?? 0) + 1,
   }
-  await kv.put(conditionKey(key), JSON.stringify(next), { expirationTtl: CONDITION_TTL_SECONDS })
+  await kv.put(conditionKey(key), JSON.stringify(next), { expirationTtl: opts.conditionTtlSeconds ?? CONDITION_TTL_SECONDS })
   await kv.put(cooldownKeyFor(key), '1', { expirationTtl: intervalSecondsFor(next.alerts - 1) })
   return next
 }

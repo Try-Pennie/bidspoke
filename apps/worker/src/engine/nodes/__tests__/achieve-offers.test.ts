@@ -74,6 +74,8 @@ function mockFetchOnce(status: number, body: unknown, headers: Record<string, st
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+    // A real Response always has text(); the node now reads it first (#1265).
+    text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
     headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
   })
   vi.stubGlobal('fetch', fn)

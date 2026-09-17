@@ -24,6 +24,7 @@ import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { containsHtmlDocument } from '../../lib/html-error-summary'
+import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -218,6 +219,9 @@ export async function executeIntegrationNode(
     // an HTML 400 from any partner permanent with retries_used=0 and dropped the
     // lead. The rule itself lives in classifyHttpErrorWithBody, not here.
     ;(responseErr as Response & { bodyText?: string }).bodyText = responseText
+    // A firewall block page is noted for the engine to report (#1265); it changes nothing
+    // about classification, which the HTML rule below already makes transient.
+    noteBlockSighting(ctx, sightingFromResponse(resolvedUrl, res.status, responseText, res.headers, node.namespace))
     if (containsHtmlDocument(responseText)) {
       console.log(`[integration] event=html_error_page_transient status=${res.status} namespace=${node.namespace} trace=${ctx.trigger.trace_id}`)
     }

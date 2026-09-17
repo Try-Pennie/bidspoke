@@ -162,6 +162,12 @@ export interface ExecutionContext {
    */
   bidGroupContext?: Record<string, unknown>
   /**
+   * Partner block sightings noted by readers during the current step (#1265), drained by
+   * the walker after every step. A reader with no step result to ride on (the partner dedup
+   * check, which answers a boolean and carries on) notes here.
+   */
+  blockSightings?: PartnerBlockSighting[]
+  /**
    * Bid-attempt insert promises (lead_sighting_bids) registered by partner-bid
    * nodes. finalizeSighting awaits these before its winner UPDATE so the UPDATE
    * doesn't race the inserts and match zero rows (#88). Populated lazily.
@@ -219,6 +225,29 @@ export interface StepExecutionResult {
   expected?: true  // expected error: keep step status `completed` and skip Slack even if earlyResponse is 4xx/5xx
   logs?: StepLogEntry[]
   resolvedInput?: ResolvedStepInput
+  /**
+   * Partner responses recognised as a firewall block page while this step ran (#1265).
+   * Node executors cannot reach the Cloudflare context, a Supabase client or the Worker
+   * Env uniformly, so a sighting rides on the result (or on a thrown error, the way
+   * `logs` and `resolvedInput` do) and the engine reports it from one place.
+   */
+  blockSightings?: PartnerBlockSighting[]
+}
+
+/**
+ * One partner response that a firewall answered instead of the partner (#1265). `host` is
+ * the host we called; `seenIn` names the step (or `code:<namespace>` for a code node fetch).
+ */
+export interface PartnerBlockSighting {
+  host: string
+  status: number
+  vendor: 'cloudflare' | 'unknown'
+  bodyRayId: string | null
+  edgeRayId: string | null
+  markers: string[]
+  seenIn: string
+  /** The partner's other hosts behind the same firewall, when known, so one incident reads as one story. */
+  siblingHosts?: string[]
 }
 
 export interface LoadedWorkflow {
