@@ -8,7 +8,7 @@ const nextConfig = {
   // because it exists to be ONE implementation the Worker and the browser share
   // (#869), and a compile step is another place the two could end up on different
   // versions of it.
-  transpilePackages: ['@bidspoke/references', '@bidspoke/uuidv7'],
+  transpilePackages: ['@bidspoke/references', '@bidspoke/uuidv7', '@bidspoke/script-hygiene'],
 }
 
 if (process.env.NODE_ENV === 'development') {

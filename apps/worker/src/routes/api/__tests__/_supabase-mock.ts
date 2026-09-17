@@ -242,13 +242,28 @@ export function makeSupabase(
             }
 
             if (prop === 'insert') {
-              return () => writeChain(cfg.insertResult, cfg.insertError, readSingle, readList, cfg.writeRows, recordEq)
+              // Recorded with its payload, so a test can assert what a route actually wrote
+              // (#1117 asserts the stored script), not only that a write happened.
+              return (...args: unknown[]) => {
+                ;(calls[table] ??= []).push(['insert', args])
+                return writeChain(cfg.insertResult, cfg.insertError, readSingle, readList, cfg.writeRows, recordEq)
+              }
             }
             if (prop === 'update') {
-              return () => writeChain(cfg.updateResult, cfg.updateError, readSingle, readList, cfg.writeRows, recordEq)
+              // Recorded with its payload, so a test can assert what a route actually wrote
+              // (#1117 asserts the stored script), not only that a write happened.
+              return (...args: unknown[]) => {
+                ;(calls[table] ??= []).push(['update', args])
+                return writeChain(cfg.updateResult, cfg.updateError, readSingle, readList, cfg.writeRows, recordEq)
+              }
             }
             if (prop === 'upsert') {
-              return () => writeChain(cfg.upsertResult, cfg.upsertError, readSingle, readList, cfg.writeRows, recordEq)
+              // Recorded with its payload, so a test can assert what a route actually wrote
+              // (#1117 asserts the stored script), not only that a write happened.
+              return (...args: unknown[]) => {
+                ;(calls[table] ??= []).push(['upsert', args])
+                return writeChain(cfg.upsertResult, cfg.upsertError, readSingle, readList, cfg.writeRows, recordEq)
+              }
             }
             if (prop === 'delete') {
               return () => writeChain(undefined, cfg.deleteError, readSingle, readList, cfg.writeRows, recordEq)

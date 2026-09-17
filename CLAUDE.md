@@ -25,6 +25,10 @@
   - `packages/uuidv7`: UUIDv7 execution ids, minted identically by the Worker for
     live runs and by the browser for canvas test runs, plus the UTC day the
     execution archive derives from them.
+  - `packages/script-hygiene`: trailing whitespace stripping for code node scripts
+    (#1117), applied by the canvas serialiser and by every worker route that writes
+    a definition, so a pasted script cannot carry column padding into storage. It
+    leaves lines inside template literals alone because those spaces are value.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`
