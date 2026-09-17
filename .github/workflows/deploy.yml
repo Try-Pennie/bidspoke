@@ -439,7 +439,9 @@ jobs:
   deploy-pages:
     name: Deploy Pages
     runs-on: ubuntu-latest
-    # measured max 135s over 2 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    # measured max 135s over 2 runs to build and upload, plus up to 300s for the
+    # propagation sampler below to wait on a route that never flips, plus
+    # headroom. Bounds a HANG, not slowness (#1062). A test derives the sum.
     timeout-minutes: 10
     needs: [verify, changes]
     if: needs.changes.outputs.pages == 'true'
@@ -496,6 +498,29 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 3e7f907a9c19e51417873e2cce4fbc5c
+
+      # Measure how long the site takes to serve this commit on each sampled
+      # route (#901). A Pages deploy propagates per route AFTER the upload, and
+      # Deploy Drift excuses a route that is behind while the upload is younger
+      # than a grace period. That grace has to be set from several measured
+      # deploys, not a guess, so every Pages deploy logs its own readings here
+      # (`pages-propagation:` lines, also in the step summary). Right after the
+      # upload step so its clock starts at the instant the drift check anchors
+      # its age on. It is a measurement, never a gate: it cannot fail the deploy.
+      - name: Watch the routes flip to this commit
+        continue-on-error: true
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ -z "${SITE_URL:-}" ]; then
+            echo "pages-propagation: the SITE_URL repository variable is empty, so propagation was not measured"
+            exit 0
+          fi
+          . .github/scripts/pages-routes.sh
+          # shellcheck disable=SC2086
+          bash .github/scripts/pages-propagation-sample.sh "$SITE_URL" "$GITHUB_SHA" 300 15 $PAGES_ROUTES
 
   # Note: deploy failures are not Slack-alerted (reverted #328) — GitHub's
   # default Actions failure email already covers them, and the Slack page was

@@ -189,7 +189,10 @@ describe('the drift workflow takes a second look before calling a target unreach
       expect(Number.isFinite(value) && value > 0, `could not read ${label} from the script`).toBe(true)
     }
     const perFetch = maxTime * (retries + 1) + retryDelay * retries
-    const routes = drift.match(/^\s*ROUTES="([^"]+)"/m)![1].trim().split(/\s+/).length
+    // The route list is shared with the deploy's propagation sampler (#901), so
+    // it is read from the one file both source rather than from the drift job.
+    const routesFile = readFileSync(path.join(REPO_ROOT, '.github/scripts/pages-routes.sh'), 'utf8')
+    const routes = routesFile.match(/^PAGES_ROUTES="([^"]+)"/m)![1].trim().split(/\s+/).length
     const worstSite = routes * perFetch * 2 + delay
     // The tail worker and the main worker are one address each (#1373).
     const worstSingle = perFetch * 2 + delay

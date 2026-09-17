@@ -188,6 +188,13 @@ const readRepoText = (relative: string): string => {
   return text
 }
 
+/** The routes every site check samples, from the one file both workflows source (#901). */
+const sharedRoutes = (): string[] => {
+  const line = readRepoText('.github/scripts/pages-routes.sh').match(/^PAGES_ROUTES="([^"]+)"/m)
+  expect(line, 'pages-routes.sh no longer declares PAGES_ROUTES').not.toBeNull()
+  return line![1].trim().split(/\s+/)
+}
+
 /** The `pages:` paths filter that gates Deploy Pages in deploy.yml. */
 const deployPagesFilterPaths = (): string[] => {
   const lines = readRepoText('.github/workflows/deploy.yml').split('\n')
@@ -226,11 +233,13 @@ describe('the site drift job samples routes that actually serve a page (#804)', 
     // A protected path answers with a redirect. curl without -L returns its empty
     // body at exit 0, which reads as a page with no stamp, so one protected route
     // in this list would page forever against a perfectly healthy site.
+    // The list lives in one shared file since #901, sourced by the drift job
+    // and by the deploy's propagation sampler; the drift job must still read it.
     const drift = readRepoText('.github/workflows/deploy-drift.yml')
-    const routesLine = drift.match(/^\s*ROUTES="([^"]+)"/m)
-    expect(routesLine, 'the pages drift job no longer declares a ROUTES list').not.toBeNull()
-
-    const routes = routesLine![1].trim().split(/\s+/)
+    expect(drift, 'the pages drift job no longer sources the shared route list').toMatch(
+      /\. \.github\/scripts\/pages-routes\.sh/,
+    )
+    const routes = sharedRoutes()
     expect(routes.length, 'a single route cannot reveal a partial per-route propagation').toBeGreaterThan(1)
 
     for (const route of routes) {
@@ -241,8 +250,7 @@ describe('the site drift job samples routes that actually serve a page (#804)', 
   it('samples both a prerendered route and the edge-rendered docs route', () => {
     // The two propagation paths. A sample confined to one of them cannot see the
     // partial state that made a prod scan read like a missed fix.
-    const drift = readRepoText('.github/workflows/deploy-drift.yml')
-    const routes = drift.match(/^\s*ROUTES="([^"]+)"/m)![1].trim().split(/\s+/)
+    const routes = sharedRoutes()
     expect(routes, 'no edge-rendered route is sampled, so the functions bundle is never checked').toContain('/docs')
     expect(
       routes.some((route) => route !== '/docs'),
@@ -367,5 +375,153 @@ describe('the drift jobs can actually ask whether a deploy is running (#899)', (
     // running". The shared script always exits 0 and answers `unavailable`, so no
     // caller needs to suppress anything.
     expect(drift()).not.toMatch(/deploy-inflight-age\.sh[^\n]*(2>\/dev\/null|\|\| true)/)
+  })
+})
+
+/**
+ * The propagation grace after a completed deploy (#901).
+ *
+ * The in-flight gate covers a deploy that is still RUNNING. A Pages deploy goes
+ * on propagating per route after its run has completed, so an hourly check that
+ * lands in that window sees `behind` with no deploy in flight and pages for a
+ * site that is simply settling. The decision now also takes the age of the
+ * newest successful Pages upload, and excuses `behind` while that age is under
+ * `PAGES_PROPAGATION_GRACE_SECONDS`.
+ *
+ * The grace is 0 unless set, which makes this whole branch inert, on purpose:
+ * the window must be MEASURED across several deploys before a number goes in
+ * (L656, L172), and the deploy's propagation sampler is what measures it. The
+ * issue that sets the constant from those samples is named in the script.
+ *
+ * With the grace off the age is still passed and logged, so the query is seen
+ * working in production before the day the constant is set (L142, L557).
+ */
+const decideWithGrace = (grace: string, ...args: string[]): string =>
+  execFileSync('bash', [SCRIPT, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, PAGES_PROPAGATION_GRACE_SECONDS: grace },
+  }).trim()
+
+const reasonWithGrace = (grace: string, ...args: string[]): string =>
+  execFileSync('bash', ['-c', `bash "$0" "$@" 2>&1 >/dev/null`, SCRIPT, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, PAGES_PROPAGATION_GRACE_SECONDS: grace },
+  })
+
+describe('pages-drift-decision: the propagation grace (#901)', () => {
+  it('is inert by default: a fresh successful deploy excuses nothing until the grace is set', () => {
+    // The default is the OFF value (L72), and a grace nobody measured must not
+    // silence the check. This is the behaviour on the day this ships.
+    expect(decide('', '--last-success-age=30', '/docs=behind')).toBe('alert-behind')
+  })
+
+  it('excuses a route that is behind while the last upload is younger than the grace', () => {
+    expect(decideWithGrace('300', '', '--last-success-age=120', '/docs=behind', '/login=current')).toBe(
+      'deploy-propagating',
+    )
+  })
+
+  it('names the age and the grace in the reason, so the log shows the arithmetic', () => {
+    const text = reasonWithGrace('300', '', '--last-success-age=120', '/docs=behind')
+    expect(text).toMatch(/120s/)
+    expect(text).toMatch(/300s/)
+    expect(text).toMatch(/\/docs/)
+  })
+
+  it('stops excusing the moment the age passes the grace', () => {
+    expect(decideWithGrace('300', '', '--last-success-age=301', '/docs=behind')).toBe('alert-behind')
+  })
+
+  it('still excuses at exactly the grace', () => {
+    expect(decideWithGrace('300', '', '--last-success-age=300', '/docs=behind')).toBe('deploy-propagating')
+  })
+
+  it('does not excuse anything when there is no recent upload to blame (an empty age)', () => {
+    // An empty age is the definite "the newest Pages attempt did not succeed,
+    // or there was none". Nothing is propagating, so behind is behind.
+    expect(decideWithGrace('300', '', '--last-success-age=', '/docs=behind')).toBe('alert-behind')
+  })
+
+  it('is its own loud outcome when the age could not be read and a grace is in force', () => {
+    // The #899 shape again: a broken query must not read as "no deploy to
+    // excuse" and page, nor as "recent deploy" and stay quiet. With the grace on,
+    // an unreadable age means the check cannot tell settling from stranded.
+    expect(decideWithGrace('300', '', '--last-success-age=unavailable', '/docs=behind')).toBe(
+      'alert-propagation-unknown',
+    )
+  })
+
+  it('treats an age the caller never supplied as unreadable, not as no deploy', () => {
+    // A parameter the decision needs must never default to a value that stands
+    // for absent (L168).
+    expect(decideWithGrace('300', '', '/docs=behind')).toBe('alert-propagation-unknown')
+    expect(reasonWithGrace('300', '', '/docs=behind')).toMatch(/not supplied/)
+  })
+
+  it('ignores an unreadable age while the grace is off, since nothing would be excused anyway', () => {
+    expect(decide('', '--last-success-age=unavailable', '/docs=behind')).toBe('alert-behind')
+  })
+
+  it('refuses a non-numeric age as a broken caller rather than comparing it', () => {
+    expect(decideWithGrace('300', '', '--last-success-age=soon', '/docs=behind')).toBe('alert-malformed')
+  })
+
+  it('refuses a grace longer than the in-flight ceiling, so a misconfigured grace cannot buy an hour of silence', () => {
+    // The in-flight ceiling is the longest a deploy is allowed to take before it
+    // counts as stuck. A propagation window longer than a whole deploy is not a
+    // propagation window, and the hourly cadence would let it hide a stranded
+    // site for most of an hour.
+    expect(decideWithGrace('901', '', '--last-success-age=10', '/docs=behind')).toBe('alert-malformed')
+    expect(reasonWithGrace('901', '', '--last-success-age=10', '/docs=behind')).toMatch(/901/)
+  })
+
+  it('refuses a non-numeric grace', () => {
+    expect(decideWithGrace('five minutes', '', '--last-success-age=10', '/docs=behind')).toBe('alert-malformed')
+  })
+
+  it('lets a deploy still in flight answer first, since that is the earlier and stronger fact', () => {
+    expect(decideWithGrace('300', '45', '--last-success-age=10', '/docs=behind')).toBe('deploy-in-flight')
+  })
+
+  it('never excuses a route that is unstamped, unknown or unreachable', () => {
+    // Propagation explains an OLDER commit and nothing else, exactly as the
+    // in-flight gate does.
+    expect(decideWithGrace('300', '', '--last-success-age=10', '/docs=unstamped')).toBe('alert-unstamped')
+    expect(decideWithGrace('300', '', '--last-success-age=10', '/docs=unknown')).toBe('alert-unknown-commit')
+    expect(decideWithGrace('300', '', '--last-success-age=10', '/docs=unreachable')).toBe('alert-unreachable')
+  })
+
+  it('is ok when every route is current, whatever the age says', () => {
+    expect(decideWithGrace('300', '', '--last-success-age=10', '/docs=current')).toBe('ok')
+    expect(decideWithGrace('300', '', '--last-success-age=unavailable', '/docs=current')).toBe('ok')
+  })
+
+  it('does not mistake the option for a route observation', () => {
+    // A `--` argument is an option, so it must not count as a sample nor fail
+    // the <path>=<state> parse.
+    expect(decideWithGrace('300', '', '--last-success-age=10')).toBe('alert-no-samples')
+  })
+})
+
+describe('the site drift job supplies the age of the last upload (#901)', () => {
+  const drift = () => readRepoText('.github/workflows/deploy-drift.yml')
+
+  it('asks through the shared script, in the sampling step', () => {
+    expect(drift()).toMatch(/LAST_SUCCESS_AGE=\$\(bash \.github\/scripts\/deploy-last-success-age\.sh\)/)
+  })
+
+  it('hands it to the decision as the named option', () => {
+    expect(drift()).toMatch(/--last-success-age=\$\{\{ steps\.sample\.outputs\.last_success_age \}\}/)
+  })
+
+  it('never swallows that query either', () => {
+    expect(drift()).not.toMatch(/deploy-last-success-age\.sh[^\n]*(2>\/dev\/null|\|\| true)/)
+  })
+
+  it('handles both new outcomes: one stays quiet, one alerts with its own remedy', () => {
+    const text = drift()
+    expect(text).toMatch(/deploy-propagating\)/)
+    expect(text).toMatch(/alert-propagation-unknown\)/)
+    expect(text).toMatch(/deploy-last-success/)
   })
 })
