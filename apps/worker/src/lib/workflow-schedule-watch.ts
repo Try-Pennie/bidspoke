@@ -543,6 +543,15 @@ export function cooldownSignature(configFailed: boolean, results: ScheduleCheckR
 const cooldownKey = (signature: string) => `workflow-schedule:alert:${signature}`
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 
+/**
+ * Marks that the previous hourly run held a rate-limit-only alert (#1367).
+ * Ninety minutes, not longer: long enough to reach the next hourly run through
+ * cron jitter, short enough that a limit two hours later with a clean hour in
+ * between is treated as new rather than as the same one continuing.
+ */
+const RATE_LIMIT_HOLD_KEY = 'workflow-schedule:rate-limit-held'
+const RATE_LIMIT_HOLD_TTL_SECONDS = 90 * 60
+
 export interface ScheduleCheckResult {
   file: string
   status: ScheduleStatus
@@ -639,6 +648,36 @@ export async function runWorkflowScheduleWatch(
   }
 
   if (configFailure === null && problems.length === 0) return results
+
+  // A run blind ONLY because GitHub's request limit is used up holds its alert for
+  // one hour (#1367). The limit is counted per account and resets hourly, so the
+  // next run usually reads normally, and paging on it is noise (L36). If the next
+  // hourly run is still rate limited the limit has outlasted a reset, and it
+  // alerts. Anything else in the run (a stale or failing workflow, a credential
+  // GitHub really refused) alerts at once. Both KV failures speak rather than hold
+  // (L42): an unreadable hold is not evidence of an earlier hour, and an
+  // unrecorded one would hold again next hour for ever.
+  const onlyRateLimited =
+    configFailure !== null ? configRateLimited : problems.every((p) => p.verdict.rateLimited === true)
+  if (onlyRateLimited) {
+    let heldLastHour = true
+    try {
+      heldLastHour = (await kv.get(RATE_LIMIT_HOLD_KEY)) !== null
+    } catch (e) {
+      console.error('[workflow-schedule] rate limit hold unreadable, alerting anyway:', formatErr(e))
+    }
+    if (!heldLastHour) {
+      try {
+        await kv.put(RATE_LIMIT_HOLD_KEY, new Date(nowMs).toISOString(), {
+          expirationTtl: RATE_LIMIT_HOLD_TTL_SECONDS,
+        })
+        console.log('[workflow-schedule] alert held: only a GitHub rate limit, which resets within the hour')
+        return results
+      } catch (e) {
+        console.error('[workflow-schedule] rate limit hold could not be recorded, alerting anyway:', formatErr(e))
+      }
+    }
+  }
 
   const signature = cooldownSignature(configFailure !== null, results)
   let held = false
