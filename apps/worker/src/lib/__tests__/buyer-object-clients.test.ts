@@ -8,7 +8,21 @@
 import { describe, expect, it } from 'vitest'
 import { DeadlineError, type Timers } from '@bidspoke/buyer-profile'
 import { GenerationMovedError, WrongStateError } from '../buyer-sale-attempt'
-import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, ObjectCallError } from '../buyer-object-clients'
+import { BuyerLedgerClient, LeadSaleClient, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, ObjectCallError } from '../buyer-object-clients'
+
+describe('OBJECT_CALL_DEADLINE_MS carries its evidence (#1428, L316)', () => {
+  it('is set from the worst p99 the deployed drill measured, with headroom, and inside the buyer budget', () => {
+    // The drill against the deployed worker records the p99 of every object
+    // call. The deadline must clear the worst one seen by a margin, or a
+    // latency spike on the objects reads as a false cap_check_error, and it
+    // must leave most of the 20 s buyer budget for the buyer. When a new drill
+    // measures a worse p99, update the measurement beside the constant and this
+    // says whether the deadline still holds.
+    expect(MEASURED_OBJECT_CALL_P99_MS).toBeGreaterThan(0)
+    expect(OBJECT_CALL_DEADLINE_MS).toBeGreaterThanOrEqual(3 * MEASURED_OBJECT_CALL_P99_MS)
+    expect(OBJECT_CALL_DEADLINE_MS).toBeLessThanOrEqual(10_000)
+  })
+})
 
 /** A namespace whose one object answers with `handler`; records the names asked for and the requests made. */
 function namespace(handler: (req: Request) => Promise<Response> | Response) {
@@ -63,7 +77,10 @@ describe('LeadSaleClient', () => {
     const client = new LeadSaleClient(ns, { kind: 'live', population: 'engine', lead_key: 'lead-1' }, { timers })
     const promise = client.claim({ partner_id: 'p', execution_id: 'e', deadline_ms: 20_000 })
     const settled = promise.catch((e: unknown) => e)
-    expect(pending.map((p) => p.ms)).toEqual([OBJECT_CALL_DEADLINE_MS])
+    // The literal, not the constant: this is the value decided from the deployed
+    // drill's measurements (#1428), so a change to it has to be a decision here too.
+    expect(pending.map((p) => p.ms)).toEqual([5_000])
+    expect(OBJECT_CALL_DEADLINE_MS).toBe(5_000)
     fire()
     const err = await settled
     expect(err).toBeInstanceOf(DeadlineError)
