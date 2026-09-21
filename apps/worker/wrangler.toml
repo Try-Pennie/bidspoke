@@ -99,6 +99,17 @@ namespace = "bidspoke-code-nodes"
 # lacks Zone:Workers Routes:Edit permission and wrangler would fail the deploy.
 
 # Public vars
+# EVERY VALUE BELOW IS DEPLOY-TIME CONFIGURATION, and only a deploy applies it.
+# None of it reaches dist/index.js, so changing one does not move the built
+# bundle. Until #1420 the deploy gate compared only that bundle, and a var change
+# on its own was therefore skipped: on 2026-09-21 #1404 turned the reachability
+# probe's alerts on, Deploy reported success, Deploy Worker was skipped, and the
+# probe went on logging mode=observe for an hour. Both the gate and the Deploy
+# Drift check now hash this file too (.github/scripts/worker-config-hash.sh), so
+# a change here ships and an unshipped one is reported.
+#
+# The hash ignores comment-only lines, so prose like this does not redeploy the
+# live bidding engine, and covers every other line verbatim.
 [vars]
 SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-known/jwks.json"
 PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_score" to enable
