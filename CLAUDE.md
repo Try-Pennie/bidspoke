@@ -29,6 +29,15 @@
     (#1117), applied by the canvas serialiser and by every worker route that writes
     a definition, so a pasted script cannot carry column padding into storage. It
     leaves lines inside template literals alone because those spaces are value.
+  - `packages/buyer-profile`: the one vocabulary, validator and evaluator set for
+    buyer profiles and the buyer_select node (#1408, milestone 52). Populations,
+    the wired population list, US states, out reasons with labels, signal
+    operators, the tier matcher both pricing homes walk (the legacy `above`
+    ladder in `bid-resolver.ts` is adapted into it), the Eastern clock, the
+    eligibility evaluator and ranking, the sale outcome rules (the classifier's
+    signal matching lives here and is imported back), the profile validator, the
+    sale payload builder and the deadline wrapper. `fixtures/tripoint/` holds the
+    redacted response shapes captured from production on 2026-09-21.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`

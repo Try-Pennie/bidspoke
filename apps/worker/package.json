@@ -15,6 +15,7 @@
     "@bidspoke/references": "workspace:*",
     "@bidspoke/uuidv7": "workspace:*",
     "@bidspoke/script-hygiene": "workspace:*",
+    "@bidspoke/buyer-profile": "workspace:*",
     "@supabase/supabase-js": "^2.110.8",
     "hono": "^4.12.32"
   },

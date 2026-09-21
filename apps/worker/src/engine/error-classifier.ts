@@ -1,6 +1,7 @@
 import type { ErrorType } from '../types'
 import { PartnerApiError } from './partner-bid-error'
 import { containsHtmlDocument } from '../lib/html-error-summary'
+import { getBodyField, looseEquals, matchSignal, type Signal } from '@bidspoke/buyer-profile'
 
 // Unified classification for an error thrown by a step executor. A
 // PartnerApiError already carries an authoritative errorType (set by the
@@ -135,14 +136,14 @@ export function isDeterministicCodeError(errorName: string | undefined, message:
 
 // ── PRD Section 11.2 — Per-partner response classification overrides ───────────
 
-export interface RejectionSignal {
-  field: string         // body field to check (dot-path supported: e.g. `data.createLead.resultCode`)
-  equals?: unknown      // exact value match (loose equality)
-  contains?: string     // string contains check
-  in?: unknown[]        // loose membership: value is in this list
-  not_in?: unknown[]    // loose non-membership: value is NOT in this list
-  present?: boolean     // field is/isn't present
-}
+/**
+ * A rejection signal is one field path plus one operator. The shape and the
+ * matching live in @bidspoke/buyer-profile (#1408), so the decline half of a
+ * partner's response rules is read identically by Main Flow's bid group here and
+ * by the buyer_select node (L89, L370). Dot paths and `[]` array segments are
+ * both supported, for example `details[].message`.
+ */
+export type RejectionSignal = Signal
 
 export interface StatusSignal {
   status_code?: number  // HTTP status code to match (if omitted, matches any)
@@ -190,29 +191,8 @@ export function evaluateResponseClassification(
   return null
 }
 
-function matchRejectionSignal(sig: RejectionSignal, body: unknown): boolean {
-  const value = getBodyField(body, sig.field)
-
-  if (sig.present !== undefined) {
-    const exists = value !== undefined && value !== null
-    return sig.present ? exists : !exists
-  }
-  if (sig.equals !== undefined) {
-    // Loose equality: handle string "true"/"false" ↔ boolean
-    return looseEquals(value, sig.equals)
-  }
-  if (sig.contains !== undefined) {
-    return typeof value === 'string' && value.includes(sig.contains)
-  }
-  if (Array.isArray(sig.in)) {
-    return sig.in.some((m) => looseEquals(value, m))
-  }
-  if (Array.isArray(sig.not_in)) {
-    if (value === undefined) return false   // missing field shouldn't match not_in
-    return !sig.not_in.some((m) => looseEquals(value, m))
-  }
-  return false
-}
+// One implementation of the field matching, shared with the buyer_select node.
+const matchRejectionSignal = (sig: RejectionSignal, body: unknown): boolean => matchSignal(sig, body)
 
 function matchStatusSignal(
   sig: StatusSignal,
@@ -257,34 +237,6 @@ function matchStatusSignal(
 
   // Only status_code was specified, and it matched
   return sig.status_code !== undefined
-}
-
-function getBodyField(body: unknown, field: string): unknown {
-  if (!field) return undefined
-  if (typeof body !== 'object' || body === null) return undefined
-  const parts = field.split('.').filter(Boolean)
-  let cur: unknown = body
-  for (const part of parts) {
-    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[part]
-  }
-  return cur
-}
-
-// Equality across the partner response value (`a`, typed from the partner's
-// JSON) and the configured signal value (`b`, author-entered). Coerce in BOTH
-// directions: the previous version only handled b=number/a=string, so a numeric
-// response field (e.g. resultCode 1000) vs a string config ("1000") silently
-// failed to match — the same class of bug as the branch condition operators.
-function looseEquals(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  // boolean ↔ its string form ("true"/"false"), either side
-  if (typeof a === 'boolean' && typeof b === 'string') return String(a) === b
-  if (typeof b === 'boolean' && typeof a === 'string') return String(b) === a
-  // number ↔ numeric string, either side
-  if (typeof a === 'number' && typeof b === 'string' && b.trim() !== '') return a === Number(b)
-  if (typeof b === 'number' && typeof a === 'string' && a.trim() !== '') return b === Number(a)
-  return false
 }
 
 // ── PRD Section 11.5 — Alert configuration ────────────────────────────────────

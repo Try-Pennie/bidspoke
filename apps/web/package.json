@@ -21,6 +21,7 @@
     "@bidspoke/references": "workspace:*",
     "@bidspoke/uuidv7": "workspace:*",
     "@bidspoke/script-hygiene": "workspace:*",
+    "@bidspoke/buyer-profile": "workspace:*",
     "@dagrejs/dagre": "^3.0.0",
     "@dnd-kit/core": "^6.3.1",
     "@monaco-editor/react": "^4.7.0",

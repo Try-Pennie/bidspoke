@@ -19,6 +19,7 @@ import { evaluateResponseClassification, shouldSuppressAlert } from './error-cla
 import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
+import { matchTier, type Ladder } from '@bidspoke/buyer-profile'
 import { partnerCredentialValue } from '../lib/partner-credential'
 import { applyOutboundMapping } from '../lib/field-mapper'
 import { containsHtmlDocument } from '../lib/html-error-summary'
@@ -433,14 +434,19 @@ function evaluateTieredMultiplier(
     if (floor !== null && value < floor) return null
   }
 
-  const tiers = readTiers(cfg.tiers)
-  for (const tier of tiers) {
-    if (value > tier.above) return value * tier.multiplier
-  }
-  return value * defaultMultiplier
+  const rung = matchTier(readTiers(cfg.tiers), value)
+  return value * (rung ? rung.multiplier : defaultMultiplier)
 }
 
-function readTiers(raw: unknown): PricingTier[] {
+/**
+ * Adapts the stored `above` tiers into the shared Ladder shape (L370), so this
+ * resolver and the buyer profile tiers walk one matcher in
+ * @bidspoke/buyer-profile. On a descending sort, `value > above` meant: each
+ * tier is exclusive above its own `above` and inclusive up to the next higher
+ * tier's `above`, and the top tier has no upper bound. That is what is built
+ * here, so the existing resolver tests hold unchanged.
+ */
+function readTiers(raw: unknown): Ladder<{ multiplier: number }> {
   if (!Array.isArray(raw)) return []
   const tiers: PricingTier[] = []
   for (const t of raw) {
@@ -451,8 +457,13 @@ function readTiers(raw: unknown): PricingTier[] {
     if (above === null || multiplier === null) continue
     tiers.push({ above, multiplier })
   }
-  // Highest threshold first — first match wins
-  return tiers.sort((a, b) => b.above - a.above)
+  // Highest threshold first, exactly as before
+  tiers.sort((a, b) => b.above - a.above)
+  return tiers.map((t, i) => ({
+    lower: { value: t.above, inclusive: false },
+    upper: i === 0 ? null : { value: tiers[i - 1].above, inclusive: true },
+    multiplier: t.multiplier,
+  }))
 }
 
 /**
