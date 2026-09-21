@@ -25,9 +25,10 @@
  *    control's fetch itself fails holds every other reading as UNMEASURED rather than
  *    paging four partner outages, because a reading that says everything is dead is first
  *    evidence about the measurement (L438, L411).
- *  - It posts nothing until `PARTNER_PROBE_ALERTS` is `on`. The first deploy observes: the
- *    whole state machine runs and every would-be post is a log line, so the control's first
- *    blocked reading proves the setup before a page can be false (L56, L142). #1396 flips it.
+ *  - It posts only while `PARTNER_PROBE_ALERTS` is exactly `on`; any other value observes,
+ *    running the whole state machine and turning every would-be post into a log line. It
+ *    shipped observing so the control's first blocked reading could prove the setup before
+ *    a page could be false (L56, L142), and #1396 turned it on on 2026-09-21 once it had.
  *
  * Log line to search for: `event=partner_probe`. The control's lines carry `control=true`.
  */

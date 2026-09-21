@@ -110,12 +110,15 @@ GITHUB_CODE_REPO = "Try-Pennie/bidspoke"
 # External reachability target for the volume-cliff self-check. Stable bidspoke-owned
 # hostname that routes to this worker (GET returns 200). Keep off personal subdomains.
 SELF_CHECK_URL = "https://hook.trypennie.dev/"
-# Partner reachability probe (#1274). "on" posts to Slack; anything else is observe
-# mode, where the probe runs every five minutes and logs what it would have posted.
-# Ships off so the control host's first blocked reading proves the setup before a
-# page can be false. #1396 flips it after one clean day. Changed here, by commit,
-# so the flip has a record.
-PARTNER_PROBE_ALERTS = "off"
+# Partner reachability probe (#1274). "on" posts to Slack; anything else, a typo
+# included, is observe mode, where the probe runs every five minutes and only logs
+# what it would have posted. Turned on 2026-09-21 by #1396 after four days observing:
+# the control host read blocked on the first tick after its WAF rule existed, no
+# would-be alert ever named a real partner, and the control's all-clear fired once
+# and settled. A guard in apps/web (partner-probe-alerts-live.test.ts) fails if this
+# stops being the exact value the probe compares against. Changed here, by commit,
+# so every flip has a record.
+PARTNER_PROBE_ALERTS = "on"
 
 # Scheduled cron triggers:
 #   "*/5 * * * *"   every 5 minutes: partner reachability probe (#1274). One GET
