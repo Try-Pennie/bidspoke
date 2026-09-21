@@ -29,6 +29,15 @@
     (#1117), applied by the canvas serialiser and by every worker route that writes
     a definition, so a pasted script cannot carry column padding into storage. It
     leaves lines inside template literals alone because those spaces are value.
+  - `packages/buyer-profile`: the one vocabulary, validator and evaluator set for
+    buyer profiles and the buyer_select node (#1408, milestone 52). Populations,
+    the wired population list, US states, out reasons with labels, signal
+    operators, the tier matcher both pricing homes walk (the legacy `above`
+    ladder in `bid-resolver.ts` is adapted into it), the Eastern clock, the
+    eligibility evaluator and ranking, the sale outcome rules (the classifier's
+    signal matching lives here and is imported back), the profile validator, the
+    sale payload builder and the deadline wrapper. `fixtures/tripoint/` holds the
+    redacted response shapes captured from production on 2026-09-21.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`
@@ -133,7 +142,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads this repo's Actions history for the scheduled-workflow watch, #842, and dispatches those workflows, #1058, so it needs Actions read AND write), `ANTHROPIC_API_KEY` (changelog drafting) |
 
 ### Cloudflare log access is partner API key access (#958)
-The `Workers trace events` stream carries request headers with values intact, `X-API-Key` included, so anyone who can `wrangler tail` this worker or read Workers Logs can read every partner webhook key. Measured 2026-09-09. Grant log access on that basis, and delete any tail capture you write to a file: it is a file full of live partner credentials. Whether the Logpush jobs forward those header fields to their destinations, one of which is an external vendor, is not yet established (#1007, #1010). Full note in [docs/disaster-recovery.md](./docs/disaster-recovery.md).
+The `Workers trace events` stream carries request headers with values intact, `X-API-Key` included, so anyone who can `wrangler tail` this worker or read Workers Logs can read every partner webhook key. Measured 2026-09-09. Grant log access on that basis, and delete any tail capture you write to a file: it is a file full of live partner credentials. The Better Stack Logpush job did forward those header fields until 2026-09-09, when its field list was narrowed to drop `Logs` and `Event`; the history it already holds stays there by Dan's decision (#1007, closed). The daily check now reads the Logpush job list itself, with a token that carries Logs Write because Cloudflare offers no read only scope for that API (#1010, closed). Full note in [docs/disaster-recovery.md](./docs/disaster-recovery.md).
 
 Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (changing it breaks person dedup) and `SECRET_ENCRYPTION_KEY` (for old reveals).
 
