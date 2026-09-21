@@ -16,17 +16,17 @@
     "@bidspoke/uuidv7": "workspace:*",
     "@bidspoke/script-hygiene": "workspace:*",
     "@bidspoke/buyer-profile": "workspace:*",
-    "@supabase/supabase-js": "^2.110.8",
-    "hono": "^4.12.32"
+    "@supabase/supabase-js": "^2.116.0",
+    "hono": "^4.13.8"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260727.1",
+    "@cloudflare/workers-types": "^5.20260918.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.1",
-    "@typescript-eslint/eslint-plugin": "^8.65.0",
-    "@typescript-eslint/parser": "^8.65.0",
+    "@types/node": "^26.6.1",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/parser": "^8.70.0",
     "eslint": "^10.6.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.135.0"
   }
 }
