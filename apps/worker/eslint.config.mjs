@@ -20,7 +20,9 @@ export default [
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: './tsconfig.json',
+        // tsconfig.json excludes the Workers test files, which tsconfig.do.json
+        // owns (#1410); the type aware rules need a project for every file.
+        project: ['./tsconfig.json', './tsconfig.do.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },

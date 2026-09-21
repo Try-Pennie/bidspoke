@@ -25,6 +25,7 @@ import { parseJson } from '../../lib/json'
 import { formatErr } from '../../lib/format-error'
 import { isNotFoundError } from '../../lib/api-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
+import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { log } from '../../lib/logger'
 import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
@@ -387,8 +388,8 @@ export async function executePartnerBidNode(
   // business rejection (the partner received and responded).
   let refundCap: (() => Promise<void>) | null = null
   if (p.daily_cap !== null) {
-    const today = new Date().toISOString().slice(0, 10)
-    const doId = env.DAILY_CAP.idFromName(`cap-${p.slug}-${today}`)
+    // The Eastern day, through the one derivation the cap count route also uses (#1410).
+    const doId = env.DAILY_CAP.idFromName(dailyCapObjectName(p.slug, Date.now()).name)
     const stub = env.DAILY_CAP.get(doId)
     const capRes = await stub.fetch('http://do/check-and-increment', {
       method: 'POST',

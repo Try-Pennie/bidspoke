@@ -90,6 +90,11 @@ jobs:
       - name: Test worker
         run: pnpm --filter worker test:unit
 
+      # The Workers test project (#1410): the SQLite backed Durable Object suites
+      # in workerd. See the same step in ci.yml.
+      - name: Test worker Durable Objects
+        run: pnpm --filter worker test:do
+
   verify-web:
     name: Verify (web tests)
     runs-on: ubuntu-latest

@@ -41,6 +41,8 @@ export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
 export { BulkheadObject } from './durable-objects/bulkhead'
 export { LatencyMarkObject } from './durable-objects/latency-mark'
 export { AlertClaimObject } from './durable-objects/alert-claim'
+export { BuyerLedgerObject } from './durable-objects/buyer-ledger'
+export { LeadSaleObject } from './durable-objects/lead-sale'
 
 export interface Env {
   // KV namespaces
@@ -59,6 +61,11 @@ export interface Env {
   LATENCY_MARK: DurableObjectNamespace
   // Alert claims (#1298): exactly one cron tick posts a given alert per cooldown.
   ALERT_CLAIM: DurableObjectNamespace
+  // Buyer selection (#1410): one SQLite ledger per buyer, holding reservations
+  // and outcomes; caps are counted from it. Sale state, not self healing.
+  BUYER_LEDGER: DurableObjectNamespace
+  // Buyer selection (#1410): one claim per lead, so a lead is sold at most once.
+  LEAD_SALE: DurableObjectNamespace
 
   // Max simultaneous in-flight Salesforce calls (string env var; default 20,
   // kept below SF's ~25-slot concurrency governor). Optional.

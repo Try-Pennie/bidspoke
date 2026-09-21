@@ -80,6 +80,23 @@ new_classes = ["LatencyMarkObject"]
 tag = "v4"
 new_classes = ["AlertClaimObject"]
 
+# Buyer selection (#1410, milestone 52). Two SQLite backed objects that hold
+# SALE state, which does not self heal: the per buyer ledger of reservations and
+# outcomes that caps are counted from, and the per lead claim that stops a lead
+# being sold twice. A `wrangler rollback` cannot cross the v5 migration; see
+# docs/adr/0011-durable-object-migrations-are-one-way.md.
+[[durable_objects.bindings]]
+name = "BUYER_LEDGER"
+class_name = "BuyerLedgerObject"
+
+[[durable_objects.bindings]]
+name = "LEAD_SALE"
+class_name = "LeadSaleObject"
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["BuyerLedgerObject", "LeadSaleObject"]
+
 # Dynamic Workers — code node sandboxing via Workers for Platforms
 [[dispatch_namespaces]]
 binding = "DYNAMIC_WORKER_LOADER"

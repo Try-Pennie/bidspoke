@@ -128,6 +128,13 @@ jobs:
       - name: Test worker
         run: pnpm --filter worker test:unit
 
+      # The Workers test project (#1410): the SQLite backed Durable Object suites
+      # run inside workerd through Cloudflare's Vitest plugin, against the
+      # bindings in wrangler.toml. A separate config, so the Node suite above is
+      # untouched. ci-runs-the-worker-do-suite.test.ts fails if this step goes.
+      - name: Test worker Durable Objects
+        run: pnpm --filter worker test:do
+
   test-web:
     name: Test (web)
     runs-on: ubuntu-latest

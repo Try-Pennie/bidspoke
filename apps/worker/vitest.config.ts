@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    // The Workers test project (vitest.do.config.mts, `pnpm run test:do`) owns
+    // these: they import cloudflare:test and cannot run on Node (#1410).
+    exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts'],
     environment: 'node',
     // Worker threads rather than forked child processes (#973). Measured on this
     // suite: 4.14 to 5.45s on forks, 3.16 to 3.36s on threads, over three runs

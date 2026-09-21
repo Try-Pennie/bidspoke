@@ -5,10 +5,11 @@
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
     "deploy": "wrangler deploy",
-    "test": "vitest run && pnpm --filter=web exec vitest run src/lib/__guards__/worker",
+    "test": "vitest run && vitest run --config vitest.do.config.mts && pnpm --filter=web exec vitest run src/lib/__guards__/worker",
     "test:unit": "vitest run",
+    "test:do": "vitest run --config vitest.do.config.mts",
     "lint": "eslint \"src/**/*.ts\"",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p tsconfig.do.json",
     "db:types": "bash scripts/gen-db-types.sh"
   },
   "dependencies": {
@@ -20,7 +21,8 @@
     "hono": "^4.12.32"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260727.1",
+    "@cloudflare/vitest-plugin": "^1.2.1",
+    "@cloudflare/workers-types": "^5.20260921.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.1",
     "@typescript-eslint/eslint-plugin": "^8.65.0",

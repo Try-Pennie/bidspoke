@@ -127,47 +127,63 @@ describe('a suite invoked by a variant script still covers the whole suite (#967
     }
   })
 
-  it('runs a variant that is a prefix of the full test script', () => {
+  /**
+   * A package's `test` script is a chain of commands joined by `&&`. Each
+   * variant CI invokes must be exactly one of those commands (#1410 added a
+   * second variant, `test:do`, beside `test:unit`, so "a prefix" became "a
+   * segment"), and every command that no variant covers is checked below
+   * against what the rest of CI runs.
+   */
+  const segments = (script: string): string[] => script.split(/\s*&&\s*/).map((s) => s.trim()).filter(Boolean)
+
+  it('runs variants that are each one segment of the full test script', () => {
     for (const [pkgName, script] of suiteInvocations()) {
       if (script === 'test') continue
       const pkg = workspacePackages().find((p) => p.name === pkgName)!
       const full = pkg.scripts.test
       const variant = pkg.scripts[script]
       expect(
-        full.startsWith(variant),
-        `${pkgName}'s ${script} script is not the leading part of its test script, so CI running ${script} skips something the package considers part of its suite.\n  test:      ${full}\n  ${script}: ${variant}`,
+        segments(full).includes(variant),
+        `${pkgName}'s ${script} script is not one command of its test script, so CI running ${script} runs something the package's own suite does not, or skips something it does.\n  test:      ${full}\n  ${script}: ${variant}`,
       ).toBe(true)
     }
   })
 
-  it('has the remainder of the full script covered elsewhere in CI', () => {
+  it('has every segment no variant runs covered elsewhere in CI', () => {
     // The one live case, stated rather than assumed: worker's `test` runs its
-    // own vitest and THEN the worker guards that live in apps/web. CI's worker
-    // job runs only the first half; the second half is covered because the web
-    // job runs the whole web suite, which includes those guard files.
+    // own vitest projects and THEN the worker guards that live in apps/web. CI's
+    // worker job runs the vitest projects through the variants; the guards are
+    // covered because the web job runs the whole web suite, which includes them.
     //
     // Asserted concretely so that a remainder doing anything ELSE fails here
     // rather than being waved through by a rule general enough to permit it
     // (L129: an exemption needs a named reviewer, and this is it).
+    const byPackage = new Map<string, Set<string>>()
     for (const [pkgName, script] of suiteInvocations()) {
-      if (script === 'test') continue
+      const set = byPackage.get(pkgName) ?? new Set<string>()
+      set.add(script)
+      byPackage.set(pkgName, set)
+    }
+    const invoked = new Set(byPackage.keys())
+    for (const [pkgName, scripts] of byPackage) {
+      if (scripts.has('test')) continue
       const pkg = workspacePackages().find((p) => p.name === pkgName)!
-      const remainder = pkg.scripts.test.slice(pkg.scripts[script].length).trim().replace(/^&&\s*/, '')
-      if (remainder === '') continue
+      const covered = new Set([...scripts].map((s) => pkg.scripts[s]))
+      const uncovered = segments(pkg.scripts.test).filter((seg) => !covered.has(seg))
+      for (const remainder of uncovered) {
+        const guardDir = remainder.match(/--filter=?(\S+) exec vitest run (\S+)/)
+        expect(
+          guardDir,
+          `${pkgName}'s test script runs a command that no CI variant runs, and it is not the known "run a sibling package's guard files" shape, so nothing here can say whether CI covers it:\n  ${remainder}`,
+        ).not.toBeNull()
 
-      const guardDir = remainder.match(/--filter=?(\S+) exec vitest run (\S+)/)
-      expect(
-        guardDir,
-        `${pkgName}'s test script does more than ${script} does, and the extra part is not the known "run a sibling package's guard files" shape, so nothing here can say whether CI covers it:\n  ${remainder}`,
-      ).not.toBeNull()
-
-      const [, sibling, dir] = guardDir!
-      const invoked = new Set(suiteInvocations().map(([p]) => p))
-      expect(
-        invoked.has(sibling),
-        `${pkgName}'s test script runs ${sibling}'s ${dir} guards, but CI never runs ${sibling}'s own suite, so those guards run nowhere in CI`,
-      ).toBe(true)
-      expect(dir).toMatch(/^src\//)
+        const [, sibling, dir] = guardDir!
+        expect(
+          invoked.has(sibling),
+          `${pkgName}'s test script runs ${sibling}'s ${dir} guards, but CI never runs ${sibling}'s own suite, so those guards run nowhere in CI`,
+        ).toBe(true)
+        expect(dir).toMatch(/^src\//)
+      }
     }
   })
 })
