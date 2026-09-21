@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -30,13 +30,15 @@ const scriptPath = path.join(REPO_ROOT, '.github/scripts/worker-artifact-decisio
 
 function run(...args: string[]): { decision: string; reason: string } {
   // stdout carries the decision, stderr the human reason, so the workflow can
-  // branch on one and log the other.
-  const chunks: string[] = []
-  const decision = execFileSync('bash', [scriptPath, ...args], {
+  // branch on one and log the other. BOTH are captured: this used to return an
+  // always-empty `reason` from a list nothing wrote to, so every assertion about
+  // the reason passed on nothing and the test claiming the script explains itself
+  // only ever read stdout (#1420, L178).
+  const res = spawnSync('bash', [scriptPath, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  return { decision: decision.trim(), reason: chunks.join('') }
+  return { decision: (res.stdout ?? '').trim(), reason: (res.stderr ?? '').trim() }
 }
 
 function decide(...args: string[]): string {
@@ -46,28 +48,83 @@ function decide(...args: string[]): string {
 const SHA = 'a'.repeat(40)
 const HASH_A = '1'.repeat(64)
 const HASH_B = '2'.repeat(64)
+const CFG_A = '3'.repeat(64)
+const CFG_B = '4'.repeat(64)
 
 describe('worker-artifact-decision: deploys only when the built artifact moved (#727)', () => {
   it('deploys when the two builds hash differently', () => {
-    expect(decide(SHA, 'true', HASH_A, HASH_B)).toBe('deploy')
+    expect(decide(SHA, 'true', HASH_A, HASH_B, CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('skips when the two builds are byte identical', () => {
-    expect(decide(SHA, 'true', HASH_A, HASH_A)).toBe('skip')
+    expect(decide(SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('skip')
+  })
+})
+
+/**
+ * The DEPLOY-TIME CONFIGURATION dimension (#1420).
+ *
+ * The bundle is not the whole of what a deploy changes. `wrangler.toml` carries
+ * `[vars]`, `[triggers]` crons, `[limits]` and every binding, and none of them
+ * appear in `dist/index.js`: they are applied BY the deploy. So a change to any
+ * of them leaves the bundle byte identical, and a gate that compares only the
+ * bundle skips the one deploy that would have shipped it, behind a green
+ * pipeline.
+ *
+ * Measured on 2026-09-21: #1404 set `PARTNER_PROBE_ALERTS = "on"` in
+ * wrangler.toml and changed one source comment. Deploy reported success, Deploy
+ * Worker was skipped, and an hour later the probe was still logging
+ * `mode=observe` on the same script version. The flip had merged and was not
+ * live.
+ *
+ * Both dimensions are compared, and each one names ITSELF in the reason, so a
+ * reader can tell a config deploy from a code deploy (L11).
+ */
+describe('worker-artifact-decision: the deploy-time configuration counts too (#1420)', () => {
+  it('deploys when only the configuration moved, with the bundle identical', () => {
+    expect(decide(SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_B)).toBe('deploy')
+  })
+
+  it('names the configuration as what moved, not the artifact', () => {
+    const { reason } = run(SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_B)
+    expect(reason).toMatch(/config/i)
+    expect(reason).not.toMatch(/artifact changed/i)
+  })
+
+  it('names the artifact as what moved when only the bundle moved', () => {
+    const { reason } = run(SHA, 'true', HASH_A, HASH_B, CFG_A, CFG_A)
+    expect(reason).toMatch(/artifact/i)
+  })
+
+  it('skips only when BOTH the bundle and the configuration are identical', () => {
+    expect(decide(SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('skip')
+  })
+
+  it('deploys when a configuration hash is missing, rather than reading two blanks as a match', () => {
+    expect(decide(SHA, 'true', HASH_A, HASH_A, '', '')).toBe('deploy')
+    expect(decide(SHA, 'true', HASH_A, HASH_A, CFG_A, '')).toBe('deploy')
+    expect(decide(SHA, 'true', HASH_A, HASH_A, '', CFG_A)).toBe('deploy')
+  })
+
+  // Omission must be impossible rather than merely discouraged (L621): a caller
+  // that forgets the config hashes is the exact blindness this fixes, so the
+  // script refuses the old four argument form instead of silently ignoring it.
+  it('deploys when called with the old four argument form', () => {
+    expect(decide(SHA, 'true', HASH_A, HASH_A)).toBe('deploy')
   })
 })
 
 describe('worker-artifact-decision: every uncertainty deploys rather than skips (#727)', () => {
   it('deploys when the live worker reports no deployed commit', () => {
-    expect(decide('unknown', 'false', HASH_A, '')).toBe('deploy')
+    expect(decide('unknown', 'false', HASH_A, '', CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the live commit is empty, e.g. the worker was unreachable', () => {
-    expect(decide('', 'false', HASH_A, '')).toBe('deploy')
+    expect(decide('', 'false', HASH_A, '', CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the live commit is not in this repository history', () => {
-    expect(decide(SHA, 'false', HASH_A, '')).toBe('deploy')
+    expect(decide(SHA, 'false', HASH_A, '', CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the live commit is outside this history even if a hash pair matches', () => {
@@ -75,28 +132,28 @@ describe('worker-artifact-decision: every uncertainty deploys rather than skips 
     // cannot see, the pair is unattributable, so a match means nothing. Every
     // other in-history test happened to pass an empty live hash as well, so a
     // second check covered for this branch and removing it stayed green.
-    expect(decide(SHA, 'false', HASH_A, HASH_A)).toBe('deploy')
-    expect(decide(SHA, 'anything-but-true', HASH_A, HASH_A)).toBe('deploy')
+    expect(decide(SHA, 'false', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
+    expect(decide(SHA, 'anything-but-true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the HEAD build produced no hash', () => {
-    expect(decide(SHA, 'true', '', HASH_A)).toBe('deploy')
+    expect(decide(SHA, 'true', '', HASH_A, CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the live-commit build produced no hash', () => {
-    expect(decide(SHA, 'true', HASH_A, '')).toBe('deploy')
+    expect(decide(SHA, 'true', HASH_A, '', CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when neither build produced a hash, rather than reading two blanks as a match', () => {
     // The trap this pins: two failed builds both yield '', and a naive equality
     // check would call that "identical" and skip the deploy.
-    expect(decide(SHA, 'true', '', '')).toBe('deploy')
+    expect(decide(SHA, 'true', '', '', CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when the live commit is unreadable even though the hashes happen to match', () => {
     // Precedence: an untrustworthy input beats a matching comparison, because a
     // hash pair that cannot be attributed to a known commit proves nothing.
-    expect(decide('unknown', 'false', HASH_A, HASH_A)).toBe('deploy')
+    expect(decide('unknown', 'false', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys on an inconsistent pair: an unknown live commit reported as in-history', () => {
@@ -105,9 +162,9 @@ describe('worker-artifact-decision: every uncertainty deploys rather than skips 
     // SHA is unknown, so a second check happened to cover for it. This is the one
     // input that separates them, and without the branch it SKIPS the deploy on a
     // commit nobody can identify.
-    expect(decide('unknown', 'true', HASH_A, HASH_A)).toBe('deploy')
-    expect(decide('', 'true', HASH_A, HASH_A)).toBe('deploy')
-    expect(decide('null', 'true', HASH_A, HASH_A)).toBe('deploy')
+    expect(decide('unknown', 'true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
+    expect(decide('', 'true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
+    expect(decide('null', 'true', HASH_A, HASH_A, CFG_A, CFG_A)).toBe('deploy')
   })
 
   it('deploys when called with no arguments at all', () => {
@@ -145,12 +202,26 @@ describe('worker-artifact-decision: never fails the pipeline itself (#727)', () 
 
   it('explains itself on stderr, so a skipped deploy is never unexplained', () => {
     // A gate that silently declines to ship is indistinguishable from a broken
-    // pipeline when someone comes looking for their change.
-    const res = execFileSync('bash', [scriptPath, SHA, 'true', HASH_A, HASH_A], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    expect(res.trim()).toBe('skip')
+    // pipeline when someone comes looking for their change. This reads the
+    // STDERR it is named for; it previously asserted only that stdout said
+    // 'skip', so the explanation it exists to require was never checked.
+    const { decision, reason } = run(SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_A)
+    expect(decision).toBe('skip')
+    expect(reason).not.toBe('')
+    expect(reason).toContain('skip')
+  })
+
+  it('explains every decision, not only the skip', () => {
+    for (const args of [
+      [SHA, 'true', HASH_A, HASH_B, CFG_A, CFG_A],
+      [SHA, 'true', HASH_A, HASH_A, CFG_A, CFG_B],
+      [SHA, 'false', HASH_A, HASH_A, CFG_A, CFG_A],
+      [],
+    ]) {
+      const { decision, reason } = run(...args)
+      expect(reason, `no reason given for ${JSON.stringify(args)}`).not.toBe('')
+      expect(reason).toContain(decision)
+    }
   })
 })
 
@@ -203,6 +274,32 @@ describe('deploy.yml wires the gate in (#727)', () => {
     const sample = "  a:\n    # cache: 'pnpm' is deliberately omitted\n    steps: []\n  b:\n"
     expect(stripYamlComments(sample)).not.toContain("cache: 'pnpm'")
     expect(stripYamlComments(sample)).toContain('steps: []')
+  })
+
+  // The blindness was in the CALLER, not the decision script, so the wiring is
+  // what has to be held in place (#1420).
+  it('hashes the deploy-time config on BOTH sides, not just the bundle', () => {
+    const gate = jobBlock('worker_artifact')
+    expect(gate).toContain('worker-config-hash.sh')
+    // Once per checkout: a hash taken on only one side has nothing to compare.
+    expect(gate.match(/worker-config-hash\.sh/g) ?? []).toHaveLength(2)
+  })
+
+  it('passes both config hashes to the decision script, head first', () => {
+    const gate = jobBlock('worker_artifact')
+    const call = gate.slice(gate.indexOf('worker-artifact-decision.sh'))
+    const argOrder = [...call.matchAll(/steps\.(head|live)_build\.outputs\.(config_hash|hash)/g)]
+      .map((m) => `${m[1]}.${m[2]}`)
+    // The script's own signature: head_hash live_hash head_config live_config.
+    // Two same-typed pairs are transposable, so the order is asserted (L455).
+    expect(argOrder).toEqual(['head.hash', 'live.hash', 'head.config_hash', 'live.config_hash'])
+  })
+
+  it('measures the live side with the HEAD copy of the hashing script', () => {
+    // Otherwise the two sides are measured by two different implementations
+    // whenever the script itself changes, and the hashes differ for that reason
+    // rather than for a real one (L398).
+    expect(jobBlock('worker_artifact')).toContain('../head/.github/scripts/worker-config-hash.sh')
   })
 
   it('runs the decision script rather than reimplementing the comparison inline', () => {

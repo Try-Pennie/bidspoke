@@ -25,8 +25,27 @@ import { REPO_ROOT } from './_scan-utils'
  */
 const SCRIPT = path.join(REPO_ROOT, '.github/scripts/drift-artifact-verdict.sh')
 
-function verdict(liveSha: string, headHash: string, liveHash: string): string {
-  return execFileSync('bash', [SCRIPT, liveSha, headHash, liveHash], {
+/**
+ * The config hashes default to a MATCHING pair so the cases below keep testing
+ * the bundle dimension they were written for. The configuration dimension has
+ * its own describe block, where both are passed explicitly.
+ */
+function verdict(
+  liveSha: string,
+  headHash: string,
+  liveHash: string,
+  headConfig: string = CFG_A,
+  liveConfig: string = CFG_A,
+): string {
+  return execFileSync('bash', [SCRIPT, liveSha, headHash, liveHash, headConfig, liveConfig], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+/** Raw, for the argument-count cases, which must not be padded by the helper. */
+function verdictRaw(...args: string[]): string {
+  return execFileSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
@@ -35,6 +54,8 @@ function verdict(liveSha: string, headHash: string, liveHash: string): string {
 const SHA = 'a'.repeat(40)
 const HASH_A = '1'.repeat(64)
 const HASH_B = '2'.repeat(64)
+const CFG_A = '3'.repeat(64)
+const CFG_B = '4'.repeat(64)
 
 describe('drift artifact verdict (#802)', () => {
   it('reports identical when both builds produced the same bundle', () => {
@@ -86,5 +107,37 @@ describe('drift artifact verdict (#802)', () => {
       verdict('unknown', HASH_A, HASH_B),
     ]
     for (const a of answers) expect(['identical', 'differs', 'unknown']).toContain(a)
+  })
+})
+
+/**
+ * The configuration dimension (#1420).
+ *
+ * Deploy Drift exists to notice a committed change that did not ship. On
+ * 2026-09-21 one did not ship, and drift reported success 47 minutes later:
+ * #1404 changed a wrangler.toml var, which never reaches the bundle, so both
+ * builds hashed the same and this said `identical`. The backstop was blind to
+ * exactly what the gate it checks was blind to, which is what made the failure
+ * silent on both sides.
+ */
+describe('drift artifact verdict: the deploy-time configuration counts too (#1420)', () => {
+  it('reports differs when only the configuration moved', () => {
+    expect(verdict(SHA, HASH_A, HASH_A, CFG_A, CFG_B)).toBe('differs')
+  })
+
+  it('reports identical only when the bundle AND the configuration match', () => {
+    expect(verdict(SHA, HASH_A, HASH_A, CFG_A, CFG_A)).toBe('identical')
+  })
+
+  // For drift the fail-safe direction is `unknown`, not `differs`: a missing
+  // measurement must not be read as an accusation that the worker is behind.
+  it('reports unknown, never identical or differs, when a config hash is missing', () => {
+    expect(verdict(SHA, HASH_A, HASH_A, '', '')).toBe('unknown')
+    expect(verdict(SHA, HASH_A, HASH_A, CFG_A, '')).toBe('unknown')
+    expect(verdict(SHA, HASH_A, HASH_A, '', CFG_A)).toBe('unknown')
+  })
+
+  it('reports unknown when called with the old three argument form', () => {
+    expect(verdictRaw(SHA, HASH_A, HASH_A)).toBe('unknown')
   })
 })

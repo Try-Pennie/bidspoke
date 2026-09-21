@@ -11,8 +11,19 @@
 # HEAD, and this decides from the two artifact hashes (LESSONS L40: compare the
 # content, never a cheap stand-in for it).
 #
+# TWO DIMENSIONS, NOT ONE (#1420). The bundle is not the whole of what a deploy
+# changes: wrangler.toml carries [vars], [triggers] crons, [limits] and every
+# binding, none of which appear in dist/index.js because they are applied BY the
+# deploy. On 2026-09-21 #1404 set PARTNER_PROBE_ALERTS = "on" and changed one
+# source comment; the bundle was byte identical, this gate skipped, Deploy
+# reported success, and an hour later the probe was still in observe mode. So
+# the caller hashes the deploy-time configuration as well, and a skip requires
+# BOTH to be unchanged.
+#
 # Usage:
-#   worker-artifact-decision.sh <live_sha> <live_sha_in_history> <head_hash> <live_hash>
+#   worker-artifact-decision.sh <live_sha> <live_sha_in_history> \
+#                               <head_hash> <live_hash> \
+#                               <head_config_hash> <live_config_hash>
 #
 # Prints exactly one word to stdout: `deploy` or `skip`. The reason goes to
 # stderr. Always exits 0: a problem inside the gate must never fail the pipeline,
@@ -31,6 +42,8 @@ LIVE_SHA="${1-}"
 LIVE_SHA_IN_HISTORY="${2-}"
 HEAD_HASH="${3-}"
 LIVE_HASH="${4-}"
+HEAD_CONFIG_HASH="${5-}"
+LIVE_CONFIG_HASH="${6-}"
 
 decide() {
   # $1 = decision, $2 = reason
@@ -39,8 +52,8 @@ decide() {
   exit 0
 }
 
-if [ "$#" -lt 4 ]; then
-  decide deploy "called with $# of 4 arguments, so the comparison never happened"
+if [ "$#" -lt 6 ]; then
+  decide deploy "called with $# of 6 arguments, so the comparison never happened"
 fi
 
 if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ] || [ "$LIVE_SHA" = "null" ]; then
@@ -61,8 +74,22 @@ if [ -z "$LIVE_HASH" ]; then
   decide deploy "the build at live commit ${LIVE_SHA} produced no artifact hash"
 fi
 
+if [ -z "$HEAD_CONFIG_HASH" ]; then
+  decide deploy "the HEAD deploy-time config produced no hash"
+fi
+
+if [ -z "$LIVE_CONFIG_HASH" ]; then
+  decide deploy "the deploy-time config at live commit ${LIVE_SHA} produced no hash"
+fi
+
 if [ "$HEAD_HASH" != "$LIVE_HASH" ]; then
   decide deploy "artifact changed (live ${LIVE_HASH:0:12} to head ${HEAD_HASH:0:12})"
 fi
 
-decide skip "artifact is byte identical to what is already live (${HEAD_HASH:0:12}), so the engine does not need redeploying"
+# Named separately from the artifact on purpose: a config-only deploy and a
+# code-only deploy are different events to whoever reads this line (L11).
+if [ "$HEAD_CONFIG_HASH" != "$LIVE_CONFIG_HASH" ]; then
+  decide deploy "deploy-time config changed (live ${LIVE_CONFIG_HASH:0:12} to head ${HEAD_CONFIG_HASH:0:12}), so vars, crons, limits or bindings need applying"
+fi
+
+decide skip "artifact (${HEAD_HASH:0:12}) and deploy-time config (${HEAD_CONFIG_HASH:0:12}) are both identical to what is already live, so the engine does not need redeploying"

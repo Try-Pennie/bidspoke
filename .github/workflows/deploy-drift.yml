@@ -270,7 +270,7 @@ jobs:
         if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
         run: |
           set -uo pipefail
-          # Hashes dist/index.js only, never the whole outdir: the sibling
+          # Hashes dist/index.js rather than the whole outdir: the sibling
           # sourcemap embeds sourceRoot, which equals the --outdir path, so
           # hashing the directory would measure the harness rather than the
           # artifact (#725).
@@ -279,16 +279,26 @@ jobs:
               && pnpm --filter=worker run build >/dev/null 2>&1 \
               && sha256sum apps/worker/dist/index.js | cut -d' ' -f1 ) || true
           }
+          # The bundle is only half of what a deploy changes (#1420). Both sides
+          # are measured with the HEAD copy of the hashing script, so the two are
+          # measured the same way even when that script itself changed (L398).
+          config_hash() {
+            ( cd "$1" && bash "$GITHUB_WORKSPACE/head/.github/scripts/worker-config-hash.sh" ) || true
+          }
           HEAD_HASH=$(build_hash head)
           LIVE_HASH=$(build_hash live)
+          HEAD_CONFIG_HASH=$(config_hash head)
+          LIVE_CONFIG_HASH=$(config_hash live)
           echo "head_hash=${HEAD_HASH:-none} live_hash=${LIVE_HASH:-none}"
+          echo "head_config=${HEAD_CONFIG_HASH:-none} live_config=${LIVE_CONFIG_HASH:-none}"
 
-          # An empty hash means a build did not produce an artifact, and two
-          # empty hashes must never read as a match. Kept in a script rather than
+          # An empty hash means a measurement did not happen, and two empty
+          # hashes must never read as a match. Kept in a script rather than
           # here so it is covered by drift-artifact-verdict.test.ts: shell living
           # in workflow YAML has no test that can reach it.
           ARTIFACT=$(bash head/.github/scripts/drift-artifact-verdict.sh \
-            "${{ steps.compare.outputs.live_sha }}" "$HEAD_HASH" "$LIVE_HASH")
+            "${{ steps.compare.outputs.live_sha }}" "$HEAD_HASH" "$LIVE_HASH" \
+            "$HEAD_CONFIG_HASH" "$LIVE_CONFIG_HASH")
           printf '%s\n' "$ARTIFACT" > artifact-verdict.txt
 
       - name: Decide and alert

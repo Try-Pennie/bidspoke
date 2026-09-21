@@ -350,6 +350,7 @@ jobs:
           set -uo pipefail
           if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
             echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            echo "config_hash=$(bash .github/scripts/worker-config-hash.sh)" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::HEAD build failed inside the artifact gate, so the deploy will go ahead unconditionally."
           fi
@@ -362,13 +363,20 @@ jobs:
           set -uo pipefail
           if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
             echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            # The HEAD copy of the hashing script deliberately, so both sides are
+            # measured the same way even when the script itself changed (L398).
+            echo "config_hash=$(bash ../head/.github/scripts/worker-config-hash.sh)" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::Build at the live commit failed inside the artifact gate, so the deploy will go ahead unconditionally."
           fi
 
-      # Hashes dist/index.js only, never the whole outdir: the sibling sourcemap
+      # Hashes dist/index.js rather than the whole outdir: the sibling sourcemap
       # embeds sourceRoot, which equals the --outdir path, so hashing the
       # directory would measure the harness rather than the artifact (#725).
+      #
+      # The bundle is only half of it (#1420). wrangler.toml's [vars], crons,
+      # limits and bindings are applied BY the deploy and appear nowhere in the
+      # bundle, so they are hashed separately and a skip needs both unchanged.
       - name: Decide whether the artifact moved
         id: decide
         run: |
@@ -377,7 +385,9 @@ jobs:
             "${{ steps.live.outputs.sha }}" \
             "${{ steps.live.outputs.in_history }}" \
             "${{ steps.head_build.outputs.hash }}" \
-            "${{ steps.live_build.outputs.hash }}")
+            "${{ steps.live_build.outputs.hash }}" \
+            "${{ steps.head_build.outputs.config_hash }}" \
+            "${{ steps.live_build.outputs.config_hash }}")
           if [ "$DECISION" = "skip" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
