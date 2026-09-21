@@ -24,7 +24,7 @@ Sizes measured 2026-08-13. Re-measure rather than copy these forward: the total 
 | Partner config, schema, org and auth records | up to ~24h | **~8 min proven** | The `scripts/dr-restore-drill.sh` subset. This is the set that has to come back for money to move. |
 | Lead sightings and bid outcomes | <24h | hours | Nightly Snowflake export at 09:00 UTC is an independent copy that outlives the Postgres retention window. |
 | Execution and audit logs | up to ~24h | hours | Largest live class: `execution_steps` daily partitions run around 2.5 GB each. Recovery is not time critical, since bidding resumes without log history. |
-| Person PII (`persons`, raw SSN) | up to ~24h | hours | **4,184 MB, the single largest table, and write-only.** Tracked in #765: nothing reads it, so today it buys no recovery value while inflating this row. |
+| Person PII (`persons`, raw SSN) | up to ~24h | hours | **Dormant since 2026-08-14 (#765).** The writer was removed and the table truncated (3.7 million rows to zero, 4.2 GB reclaimed), so it holds nothing to recover. Raw SSN for repeat lead grouping reaches Snowflake through `lead_sightings` and never depended on this table. |
 
 Two items are pure dead weight in the figures above and removing them shortens the full-system RTO directly: `persons` (4,184 MB, #765) and the drained `lead_sightings_2026_06` partition (2,044 MB, zero live rows). Together roughly a quarter of the database.
 
@@ -37,7 +37,7 @@ Two items are pure dead weight in the figures above and removing them shortens t
    - Workers: `bidspoke-worker` (engine + API) and the tail consumer (`apps/worker-tail`).
    - Pages: the Next.js frontend.
    - KV namespaces: `WORKFLOW_CACHE`, `IDEMPOTENCY`, `SUBMISSIONS` (all caches/ephemeral — rebuildable, not a system of record).
-   - Durable Objects: `DailyCapObject`, `CircuitBreakerObject`, `BulkheadObject` (transient runtime state — self-heals).
+   - Durable Objects, seven classes. Five hold transient runtime state that self heals on eviction: `DailyCapObject`, `CircuitBreakerObject`, `BulkheadObject`, `LatencyMarkObject` (bid marks for the latency gate, #488) and `AlertClaimObject` (one alert post per cooldown, #1298). Two are SQLite backed and hold SALE state that does NOT self heal (#1410, migration `v5`): `BuyerLedgerObject` (one per buyer: every reservation and outcome, the record the caps are counted from) and `LeadSaleObject` (one per lead: the claim that stops a lead being sold twice). Their mirror in Postgres is `buyer_sales`, which is how sale history survives a loss of the objects; the objects are how caps and claims survive an outage of Postgres. A `wrangler rollback` cannot cross a migration tag, so a bad deploy carrying a new class is fixed forward, never rolled back: [ADR 0011](./adr/0011-durable-object-migrations-are-one-way.md).
    - Dispatch namespace: `bidspoke-code-nodes` (Workers-for-Platforms, backs the code-node sandbox).
    - R2: the Logpush destination (cold-tier log archive).
    - DNS + routes: wildcard `*.trypennie.dev` (partner subdomain endpoints), the Worker route, and the `bidspoke.trypennie.dev` bypass route that protects Pages.
@@ -146,12 +146,16 @@ Two consequences for anyone working from this runbook:
    credentials. Delete it when finished. Never attach one to an issue, a PR or a
    support ticket.
 
-**What is not yet established** is whether the account's Logpush jobs (#1007,
-#1008) carry these header fields to their destinations, one of which is the
-external vendor Better Stack. That depends on each job's configured field list,
-which no credential this codebase can reach is able to read (#1010). Until that
-is answered, treat it as unknown rather than as safe: an unread field list and a
-field list known to exclude headers look identical from here.
+**Established on 2026-09-09 (#1007):** the Logpush job to the external vendor
+Better Stack DID carry these fields. Its field list was narrowed that day to
+remove `Logs` and `Event`, verified by reading the job back, and it has delivered
+under the narrowed list since, so no header value reaches that vendor from then
+on. Dan decided the same day not to pursue what the vendor already holds (who
+owns the account, its retention, a purge); that decision is recorded on #1007 so
+the exposure is stated rather than silent. The R2 job (#1008) was measured
+delivering nothing for months, so it forwards nothing. Reading a job's field list
+needs the Cloudflare API plugin's credential, not one this codebase holds
+(#1010).
 
 ## Secret inventory (and the escrow gap)
 

@@ -32,6 +32,8 @@ import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
 import { writeAuditLog } from '../../lib/audit'
+import { buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
+import { withDeadline } from '@bidspoke/buyer-profile'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -528,6 +530,29 @@ admin.post('/re-archive', async (c) => {
 admin.get('/archive-health', async (c) => {
   const supabase = createSupabaseClient(c.env)
   return c.json(await archiveHealth(c.env, supabase))
+})
+
+/**
+ * Buyer selection objects (#1410). Health is a GET that only looks: a peek on
+ * one throwaway ledger and a read on one throwaway claim. A failed probe is a
+ * 503 carrying the report, so a dashboard sees red rather than a shape (L11).
+ */
+admin.get('/buyer-objects/health', async (c) => {
+  const report = await buyerObjectsHealth(c.env)
+  return c.json(report, report.ok ? 200 : 503)
+})
+
+/**
+ * The drill WRITES, so it is a POST and is named a drill (L206): under the
+ * rehearsal kind against a throwaway buyer it runs the two lead race, the
+ * in_doubt race and a kill after reserve, and records the p50 and p99 of every
+ * object call. The p99 sets OBJECT_CALL_DEADLINE_MS. It calls no buyer and
+ * writes no Postgres row. Bounded as a whole (L110); a failed scenario is a 500
+ * carrying the report.
+ */
+admin.post('/buyer-objects/drill', async (c) => {
+  const report = await withDeadline(runBuyerObjectsDrill(c.env), 30_000, 'buyer objects drill')
+  return c.json(report, report.ok ? 200 : 500)
 })
 
 admin.post('/archive-settings-check', async (c) => {

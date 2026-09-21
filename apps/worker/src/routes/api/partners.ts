@@ -12,6 +12,7 @@ import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 import { partnerCredentialMissing } from '../../lib/partner-credential'
+import { dailyCapObjectName } from '../../lib/daily-cap-name'
 
 type Variables = AuthVariables
 
@@ -332,13 +333,14 @@ partners.get('/:id/cap-count', async (c) => {
   if (blocked) return blocked
   if (!data) return c.json({ error: 'Partner not found' }, 404)
 
-  const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD UTC
-  const doId = c.env.DAILY_CAP.idFromName(`cap-${data.slug}-${today}`)
-  const stub = c.env.DAILY_CAP.get(doId)
+  // The Eastern day, through the one derivation the Partner Bid node also uses
+  // (#1410). The date comes back so the caller can say which day was counted.
+  const { name, date } = dailyCapObjectName(data.slug, Date.now())
+  const stub = c.env.DAILY_CAP.get(c.env.DAILY_CAP.idFromName(name))
   const res = await stub.fetch('http://do/get-count')
   const { count } = await res.json<{ count: number }>()
 
-  return c.json({ count, date: today })
+  return c.json({ count, date })
 })
 
 export default partners

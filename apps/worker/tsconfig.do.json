@@ -1,0 +1,13 @@
+{
+  // Typecheck for the Workers test project (#1410). The *.workers.test.ts files
+  // import from cloudflare:test and cloudflare:workers, whose ambient types come
+  // from the Vitest plugin, so the main tsconfig excludes them and this one adds
+  // the types back. The typecheck script runs it alongside the other two.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    "noEmit": true
+  },
+  "include": ["src"],
+  "exclude": []
+}

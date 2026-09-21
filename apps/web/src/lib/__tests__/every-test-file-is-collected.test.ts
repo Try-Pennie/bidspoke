@@ -55,16 +55,22 @@ function testFilesOnDisk(pkgDir: string): string[] {
 function vitestCollects(pkgDir: string): Set<string> {
   const bin = path.join(pkgDir, 'node_modules', '.bin', 'vitest')
   const runner = existsSync(bin) ? bin : path.join(REPO_ROOT, 'node_modules', '.bin', 'vitest')
-  const stdout = execFileSync(runner, ['list', '--filesOnly'], { cwd: pkgDir, encoding: 'utf8' })
+  // The default config, plus every additional `vitest.<name>.config.*` the
+  // package holds (#1410: the worker's Durable Object suites run under
+  // vitest.do.config.mts, which the default config deliberately excludes).
+  // Enumerated from disk, so a third project is seen without a change here.
+  const extraConfigs = readdirSync(pkgDir).filter((f) => /^vitest\.[\w-]+\.config\.[cm]?[jt]s$/.test(f))
+  const invocations: string[][] = [['list', '--filesOnly'], ...extraConfigs.map((c) => ['list', '--filesOnly', '--config', c])]
 
-  return new Set(
-    stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l) => l.replace(/^\[[^\]]+\]\s*/, ''))
-      .filter((l) => TEST_FILE.test(l)),
-  )
+  const collected = new Set<string>()
+  for (const args of invocations) {
+    const stdout = execFileSync(runner, args, { cwd: pkgDir, encoding: 'utf8' })
+    for (const line of stdout.split('\n')) {
+      const l = line.trim().replace(/^\[[^\]]+\]\s*/, '')
+      if (l && TEST_FILE.test(l)) collected.add(l)
+    }
+  }
+  return collected
 }
 
 /** What the playwright config claims, read from the config rather than assumed. */
