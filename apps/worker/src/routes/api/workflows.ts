@@ -1214,28 +1214,37 @@ workflows.post('/:id/rename-apply', async (c) => {
     const legacyChanged = nextLegacy !== p.bid_formula
     if (!cfgChanged && !legacyChanged) continue
 
-    const update: Database['public']['Tables']['partner_configs']['Update'] = { updated_by: userId }
-    if (legacyChanged) update.bid_formula = nextLegacy
-    if (cfgChanged) update.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
+    const columns: { bid_formula?: string | null; bid_resolver_config?: Record<string, unknown> } = {}
+    if (legacyChanged) columns.bid_formula = nextLegacy
+    if (cfgChanged) columns.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
 
-    // A partner deleted between the SELECT above and this UPDATE matches zero
-    // rows. Aborting a bulk rename over one vanished partner is worse than
-    // skipping it, but it must not be counted or audited as renamed (#588). A
-    // real database error is a different thing, and still aborts.
-    const { rows: touched, error: upErr } = await requireRowsAffected(
-      'partner_configs.step_id_rename',
-      () => supabase.from('partner_configs').update(update).eq('id', p.id).eq('organization_id', orgId).select('id'),
-      { onMiss: 'warn', context: { partner_id: p.id, workflow_id: id } }
-    )
-    if (upErr && !isNoRowMatchedError(upErr)) return dbError(c, upErr)
-    if (touched.length === 0) continue
-
-    await writeAuditLog(supabase, orgId, 'partner_config', p.id, 'updated', userId, {
-      reason: 'step_id_renamed',
-      workflow_id: id,
-      old_namespace: oldNs,
-      new_namespace: newNs,
+    // The rewrite goes through rename_partner_step_namespace (#1409), so the
+    // audit row the table trigger writes carries the actor, the reason and the
+    // workflow. The function returns the rows it touched: a partner deleted
+    // between the SELECT above and this write comes back as 0, and aborting a
+    // bulk rename over one vanished partner is worse than skipping it, but it
+    // must not be counted as renamed (#588). A real database error still aborts.
+    const { data: touched, error: upErr } = await supabase.rpc('rename_partner_step_namespace', {
+      p_org: orgId,
+      p_partner: p.id,
+      p_columns: columns as never,
+      p_actor: userId,
+      p_actor_email: c.get('user').email,
+      p_context: { reason: 'step_id_renamed', workflow_id: id, old_namespace: oldNs, new_namespace: newNs } as never,
     })
+    if (upErr) return dbError(c, upErr)
+    if (!touched || Number(touched) === 0) {
+      // The same event line requireRowsAffected logs for a zero row write, so the
+      // partner rename keeps showing up wherever those are counted.
+      console.warn(JSON.stringify({
+        event: 'zero_row_write',
+        target: 'partner_configs.step_id_rename',
+        message: 'rename_partner_step_namespace touched no row',
+        partner_id: p.id,
+        workflow_id: id,
+      }))
+      continue
+    }
     updated += 1
   }
 

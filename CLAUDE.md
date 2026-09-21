@@ -80,7 +80,7 @@ pnpm lint          # lint all packages
 ### Local dev is read-only against production (#669)
 There is no separate local backend: `wrangler dev` and production share one Supabase project, and the Worker connects as `service_role`, which bypasses RLS. So an unguarded local run can write anywhere in production.
 
-`apps/worker/src/lib/supabase.ts` therefore blocks writes (`insert`, `update`, `upsert`, `delete`) when `LOCAL_DEV` is set and `SUPABASE_URL` is not localhost. Reads and `rpc` stay allowed, so local dev works normally until it tries to mutate.
+`apps/worker/src/lib/supabase.ts` therefore blocks writes (`insert`, `update`, `upsert`, `delete`) when `LOCAL_DEV` is set and `SUPABASE_URL` is not localhost. Reads stay allowed. An `rpc` call is allowed only when its name is on the `readOnly` list in `apps/worker/src/lib/read-only-rpcs.json`; a name on the `mutating` list, or one on neither, is refused the same way a write is (#1409). A web guard (`rpc-classification.test.ts`) requires every `.rpc('name')` in the worker to be on exactly one list, and the SQL suite checks the read only names are declared STABLE in a real database, so a write cannot be smuggled through as a read.
 
 To write to prod deliberately from local, set `ALLOW_PROD_WRITES=true` in `apps/worker/.dev.vars` (gitignored). Unset it again afterwards; leaving it on permanently defeats the guard. This also means write-heavy e2e specs need the opt-in, or a database that is not prod.
 
@@ -117,6 +117,8 @@ CI checks, require one approving review, and disallow force-push and deletion.
 
 ## Database migrations
 Migrations must be **backward-compatible (expand/contract)** so schema and code can deploy in either order without a window where prod code and schema disagree. In short: additive-only in a single migration (add nullable/defaulted columns, tables, indexes); never rename or drop in the same release that starts using the change — split renames/drops across two releases (expand + dual-write, then contract later). The deploy pipeline only CHECKS migrations are applied; you apply them by hand with `supabase db push`. Full rules + deployment runbook: [docs/adr/0007-expand-contract-migrations.md](./docs/adr/0007-expand-contract-migrations.md).
+
+**Prove a migration against a real Postgres before pushing it.** `bash scripts/sql-suite/run.sh` starts a throwaway `supabase/postgres` Docker container on port 54329 (never production: the harness reaches it only through `docker exec`, so it has no connection string that could point anywhere else), bootstraps the handful of objects the hosted platform provides outside migrations (`scripts/sql-suite/bootstrap.sql`), replays every file in `supabase/migrations/` from empty, then runs `supabase/tests/*.test.sql`. The pre push hook runs it whenever `supabase/`, the rpc allowlist or the harness itself changed (`SKIP_SQL_SUITE=1` for the one time reason, explained first). Regenerate `database.ts` from that container rather than from production: `SUPABASE_DB_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres pnpm --filter worker db:types`. A function a route calls through `rpc` also needs an entry in `supabase/required-live-objects.json` and in `read-only-rpcs.json` (see the local dev section).
 
 ## Disaster recovery
 Recovery runbook for catastrophic loss (Supabase, Cloudflare, secrets, destructive migration), plus the warm-Pipedream rollback target: [docs/disaster-recovery.md](./docs/disaster-recovery.md). Note: worker secrets are not escrowed yet — see the runbook's Secret inventory.

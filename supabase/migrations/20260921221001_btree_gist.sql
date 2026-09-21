@@ -1,0 +1,12 @@
+-- btree_gist, so a gist exclusion constraint can combine an equality on a uuid or
+-- text column with a range overlap (#1409). The buyer pricing tiers refuse two
+-- tiers of one buyer and population whose debt ranges overlap, and the operating
+-- windows refuse two windows on one weekday that overlap, both in the database
+-- rather than only in the form (L18).
+--
+-- Expand only: installs an extension nothing yet depends on. It goes in the
+-- extensions schema beside pgcrypto and uuid-ossp, where production keeps its
+-- extensions (measured 2026-09-21). Default operator classes are found by type
+-- and access method, not by search path, so the constraints that use it need no
+-- schema qualification.
+CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA extensions;

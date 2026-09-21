@@ -1,0 +1,492 @@
+-- Behavioural tests for the buyer profile schema, functions, grants and audit (#1409).
+--
+-- WHERE THIS RUNS: only on the throwaway database `scripts/sql-suite/run.sh`
+-- builds by replaying every migration from empty (#1139), never production and
+-- never any database holding real rows. It creates an organization, a user and
+-- two partners with fixed ids, runs every case against them, and leaves them in
+-- place so a rerun is idempotent. No real identity appears anywhere in it.
+--
+-- HOW IT ASSERTS: by RAISE EXCEPTION inside DO blocks, one case per block, and
+-- it counts the cases that ran into a temp table, because a suite that silently
+-- executed half its cases and reported nothing wrong is the failure the count
+-- exists to catch (L288). The last statement compares the count to the number
+-- written at the bottom, so adding a case means bumping that number.
+--
+-- ASSERTIONS USE `IS DISTINCT FROM`, NEVER `<>`: a NULL compared with `<>` is
+-- NULL, a plpgsql IF does not fire on NULL, and the case passes vacuously
+-- (measured on the deletion gate suite, 2026-09-03).
+--
+-- SEND ONE STATEMENT AT A TIME. psql does. The runner uses psql.
+
+-- ── Case counter ─────────────────────────────────────────────────────────────
+CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
+DELETE FROM suite_cases;
+
+-- ── Fixtures ─────────────────────────────────────────────────────────────────
+-- Fixed ids so every case can name them. Deleted first so a rerun starts clean.
+DO $do$
+BEGIN
+  DELETE FROM public.buyer_sales WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.buyer_pricing_tiers WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.buyer_blackout_dates WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.buyer_operating_windows WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.buyer_profiles WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.buyer_select_parity_days WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.partner_configs WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.workflows WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  -- The deletes above are themselves audited (which is the point), so the audit
+  -- rows go last, before the user and organization they reference.
+  DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.users WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+  DELETE FROM public.organizations WHERE id = '11111111-1111-1111-1111-111111111111';
+END
+$do$;
+
+INSERT INTO public.organizations (id, name, slug) VALUES ('11111111-1111-1111-1111-111111111111', 'Suite Org', 'suite-org');
+INSERT INTO public.users (id, organization_id, email, display_name) VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'suite@example.test', 'Suite User');
+-- The partner rows are inserted the way the app inserts them: with updated_by set.
+INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, updated_by, updated_by_email)
+VALUES ('33333333-3333-3333-3333-333333330001', '11111111-1111-1111-1111-111111111111', 'Suite Buyer One', 'suite-buyer-one', 'buyer', true, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, updated_by, updated_by_email)
+VALUES ('33333333-3333-3333-3333-333333330002', '11111111-1111-1111-1111-111111111111', 'Suite Buyer Two', 'suite-buyer-two', 'buyer', true, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+-- The fixture inserts above are audited by the trigger; clear them so the counts below start from zero.
+DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111111111';
+
+-- ── 1. Grants: anon and authenticated cannot execute any of the five functions ──
+DO $do$
+DECLARE
+  fn text;
+  bad text[] := '{}';
+BEGIN
+  FOREACH fn IN ARRAY ARRAY[
+    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
+    'public.record_buyer_sale(jsonb)',
+    'public.settle_buyer_sale(uuid, uuid, text, uuid)',
+    'public.delete_partner_config(uuid, uuid, uuid, text)',
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
+  ] LOOP
+    IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
+    IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
+    IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
+  END LOOP;
+  IF array_length(bad, 1) IS NOT NULL THEN RAISE EXCEPTION 'function grants wrong: %', array_to_string(bad, '; '); END IF;
+  INSERT INTO suite_cases(name) VALUES ('function grants');
+END
+$do$;
+
+-- ── 2. Grants: an authenticated member of the right org is refused every table verb on the six tables and partner_configs ──
+DO $do$
+DECLARE
+  t text;
+  verb text;
+  bad text[] := '{}';
+BEGIN
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+  FOREACH t IN ARRAY ARRAY['buyer_profiles','buyer_operating_windows','buyer_blackout_dates','buyer_pricing_tiers','buyer_sales','buyer_select_parity_days','partner_configs'] LOOP
+    FOREACH verb IN ARRAY ARRAY['SELECT','INSERT','UPDATE','DELETE'] LOOP
+      IF has_table_privilege('authenticated', 'public.' || t, verb) THEN bad := array_append(bad, 'authenticated has ' || verb || ' on ' || t); END IF;
+      IF has_table_privilege('anon', 'public.' || t, verb) THEN bad := array_append(bad, 'anon has ' || verb || ' on ' || t); END IF;
+    END LOOP;
+    IF NOT has_table_privilege('service_role', 'public.' || t, 'SELECT') THEN bad := array_append(bad, 'service_role cannot read ' || t); END IF;
+  END LOOP;
+  IF array_length(bad, 1) IS NOT NULL THEN RAISE EXCEPTION 'table grants wrong: %', array_to_string(bad, '; '); END IF;
+  INSERT INTO suite_cases(name) VALUES ('table grants');
+END
+$do$;
+
+-- ── 3. The partner_configs policy now carries WITH CHECK, and every new table has RLS on ──
+DO $do$
+DECLARE
+  wc text;
+  t text;
+  bad text[] := '{}';
+BEGIN
+  SELECT with_check INTO wc FROM pg_policies WHERE schemaname = 'public' AND tablename = 'partner_configs' AND policyname = 'partners_org';
+  IF wc IS NULL OR position('user_org_id' IN wc) = 0 THEN RAISE EXCEPTION 'partners_org has no WITH CHECK on user_org_id: %', coalesce(wc, '<null>'); END IF;
+  FOREACH t IN ARRAY ARRAY['buyer_profiles','buyer_operating_windows','buyer_blackout_dates','buyer_pricing_tiers','buyer_sales','buyer_select_parity_days'] LOOP
+    IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = ('public.' || t)::regclass) THEN bad := array_append(bad, t); END IF;
+  END LOOP;
+  IF array_length(bad, 1) IS NOT NULL THEN RAISE EXCEPTION 'RLS off on: %', array_to_string(bad, ', '); END IF;
+  INSERT INTO suite_cases(name) VALUES ('rls and with check');
+END
+$do$;
+
+-- ── 4. Save: a first save creates the profile at version 1 and writes exactly one created audit row ──
+DO $do$
+DECLARE
+  doc jsonb;
+  n int;
+BEGIN
+  doc := public.save_buyer_profile(
+    '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 0,
+    '{"is_enabled": false, "priority": null, "allowed_states": ["ND","SD"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
+      "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+      "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}],
+      "blackout_dates": [{"date": "2026-11-26", "note": "Thanksgiving"}],
+      "tiers": [{"population": "engine", "debt_from": 20000, "debt_to": 40000, "multiplier": 0.0010}, {"population": "engine", "debt_from": 40000, "debt_to": null, "multiplier": 0.0012}]}'::jsonb,
+    '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF (doc->>'version')::int IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'first save version: %', doc->>'version'; END IF;
+  IF jsonb_array_length(doc->'tiers') IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'tiers stored: %', doc->'tiers'; END IF;
+  SELECT count(*) INTO n FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001';
+  IF n IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'audit rows after first save: %', n; END IF;
+  IF (SELECT action FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM 'created' THEN RAISE EXCEPTION 'first save action is not created'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('first save creates');
+END
+$do$;
+
+-- ── 5. Save: the same document again writes no audit row and leaves the version alone ──
+DO $do$
+DECLARE
+  doc jsonb;
+  n int;
+BEGIN
+  doc := public.save_buyer_profile(
+    '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
+    '{"is_enabled": false, "priority": null, "allowed_states": ["SD","ND"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
+      "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+      "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}],
+      "blackout_dates": [{"date": "2026-11-26", "note": "Thanksgiving"}],
+      "tiers": [{"population": "engine", "debt_from": 40000, "debt_to": null, "multiplier": 0.0012}, {"population": "engine", "debt_from": 20000, "debt_to": 40000, "multiplier": 0.0010}]}'::jsonb,
+    '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF (doc->>'version')::int IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'unchanged save bumped version to %', doc->>'version'; END IF;
+  SELECT count(*) INTO n FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001';
+  IF n IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'unchanged save wrote an audit row (now %)', n; END IF;
+  INSERT INTO suite_cases(name) VALUES ('unchanged save is silent');
+END
+$do$;
+
+-- ── 6. Save: changing one multiplier writes exactly one audit row holding that one path, old and new ──
+DO $do$
+DECLARE
+  doc jsonb;
+  ch jsonb;
+BEGIN
+  doc := public.save_buyer_profile(
+    '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
+    '{"is_enabled": false, "priority": null, "allowed_states": ["ND","SD"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
+      "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+      "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}],
+      "blackout_dates": [{"date": "2026-11-26", "note": "Thanksgiving"}],
+      "tiers": [{"population": "engine", "debt_from": 20000, "debt_to": 40000, "multiplier": 0.0010}, {"population": "engine", "debt_from": 40000, "debt_to": null, "multiplier": 0.0013}]}'::jsonb,
+    '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF (doc->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'version after one change: %', doc->>'version'; END IF;
+  SELECT changes INTO ch FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
+  IF (SELECT count(*) FROM jsonb_object_keys(ch)) IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'expected one changed path, got %', ch; END IF;
+  IF (ch->'tiers.engine.40000.multiplier'->>'old')::numeric IS DISTINCT FROM 0.0012 OR (ch->'tiers.engine.40000.multiplier'->>'new')::numeric IS DISTINCT FROM 0.0013 THEN
+    RAISE EXCEPTION 'multiplier path old and new wrong: %', ch;
+  END IF;
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'audit rows after two saves'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('one change is one path');
+END
+$do$;
+
+-- ── 7. Save: a stale version is refused, and the refusal carries the current document ──
+DO $do$
+DECLARE
+  msg text;
+  detail text;
+BEGIN
+  BEGIN
+    PERFORM public.save_buyer_profile(
+      '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
+      '{"is_enabled": false, "priority": null, "allowed_states": ["ND"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
+        "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+        "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}], "blackout_dates": [],
+        "tiers": [{"population": "engine", "debt_from": 20000, "debt_to": null, "multiplier": 0.0010}]}'::jsonb,
+      '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'stale version was accepted';
+  EXCEPTION WHEN SQLSTATE 'BP409' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, detail = PG_EXCEPTION_DETAIL;
+    IF msg IS DISTINCT FROM 'stale_version' THEN RAISE EXCEPTION 'wrong message: %', msg; END IF;
+    IF (detail::jsonb->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'refusal does not carry the current document: %', detail; END IF;
+  END;
+  -- Nothing changed underneath.
+  IF (SELECT version FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'stale save changed the row'; END IF;
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'stale save wrote an audit row'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('stale version refused with document');
+END
+$do$;
+
+-- ── 8. Save: a gap inside the debt range is refused by name, and so are tiers for an unwired population ──
+DO $do$
+DECLARE
+  msg text;
+BEGIN
+  BEGIN
+    PERFORM public.save_buyer_profile(
+      '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', 0,
+      '{"is_enabled": false, "priority": null, "allowed_states": ["WY"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": null,
+        "hourly_lead_cap": null, "daily_lead_cap": null, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+        "windows": [], "blackout_dates": [],
+        "tiers": [{"population": "engine", "debt_from": 20000, "debt_to": 30000, "multiplier": 0.001}, {"population": "engine", "debt_from": 35000, "debt_to": null, "multiplier": 0.001}]}'::jsonb,
+      '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'tier gap was accepted';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'tiers_gap' THEN RAISE EXCEPTION 'wrong message for gap: %', msg; END IF;
+  END;
+  BEGIN
+    PERFORM public.save_buyer_profile(
+      '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', 0,
+      '{"is_enabled": false, "priority": null, "allowed_states": ["WY"], "debt_min": null, "debt_max": null, "loan_amount_min": null,
+        "hourly_lead_cap": null, "daily_lead_cap": null, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+        "windows": [], "blackout_dates": [],
+        "tiers": [{"population": "main_flow", "debt_from": 10000, "debt_to": null, "multiplier": 0.001}]}'::jsonb,
+      '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'unwired population was accepted';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'population_not_wired' THEN RAISE EXCEPTION 'wrong message for population: %', msg; END IF;
+  END;
+  IF EXISTS (SELECT 1 FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330002') THEN RAISE EXCEPTION 'refused saves left a profile row'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('gap and unwired refused');
+END
+$do$;
+
+-- ── 9. Constraints: an overlapping tier is refused by the database itself, adjacency is accepted, enabling without a priority is refused ──
+DO $do$
+BEGIN
+  BEGIN
+    INSERT INTO public.buyer_pricing_tiers (partner_id, organization_id, population, debt_from, debt_to, multiplier)
+    VALUES ('33333333-3333-3333-3333-333333330001', '11111111-1111-1111-1111-111111111111', 'engine', 35000, 45000, 0.002);
+    RAISE EXCEPTION 'overlapping tier was inserted';
+  EXCEPTION WHEN exclusion_violation THEN NULL;
+  END;
+  -- Adjacent at exactly 40,000 is what the saved profile already holds: [20000, 40000) and [40000, null). Prove the boundary is accepted by the constraint by inserting a third tier that meets the top one from below after removing the middle one, then restoring.
+  BEGIN
+    UPDATE public.buyer_profiles SET is_enabled = true, priority = NULL WHERE partner_id = '33333333-3333-3333-3333-333333330001';
+    RAISE EXCEPTION 'enabled without a priority was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('constraints hold');
+END
+$do$;
+
+-- ── 10. Direct SQL on the profile tables is recorded as direct_sql with no actor ──
+DO $do$
+DECLARE
+  r record;
+BEGIN
+  UPDATE public.buyer_profiles SET daily_lead_cap = 51 WHERE partner_id = '33333333-3333-3333-3333-333333330001';
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
+  IF r.changed_by IS NOT NULL THEN RAISE EXCEPTION 'direct SQL inherited an actor: %', r.changed_by; END IF;
+  IF r.changes->>'_source' IS DISTINCT FROM 'direct_sql' THEN RAISE EXCEPTION 'direct SQL not labelled: %', r.changes; END IF;
+  UPDATE public.buyer_profiles SET daily_lead_cap = 50 WHERE partner_id = '33333333-3333-3333-3333-333333330001';
+  INSERT INTO suite_cases(name) VALUES ('direct sql on profiles is labelled');
+END
+$do$;
+
+-- ── 11. partner_configs audit: an app update writes exactly one row naming the actor, with old and new, and no direct_sql label ──
+DO $do$
+DECLARE
+  r record;
+  before int;
+BEGIN
+  SELECT count(*) INTO before FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330001';
+  UPDATE public.partner_configs SET accept_signals = '[{"field":"ok","equals":true}]'::jsonb, updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330001';
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM before + 1 THEN RAISE EXCEPTION 'app update did not write exactly one audit row'; END IF;
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
+  IF r.action IS DISTINCT FROM 'updated' THEN RAISE EXCEPTION 'action: %', r.action; END IF;
+  IF r.changed_by IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'actor not resolved from updated_by: %', r.changed_by; END IF;
+  IF r.changes ? '_source' THEN RAISE EXCEPTION 'app update labelled direct_sql'; END IF;
+  IF r.changes->'accept_signals'->'old' IS DISTINCT FROM '[]'::jsonb OR r.changes->'accept_signals'->'new' IS DISTINCT FROM '[{"field":"ok","equals":true}]'::jsonb THEN RAISE EXCEPTION 'accept_signals old and new wrong: %', r.changes; END IF;
+  IF r.changes ? 'updated_at' OR r.changes ? 'updated_by' THEN RAISE EXCEPTION 'excluded columns leaked into changes: %', r.changes; END IF;
+  INSERT INTO suite_cases(name) VALUES ('partner update audited once with actor');
+END
+$do$;
+
+-- ── 12. partner_configs audit: an update that changes no audited column writes no row ──
+DO $do$
+DECLARE
+  before int;
+BEGIN
+  SELECT count(*) INTO before FROM public.audit_log WHERE entity_type = 'partner_config';
+  UPDATE public.partner_configs SET last_probe_response = '{"probe": 1}'::jsonb, updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330001';
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config') IS DISTINCT FROM before THEN RAISE EXCEPTION 'a probe response write was audited'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('excluded columns are silent');
+END
+$do$;
+
+-- ── 13. partner_configs audit: a direct update with no actor is labelled direct_sql with changed_by null ──
+DO $do$
+DECLARE
+  r record;
+BEGIN
+  UPDATE public.partner_configs SET name = 'Suite Buyer One Renamed' WHERE id = '33333333-3333-3333-3333-333333330001';
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
+  IF r.changed_by IS NOT NULL THEN RAISE EXCEPTION 'direct update inherited actor %', r.changed_by; END IF;
+  IF r.changes->>'_source' IS DISTINCT FROM 'direct_sql' THEN RAISE EXCEPTION 'direct update not labelled: %', r.changes; END IF;
+  IF r.changes->'name'->>'new' IS DISTINCT FROM 'Suite Buyer One Renamed' THEN RAISE EXCEPTION 'name change not recorded: %', r.changes; END IF;
+  INSERT INTO suite_cases(name) VALUES ('direct partner update labelled');
+END
+$do$;
+
+-- ── 14. rename_partner_step_namespace: rewrites only the allowed columns, audits once with reason and context, refuses another column ──
+DO $do$
+DECLARE
+  r record;
+  n int;
+  msg text;
+BEGIN
+  UPDATE public.partner_configs SET bid_formula = 'steps.old_ns.output.debt * 0.001', updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330002';
+  n := public.rename_partner_step_namespace(
+    '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002',
+    '{"bid_formula": "steps.new_ns.output.debt * 0.001"}'::jsonb,
+    '22222222-2222-2222-2222-222222222222', 'suite@example.test',
+    '{"reason": "step_id_renamed", "workflow_id": "44444444-4444-4444-4444-444444444444", "old_namespace": "old_ns", "new_namespace": "new_ns"}'::jsonb);
+  IF n IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'rename touched % rows', n; END IF;
+  -- Both writes above share this transaction's now(), so the rename's row is found by its reason, not by recency.
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002' AND changes ? 'reason') IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'rename did not write exactly one audit row'; END IF;
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002' AND changes ? 'reason';
+  IF r.changed_by IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'rename actor: %', r.changed_by; END IF;
+  IF r.changes->>'reason' IS DISTINCT FROM 'step_id_renamed' OR r.changes->>'workflow_id' IS DISTINCT FROM '44444444-4444-4444-4444-444444444444' THEN RAISE EXCEPTION 'rename reason or context missing: %', r.changes; END IF;
+  IF r.changes->'bid_formula'->>'new' IS DISTINCT FROM 'steps.new_ns.output.debt * 0.001' THEN RAISE EXCEPTION 'rename value not recorded: %', r.changes; END IF;
+  BEGIN
+    PERFORM public.rename_partner_step_namespace(
+      '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002',
+      '{"api_endpoint": "https://evil.example"}'::jsonb,
+      '22222222-2222-2222-2222-222222222222', 'suite@example.test', '{}'::jsonb);
+    RAISE EXCEPTION 'rename accepted a column it must refuse';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'column_not_renameable' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('rename audited and bounded');
+END
+$do$;
+
+-- ── 15. record_buyer_sale: same key set every time, a late reserved cannot overwrite accepted, the second accepted live sale of one lead is refused by name ──
+DO $do$
+DECLARE
+  row1 jsonb;
+  row2 jsonb;
+  msg text;
+BEGIN
+  row1 := public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550001", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-a", "population": "engine", "kind": "live", "status": "reserved", "payout_cents": 2500, "debt": 25000, "multiplier": 0.001,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T16:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t1",
+    "http_status": null, "result_code": null, "buyer_reference": null, "live_percent_in_force": 1, "caps_in_force": {"daily_lead_cap": 50}, "resolution_source": null, "resolved_by": null}'::jsonb);
+  IF row1->>'status' IS DISTINCT FROM 'reserved' THEN RAISE EXCEPTION 'first record: %', row1; END IF;
+  row2 := public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550001", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-a", "population": "engine", "kind": "live", "status": "accepted", "payout_cents": 2500, "debt": 25000, "multiplier": 0.001,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T16:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t1",
+    "http_status": 200, "result_code": "1001", "buyer_reference": "ref-1", "live_percent_in_force": 1, "caps_in_force": {"daily_lead_cap": 50}, "resolution_source": "buyer", "resolved_by": null}'::jsonb);
+  IF row2->>'status' IS DISTINCT FROM 'accepted' THEN RAISE EXCEPTION 'accept did not land: %', row2; END IF;
+  -- A late reserved arrives after the accept.
+  row2 := public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550001", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-a", "population": "engine", "kind": "live", "status": "reserved", "payout_cents": 2500, "debt": 25000, "multiplier": 0.001,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T16:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t1",
+    "http_status": null, "result_code": null, "buyer_reference": null, "live_percent_in_force": 1, "caps_in_force": {"daily_lead_cap": 50}, "resolution_source": null, "resolved_by": null}'::jsonb);
+  IF row2->>'status' IS DISTINCT FROM 'accepted' THEN RAISE EXCEPTION 'a late reserved overwrote accepted: %', row2; END IF;
+  IF row2->>'buyer_reference' IS DISTINCT FROM 'ref-1' THEN RAISE EXCEPTION 'a late reserved erased the reference: %', row2; END IF;
+  -- A second buyer accepting the same live lead.
+  BEGIN
+    PERFORM public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550002", "partner_id": "33333333-3333-3333-3333-333333330002", "organization_id": "11111111-1111-1111-1111-111111111111",
+      "lead_key": "lead-a", "population": "engine", "kind": "live", "status": "accepted", "payout_cents": 2000, "debt": 25000, "multiplier": 0.0008,
+      "et_day": "2026-09-21", "hour_bucket": "2026-09-21T16:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t2",
+      "http_status": 200, "result_code": "1001", "buyer_reference": "ref-2", "live_percent_in_force": 1, "caps_in_force": {}, "resolution_source": "buyer", "resolved_by": null}'::jsonb);
+    RAISE EXCEPTION 'a second accepted live sale of one lead was recorded';
+  EXCEPTION WHEN SQLSTATE 'BP023' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'duplicate_accepted_sale' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  -- A rehearsal accept of the same lead is a different kind and is allowed.
+  PERFORM public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550003", "partner_id": "33333333-3333-3333-3333-333333330002", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-a", "population": "engine", "kind": "rehearsal", "status": "accepted", "payout_cents": 2000, "debt": 25000, "multiplier": 0.0008,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T16:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t3",
+    "http_status": null, "result_code": null, "buyer_reference": null, "live_percent_in_force": 0, "caps_in_force": {}, "resolution_source": "rehearsal", "resolved_by": null}'::jsonb);
+  INSERT INTO suite_cases(name) VALUES ('sale record rank and uniqueness');
+END
+$do$;
+
+-- ── 16. settle_buyer_sale: only an unresolved row can be settled, and settling writes its own audit row with old and new status ──
+DO $do$
+DECLARE
+  msg text;
+  r record;
+BEGIN
+  PERFORM public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550004", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-b", "population": "engine", "kind": "live", "status": "unresolved", "payout_cents": 1800, "debt": 18000, "multiplier": 0.001,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T17:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t4",
+    "http_status": 200, "result_code": null, "buyer_reference": null, "live_percent_in_force": 1, "caps_in_force": {}, "resolution_source": null, "resolved_by": null}'::jsonb);
+  PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'released', '22222222-2222-2222-2222-222222222222');
+  IF (SELECT status FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM 'released' THEN RAISE EXCEPTION 'settle did not land'; END IF;
+  IF (SELECT resolved_by FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'settle did not record who'; END IF;
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'buyer_sale' AND entity_id = '55555555-5555-5555-5555-555555550004' ORDER BY changed_at DESC LIMIT 1;
+  IF r.changes->'status'->>'old' IS DISTINCT FROM 'unresolved' OR r.changes->'status'->>'new' IS DISTINCT FROM 'released' THEN RAISE EXCEPTION 'settle audit wrong: %', r.changes; END IF;
+  BEGIN
+    PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'accepted', '22222222-2222-2222-2222-222222222222');
+    RAISE EXCEPTION 'a settled row was settled again';
+  EXCEPTION WHEN SQLSTATE 'BP409' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'not_unresolved' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  BEGIN
+    PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'reserved', '22222222-2222-2222-2222-222222222222');
+    RAISE EXCEPTION 'settle accepted an outcome that is not a settlement';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN NULL;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('settle bounded and audited');
+END
+$do$;
+
+-- ── 17. delete_partner_config: a partner with sales is refused by name; a clean partner is deleted and audited once with the actor ──
+DO $do$
+DECLARE
+  msg text;
+  detail text;
+  r record;
+  before int;
+BEGIN
+  BEGIN
+    PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'a partner with sales was deleted';
+  EXCEPTION WHEN SQLSTATE 'BP023' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, detail = PG_EXCEPTION_DETAIL;
+    IF msg IS DISTINCT FROM 'partner_has_dependents' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+    IF position('buyer_sales' IN detail) = 0 THEN RAISE EXCEPTION 'refusal does not name the blocking table: %', detail; END IF;
+  END;
+  -- Partner two has one rehearsal sale row; remove it, then the delete goes through.
+  DELETE FROM public.buyer_sales WHERE partner_id = '33333333-3333-3333-3333-333333330002';
+  SELECT count(*) INTO before FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002';
+  PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF EXISTS (SELECT 1 FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-333333330002') THEN RAISE EXCEPTION 'delete did not delete'; END IF;
+  IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002') IS DISTINCT FROM before + 1 THEN RAISE EXCEPTION 'delete did not write exactly one audit row'; END IF;
+  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002' ORDER BY changed_at DESC LIMIT 1;
+  IF r.action IS DISTINCT FROM 'deleted' OR r.changed_by IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'delete audit wrong: % %', r.action, r.changed_by; END IF;
+  IF r.changes ? '_source' THEN RAISE EXCEPTION 'app delete labelled direct_sql'; END IF;
+  BEGIN
+    PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'deleting a missing partner did not refuse';
+  EXCEPTION WHEN no_data_found THEN NULL;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('delete refuses dependents and audits');
+END
+$do$;
+
+-- ── 18. Read only rpcs are STABLE, including the two that were VOLATILE ──
+DO $do$
+DECLARE
+  bad text[] := '{}';
+  fn text;
+BEGIN
+  FOREACH fn IN ARRAY ARRAY['auth_user_with_allowlist', 'pg_cron_health', 'bid_recording_coverage', 'user_org_id'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = fn AND provolatile IN ('s','i')) THEN
+      bad := array_append(bad, fn);
+    END IF;
+  END LOOP;
+  IF array_length(bad, 1) IS NOT NULL THEN RAISE EXCEPTION 'not STABLE or IMMUTABLE: %', array_to_string(bad, ', '); END IF;
+  INSERT INTO suite_cases(name) VALUES ('read only rpcs are stable');
+END
+$do$;
+
+-- ── The count. Every case above inserts its name; this is the number of blocks. ──
+DO $do$
+DECLARE
+  n int;
+BEGIN
+  SELECT count(*) INTO n FROM suite_cases;
+  IF n IS DISTINCT FROM 18 THEN RAISE EXCEPTION 'ran % of 18 cases', n; END IF;
+  RAISE NOTICE 'buyer_profiles.test.sql: % of 18 cases passed', n;
+END
+$do$;

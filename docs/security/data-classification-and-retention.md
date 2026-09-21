@@ -77,6 +77,17 @@ is always null.
 If personal data ever starts flowing here again, this row needs rewriting and the
 erasure path below has a new target.
 
+### `buyer_sales` (Supabase)
+
+One row per lead a buyer was offered (#1409). It holds Engine's own lead id
+(`lead_key`), the debt figure the price was computed from, the payout, and the
+outcome. No name, contact detail, SSN or score: the lead is identified only by
+the id Engine minted, which resolves to a person nowhere in this database.
+
+**Retention: 90 days was decided (#1406) and is not enforced yet.** No purge job
+exists for this table as of 2026-09-21; the milestone 52 phase that turns the
+buyer_select node on ships it. Until then rows accumulate.
+
 ### `workflow_executions` and `execution_steps` (Supabase)
 
 No named personal-data columns, and the most personal data of anything in the
@@ -128,8 +139,10 @@ is set in Salesforce and is outside this document.
 
 `users.email` and `user_allowlist.email` hold team member addresses.
 `updated_by_email` on `workflows`, `environment_variables`, `partner_configs`,
-`partner_bid_configs`, `service_connections` and `app_settings` records who
-changed a config row.
+`partner_bid_configs`, `service_connections`, `app_settings` and `buyer_profiles`
+records who changed a config row (`buyer_profiles` also carries `updated_by_name`,
+the editor's display name, because a buyer's price or cap changing is the kind
+of edit somebody asks about by name).
 
 **Retention: indefinite, deliberately.** These are audit trails. A workflow whose
 last editor is unknown is worse than one whose editor is recorded.

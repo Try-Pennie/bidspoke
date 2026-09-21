@@ -3,11 +3,10 @@
  * CRUD for partner_configs. Daily cap count comes from the DailyCapDO.
  */
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { writeAuditLog } from '../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
@@ -202,10 +201,8 @@ partners.post('/', async (c) => {
     return dbError(c, error)
   }
 
-  await writeAuditLog(supabase, orgId, 'partner_config', data.id, 'created', userId, {
-    name: body.name,
-    slug,
-  })
+  // Audited by the partner_configs table trigger, which records every column's
+  // old and new value with updated_by as the actor (#1409). No second row here.
 
   // A new partner always affects the constants set (subAccountIdsMap / activeBidding),
   // so invalidate unconditionally rather than gating on the copy fields.
@@ -267,9 +264,9 @@ partners.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Partner not found' }, 404)
 
-  await writeAuditLog(supabase, orgId, 'partner_config', id, 'updated', userId, {
-    changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
-  })
+  // Audited by the partner_configs table trigger: the statement sets updated_by,
+  // which the trigger reads as the actor, and it records each changed column's
+  // old and new value rather than a list of names (#1409).
 
   const affectsConstants =
     'sell_off_offer_title' in updates ||
@@ -287,32 +284,30 @@ partners.put('/:id', async (c) => {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 partners.delete('/:id', async (c) => {
-  const { orgId, userId } = c.get('user')
+  const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  // Fetch slug for audit log before deleting
-  const { data: existing, error: existingError } = await supabase
-    .from('partner_configs')
-    .select('slug, name')
-    .eq('id', id)
-    .eq('organization_id', orgId)
-    .single()
-
-  // PGRST116 = no partner for this org (→ 404); a real error must not look like
-  // a 404, which would block a legitimate delete (#303).
-  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
-  if (!existing) return c.json({ error: 'Partner not found' }, 404)
-
-  const deleteBlocked = await requireRowOr404(c, 'Partner not found', () =>
-    supabase.from('partner_configs').delete().eq('id', id).eq('organization_id', orgId).select('id')
-  )
-  if (deleteBlocked) return deleteBlocked
-
-  await writeAuditLog(supabase, orgId, 'partner_config', id, 'deleted', userId, {
-    name: existing.name,
-    slug: existing.slug,
+  // The delete goes through delete_partner_config (#1409): a delete sets no
+  // column, so the table's audit trigger cannot see who did it from the row, and
+  // the function carries the actor in for it. The function refuses by name: P0002
+  // when there is no such partner in this org (a row that raced away, or another
+  // org's, #588, #303), BP023 when sales still reference it, with the detail
+  // naming the blocking table. A real database error surfaces as a 500.
+  const { error } = await supabase.rpc('delete_partner_config', {
+    p_org: orgId,
+    p_id: id,
+    p_actor: userId,
+    p_actor_email: email,
   })
+  if (error) {
+    if (error.code === 'P0002') return c.json({ error: 'Partner not found' }, 404) // db-guard-ok: P0002 is the function's own named refusal for no such partner in this org, raised after the lookup, never a transport or query error
+    if (error.code === 'BP023') {
+      const detail = (error as { details?: string | null }).details ?? ''
+      return c.json({ error: `Partner cannot be deleted while other records refer to it. ${detail}`.trim() }, 409)
+    }
+    return dbError(c, error)
+  }
 
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
 

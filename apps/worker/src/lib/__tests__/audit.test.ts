@@ -82,7 +82,7 @@ describe('writeAuditLog', () => {
   })
 
   it('supports all entity types without throwing', async () => {
-    const entityTypes = ['partner_config', 'environment_variable', 'service_connection', 'workflow', 'circuit_breaker'] as const
+    const entityTypes = ['partner_config', 'environment_variable', 'service_connection', 'workflow', 'circuit_breaker', 'buyer_profile', 'buyer_sale'] as const
     for (const entityType of entityTypes) {
       const sb = makeSupabase()
       await expect(

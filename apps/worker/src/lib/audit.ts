@@ -4,6 +4,11 @@ import { isPermanentDbError, sleep, type DbError } from './db-retry'
 export type AuditEntityType =
   | 'partner_config'
   | 'partner_bid_config'
+  // A buyer's eligibility profile and a sale to a buyer (#1409). Both are written
+  // by the database itself (save_buyer_profile, settle_buyer_sale and the table
+  // triggers), never through writeAuditLog, but the vocabulary is one list.
+  | 'buyer_profile'
+  | 'buyer_sale'
   | 'environment_variable'
   | 'service_connection'
   | 'service_preset'

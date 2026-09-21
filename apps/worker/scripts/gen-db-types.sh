@@ -49,7 +49,17 @@ fi
   echo "// Supabase types for the typed client (lib/supabase.ts). ESLint-excluded."
   echo "// Drift from the live schema is checked nightly (.github/workflows/db-types-drift.yml)."
   echo ""
-  supabase gen types typescript --project-id "$PROJECT_ID" \
+  # SUPABASE_DB_URL points the generator at a database by connection string
+  # instead of at the hosted project (#1409): the SQL suite's throwaway Postgres
+  # holds migrations that are not yet applied to production, and a PR that adds
+  # a table must commit the types for it in the same change (db-types-fresh).
+  # The nightly drift check still regenerates from the hosted project, so a
+  # difference between the two generators is noticed there, on purpose (L552).
+  if [ -n "${SUPABASE_DB_URL:-}" ]; then
+    supabase gen types typescript --db-url "$SUPABASE_DB_URL"
+  else
+    supabase gen types typescript --project-id "$PROJECT_ID"
+  fi \
     | grep -vF '// Allows to automatically instantiate createClient with right options' \
     | grep -vF "// instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)" \
     | awk '
@@ -59,6 +69,41 @@ fi
         { print }
       '
 } > "$RAW"
+
+# ---------------------------------------------------------------------------
+# The hosted generator opens `Database` with an `__InternalSupabase` block naming
+# the project's PostgREST version. The local generator (SUPABASE_DB_URL) does
+# not, because that version is a property of the hosted project, not of any
+# schema. So when generating locally the block is carried over from the
+# committed file, unchanged, and the nightly drift check against the hosted
+# project still decides whether it is current. A miss is loud (L100): if the
+# committed file holds no such block there is nothing to carry and that is said.
+# ---------------------------------------------------------------------------
+if [ -n "${SUPABASE_DB_URL:-}" ] && ! grep -q '^  __InternalSupabase: {$' "$RAW"; then
+  if [ ! -f "$OUT" ] || ! grep -q '^  __InternalSupabase: {$' "$OUT"; then
+    echo "gen-db-types: generating from SUPABASE_DB_URL, but the committed $OUT has no" >&2
+    echo "  __InternalSupabase block to carry over. Generate once from the hosted project first." >&2
+    exit 1
+  fi
+  # BSD awk refuses a multi line -v string, so the block goes through a file and
+  # the splice is three plain slices around the `export type Database = {` line.
+  BLOCK="$(mktemp)"
+  awk '/^  __InternalSupabase: \{$/ { p=1 } p { print } p && /^  \}$/ { exit }' "$OUT" > "$BLOCK"
+  db_line=$(grep -n '^export type Database = {$' "$RAW" | head -1 | cut -d: -f1)
+  if [ -z "$db_line" ]; then
+    echo "gen-db-types: no 'export type Database = {' line to splice the __InternalSupabase block after." >&2
+    rm -f "$BLOCK"
+    exit 1
+  fi
+  {
+    sed -n "1,${db_line}p" "$RAW"
+    cat "$BLOCK"
+    sed -n "$((db_line + 1)),\$p" "$RAW"
+  } > "$TMP"
+  mv "$TMP" "$RAW"
+  rm -f "$BLOCK"
+  TMP="$(mktemp)"
+fi
 
 # ---------------------------------------------------------------------------
 # Freeze the boilerplate helper region (#1105).
@@ -140,4 +185,8 @@ fi
 } > "$TMP"
 
 mv "$TMP" "$OUT"
-echo "Wrote $OUT from project $PROJECT_ID"
+if [ -n "${SUPABASE_DB_URL:-}" ]; then
+  echo "Wrote $OUT from the database at SUPABASE_DB_URL (not the hosted project)"
+else
+  echo "Wrote $OUT from project $PROJECT_ID"
+fi
