@@ -37,6 +37,14 @@ function answeringNamespace(claimed: boolean, calls: string[] = []): DurableObje
   return { idFromName: (n: string) => n, get: () => stub } as unknown as DurableObjectNamespace
 }
 
+/** A namespace whose lookup itself throws, before any call can be made. */
+function throwingLookupNamespace(): DurableObjectNamespace {
+  return {
+    idFromName: () => { throw new TypeError('Invalid Durable Object ID') },
+    get: () => { throw new Error('unreachable') },
+  } as unknown as DurableObjectNamespace
+}
+
 describe('makeAlertClaims deadline (#1401)', () => {
   let errors: string[]
   let spy: ReturnType<typeof vi.spyOn>
@@ -124,5 +132,33 @@ describe('makeAlertClaims deadline (#1401)', () => {
 
     const tightestRunAllowance = Math.min(...CRON_JOBS.map((j) => j.maxRunMs))
     expect(CLAIM_DEADLINE_MS).toBeLessThan(tightestRunAllowance)
+  })
+  // Both entry points look the object up before they can call it, and a lookup
+  // can throw outright rather than returning a rejected promise. Neither may
+  // let that reach its caller: `release` is awaited bare on the live lead path
+  // (partner-block-alert.ts) and twice in volume-cliff.ts, so a throw there
+  // aborts the surrounding work instead of being logged and shrugged off.
+  it('release stays quiet when looking the object up throws outright', async () => {
+    const claims = makeAlertClaims(throwingLookupNamespace(), Date.now, {
+      deadlineMs: 2000,
+      delay: () => new Promise<void>(() => {}),
+    })
+
+    await expect(claims.release('partner-probe-control')).resolves.toBeUndefined()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('release partner-probe-control failed')
+    expect(errors[0]).toContain('Invalid Durable Object ID')
+  })
+
+  it('claim fails open when looking the object up throws outright', async () => {
+    const claims = makeAlertClaims(throwingLookupNamespace(), Date.now, {
+      deadlineMs: 2000,
+      delay: () => new Promise<void>(() => {}),
+    })
+
+    await expect(claims.claim('partner-probe-control', 60)).resolves.toBe(true)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('claim partner-probe-control failed')
+    expect(errors[0]).toContain('Invalid Durable Object ID')
   })
 })
