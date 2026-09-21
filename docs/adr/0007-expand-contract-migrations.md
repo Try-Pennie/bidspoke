@@ -36,12 +36,13 @@ Because each migration is additive and each release reads defensively, the apply
 ## Deployment runbook (a change that includes a migration)
 
 1. Write the migration to the rules above (additive / expand/contract). If the change is a rename/drop, split it across two releases.
-2. If the migration changes table/column/type DDL, regenerate types: `pnpm --filter worker db:types`, and commit `apps/worker/src/types/database.ts` in the SAME commit (CI's `db-types-fresh` guard enforces this, #364).
-3. Pick the next unused migration version: `ls supabase/migrations/` and use the next `YYYYMMDDNNNNNN` prefix (two files sharing a version collide on `db push`).
-4. Commit the migration + code together and push to main.
-5. Apply to prod: `supabase db push`. Safe to run before the code deploy finishes — the additive migration does not break the still-running old code.
-6. The Deploy `Verify` job's migration check now passes. If Deploy already ran and failed Verify before the apply, re-run it: `gh run rerun --failed <run-id>` (find it with `gh run list --workflow Deploy --branch main --limit 1`). Confirm per-job conclusions — an overall "success" can hide a SKIPPED path-gated deploy job.
-7. The path-gated `Deploy Worker / Pages / Worker Tail` jobs ship the code.
+2. Prove it against a real Postgres: `bash scripts/sql-suite/run.sh` (#1409) replays every migration from empty into a throwaway `supabase/postgres` container on 127.0.0.1:54329 and runs `supabase/tests/*.test.sql`. Write the test for a new function, policy or grant in that directory first and watch it fail. The pre push hook runs the suite when anything under `supabase/` changed.
+3. If the migration changes table/column/type DDL or adds a function, regenerate types from the throwaway rather than from production: `SUPABASE_DB_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres pnpm --filter worker db:types`, and commit `apps/worker/src/types/database.ts` in the SAME commit (CI's `db-types-fresh` guard enforces this, #364). The generator splices the `__InternalSupabase` block from the committed file, since only the hosted generator emits it. A column that exists in production but in no migration shows up here as a deletion in the diff; add the migration for it rather than accepting the deletion (`20260921221010_workflows_updated_by_name.sql` is the precedent).
+4. Pick the next unused migration version: `ls supabase/migrations/` and use the next `YYYYMMDDNNNNNN` prefix (two files sharing a version collide on `db push`).
+5. Commit the migration + code together and push to main.
+6. Apply to prod: `supabase db push`. Safe to run before the code deploy finishes: the additive migration does not break the still-running old code.
+7. The Deploy `Verify` job's migration check now passes. If Deploy already ran and failed Verify before the apply, re-run it: `gh run rerun --failed <run-id>` (find it with `gh run list --workflow Deploy --branch main --limit 1`). Confirm per-job conclusions, since an overall "success" can hide a SKIPPED path-gated deploy job.
+8. The path-gated `Deploy Worker / Pages / Worker Tail` jobs ship the code.
 
 For a **rename/drop** (expand/contract), repeat the cycle twice: release 1 = expand + dual-write + backfill; release 2 (after release 1 is fully live) = contract (drop the old).
 
@@ -49,5 +50,5 @@ For a **rename/drop** (expand/contract), repeat the cycle twice: release 1 = exp
 
 - The manual `supabase db push` stays, but it is now safe in any order relative to the deploy, so a forgotten or mistimed apply degrades to "the migration check fails, re-run after applying" rather than a code/schema disagreement that corrupts data.
 - Destructive/irreversible changes are deliberately split into a later contract release, which also gives a rollback window (the old column survives one release).
-- This does not add migration reversibility or an ephemeral-Postgres apply test — those are tracked separately (production-readiness item #28 / DR work).
+- This does not add migration reversibility, which is tracked separately (production-readiness item #28 / DR work). The ephemeral Postgres apply test this line once deferred exists since #1409: `scripts/sql-suite/run.sh` replays every migration from empty locally and the pre push hook runs it. CI does not run it yet (#1139).
 - If the manual-apply friction proves too costly, the escalation is to auto-apply in the pipeline (add `SUPABASE_DB_PASSWORD`, run `supabase db push` in a reviewed pre-deploy step); the expand/contract discipline remains correct under that change too.

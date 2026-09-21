@@ -333,6 +333,398 @@ export type Database = {
           },
         ]
       }
+      buyer_blackout_dates: {
+        Row: {
+          blackout_date: string
+          id: string
+          note: string | null
+          organization_id: string
+          partner_id: string
+        }
+        Insert: {
+          blackout_date: string
+          id?: string
+          note?: string | null
+          organization_id: string
+          partner_id: string
+        }
+        Update: {
+          blackout_date?: string
+          id?: string
+          note?: string | null
+          organization_id?: string
+          partner_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_blackout_dates_profile_fkey"
+            columns: ["partner_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "buyer_profiles"
+            referencedColumns: ["partner_id", "organization_id"]
+          },
+        ]
+      }
+      buyer_operating_windows: {
+        Row: {
+          closes_minute: number
+          day_of_week: number
+          id: string
+          opens_minute: number
+          organization_id: string
+          partner_id: string
+        }
+        Insert: {
+          closes_minute: number
+          day_of_week: number
+          id?: string
+          opens_minute: number
+          organization_id: string
+          partner_id: string
+        }
+        Update: {
+          closes_minute?: number
+          day_of_week?: number
+          id?: string
+          opens_minute?: number
+          organization_id?: string
+          partner_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_operating_windows_profile_fkey"
+            columns: ["partner_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "buyer_profiles"
+            referencedColumns: ["partner_id", "organization_id"]
+          },
+        ]
+      }
+      buyer_pricing_tiers: {
+        Row: {
+          debt_from: number
+          debt_to: number | null
+          id: string
+          multiplier: number
+          organization_id: string
+          partner_id: string
+          population: string
+        }
+        Insert: {
+          debt_from: number
+          debt_to?: number | null
+          id?: string
+          multiplier: number
+          organization_id: string
+          partner_id: string
+          population: string
+        }
+        Update: {
+          debt_from?: number
+          debt_to?: number | null
+          id?: string
+          multiplier?: number
+          organization_id?: string
+          partner_id?: string
+          population?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_pricing_tiers_profile_fkey"
+            columns: ["partner_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "buyer_profiles"
+            referencedColumns: ["partner_id", "organization_id"]
+          },
+        ]
+      }
+      buyer_profiles: {
+        Row: {
+          allowed_states: string[]
+          created_at: string
+          daily_lead_cap: number | null
+          daily_spend_cap_cents: number | null
+          debt_max: number | null
+          debt_min: number | null
+          hourly_lead_cap: number | null
+          hourly_spend_cap_cents: number | null
+          is_enabled: boolean
+          loan_amount_min: number | null
+          organization_id: string
+          partner_id: string
+          priority: number | null
+          updated_at: string
+          updated_by: string | null
+          updated_by_email: string | null
+          updated_by_name: string | null
+          version: number
+        }
+        Insert: {
+          allowed_states?: string[]
+          created_at?: string
+          daily_lead_cap?: number | null
+          daily_spend_cap_cents?: number | null
+          debt_max?: number | null
+          debt_min?: number | null
+          hourly_lead_cap?: number | null
+          hourly_spend_cap_cents?: number | null
+          is_enabled?: boolean
+          loan_amount_min?: number | null
+          organization_id: string
+          partner_id: string
+          priority?: number | null
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_email?: string | null
+          updated_by_name?: string | null
+          version?: number
+        }
+        Update: {
+          allowed_states?: string[]
+          created_at?: string
+          daily_lead_cap?: number | null
+          daily_spend_cap_cents?: number | null
+          debt_max?: number | null
+          debt_min?: number | null
+          hourly_lead_cap?: number | null
+          hourly_spend_cap_cents?: number | null
+          is_enabled?: boolean
+          loan_amount_min?: number | null
+          organization_id?: string
+          partner_id?: string
+          priority?: number | null
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_email?: string | null
+          updated_by_name?: string | null
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_profiles_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "buyer_profiles_partner_org_fkey"
+            columns: ["partner_id", "organization_id"]
+            isOneToOne: true
+            referencedRelation: "partner_configs"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "buyer_profiles_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      buyer_sales: {
+        Row: {
+          buyer_reference: string | null
+          caps_in_force: Json | null
+          created_at: string
+          debt: number | null
+          et_day: string
+          execution_id: string | null
+          hour_bucket: string
+          http_status: number | null
+          id: string
+          kind: string
+          lead_key: string
+          live_percent_in_force: number | null
+          multiplier: number | null
+          organization_id: string
+          partner_id: string
+          payout_cents: number
+          population: string
+          reserved_at: string
+          resolution_source: string | null
+          resolved_at: string | null
+          resolved_by: string | null
+          result_code: string | null
+          status: string
+          trace_id: string | null
+          updated_at: string
+          workflow_id: string | null
+        }
+        Insert: {
+          buyer_reference?: string | null
+          caps_in_force?: Json | null
+          created_at?: string
+          debt?: number | null
+          et_day: string
+          execution_id?: string | null
+          hour_bucket: string
+          http_status?: number | null
+          id: string
+          kind: string
+          lead_key: string
+          live_percent_in_force?: number | null
+          multiplier?: number | null
+          organization_id: string
+          partner_id: string
+          payout_cents: number
+          population: string
+          reserved_at?: string
+          resolution_source?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          result_code?: string | null
+          status: string
+          trace_id?: string | null
+          updated_at?: string
+          workflow_id?: string | null
+        }
+        Update: {
+          buyer_reference?: string | null
+          caps_in_force?: Json | null
+          created_at?: string
+          debt?: number | null
+          et_day?: string
+          execution_id?: string | null
+          hour_bucket?: string
+          http_status?: number | null
+          id?: string
+          kind?: string
+          lead_key?: string
+          live_percent_in_force?: number | null
+          multiplier?: number | null
+          organization_id?: string
+          partner_id?: string
+          payout_cents?: number
+          population?: string
+          reserved_at?: string
+          resolution_source?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          result_code?: string | null
+          status?: string
+          trace_id?: string | null
+          updated_at?: string
+          workflow_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_sales_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "buyer_sales_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "partner_configs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "buyer_sales_resolved_by_fkey"
+            columns: ["resolved_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      buyer_select_parity_days: {
+        Row: {
+          classification_agree: number
+          classification_disagree: number
+          decide_only_latency_p50_ms: number | null
+          decide_only_latency_p95_ms: number | null
+          disagreement_execution_ids: string[]
+          et_day: string
+          hash_match: number
+          hash_mismatch: number
+          hash_unmeasured: number
+          organization_id: string
+          outcome_unknown_count: number
+          rehearsal_expired_in_flight: number
+          rehearsal_in_doubt_heals: number
+          sell_off_agree: number
+          sell_off_disagree: number
+          sign_off_note: string | null
+          signed_off_at: string | null
+          signed_off_by: string | null
+          state_resolved: number
+          state_unresolved: number
+          summarised_at: string
+          window_complete: boolean
+          workflow_id: string
+        }
+        Insert: {
+          classification_agree?: number
+          classification_disagree?: number
+          decide_only_latency_p50_ms?: number | null
+          decide_only_latency_p95_ms?: number | null
+          disagreement_execution_ids?: string[]
+          et_day: string
+          hash_match?: number
+          hash_mismatch?: number
+          hash_unmeasured?: number
+          organization_id: string
+          outcome_unknown_count?: number
+          rehearsal_expired_in_flight?: number
+          rehearsal_in_doubt_heals?: number
+          sell_off_agree?: number
+          sell_off_disagree?: number
+          sign_off_note?: string | null
+          signed_off_at?: string | null
+          signed_off_by?: string | null
+          state_resolved?: number
+          state_unresolved?: number
+          summarised_at?: string
+          window_complete?: boolean
+          workflow_id: string
+        }
+        Update: {
+          classification_agree?: number
+          classification_disagree?: number
+          decide_only_latency_p50_ms?: number | null
+          decide_only_latency_p95_ms?: number | null
+          disagreement_execution_ids?: string[]
+          et_day?: string
+          hash_match?: number
+          hash_mismatch?: number
+          hash_unmeasured?: number
+          organization_id?: string
+          outcome_unknown_count?: number
+          rehearsal_expired_in_flight?: number
+          rehearsal_in_doubt_heals?: number
+          sell_off_agree?: number
+          sell_off_disagree?: number
+          sign_off_note?: string | null
+          signed_off_at?: string | null
+          signed_off_by?: string | null
+          state_resolved?: number
+          state_unresolved?: number
+          summarised_at?: string
+          window_complete?: boolean
+          workflow_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "buyer_select_parity_days_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "buyer_select_parity_days_signed_off_by_fkey"
+            columns: ["signed_off_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       env_var_folders: {
         Row: {
           created_at: string
@@ -1186,6 +1578,7 @@ export type Database = {
       }
       partner_configs: {
         Row: {
+          accept_signals: Json
           alert_config: Json | null
           api_endpoint: string | null
           bid_comparison_source: string
@@ -1224,6 +1617,7 @@ export type Database = {
           updated_by_name: string | null
         }
         Insert: {
+          accept_signals?: Json
           alert_config?: Json | null
           api_endpoint?: string | null
           bid_comparison_source?: string
@@ -1262,6 +1656,7 @@ export type Database = {
           updated_by_name?: string | null
         }
         Update: {
+          accept_signals?: Json
           alert_config?: Json | null
           api_endpoint?: string | null
           bid_comparison_source?: string
@@ -2128,11 +2523,29 @@ export type Database = {
           workflow_name: string
         }[]
       }
+      buyer_profile_document: { Args: { p_partner: string }; Returns: Json }
+      buyer_profile_flatten: {
+        Args: { p_doc: Json }
+        Returns: {
+          path: string
+          value: Json
+        }[]
+      }
+      buyer_sale_status_rank: { Args: { p_status: string }; Returns: number }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
       create_upcoming_daily_partitions: {
         Args: { p_days_ahead?: number }
         Returns: number
+      }
+      delete_partner_config: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_id: string
+          p_org: string
+        }
+        Returns: undefined
       }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
       email_drop_counts_by_source: {
@@ -2219,6 +2632,7 @@ export type Database = {
         }
         Returns: undefined
       }
+      record_buyer_sale: { Args: { p_row: Json }; Returns: Json }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number
@@ -2230,6 +2644,37 @@ export type Database = {
       refresh_workflow_stats_daily: {
         Args: { p_lookback_days?: number }
         Returns: undefined
+      }
+      rename_partner_step_namespace: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_columns: Json
+          p_context: Json
+          p_org: string
+          p_partner: string
+        }
+        Returns: number
+      }
+      save_buyer_profile: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_expected_version: number
+          p_org: string
+          p_partner: string
+          p_profile: Json
+        }
+        Returns: Json
+      }
+      settle_buyer_sale: {
+        Args: {
+          p_actor: string
+          p_id: string
+          p_org: string
+          p_outcome: string
+        }
+        Returns: Json
       }
       step_duration_percentiles: {
         Args: { p_namespace: string; p_since: string; p_workflow_id: string }
@@ -2483,3 +2928,4 @@ export const Constants = {
     Enums: {},
   },
 } as const
+

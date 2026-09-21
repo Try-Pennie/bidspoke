@@ -77,31 +77,52 @@ describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
     app = await makeApp()
   })
 
-  it('returns 404 and writes no audit log when the delete matches zero rows', async () => {
-    // #588: the existence read succeeds but the DELETE touches nothing (the row
-    // raced away or is another org's). Auditing it would log a delete that never
-    // happened.
+  // The delete goes through delete_partner_config (#1409), which records the
+  // actor on the audit row the table trigger writes. The route itself writes no
+  // audit row any more: one record per change, from the table, never two.
+  function deleteApp(rpcResult: { data: unknown; error: unknown }) {
+    const rpc = vi.fn().mockResolvedValue(rpcResult)
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        partner_configs: [{ single: { slug: 'sofi', name: 'SoFi' } }, { writeRows: [] }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
     )
+    return rpc
+  }
+
+  it('calls delete_partner_config with the org, the id, the actor and their email, and invalidates the constants cache', async () => {
+    const rpc = deleteApp({ data: null, error: null })
+    const res = await request(app, 'DELETE', '/partners/p-1')
+    expect(res.status).toBe(200)
+    expect(rpc).toHaveBeenCalledWith('delete_partner_config', {
+      p_org: 'org-abc', p_id: 'p-1', p_actor: 'user-1', p_actor_email: 'dan@pennie.com',
+    })
+    expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 when the function reports the partner is not there (P0002), and writes no audit log', async () => {
+    // #588: the existence read succeeded but the row raced away or is another
+    // org's. The function refuses by name and nothing is audited as deleted.
+    deleteApp({ data: null, error: { code: 'P0002', message: 'partner_not_found' } })
     const res = await request(app, 'DELETE', '/partners/p-1')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Partner not found' })
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
   })
 
-  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+  it('returns 409 naming what blocks the delete when the function refuses partner_has_dependents (BP023)', async () => {
+    deleteApp({ data: null, error: { code: 'BP023', message: 'partner_has_dependents', details: 'Key (id)=(p-1) is still referenced from table "buyer_sales".' } })
+    const res = await request(app, 'DELETE', '/partners/p-1')
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('buyer_sales')
+    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the function call hits a real DB error', async () => {
     // A transient write failure must surface as a retryable 500, never a 404.
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        partner_configs: [{ single: { slug: 'sofi', name: 'SoFi' } }, { deleteError: { code: '42P01', message: 'relation missing' } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
+    deleteApp({ data: null, error: { code: '42P01', message: 'relation missing' } })
     const res = await request(app, 'DELETE', '/partners/p-1')
     expect(res.status).toBe(500)
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
@@ -444,6 +465,8 @@ describe('partner credential warning (#416)', () => {
       mockCtx
     )
     expect(res.status).toBe(200)
-    expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
+    // The route writes no audit row of its own: the partner_configs table trigger
+    // records the change with updated_by as the actor (#1409).
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

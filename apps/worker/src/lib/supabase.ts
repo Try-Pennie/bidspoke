@@ -1,17 +1,25 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import type { Database } from '../types/database'
+import rpcLists from './read-only-rpcs.json'
 
 // Local `wrangler dev` shares the real production Supabase project (there is no
 // separate local backend), and the Worker connects as service_role, which
 // bypasses RLS. So a local run can write anywhere in production. This guard
 // blocks writes from local dev unless the operator explicitly opts in (#669).
 //
-// Reads and rpc stay allowed on purpose. Local dev has to remain usable, and
-// every rpc in this codebase is read-only (auth_user_with_allowlist runs on
-// every authenticated request). Blocking those would break local dev outright
-// for no gain, since the exposure is writes.
+// Reads stay allowed, and so do the rpcs on the READ ONLY list in
+// read-only-rpcs.json (#1409, L96). The old rule let every rpc through on the
+// claim that all of them read; record_archive_day_measurement already wrote,
+// and save_buyer_profile is a user facing write path, so the rule is now an
+// allowlist: a mutating rpc, or one nobody has classified, is refused with the
+// same message as a blocked insert. auth_user_with_allowlist runs on every
+// authenticated request and is on the read only list, so local dev stays usable.
 const GUARDED_WRITE_METHODS: ReadonlySet<string> = new Set(['insert', 'update', 'upsert', 'delete'])
+
+const READ_ONLY_RPCS: ReadonlySet<string> = new Set(rpcLists.readOnly)
+/** Exported for the guard tests and so a scan can name the writers (L41). */
+export const MUTATING_RPCS: ReadonlySet<string> = new Set(rpcLists.mutating)
 
 const LOCAL_DB_HOSTNAMES: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]'])
 
@@ -42,6 +50,17 @@ function blockedWriteMessage(table: string, method: string): string {
   )
 }
 
+function blockedRpcMessage(name: string): string {
+  const why = MUTATING_RPCS.has(name)
+    ? 'it is on the mutating list'
+    : 'it is on neither list in apps/worker/src/lib/read-only-rpcs.json, and an unclassified rpc is treated as a write'
+  return (
+    `Blocked rpc('${name}'): local dev is pointed at a remote Supabase database and ${why}. ` +
+    'The Worker connects as service_role, so this would write to production data. ' +
+    'Set ALLOW_PROD_WRITES=true in apps/worker/.dev.vars if you intend this (see issues #669 and #1409).'
+  )
+}
+
 function guardQueryBuilder<T extends object>(builder: T, table: string): T {
   return new Proxy(builder, {
     get(target, prop, receiver) {
@@ -61,8 +80,16 @@ function guardQueryBuilder<T extends object>(builder: T, table: string): T {
 function withProdWriteGuard(client: SupabaseClient<Database>): SupabaseClient<Database> {
   return new Proxy(client, {
     get(target, prop, receiver) {
-      if (prop !== 'from') return Reflect.get(target, prop, receiver)
-      return (table: string) => guardQueryBuilder(target.from(table as never), table)
+      if (prop === 'from') {
+        return (table: string) => guardQueryBuilder(target.from(table as never), table)
+      }
+      if (prop === 'rpc') {
+        return (name: string, ...rest: unknown[]) => {
+          if (!READ_ONLY_RPCS.has(name)) throw new Error(blockedRpcMessage(name))
+          return (target.rpc as (n: string, ...a: unknown[]) => unknown)(name, ...rest)
+        }
+      }
+      return Reflect.get(target, prop, receiver)
     },
   })
 }

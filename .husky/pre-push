@@ -24,3 +24,18 @@ fi
 if [ -z "$SKIP_COPY_CHECK" ]; then
   pnpm --filter=web test run em-dash emoji
 fi
+
+# SQL suite (#1409, #1139): when this push touches supabase/ or the read only
+# rpc list, replay every migration from empty onto a throwaway Postgres in
+# Docker and run supabase/tests/*.test.sql against it. Before this existed no
+# SQL in the repo had ever run against a real database before reaching
+# production (#1139). It refuses the push by name when Docker is not running
+# rather than passing on nothing (L98). Roughly two minutes on a cold database,
+# seconds when the container is already up. Skip with SKIP_SQL_SUITE=1 for ONE
+# push, after saying why.
+if [ -z "$SKIP_SQL_SUITE" ]; then
+  if git diff --name-only "@{upstream}" HEAD 2>/dev/null | grep -qE '^(supabase/|apps/worker/src/lib/read-only-rpcs\.json|scripts/sql-suite/)' \
+     || ! git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+    bash scripts/sql-suite/run.sh
+  fi
+fi

@@ -178,5 +178,61 @@
     "args": {},
     "anon": "denied",
     "note": "The daily retention drift check (lib/retention-check.ts) calls this to read what the two execution purge cron jobs are actually scheduled at, so a hand change to either can be compared against RETENTION_DAYS (#1017). service_role only: anon and authenticated have no business reading the schedule on which production data is destroyed. If it is missing the check alerts that it could not read, which is deliberate, because reporting no differences from a failed read would make a broken check and a healthy system the same output."
+  },
+  {
+    "name": "save_buyer_profile",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner": "00000000-0000-0000-0000-000000000000",
+      "p_expected_version": 0,
+      "p_profile": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid"
+    },
+    "anon": "denied",
+    "note": "The only writer of a buyer profile (#1409). A WRITE: anon reaching it could enable a buyer or reprice one. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing."
+  },
+  {
+    "name": "record_buyer_sale",
+    "args": {
+      "p_row": {}
+    },
+    "anon": "denied",
+    "note": "Upserts a buyer_sales row (#1409). A WRITE. Probed with an empty row, which the function refuses as missing_key before touching the table."
+  },
+  {
+    "name": "settle_buyer_sale",
+    "args": {
+      "p_id": "00000000-0000-0000-0000-000000000000",
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_outcome": "released",
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "Settles an unresolved sale (#1409). A WRITE that frees a cap slot or counts a sale. Probed with the all zero id, which no row carries, so a successful probe refuses sale_not_found."
+  },
+  {
+    "name": "delete_partner_config",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid"
+    },
+    "anon": "denied",
+    "note": "Deletes a partner with the actor on its audit row (#1409). A WRITE. Probed with the all zero id, which no row carries, so a successful probe refuses partner_not_found."
+  },
+  {
+    "name": "rename_partner_step_namespace",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner": "00000000-0000-0000-0000-000000000000",
+      "p_columns": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_context": {}
+    },
+    "anon": "denied",
+    "note": "Rewrites a partner's formula columns for a step id rename (#1409). A WRITE. Probed with the all zero partner and no columns, which matches no row."
   }
 ]

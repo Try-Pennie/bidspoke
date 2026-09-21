@@ -831,89 +831,12 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
   })
 })
 
-// A partner can be deleted between the SELECT that lists rename candidates and
-// the UPDATE that rewrites its formula. That UPDATE then matches zero rows, which
-// PostgREST reports as success, so the partner was counted and audited as
-// renamed when nothing changed (#588).
-describe('POST /workflows/:id/rename-apply: zero-row partner update', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  const partnerRow = {
-    id: 'p-1',
-    name: 'Tripoint',
-    slug: 'tripoint',
-    bid_formula: 'steps.old_ns.output.score',
-    bid_resolver_config: null,
-  }
-  const renameBody = { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1'] }
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  it('skips a partner whose update matches no row: not counted, not audited', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { single: existingWorkflow },
-        partner_configs: [
-          { list: [partnerRow] },   // the rename candidates
-          { list: [] },             // ...then the UPDATE touches nothing
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ updated: 0 })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-    const warned = warnSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
-    expect(warned).toContainEqual(expect.objectContaining({
-      event: 'zero_row_write',
-      target: 'partner_configs.step_id_rename',
-      partner_id: 'p-1',
-    }))
-  })
-
-  it('counts and audits a partner whose update lands', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { single: existingWorkflow },
-        partner_configs: [{ list: [partnerRow] }, { list: [{ id: 'p-1' }] }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ updated: 1 })
-    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
-      expect.anything(), USER_ORG, 'partner_config', 'p-1', 'updated', 'user-1', expect.anything()
-    )
-  })
-
-  // A real database error is not a vanished partner: it must abort with a 500,
-  // never be swallowed as a skip.
-  it('returns 500 when the partner update fails for a real database reason', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { single: existingWorkflow },
-        partner_configs: [
-          { list: [partnerRow] },
-          { updateError: { code: '42P01', message: 'relation missing' } },
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
-    expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({ error: 'Internal error' })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-})
+// The #588 zero row rename tests that used to sit here (a partner deleted between
+// the candidate SELECT and the UPDATE was counted and audited as renamed) moved to
+// the rename-apply describe at the end of this file when the rewrite moved into
+// the database function (#1409). The decision they defended stands: an untouched
+// partner is not counted and the zero row write is logged, a landed one is counted,
+// and a real database error is a 500.
 
 describe('POST /workflows/:id/test', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
@@ -1572,5 +1495,71 @@ describe('code node script hygiene on every definition write (#1117)', () => {
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
     expect(scriptsWritten(sb, 'workflows', 'insert')).toEqual([[clean]])
+  })
+})
+
+// The step id rename rewrites partner formulas through rename_partner_step_namespace
+// (#1409), so the actor, reason and workflow ride on the audit row the table trigger
+// writes. The route writes no audit row of its own any more.
+describe('POST /workflows/:id/rename-apply rewrites partner formulas through the database function', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const partners = [
+    { id: 'p-1', name: 'Tripoint', slug: 'tripoint', bid_formula: 'steps.old_ns.output.debt * 0.001', bid_resolver_config: { formula: 'steps.old_ns.output.debt * 2' } },
+    { id: 'p-2', name: 'AmOne', slug: 'amone', bid_formula: 'steps.other.output.x', bid_resolver_config: null },
+  ]
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  it('calls the function once per partner whose formulas reference the old namespace, with both rewritten columns and the context', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 1, error: null })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow }, partner_configs: { list: partners } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1', 'p-2'] } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ updated: 1 })
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(rpc).toHaveBeenCalledWith('rename_partner_step_namespace', {
+      p_org: USER_ORG,
+      p_partner: 'p-1',
+      p_columns: { bid_formula: 'steps.new_ns.output.debt * 0.001', bid_resolver_config: { formula: 'steps.new_ns.output.debt * 2' } },
+      p_actor: 'user-1',
+      p_actor_email: 'dan@pennie.com',
+      p_context: { reason: 'step_id_renamed', workflow_id: 'wf-1', old_namespace: 'old_ns', new_namespace: 'new_ns' },
+    })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('does not count a partner the function reports as untouched (it vanished between the read and the write, #588), and logs the zero row write', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rpc = vi.fn().mockResolvedValue({ data: 0, error: null })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow }, partner_configs: { list: [partners[0]] } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1'] } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ updated: 0 })
+    const warned = warnSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(warned).toContainEqual(expect.objectContaining({
+      event: 'zero_row_write',
+      target: 'partner_configs.step_id_rename',
+      partner_id: 'p-1',
+    }))
+  })
+
+  // A real database error is not a vanished partner: it must abort with a 500,
+  // never be swallowed as a skip.
+  it('surfaces a real database error from the function as a 500', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow }, partner_configs: { list: [partners[0]] } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1'] } })
+    expect(res.status).toBe(500)
   })
 })

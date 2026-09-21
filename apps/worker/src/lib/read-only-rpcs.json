@@ -1,0 +1,30 @@
+{
+  "_comment": "Every rpc the Worker calls, classified (#1409, L96). readOnly names are let through the local dev production write guard in lib/supabase.ts; mutating names and any unlisted name are refused there unless ALLOW_PROD_WRITES is set. A web guard (rpc-classification.test.ts) requires every .rpc('name') call in the worker to be on exactly one list and every listed name to be created by a migration; the SQL suite (supabase/tests/buyer_profiles.test.sql) checks the read only names are STABLE or IMMUTABLE in a real database.",
+  "readOnly": [
+    "archive_day_measurements",
+    "archive_day_probe_sample",
+    "archive_index_health",
+    "auth_user_with_allowlist",
+    "bid_recording_coverage",
+    "email_drop_counts_by_source",
+    "execution_counts_per_minute",
+    "execution_purge_retention",
+    "field_presence_window",
+    "pg_cron_health",
+    "step_duration_percentiles",
+    "step_duration_percentiles_by_workflow",
+    "step_duration_percentiles_typed",
+    "stranded_step_partitions",
+    "unpaginated_big_tables",
+    "workflow_stats_rollup",
+    "buyer_profile_document"
+  ],
+  "mutating": [
+    "record_archive_day_measurement",
+    "save_buyer_profile",
+    "record_buyer_sale",
+    "settle_buyer_sale",
+    "delete_partner_config",
+    "rename_partner_step_namespace"
+  ]
+}

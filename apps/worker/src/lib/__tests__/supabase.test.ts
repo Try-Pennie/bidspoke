@@ -60,10 +60,35 @@ describe('createSupabaseClient prod-write guard', () => {
       expect(() => supabase.from('workflows').select('*')).not.toThrow()
     })
 
-    it('still allows rpc, which is read-only here and runs on every authed request', () => {
+    it('still allows a read only rpc, which runs on every authed request', () => {
       const supabase = createSupabaseClient(env)
       expect(() => supabase.rpc('auth_user_with_allowlist', { p_user_id: 'x' })).not.toThrow()
     })
+
+    // The rpc surface is guarded by an ALLOWLIST of read only names (#1409, L96).
+    // The old comment claimed every rpc was read only; record_archive_day_measurement
+    // already wrote, and save_buyer_profile is a user facing write path, so a local
+    // run pointed at production could write through either with no opt in.
+    it('rejects a mutating rpc by name', () => {
+      const supabase = createSupabaseClient(env)
+      expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).toThrow(/ALLOW_PROD_WRITES/)
+      expect(() => supabase.rpc('record_archive_day_measurement' as never, {} as never)).toThrow(/record_archive_day_measurement/)
+    })
+
+    it('rejects an rpc that is on neither list, so an unclassified name fails closed', () => {
+      const supabase = createSupabaseClient(env)
+      expect(() => supabase.rpc('some_new_rpc_nobody_classified' as never, {} as never)).toThrow(/read-only-rpcs\.json/)
+    })
+  })
+
+  it('allows a mutating rpc in local dev when ALLOW_PROD_WRITES opts in explicitly', () => {
+    const supabase = createSupabaseClient(envWith({ LOCAL_DEV: 'true', ALLOW_PROD_WRITES: 'true' }))
+    expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).not.toThrow()
+  })
+
+  it('leaves rpc alone in production, where LOCAL_DEV is unset', () => {
+    const supabase = createSupabaseClient(envWith({}))
+    expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).not.toThrow()
   })
 
   it('allows writes in local dev when ALLOW_PROD_WRITES opts in explicitly', () => {
