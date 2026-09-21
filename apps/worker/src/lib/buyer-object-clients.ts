@@ -27,10 +27,22 @@ import { GenerationMovedError, WrongStateError, type LedgerApi, type SaleApi } f
 export type { CapLimits }
 
 /**
- * How long one object call may take. The Phase 3 drill records the p99 of each
- * call against the deployed Worker and this constant is set from it (#1410).
+ * The worst p99 of one object call the deployed drill has measured (#1428).
+ * Measured 2026-09-21 against worker 24889e70 over six drill runs: warm calls
+ * about 25 ms, the first call on a new object 160 to 330 ms, and one run with a
+ * claim at 1,492 ms and a release past 2,000 ms. Update this from the drill's
+ * latency table when a worse figure is seen; the test beside the clients says
+ * whether the deadline below still clears it.
  */
-export const OBJECT_CALL_DEADLINE_MS = 2_000
+export const MEASURED_OBJECT_CALL_P99_MS = 1_492
+
+/**
+ * How long one object call may take before it is a DeadlineError (L110). Three
+ * times the worst measured p99 and a quarter of the 20 s buyer budget, so a
+ * latency spike on the objects does not read as a false cap_check_error while
+ * a hung object still cannot eat the attempt (#1428).
+ */
+export const OBJECT_CALL_DEADLINE_MS = 5_000
 
 export interface ClientOptions {
   deadlineMs?: number
