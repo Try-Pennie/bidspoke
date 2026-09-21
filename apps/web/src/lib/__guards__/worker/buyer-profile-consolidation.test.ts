@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { WORKER_SRC } from './_scan-utils'
+import { WORKER_SRC } from '../../__tests__/_scan-utils'
 
 /**
  * The signal matching and the tier walk live once, in @bidspoke/buyer-profile
