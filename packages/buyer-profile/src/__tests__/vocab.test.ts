@@ -14,7 +14,7 @@ import {
   WIRED_POPULATIONS,
 } from '../vocab'
 
-const noDashOrEmoji = /^[^–—\u{1F300}-\u{1FAFF}]*$/u
+const noDashOrEmoji = /^[^\u{2013}\u{2014}\u{1F300}-\u{1FAFF}]*$/u
 
 describe('populations', () => {
   it('names the three lead populations', () => {

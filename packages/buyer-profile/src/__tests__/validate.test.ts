@@ -164,7 +164,7 @@ describe('enabling is gated (L72)', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) {
       expect(r.errors[0].path).toBe('priority')
-      expect(r.errors[0].message).toMatch(/^[^–—]*$/)
+      expect(r.errors[0].message).toMatch(/^[^\u{2013}\u{2014}]*$/u)
       expect(r.errors[0].message.length).toBeGreaterThan(10)
     }
   })
