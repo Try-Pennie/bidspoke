@@ -57,11 +57,20 @@ export function makeAlertClaims(
   const delay = options.delay ?? realDelay
   const stub = (key: string) => ns.get(ns.idFromName(key))
 
-  // The work arm is folded into a value BEFORE the race, so a call that
+  // Takes the work as a THUNK, not a promise, and calls it inside this async
+  // arrow. Looking the object up can throw OUTRIGHT rather than returning a
+  // rejected promise, and a promise handed in as an argument has already been
+  // built by the time this is entered, so such a throw would escape past the
+  // caller entirely. Calling it here makes every failure a rejection, and makes
+  // that true for the next call site too rather than for the ones that
+  // remembered (L30).
+  //
+  // The work arm is then folded into a value BEFORE the race, so a call that
   // eventually rejects after losing has already had its rejection handled and
   // cannot surface as an unhandled one long after the check has moved on.
-  const race = async <T>(work: Promise<T>): Promise<Raced<T>> => {
-    const settled: Promise<Raced<T>> = work.then(
+  const race = async <T>(work: () => Promise<T>): Promise<Raced<T>> => {
+    const attempt = async (): Promise<T> => work()
+    const settled: Promise<Raced<T>> = attempt().then(
       (value) => ({ kind: 'ok', value }),
       (error: unknown) => ({ kind: 'threw' as const, error }),
     )
@@ -71,16 +80,14 @@ export function makeAlertClaims(
 
   return {
     async claim(key, ttlSeconds) {
-      const outcome = await race(
-        (async () => {
-          const res = await stub(key).fetch('https://do/claim', {
-            method: 'POST',
-            body: JSON.stringify({ now: now(), ttl_seconds: ttlSeconds }),
-          })
-          const body = await res.json<{ claimed?: unknown }>()
-          return body.claimed === true
-        })(),
-      )
+      const outcome = await race(async () => {
+        const res = await stub(key).fetch('https://do/claim', {
+          method: 'POST',
+          body: JSON.stringify({ now: now(), ttl_seconds: ttlSeconds }),
+        })
+        const body = await res.json<{ claimed?: unknown }>()
+        return body.claimed === true
+      })
       // Both failures fail OPEN: a claim that cannot be asked must not silence
       // the alert, since the KV cooldown still stands behind it and the worst
       // case is the duplicate this object exists to prevent, never a missing
@@ -98,7 +105,7 @@ export function makeAlertClaims(
     },
 
     async release(key) {
-      const outcome = await race(stub(key).fetch('https://do/release', { method: 'POST' }))
+      const outcome = await race(() => stub(key).fetch('https://do/release', { method: 'POST' }))
       if (outcome.kind === 'timed_out') {
         console.error(`[alert-claim] release ${key} did not answer inside its ${deadlineMs}ms deadline`)
         return
