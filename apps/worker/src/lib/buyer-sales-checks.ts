@@ -1,0 +1,499 @@
+/**
+ * The buyer sales checks, every 15 minutes (#1413, Phase 6). Three checks per
+ * buyer, each named for what it proves, and one page for what is waiting on a
+ * person.
+ *
+ * COMPLETENESS: the ledger's entries for the day against the buyer_sales copy,
+ * by status. buyer_sales is a copy the ledger wrote, so agreement proves the
+ * copy is complete and nothing more (L58). While the outbox is not empty the
+ * copy is known to lag, so the check is unmeasured with the oldest age rather
+ * than a mismatch that the next drain tick will erase (L324).
+ *
+ * CONSISTENCY: accepted live entries against the bid logger's winner rows in
+ * lead_sighting_bids, per Eastern hour. The node wrote both in the same
+ * attempt, so this catches a lost logger write and NOTHING about a double sale
+ * or an accept the buyer never recorded, and it is named consistency for that
+ * reason (L58). Bid rows are purged after export, so an hour at or beyond the
+ * purge horizon is unmeasured with the reason `beyond_bid_purge_horizon`, never
+ * compared against rows that may be gone (L592). The horizon is imported from
+ * the purge itself, never copied.
+ *
+ * INDEPENDENT: accepted live entries' buyer references against a record a
+ * DIFFERENT node wrote: the Salesforce write back of the buyer's lead id. A
+ * buyer with no such record is unmeasured, never clean (L11).
+ *
+ * UNRESOLVED: one page per buyer counting every unresolved entry, the oldest
+ * age, and the slots and dollars they hold against today's caps, with a link
+ * to the list. The dedup stamp is the count, so the page repeats when the count
+ * grows (L707, L641), and never names a lead key.
+ *
+ * A mismatch pages only once it has persisted across two runs; a single run's
+ * disagreement is usually the copy catching up. Pages go through the shared
+ * export alerter so the same KV keys mute them. The run records its own outcome
+ * through job_runs, so a lifetime of zero passes reads as broken (L557).
+ */
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { easternDayStartUtc, easternParts, hourBucket, type SaleStatus } from '@bidspoke/buyer-profile'
+import type { CapLimits, LedgerEntry, UnmirroredResult } from '../durable-objects/buyer-ledger'
+import type { Env } from '../index'
+import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { clearCondition, readCondition, type BackoffKv } from './alert-backoff'
+import { BuyerLedgerClient } from './buyer-object-clients'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { withJobRun, type JobRunEnding } from './job-run-record'
+import { parseJson } from './json'
+import { resolveSalesforceCredsFor } from './salesforce-creds'
+import { BID_PURGE_HORIZON_MS } from './sightings-export'
+import { describeDuration } from './slack'
+
+export { BID_PURGE_HORIZON_MS }
+
+/** The heartbeat and job_runs name. */
+export const BUYER_SALES_CHECKS_JOB = 'buyer-sales-checks'
+/** The alerter job name for a persisted completeness, consistency or independent mismatch. */
+export const BUYER_SALES_MISMATCH_JOB = 'buyer-sales-mismatch'
+/** The alerter job name for the unresolved page. */
+export const BUYER_SALES_UNRESOLVED_JOB = 'buyer-sales-unresolved'
+
+/**
+ * The buyers whose accepted sales another node writes back to Salesforce, by
+ * slug. Tripoint's lead id is patched onto the prospect by the Engine workflow's
+ * patch step (docs/engine-cutover-scope.md), which is a record the buyer_select
+ * node did not write. A buyer absent from here has no independent record and
+ * its independent check is unmeasured rather than clean.
+ */
+export const INDEPENDENT_RECORD_BUYERS: ReadonlySet<string> = new Set(['tripoint'])
+
+export const BUYER_SALES_MISMATCH_REMEDY: AlertRemedy = {
+  consequence:
+    'A buyer ledger and the records it should agree with have disagreed on two consecutive checks. Selling is unaffected; ' +
+    'the ledger decides caps and the ledger is what the copies are compared against. Each line names the buyer, which check ' +
+    'disagreed and by how much:',
+  fixHint:
+    'Completeness: the buyer_sales copy is short or long against the ledger for the day; check the drain job for errors, then ' +
+    'compare GET /api/buyer-sales against the ledger summary. Consistency: an accepted sale has no winner row in ' +
+    'lead_sighting_bids, so the bid logger write was lost; find the execution by lead key. Independent: Salesforce holds no ' +
+    'write back for a lead the ledger says was sold; look at the patch step of that execution before trusting the sale.',
+  headlineVerb: 'found a disagreement',
+  itemNoun: { one: 'disagreement', many: 'disagreements' },
+}
+
+export const BUYER_SALES_UNRESOLVED_REMEDY: AlertRemedy = {
+  consequence:
+    "Sales nobody could classify are waiting on a person. Each holds a slot and its payout against the buyer's caps today " +
+    'until it is settled, so a buyer can be refused leads over sales that may never have happened. Nothing failed; the lines ' +
+    'below say which buyer and how many:',
+  fixHint:
+    'Open the partner page linked on each line, read what the buyer answered for each sale, and settle it: Count as sold when ' +
+    "the buyer has the lead, Free the slot when it does not. The buyer's own portal or report says which.",
+  headlineVerb: 'has sales waiting on a person',
+  itemNoun: { one: 'buyer', many: 'buyers' },
+}
+
+// ── Shapes ────────────────────────────────────────────────────────────────────
+
+export interface CheckBuyer {
+  partner_id: string
+  organization_id: string
+  slug: string
+  caps: CapLimits
+  /** Whether another node writes this buyer's accepted sales somewhere the check can read. */
+  has_independent_record: boolean
+}
+
+export interface ChecksLedger {
+  entries(kind: 'live' | 'rehearsal', day: string): Promise<LedgerEntry[]>
+  unmirrored(): Promise<UnmirroredResult>
+  unresolved(): Promise<LedgerEntry[]>
+}
+
+export interface SalesRow {
+  lead_key: string
+  status: string
+  kind: string
+}
+
+export interface WinnerRow {
+  execution_id: string
+  attempted_at_utc: string
+}
+
+export interface ChecksDeps {
+  listBuyers(): Promise<CheckBuyer[]>
+  ledger(partnerId: string): ChecksLedger
+  /** buyer_sales rows for the partner and Eastern day, every kind. */
+  readSalesRows(partnerId: string, day: string): Promise<SalesRow[]>
+  /** lead_sighting_bids winner rows this buyer's buyer_select attempts wrote, inside [fromMs, toMs). */
+  readWinnerRows(slug: string, fromMs: number, toMs: number): Promise<WinnerRow[]>
+  /** The buyer references Salesforce holds among those asked for; null when the buyer has no independent record. */
+  readIndependentRecord(buyer: CheckBuyer, references: string[]): Promise<Set<string> | null>
+  kv: BackoffKv
+  notifyMismatch(lines: string[]): Promise<void>
+  notifyUnresolved(lines: string[]): Promise<void>
+  now(): number
+  localDev: boolean
+  appUrl: string
+  log(line: string): void
+}
+
+export type Verdict<Good extends string, Bad extends string> =
+  | { verdict: Good; detail?: string }
+  | { verdict: Bad; detail: string }
+  | { verdict: 'unmeasured'; reason: string; unmeasured_hours?: number }
+
+export interface BuyerCheckSummary {
+  partner_id: string
+  slug: string
+  completeness: Verdict<'complete', 'mismatch'>
+  consistency: Verdict<'consistent', 'inconsistent'> & { unmeasured_hours?: number }
+  independent: Verdict<'verified', 'unverified'>
+  unresolved: { count: number; oldest_age_ms: number | null; paged: boolean }
+}
+
+export interface ChecksSummary {
+  skipped?: 'local_dev'
+  unmeasured?: string
+  days: string[]
+  buyers: BuyerCheckSummary[]
+  mismatch_lines: string[]
+  unresolved_lines: string[]
+}
+
+const STATUSES: SaleStatus[] = ['reserved', 'accepted', 'declined', 'released', 'unresolved']
+const HOUR_MS = 3_600_000
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
+const money = (cents: number): string => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+export const mismatchMarkerKey = (partnerId: string) => `buyer-sales-mismatch-seen:${partnerId}`
+export const unresolvedPagedKey = (partnerId: string) => `unresolved-paged:${partnerId}`
+
+function previousIsoDate(day: string): string {
+  const [y, m, d] = day.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10)
+}
+
+// ── The checks ────────────────────────────────────────────────────────────────
+
+function countByStatus(entries: LedgerEntry[]): Record<SaleStatus, number> {
+  const out = { reserved: 0, accepted: 0, declined: 0, released: 0, unresolved: 0 }
+  for (const e of entries) out[e.status] += 1
+  return out
+}
+
+/** The copy against the ledger, by status, for the days given. */
+export function judgeCompleteness(ledgerEntries: LedgerEntry[], sales: SalesRow[], outbox: UnmirroredResult): BuyerCheckSummary['completeness'] {
+  if (outbox.entries.length > 0 || (outbox.oldest_age_ms !== null && outbox.oldest_age_ms > 0)) {
+    const age = outbox.oldest_age_ms === null ? 'unknown age' : (describeDuration(outbox.oldest_age_ms) ?? `${outbox.oldest_age_ms} ms`)
+    return { verdict: 'unmeasured', reason: `the outbox holds ${plural(outbox.entries.length, 'entry', 'entries')} not yet copied, oldest ${age}, so the copy is known to lag` }
+  }
+  const ledger = countByStatus(ledgerEntries)
+  const copy = { reserved: 0, accepted: 0, declined: 0, released: 0, unresolved: 0 } as Record<SaleStatus, number>
+  for (const s of sales) {
+    if (s.kind !== 'live') continue
+    if ((STATUSES as string[]).includes(s.status)) copy[s.status as SaleStatus] += 1
+  }
+  const diffs = STATUSES.filter((s) => ledger[s] !== copy[s]).map((s) => `ledger ${ledger[s]} ${s}, buyer_sales ${copy[s]}`)
+  if (diffs.length === 0) return { verdict: 'complete' }
+  return { verdict: 'mismatch', detail: diffs.join('; ') }
+}
+
+/**
+ * Accepted live entries against winner rows per Eastern hour, judging only hours
+ * whose end is younger than the purge horizon.
+ */
+export function judgeConsistency(accepted: LedgerEntry[], winners: WinnerRow[], nowMs: number): BuyerCheckSummary['consistency'] {
+  const horizonStart = nowMs - BID_PURGE_HORIZON_MS
+  const byHour = new Map<number, { ledger: number; winners: number }>()
+  for (const e of accepted) {
+    const h = e.hour_bucket
+    const slot = byHour.get(h) ?? { ledger: 0, winners: 0 }
+    slot.ledger += 1
+    byHour.set(h, slot)
+  }
+  for (const w of winners) {
+    const at = Date.parse(w.attempted_at_utc)
+    if (!Number.isFinite(at)) continue
+    const h = hourBucket(at)
+    const slot = byHour.get(h) ?? { ledger: 0, winners: 0 }
+    slot.winners += 1
+    byHour.set(h, slot)
+  }
+  let unmeasuredHours = 0
+  const diffs: string[] = []
+  for (const [h, slot] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
+    const hourEnd = (h + 1) * HOUR_MS
+    if (hourEnd <= horizonStart) { unmeasuredHours += 1; continue }
+    if (slot.ledger !== slot.winners) {
+      const label = new Date(h * HOUR_MS).toISOString().slice(0, 13) + ':00Z'
+      diffs.push(`hour ${label}: ${slot.ledger} accepted in the ledger, ${slot.winners} winner rows`)
+    }
+  }
+  if (diffs.length > 0) return { verdict: 'inconsistent', detail: diffs.join('; '), unmeasured_hours: unmeasuredHours }
+  if (unmeasuredHours > 0 && byHour.size === unmeasuredHours) return { verdict: 'unmeasured', reason: 'beyond_bid_purge_horizon', unmeasured_hours: unmeasuredHours }
+  return { verdict: 'consistent', unmeasured_hours: unmeasuredHours }
+}
+
+export function judgeIndependent(accepted: LedgerEntry[], found: Set<string> | null): BuyerCheckSummary['independent'] {
+  if (found === null) return { verdict: 'unmeasured', reason: 'no_independent_record' }
+  const missing = accepted
+    .map((e) => e.outcome?.buyer_reference ?? null)
+    .filter((r): r is string => typeof r === 'string' && r.length > 0)
+    .filter((r) => !found.has(r))
+  const blank = accepted.filter((e) => !e.outcome?.buyer_reference).length
+  if (missing.length === 0 && blank === 0) return { verdict: 'verified' }
+  const parts: string[] = []
+  if (missing.length) parts.push(`${plural(missing.length, 'accepted sale has', 'accepted sales have')} no Salesforce write back: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', ...' : ''}`)
+  if (blank) parts.push(`${plural(blank, 'accepted sale carries', 'accepted sales carry')} no buyer reference to look up`)
+  return { verdict: 'unverified', detail: parts.join('; ') }
+}
+
+export function unresolvedLine(buyer: CheckBuyer, entries: LedgerEntry[], nowMs: number, appUrl: string): string {
+  const oldest = entries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
+  const age = oldest === null ? 'unknown age' : (describeDuration(nowMs - oldest) ?? `${nowMs - oldest} ms`)
+  const cents = entries.reduce((n, e) => n + e.payout_cents, 0)
+  const slots = buyer.caps.daily_lead_cap === null ? `${plural(entries.length, 'lead slot', 'lead slots')} (no daily lead cap)` : `${entries.length} of the ${buyer.caps.daily_lead_cap} lead slots`
+  const spend = buyer.caps.daily_spend_cap_cents === null ? `${money(cents)} (no daily spend cap)` : `${money(cents)} of the ${money(buyer.caps.daily_spend_cap_cents)} daily spend`
+  return `${buyer.slug}: ${plural(entries.length, 'unresolved sale', 'unresolved sales')}, oldest ${age}, holding ${slots} and ${spend} today. Settle them at ${appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`
+}
+
+// ── The run ───────────────────────────────────────────────────────────────────
+
+export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSummary> {
+  const now = deps.now()
+  const today = easternParts(now).date
+  const days = [today, previousIsoDate(today)]
+
+  if (deps.localDev) {
+    deps.log(`[${BUYER_SALES_CHECKS_JOB}] skipped: local dev`)
+    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [] }
+  }
+
+  let buyers: CheckBuyer[]
+  try {
+    buyers = await deps.listBuyers()
+  } catch (err) {
+    const reason = `the buyer list could not be read, so nothing was checked: ${messageOf(err)}`
+    await deps.notifyMismatch([reason])
+    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [] }
+  }
+
+  const summaries: BuyerCheckSummary[] = []
+  const mismatchLines: string[] = []
+  const unresolvedLines: string[] = []
+  let unresolvedGrew = false
+
+  for (const buyer of buyers) {
+    const s = await checkBuyer(deps, buyer, days, now)
+    summaries.push(s)
+
+    // A mismatch pages only once it has stood across two runs.
+    const mismatches: string[] = []
+    if (s.completeness.verdict === 'mismatch') mismatches.push(`completeness: ${s.completeness.detail}`)
+    if (s.consistency.verdict === 'inconsistent') mismatches.push(`consistency: ${s.consistency.detail}`)
+    if (s.independent.verdict === 'unverified') mismatches.push(`independent: ${s.independent.detail}`)
+    const marker = mismatchMarkerKey(buyer.partner_id)
+    if (mismatches.length > 0) {
+      const seenBefore = (await deps.kv.get(marker)) !== null
+      if (seenBefore) mismatchLines.push(`${buyer.slug}: ${mismatches.join(' | ')}`)
+      await deps.kv.put(marker, new Date(now).toISOString(), { expirationTtl: 24 * 3600 })
+    } else {
+      await deps.kv.delete(marker)
+    }
+
+    // The unresolved page, keyed on the count.
+    const pagedKey = unresolvedPagedKey(buyer.partner_id)
+    if (s.unresolved.count === 0) {
+      await deps.kv.delete(pagedKey)
+    } else {
+      const lastPaged = Number((await deps.kv.get(pagedKey)) ?? '0')
+      if (s.unresolved.count > lastPaged) {
+        unresolvedLines.push(unresolvedLine(buyer, s.unresolved.entries, now, deps.appUrl))
+        s.unresolved.paged = true
+        if (lastPaged > 0) unresolvedGrew = true
+        await deps.kv.put(pagedKey, String(s.unresolved.count), { expirationTtl: 7 * 24 * 3600 })
+      }
+    }
+  }
+
+  // A count that grew must get out past the reminder backoff, but only when it
+  // was this job that set the condition: a cooldown standing on its own is a
+  // person's mute and stays (L523).
+  if (unresolvedGrew) {
+    const family = `export-alert:${BUYER_SALES_UNRESOLVED_JOB}`
+    if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
+  }
+
+  await deps.notifyMismatch(mismatchLines)
+  await deps.notifyUnresolved(unresolvedLines)
+  return { days, buyers: summaries.map(({ unresolved, ...rest }) => ({ ...rest, unresolved: { count: unresolved.count, oldest_age_ms: unresolved.oldest_age_ms, paged: unresolved.paged } })), mismatch_lines: mismatchLines, unresolved_lines: unresolvedLines }
+}
+
+type BuyerWork = Omit<BuyerCheckSummary, 'unresolved'> & { unresolved: BuyerCheckSummary['unresolved'] & { entries: LedgerEntry[] } }
+
+async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], now: number): Promise<BuyerWork> {
+  const ledger = deps.ledger(buyer.partner_id)
+  const base = { partner_id: buyer.partner_id, slug: buyer.slug }
+  const unmeasuredAll = (reason: string): BuyerWork => ({
+    ...base,
+    completeness: { verdict: 'unmeasured', reason },
+    consistency: { verdict: 'unmeasured', reason },
+    independent: { verdict: 'unmeasured', reason },
+    unresolved: { count: 0, oldest_age_ms: null, paged: false, entries: [] },
+  })
+
+  let entries: LedgerEntry[]
+  let outbox: UnmirroredResult
+  let unresolvedEntries: LedgerEntry[]
+  try {
+    entries = (await Promise.all(days.map((d) => ledger.entries('live', d)))).flat()
+    outbox = await ledger.unmirrored()
+    unresolvedEntries = await ledger.unresolved()
+  } catch (err) {
+    return unmeasuredAll(`the buyer ledger could not be read: ${messageOf(err)}`)
+  }
+
+  let completeness: BuyerCheckSummary['completeness']
+  try {
+    const sales = (await Promise.all(days.map((d) => deps.readSalesRows(buyer.partner_id, d)))).flat()
+    completeness = judgeCompleteness(entries, sales, outbox)
+  } catch (err) {
+    completeness = { verdict: 'unmeasured', reason: `buyer_sales could not be read: ${messageOf(err)}` }
+  }
+
+  const accepted = entries.filter((e) => e.status === 'accepted')
+  let consistency: BuyerCheckSummary['consistency']
+  try {
+    const from = easternDayStartUtc(days[days.length - 1])
+    const winners = await deps.readWinnerRows(buyer.slug, from, now + HOUR_MS)
+    consistency = judgeConsistency(accepted, winners, now)
+  } catch (err) {
+    consistency = { verdict: 'unmeasured', reason: `lead_sighting_bids could not be read: ${messageOf(err)}` }
+  }
+
+  let independent: BuyerCheckSummary['independent']
+  try {
+    const references = accepted.map((e) => e.outcome?.buyer_reference).filter((r): r is string => typeof r === 'string' && r.length > 0)
+    const found = buyer.has_independent_record ? await deps.readIndependentRecord(buyer, references) : null
+    independent = judgeIndependent(accepted, found)
+  } catch (err) {
+    independent = { verdict: 'unmeasured', reason: `the independent record could not be read: ${messageOf(err)}` }
+  }
+
+  const oldest = unresolvedEntries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
+  return {
+    ...base,
+    completeness,
+    consistency,
+    independent,
+    unresolved: { count: unresolvedEntries.length, oldest_age_ms: oldest === null ? null : now - oldest, paged: false, entries: unresolvedEntries },
+  }
+}
+
+/** What the run records about itself: ok only when every check on every buyer measured and agreed. */
+export function endingOf(summary: ChecksSummary): JobRunEnding {
+  if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped, summary: { days: summary.days } }
+  if (summary.unmeasured) return { outcome: 'unmeasured', detail: summary.unmeasured, summary: { days: summary.days } }
+  const verdicts = summary.buyers.flatMap((b) => [b.completeness.verdict, b.consistency.verdict, b.independent.verdict])
+  const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified')
+  const unmeasured = verdicts.some((v) => v === 'unmeasured')
+  const outcome = findings ? 'findings' : unmeasured ? 'unmeasured' : 'ok'
+  return {
+    outcome,
+    summary: {
+      days: summary.days,
+      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count })),
+      paged_mismatches: summary.mismatch_lines.length,
+      paged_unresolved: summary.unresolved_lines.length,
+    },
+  }
+}
+
+// ── Production wiring ─────────────────────────────────────────────────────────
+
+interface ProfileRow {
+  partner_id: string
+  hourly_lead_cap: number | null
+  daily_lead_cap: number | null
+  hourly_spend_cap_cents: number | null
+  daily_spend_cap_cents: number | null
+  partner_configs: { organization_id: string; slug: string }
+}
+
+const SOQL_CHUNK = 150
+
+export function productionChecksDeps(supabase: SupabaseClient, env: Env): ChecksDeps {
+  return {
+    listBuyers: async () => {
+      const { data, error } = await supabase
+        .from('buyer_profiles')
+        .select('partner_id, hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, partner_configs!inner(organization_id, slug)')
+      if (error) throw new Error(`buyer_profiles: ${error.message}`)
+      return ((data ?? []) as unknown as ProfileRow[]).map((r) => ({
+        partner_id: r.partner_id,
+        organization_id: r.partner_configs.organization_id,
+        slug: r.partner_configs.slug,
+        caps: { hourly_lead_cap: r.hourly_lead_cap, daily_lead_cap: r.daily_lead_cap, hourly_spend_cap_cents: r.hourly_spend_cap_cents, daily_spend_cap_cents: r.daily_spend_cap_cents },
+        has_independent_record: INDEPENDENT_RECORD_BUYERS.has(r.partner_configs.slug),
+      }))
+    },
+    ledger: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
+    readSalesRows: async (partnerId, day) => {
+      const { data, error } = await supabase
+        .from('buyer_sales')
+        .select('lead_key, status, kind')
+        .eq('partner_id', partnerId)
+        .eq('et_day', day)
+        .limit(5000)
+      if (error) throw new Error(`buyer_sales: ${error.message}`)
+      return (data ?? [])
+    },
+    readWinnerRows: async (slug, fromMs, toMs) => {
+      const { data, error } = await supabase
+        .from('lead_sighting_bids')
+        .select('execution_id, attempted_at_utc')
+        .eq('partner_slug', slug)
+        .eq('is_winner', true)
+        .eq('resolver_type', 'buyer_select')
+        .gte('attempted_at_utc', new Date(fromMs).toISOString())
+        .lt('attempted_at_utc', new Date(toMs).toISOString())
+        .limit(5000)
+      if (error) throw new Error(`lead_sighting_bids: ${error.message}`)
+      return (data ?? [])
+    },
+    readIndependentRecord: async (buyer, references) => {
+      if (!buyer.has_independent_record) return null
+      if (references.length === 0) return new Set()
+      const { creds, missing } = await resolveSalesforceCredsFor(env, supabase, buyer.organization_id)
+      if (!creds) throw new Error(`Salesforce credentials missing: ${missing.join(', ')}`)
+      const token = await getSalesforceToken(env, buyer.organization_id, creds.instanceUrl, creds.clientId, creds.clientSecret)
+      const found = new Set<string>()
+      const safe = references.filter((r) => /^[A-Za-z0-9_-]{1,64}$/.test(r))
+      for (let i = 0; i < safe.length; i += SOQL_CHUNK) {
+        const chunk = safe.slice(i, i + SOQL_CHUNK)
+        const soql = `SELECT Tripoint_Lead_ID__c FROM Prospect__c WHERE Tripoint_Lead_ID__c IN (${chunk.map((r) => `'${r}'`).join(',')})`
+        let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+        while (next) {
+          const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
+          if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
+          const body = await parseJson<{ records: Array<{ Tripoint_Lead_ID__c?: unknown }>; done: boolean; nextRecordsUrl?: string }>(res)
+          for (const rec of body.records) if (typeof rec.Tripoint_Lead_ID__c === 'string') found.add(rec.Tripoint_Lead_ID__c)
+          next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
+        }
+      }
+      return found
+    },
+    kv: env.IDEMPOTENCY,
+    notifyMismatch: (lines) => notifyExportFailure(supabase, BUYER_SALES_MISMATCH_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_MISMATCH_REMEDY),
+    notifyUnresolved: (lines) => notifyExportFailure(supabase, BUYER_SALES_UNRESOLVED_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_UNRESOLVED_REMEDY),
+    now: () => Date.now(),
+    localDev: Boolean(env.LOCAL_DEV),
+    appUrl: env.APP_URL,
+    log: (line) => console.log(line),
+  }
+}
+
+/** What the scheduled handler calls: the checks under a job run record (L557). */
+export function runBuyerSalesChecksForEnv(supabase: SupabaseClient, env: Env): Promise<ChecksSummary> {
+  return withJobRun(supabase, BUYER_SALES_CHECKS_JOB, () => runBuyerSalesChecks(productionChecksDeps(supabase, env)), endingOf)
+}

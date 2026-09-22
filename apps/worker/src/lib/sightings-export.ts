@@ -29,7 +29,14 @@ import { requireRowsAffected, toThrowable, toDbError } from './db-retry'
 import { formatErr } from './format-error'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
-const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
+export const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
+/**
+ * The earliest a lead_sighting_bids row can have been purged, measured from its
+ * attempt: the export runs after the attempt and the purge follows the export by
+ * the grace. Any check comparing against bid rows imports this rather than
+ * copying the number, so the two cannot drift (#1413, L592).
+ */
+export const BID_PURGE_HORIZON_MS = PURGE_GRACE_HOURS * 3600 * 1000
 // Per-run backstop on rows exported per table. Far above a normal night (~83K
 // finalized sightings) so steady-state runs are unaffected; it only bounds a
 // catch-up run draining a large backlog, alongside the platform clean-stop in

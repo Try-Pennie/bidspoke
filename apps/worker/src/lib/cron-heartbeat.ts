@@ -174,6 +174,18 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'ledger entries the inline mirror failed to copy never reach buyer_sales, so the partner page, the unresolved list and the sales checks read an incomplete copy while selling continues (#1413)',
   },
+  {
+    id: 'buyer-sales-checks',
+    label: 'Buyer sales checks',
+    triggerCron: '*/15 * * * *',
+    // 15 minute cadence, half an hour slack: two missed runs before it is dark.
+    staleMs: 45 * MIN,
+    // A handful of ledger reads and table reads per buyer plus one Salesforce
+    // query; minutes at most even with several buyers.
+    maxRunMs: 10 * MIN,
+    dependents:
+      'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, and nobody is paged for sales waiting on a person (#1413)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {

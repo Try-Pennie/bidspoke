@@ -289,6 +289,34 @@ describe('BuyerLedgerObject summary agrees with reserve (L16)', () => {
   })
 })
 
+describe('BuyerLedgerObject entries for a day (#1413)', () => {
+  it('lists one kind of entry for one Eastern day in reservation order, so the checks can compare them row by row', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await post(stub, '/commit', { ...key('lead-a'), outcome: OUTCOME })
+    await setClock(stub, NOW + 60_000)
+    await reserve(stub, 'lead-b')
+    await reserve(stub, 'lead-r', { kind: 'rehearsal' })
+    const live = await get<{ entries: LedgerEntry[] }>(stub, '/entries', { kind: 'live', day: '2027-09-20' })
+    expect(live.entries.map((e) => [e.lead_key, e.status])).toEqual([['lead-a', 'accepted'], ['lead-b', 'reserved']])
+    const rehearsal = await get<{ entries: LedgerEntry[] }>(stub, '/entries', { kind: 'rehearsal', day: '2027-09-20' })
+    expect(rehearsal.entries.map((e) => e.lead_key)).toEqual(['lead-r'])
+    const otherDay = await get<{ entries: LedgerEntry[] }>(stub, '/entries', { kind: 'live', day: '2027-09-19' })
+    expect(otherDay.entries).toEqual([])
+  })
+
+  it('refuses a malformed kind or day by name rather than answering for another day (L11)', async () => {
+    const stub = ledger()
+    const badKind = await stub.fetch('http://do/entries?kind=dress&day=2027-09-20')
+    expect(badKind.status).toBe(400)
+    expect(await badKind.json()).toEqual({ error: 'bad_kind' })
+    const badDay = await stub.fetch('http://do/entries?kind=live&day=yesterday')
+    expect(badDay.status).toBe(400)
+    expect(await badDay.json()).toEqual({ error: 'bad_day' })
+  })
+})
+
 describe('BuyerLedgerObject alarm', () => {
   it('a reservation still pending at the grace deadline becomes unresolved, still counts, and is reported', async () => {
     const stub = ledger()

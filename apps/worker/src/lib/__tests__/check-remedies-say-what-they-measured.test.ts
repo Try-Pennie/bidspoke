@@ -40,6 +40,7 @@ import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
 import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
+import { BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
@@ -65,6 +66,8 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
   ['tripoint pricing', TRIPOINT_PRICING_REMEDY],
   ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
+  ['buyer sales mismatch', BUYER_SALES_MISMATCH_REMEDY],
+  ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
 ]
 
 /**

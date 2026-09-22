@@ -183,6 +183,12 @@ export class BuyerLedgerClient implements LedgerApi {
     return call<Summary>(this.stub, 'buyer ledger summary', query('/summary', day ? { kind, day } : { kind }), undefined, this.opts)
   }
 
+  /** Every entry of one kind for one Eastern day, for the sales checks (#1413). */
+  async entries(kind: LedgerKind, day: string): Promise<LedgerEntry[]> {
+    const r = await call<{ entries: LedgerEntry[] }>(this.stub, 'buyer ledger entries', query('/entries', { kind, day }), undefined, this.opts)
+    return r.entries
+  }
+
   unmirrored(): Promise<UnmirroredResult> {
     return call<UnmirroredResult>(this.stub, 'buyer ledger unmirrored', 'http://do/unmirrored', undefined, this.opts)
   }
