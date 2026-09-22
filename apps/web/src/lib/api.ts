@@ -14,6 +14,8 @@ export type ExtraExtractionSpec =
 
 export type ExtraExtractionConfig = Record<string, ExtraExtractionSpec>
 
+import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
+
 export interface Partner {
   id: string
   organization_id: string
@@ -33,6 +35,8 @@ export interface Partner {
   last_probe_response: unknown
   dedup_endpoint: string | null
   response_classification: unknown
+  /** The buyer_select accept rules, the shared Signal shape (#1412). */
+  accept_signals?: unknown[] | null
   alert_config: unknown
   circuit_error_threshold: number
   circuit_window_seconds: number
@@ -778,6 +782,37 @@ export const api = {
       req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string }>(`/api/partners/${id}/cap-count`),
+  },
+
+  // The buyer profile routes (#1412). A refused save throws an Error carrying
+  // `status` and the parsed `body`; a 409 body holds `current`, the document
+  // saved now, which the form shows beside the person's edits.
+  buyerProfiles: {
+    get: (partnerId: string) =>
+      req<{ profile: BuyerProfileDocument | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>(`/api/partners/${partnerId}/buyer-profile`),
+    save: (partnerId: string, body: { expected_version: number; profile: BuyerProfileDocument }) =>
+      req<{ profile: BuyerProfileDocument }>(`/api/partners/${partnerId}/buyer-profile`, { method: 'PUT', body: JSON.stringify(body) }),
+    history: (partnerId: string) =>
+      req<{ entries: Array<{ changed_at: string; changed_by: string | null; action: string; changes: Record<string, { old: unknown; new: unknown }> | null }> }>(`/api/partners/${partnerId}/buyer-profile/history`),
+    usage: (partnerId: string) =>
+      req<{
+        et_day: string
+        hour_bucket: number
+        hour: { leads: number; spend_cents: number }
+        day: { leads: number; spend_cents: number; by_status: Record<string, number> }
+        counted_populations: string[]
+        outside_wins_today: number | null
+        unmeasured: string[]
+      }>(`/api/partners/${partnerId}/buyer-usage`),
+  },
+
+  buyerSales: {
+    list: (params: { status: string; page?: number; limit?: number }) => {
+      const q = new URLSearchParams({ status: params.status, page: String(params.page ?? 1), limit: String(params.limit ?? 20) })
+      return req<{ entries: Array<Record<string, unknown>>; total: number; page: number; limit: number }>(`/api/buyer-sales?${q.toString()}`)
+    },
+    settle: (id: string, outcome: 'accepted' | 'released') =>
+      req<{ entry: Record<string, unknown>; mirrored: boolean; mirror_error?: string }>(`/api/buyer-sales/${id}/settle`, { method: 'POST', body: JSON.stringify({ outcome }) }),
   },
 
   partnerBidConfigs: {

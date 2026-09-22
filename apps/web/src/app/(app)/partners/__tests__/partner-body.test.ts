@@ -18,6 +18,7 @@ function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
     alertTransient: true, alertPermanent: true,
     sellOffOfferTitle: '', sellOffOfferDetails: '', partnerType: 'buyer', confirmationWindowMs: '',
     subAccountFloors: [],
+    acceptSignals: [],
     ...overrides,
   }
 }
