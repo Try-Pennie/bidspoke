@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -170,5 +170,68 @@ describe('ingestRemedyFor', () => {
 
     expect(remedy.fixHint).toMatch(/Read the stop reason/)
     expect(remedy.fixHint).not.toMatch(/Check Snowflake availability/)
+  })
+})
+
+/**
+ * Which conditions a finished run shows to be CLEAR (#1441).
+ *
+ * Without this the archive only ever reports failures, so the escalating
+ * reminder schedule never learns that anything recovered: on 2026-09-22 two
+ * timeouts 22 successful runs apart arrived as one incident standing for 21
+ * hours.
+ *
+ * A FAILED RUN CLEARS NOTHING, however healthy its other numbers look. A run
+ * that stopped early measured less than it appears to: the misconfigured exit
+ * returns an empty result whose `hoursBehind` is zero and whose refusal count is
+ * zero, and reading those as evidence would clear two conditions on a run that
+ * never looked at either (L98, L706).
+ */
+describe('clearedConditionsFor', () => {
+  it('clears every condition a healthy run measured', () => {
+    expect(clearedConditionsFor(run())).toEqual([
+      ARCHIVE_JOB_NAMES.ingest,
+      ARCHIVE_JOB_NAMES.refusal,
+      ARCHIVE_JOB_NAMES.lag,
+    ])
+  })
+
+  it('clears nothing at all on a failed run, whatever its other numbers say', () => {
+    expect(clearedConditionsFor(run({ failed: true, stop: 'send-failed', detail: 'snowflake refused' }))).toEqual([])
+  })
+
+  it('does not clear the refusal condition on a run that refused something', () => {
+    const cleared = clearedConditionsFor(run({ executionsRefused: 4 }))
+
+    expect(cleared).toContain(ARCHIVE_JOB_NAMES.ingest)
+    expect(cleared).not.toContain(ARCHIVE_JOB_NAMES.refusal)
+  })
+
+  it('does not clear the lag condition while the run is still behind', () => {
+    const cleared = clearedConditionsFor(run({ stop: 'wall-time', hoursBehind: LAG_ALERT_HOURS + 1 }))
+
+    expect(cleared).toContain(ARCHIVE_JOB_NAMES.ingest)
+    expect(cleared).not.toContain(ARCHIVE_JOB_NAMES.lag)
+  })
+
+  it('never clears the killed condition, which is about an invocation already over', () => {
+    expect(clearedConditionsFor(run())).not.toContain(ARCHIVE_JOB_NAMES.killed)
+  })
+
+  it('raises and clears nothing in common, on every shape of run', () => {
+    // The two halves must not disagree: a condition cannot be both raised and
+    // reported clear by the same run, or the alert and the recovery race.
+    for (const over of [
+      {},
+      { executionsRefused: 4 },
+      { failed: true, stop: 'send-failed' as const },
+      { stop: 'wall-time' as const, hoursBehind: LAG_ALERT_HOURS + 1 },
+      { failed: true, stop: 'misconfigured' as const, executionsRefused: 2, hoursBehind: 99 },
+    ]) {
+      const result = run(over)
+      const raised = alertsFor(result).map((a) => a.jobName)
+      const cleared = clearedConditionsFor(result)
+      expect(raised.filter((name) => cleared.includes(name))).toEqual([])
+    }
   })
 })

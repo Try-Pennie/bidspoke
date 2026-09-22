@@ -12,8 +12,14 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
-import { alertsFor, ARCHIVE_JOB_NAMES, ARCHIVE_KILLED_REMEDY, ARCHIVE_MISCONFIGURED_REMEDY } from '../archive/alerts'
+import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
+import {
+  alertsFor,
+  clearedConditionsFor,
+  ARCHIVE_JOB_NAMES,
+  ARCHIVE_KILLED_REMEDY,
+  ARCHIVE_MISCONFIGURED_REMEDY,
+} from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
 import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
@@ -684,10 +690,18 @@ export async function runExecutionArchive(
     // holds. Added after, the alert would go on reading zero.
     result.executionsRefused += refusedAtDisposition
 
-    // Each condition under its own name, and nothing at all for a healthy run:
-    // notifyExportFailure clears its grace marker when called with no errors.
+    // Each condition under its own name. A healthy run still says nothing to
+    // notifyExportFailure, because a call with no errors DELETES its grace
+    // marker and a job alternating a failure with a clean run would then re-arm
+    // the grace every other run and never page. It reports its recovery through
+    // the other entry point instead (#1441), which clears the standing
+    // condition, so the escalating reminders stop, while keeping the record that
+    // a failure happened recently.
     for (const alert of alertsFor(result)) {
       await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
+    }
+    for (const jobName of clearedConditionsFor(result)) {
+      await notifyExportRecovery(env.IDEMPOTENCY, jobName)
     }
 
     console.log(

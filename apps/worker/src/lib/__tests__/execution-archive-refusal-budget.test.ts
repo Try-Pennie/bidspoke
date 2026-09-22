@@ -21,7 +21,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { Env } from '../../index'
 
-vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn().mockResolvedValue(undefined),
+  notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
+}))
 
 import { runExecutionArchive, type ArchiveRow } from '../execution-archive'
 import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'

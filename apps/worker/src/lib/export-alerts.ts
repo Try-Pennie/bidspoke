@@ -36,6 +36,75 @@ interface KvLike {
 export const EXPORT_ALERT_PENDING_TTL_SECONDS = 26 * 60 * 60
 
 /**
+ * The grace marker, which now records whether a run has SUCCEEDED since the
+ * first failure (#1441).
+ *
+ * It used to be a bare ISO timestamp, and a success never touched it, because
+ * the only way to clear it was a call with no errors and that call deletes the
+ * cooldown too. The consequence was measured on 2026-09-22: two archive
+ * timeouts 22 successful runs apart were reported as one incident, "failing
+ * since" a day earlier, with reminders escalating against a condition that had
+ * healed twice.
+ *
+ * Deleting it on a success is not the answer, and that is why it was never
+ * done: a job alternating a failure with a clean run would re-arm the grace
+ * every other run and never reach the second consecutive failure that pages. So
+ * the marker is KEPT and stamped instead, which leaves the paging behaviour
+ * exactly as it was while letting the message say which of the two it is.
+ *
+ * A marker written before this change is a bare timestamp, and there is one in
+ * production KV as this ships, so the reader accepts both shapes. An
+ * unparseable one is read as a standing failure, which is the direction that
+ * reports MORE rather than less.
+ */
+interface PendingFailure {
+  /** ISO timestamp of the first failure in this stretch. */
+  since: string
+  /** True once a run has succeeded after that first failure. */
+  recovered: boolean
+}
+
+export function parsePendingFailure(raw: string | null): PendingFailure | null {
+  if (raw === null) return null
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('{')) return { since: trimmed, recovered: false }
+  try {
+    const parsed = JSON.parse(trimmed) as { since?: unknown; recovered?: unknown }
+    if (typeof parsed.since !== 'string') return { since: trimmed, recovered: false }
+    return { since: parsed.since, recovered: parsed.recovered === true }
+  } catch {
+    return { since: trimmed, recovered: false }
+  }
+}
+
+const writePendingFailure = (pending: PendingFailure): string => JSON.stringify(pending)
+
+/**
+ * What a HEALTHY run of a job that alerts through this module reports (#1441).
+ *
+ * Two separate things, and the difference is the whole point. The standing
+ * condition is DELETED, because the condition has cleared and that is what the
+ * escalating reminder schedule means by clearing: the next failure starts a
+ * fresh schedule rather than continuing a day-old one. The grace marker is KEPT
+ * and stamped as interrupted, because it is the only record that a failure
+ * happened recently at all, and the alternating pattern it protects against is
+ * exactly the one a delete would hide.
+ *
+ * A job with nothing recorded writes nothing, so a healthy job that has never
+ * failed costs one KV read.
+ */
+export async function notifyExportRecovery(kv: KvLike | undefined, jobName: string): Promise<void> {
+  if (!kv) return
+  await clearCondition(kv, `export-alert:${jobName}`)
+  const pendingKey = `export-alert-pending:${jobName}`
+  const pending = parsePendingFailure(await kv.get(pendingKey))
+  if (!pending || pending.recovered) return
+  await kv.put(pendingKey, writePendingFailure({ since: pending.since, recovered: true }), {
+    expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS,
+  })
+}
+
+/**
  * What the alert should say happened, and what to do, when the caller knows
  * better than the message classifier.
  *
@@ -101,17 +170,25 @@ export async function notifyExportFailure(
   // page only when the next run fails too. Anything a retry cannot fix (auth,
   // permissions, schema, unrecognised errors) still pages immediately.
   let failingSince: string | undefined
+  let intermittentSince: string | undefined
   if (kv && errors.every(isTransientExportError)) {
-    const pending = await kv.get(pendingKey)
+    const pending = parsePendingFailure(await kv.get(pendingKey))
     if (!pending) {
-      await kv.put(pendingKey, new Date().toISOString(), { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
+      await kv.put(pendingKey, writePendingFailure({ since: new Date().toISOString(), recovered: false }), {
+        expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS,
+      })
       console.log(`[export-alerts] ${jobName}: transient failure held (no alert unless the next run also fails):`, errors)
       return
     }
     // Keep the original first-failure time and re-arm the TTL so a long outage
     // cannot expire the marker mid-outage and silently restart the grace.
-    await kv.put(pendingKey, pending, { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
-    failingSince = pending
+    await kv.put(pendingKey, writePendingFailure(pending), { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
+    // WHICH of the two sentences this earns is decided here, from what was
+    // recorded rather than from the fact that a marker exists (#1441, L11). A
+    // run succeeded in between means this is intermittent, and saying "failing
+    // since" would name a stretch that demonstrably ended.
+    if (pending.recovered) intermittentSince = pending.since
+    else failingSince = pending.since
   }
 
   // Already paged for this ongoing issue; stay quiet until it recovers (the
@@ -148,6 +225,7 @@ export async function notifyExportFailure(
         fixHint,
         consequence,
         failingSince,
+        intermittentSince,
         repeat,
         headlineVerb: own?.headlineVerb,
         itemNoun: own?.itemNoun,

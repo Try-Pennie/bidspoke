@@ -12,7 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn().mockResolvedValue(undefined),
+  notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
+}))
 
 import { checkExecutionRetention, RETENTION_CHECK_JOB } from '../retention-check'
 import { notifyExportFailure } from '../export-alerts'

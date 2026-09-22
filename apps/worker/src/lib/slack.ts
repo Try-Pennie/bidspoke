@@ -1585,6 +1585,13 @@ export async function sendExportFailureAlert(
     consequence?: string
     failingSince?: string
     /**
+     * The first failure of a stretch that a successful run has already
+     * INTERRUPTED (#1441). Mutually exclusive with `failingSince`: one says the
+     * job has been failing since then, the other says it failed then, recovered,
+     * and has failed again, which is a different thing to go and look at.
+     */
+    intermittentSince?: string
+    /**
      * Present only on a REMINDER, saying which one it is and how long the
      * condition has stood (#1334). Absent on a first report, so a message
      * carrying it is visibly the same incident as the one before rather than a
@@ -1633,15 +1640,28 @@ export async function sendExportFailureAlert(
       },
     },
   ]
+  const easternInstant = (iso: string) =>
+    new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(iso))
   if (payload.failingSince) {
-    const since = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.failingSince))
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        // Present only when the transient grace held back an earlier failure:
-        // this is the second consecutive failed run, no longer a lone blip.
-        text: `*Failing since:* ${since}. This is the second consecutive failed run; the first was held back as a likely one-off blip.`,
+        // Present only when the transient grace held back an earlier failure
+        // and NO run has succeeded since: this is the second consecutive failed
+        // run, no longer a lone blip.
+        text: `*Failing since:* ${easternInstant(payload.failingSince)}. This is the second consecutive failed run; the first was held back as a likely one-off blip.`,
+      },
+    })
+  } else if (payload.intermittentSince) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        // The stretch ENDED and started again, so this may claim only that
+        // (#1441). Saying "failing since" here named a day-long outage that had
+        // in fact healed twice, across 22 successful runs.
+        text: `*Intermittent:* this last happened on ${easternInstant(payload.intermittentSince)} and runs have succeeded since, so it is recurring rather than standing.`,
       },
     })
   }
