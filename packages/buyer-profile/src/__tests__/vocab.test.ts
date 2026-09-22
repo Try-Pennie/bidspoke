@@ -13,6 +13,7 @@ import {
   PRIORITY_DIRECTION,
   SALE_STATUSES,
   SIGNAL_OPERATORS,
+  SIGNAL_OPERATOR_LABELS,
   US_STATES,
   WIRED_POPULATIONS,
 } from '../vocab'
@@ -82,6 +83,10 @@ describe('the rest of the vocabulary', () => {
     expect([...SIGNAL_OPERATORS]).toEqual([
       'present', 'equals', 'contains', 'in', 'not_in', 'any_item_contains', 'any_item_word_prefix_ci',
     ])
+  })
+  it('labels every signal operator once, for both rule editors to read (#1463)', () => {
+    expect(Object.keys(SIGNAL_OPERATOR_LABELS)).toEqual([...SIGNAL_OPERATORS])
+    for (const op of SIGNAL_OPERATORS) expect(SIGNAL_OPERATOR_LABELS[op].length).toBeGreaterThan(0)
   })
   it('names one payload normaliser', () => {
     expect([...PAYLOAD_NORMALISERS]).toEqual(['ssn_digits_9'])

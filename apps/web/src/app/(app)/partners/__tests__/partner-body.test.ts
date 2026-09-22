@@ -5,7 +5,8 @@
  * concrete bug: disable, save, Undo must re-enable).
  */
 import { describe, it, expect } from 'vitest'
-import { buildPartnerBody, serializeRules, floorsToMap, type FormSnapshot } from '../partner-body'
+import { SIGNAL_OPERATORS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
+import { buildPartnerBody, parseRules, serializeRules, floorsToMap, type FormSnapshot } from '../partner-body'
 
 function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
   return {
@@ -78,5 +79,43 @@ describe('floorsToMap / serializeRules (#98, moved intact)', () => {
 
   it('returns null when there are no signal rules', () => {
     expect(serializeRules({ rejection: [], transient: [], permanent: [] })).toBeNull()
+  })
+})
+
+/**
+ * #1463: the Rejection rules builder offered five operators while the shared
+ * classifier knows seven, and a stored rule using one of the other two was read
+ * as "equals" with an empty value and written back that way on the next save
+ * (L652). Every operator the vocabulary names must survive a read and a write.
+ */
+describe('parseRules and serializeRules round trip every signal operator (#1463)', () => {
+  const ONE_OF_EACH: Record<SignalOperator, Signal> = {
+    present: { field: 'data.id', present: true },
+    equals: { field: 'ok', equals: true },
+    contains: { field: 'message', contains: 'declined' },
+    in: { field: 'data.createLead.resultCode', in: [1000, 1001, 'A1'] },
+    not_in: { field: 'data.createLead.resultCode', not_in: [1000, 1001, 1013, 1014, 1015, 1016, 1017] },
+    any_item_contains: { field: 'details[].message', any_item_contains: 'Cannot return null for non-nullable field CreateLeadResponse.id' },
+    any_item_word_prefix_ci: { field: 'details[].message', any_item_word_prefix_ci: 'invalid' },
+  }
+
+  for (const op of SIGNAL_OPERATORS) {
+    it(`${op} survives unchanged`, () => {
+      const stored = { rejection_signals: [ONE_OF_EACH[op]] }
+      expect(serializeRules(parseRules(stored))).toEqual(stored)
+    })
+  }
+
+  it('the two Tripoint 502 decline shapes survive beside the result code rule, in order', () => {
+    const stored = {
+      rejection_signals: [ONE_OF_EACH.not_in, ONE_OF_EACH.any_item_contains, ONE_OF_EACH.any_item_word_prefix_ci],
+    }
+    expect(serializeRules(parseRules(stored))).toEqual(stored)
+  })
+
+  it('reads every operator into the condition the picker shows, never a blank equals', () => {
+    const rules = parseRules({ rejection_signals: SIGNAL_OPERATORS.map((op) => ONE_OF_EACH[op]) })
+    expect(rules.rejection.map((r) => (r.kind === 'body' ? r.condition : r.kind))).toEqual([...SIGNAL_OPERATORS])
+    expect(rules.rejection.some((r) => r.kind === 'body' && r.condition === 'equals' && r.value === '')).toBe(false)
   })
 })

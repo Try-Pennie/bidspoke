@@ -9,55 +9,9 @@
  */
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
-import { SIGNAL_OPERATORS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
+import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
 import { Button, Select, TextInput } from '@/components/ui/form'
-
-const OPERATOR_LABELS: Record<SignalOperator, string> = {
-  present: 'is present',
-  equals: 'equals',
-  contains: 'contains',
-  in: 'is one of',
-  not_in: 'is none of',
-  any_item_contains: 'any item contains',
-  any_item_word_prefix_ci: 'any item has a word starting with',
-}
-
-const LIST_OPERATORS: ReadonlySet<SignalOperator> = new Set(['in', 'not_in'])
-
-/** The operator a signal carries, or equals when it carries none yet. */
-export function operatorOf(sig: Signal): SignalOperator {
-  for (const op of SIGNAL_OPERATORS) if (sig[op] !== undefined) return op
-  return 'equals'
-}
-
-/** The value a signal carries, as the text the box shows. */
-export function valueTextOf(sig: Signal): string {
-  const op = operatorOf(sig)
-  const v = sig[op]
-  if (op === 'present') return ''
-  if (Array.isArray(v)) return v.map((x) => String(x)).join(',')
-  return v === undefined || v === null ? '' : String(v)
-}
-
-/** A comma separated list, numeric tokens kept numeric, everything else text (the legacy rule builder's reading). */
-function parseList(text: string): unknown[] {
-  return text.split(',').map((t) => t.trim()).filter(Boolean).map((t) => (/^-?\d+(\.\d+)?$/.test(t) ? Number(t) : t))
-}
-
-function scalar(text: string): unknown {
-  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text)
-  if (text === 'true') return true
-  if (text === 'false') return false
-  return text
-}
-
-/** Rebuild a signal from its field, operator and text. */
-export function signalFrom(field: string, op: SignalOperator, text: string): Signal {
-  if (op === 'present') return { field, present: true }
-  if (LIST_OPERATORS.has(op)) return { field, [op]: parseList(text) } as Signal
-  if (op === 'equals') return { field, equals: scalar(text) }
-  return { field, [op]: text } as Signal
-}
+import { LIST_OPERATORS, operatorOf, signalFrom, valueTextOf } from '@/lib/signal-text'
 
 export function AcceptRulesEditor({ value, onChange, refusal }: { value: readonly Signal[]; onChange: (rules: Signal[]) => void; refusal?: string | null }) {
   const base = useId()
@@ -78,7 +32,7 @@ export function AcceptRulesEditor({ value, onChange, refusal }: { value: readonl
             </div>
             <div>
               <label htmlFor={`${rowId}-op`} className="mb-1 block text-xs text-gray-600">Operator</label>
-              <Select id={`${rowId}-op`} value={op} onChange={(v) => update(i, signalFrom(rule.field, v as SignalOperator, text))} options={SIGNAL_OPERATORS.map((o) => ({ value: o, label: OPERATOR_LABELS[o] }))} />
+              <Select id={`${rowId}-op`} value={op} onChange={(v) => update(i, signalFrom(rule.field, v as SignalOperator, text))} options={SIGNAL_OPERATORS.map((o) => ({ value: o, label: SIGNAL_OPERATOR_LABELS[o] }))} />
             </div>
             {op === 'present' ? (
               <span className="text-xs text-gray-500">any value</span>

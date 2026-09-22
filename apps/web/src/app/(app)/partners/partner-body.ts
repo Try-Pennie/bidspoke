@@ -2,10 +2,15 @@
 // the shared rule/floor helpers. Extracted from PartnerForm so the body mapping
 // is testable without the React component — it's what the Undo affordance re-saves
 // (#98), so a missing field here would silently drop a real-money setting.
+import type { Signal, SignalOperator } from '@bidspoke/buyer-profile'
 import type { PartnerBody, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
 import type { PartnerType } from '@/lib/partner-roles'
+import { listToString, operatorOf, parseList, signalFrom, valueTextOf } from '@/lib/signal-text'
 
-export type BodyCondition = 'equals' | 'contains' | 'in' | 'not_in' | 'present'
+export { listToString, parseList }
+
+/** A body rule's condition IS a signal operator: one vocabulary for both rule editors (#1463, L611). */
+export type BodyCondition = SignalOperator
 export type StatusCondition = 'contains' | 'in' | 'not_in' | 'present'
 export type SignalCategory = 'rejection' | 'transient' | 'permanent'
 
@@ -34,20 +39,46 @@ export interface FormSnapshot {
   acceptSignals: unknown[]
 }
 
-/** Parse a comma-separated value list for in/not_in. Numeric tokens coerced to numbers. */
-export function parseList(s: string): unknown[] {
-  return s
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-    .map((t) => {
-      const n = Number(t)
-      return Number.isFinite(n) && /^-?\d+(\.\d+)?$/.test(t) ? n : t
-    })
-}
+function uid() { return Math.random().toString(36).slice(2) }
 
-export function listToString(arr: unknown[]): string {
-  return arr.map((v) => (v == null ? '' : String(v))).join(',')
+/**
+ * The stored response_classification as rule rows. A body signal is read
+ * through the shared mapping, so every operator the classifier knows comes back
+ * as itself: before #1463 the two array operators were read as a blank equals
+ * and written back that way on the next save, destroying the rule (L652).
+ */
+export function parseRules(raw: unknown): SignalRules {
+  const result: SignalRules = { rejection: [], transient: [], permanent: [] }
+  if (!raw || typeof raw !== 'object') return result
+  const obj = raw as Record<string, unknown>
+  const map: [string, SignalCategory][] = [
+    ['rejection_signals', 'rejection'],
+    ['transient_signals', 'transient'],
+    ['permanent_signals', 'permanent'],
+  ]
+  for (const [key, cat] of map) {
+    if (!Array.isArray(obj[key])) continue
+    for (const sig of obj[key] as Record<string, unknown>[]) {
+      if (sig.field != null) {
+        const signal = { ...sig, field: String(sig.field) } as Signal
+        result[cat].push({ id: uid(), kind: 'body', field: signal.field, condition: operatorOf(signal), value: valueTextOf(signal) })
+      } else if (sig.status_code != null || sig.body_field != null || sig.header != null) {
+        let condition: StatusCondition = 'contains'
+        let value = ''
+        if (sig.present === true)            { condition = 'present' }
+        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
+        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
+        else if (sig.contains != null)       { value = String(sig.contains) }
+        result[cat].push({
+          id: uid(), kind: 'status',
+          code:      sig.status_code != null ? String(sig.status_code) : '',
+          bodyField: String(sig.body_field ?? sig.header ?? ''),
+          condition, value,
+        })
+      }
+    }
+  }
+  return result
 }
 
 export function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {
@@ -79,11 +110,7 @@ export function serializeRules(rules: SignalRules): unknown {
     const signals: unknown[] = []
     for (const r of rules[cat]) {
       if (r.kind === 'body' && r.field.trim()) {
-        if      (r.condition === 'present')  signals.push({ field: r.field, present: true })
-        else if (r.condition === 'in')       signals.push({ field: r.field, in: parseList(r.value) })
-        else if (r.condition === 'not_in')   signals.push({ field: r.field, not_in: parseList(r.value) })
-        else if (r.condition === 'contains') signals.push({ field: r.field, contains: r.value })
-        else                                 signals.push({ field: r.field, equals: r.value })
+        signals.push(signalFrom(r.field, r.condition, r.value))
       } else if (r.kind === 'status' && (r.code.trim() || r.bodyField.trim())) {
         const obj: Record<string, unknown> = {}
         if (r.code.trim())      obj.status_code = parseInt(r.code)

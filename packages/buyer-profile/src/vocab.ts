@@ -56,6 +56,22 @@ export const SIGNAL_OPERATORS = [
 ] as const
 export type SignalOperator = (typeof SIGNAL_OPERATORS)[number]
 
+/**
+ * What each operator is called in a rule picker. Both the accept rules editor
+ * and the response classification builder read this table, so a rule reads the
+ * same in both places and an operator added above is labelled here or the
+ * build fails (#1463, L113).
+ */
+export const SIGNAL_OPERATOR_LABELS: Record<SignalOperator, string> = {
+  present: 'is present',
+  equals: 'equals',
+  contains: 'contains',
+  in: 'is one of',
+  not_in: 'is none of',
+  any_item_contains: 'any item contains',
+  any_item_word_prefix_ci: 'any item has a word starting with',
+}
+
 export const PAYLOAD_NORMALISERS = ['ssn_digits_9'] as const
 export type PayloadNormaliser = (typeof PAYLOAD_NORMALISERS)[number]
 
