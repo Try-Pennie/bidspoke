@@ -115,6 +115,56 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   not_reached: 'Not reached, an earlier buyer took the lead',
 }
 
+/**
+ * The buyer_select node's two modes (#1411). decide_only rehearses everything
+ * but the buyer call; live sells. There is no default: a missing or unknown
+ * mode is a named failure (L72).
+ */
+export const BUYER_SELECT_MODES = ['decide_only', 'live'] as const
+export type BuyerSelectMode = (typeof BUYER_SELECT_MODES)[number]
+
+/**
+ * Why the node as a whole routed where it did, as distinct from why one buyer
+ * was out (OUT_REASONS). The two sets are disjoint so a reason is never
+ * ambiguous about which it describes.
+ */
+export const NODE_REASONS = [
+  'sold',
+  'sell_off_false',
+  'bid_not_positive',
+  'sell_off_unresolved',
+  'lead_key_empty',
+  'mode_invalid',
+  'payload_invalid',
+  'profiles_unavailable',
+  'no_eligible_buyer',
+  'canary_out',
+  'report_only',
+  'decide_only',
+  'rehearsal_caps_invalid',
+  'rehearsal_deadline',
+  'buyer_select_handle_unwired',
+] as const
+export type NodeReason = (typeof NODE_REASONS)[number]
+
+export const NODE_REASON_LABELS: Record<NodeReason, string> = {
+  sold: 'Sold to the buyer',
+  sell_off_false: 'Not a sell off lead',
+  bid_not_positive: 'The bid was zero, so the lead was not for sale',
+  sell_off_unresolved: 'The sell off flag could not be read, so the workflow decided',
+  lead_key_empty: 'The lead key resolved to nothing',
+  mode_invalid: 'The node has no valid mode',
+  payload_invalid: 'The sale payload did not resolve to an object',
+  profiles_unavailable: 'Buyer profiles could not be read and no earlier copy was held',
+  no_eligible_buyer: 'No buyer was eligible for this lead',
+  canary_out: 'Outside the live share, so the workflow decided',
+  report_only: 'Evaluated and reported only: a test, shadow or local run',
+  decide_only: 'Rehearsed without calling a buyer',
+  rehearsal_caps_invalid: 'The rehearsal caps variable is not valid JSON caps',
+  rehearsal_deadline: 'The rehearsal ran past its deadline',
+  buyer_select_handle_unwired: 'The handle the node needed to take is not wired',
+}
+
 /** Stated once here and once on the form (L118). */
 export const PRIORITY_DIRECTION = '1 is offered the lead first. A lower number outranks a higher one.'
 

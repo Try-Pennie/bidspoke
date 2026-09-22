@@ -28,6 +28,7 @@ export const NODE_TYPES = [
   'data_store',
   'latency_gate',
   'achieve_offers',
+  'buyer_select',
 ] as const
 
 export type NodeType = (typeof NODE_TYPES)[number]
@@ -92,6 +93,17 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   data_store: inMemory({ dispatchOrDb: true, executorFile: 'data-store' }),
   latency_gate: inMemory({ dispatchOrDb: true, executorFile: 'latency-gate' }),
   achieve_offers: inMemory({ network: true, executorFile: 'achieve-offers' }),
+  // Sells a lead to the highest ranked eligible buyer (#1411). Walker only,
+  // because it writes one attempt row per buyer tried; names no partner in its
+  // config, since the buyers are whoever holds an enabled profile priced for its
+  // population, which the partner routes resolve at read time.
+  buyer_select: inMemory({
+    network: true,
+    walkGraphOnly: true,
+    synthesizesAttempts: true,
+    staticHandles: ['sold', 'no_sale', 'not_applicable', 'deferred'],
+    executorFile: 'buyer-select',
+  }),
 }
 
 /**

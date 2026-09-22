@@ -1,0 +1,168 @@
+/**
+ * loadBuyerProfiles (#1411): the buyer_select node's one read of the profile
+ * tables. One query for the org, enabled profiles joined to their partner, the
+ * windows, the blackouts and the tiers, through a 60 second KV cache that the
+ * profile save route and the partner save route invalidate.
+ *
+ * The last good copy is served only when the read FAILS, never when it returns
+ * empty (L682, L214): an org with no enabled buyer is a true answer, and a
+ * transient error must not be cached as one. It is rewritten only when the
+ * newest updated_at moves, so KV's one write a second per key is never hit by a
+ * hot path that reads the same rows over and over.
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor } from '../buyer-profile-loader'
+
+const ROW = {
+  partner_id: 'p-1',
+  version: 3,
+  is_enabled: true,
+  priority: 1,
+  allowed_states: ['TX', 'FL'],
+  debt_min: 15000,
+  debt_max: null,
+  loan_amount_min: null,
+  hourly_lead_cap: 50,
+  daily_lead_cap: null,
+  hourly_spend_cap_cents: null,
+  daily_spend_cap_cents: 500000,
+  updated_at: '2026-09-22T10:00:00.000Z',
+  partner_configs: {
+    id: 'p-1', slug: 'tripoint', is_active: true, api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create',
+    cf_secret_key: 'TRIPOINT_PROXY_SECRET', outbound_field_mapping: null, extra_extraction: null,
+    accept_signals: [{ field: 'ok', operator: 'equals', value: true }], response_classification: null,
+    circuit_enabled: true, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30,
+  },
+  buyer_operating_windows: [{ day_of_week: 1, opens_minute: 540, closes_minute: 1080 }],
+  buyer_blackout_dates: [{ blackout_date: '2026-11-26' }],
+  buyer_pricing_tiers: [{ population: 'engine', debt_from: 15000, debt_to: null, multiplier: 0.0012 }],
+}
+
+function fakeSupabase(result: { data: unknown; error: { message: string } | null }) {
+  const calls: Array<{ table: string; select: string; filters: Array<[string, unknown]> }> = []
+  const supabase = {
+    from(table: string) {
+      const call = { table, select: '', filters: [] as Array<[string, unknown]> }
+      calls.push(call)
+      const builder = {
+        select(cols: string) { call.select = cols; return builder },
+        eq(col: string, val: unknown) { call.filters.push([col, val]); return builder },
+        then(resolve: (v: typeof result) => unknown) { return Promise.resolve(result).then(resolve) },
+      }
+      return builder
+    },
+  }
+  return { supabase: supabase as never, calls }
+}
+
+function fakeKv() {
+  const store = new Map<string, { value: string; ttl?: number }>()
+  const kv = {
+    get: vi.fn(async (key: string, type?: string) => {
+      const hit = store.get(key)
+      if (!hit) return null
+      return type === 'json' ? JSON.parse(hit.value) : hit.value
+    }),
+    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => { store.set(key, { value, ttl: opts?.expirationTtl }) }),
+    delete: vi.fn(async (key: string) => { store.delete(key) }),
+  }
+  return { kv: kv as unknown as KVNamespace, store, spies: kv }
+}
+
+describe('loadBuyerProfiles', () => {
+  it('reads enabled profiles for the org in one query joined to partner, windows, blackouts and tiers, and shapes them for the evaluator', async () => {
+    const { supabase, calls } = fakeSupabase({ data: [ROW], error: null })
+    const { kv, store } = fakeKv()
+    const snapshot = await loadBuyerProfiles('org-1', kv, supabase)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].table).toBe('buyer_profiles')
+    expect(calls[0].filters).toEqual([['organization_id', 'org-1'], ['is_enabled', true]])
+    for (const joined of ['partner_configs!inner(', 'buyer_operating_windows(', 'buyer_blackout_dates(', 'buyer_pricing_tiers(']) {
+      expect(calls[0].select, joined).toContain(joined)
+    }
+    expect(snapshot.buyers).toHaveLength(1)
+    const b = snapshot.buyers[0]
+    expect(b.partner.slug).toBe('tripoint')
+    expect(b.partner.accept_signals).toEqual([{ field: 'ok', operator: 'equals', value: true }])
+    expect(b.profile).toEqual({
+      partnerId: 'p-1', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null,
+      hourlyLeadCap: 50, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: 500000,
+      windows: [{ dayOfWeek: 1, opensMinute: 540, closesMinute: 1080 }],
+      blackoutDates: ['2026-11-26'],
+      tiers: [{ population: 'engine', debtFrom: 15000, debtTo: null, multiplier: 0.0012 }],
+    })
+    expect(b.version).toBe(3)
+    // Cached for the hot path, with the TTL the plan set, and kept as the last good copy.
+    expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
+    expect(BUYER_PROFILES_CACHE_TTL_SECONDS).toBe(60)
+    expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+
+  it('a cache hit skips the database', async () => {
+    const { supabase, calls } = fakeSupabase({ data: [ROW], error: null })
+    const { kv } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, supabase)
+    await loadBuyerProfiles('org-1', kv, supabase)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('a failed read serves the last good copy and caches nothing', async () => {
+    const good = fakeSupabase({ data: [ROW], error: null })
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, good.supabase)
+    store.delete('buyer-profiles:org-1')
+    const bad = fakeSupabase({ data: null, error: { message: 'connection reset' } })
+    const snapshot = await loadBuyerProfiles('org-1', kv, bad.supabase)
+    expect(snapshot.buyers.map((b) => b.partner.slug)).toEqual(['tripoint'])
+    expect(snapshot.served_from).toBe('last_good')
+    expect(store.has('buyer-profiles:org-1')).toBe(false)
+  })
+
+  it('a failed read with no last good copy throws, naming the failure (L11)', async () => {
+    const bad = fakeSupabase({ data: null, error: { message: 'connection reset' } })
+    const { kv } = fakeKv()
+    await expect(loadBuyerProfiles('org-1', kv, bad.supabase)).rejects.toThrow('buyer profiles read failed for org org-1: connection reset')
+  })
+
+  it('an empty read is the answer, not a reason to serve the last good copy (L214)', async () => {
+    const good = fakeSupabase({ data: [ROW], error: null })
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, good.supabase)
+    store.delete('buyer-profiles:org-1')
+    const empty = fakeSupabase({ data: [], error: null })
+    const snapshot = await loadBuyerProfiles('org-1', kv, empty.supabase)
+    expect(snapshot.buyers).toEqual([])
+    expect(snapshot.served_from).toBe('database')
+  })
+
+  it('rewrites the last good copy only when the newest updated_at moves', async () => {
+    const { kv, store, spies } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    store.delete('buyer-profiles:org-1')
+    const writesBefore = spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    expect(spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood')).toHaveLength(writesBefore)
+    store.delete('buyer-profiles:org-1')
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [{ ...ROW, updated_at: '2026-09-22T11:00:00.000Z', version: 4 }], error: null }).supabase)
+    expect(spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood')).toHaveLength(writesBefore + 1)
+  })
+
+  it('invalidate clears the cache and leaves the last good copy', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    await invalidateBuyerProfilesCache('org-1', kv)
+    expect(store.has('buyer-profiles:org-1')).toBe(false)
+    expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+})
+
+describe('partnersPricedFor', () => {
+  it('names the partners holding an enabled profile with a tier for the population', async () => {
+    const other = { ...ROW, partner_id: 'p-2', partner_configs: { ...ROW.partner_configs, id: 'p-2', slug: 'liberty' }, buyer_pricing_tiers: [{ population: 'main_flow', debt_from: 10000, debt_to: null, multiplier: 0.001 }] }
+    const { kv } = fakeKv()
+    const snapshot = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW, other], error: null }).supabase)
+    expect(partnersPricedFor(snapshot, 'engine')).toEqual(['p-1'])
+    expect(partnersPricedFor(snapshot, 'main_flow')).toEqual(['p-2'])
+    expect(partnersPricedFor(snapshot, 'lead_economy')).toEqual([])
+  })
+})

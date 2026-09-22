@@ -19,6 +19,7 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
+import { PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -419,6 +420,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
+        {type === 'buyer_select' && <BuyerSelectConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -1589,6 +1591,147 @@ function AchieveOffersConfig({
         <span className="font-mono">ACHIEVE_API_URL</span>. This node is collect-only: it logs the
         lead and any offers to the Achieve evaluations table, passes its input through, and never
         fails the flow.
+      </p>
+    </section>
+  )
+}
+
+/**
+ * Buyer Select (#1411). Every vocabulary is a picker over the shared constant
+ * (population, mode, normaliser), never a text box (L611). The templates resolve
+ * through the engine's resolver; the sale payload is config, not a code node.
+ * There is no retries control: the executor runs once whatever the definition
+ * says, because a retried sale is a second send to a buyer.
+ */
+function BuyerSelectConfig({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const mode = config.mode === 'live' ? 'live' : 'decide_only'
+  const population = (config.population as string | undefined) ?? ''
+  const livePercentEnv = (config.live_percent_env as string | undefined) ?? ''
+  const template = (key: string) => (config[key] as string | undefined) ?? ''
+  const payload = (config.sale_payload as { base?: string; set?: Array<{ path: string; template: string }>; normalise?: Array<{ path: string; normaliser: string }> } | undefined) ?? {}
+  const setRows = payload.set ?? []
+  const normaliseRows = payload.normalise ?? []
+  const patchPayload = (patch: Partial<typeof payload>) => onChange({ sale_payload: { base: payload.base ?? '', set: setRows, normalise: normaliseRows, ...patch } })
+  const refsHint = refs.length > 0 ? `Templates resolve against ${refs.length} available references.` : undefined
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <p className="mb-1.5 text-xs font-medium text-gray-600">Mode</p>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
+          {(['decide_only', 'live'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onChange({ mode: m })}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                mode === m ? 'bg-graphite text-white' : 'text-gray-600 hover:text-graphite'
+              }`}
+            >
+              {m === 'live' ? 'Live' : 'Decide only'}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {mode === 'decide_only'
+            ? 'Rehearses the whole sale against the buyers, claim and reservation included, and calls nobody. Sell off leads route to deferred.'
+            : 'Sells the lead. Only this mode can send to a buyer or fail the step.'}
+        </p>
+      </div>
+
+      <Field label="Population" hint="Which pricing the buyers apply. Only populations a buyer_select node is wired for are offered.">
+        <select className="input" value={population} onChange={(e) => onChange({ population: e.target.value || undefined })}>
+          <option value="">Choose a population</option>
+          {WIRED_POPULATIONS.map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Live share variable (optional)" hint="Name of an environment variable holding the percent of sell off leads sold live, 0 to 100. Unset or unreadable at run time means every lead routes to deferred and nobody is called.">
+        <input className="input" placeholder="BUYER_SELECT_LIVE_PERCENT" value={livePercentEnv} onChange={(e) => onChange({ live_percent_env: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Sell off condition" hint="A template that resolves to true for a sell off lead. Anything else routes to not applicable.">
+        <input className="input" placeholder="{{steps.prospect_trades.output.body.sellOff}}" value={template('sell_off_when')} onChange={(e) => onChange({ sell_off_when: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Bid must be positive (optional)" hint="A template that must resolve to a positive number for the lead to be sold. Reproduces the incumbent's zero bid bail out; a zero or missing value routes to not applicable.">
+        <input className="input" placeholder="{{steps.prospect_trades.output.body.engineBid}}" value={template('bid_when_positive')} onChange={(e) => onChange({ bid_when_positive: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Lead key" hint="The identifier one lead keeps across retries and replays, so it is never sold twice.">
+        <input className="input" placeholder="{{trigger.payload.leadUuid}}" value={template('lead_key')} onChange={(e) => onChange({ lead_key: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="State" hint={refsHint}>
+        <input className="input" placeholder="{{trigger.payload.personalInformation.state}}" value={template('state')} onChange={(e) => onChange({ state: e.target.value || undefined })} />
+      </Field>
+      <Field label="Debt" hint="Dollars. The figure the profile bounds and the price apply to.">
+        <input className="input" placeholder="{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}" value={template('debt')} onChange={(e) => onChange({ debt: e.target.value || undefined })} />
+      </Field>
+      <Field label="Loan amount (optional)" hint="Read only by buyers whose profile sets a minimum.">
+        <input className="input" placeholder="{{trigger.payload.loanAmount}}" value={template('loan_amount')} onChange={(e) => onChange({ loan_amount: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Sale payload base" hint="A template that resolves to the whole object to send. Resolved only after the sell off condition passes.">
+        <input className="input" placeholder="{{trigger.payload}}" value={payload.base ?? ''} onChange={(e) => patchPayload({ base: e.target.value })} />
+      </Field>
+
+      <Field label="Set fields" hint="Target path and source template pairs added to the base. A source that resolves to nothing fails the sale by name rather than sending a hole.">
+        <div className="space-y-1.5">
+          {/* Path over template: side by side, both truncated at the panel's real
+              width with six rows (seen 2026-09-22, L606). */}
+          {setRows.map((row, i) => (
+            <div key={i} className="flex items-start gap-1.5 rounded-md border border-gray-100 p-1.5">
+              <div className="flex-1 space-y-1">
+                <input className="input" aria-label={`Set field ${i + 1} path`} placeholder="unsecuredDebt" value={row.path} onChange={(e) => patchPayload({ set: setRows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)) })} />
+                <input className="input" aria-label={`Set field ${i + 1} source`} placeholder="{{steps.x.output.y}} or a literal" value={row.template} onChange={(e) => patchPayload({ set: setRows.map((r, j) => (j === i ? { ...r, template: e.target.value } : r)) })} />
+              </div>
+              <button type="button" aria-label={`Remove set field ${row.path || i + 1}`} onClick={() => patchPayload({ set: setRows.filter((_, j) => j !== i) })} className="rounded p-1 text-gray-500 hover:text-red-600">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={() => patchPayload({ set: [...setRows, { path: '', template: '' }] })} className="inline-flex items-center gap-1 text-xs text-p-blue-dark hover:underline">
+            <Plus className="h-3.5 w-3.5" /> Add field
+          </button>
+        </div>
+      </Field>
+
+      <Field label="Normalise" hint="Path and rule pairs applied after the fields are set.">
+        <div className="space-y-1.5">
+          {normaliseRows.map((row, i) => (
+            <div key={i} className="flex items-start gap-1.5 rounded-md border border-gray-100 p-1.5">
+              <div className="flex-1 space-y-1">
+                <input className="input" aria-label={`Normaliser ${i + 1} path`} placeholder="personalInformation.ssn" value={row.path} onChange={(e) => patchPayload({ normalise: normaliseRows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)) })} />
+                <select className="input" aria-label={`Normaliser ${i + 1} rule`} value={row.normaliser} onChange={(e) => patchPayload({ normalise: normaliseRows.map((r, j) => (j === i ? { ...r, normaliser: e.target.value } : r)) })}>
+                  {PAYLOAD_NORMALISERS.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              <button type="button" aria-label={`Remove normaliser ${row.path || i + 1}`} onClick={() => patchPayload({ normalise: normaliseRows.filter((_, j) => j !== i) })} className="rounded p-1 text-gray-500 hover:text-red-600">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={() => patchPayload({ normalise: [...normaliseRows, { path: '', normaliser: PAYLOAD_NORMALISERS[0] }] })} className="inline-flex items-center gap-1 text-xs text-p-blue-dark hover:underline">
+            <Plus className="h-3.5 w-3.5" /> Add rule
+          </button>
+        </div>
+      </Field>
+
+      <p className="text-xs text-slate-400">
+        The buyers are every partner holding an enabled profile priced for this population, in priority order. This node runs once per lead: there is no retry setting, because a retried sale is a second send.
       </p>
     </section>
   )

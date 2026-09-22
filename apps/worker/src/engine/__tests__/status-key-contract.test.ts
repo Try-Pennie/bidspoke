@@ -36,6 +36,7 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
   achieve_offers: 'emits-status',
   code: 'no-http-status', // output is the script's return value, user-controlled
   bid_group: 'no-http-status', // composes partner_bid outputs, covered via partner_bid
+  buyer_select: 'no-http-status', // the parent output carries the sale and the considered buyers; each attempt is a partner_bid row, covered via partner_bid
   parallel: 'no-http-status', // composes child outputs
   filter: 'no-http-status',
   branch: 'no-http-status',

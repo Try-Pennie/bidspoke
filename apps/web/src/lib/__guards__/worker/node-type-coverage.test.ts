@@ -57,6 +57,7 @@ describe('shadow side effect exemptions', () => {
     data_store: 'writes KV; skips the write under the shadow flag',
     latency_gate: 'writes a KV mark; short circuits under the shadow flag',
     achieve_offers: 'calls Achieve; short circuits under the shadow flag',
+    buyer_select: 'sells a lead to a buyer; a shadow or test run evaluates and reports only, claiming, reserving, calling and mirroring nothing',
   }
 
   it('places every node type with an executor file as exempt or shadow aware, never both, never neither', () => {

@@ -25,6 +25,7 @@ import { asJson } from '../../lib/json'
 import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
+import { loadBuyerProfiles, partnersPricedFor } from '../../lib/buyer-profile-loader'
 
 type Variables = AuthVariables
 
@@ -1121,18 +1122,50 @@ workflows.get('/:id/rename-impact', async (c) => {
     .neq('id', id)
   if (wfError) return dbError(c, wfError)
 
+  type DefNode = { type?: string; config?: Record<string, unknown> }
+  const nodesOf = (w: unknown): DefNode[] => {
+    const def = (w as { definition: unknown }).definition as { nodes?: DefNode[] } | null
+    return def?.nodes ?? []
+  }
+
+  // A buyer_select node names no partner in its config: the decision recorded on
+  // the plan (#1411) is that a workflow containing one uses every partner holding
+  // an enabled profile priced for that node's population. The snapshot is read
+  // once, only when some other workflow carries the node, and a read that fails
+  // refuses the whole answer rather than reporting a partner as unshared (L98).
+  const populationsInUse = new Set<string>()
+  for (const w of otherWorkflows ?? []) {
+    for (const n of nodesOf(w)) {
+      if (n?.type === 'buyer_select' && typeof n.config?.population === 'string') populationsInUse.add(n.config.population)
+    }
+  }
+  const pricedPartnersByPopulation = new Map<string, Set<string>>()
+  if (populationsInUse.size > 0) {
+    let snapshot
+    try {
+      snapshot = await loadBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase)
+    } catch (err) {
+      console.error(`[workflows] rename impact could not read buyer profiles for org ${orgId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+      return c.json({ error: 'Buyer profiles could not be read, so which workflows share these partners cannot be determined. Try again.' }, 503)
+    }
+    for (const population of populationsInUse) {
+      pricedPartnersByPopulation.set(population, new Set(partnersPricedFor(snapshot, population)))
+    }
+  }
+
   function workflowsUsingPartner(partnerId: string): { id: string; name: string }[] {
     const out: { id: string; name: string }[] = []
     for (const w of otherWorkflows ?? []) {
-      const def = (w as { definition: unknown }).definition as { nodes?: Array<{ type?: string; config?: Record<string, unknown> }> } | null
-      const nodes = def?.nodes ?? []
-      const used = nodes.some((n) => {
+      const used = nodesOf(w).some((n) => {
         if (!n || !n.config) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group') {
           const ids = n.config.partner_ids
           if (Array.isArray(ids) && ids.includes(partnerId)) return true
           if (n.config.fallback_partner_id === partnerId) return true
+        }
+        if (n.type === 'buyer_select' && typeof n.config.population === 'string') {
+          return pricedPartnersByPopulation.get(n.config.population)?.has(partnerId) ?? false
         }
         return false
       })

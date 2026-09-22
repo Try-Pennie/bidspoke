@@ -78,6 +78,19 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // Nothing to configure: Achieve drives product selection on their side, and every
       // other field has a working default.
       return null
+    case 'buyer_select': {
+      // The fields the node cannot decide without (#1411). This is what blocks
+      // saving an unconfigured live workflow. Mode is checked as a member of the
+      // vocabulary, not as presence, so an unknown mode is unconfigured (L72).
+      const mode = config.mode
+      if (mode !== 'decide_only' && mode !== 'live') return 'No mode set (decide only or live)'
+      if (!(config.population as string | undefined)?.trim()) return 'No population selected'
+      if (!(config.lead_key as string | undefined)?.trim()) return 'No lead key template set'
+      if (!(config.sell_off_when as string | undefined)?.trim()) return 'No sell off condition set'
+      const payload = config.sale_payload as { base?: unknown } | undefined
+      if (typeof payload?.base !== 'string' || !payload.base.trim()) return 'No sale payload base set'
+      return null
+    }
     case 'response':
     case 'exit':
     case 'branch_end':
@@ -198,6 +211,42 @@ export function findDuplicateOutEdges(nodes: Node[], edges: Edge[]): Map<string,
       namespace: data?.namespace ?? id,
       label: data?.label,
       message: 'Has two outgoing edges on one output. Only one will run. Delete the stale edge.',
+    })
+  }
+  return errors
+}
+
+/**
+ * The outgoing handles a buyer_select node can route to, given its config
+ * (#1411). sold, no_sale and not_applicable always; deferred whenever the node
+ * can defer, which is decide only mode and any live share variable.
+ */
+export function buyerSelectRequiredHandles(config: Record<string, unknown>): string[] {
+  const handles = ['sold', 'no_sale', 'not_applicable']
+  const livePercentEnv = config.live_percent_env
+  if (config.mode === 'decide_only' || (typeof livePercentEnv === 'string' && livePercentEnv.trim() !== '')) handles.push('deferred')
+  return handles
+}
+
+/**
+ * Attached buyer_select nodes with a required outgoing handle no edge leaves
+ * from. At run time an unwired handle the node needs to take is a named step
+ * failure in every mode, so a live workflow must not save with one (L72).
+ */
+export function findUnwiredBuyerSelectHandles(nodes: NodeDef[], edges: EdgeDef[]): Map<string, ValidationError> {
+  const errors = new Map<string, ValidationError>()
+  for (const node of nodes) {
+    if (node.type !== 'buyer_select') continue
+    const attached = edges.some((e) => e.source === node.id || e.target === node.id)
+    if (!attached) continue
+    const wired = new Set(edges.filter((e) => e.source === node.id).map((e) => normalizeHandle(e.source_handle)))
+    const missing = buyerSelectRequiredHandles(node.config ?? {}).filter((h) => !wired.has(h))
+    if (missing.length === 0) continue
+    errors.set(node.id, {
+      nodeId: node.id,
+      namespace: node.namespace,
+      label: node.label,
+      message: `Outgoing handle not wired: ${missing.join(', ')}`,
     })
   }
   return errors

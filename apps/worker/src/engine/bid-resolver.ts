@@ -20,8 +20,8 @@ import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { matchTier, type Ladder } from '@bidspoke/buyer-profile'
-import { partnerCredentialValue } from '../lib/partner-credential'
 import { applyOutboundMapping } from '../lib/field-mapper'
+import { partnerRequestHeaders } from '../lib/post-to-partner'
 import { containsHtmlDocument } from '../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from './block-sightings'
 
@@ -193,41 +193,22 @@ async function callBidApi(
   env: Env,
   signal?: AbortSignal
 ): Promise<BidResolverResult> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-Trace-Id': ctx.trigger.trace_id,
-  }
-
-  if (partner.cf_secret_key) {
-    // Shared with the save-time warning in the partner routes (#416), so the two
-    // cannot disagree about what counts as a usable credential.
-    const secretValue = partnerCredentialValue(env, partner.cf_secret_key)
-    if (secretValue) {
-      headers['Authorization'] = `Bearer ${secretValue}`
-    } else {
-      // The partner is configured to require a credential but it resolved empty
-      // (the secret is unset or blank). Previously we silently dropped the auth
-      // header and sent an unauthenticated request, which just 401s and surfaces as
-      // a generic transient with no hint that the real cause is a missing credential
-      // (#411). Fail loudly instead: a distinct, permanent (retry can't help) error
-      // that names the missing key, and skip the doomed call.
-      //
-      // Marked isConfigError so the circuit breaker does not count it (#417): the
-      // partner is not down, we are misconfigured, and charging the breaker for our
-      // own fault opens it and re-buries this message behind 'circuit_open'.
-      const credErr = new PartnerApiError(
-        `Partner ${partner.slug} requires credential '${partner.cf_secret_key}' but it is missing or blank`,
-        'permanent',
-        false,
-        true,
-      ) as PartnerApiError & { resolved_input?: Record<string, unknown> }
-      credErr.resolved_input = {
+  // The headers and the credential rule (#411, #417) live in lib/post-to-partner,
+  // shared with the buyer_select node (#1411). A configured credential that is
+  // unset or blank is a permanent config error the call never makes; the
+  // resolved input is attached here so the Results panel names the missing key.
+  let headers: Record<string, string>
+  try {
+    headers = partnerRequestHeaders(partner, env, ctx.trigger.trace_id)
+  } catch (err) {
+    if (err instanceof PartnerApiError) {
+      ;(err as PartnerApiError & { resolved_input?: Record<string, unknown> }).resolved_input = {
         endpoint: partner.api_endpoint,
         method: 'POST',
         missing_credential: partner.cf_secret_key,
       }
-      throw credErr
     }
+    throw err
   }
 
   // Apply per-partner outbound field mapping (TODO 4.9). Null mapping = identity.

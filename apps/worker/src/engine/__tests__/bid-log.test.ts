@@ -176,6 +176,56 @@ const attemptsOf = (s: Record<string, StepOutput>) => deriveCodeNodeBidAttempts(
 const summaryOf = (s: Record<string, StepOutput>) => deriveCodeNodeBidSummary(s, allCode(s))
 const projectionOf = (s: Record<string, StepOutput>) => bidAttemptsForProjection(s, allCode(s))
 
+// ── buyer_select beside tripoint_ping (#1411, L467) ───────────────────────────
+//
+// The node records its own live attempts during the run through makeBidLogger,
+// exactly as partner_bid does, so this derivation must NOT also produce a row
+// for it: the parent output is not a code node's, and its synthesized child
+// namespaces are absent from the definition. Across every arm of the cutover the
+// two writers together yield exactly ONE Tripoint row per execution.
+describe('deriveCodeNodeBidAttempts leaves buyer_select to its own logger (#1411)', () => {
+  const engineNodes: NodeDefinition[] = [
+    { id: 'n1', namespace: 'tripoint_ping', type: 'code', config: {} },
+    { id: 'n2', namespace: 'sell_off', type: 'buyer_select', config: {} },
+  ]
+  const nodeOutput = (route: string, mode: string) => ({
+    _route: route, reason: route, mode_effective: mode, population: 'engine', lead_key: 'lead-1',
+    sale: { skipped: route !== 'sold', accepted: route === 'sold', buyer_reference: route === 'sold' ? 'L-1' : null, result_code: route === 'sold' ? '1000' : null, partner_slug: route === 'sold' ? 'tripoint' : null },
+    considered: [{ partner: 'tripoint', priority: 1, payout_cents: 2190, outcome: route === 'sold' ? 'sold' : 'declined_by_buyer' }],
+    live_percent_in_force: 100, caps_in_force: [], duration_ms: 5,
+  })
+  // What the node's own logger wrote during the run, per arm.
+  const nodeRows = (route: string, mode: string): number => (route !== '' && mode === 'live' && route !== 'not_applicable' ? 1 : 0)
+
+  const arms: Array<[string, Record<string, unknown>, string, string]> = [
+    ['legacy skipped, node not applicable', { skipped: true, qualified: null, resultCode: null }, 'not_applicable', 'live'],
+    ['legacy sold, node not present', { skipped: false, qualified: true, resultCode: 1001, createLead: { id: 'L-9' } }, '', 'live'],
+    ['node sold, legacy not reached', {}, 'sold', 'live'],
+    ['node no sale, legacy not reached', {}, 'no_sale', 'live'],
+    ['decide_only beside a legacy sale', { skipped: false, qualified: true, resultCode: 1001, createLead: { id: 'L-9' } }, 'deferred', 'decide_only'],
+  ]
+
+  it.each(arms)('%s: exactly one Tripoint row per execution', (_label, ping, route, mode) => {
+    const s: Record<string, StepOutput> = {}
+    if (Object.keys(ping).length > 0) s.tripoint_ping = { output: ping, status: 'completed' }
+    if (route) {
+      s.sell_off = { output: nodeOutput(route, mode), status: 'completed' }
+      // The synthesized child the walker records under the node namespace.
+      if (nodeRows(route, mode) > 0) s['sell_off.tripoint'] = { output: { outcome: route === 'sold' ? 'accepted' : 'declined_by_buyer', partner_slug: 'tripoint' }, status: 'completed' }
+    }
+    const derived = deriveCodeNodeBidAttempts(s, meta, engineNodes).filter((r) => r.partner_slug === 'tripoint')
+    expect(derived.length + nodeRows(route, mode)).toBe(1)
+  })
+
+  it('the parent output and the child step are both invisible to the projection', () => {
+    const s: Record<string, StepOutput> = {
+      sell_off: { output: nodeOutput('sold', 'live'), status: 'completed' },
+      'sell_off.tripoint': { output: { outcome: 'accepted', partner_slug: 'tripoint', http_status: 200 }, status: 'completed' },
+    }
+    expect(bidAttemptsForProjection(s, engineNodes)).toEqual([])
+  })
+})
+
 describe('bidAttemptsForProjection — RML carries bid_cents (#381)', () => {
   it('projects the RML amount onto the strand projection', () => {
     const out = projectionOf(rml('lendswift', { status: 'ACCEPTED', bid_amount: 4.99, min_bid_value: 6.15 }))

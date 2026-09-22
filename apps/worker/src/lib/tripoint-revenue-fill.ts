@@ -193,6 +193,39 @@ export interface FillDeps {
   now?: () => Date
 }
 
+/**
+ * The population this job fills, as ONE filter both its queries apply, so the
+ * candidate read and the exported residual count can never drift apart, and a
+ * test can prove a row is selected by the job's own predicate rather than by a
+ * restatement of it (#1411, L16). Unpriced Tripoint wins: the winner flag set
+ * by the finalize, no estimate yet, and no partner reported amount, because a
+ * measured bid beats a derived one (Main Flow's bid_group winners carry one and
+ * create no Salesforce prospect, so they were 39 of 39 false candidates on
+ * 2026-09-05).
+ */
+export const UNPRICED_TRIPOINT_WIN_FILTER: ReadonlyArray<['eq', string, string | boolean] | ['is', string, null]> = [
+  ['eq', 'partner_slug', 'tripoint'],
+  ['eq', 'is_winner', true],
+  ['is', 'estimated_revenue_cents', null],
+  ['is', 'bid_cents', null],
+]
+
+interface FilterChain {
+  eq(column: string, value: unknown): FilterChain
+  is(column: string, value: null): FilterChain
+}
+
+// T is left unconstrained on purpose: constraining it to the builder's own eq
+// and is signatures sends the compiler into PostgREST's generic column types
+// (TS2589). The chain is the same object in and out, so the cast is honest.
+export function unpricedTripointWinFilter<T>(query: T): T {
+  let chain = query as unknown as FilterChain
+  for (const [op, column, value] of UNPRICED_TRIPOINT_WIN_FILTER) {
+    chain = op === 'eq' ? chain.eq(column, value) : chain.is(column, value)
+  }
+  return chain as unknown as T
+}
+
 export async function runTripointRevenueFill(deps: FillDeps): Promise<FillSummary> {
   const { supabase, fetchRevenue } = deps
   const now = deps.now ? deps.now() : new Date()
@@ -206,23 +239,14 @@ export async function runTripointRevenueFill(deps: FillDeps): Promise<FillSummar
   // already exported are deliberately excluded: filling one writes a value the
   // warehouse will never see and the purge then deletes, so the work would be
   // invisible either way. They are counted separately below instead.
-  const { data: bids, error: bidsErr } = await supabase
-    .from('lead_sighting_bids')
-    .select('id, sighting_id, attempted_at_utc')
-    .eq('partner_slug', 'tripoint')
-    .eq('is_winner', true)
-    .is('estimated_revenue_cents', null)
-    // A row already carrying a partner-reported amount needs no estimate: a
-    // measured bid beats a derived one. Main Flow resolves a real bid through
-    // its bid_group node and creates no Salesforce prospect, so without this
-    // every one of its winners became a candidate, found no prospect, and was
-    // reported as a skip. Measured 2026-09-05: 39 of 39 Main Flow winners
-    // against 0 of 282 for the two flows this job exists for, and the skip
-    // count had climbed to 19 of 58 per run.
-    .is('bid_cents', null)
-    .is('exported_at', null)
-    .gte('attempted_at_utc', since)
-    .limit(MAX_ROWS_PER_RUN)
+  const { data: bids, error: bidsErr } = await unpricedTripointWinFilter(
+    supabase
+      .from('lead_sighting_bids')
+      .select('id, sighting_id, attempted_at_utc')
+      .is('exported_at', null)
+      .gte('attempted_at_utc', since)
+      .limit(MAX_ROWS_PER_RUN),
+  )
 
   if (bidsErr) {
     // A failed read is not an empty window (LESSONS L98).
@@ -343,15 +367,13 @@ async function countExportedUnpriced(
   since: string,
   summary: FillSummary,
 ): Promise<number> {
-  const { count, error } = await supabase
-    .from('lead_sighting_bids')
-    .select('id', { count: 'exact', head: true })
-    .eq('partner_slug', 'tripoint')
-    .eq('is_winner', true)
-    .is('estimated_revenue_cents', null)
-    // Same population as the candidate read above, or the residual reports rows
-    // this job would never have filled anyway.
-    .is('bid_cents', null)
+  // Same population as the candidate read above, through the same filter, or the
+  // residual reports rows this job would never have filled anyway.
+  const { count, error } = await unpricedTripointWinFilter(
+    supabase
+      .from('lead_sighting_bids')
+      .select('id', { count: 'exact', head: true }),
+  )
     .not('exported_at', 'is', null)
     .gte('attempted_at_utc', since)
 

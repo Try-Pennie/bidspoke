@@ -17,6 +17,7 @@ import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
+import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
@@ -1352,6 +1353,80 @@ export async function walkGraph(
       current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
 
       stepOrder = groupEndOrder + 1
+      continue
+    }
+
+    // ── Buyer Select node (#1411): sell a sell off lead to the best eligible buyer ──
+    // First class like bid_group: the executor returns the parent output plus one
+    // attempt per buyer it actually contacted, and the walker writes one parent
+    // row and one `partner_bid` child row per attempt, every row under the node's
+    // REAL id (step_node_id is a uuid column) and linked by parallel_group_id.
+    // The node never goes through executeNode's retry loop: a retried sale is a
+    // duplicate send, so it runs exactly once whatever the definition says.
+    if (node.type === 'buyer_select') {
+      const selectStartedAt = new Date().toISOString()
+      const selectStartMs = Date.now()
+      log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
+
+      const selectStartOrder = stepOrder
+      const attemptOrderBase = stepOrder + 1
+      const selectResult = await executeBuyerSelectNode(node, ctx, env, buyerSelectProductionDeps(ctx, env, supabase))
+
+      selectResult.attempts.forEach((attempt, attemptIndex) => {
+        recordStepOutput(ctx, attempt.namespace, { output: attempt.output, status: attempt.status, error: attempt.error ?? undefined, error_type: attempt.error_type })
+        const childNode: NodeDefinition = { id: node.id, namespace: attempt.namespace, type: 'partner_bid', config: {} }
+        const attemptInput: ResolvedStepInput = { template: { partner_slug: attempt.partner_slug }, resolved: attempt.input }
+        logStep(stepLogQueue, executionId, executionStartedAt, childNode, attempt.status, attemptInput, attempt.output, attempt.error ?? undefined, attempt.error_type, 0, attempt.started_at.toISOString(), attemptOrderBase + attemptIndex, node.id)
+        log({ event: attempt.status === 'completed' ? 'step_complete' : 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: attempt.namespace, step_type: 'partner_bid', duration_ms: attempt.completed_at.getTime() - attempt.started_at.getTime(), error_message: attempt.error ?? undefined, error_type: attempt.error_type })
+      })
+
+      // The handle is checked BEFORE the parent row is written, so an unwired
+      // handle is a failed row with its own name in every mode, never a
+      // completed row that then went nowhere.
+      const selectOutput = selectResult.output
+      const selectEdges = outgoingEdges(node.id, definition.edges)
+      const selectEdge = selectEdges.find((e) => e.source_handle === selectOutput._route)
+      let selectFailure = selectResult.failure
+      if (!selectFailure && !selectEdge) {
+        selectFailure = {
+          message: `buyer_select buyer_select_handle_unwired: the node routed ${selectOutput._route} and that handle is not wired`,
+          errorType: 'permanent',
+          reason: 'buyer_select_handle_unwired',
+        }
+      }
+      const selectStatus: StepStatus = selectFailure ? 'failed' : 'completed'
+      const selectErrorType: ErrorType = selectFailure?.errorType ?? null
+
+      recordStepOutput(ctx, node.namespace, { output: selectOutput, status: selectStatus, error: selectFailure?.message, error_type: selectErrorType }, { chainStep: true })
+      const selectConfig = node.config as Record<string, unknown>
+      const selectResolvedInput: ResolvedStepInput = {
+        template: {
+          population: selectConfig.population,
+          mode: selectConfig.mode,
+          live_percent_env: selectConfig.live_percent_env,
+          lead_key: selectConfig.lead_key,
+          sell_off_when: selectConfig.sell_off_when,
+          bid_when_positive: selectConfig.bid_when_positive,
+        },
+        resolved: {
+          population: selectOutput.population,
+          mode_effective: selectOutput.mode_effective,
+          lead_key: selectOutput.lead_key,
+          live_percent_in_force: selectOutput.live_percent_in_force,
+        },
+      }
+      logStep(stepLogQueue, executionId, executionStartedAt, node, selectStatus, selectResolvedInput, selectOutput, selectFailure?.message, selectErrorType, 0, selectStartedAt, selectStartOrder)
+      lastOutput = selectOutput
+
+      const selectDurationMs = Date.now() - selectStartMs
+      if (selectFailure) {
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: selectDurationMs, error_message: selectFailure.message, error_type: selectErrorType })
+        throw new StepFailureError(selectFailure.message, node.namespace, selectErrorType)
+      }
+      log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: selectDurationMs })
+
+      current = selectEdge ? findNode(selectEdge.target, definition.nodes) : undefined
+      stepOrder = attemptOrderBase + selectResult.attempts.length
       continue
     }
 

@@ -34,7 +34,7 @@ import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConf
 import { resolveBid, effectiveResolverType } from '../bid-resolver'
 import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
-import { recordBidAttempt } from '../lead-sightings'
+import { makeBidLogger } from '../bid-logger'
 import { isShadowDryRun, isShadowStandIn } from '../shadow'
 
 // Re-exports — keep external imports stable.
@@ -327,31 +327,10 @@ export async function executePartnerBidNode(
   }
 
   const attemptedAt = new Date()
-  const logBid = (input: Partial<Parameters<typeof recordBidAttempt>[1]> & { partner_slug: string; attempted_at_utc: Date }) => {
-    if (!ctx.trigger.sighting_id) return
-    const write = recordBidAttempt(supabase, {
-      sighting_id: ctx.trigger.sighting_id,
-      trace_id: ctx.trigger.trace_id,
-      execution_id: ctx.trigger.execution_id ?? '',
-      partner_slug: input.partner_slug,
-      attempted_at_utc: input.attempted_at_utc,
-      attempted_at_et: input.attempted_at_et ?? input.attempted_at_utc,
-      responded_at_utc: input.responded_at_utc ?? null,
-      responded_at_et: input.responded_at_et ?? input.responded_at_utc ?? null,
-      http_status: input.http_status ?? null,
-      bid_cents: input.bid_cents ?? null,
-      classification: input.classification ?? null,
-      decline_reason: input.decline_reason ?? null,
-      resolver_type: p.bid_resolver_type ?? null,
-      skip_reason: input.skip_reason ?? null,
-      is_test: false,
-    })
-    // Track the insert so finalizeSighting can await it before its winner
-    // UPDATE. Otherwise the UPDATE (matched on execution_id + partner_slug)
-    // races the unawaited insert, matches zero rows, and the winning bid stays
-    // is_winner=false permanently (#88). recordBidAttempt never rejects.
-    ;(ctx.pendingBidWrites ??= []).push(write)
-  }
+  // The lead_sighting_bids writer, shared with the buyer_select node (#1411).
+  // No sighting id means no row; the write is registered on ctx so the sighting
+  // finalize can await it before its winner UPDATE (#88).
+  const logBid = makeBidLogger(supabase, ctx, p.bid_resolver_type ?? null)
 
   // 2. Inactive check
   if (!p.is_active) {

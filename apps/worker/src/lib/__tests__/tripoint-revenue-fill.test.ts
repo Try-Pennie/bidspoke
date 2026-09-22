@@ -13,7 +13,45 @@
  * is the same reasoning that kept the quoted rate out of that column (#1158).
  */
 import { describe, it, expect } from 'vitest'
-import { revenueUpdates, type FillCandidate } from '../tripoint-revenue-fill'
+import { revenueUpdates, unpricedTripointWinFilter, type FillCandidate } from '../tripoint-revenue-fill'
+
+// ── The candidate predicate, as one function both queries apply (#1411) ────────
+//
+// The buyer_select node writes its Tripoint accept row through makeBidLogger
+// with bid_cents null, and the finalize flips is_winner on it. This proves that
+// row is selected by the job's OWN predicate, by recording the filter the job
+// applies and evaluating it against the row, rather than by restating the
+// predicate in the test (L638).
+type Constraint = ['eq', string, unknown] | ['is', string, null]
+function recordFilter(): { chain: { eq: Function; is: Function }; constraints: Constraint[] } {
+  const constraints: Constraint[] = []
+  const chain = {
+    eq(column: string, value: unknown) { constraints.push(['eq', column, value]); return chain },
+    is(column: string, value: null) { constraints.push(['is', column, value]); return chain },
+  }
+  return { chain, constraints }
+}
+const satisfies = (row: Record<string, unknown>, constraints: Constraint[]) =>
+  constraints.every(([op, column, value]) => (op === 'eq' ? row[column] === value : row[column] === null))
+
+describe('unpricedTripointWinFilter', () => {
+  const nodeAcceptRow = { partner_slug: 'tripoint', is_winner: true, estimated_revenue_cents: null, bid_cents: null, classification: 'accept', resolver_type: 'buyer_select' }
+
+  it('selects the row the buyer_select node writes for a Tripoint sale once the finalize has flipped its winner flag', () => {
+    const { chain, constraints } = recordFilter()
+    unpricedTripointWinFilter(chain as never)
+    expect(constraints.length).toBeGreaterThanOrEqual(4)
+    expect(satisfies(nodeAcceptRow, constraints)).toBe(true)
+  })
+
+  it('does not select a node row the finalize has not flipped, a priced row, or another buyer', () => {
+    const { chain, constraints } = recordFilter()
+    unpricedTripointWinFilter(chain as never)
+    expect(satisfies({ ...nodeAcceptRow, is_winner: false }, constraints)).toBe(false)
+    expect(satisfies({ ...nodeAcceptRow, bid_cents: 1200 }, constraints)).toBe(false)
+    expect(satisfies({ ...nodeAcceptRow, partner_slug: 'liberty' }, constraints)).toBe(false)
+  })
+})
 
 const at = '2026-09-04T19:00:00.000Z'
 const cand = (bid_id: string, prospect_id: string): FillCandidate => ({ bid_id, prospect_id, attempted_at_utc: at })

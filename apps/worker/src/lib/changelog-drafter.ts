@@ -186,6 +186,7 @@ Common node types and what they do:
 - data_store: KV read/write with a TTL
 - latency_gate: mark a time, then gate on the elapsed time
 - achieve_offers: collect Achieve offers, log only
+- buyer_select: sell the lead to the highest ranked eligible buyer
 - response/exit: terminate with HTTP response
 - salesforce: SF object create/update
 - webhook: outbound HTTP call

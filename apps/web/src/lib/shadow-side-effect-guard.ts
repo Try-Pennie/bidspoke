@@ -34,6 +34,10 @@ export const SHADOW_EXEMPT_NODES = [
   // value and returns them. It reaches nothing outside the isolate, and the node that
   // sends them (achieve-offers) carries the shadow guard.
   'achieve-identity',
+  // Pure: resolves the buyer_select node's sale body from its config through the template
+  // resolver and returns it (#1411). The node that sends it (buyer-select) carries the
+  // shadow guard.
+  'buyer-select-payload',
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).

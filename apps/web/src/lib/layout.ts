@@ -38,6 +38,7 @@ const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
   data_store:     STANDARD_NODE_H,
   latency_gate:   STANDARD_NODE_H,
   achieve_offers: STANDARD_NODE_H,
+  buyer_select:   STANDARD_NODE_H,
   default:        STANDARD_NODE_H,
 }
 
@@ -191,6 +192,7 @@ export function configuredHandleIds(node: Node): string[] | null {
   }
   if (type === 'filter') return ['pass', 'exit']
   if (type === 'bid_group') return ['winner', 'no_winner']
+  if (type === 'buyer_select') return ['sold', 'no_sale', 'not_applicable', 'deferred']
   if (type === 'latency_gate') {
     const op = (config?.operation as string | undefined) ?? 'mark'
     return op === 'check' ? ['within', 'exceeded'] : null
@@ -219,6 +221,10 @@ function handleSortIndex(
   if (nodeType === 'bid_group') {
     if (handleId === 'winner') return 0
     if (handleId === 'no_winner') return 1
+  }
+  if (nodeType === 'buyer_select') {
+    const idx = ['sold', 'no_sale', 'not_applicable', 'deferred'].indexOf(handleId)
+    return idx >= 0 ? idx : 999
   }
   if (nodeType === 'latency_gate') {
     if (handleId === 'within') return 0
@@ -316,7 +322,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
   // Typed by NodeType so a misspelt member is a compile error (#1411); which
   // types belong is a layout judgement, stated above, not a trait.
-  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate'])
+  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate', 'buyer_select'])
 
   // Cross-path edges: a node can be deliberately wired from a second, deeper
   // path (e.g. a filter on one branch routing into a bid_group on another).

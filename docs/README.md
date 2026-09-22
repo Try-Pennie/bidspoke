@@ -29,7 +29,7 @@ Every node type, with config schema and examples. See the [node catalog](nodes/R
 
 Control flow: [Filter](nodes/filter.md), [Branch](nodes/branch.md), [Parallel](nodes/parallel.md), [Exit](nodes/exit.md), [Response](nodes/response.md).
 Data and integrations: [Code](nodes/code.md), [Webhook](nodes/webhook.md), [Salesforce](nodes/salesforce.md), [Transform](nodes/transform.md), [Constants](nodes/constants.md), [Data Store](nodes/data-store.md).
-Bidding: [Bid Group](nodes/bid-group.md), [Partner Bid](nodes/partner-bid.md), [Latency Gate](nodes/latency-gate.md).
+Bidding: [Bid Group](nodes/bid-group.md), [Partner Bid](nodes/partner-bid.md), [Latency Gate](nodes/latency-gate.md), [Buyer Select](nodes/buyer-select.md).
 
 ## Guides
 
