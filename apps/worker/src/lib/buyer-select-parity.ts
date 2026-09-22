@@ -460,8 +460,12 @@ export const BUYER_SELECT_PARITY_REMEDY: AlertRemedy = {
  */
 export async function runParityRefreshAndPage(deps: RefreshDeps, notify: (lines: string[]) => Promise<void>, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
   const summary = await runParityRefresh(deps, only)
-  // A skipped run measured nothing, so it neither pages nor clears (L11).
-  if (!summary.skipped) await notify(summary.errors)
+  // Only a FULL run speaks for the job: a skipped run measured nothing, and a
+  // run scoped to one workflow or one day (the route's retry) knows nothing about
+  // the days it did not touch, so its clean answer must not clear a standing
+  // page for them (L11). Its result is the HTTP response.
+  const full = !only.workflowId && !only.day
+  if (!summary.skipped && full) await notify(summary.errors)
   return summary
 }
 

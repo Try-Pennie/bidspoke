@@ -221,6 +221,15 @@ describe('runParityRefresh', () => {
     await runParityRefreshAndPage(skipped.deps, notify)
     expect(paged).toHaveLength(2)
   })
+
+  it('a run scoped to one workflow or one day neither pages nor clears: its answer is the response, and only a full run speaks for the whole job', async () => {
+    const paged: string[][] = []
+    const notify = async (lines: string[]) => { paged.push(lines) }
+    const clean = refreshDeps()
+    await runParityRefreshAndPage(clean.deps, notify, { day: '2027-09-19' })
+    await runParityRefreshAndPage(clean.deps, notify, { workflowId: 'wf-engine' })
+    expect(paged).toEqual([])
+  })
 })
 
 describe('countsHash', () => {
