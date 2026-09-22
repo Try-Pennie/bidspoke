@@ -160,6 +160,20 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'a partner firewall block appearing or lifting is no longer noticed between leads, and no all-clear is posted for a standing block (#1274)',
   },
+  {
+    id: 'buyer-sale-drain',
+    label: 'Buyer ledger outbox drain',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack: a dark drain is noticed inside the
+    // ten minute window its own backlog page (five ticks) would otherwise be
+    // the only sign of.
+    staleMs: 10 * MIN,
+    // One ledger read per buyer plus one rpc per pending entry; a healthy tick
+    // is under a second and a backlog of hundreds is still well inside this.
+    maxRunMs: 50 * 1000,
+    dependents:
+      'ledger entries the inline mirror failed to copy never reach buyer_sales, so the partner page, the unresolved list and the sales checks read an incomplete copy while selling continues (#1413)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {
