@@ -13,6 +13,9 @@ import {
   pollStatement,
   isTransientSnowflakeError,
   postStatementWithRetry,
+  statementRequestBody,
+  STATEMENT_TIMEOUT_SECONDS,
+  EDGE_TIMEOUT_CEILING_SECONDS,
   type SnowflakeConfig,
 } from '../snowflake'
 
@@ -438,5 +441,62 @@ describe('result partition assembly', () => {
     ])
     const result = await resolveStatementResult(config, headers, 202, JSON.stringify({ statementHandle: 'h1' }), fast)
     expect(result.data).toEqual([['a'], ['b'], ['c']])
+  })
+})
+
+/**
+ * How long Snowflake may spend on one statement before cancelling it (#1447).
+ *
+ * Measured 2026-09-22. The execution archive stopped three runs in 40 hours on
+ * this limit, and the run at 15:23 UTC spent 642 seconds resubmitting one
+ * statement three times, each attempt cancelled at 60 seconds, then archived
+ * nothing. The statements are not large: a healthy hour uses 9 to 13 sends for
+ * about 25 MB, so roughly 2 MB each, and two failures in the same hour landed on
+ * its second and its tenth send, which rules out one pathological record and
+ * leaves Snowflake itself being slow.
+ *
+ * The value is bounded ABOVE by something outside our control, which is why the
+ * ceiling is a constant rather than a sentence: the edge in front of Snowflake
+ * answers 524 at about 100 seconds, so a limit past that converts a clean
+ * cancellation, which names the statement and its timeout, into an opaque
+ * gateway error.
+ */
+describe('the statement timeout (#1447)', () => {
+  it('stays under the ceiling the edge in front of Snowflake imposes', () => {
+    // The relationship, not the number: a future raise that crosses the ceiling
+    // fails here rather than shipping and being diagnosed from a 524 (L545).
+    expect(STATEMENT_TIMEOUT_SECONDS).toBeLessThan(EDGE_TIMEOUT_CEILING_SECONDS)
+  })
+
+  it('gives a statement more room than the 60 seconds that was cancelling them', () => {
+    expect(STATEMENT_TIMEOUT_SECONDS).toBeGreaterThan(60)
+  })
+
+  it('is what the request actually carries, not a number beside it', () => {
+    const body = statementRequestBody(
+      { database: 'db', schema: 'sch', warehouse: 'wh', role: 'r' } as SnowflakeConfig,
+      'select 1',
+    )
+
+    expect(body.timeout).toBe(STATEMENT_TIMEOUT_SECONDS)
+  })
+
+  it('still upcases the identifiers, which Snowflake stores unquoted', () => {
+    const body = statementRequestBody(
+      { database: 'db', schema: 'sch', warehouse: 'wh', role: 'r' } as SnowflakeConfig,
+      'select 1',
+    )
+
+    expect(body).toMatchObject({ database: 'DB', schema: 'SCH', warehouse: 'WH', role: 'R' })
+  })
+
+  it('carries bindings as one-indexed text, and omits them entirely when there are none', () => {
+    const config = { database: 'db', schema: 'sch', warehouse: 'wh', role: 'r' } as SnowflakeConfig
+
+    expect(statementRequestBody(config, 'select ?', ['a', null]).bindings).toEqual({
+      '1': { type: 'TEXT', value: 'a' },
+      '2': { type: 'TEXT', value: '' },
+    })
+    expect(statementRequestBody(config, 'select 1', []).bindings).toBeUndefined()
   })
 })
