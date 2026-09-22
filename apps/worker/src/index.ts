@@ -9,6 +9,7 @@ import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
+import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -791,6 +792,28 @@ export default {
       ctx.waitUntil(
         prewarmKvCaches(supabase, env)
           .catch((e) => console.error('[prewarm] failed:', e))
+      )
+      // The buyer ledger outbox drain (#1413): delivers every ledger entry the
+      // inline mirror did not copy to buyer_sales, through the same write. Both
+      // heartbeat stamps on every exit path (L514); it pages through the shared
+      // export alerter so the same KV keys mute it as every other job.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, BUYER_SALE_DRAIN_JOB)
+            .catch((e) => console.error(`[${BUYER_SALE_DRAIN_JOB}] heartbeat write failed:`, e))
+            .then(() => runBuyerSaleDrainForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              const delivered = s.buyers.reduce((n, b) => n + b.delivered, 0)
+              const pending = s.buyers.reduce((n, b) => n + b.pending, 0)
+              if (pending > 0 || s.errors.length > 0 || s.unmeasured) {
+                console.log(`[${BUYER_SALE_DRAIN_JOB}] buyers=${s.buyers.length} pending=${pending} delivered=${delivered} paged=${s.paged.length}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''}`)
+              }
+              if (s.errors.length) console.error(`[${BUYER_SALE_DRAIN_JOB}] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error(`[${BUYER_SALE_DRAIN_JOB}] drain failed:`, e)),
+          BUYER_SALE_DRAIN_JOB,
+        ),
       )
       ctx.waitUntil(
         runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, env.SECRET_ENCRYPTION_KEY, makeAlertClaims(env.ALERT_CLAIM))

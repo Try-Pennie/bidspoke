@@ -39,6 +39,7 @@ import { RETENTION_CHECK_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
 import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
+import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
@@ -63,6 +64,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
   ['tripoint pricing', TRIPOINT_PRICING_REMEDY],
+  ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
 ]
 
 /**

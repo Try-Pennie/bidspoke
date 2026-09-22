@@ -1,0 +1,81 @@
+/**
+ * Guard: every job in the worker's heartbeat registry is stamped by the
+ * scheduled handler (#1413, L694, L660).
+ *
+ * A job registered in CRON_JOBS and never stamped reads as never having run,
+ * for ever, with a remedy aimed at cron triggers that are fine: that is what
+ * #1332 was, and the unstamped verdict only softens it after the fact. This
+ * reads the registry file and the handler's source, so a job added to one
+ * without the other fails here rather than in Slack.
+ *
+ * The handler names a job either by its literal or by a constant exported from
+ * a lib module (`export const ARCHIVE_EXPIRY_JOB = 'execution-archive-expiry'`),
+ * so constants are resolved from the lib sources rather than guessed from the id.
+ *
+ * Seen to fail with the drain's writeHeartbeat line removed from index.ts.
+ */
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+
+const INDEX_SOURCE = readFileSync(path.join(WORKER_SRC, 'index.ts'), 'utf8')
+const REGISTRY_SOURCE = readFileSync(path.join(WORKER_SRC, 'lib/cron-heartbeat.ts'), 'utf8')
+
+/** The job ids the registry declares, read from its source. */
+export function registeredJobIds(registrySource: string): string[] {
+  const start = registrySource.indexOf('export const CRON_JOBS')
+  const end = registrySource.indexOf('\n]', start)
+  const block = registrySource.slice(start, end)
+  return [...block.matchAll(/^\s+id: '([a-z0-9-]+)',/gm)].map((m) => m[1])
+}
+
+/** Every `export const NAME_JOB = '<id>'` in the lib sources, keyed by the id. */
+function jobConstants(): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const file of listTsFiles(path.join(WORKER_SRC, 'lib'))) {
+    if (file.includes('__tests__')) continue
+    const src = readFileSync(file, 'utf8')
+    for (const m of src.matchAll(/export const ([A-Z_]+_JOB) = '([a-z0-9-]+)'/g)) {
+      out.set(m[2], [...(out.get(m[2]) ?? []), m[1]])
+    }
+  }
+  return out
+}
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The two calls the handler must make for a job id: the started stamp and the settled stamp. */
+export function stampsFor(source: string, jobId: string, constants: Map<string, string[]>): { started: boolean; completed: boolean } {
+  const names = [`'${jobId}'`, ...(constants.get(jobId) ?? [])]
+  const started = names.some((n) => new RegExp(`writeHeartbeat\\([^)]*,\\s*${escape(n)}\\s*\\)`).test(source))
+  const completed = names.some((n) => new RegExp(`(completeAfter\\(|writeHeartbeatCompleted\\()[\\s\\S]{0,4000}?${escape(n)}`).test(source))
+  return { started, completed }
+}
+
+describe('every registered cron job is stamped by the scheduled handler', () => {
+  const ids = registeredJobIds(REGISTRY_SOURCE)
+  const constants = jobConstants()
+
+  it('the registry was read, the handler was read, and the constants were found', () => {
+    expect(ids.length).toBeGreaterThan(5)
+    expect(ids).toContain('daily-1300')
+    expect(ids).toContain('buyer-sale-drain')
+    expect(INDEX_SOURCE).toContain('scheduled(event: ScheduledEvent')
+    expect(constants.get('execution-archive-expiry')).toEqual(['ARCHIVE_EXPIRY_JOB'])
+  })
+
+  for (const id of ids) {
+    it(`${id} has a started stamp and a settled stamp reachable from scheduled()`, () => {
+      const s = stampsFor(INDEX_SOURCE, id, constants)
+      expect(s.started, `${id}: no writeHeartbeat(..., '${id}') in apps/worker/src/index.ts`).toBe(true)
+      expect(s.completed, `${id}: no completeAfter or writeHeartbeatCompleted for '${id}' in apps/worker/src/index.ts`).toBe(true)
+    })
+  }
+
+  it('reports a job the handler never stamps, so a green run means the scan can see an omission', () => {
+    expect(stampsFor(INDEX_SOURCE, 'no-such-job', constants)).toEqual({ started: false, completed: false })
+    expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, 'x-job')\ncompleteAfter(p, 'x-job')", 'x-job', new Map())).toEqual({ started: true, completed: true })
+    expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, X_JOB)\nwriteHeartbeatCompleted(env.IDEMPOTENCY, X_JOB)", 'x-job', new Map([['x-job', ['X_JOB']]]))).toEqual({ started: true, completed: true })
+  })
+})
