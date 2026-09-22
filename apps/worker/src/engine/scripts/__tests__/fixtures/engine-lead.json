@@ -1,0 +1,71 @@
+{
+  "_source": "A synthetic Engine sell off lead shaped like the live Engine Bidding Workflow's inputs (payload from Engine, constants node output, prospect_trades and create_prospect Salesforce answers), read from the bidspoke-workflows backup on 2026-09-22. No real person: every value is invented. The same inputs feed the recorded live outputs beside this file and the tests over the kept scripts.",
+  "payload": {
+    "leadUuid": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
+    "subAccountUuid": "9c1e2d3f-0000-4000-8000-000000000001",
+    "personalInformation": { "firstName": "jordan", "lastName": "Example", "ssn": "123-45-6789", "state": "TX", "email": "masked@masked" },
+    "financialInformation": { "annualIncome": 68500 }
+  },
+  "execution": { "trace_id": "trace-9f1e-example", "execution_id": "exec-example", "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840" },
+  "env": { "TRIPOINT_PROXY_SECRET": "test-proxy-secret" },
+  "constants": {
+    "TripointClickUrl": "https://go.example-tripoint.test/apply",
+    "pennieClickUrl": "https://apply.example-pennie.test/start",
+    "pennieAlternateClickUrl": "https://apply.example-pennie.test/alt",
+    "pennieExpLandingPage": "https://apply.example-pennie.test/exp",
+    "offerName": "Pennie",
+    "productType": "personal_loan",
+    "logoSrc": "https://cdn.example-pennie.test/logo.png",
+    "mainOfferTitle": "You may qualify for a lower monthly payment",
+    "mainOfferDetails": "<ul><li>Fixed rates</li><li>No prepayment penalty</li></ul>",
+    "SofiSellOffOfferTitle": "A partner offer for you",
+    "SofiSellOffOfferDetails": "<ul><li>Partner terms</li></ul>",
+    "subAccountIdsMap": { "9c1e2d3f-0000-4000-8000-0000000000ff": "sofi" }
+  },
+  "create_prospect": { "id": "a0XSF0000001ABCD" },
+  "prospect_trades_sell_off": {
+    "sellOff": true,
+    "engineBid": 0.65,
+    "baseBid": 0.5,
+    "discountApplied": false,
+    "altLandingPage": false,
+    "testOfferLanguage": false,
+    "expLandingPage": false,
+    "maxLoanPmt": 412,
+    "maxLoanAmt": 18000,
+    "tradeCalculations": { "engineDebt": 18250, "enrollableDebt": 22100 }
+  },
+  "prospect_trades_not_sell_off": {
+    "sellOff": false,
+    "engineBid": 0.65,
+    "baseBid": 0.5,
+    "discountApplied": false,
+    "altLandingPage": false,
+    "testOfferLanguage": false,
+    "expLandingPage": false,
+    "maxLoanPmt": 412,
+    "maxLoanAmt": 18000,
+    "tradeCalculations": { "engineDebt": 18250, "enrollableDebt": 22100 }
+  },
+  "prospect_trades_zero_bid": {
+    "sellOff": true,
+    "engineBid": 0,
+    "baseBid": 0,
+    "discountApplied": false,
+    "altLandingPage": false,
+    "testOfferLanguage": false,
+    "expLandingPage": false,
+    "maxLoanPmt": 0,
+    "maxLoanAmt": 0,
+    "tradeCalculations": { "engineDebt": 9800, "enrollableDebt": 9800 }
+  },
+  "tripoint_null_id_502": {
+    "_source": "Synthetic, not a captured fixture: the null id fault was not observed in the 7 days to 2026-09-20 (fixtures README). Shaped from the message the live tripoint_ping script matches on.",
+    "httpStatus": 502,
+    "body": {
+      "ok": false,
+      "statusCode": 999,
+      "details": [{ "message": "Cannot return null for non-nullable field CreateLeadResponse.id", "path": ["createLead"] }]
+    }
+  }
+}
