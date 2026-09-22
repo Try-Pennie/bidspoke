@@ -184,7 +184,7 @@ export const CRON_JOBS: CronJob[] = [
     // query; minutes at most even with several buyers.
     maxRunMs: 10 * MIN,
     dependents:
-      'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, and nobody is paged for sales waiting on a person (#1413)',
+      'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, nobody is paged for sales waiting on a person, and a buyer failing or declining every lead goes unnoticed (#1413)',
   },
   {
     id: 'buyer-select-parity',

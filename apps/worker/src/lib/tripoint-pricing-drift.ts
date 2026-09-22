@@ -17,7 +17,17 @@
  * third band, or read a rewritten formula as "no Tripoint branch, nothing to
  * compare", would report agreement about a rule it never read (L98, L11). So an
  * unfamiliar shape is `null`, and the caller treats null as its own finding.
+ *
+ * THE ENGINE RULE IS REPORTED, NOT COMPARED (#1413). Since the buyer profiles
+ * shipped, Bidspoke holds Tripoint's Engine price too, as pricing tiers for the
+ * `engine` population, and `describeEngineTiers` puts that rule beside the Main
+ * Flow one under its population name. It is never compared against the Lead
+ * formula, which books Main Flow leads only, and there is no Salesforce rule it
+ * should agree with: Engine leads are bought, and pricing them differently is a
+ * recorded decision (docs/adr/0010-engine-and-main-flow-price-tripoint-differently.md).
+ * Both rules are labelled so a line from one can never be read as the other.
  */
+import type { PricingTier } from '@bidspoke/buyer-profile'
 
 export interface TripointRule {
   /** Debt below this books zero revenue. */
@@ -197,4 +207,46 @@ export function tripointPricingDifferences(
   }
 
   return { differences, notes }
+}
+
+/** The label each line carries, so the reader knows which population's rule it is about. */
+export const POPULATION_LABEL = { main_flow: 'Main Flow', engine: 'Engine' } as const
+
+/** Prefix a difference or note with its population, once. */
+export function underPopulation(population: keyof typeof POPULATION_LABEL, d: PricingDifference): PricingDifference {
+  return { ...d, message: `${POPULATION_LABEL[population]}: ${d.message}` }
+}
+
+/**
+ * The Engine rule as the buyer_select node reads it, as a standing note. `null`
+ * is no enabled Tripoint buyer profile, an empty list is an enabled profile that
+ * holds no Engine tiers: two states with two messages, because the remedy for
+ * each is different (L11). Tiers for another population are left out, since the
+ * node never reads them for an Engine lead.
+ */
+export function describeEngineTiers(tiers: readonly PricingTier[] | null): PricingDifference {
+  if (tiers === null) {
+    return underPopulation('engine', {
+      code: 'engine-tiers-none',
+      message: 'no enabled Tripoint buyer profile, so the buyer_select node has no Tripoint price for Engine leads',
+    })
+  }
+  const engine = tiers.filter((t) => t.population === 'engine').slice().sort((a, b) => a.debtFrom - b.debtFrom)
+  if (engine.length === 0) {
+    return underPopulation('engine', {
+      code: 'engine-tiers-none',
+      message: 'the enabled Tripoint buyer profile holds no Engine tiers, so the buyer_select node has no Tripoint price for Engine leads',
+    })
+  }
+  const bands = engine.map((t) =>
+    t.debtTo === null
+      ? `$${dollars(t.debtFrom)} and up at ${rate(t.multiplier)}`
+      : `$${dollars(t.debtFrom)} to under $${dollars(t.debtTo)} at ${rate(t.multiplier)}`,
+  )
+  return underPopulation('engine', {
+    code: 'engine-tiers',
+    message:
+      `Bidspoke pays Tripoint ${bands.join(', ')} of debt on the buyer profile. This rule is reported here and not ` +
+      'compared against Salesforce, which books Engine leads on a different basis by decision (ADR 0010)',
+  })
 }

@@ -17,13 +17,20 @@ import type { LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { PURGE_GRACE_HOURS } from '../sightings-export'
 import {
   BID_PURGE_HORIZON_MS,
+  BUYER_OUTCOME_RATE_JOB,
   BUYER_SALES_CHECKS_JOB,
   BUYER_SALES_MISMATCH_JOB,
   BUYER_SALES_UNRESOLVED_JOB,
+  OUTCOME_BASELINE_DAYS,
+  OUTCOME_BASELINE_MIN_ATTEMPTS,
+  OUTCOME_RATE_MIN_ATTEMPTS,
+  OUTCOME_SATURATION_MIN_ATTEMPTS,
   endingOf,
+  judgeOutcomeRate,
   runBuyerSalesChecks,
   type ChecksDeps,
   type CheckBuyer,
+  type OutcomeBaseline,
 } from '../buyer-sales-checks'
 
 // 2027-09-20 15:40 UTC is 11:40 in New York: the ET day is 2027-09-20.
@@ -51,6 +58,21 @@ function unresolved(leadKey: string, reservedAt: number): LedgerEntry {
   return { ...accepted(leadKey, reservedAt), status: 'unresolved', resolved_at: null, outcome: null, resolution_source: null, mirrored: true }
 }
 
+/** A buyer answer that was not a sale: declined is the buyer saying no, released is a call that failed before the lead was processed. */
+function noSale(leadKey: string, reservedAt: number, status: 'declined' | 'released'): LedgerEntry {
+  return { ...accepted(leadKey, reservedAt), status, outcome: null, payout_cents: 0 }
+}
+
+/** n entries of one status inside the last hour, one per minute. */
+function hourOf(status: 'accepted' | 'declined' | 'released', n: number, prefix = status): LedgerEntry[] {
+  return Array.from({ length: n }, (_, i) =>
+    status === 'accepted' ? accepted(`${prefix}-${i}`, NOW - (i + 1) * 60_000) : noSale(`${prefix}-${i}`, NOW - (i + 1) * 60_000, status),
+  )
+}
+
+/** Fourteen ordinary days: a few buyer errors, a third declined. */
+const HEALTHY_BASELINE: OutcomeBaseline = { attempts: 600, failed: 6, declined: 200 }
+
 function fakeKv() {
   const store = new Map<string, string>()
   return {
@@ -68,18 +90,21 @@ interface Fixture {
   winners?: Array<{ execution_id: string; attempted_at_utc: string }>
   salesforce?: Set<string> | null
   buyers?: CheckBuyer[]
+  baseline?: OutcomeBaseline
 }
 
 function deps(f: Fixture = {}, over: Partial<Omit<ChecksDeps, 'kv'>> = {}): Omit<ChecksDeps, 'kv'> & { kv: ReturnType<typeof fakeKv> } {
   const kv = fakeKv()
   const notifyMismatch = vi.fn(async (_lines: string[]) => {})
   const notifyUnresolved = vi.fn(async (_lines: string[]) => {})
+  const notifyOutcomeRate = vi.fn(async (_lines: string[]) => {})
   const entries = f.entries ?? { '2027-09-20': [accepted('lead-1', NOW - 10 * 60_000)], '2027-09-19': [] }
   const unresolvedEntries = Object.values(entries).flat().filter((e) => e.status === 'unresolved')
   return {
     kv,
     notifyMismatch,
     notifyUnresolved,
+    notifyOutcomeRate,
     listBuyers: async () => f.buyers ?? [TRIPOINT],
     ledger: () => ({
       entries: async (kind, day) => (kind === 'live' ? entries[day] ?? [] : []),
@@ -90,6 +115,7 @@ function deps(f: Fixture = {}, over: Partial<Omit<ChecksDeps, 'kv'>> = {}): Omit
     readSalesRows: async (_partnerId, day) => (day === '2027-09-20' ? f.sales ?? [{ lead_key: 'lead-1', status: 'accepted', kind: 'live' }] : []),
     readWinnerRows: async () => f.winners ?? [{ execution_id: 'exec-lead-1', attempted_at_utc: new Date(NOW - 10 * 60_000).toISOString() }],
     readIndependentRecord: async () => (f.salesforce === undefined ? new Set(['TP-lead-1']) : f.salesforce),
+    readOutcomeBaseline: async () => f.baseline ?? HEALTHY_BASELINE,
     now: () => NOW,
     localDev: false,
     appUrl: 'https://app.example',
@@ -251,6 +277,156 @@ describe('runBuyerSalesChecks', () => {
     expect(BUYER_SALES_CHECKS_JOB).toBe('buyer-sales-checks')
     expect(BUYER_SALES_MISMATCH_JOB).toBe('buyer-sales-mismatch')
     expect(BUYER_SALES_UNRESOLVED_JOB).toBe('buyer-sales-unresolved')
+    expect(BUYER_OUTCOME_RATE_JOB).toBe('buyer-outcome-rate')
     expect(BID_PURGE_HORIZON_MS).toBe(PURGE_GRACE_HOURS * HOUR)
   })
 })
+
+/**
+ * The outcome rate (L77, L139): a decline and a buyer error are each an expected
+ * answer, so every run carrying one succeeds and nothing else notices when a
+ * buyer starts answering that way to everything. Per buyer over the last hour,
+ * against the prior 14 days, with a saturation rule so a small hour in which
+ * every attempt failed is not discarded by the rate's volume floor.
+ */
+describe('judgeOutcomeRate', () => {
+  it('an hour in which every attempt failed is elevated even below the rate floor (saturation, L139)', () => {
+    const entries = hourOf('released', OUTCOME_SATURATION_MIN_ATTEMPTS)
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    expect(v).toMatchObject({ verdict: 'elevated' })
+    expect(v).toMatchObject({ detail: expect.stringMatching(new RegExp(`all ${OUTCOME_SATURATION_MIN_ATTEMPTS} attempts in the last hour failed`)) })
+  })
+
+  it('unclassified answers count as failures: a buyer timing out on everything saturates too', () => {
+    const entries = Array.from({ length: OUTCOME_SATURATION_MIN_ATTEMPTS }, (_, i) => unresolved(`u-${i}`, NOW - (i + 1) * 60_000))
+    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW).verdict).toBe('elevated')
+  })
+
+  it('a buyer error share far above the 14 day share is elevated and names both shares', () => {
+    const entries = [...hourOf('released', 4), ...hourOf('accepted', 6)]
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    expect(v).toMatchObject({ verdict: 'elevated' })
+    expect(v).toMatchObject({ detail: expect.stringMatching(/4 of 10 attempts.*failed.*40%.*1% over the prior 14 days/) })
+  })
+
+  it('a decline share far above the 14 day share is elevated; the same share the buyer always had is normal', () => {
+    const high = [...hourOf('declined', 9), ...hourOf('accepted', 1)]
+    const v = judgeOutcomeRate(high, HEALTHY_BASELINE, NOW)
+    expect(v).toMatchObject({ verdict: 'elevated', detail: expect.stringMatching(/9 of 10 attempts.*declined.*90%.*33% over the prior 14 days/) })
+    const usual = [...hourOf('declined', 4), ...hourOf('accepted', 6)]
+    expect(judgeOutcomeRate(usual, HEALTHY_BASELINE, NOW).verdict).toBe('normal')
+  })
+
+  it('a rise that doubles a tiny share but moves it by a few points is not elevated: both tests must hold', () => {
+    // 2 of 20 is double the 1% baseline but 9 points above it, which one bad
+    // lead and one flaky call produce on an ordinary day.
+    const entries = [...hourOf('released', 2), ...hourOf('accepted', 18)]
+    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW).verdict).toBe('normal')
+  })
+
+  it('too few attempts for a rate, and none of the saturation shape, is quiet: a third state, not normal (L11)', () => {
+    const entries = [...hourOf('released', 1), ...hourOf('accepted', 2)]
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    expect(v).toMatchObject({ verdict: 'quiet', detail: expect.stringMatching(new RegExp(`3 attempts in the last hour, fewer than the ${OUTCOME_RATE_MIN_ATTEMPTS}`)) })
+  })
+
+  it('a thin baseline leaves the rate unmeasured, while saturation is still judged', () => {
+    const thin: OutcomeBaseline = { attempts: OUTCOME_BASELINE_MIN_ATTEMPTS - 1, failed: 0, declined: 0 }
+    const busy = [...hourOf('released', 4), ...hourOf('accepted', 6)]
+    expect(judgeOutcomeRate(busy, thin, NOW)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/baseline.*fewer than/) })
+    expect(judgeOutcomeRate(hourOf('released', 5), thin, NOW).verdict).toBe('elevated')
+  })
+
+  it('an unreadable baseline is unmeasured with the reason, never normal', () => {
+    const busy = [...hourOf('released', 4), ...hourOf('accepted', 6)]
+    expect(judgeOutcomeRate(busy, null, NOW)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/could not be read/) })
+  })
+
+  it('reads only live attempts inside the last hour: older entries and still reserved ones do not count', () => {
+    const old = hourOf('released', 5).map((e) => ({ ...e, reserved_at: NOW - 3 * HOUR }))
+    const reserved = { ...accepted('r-1', NOW - 60_000), status: 'reserved' as const, outcome: null, resolved_at: null }
+    expect(judgeOutcomeRate([...old, reserved], HEALTHY_BASELINE, NOW)).toMatchObject({ verdict: 'quiet' })
+  })
+})
+
+describe('the outcome rate page', () => {
+  const day = (entries: LedgerEntry[]) => ({ '2027-09-20': entries, '2027-09-19': [] })
+
+  it('an hour of all buyer errors pages once per buyer, naming it, and the same shape across two buyers gives two lines', async () => {
+    const failing = hourOf('released', 6)
+    const sales = failing.map((e) => ({ lead_key: e.lead_key, status: 'released', kind: 'live' }))
+    const one = deps({ entries: day(failing), sales, winners: [] })
+    const s1 = await runBuyerSalesChecks(one)
+    expect(s1.buyers[0].outcome_rate.verdict).toBe('elevated')
+    const lines = vi.mocked(one.notifyOutcomeRate).mock.calls[0][0] as string[]
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^tripoint: all 6 attempts in the last hour failed/)
+    expect(lines[0]).toMatch(/partners\?selected=tripoint/)
+    expect(endingOf(s1).outcome).toBe('findings')
+
+    const acme: CheckBuyer = { ...TRIPOINT, partner_id: '33333333-3333-4333-8333-333333333333', slug: 'acme', has_independent_record: false }
+    const two = deps({ entries: day(failing), sales, winners: [], buyers: [TRIPOINT, acme], salesforce: null })
+    await runBuyerSalesChecks(two)
+    const both = vi.mocked(two.notifyOutcomeRate).mock.calls[0][0] as string[]
+    expect(both.map((l) => l.split(':')[0])).toEqual(['tripoint', 'acme'])
+  })
+
+  it('a healthy hour clears the page, and a buyer that starts failing while another is already paged gets out past the backoff', async () => {
+    const acme: CheckBuyer = { ...TRIPOINT, partner_id: '33333333-3333-4333-8333-333333333333', slug: 'acme', has_independent_record: false }
+    const d = deps({ entries: day([accepted('ok-1', NOW - 60_000)]), sales: [{ lead_key: 'ok-1', status: 'accepted', kind: 'live' }], winners: [{ execution_id: 'exec-ok-1', attempted_at_utc: new Date(NOW - 60_000).toISOString() }], buyers: [TRIPOINT, acme], salesforce: null })
+    await runBuyerSalesChecks(d)
+    expect(d.notifyOutcomeRate).toHaveBeenLastCalledWith([])
+
+    // Tripoint fails; the alerter records its condition and cooldown.
+    const failing = hourOf('released', 6)
+    d.ledger = (partnerId) => ({
+      entries: async () => (partnerId === PARTNER ? failing : [accepted('ok-1', NOW - 60_000)]),
+      unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+      unresolved: async () => [],
+    })
+    d.readSalesRows = async () => []
+    await runBuyerSalesChecks(d)
+    expect((vi.mocked(d.notifyOutcomeRate).mock.calls[1][0] as string[]).map((l) => l.split(':')[0])).toEqual(['tripoint'])
+    d.kv.store.set(`export-alert:${BUYER_OUTCOME_RATE_JOB}:condition`, JSON.stringify({ since: '2027-09-20T15:00:00.000Z', alerts: 1 }))
+    d.kv.store.set(`export-alert:${BUYER_OUTCOME_RATE_JOB}:cooldown`, '1')
+
+    // Acme starts failing too: a new buyer's first page must not wait out Tripoint's reminder backoff (L707).
+    d.ledger = () => ({
+      entries: async () => failing,
+      unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+      unresolved: async () => [],
+    })
+    await runBuyerSalesChecks(d)
+    expect((vi.mocked(d.notifyOutcomeRate).mock.calls[2][0] as string[]).map((l) => l.split(':')[0])).toEqual(['tripoint', 'acme'])
+    expect(d.kv.store.has(`export-alert:${BUYER_OUTCOME_RATE_JOB}:cooldown`)).toBe(false)
+  })
+
+  it('a manual mute is left alone when a second buyer starts failing', async () => {
+    const acme: CheckBuyer = { ...TRIPOINT, partner_id: '33333333-3333-4333-8333-333333333333', slug: 'acme', has_independent_record: false }
+    const failing = hourOf('released', 6)
+    const d = deps({ entries: day(failing), sales: [], winners: [], buyers: [TRIPOINT, acme], salesforce: null })
+    d.kv.store.set(`outcome-rate-paged:${PARTNER}`, '1')
+    d.kv.store.set(`export-alert:${BUYER_OUTCOME_RATE_JOB}:cooldown`, 'muted')
+    await runBuyerSalesChecks(d)
+    expect(d.kv.store.get(`export-alert:${BUYER_OUTCOME_RATE_JOB}:cooldown`)).toBe('muted')
+  })
+
+  it('the baseline read covers the 14 Eastern days before today and is asked once per buyer', async () => {
+    const asked: Array<[string, string, string]> = []
+    const d = deps({}, { readOutcomeBaseline: async (partnerId, fromDay, toDay) => { asked.push([partnerId, fromDay, toDay]); return HEALTHY_BASELINE } })
+    const s = await runBuyerSalesChecks(d)
+    expect(asked).toEqual([[PARTNER, '2027-09-06', '2027-09-20']])
+    expect(OUTCOME_BASELINE_DAYS).toBe(14)
+    expect(s.buyers[0].outcome_rate.verdict).toBe('quiet')
+    expect(endingOf(s).outcome).toBe('ok')
+  })
+
+  it('a baseline that cannot be read is unmeasured for that buyer and the run is not a pass', async () => {
+    const busy = [...hourOf('released', 4), ...hourOf('accepted', 6)]
+    const d = deps({ entries: day(busy), sales: [], winners: [] }, { readOutcomeBaseline: async () => { throw new Error('buyer_sales count timed out') } })
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/timed out/) })
+    expect(endingOf(s).outcome).not.toBe('ok')
+  })
+})
+

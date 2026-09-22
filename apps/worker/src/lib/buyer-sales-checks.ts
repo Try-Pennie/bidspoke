@@ -27,6 +27,21 @@
  * to the list. The dedup stamp is the count, so the page repeats when the count
  * grows (L707, L641), and never names a lead key.
  *
+ * OUTCOME RATE: a decline and a buyer error are each an expected answer, so a
+ * run carrying one succeeds and the outage aggregation, which reads failed
+ * runs, cannot see a buyer answering that way to everything (L77). Per buyer,
+ * the live attempts of the last hour: the share that failed before the buyer
+ * processed the lead (released, or held as unresolved) and the share the buyer
+ * declined, each against the same share over the prior 14 days of buyer_sales.
+ * A share is elevated when it is more than double the baseline AND at least 25
+ * points above it, so a tiny baseline doubled by one flaky call does not page.
+ * The rate needs 10 attempts; below that an hour in which EVERY attempt failed,
+ * three or more, is elevated anyway (saturation, L139), and otherwise the hour
+ * is QUIET, a third state distinct from normal (L11). A baseline thinner than
+ * 100 attempts, or one that could not be read, leaves the rate unmeasured.
+ * One line per buyer; a buyer that starts failing while another is already
+ * paged gets out past the reminder backoff (L707).
+ *
  * A mismatch pages only once it has persisted across two runs; a single run's
  * disagreement is usually the copy catching up. Pages go through the shared
  * export alerter so the same KV keys mute them. The run records its own outcome
@@ -54,6 +69,20 @@ export const BUYER_SALES_CHECKS_JOB = 'buyer-sales-checks'
 export const BUYER_SALES_MISMATCH_JOB = 'buyer-sales-mismatch'
 /** The alerter job name for the unresolved page. */
 export const BUYER_SALES_UNRESOLVED_JOB = 'buyer-sales-unresolved'
+/** The alerter job name for a buyer refusing or failing far more of its leads than usual. */
+export const BUYER_OUTCOME_RATE_JOB = 'buyer-outcome-rate'
+
+/** The baseline window, in Eastern days before today. */
+export const OUTCOME_BASELINE_DAYS = 14
+/** Attempts the baseline must hold before an hour is judged against it. */
+export const OUTCOME_BASELINE_MIN_ATTEMPTS = 100
+/** Attempts an hour must hold before its shares are judged against the baseline. */
+export const OUTCOME_RATE_MIN_ATTEMPTS = 10
+/** Attempts an hour must hold for every one of them failing to be a finding on its own (L139). */
+export const OUTCOME_SATURATION_MIN_ATTEMPTS = 3
+/** Elevated means more than this multiple of the baseline share AND at least this many points above it. */
+const OUTCOME_RATE_MULTIPLE = 2
+const OUTCOME_RATE_MIN_RISE = 0.25
 
 /**
  * The buyers whose accepted sales another node writes back to Salesforce, by
@@ -76,6 +105,20 @@ export const BUYER_SALES_MISMATCH_REMEDY: AlertRemedy = {
     'write back for a lead the ledger says was sold; look at the patch step of that execution before trusting the sale.',
   headlineVerb: 'found a disagreement',
   itemNoun: { one: 'disagreement', many: 'disagreements' },
+}
+
+export const BUYER_OUTCOME_RATE_REMEDY: AlertRemedy = {
+  consequence:
+    'A buyer is failing or declining far more of the leads offered to it in the last hour than it did over the prior ' +
+    '14 days. Every one of those runs succeeded and the leads went on to the next buyer or to the workflow, so nothing ' +
+    'else pages for this. Each line names the buyer and the shares:',
+  fixHint:
+    'A run of failed attempts: open the partner page and the newest execution details, and read the HTTP status the ' +
+    'buyer answered. A block page, a 401 or a 403 means the buyer is refusing us, not the leads; check its endpoint and ' +
+    'credential. A run of declines: compare the declined leads with the profile and ask the buyer whether its intake ' +
+    'rules changed.',
+  headlineVerb: 'shows a buyer refusing far more leads than usual',
+  itemNoun: { one: 'buyer', many: 'buyers' },
 }
 
 export const BUYER_SALES_UNRESOLVED_REMEDY: AlertRemedy = {
@@ -118,6 +161,13 @@ export interface WinnerRow {
   attempted_at_utc: string
 }
 
+/** Live attempts over the baseline window: every resolved attempt, those that failed, those declined. */
+export interface OutcomeBaseline {
+  attempts: number
+  failed: number
+  declined: number
+}
+
 export interface ChecksDeps {
   listBuyers(): Promise<CheckBuyer[]>
   ledger(partnerId: string): ChecksLedger
@@ -127,9 +177,12 @@ export interface ChecksDeps {
   readWinnerRows(slug: string, fromMs: number, toMs: number): Promise<WinnerRow[]>
   /** The buyer references Salesforce holds among those asked for; null when the buyer has no independent record. */
   readIndependentRecord(buyer: CheckBuyer, references: string[]): Promise<Set<string> | null>
+  /** Counts over live buyer_sales rows with et_day in [fromDay, toDay). */
+  readOutcomeBaseline(partnerId: string, fromDay: string, toDay: string): Promise<OutcomeBaseline>
   kv: BackoffKv
   notifyMismatch(lines: string[]): Promise<void>
   notifyUnresolved(lines: string[]): Promise<void>
+  notifyOutcomeRate(lines: string[]): Promise<void>
   now(): number
   localDev: boolean
   appUrl: string
@@ -148,6 +201,7 @@ export interface BuyerCheckSummary {
   consistency: Verdict<'consistent', 'inconsistent'> & { unmeasured_hours?: number }
   independent: Verdict<'verified', 'unverified'>
   unresolved: { count: number; oldest_age_ms: number | null; paged: boolean }
+  outcome_rate: Verdict<'normal' | 'quiet', 'elevated'>
 }
 
 export interface ChecksSummary {
@@ -157,6 +211,7 @@ export interface ChecksSummary {
   buyers: BuyerCheckSummary[]
   mismatch_lines: string[]
   unresolved_lines: string[]
+  outcome_rate_lines: string[]
 }
 
 const STATUSES: SaleStatus[] = ['reserved', 'accepted', 'declined', 'released', 'unresolved']
@@ -167,11 +222,13 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 export const mismatchMarkerKey = (partnerId: string) => `buyer-sales-mismatch-seen:${partnerId}`
 export const unresolvedPagedKey = (partnerId: string) => `unresolved-paged:${partnerId}`
+export const outcomeRatePagedKey = (partnerId: string) => `outcome-rate-paged:${partnerId}`
 
-function previousIsoDate(day: string): string {
+function isoDateMinus(day: string, days: number): string {
   const [y, m, d] = day.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10)
+  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().slice(0, 10)
 }
+const previousIsoDate = (day: string) => isoDateMinus(day, 1)
 
 // ── The checks ────────────────────────────────────────────────────────────────
 
@@ -248,6 +305,54 @@ export function judgeIndependent(accepted: LedgerEntry[], found: Set<string> | n
   return { verdict: 'unverified', detail: parts.join('; ') }
 }
 
+/** How a baseline that could not be read is handed to the judge, with the reason. */
+export interface BaselineUnreadable {
+  unreadable: string
+}
+
+const percent = (n: number): string => `${Math.round(n * 100)}%`
+
+/**
+ * The last hour's live attempts against the baseline. Saturation is judged
+ * first and needs no baseline; the rate needs both a big enough hour and a big
+ * enough baseline, and says which is missing when one is (L11).
+ */
+export function judgeOutcomeRate(
+  entries: LedgerEntry[],
+  baseline: OutcomeBaseline | BaselineUnreadable | null,
+  nowMs: number,
+): BuyerCheckSummary['outcome_rate'] {
+  const hour = entries.filter((e) => e.kind === 'live' && e.status !== 'reserved' && e.reserved_at > nowMs - HOUR_MS && e.reserved_at <= nowMs)
+  const attempts = hour.length
+  const failed = hour.filter((e) => e.status === 'released' || e.status === 'unresolved').length
+  const declined = hour.filter((e) => e.status === 'declined').length
+  const failedWhat = 'failed before the buyer processed the lead (a buyer error or an answer nobody could classify)'
+
+  if (attempts >= OUTCOME_SATURATION_MIN_ATTEMPTS && failed === attempts) {
+    return { verdict: 'elevated', detail: `all ${attempts} attempts in the last hour ${failedWhat}` }
+  }
+  if (attempts < OUTCOME_RATE_MIN_ATTEMPTS) {
+    return { verdict: 'quiet', detail: `${attempts} attempts in the last hour, fewer than the ${OUTCOME_RATE_MIN_ATTEMPTS} a rate needs, and not every one failed` }
+  }
+  if (baseline === null) return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days could not be read` }
+  if ('unreadable' in baseline) return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days could not be read: ${baseline.unreadable}` }
+  if (baseline.attempts < OUTCOME_BASELINE_MIN_ATTEMPTS) {
+    return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days holds ${baseline.attempts} attempts, fewer than the ${OUTCOME_BASELINE_MIN_ATTEMPTS} it needs` }
+  }
+
+  const elevated = (now: number, base: number) => now > base * OUTCOME_RATE_MULTIPLE && now - base >= OUTCOME_RATE_MIN_RISE
+  const against = (base: number) => `against ${percent(base)} over the prior ${OUTCOME_BASELINE_DAYS} days`
+  const findings: string[] = []
+  const failedShare = failed / attempts
+  const failedBase = baseline.failed / baseline.attempts
+  if (elevated(failedShare, failedBase)) findings.push(`${failed} of ${attempts} attempts in the last hour ${failedWhat}, ${percent(failedShare)} ${against(failedBase)}`)
+  const declinedShare = declined / attempts
+  const declinedBase = baseline.declined / baseline.attempts
+  if (elevated(declinedShare, declinedBase)) findings.push(`${declined} of ${attempts} attempts in the last hour were declined by the buyer, ${percent(declinedShare)} ${against(declinedBase)}`)
+  if (findings.length > 0) return { verdict: 'elevated', detail: findings.join('; ') }
+  return { verdict: 'normal', detail: `${attempts} attempts in the last hour, ${percent(failedShare)} failed ${against(failedBase)}, ${percent(declinedShare)} declined ${against(declinedBase)}` }
+}
+
 export function unresolvedLine(buyer: CheckBuyer, entries: LedgerEntry[], nowMs: number, appUrl: string): string {
   const oldest = entries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
   const age = oldest === null ? 'unknown age' : (describeDuration(nowMs - oldest) ?? `${nowMs - oldest} ms`)
@@ -266,7 +371,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
 
   if (deps.localDev) {
     deps.log(`[${BUYER_SALES_CHECKS_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [] }
+    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [], outcome_rate_lines: [] }
   }
 
   let buyers: CheckBuyer[]
@@ -275,13 +380,15 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   } catch (err) {
     const reason = `the buyer list could not be read, so nothing was checked: ${messageOf(err)}`
     await deps.notifyMismatch([reason])
-    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [] }
+    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [] }
   }
 
   const summaries: BuyerCheckSummary[] = []
   const mismatchLines: string[] = []
   const unresolvedLines: string[] = []
+  const outcomeRateLines: string[] = []
   let unresolvedGrew = false
+  let newlyElevated = false
 
   for (const buyer of buyers) {
     const s = await checkBuyer(deps, buyer, days, now)
@@ -314,6 +421,18 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
         await deps.kv.put(pagedKey, String(s.unresolved.count), { expirationTtl: 7 * 24 * 3600 })
       }
     }
+
+    // The outcome rate page, one line per elevated buyer. A buyer paged for the
+    // first time while another's page is standing must not wait out that
+    // buyer's reminder backoff (L707).
+    const rateKey = outcomeRatePagedKey(buyer.partner_id)
+    if (s.outcome_rate.verdict === 'elevated') {
+      outcomeRateLines.push(`${buyer.slug}: ${s.outcome_rate.detail}. Partner page: ${deps.appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`)
+      if ((await deps.kv.get(rateKey)) === null) newlyElevated = true
+      await deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: 24 * 3600 })
+    } else {
+      await deps.kv.delete(rateKey)
+    }
   }
 
   // A count that grew must get out past the reminder backoff, but only when it
@@ -323,10 +442,21 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     const family = `export-alert:${BUYER_SALES_UNRESOLVED_JOB}`
     if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
   }
+  if (newlyElevated) {
+    const family = `export-alert:${BUYER_OUTCOME_RATE_JOB}`
+    if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
+  }
 
   await deps.notifyMismatch(mismatchLines)
   await deps.notifyUnresolved(unresolvedLines)
-  return { days, buyers: summaries.map(({ unresolved, ...rest }) => ({ ...rest, unresolved: { count: unresolved.count, oldest_age_ms: unresolved.oldest_age_ms, paged: unresolved.paged } })), mismatch_lines: mismatchLines, unresolved_lines: unresolvedLines }
+  await deps.notifyOutcomeRate(outcomeRateLines)
+  return {
+    days,
+    buyers: summaries.map(({ unresolved, ...rest }) => ({ ...rest, unresolved: { count: unresolved.count, oldest_age_ms: unresolved.oldest_age_ms, paged: unresolved.paged } })),
+    mismatch_lines: mismatchLines,
+    unresolved_lines: unresolvedLines,
+    outcome_rate_lines: outcomeRateLines,
+  }
 }
 
 type BuyerWork = Omit<BuyerCheckSummary, 'unresolved'> & { unresolved: BuyerCheckSummary['unresolved'] & { entries: LedgerEntry[] } }
@@ -340,6 +470,7 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
     consistency: { verdict: 'unmeasured', reason },
     independent: { verdict: 'unmeasured', reason },
     unresolved: { count: 0, oldest_age_ms: null, paged: false, entries: [] },
+    outcome_rate: { verdict: 'unmeasured', reason },
   })
 
   let entries: LedgerEntry[]
@@ -380,6 +511,15 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
     independent = { verdict: 'unmeasured', reason: `the independent record could not be read: ${messageOf(err)}` }
   }
 
+  // The baseline is the 14 Eastern days before today, today excluded because it is still being written (L696).
+  let baseline: OutcomeBaseline | BaselineUnreadable
+  try {
+    baseline = await deps.readOutcomeBaseline(buyer.partner_id, isoDateMinus(days[0], OUTCOME_BASELINE_DAYS), days[0])
+  } catch (err) {
+    baseline = { unreadable: messageOf(err) }
+  }
+  const outcome_rate = judgeOutcomeRate(entries, baseline, now)
+
   const oldest = unresolvedEntries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
   return {
     ...base,
@@ -387,6 +527,7 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
     consistency,
     independent,
     unresolved: { count: unresolvedEntries.length, oldest_age_ms: oldest === null ? null : now - oldest, paged: false, entries: unresolvedEntries },
+    outcome_rate,
   }
 }
 
@@ -394,17 +535,18 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
 export function endingOf(summary: ChecksSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped, summary: { days: summary.days } }
   if (summary.unmeasured) return { outcome: 'unmeasured', detail: summary.unmeasured, summary: { days: summary.days } }
-  const verdicts = summary.buyers.flatMap((b) => [b.completeness.verdict, b.consistency.verdict, b.independent.verdict])
-  const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified')
+  const verdicts = summary.buyers.flatMap((b) => [b.completeness.verdict, b.consistency.verdict, b.independent.verdict, b.outcome_rate.verdict])
+  const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified' || v === 'elevated')
   const unmeasured = verdicts.some((v) => v === 'unmeasured')
   const outcome = findings ? 'findings' : unmeasured ? 'unmeasured' : 'ok'
   return {
     outcome,
     summary: {
       days: summary.days,
-      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count })),
+      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, outcome_rate: b.outcome_rate.verdict })),
       paged_mismatches: summary.mismatch_lines.length,
       paged_unresolved: summary.unresolved_lines.length,
+      paged_outcome_rates: summary.outcome_rate_lines.length,
     },
   }
 }
@@ -483,9 +625,31 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       }
       return found
     },
+    readOutcomeBaseline: async (partnerId, fromDay, toDay) => {
+      // Head counts, never rows: fourteen days can hold more than the 1,000 row page.
+      const count = async (statuses: SaleStatus[]): Promise<number> => {
+        const { count, error } = await supabase
+          .from('buyer_sales')
+          .select('id', { count: 'exact', head: true })
+          .eq('partner_id', partnerId)
+          .eq('kind', 'live')
+          .gte('et_day', fromDay)
+          .lt('et_day', toDay)
+          .in('status', statuses)
+        if (error) throw new Error(`buyer_sales count: ${error.message}`)
+        return count ?? 0
+      }
+      const [attempts, failed, declined] = await Promise.all([
+        count(['accepted', 'declined', 'released', 'unresolved']),
+        count(['released', 'unresolved']),
+        count(['declined']),
+      ])
+      return { attempts, failed, declined }
+    },
     kv: env.IDEMPOTENCY,
     notifyMismatch: (lines) => notifyExportFailure(supabase, BUYER_SALES_MISMATCH_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_MISMATCH_REMEDY),
     notifyUnresolved: (lines) => notifyExportFailure(supabase, BUYER_SALES_UNRESOLVED_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_UNRESOLVED_REMEDY),
+    notifyOutcomeRate: (lines) => notifyExportFailure(supabase, BUYER_OUTCOME_RATE_JOB, lines, env.IDEMPOTENCY, BUYER_OUTCOME_RATE_REMEDY),
     now: () => Date.now(),
     localDev: Boolean(env.LOCAL_DEV),
     appUrl: env.APP_URL,

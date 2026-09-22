@@ -47,8 +47,12 @@ is worth, and the two rules answer their own question.
   presented as one number.
 - The daily pricing check (`apps/worker/src/lib/tripoint-pricing-check.ts`,
   #1166) compares Bidspoke's config against `Lead.ExternalRevenue__c` only, and
-  that is correct: it is the Main Flow rule, and it is the only one Bidspoke
-  itself holds a copy of. It is deliberately silent about the Engine rule.
+  that is correct: it is the Main Flow rule. Since the buyer profiles shipped
+  (#1413) Bidspoke also holds Tripoint's Engine price, as pricing tiers for the
+  `engine` population, and the check reports that rule beside the Main Flow one
+  under its population name. It never compares the two, and it never compares
+  the Engine tiers against a Salesforce formula: there is no rule they are
+  meant to agree with.
 - The Tripoint revenue fill (`apps/worker/src/lib/tripoint-revenue-fill.ts`)
   reads the Prospect formula, which is why its output goes to
   `estimated_revenue_cents` rather than `bid_cents`.
