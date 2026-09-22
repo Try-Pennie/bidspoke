@@ -71,7 +71,10 @@ export interface RatioRow {
   workflow_id: string
   workflow_name: string
   sightings: number
+  /** Every bid row, `skipped` rows included; only its zero matters here (#1157 owns that case). */
   bid_rows: number
+  /** Bid rows whose skip_reason is distinct from `skipped`: the real attempts (#1413, L683). */
+  attempt_rows: number
 }
 
 export interface CollapsedWorkflow {
@@ -81,7 +84,8 @@ export interface CollapsedWorkflow {
   baseline: number
   sightings: number
   bid_rows: number
-  /** Rows this workflow would have written at its usual rate. */
+  attempt_rows: number
+  /** Attempts this workflow would have recorded at its usual rate. */
   expected_rows: number
 }
 
@@ -113,16 +117,21 @@ export function decideRatioCollapse(
   const readings: Array<{ workflow_id: string; ratio: number }> = []
 
   for (const r of rows) {
-    if (!isCount(r.sightings) || !isCount(r.bid_rows)) continue
+    if (!isCount(r.sightings) || !isCount(r.bid_rows) || !isCount(r.attempt_rows)) continue
     // A ratio over zero leads is not a measurement. Storing it would poison the
     // median with a value the workflow never had.
     if (r.sightings === 0) continue
 
-    // A workflow recording NOTHING is #1157's finding, and it says so far better
-    // than this would. Reporting it here as well would page twice for one fault.
+    // A workflow recording NOTHING AT ALL is #1157's finding, and it says so far
+    // better than this would. Reporting it here as well would page twice for one
+    // fault. Rows with no attempts among them are NOT that case: #1157 sees rows
+    // and stays quiet, so this is the only check that can see it.
     if (r.bid_rows === 0) continue
 
-    const ratio = r.bid_rows / r.sightings
+    // Attempts per sighting, not rows (#1413, L683): Engine writes a `skipped`
+    // row for nine leads in ten, rows that appear whether or not anything was
+    // attempted, and Stage C of the buyer_select cutover removes them.
+    const ratio = r.attempt_rows / r.sightings
     const history = histories[r.workflow_id]?.ratios ?? []
 
     if (history.length < MIN_BASELINE_SAMPLES) {
@@ -150,6 +159,7 @@ export function decideRatioCollapse(
         baseline,
         sightings: r.sightings,
         bid_rows: r.bid_rows,
+        attempt_rows: r.attempt_rows,
         expected_rows: Math.round(baseline * r.sightings),
       })
       // Deliberately NOT recorded: a sustained fault would otherwise walk the

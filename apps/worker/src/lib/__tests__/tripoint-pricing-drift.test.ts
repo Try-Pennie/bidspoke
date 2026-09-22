@@ -15,6 +15,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
+  describeEngineTiers,
   parseTripointRevenueFormula,
   tripointPricingDifferences,
   type TripointRule,
@@ -144,5 +145,39 @@ describe('tripointPricingDifferences', () => {
       tiers: [{ above: 12499, multiplier: 0.0012 }, { above: 30000, multiplier: 0.002 }],
     })
     expect(two.differences.map((x) => x.code)).toEqual(['config-unreadable'])
+  })
+})
+
+describe('describeEngineTiers', () => {
+  // Geoff's worked example (Discussion #1406): 12,500 to 14,999 at 0.0012 and
+  // 15,000 and up at 0.0013, with 15,000 exactly in the upper tier.
+  const GEOFF = [
+    { population: 'engine', debtFrom: 15000, debtTo: null, multiplier: 0.0013 },
+    { population: 'engine', debtFrom: 12500, debtTo: 15000, multiplier: 0.0012 },
+  ]
+
+  it('reads the Engine tiers under their population name, lowest debt first, with the open ended tier last', () => {
+    const note = describeEngineTiers(GEOFF)
+    expect(note.code).toBe('engine-tiers')
+    expect(note.message).toMatch(/^Engine: /)
+    expect(note.message).toMatch(/\$12,500 to under \$15,000 at 0\.0012.*\$15,000 and up at 0\.0013/)
+  })
+
+  it('says the Engine rule is reported and not compared, naming the record that decided so', () => {
+    expect(describeEngineTiers(GEOFF).message).toMatch(/not compared.*ADR 0010/)
+  })
+
+  it('ignores tiers written for another population, which the node never reads for an Engine lead', () => {
+    const note = describeEngineTiers([...GEOFF, { population: 'main_flow', debtFrom: 0, debtTo: null, multiplier: 0.5 }])
+    expect(note.message).not.toContain('0.5')
+  })
+
+  it('an enabled profile with no Engine tiers, and no enabled profile at all, are two different notes', () => {
+    const empty = describeEngineTiers([])
+    expect(empty.code).toBe('engine-tiers-none')
+    expect(empty.message).toMatch(/^Engine: .*holds no Engine tiers/)
+    const none = describeEngineTiers(null)
+    expect(none.code).toBe('engine-tiers-none')
+    expect(none.message).toMatch(/^Engine: no enabled Tripoint buyer profile/)
   })
 })

@@ -13,7 +13,7 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { checkTripointPricing, TRIPOINT_PRICING_JOB } from '../tripoint-pricing-check'
+import { checkTripointPricing, TRIPOINT_PRICING_JOB, type TripointPricingDeps } from '../tripoint-pricing-check'
 import { notifyExportFailure } from '../export-alerts'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -53,6 +53,16 @@ function supabaseDouble(answer: { data?: unknown; error?: unknown }) {
   return { client, slugs }
 }
 
+const GEOFF_TIERS = [
+  { population: 'engine', debtFrom: 12500, debtTo: 15000, multiplier: 0.0012 },
+  { population: 'engine', debtFrom: 15000, debtTo: null, multiplier: 0.0013 },
+]
+
+/** The seams, with the Engine tiers read answering "no enabled profile" unless a test says otherwise. */
+function seams(over: Partial<TripointPricingDeps> = {}): TripointPricingDeps {
+  return { readFormula: async () => LEAD_FORMULA, readEngineTiers: async () => null, ...over }
+}
+
 function alerted(): string[] {
   return vi
     .mocked(notifyExportFailure)
@@ -71,7 +81,7 @@ describe('checkTripointPricing', () => {
     // credentials" sends whoever reads it to the wrong product (L399).
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0013) } })
 
-    await checkTripointPricing(env, db.client, { readFormula: async () => LEAD_FORMULA })
+    await checkTripointPricing(env, db.client, seams())
 
     const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4] as { consequence: string; fixHint: string } | undefined
     expect(remedy).toBeDefined()
@@ -84,7 +94,7 @@ describe('checkTripointPricing', () => {
   it('is silent, and still reports a clean run to the alerter, when both rules agree', async () => {
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
 
-    const r = await checkTripointPricing(env, db.client, { readFormula: async () => LEAD_FORMULA })
+    const r = await checkTripointPricing(env, db.client, seams())
 
     expect(db.slugs).toEqual(['partner_configs:tripoint'])
     expect(r.differences).toEqual([])
@@ -93,13 +103,13 @@ describe('checkTripointPricing', () => {
     expect(vi.mocked(notifyExportFailure)).toHaveBeenCalledTimes(1)
     expect(alerted()).toEqual([])
     // The standing note is carried in the result, never sent.
-    expect(r.notes.map((n) => n.code)).toEqual(['floor-not-modelled'])
+    expect(r.notes.map((n) => n.code)).toEqual(['floor-not-modelled', 'engine-tiers-none'])
   })
 
   it('alerts the one figure that drifted, naming both numbers', async () => {
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0013) } })
 
-    const r = await checkTripointPricing(env, db.client, { readFormula: async () => LEAD_FORMULA })
+    const r = await checkTripointPricing(env, db.client, seams())
 
     expect(r.differences.map((d) => d.code)).toEqual(['high-multiplier-disagrees'])
     expect(r.alerted).toBe(true)
@@ -109,11 +119,11 @@ describe('checkTripointPricing', () => {
   it('treats a formula it cannot read from Salesforce as its own finding, never as agreement', async () => {
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
 
-    const r = await checkTripointPricing(env, db.client, {
+    const r = await checkTripointPricing(env, db.client, seams({
       readFormula: async () => {
         throw new Error('Tooling API answered 403 INSUFFICIENT_ACCESS')
       },
-    })
+    }))
 
     expect(r.differences.map((d) => d.code)).toEqual(['formula-unreadable'])
     expect(alerted().join(' ')).toMatch(/could not be read.*403 INSUFFICIENT_ACCESS/)
@@ -122,9 +132,9 @@ describe('checkTripointPricing', () => {
   it('treats a formula of an unfamiliar shape as its own finding, quoting what it saw', async () => {
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
 
-    const r = await checkTripointPricing(env, db.client, {
+    const r = await checkTripointPricing(env, db.client, seams({
       readFormula: async () => 'IF(ExternalPartnerName__c = "Tripoint", ExternalDebtAmount__c * 0.002, 0)',
-    })
+    }))
 
     expect(r.differences.map((d) => d.code)).toEqual(['formula-unrecognised'])
     expect(alerted().join(' ')).toContain('ExternalDebtAmount__c * 0.002')
@@ -132,11 +142,11 @@ describe('checkTripointPricing', () => {
 
   it('reports a missing or unreadable partner row rather than comparing against nothing', async () => {
     const missing = supabaseDouble({ data: null })
-    const r1 = await checkTripointPricing(env, missing.client, { readFormula: async () => LEAD_FORMULA })
+    const r1 = await checkTripointPricing(env, missing.client, seams())
     expect(r1.differences.map((d) => d.code)).toEqual(['config-missing'])
 
     const broken = supabaseDouble({ error: { message: 'connection reset' } })
-    const r2 = await checkTripointPricing(env, broken.client, { readFormula: async () => LEAD_FORMULA })
+    const r2 = await checkTripointPricing(env, broken.client, seams())
     expect(r2.differences.map((d) => d.code)).toEqual(['config-unreadable'])
     expect(alerted().join(' ')).toContain('connection reset')
   })
@@ -148,10 +158,40 @@ describe('checkTripointPricing', () => {
       },
     } as unknown as SupabaseClient
 
-    const r = await checkTripointPricing(env, db, { readFormula: async () => LEAD_FORMULA })
+    const r = await checkTripointPricing(env, db, seams())
 
     expect(r.differences.map((d) => d.code)).toEqual(['failed'])
     expect(r.alerted).toBe(true)
     expect(alerted().join(' ')).toContain('from is not a function')
+  })
+
+  it('every Main Flow line names its population, so a reader never takes it for the Engine rule (ADR 0010)', async () => {
+    const db = supabaseDouble({ data: { bid_resolver_config: config(0.0013) } })
+    const r = await checkTripointPricing(env, db.client, seams())
+    expect(r.differences[0].message).toMatch(/^Main Flow: /)
+    expect(r.notes.map((n) => n.message)).toEqual(expect.arrayContaining([expect.stringMatching(/^Main Flow: /), expect.stringMatching(/^Engine: /)]))
+  })
+
+  it('reports the Engine tiers under their population name as a note, never as a difference against the Lead formula', async () => {
+    const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
+    const r = await checkTripointPricing(env, db.client, seams({ readEngineTiers: async () => GEOFF_TIERS }))
+    expect(r.differences).toEqual([])
+    expect(r.engine_tiers).toEqual(GEOFF_TIERS)
+    const engine = r.notes.find((n) => n.code === 'engine-tiers')
+    expect(engine?.message).toMatch(/0\.0012.*0\.0013/)
+    expect(alerted()).toEqual([])
+  })
+
+  it('treats Engine tiers it cannot read as its own finding, never as there being none (L98)', async () => {
+    const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
+    const r = await checkTripointPricing(env, db.client, seams({
+      readEngineTiers: async () => {
+        throw new Error('buyer profiles read failed for org x: timeout')
+      },
+    }))
+    expect(r.differences.map((d) => d.code)).toEqual(['engine-tiers-unreadable'])
+    expect(r.engine_tiers).toBeNull()
+    expect(r.notes.map((n) => n.code)).not.toContain('engine-tiers-none')
+    expect(alerted().join(' ')).toMatch(/^Engine: .*timeout/)
   })
 })

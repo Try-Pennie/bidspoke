@@ -42,6 +42,8 @@ export interface BidCoverageRow {
   is_active: boolean
   sightings: number
   bid_rows: number
+  /** Bid rows whose skip_reason is distinct from `skipped`: the real attempts (#1413). */
+  attempt_rows: number
   winners: number
 }
 
@@ -219,7 +221,9 @@ async function checkOrg(
   // Typed at the boundary rather than destructured from `any` and cast further
   // down: the shape is asserted either way, and this keeps the assertion where
   // the untyped value actually arrives.
-  const { data, error } = (await supabase.rpc('bid_recording_coverage', {
+  // v2 carries attempt_rows beside bid_rows (#1413); the silent workflow rule
+  // below still reads bid_rows, the ratio judge reads attempts.
+  const { data, error } = (await supabase.rpc('bid_recording_coverage_v2', {
     p_org_id: orgId,
     p_since: since,
   })) as { data: BidCoverageRow[] | null; error: { message: string } | null }
@@ -317,8 +321,14 @@ async function checkOrg(
 
 // ── Far too few, not only none (#1168) ────────────────────────────────────────
 
-/** One KV entry per organization, holding every workflow's recent ratios. */
-const historyKey = (orgId: string) => `bid-ratio-history:${orgId}`
+/**
+ * One KV entry per organization, holding every workflow's recent ratios. The v2
+ * suffix is deliberate (#1413, L683): the ratio changed unit from rows to
+ * attempts, and a reading in the old unit compared against one in the new would
+ * page every workflow at once. The old key is simply never read again; the
+ * monitor is unbaselined for MIN_BASELINE_SAMPLES runs per workflow and says so.
+ */
+const historyKey = (orgId: string) => `bid-ratio-history-v2:${orgId}`
 
 /** No expiry: the history IS the baseline, and losing it makes the check inert
  *  for MIN_BASELINE_SAMPLES runs with nothing saying why. */
@@ -398,7 +408,7 @@ async function checkRatios(
     const text = [
       `*${c.workflow_name}*`,
       '',
-      `This workflow recorded ${c.bid_rows} bids across ${c.sightings} leads in the last ${WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} bids were expected.`,
+      `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`,
       '',
       'The runs are succeeding and most of the bid history is still there, so nothing else will report this. The usual cause is one partner or one branch dropping out of the recording while the rest carries on.',
     ].join('\n')
@@ -413,7 +423,7 @@ async function checkRatios(
         slack.bot_token,
         slack.default_channel,
         blocks,
-        `Bids down to ${pct(c.ratio)}: ${c.workflow_name}`,
+        `Bid attempts down to ${pct(c.ratio)}: ${c.workflow_name}`,
       )
       if (sent) await kv.put(key, '1', { expirationTtl: COOLDOWN_SECONDS })
       else console.error(`[bid-recording] event=bid_ratio_alert_not_sent workflow=${c.workflow_name}`)

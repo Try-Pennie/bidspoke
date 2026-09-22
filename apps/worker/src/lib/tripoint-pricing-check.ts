@@ -18,13 +18,15 @@
  * compared, and answering "no differences" there would make a broken check and
  * agreement the same output (L98, L11).
  *
- * IT COMPARES THE MAIN FLOW RULE ONLY, DELIBERATELY. The Engine Bidding
- * Workflow prices the same partner on a different basis (a lookup table in its
- * own patch_prospect_body code node, booking through
- * Prospect__c.ExternalExchangeRevenue__c), and that difference is intended
- * rather than drift: see docs/adr/0010-engine-and-main-flow-price-tripoint-differently.md
- * (#1178). This check is silent about the Engine rule because Bidspoke holds no
- * copy of it to compare against.
+ * IT COMPARES THE MAIN FLOW RULE ONLY, DELIBERATELY, AND REPORTS THE ENGINE
+ * RULE BESIDE IT. Engine leads are priced on a different basis, and that
+ * difference is intended rather than drift: see
+ * docs/adr/0010-engine-and-main-flow-price-tripoint-differently.md (#1178).
+ * Since the buyer profiles shipped (#1413), Bidspoke holds Tripoint's Engine
+ * price as pricing tiers for the `engine` population, read through the same
+ * loader the buyer_select node uses, so each daily answer carries both rules
+ * under their population names. The Engine rule is a note, never compared with
+ * the Lead formula; a failure to read it is a finding, never "no tiers" (L98).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
@@ -33,12 +35,16 @@ import { parseJson } from './json'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
 import {
+  describeEngineTiers,
   parseTripointRevenueFormula,
   tripointPricingDifferences,
+  underPopulation,
   type PricingDifference,
   type TripointRule,
 } from './tripoint-pricing-drift'
 import type { Env } from '../index'
+import type { PricingTier } from '@bidspoke/buyer-profile'
+import { loadBuyerProfiles } from './buyer-profile-loader'
 
 export const TRIPOINT_PRICING_JOB = 'tripoint-pricing-drift'
 
@@ -75,11 +81,17 @@ export const TRIPOINT_PRICING_REMEDY: AlertRemedy = {
 export const LEAD_REVENUE_FIELD = { object: 'Lead', developerName: 'ExternalRevenue' } as const
 
 export interface TripointPricingCheckResult {
-  /** The Salesforce rule as read, or null when it could not be read or recognised. */
+  /** The Salesforce Main Flow rule as read, or null when it could not be read or recognised. */
   salesforce: TripointRule | null
-  /** Disagreements and refusals, each under its own code. Alerted. */
+  /**
+   * Tripoint's Engine tiers as the buyer_select node reads them: null when no
+   * enabled profile holds them or they could not be read (the notes and
+   * differences say which), never compared with `salesforce`.
+   */
+  engine_tiers: PricingTier[] | null
+  /** Disagreements and refusals, each under its own code and population. Alerted. */
   differences: PricingDifference[]
-  /** Standing facts about the two rules. Logged, never alerted. */
+  /** Standing facts about the rules, each under its population. Logged, never alerted. */
   notes: PricingDifference[]
   alerted: boolean
 }
@@ -87,6 +99,8 @@ export interface TripointPricingCheckResult {
 export interface TripointPricingDeps {
   /** Returns the formula text. Injected so the check is testable without Salesforce (L196). */
   readFormula?: () => Promise<string>
+  /** Tripoint's enabled profile tiers, or null when no enabled profile exists. Injected for the same reason. */
+  readEngineTiers?: () => Promise<PricingTier[] | null>
 }
 
 /**
@@ -99,12 +113,17 @@ export async function checkTripointPricing(
   deps: TripointPricingDeps = {},
 ): Promise<TripointPricingCheckResult> {
   try {
-    return await runCheck(env, supabase, deps.readFormula ?? salesforceFormulaReader(env, supabase))
+    return await runCheck(
+      env,
+      supabase,
+      deps.readFormula ?? salesforceFormulaReader(env, supabase),
+      deps.readEngineTiers ?? engineTiersReader(env, supabase),
+    )
   } catch (err) {
     const detail = `the Tripoint pricing check itself failed: ${formatErr(err)}`
     console.error(`[tripoint-pricing] ${detail}`)
     await alertQuietly(supabase, env, [detail])
-    return { salesforce: null, differences: [{ code: 'failed', message: detail }], notes: [], alerted: true }
+    return { salesforce: null, engine_tiers: null, differences: [{ code: 'failed', message: detail }], notes: [], alerted: true }
   }
 }
 
@@ -131,17 +150,24 @@ async function finish(
   // from the outside rather than only heard from when it complains.
   const sf = result.salesforce
   const rule = sf ? `sf=${sf.lowBand.multiplier}/${sf.highBand.multiplier}@${sf.highBand.from}` : 'sf=unread'
+  const engine = result.engine_tiers
+    ? `engine=${result.engine_tiers.map((t) => `${t.debtFrom}-${t.debtTo ?? 'up'}@${t.multiplier}`).join(',')}`
+    : 'engine=none'
   console.log(
-    `[tripoint-pricing] ${rule} differences=${result.differences.length} notes=${result.notes.map((n) => n.code).join(',')}`,
+    `[tripoint-pricing] ${rule} ${engine} differences=${result.differences.length} notes=${result.notes.map((n) => n.code).join(',')}`,
   )
   return { ...result, alerted: result.differences.length > 0 }
 }
 
-async function runCheck(
-  env: Env,
+/**
+ * The Main Flow half: the legacy config against the Lead formula. Every line it
+ * returns is labelled Main Flow, because the Engine half's lines sit beside them.
+ */
+async function compareMainFlow(
   supabase: SupabaseClient,
   readFormula: () => Promise<string>,
-): Promise<TripointPricingCheckResult> {
+): Promise<Pick<TripointPricingCheckResult, 'salesforce' | 'differences' | 'notes'>> {
+  const mf = (d: PricingDifference) => underPopulation('main_flow', d)
   const { data, error } = await supabase
     .from('partner_configs')
     .select('bid_resolver_config')
@@ -149,62 +175,114 @@ async function runCheck(
     .maybeSingle()
 
   if (error) {
-    return finish(supabase, env, {
+    return {
       salesforce: null,
       notes: [],
-      differences: [
-        { code: 'config-unreadable', message: `the Tripoint partner config could not be read: ${formatErr(error)}` },
-      ],
-    })
+      differences: [mf({ code: 'config-unreadable', message: `the Tripoint partner config could not be read: ${formatErr(error)}` })],
+    }
   }
   const cfg = (data as { bid_resolver_config?: unknown } | null)?.bid_resolver_config
   if (!cfg || typeof cfg !== 'object') {
-    return finish(supabase, env, {
+    return {
       salesforce: null,
       notes: [],
       differences: [
-        {
+        mf({
           code: 'config-missing',
           message: 'no partner_configs row has slug tripoint with a bid_resolver_config, so there is no Bidspoke price to compare',
-        },
+        }),
       ],
-    })
+    }
   }
 
   let formula: string
   try {
     formula = await readFormula()
   } catch (err) {
-    return finish(supabase, env, {
+    return {
       salesforce: null,
       notes: [],
       differences: [
-        {
+        mf({
           code: 'formula-unreadable',
           message: `the Salesforce formula behind ${LEAD_REVENUE_FIELD.object}.${LEAD_REVENUE_FIELD.developerName}__c could not be read: ${formatErr(err)}`,
-        },
+        }),
       ],
-    })
+    }
   }
 
   const rule = parseTripointRevenueFormula(formula)
   if (rule === null) {
-    return finish(supabase, env, {
+    return {
       salesforce: null,
       notes: [],
       differences: [
-        {
+        mf({
           code: 'formula-unrecognised',
           message:
             `the Salesforce formula behind ${LEAD_REVENUE_FIELD.object}.${LEAD_REVENUE_FIELD.developerName}__c no longer has ` +
             `the two-band shape this check reads, so Bidspoke's price was NOT compared. It reads: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
-        },
+        }),
       ],
-    })
+    }
   }
 
   const compared = tripointPricingDifferences(rule, cfg as Record<string, unknown>)
-  return finish(supabase, env, { salesforce: rule, differences: compared.differences, notes: compared.notes })
+  return { salesforce: rule, differences: compared.differences.map(mf), notes: compared.notes.map(mf) }
+}
+
+/** The Engine half: the buyer profile tiers, reported. A failed read is a difference, never an empty note. */
+async function reportEngine(
+  readEngineTiers: () => Promise<PricingTier[] | null>,
+): Promise<{ engine_tiers: PricingTier[] | null; differences: PricingDifference[]; notes: PricingDifference[] }> {
+  try {
+    const tiers = await readEngineTiers()
+    const engine_tiers = tiers === null ? null : tiers.filter((t) => t.population === 'engine')
+    return { engine_tiers, differences: [], notes: [describeEngineTiers(tiers)] }
+  } catch (err) {
+    return {
+      engine_tiers: null,
+      notes: [],
+      differences: [
+        underPopulation('engine', {
+          code: 'engine-tiers-unreadable',
+          message: `Tripoint's buyer profile tiers could not be read, so the Engine rule is not known: ${formatErr(err)}`,
+        }),
+      ],
+    }
+  }
+}
+
+async function runCheck(
+  env: Env,
+  supabase: SupabaseClient,
+  readFormula: () => Promise<string>,
+  readEngineTiers: () => Promise<PricingTier[] | null>,
+): Promise<TripointPricingCheckResult> {
+  const mainFlow = await compareMainFlow(supabase, readFormula)
+  const engine = await reportEngine(readEngineTiers)
+  return finish(supabase, env, {
+    salesforce: mainFlow.salesforce,
+    engine_tiers: engine.engine_tiers,
+    differences: [...mainFlow.differences, ...engine.differences],
+    notes: [...mainFlow.notes, ...engine.notes],
+  })
+}
+
+/**
+ * The real Engine tiers reader: Tripoint's enabled buyer profile through the one
+ * loader the buyer_select node uses (the only sanctioned reader of the profile
+ * tables), for the organization that holds the Salesforce credentials, which is
+ * the one the formula is read for. Null when no enabled Tripoint profile exists.
+ */
+export function engineTiersReader(env: Env, supabase: SupabaseClient): () => Promise<PricingTier[] | null> {
+  return async () => {
+    const { orgId, error } = await resolveSalesforceCredentialOrg(supabase)
+    if (!orgId) throw new Error(error ?? 'no_org_holds_salesforce_credentials')
+    const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase)
+    const tripoint = snapshot.buyers.find((b) => b.partner.slug === 'tripoint')
+    return tripoint ? [...tripoint.profile.tiers] : null
+  }
 }
 
 /**

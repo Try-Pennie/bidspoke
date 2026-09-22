@@ -41,15 +41,31 @@ function history(ratio: number, n = MIN_BASELINE_SAMPLES): RatioHistory {
   return { ratios: Array.from({ length: n }, () => ratio) }
 }
 
-const row = (over: Partial<{ workflow_id: string; workflow_name: string; sightings: number; bid_rows: number }> = {}) => ({
+// Engine writes a `skipped` row for nine leads in ten, so bid_rows is about ten
+// times attempt_rows there; the ratio is over attempts (#1413, L683).
+const row = (over: Partial<{ workflow_id: string; workflow_name: string; sightings: number; bid_rows: number; attempt_rows: number }> = {}) => ({
   workflow_id: 'wf-1',
   workflow_name: 'Engine Bidding Workflow',
   sightings: 1000,
-  bid_rows: 560,
+  bid_rows: 5600,
+  attempt_rows: 560,
   ...over,
 })
 
 describe('decideRatioCollapse: a workflow judged against its own history', () => {
+  it('judges ATTEMPTS per sighting, not rows: Engine\u2019s skipped rows are nine in ten and must not read as bids (#1413, L683)', () => {
+    // 5,600 rows, 56 real attempts: the rows alone would read as a healthy 5.6 per lead.
+    const out = decideRatioCollapse([row({ bid_rows: 5600, attempt_rows: 56 })], { 'wf-1': history(0.56) })
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0]).toMatchObject({ ratio: 0.056, attempt_rows: 56, expected_rows: 560 })
+  })
+
+  it('a workflow with rows but no attempts at all is judged, because the no rows check cannot see it', () => {
+    const out = decideRatioCollapse([row({ bid_rows: 5000, attempt_rows: 0 })], { 'wf-1': history(0.56) })
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0].ratio).toBe(0)
+  })
+
   it('says nothing when the ratio matches its baseline', () => {
     const out = decideRatioCollapse([row()], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
@@ -57,7 +73,7 @@ describe('decideRatioCollapse: a workflow judged against its own history', () =>
 
   it('flags a ratio that has collapsed well below its own baseline', () => {
     // 500 expected, 16 recorded: the shape the issue names.
-    const out = decideRatioCollapse([row({ bid_rows: 16 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ attempt_rows: 16 })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toHaveLength(1)
     expect(out.collapsed[0]).toMatchObject({ workflow_id: 'wf-1', ratio: 0.016, baseline: 0.56 })
   })
@@ -65,8 +81,8 @@ describe('decideRatioCollapse: a workflow judged against its own history', () =>
   it('judges each workflow against ITS OWN baseline, not a shared one', () => {
     // Main Flow at 35% is healthy; LendSwift at 35% has halved from 80%.
     const rows = [
-      row({ workflow_id: 'main', workflow_name: 'Main Flow', sightings: 1000, bid_rows: 350 }),
-      row({ workflow_id: 'lend', workflow_name: 'RML (LendSwift)', sightings: 1000, bid_rows: 350 }),
+      row({ workflow_id: 'main', workflow_name: 'Main Flow', sightings: 1000, attempt_rows: 350 }),
+      row({ workflow_id: 'lend', workflow_name: 'RML (LendSwift)', sightings: 1000, attempt_rows: 350 }),
     ]
     const out = decideRatioCollapse(rows, { main: history(0.35), lend: history(0.80) })
     expect(out.collapsed.map((c) => c.workflow_id)).toEqual(['lend'])
@@ -75,14 +91,14 @@ describe('decideRatioCollapse: a workflow judged against its own history', () =>
   it('does not flag an ordinary dip above the collapse factor', () => {
     // Just inside the factor: a normal bad hour must not page.
     const justInside = 0.56 * (COLLAPSE_FACTOR + 0.05)
-    const out = decideRatioCollapse([row({ bid_rows: Math.round(1000 * justInside) })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ attempt_rows: Math.round(1000 * justInside) })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
   })
 
   it('uses the median, so one bad reading in the history does not move the bar', () => {
     const ratios = Array.from({ length: MIN_BASELINE_SAMPLES }, () => 0.56)
     ratios[0] = 0.01  // a previous incident, recorded like any other reading
-    const out = decideRatioCollapse([row({ bid_rows: 100 })], { 'wf-1': { ratios } })
+    const out = decideRatioCollapse([row({ attempt_rows: 100 })], { 'wf-1': { ratios } })
     expect(out.collapsed).toHaveLength(1)
     expect(out.collapsed[0].baseline).toBeCloseTo(0.56, 6)
   })
@@ -91,19 +107,19 @@ describe('decideRatioCollapse: a workflow judged against its own history', () =>
 describe('decideRatioCollapse: what it refuses to judge', () => {
   it('cannot judge a workflow with too little history, and names it', () => {
     // The blind spot is real for a new workflow and must be visible, not implied.
-    const out = decideRatioCollapse([row({ bid_rows: 16 })], { 'wf-1': history(0.56, MIN_BASELINE_SAMPLES - 1) })
+    const out = decideRatioCollapse([row({ attempt_rows: 16 })], { 'wf-1': history(0.56, MIN_BASELINE_SAMPLES - 1) })
     expect(out.collapsed).toEqual([])
     expect(out.unbaselined).toEqual(['Engine Bidding Workflow'])
   })
 
   it('cannot judge a workflow with no history at all', () => {
-    const out = decideRatioCollapse([row({ bid_rows: 16 })], {})
+    const out = decideRatioCollapse([row({ attempt_rows: 16 })], {})
     expect(out.collapsed).toEqual([])
     expect(out.unbaselined).toEqual(['Engine Bidding Workflow'])
   })
 
   it('does not judge a window with no sightings, which measures nothing', () => {
-    const out = decideRatioCollapse([row({ sightings: 0, bid_rows: 0 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ sightings: 0, bid_rows: 0, attempt_rows: 0 })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
     expect(out.unbaselined).toEqual([])
   })
@@ -111,12 +127,12 @@ describe('decideRatioCollapse: what it refuses to judge', () => {
   it('leaves a total silence to the existing check rather than reporting it twice', () => {
     // bid_rows === 0 is #1157's job. Reporting it here too would page twice for
     // one fault and make the two detectors argue about the same workflow.
-    const out = decideRatioCollapse([row({ bid_rows: 0 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ bid_rows: 0, attempt_rows: 0 })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
   })
 
   it('refuses a baseline of zero rather than dividing by it', () => {
-    const out = decideRatioCollapse([row({ bid_rows: 16 })], { 'wf-1': history(0) })
+    const out = decideRatioCollapse([row({ attempt_rows: 16 })], { 'wf-1': history(0) })
     expect(out.collapsed).toEqual([])
     expect(out.unbaselined).toEqual(['Engine Bidding Workflow'])
   })
@@ -128,35 +144,35 @@ describe('decideRatioCollapse: what it refuses to judge', () => {
   })
 
   it('does not flag a ratio ABOVE its baseline', () => {
-    const out = decideRatioCollapse([row({ bid_rows: 900 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ attempt_rows: 900 })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
   })
 })
 
 describe('the recorded reading', () => {
   it('returns the ratio each judged workflow measured, so the next run has a baseline', () => {
-    const out = decideRatioCollapse([row({ bid_rows: 560 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ attempt_rows: 560 })], { 'wf-1': history(0.56) })
     expect(out.readings).toEqual([{ workflow_id: 'wf-1', ratio: 0.56 }])
   })
 
   it('records a reading even for a workflow it could not yet judge', () => {
     // Otherwise a new workflow never accumulates the history it needs and stays
     // unjudgeable forever.
-    const out = decideRatioCollapse([row({ bid_rows: 560 })], {})
+    const out = decideRatioCollapse([row({ attempt_rows: 560 })], {})
     expect(out.readings).toEqual([{ workflow_id: 'wf-1', ratio: 0.56 }])
   })
 
   it('does not record a reading from a window with no sightings', () => {
     // A ratio over zero leads is not a measurement, and storing it would poison
     // the median with a value no workflow ever had.
-    const out = decideRatioCollapse([row({ sightings: 0, bid_rows: 0 })], {})
+    const out = decideRatioCollapse([row({ sightings: 0, bid_rows: 0, attempt_rows: 0 })], {})
     expect(out.readings).toEqual([])
   })
 
   it('does not record a collapsed reading, so an outage cannot become the new normal', () => {
     // A sustained fault would otherwise walk the median down until the detector
     // accepts the broken rate as healthy.
-    const out = decideRatioCollapse([row({ bid_rows: 16 })], { 'wf-1': history(0.56) })
+    const out = decideRatioCollapse([row({ attempt_rows: 16 })], { 'wf-1': history(0.56) })
     expect(out.readings).toEqual([])
   })
 })

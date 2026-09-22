@@ -71,7 +71,11 @@ reads that formula through the Tooling API and reports any boundary or multiplie
 the two disagree on, and separately refuses when the formula cannot be read or has
 changed shape. `POST /api/admin/tripoint-pricing-check` runs it on demand. The one
 standing difference it notes without alerting: Salesforce books nothing below
-$10,000 of debt, and Bidspoke has no debt floor.
+$10,000 of debt, and Bidspoke has no debt floor. Every line is labelled `Main Flow`,
+because the same answer carries a second rule under `Engine`: Tripoint's pricing
+tiers for the `engine` population on its buyer profile, read through the buyer
+profile loader and reported, never compared (ADR 0010). A profile the check cannot
+read is a finding of its own, not an absence of tiers.
 
 ### Matrix resolver
 
