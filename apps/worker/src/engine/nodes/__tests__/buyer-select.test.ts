@@ -127,7 +127,7 @@ class FakeLedger implements LedgerApi {
     const existing = this.entries.get(this.k(body))
     const counts = { hour_leads: 1, day_leads: 1, hour_spend_cents: body.payout_cents, day_spend_cents: body.payout_cents, et_day: '2027-09-20', hour_bucket: 0 }
     if (existing) return { reserved: true, repeat: true, entry: existing, counts }
-    const entry: LedgerEntry = { lead_key: body.lead_key, population: body.population, kind: body.kind, payout_cents: body.payout_cents, status: 'reserved', et_day: '2027-09-20', hour_bucket: 0, reserved_at: NOW, resolved_at: null, mirrored: false, execution_id: body.execution_id, outcome: null }
+    const entry: LedgerEntry = { lead_key: body.lead_key, population: body.population, kind: body.kind, payout_cents: body.payout_cents, status: 'reserved', et_day: '2027-09-20', hour_bucket: 0, reserved_at: NOW, resolved_at: null, mirrored: false, execution_id: body.execution_id, outcome: null, resolution_source: null, resolved_by: null }
     this.entries.set(this.k(body), entry)
     return { reserved: true, repeat: false, entry, counts }
   }

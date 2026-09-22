@@ -41,7 +41,7 @@ function entry(status: LedgerEntry['status'], outcome: SaleOutcomeRecord | null 
   return {
     lead_key: 'lead-1', population: 'engine', kind: 'live', payout_cents: 1500, status,
     et_day: '2027-09-20', hour_bucket: Math.floor(NOW / 3_600_000), reserved_at: NOW, resolved_at: null,
-    mirrored: false, execution_id: 'exec-1', outcome,
+    mirrored: false, execution_id: 'exec-1', outcome, resolution_source: null, resolved_by: null,
   }
 }
 

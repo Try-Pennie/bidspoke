@@ -193,23 +193,20 @@
     "note": "The only writer of a buyer profile (#1409). A WRITE: anon reaching it could enable a buyer or reprice one. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing."
   },
   {
+    "name": "buyer_profile_document",
+    "args": {
+      "p_partner": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "Reads one buyer profile as a document (#1412). STABLE, read only. Probed with the all zero id, which no partner carries, so a successful probe returns null."
+  },
+  {
     "name": "record_buyer_sale",
     "args": {
       "p_row": {}
     },
     "anon": "denied",
     "note": "Upserts a buyer_sales row (#1409). A WRITE. Probed with an empty row, which the function refuses as missing_key before touching the table."
-  },
-  {
-    "name": "settle_buyer_sale",
-    "args": {
-      "p_id": "00000000-0000-0000-0000-000000000000",
-      "p_org": "00000000-0000-0000-0000-000000000000",
-      "p_outcome": "released",
-      "p_actor": "00000000-0000-0000-0000-000000000000"
-    },
-    "anon": "denied",
-    "note": "Settles an unresolved sale (#1409). A WRITE that frees a cap slot or counts a sale. Probed with the all zero id, which no row carries, so a successful probe refuses sale_not_found."
   },
   {
     "name": "delete_partner_config",

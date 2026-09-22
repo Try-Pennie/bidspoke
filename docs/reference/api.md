@@ -359,6 +359,19 @@ Response `201` (the only time the key is shown in full):
 | PUT | `/api/partners/:id` | Update a partner. |
 | DELETE | `/api/partners/:id` | Delete a partner. |
 | GET | `/api/partners/:id/cap-count` | Current daily cap count (from the Daily Cap Durable Object). |
+| GET | `/api/partners/:id/buyer-profile` | The buyer profile document, the partner's accept rules, and the live workflows selling to this partner outside buyer selection (`other_sellers`). `profile` is null until one is saved. |
+| PUT | `/api/partners/:id/buyer-profile` | Save the profile. Body `{ expected_version, profile }`. Validated with the shared package first (422 `profile_invalid` with the errors), then saved through `save_buyer_profile`. A stale `expected_version` is 409 `stale_version` carrying the current document, so the form can show both sides. |
+| GET | `/api/partners/:id/buyer-profile/history` | One audit entry per save, each changed path old to new. |
+| GET | `/api/partners/:id/buyer-usage` | The buyer ledger's counts for the current Eastern hour and day with the breakdown by status, plus today's wins recorded for this buyer outside buyer selection. 503 `usage_unavailable` when the ledger does not answer; a count that could not be read is named in `unmeasured` rather than shown as zero. |
+
+## Buyer sales
+
+`/api/buyer-sales`. Sales the [Buyer Select node](../nodes/buyer-select.md) recorded, from the `buyer_sales` mirror of the buyer ledger. Settling is a ledger operation first: the route settles the ledger with the caller as the actor, then mirrors the settled entry inline; a mirror that fails is reported and delivered by the drain, and never fails the settlement.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/buyer-sales?status=unresolved&page=&limit=` | The queue, paged, with the partner slug on each row and the total. |
+| POST | `/api/buyer-sales/:id/settle` | Body `{ outcome: 'accepted' \| 'released' }`. Accepted counts as sold to that buyer; released frees the slot. 409 `not_unresolved` names the state the sale is in; 503 when the ledger does not answer, with nothing changed. |
 
 ## Partner bid configs
 

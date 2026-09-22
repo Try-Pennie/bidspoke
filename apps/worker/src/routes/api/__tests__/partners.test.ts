@@ -267,6 +267,16 @@ describe('partner_type vocabulary on the write path (#306)', () => {
     expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
   })
 
+  it('PUT accepts accept_signals beside response_classification and writes them to the row (#1412)', async () => {
+    const accept = [{ field: 'ok', equals: true }, { field: 'data.createLead.resultCode', in: [1000, 1001] }]
+    const sb = supabaseForUpdate({ id: 'p-1', accept_signals: accept })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+    const res = await send('PUT', '/partners/p-1', { accept_signals: accept })
+    expect(res.status).toBe(200)
+    const update = (sb as unknown as { calls: Record<string, Array<[string, unknown[]]>> }).calls.partner_configs.find((c) => c[0] === 'update')
+    expect(update?.[1][0]).toMatchObject({ accept_signals: accept })
+  })
+
   it('PUT does not invalidate the buyer profile snapshot when the write matched nothing', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, partner_configs: [{ single: { id: 'p-1' } }, { single: null }] }) as unknown as ReturnType<typeof createSupabaseClient>

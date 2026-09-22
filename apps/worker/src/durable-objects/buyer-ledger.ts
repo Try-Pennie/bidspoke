@@ -69,7 +69,17 @@ export interface LedgerEntry extends EntryKey {
   mirrored: boolean
   execution_id: string
   outcome: SaleOutcomeRecord | null
+  /**
+   * How the entry left `reserved` or `unresolved` (#1412, L83): 'buyer' for an
+   * answer the buyer gave, 'rehearsal' for a decide_only commit, 'settled' for a
+   * person's decision through the settle route. Null while reserved.
+   */
+  resolution_source: ResolutionSource | null
+  /** The user id of the person who settled it; null for every other source. */
+  resolved_by: string | null
 }
+
+export type ResolutionSource = 'buyer' | 'rehearsal' | 'settled'
 
 export interface Counts {
   hour_leads: number
@@ -101,6 +111,8 @@ export interface ReleaseBody extends EntryKey {
 export interface SettleBody extends EntryKey {
   status: 'accepted' | 'declined' | 'released'
   outcome?: SaleOutcomeRecord
+  /** The user id of the person settling, recorded on the entry for the mirror (#1412). */
+  resolved_by?: string
 }
 
 export type EntryResult = { found: true; entry: LedgerEntry } | { found: false }
@@ -148,6 +160,12 @@ export class BuyerLedgerObject implements DurableObject {
       )
     `)
     this.sql.exec('CREATE INDEX IF NOT EXISTS entries_kind_status ON entries (kind, status)')
+    // Two columns added after the first deploy (#1412). SQLite has no ADD COLUMN IF
+    // NOT EXISTS, so the table's own column list decides, and an object created
+    // before the columns existed gains them on its next wake.
+    const columns = new Set(this.sql.exec<{ name: string }>('PRAGMA table_info(entries)').toArray().map((r) => r.name))
+    if (!columns.has('resolution_source')) this.sql.exec('ALTER TABLE entries ADD COLUMN resolution_source TEXT')
+    if (!columns.has('resolved_by')) this.sql.exec('ALTER TABLE entries ADD COLUMN resolved_by TEXT')
     this.sql.exec('CREATE INDEX IF NOT EXISTS entries_kind_day ON entries (kind, et_day)')
   }
 
@@ -248,7 +266,7 @@ export class BuyerLedgerObject implements DurableObject {
     if (!body || !key) return jsonResponse({ error: 'bad_key' }, 400)
     const outcome = parseOutcome(body.outcome)
     if (!outcome) return jsonResponse({ error: 'bad_outcome' }, 400)
-    return this.transition(key, ['reserved'], 'accepted', outcome)
+    return this.transition(key, ['reserved'], 'accepted', outcome, { source: sourceForKind(key.kind), resolvedBy: null })
   }
 
   private async handleRelease(request: Request): Promise<Response> {
@@ -256,7 +274,7 @@ export class BuyerLedgerObject implements DurableObject {
     const key = body && parseKey(body)
     if (!body || !key) return jsonResponse({ error: 'bad_key' }, 400)
     if (body.status !== 'declined' && body.status !== 'released') return jsonResponse({ error: 'bad_status' }, 400)
-    return this.transition(key, ['reserved'], body.status, null)
+    return this.transition(key, ['reserved'], body.status, null, { source: sourceForKind(key.kind), resolvedBy: null })
   }
 
   private async handleSettle(request: Request): Promise<Response> {
@@ -267,7 +285,12 @@ export class BuyerLedgerObject implements DurableObject {
     const outcome = body.outcome === undefined ? null : parseOutcome(body.outcome)
     if (body.status === 'accepted' && !outcome) return jsonResponse({ error: 'accepted_needs_outcome' }, 400)
     if (body.outcome !== undefined && !outcome) return jsonResponse({ error: 'bad_outcome' }, 400)
-    return this.transition(key, ['unresolved'], body.status, outcome)
+    // A settlement is a person's decision (#1412): the route hands their user id
+    // in, the entry keeps it, and the mirror carries it to buyer_sales (L83).
+    if (body.resolved_by !== undefined && (typeof body.resolved_by !== 'string' || !UUID_RE.test(body.resolved_by))) {
+      return jsonResponse({ error: 'bad_resolved_by' }, 400)
+    }
+    return this.transition(key, ['unresolved'], body.status, outcome, { source: 'settled', resolvedBy: typeof body.resolved_by === 'string' ? body.resolved_by : null })
   }
 
   /**
@@ -275,7 +298,13 @@ export class BuyerLedgerObject implements DurableObject {
    * absent (404) or in another state (409, naming the state it is in), so a
    * caller cannot mistake either for success (L11).
    */
-  private transition(key: EntryKey, from: SaleStatus[], to: SaleStatus, outcome: SaleOutcomeRecord | null): Response {
+  private transition(
+    key: EntryKey,
+    from: SaleStatus[],
+    to: SaleStatus,
+    outcome: SaleOutcomeRecord | null,
+    resolution: { source: ResolutionSource; resolvedBy: string | null }
+  ): Response {
     const current = this.entry(key)
     if (!current) return jsonResponse({ error: 'absent' }, 404)
     if (!from.includes(current.status)) {
@@ -283,10 +312,14 @@ export class BuyerLedgerObject implements DurableObject {
     }
     const now = this.clock()
     const payout = outcome ? outcome.payout_cents : current.payout_cents
+    // Every state change clears `mirrored`: the mirror copy of the previous state
+    // may already have been delivered, and the drain must carry the new one too,
+    // or a settlement after a mirrored `unresolved` never reaches buyer_sales (#1412).
     this.sql.exec(
-      `UPDATE entries SET status = ?, resolved_at = ?, outcome_json = ?, payout_cents = ?
+      `UPDATE entries SET status = ?, resolved_at = ?, outcome_json = ?, payout_cents = ?, mirrored = 0,
+         resolution_source = ?, resolved_by = ?
        WHERE lead_key = ? AND population = ? AND kind = ?`,
-      to, now, outcome ? JSON.stringify(outcome) : null, payout, key.lead_key, key.population, key.kind
+      to, now, outcome ? JSON.stringify(outcome) : null, payout, resolution.source, resolution.resolvedBy, key.lead_key, key.population, key.kind
     )
     const entry = this.entry(key)
     return jsonResponse({ ok: true, entry })
@@ -389,7 +422,9 @@ export class BuyerLedgerObject implements DurableObject {
   async alarm(): Promise<void> {
     const now = this.clock()
     this.sql.exec(
-      "UPDATE entries SET status = 'unresolved' WHERE status = 'reserved' AND reserved_at + ? <= ?",
+      // mirrored is cleared with the status, as every state change does (#1412):
+      // a reservation the drain already delivered must be delivered again as unresolved.
+      "UPDATE entries SET status = 'unresolved', mirrored = 0 WHERE status = 'reserved' AND reserved_at + ? <= ?",
       PENDING_GRACE_MS, now
     )
     this.sql.exec(
@@ -460,5 +495,14 @@ function rowToEntry(row: Row): LedgerEntry {
     mirrored: asInteger(row.mirrored, 'mirrored') === 1,
     execution_id: asText(row.execution_id, 'execution_id'),
     outcome: outcomeJson === null ? null : (JSON.parse(outcomeJson) as SaleOutcomeRecord),
+    resolution_source: (row.resolution_source === undefined ? null : asTextOrNull(row.resolution_source, 'resolution_source')) as ResolutionSource | null,
+    resolved_by: row.resolved_by === undefined ? null : asTextOrNull(row.resolved_by, 'resolved_by'),
   }
 }
+
+/** A buyer's answer resolves a live entry; a decide_only commit resolves a rehearsal one. */
+function sourceForKind(kind: LedgerKind): ResolutionSource {
+  return kind === 'rehearsal' ? 'rehearsal' : 'buyer'
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

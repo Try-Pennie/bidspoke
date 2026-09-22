@@ -2667,15 +2667,6 @@ export type Database = {
         }
         Returns: Json
       }
-      settle_buyer_sale: {
-        Args: {
-          p_actor: string
-          p_id: string
-          p_org: string
-          p_outcome: string
-        }
-        Returns: Json
-      }
       step_duration_percentiles: {
         Args: { p_namespace: string; p_since: string; p_workflow_id: string }
         Returns: {

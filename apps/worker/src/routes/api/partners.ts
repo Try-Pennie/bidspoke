@@ -34,6 +34,8 @@ interface PartnerBody {
   last_probe_response?: unknown
   dedup_endpoint?: string | null
   response_classification?: unknown
+  /** The buyer_select accept rules, beside the decline rules in response_classification (#1412). */
+  accept_signals?: unknown
   alert_config?: unknown
   circuit_error_threshold?: number
   circuit_window_seconds?: number
@@ -246,7 +248,7 @@ partners.put('/:id', async (c) => {
     'name', 'api_endpoint', 'cf_secret_key', 'daily_cap', 'min_bid',
     'bid_formula', 'bid_resolver_type', 'bid_resolver_config', 'outbound_field_mapping',
     'bid_mode', 'bid_comparison_source', 'extra_extraction', 'last_probe_response',
-    'dedup_endpoint', 'response_classification', 'alert_config',
+    'dedup_endpoint', 'response_classification', 'accept_signals', 'alert_config',
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'confirmation_window_ms', 'is_active', 'priority',
     'sell_off_offer_title', 'sell_off_offer_details',
