@@ -1,0 +1,226 @@
+'use client'
+
+/**
+ * The design system form primitives (#1412, L607). Every control on a new
+ * surface comes from here: each has its own class (a select is not an input),
+ * a real label reachable by id, and one place to fix geometry or contrast.
+ * The raw elements live in this file and nowhere else on the buyer profile
+ * surface; a scan guard enforces that (buyer-profile-controls-guard.test.ts).
+ */
+import type { ReactNode } from 'react'
+import { Loader2 } from 'lucide-react'
+
+// ── Field ─────────────────────────────────────────────────────────────────────
+
+export function Field({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string | null; children: ReactNode }) {
+  return (
+    <div className="field">
+      <label htmlFor={id} className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
+      {children}
+      {hint && <p id={`${id}-hint`} className="mt-1 text-xs text-gray-500">{hint}</p>}
+      {error && <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+    </div>
+  )
+}
+
+/** The ids a control should be described by, given which of hint and error are present. */
+export function describedBy(id: string, hint: boolean, error: boolean): string | undefined {
+  const ids = [hint ? `${id}-hint` : null, error ? `${id}-error` : null].filter(Boolean)
+  return ids.length ? ids.join(' ') : undefined
+}
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+
+interface TextInputProps {
+  id: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  type?: 'text' | 'time' | 'date'
+  mono?: boolean
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}
+
+export function TextInput({ id, value, onChange, placeholder, type = 'text', mono, disabled, describedBy: db, className, ...aria }: TextInputProps) {
+  return (
+    <input
+      id={id}
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+    />
+  )
+}
+
+interface NumberInputProps {
+  id: string
+  /** null is an empty box, which is a different fact from 0. */
+  value: number | null
+  onChange: (value: number | null) => void
+  min?: number
+  max?: number
+  step?: number | 'any'
+  placeholder?: string
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}
+
+export function NumberInput({ id, value, onChange, min, max, step = 'any', placeholder, disabled, describedBy: db, className, ...aria }: NumberInputProps) {
+  return (
+    <input
+      id={id}
+      type="number"
+      inputMode="decimal"
+      value={value === null ? '' : value}
+      min={min}
+      max={max}
+      step={step}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      onChange={(e) => {
+        // A number box holding text it cannot parse (a half typed "1e") reports an
+        // empty value with badInput set. That is not a cleared box, so nothing is
+        // emitted and the person's partial typing is left alone (L663).
+        if (e.target.validity?.badInput) return
+        const raw = e.target.value
+        if (raw === '') { onChange(null); return }
+        const n = Number(raw)
+        if (Number.isFinite(n)) onChange(n)
+      }}
+      className={`input ${className ?? ''}`.trim()}
+    />
+  )
+}
+
+interface SelectProps {
+  id: string
+  value: string
+  onChange: (value: string) => void
+  options: ReadonlyArray<{ value: string; label: string }>
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}
+
+export function Select({ id, value, onChange, options, disabled, describedBy: db, className, ...aria }: SelectProps) {
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`select ${className ?? ''}`.trim()}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  )
+}
+
+export function TextArea({ id, value, onChange, rows = 3, placeholder, describedBy: db, 'aria-label': ariaLabel }: { id: string; value: string; onChange: (v: string) => void; rows?: number; placeholder?: string; describedBy?: string; 'aria-label'?: string }) {
+  return <textarea id={id} value={value} rows={rows} placeholder={placeholder} aria-describedby={db} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value)} className="textarea" />
+}
+
+// ── Toggle and checkbox ───────────────────────────────────────────────────────
+
+export function Toggle({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`toggle ${checked ? 'toggle-on' : ''}`.trim()}
+    >
+      <span aria-hidden="true" className="toggle-knob" />
+    </button>
+  )
+}
+
+export function Checkbox({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <label htmlFor={id} className="inline-flex items-center gap-1.5 text-sm text-graphite">
+      <input id={id} type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="checkbox" />
+      <span>{label}</span>
+    </label>
+  )
+}
+
+// ── Button ────────────────────────────────────────────────────────────────────
+
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
+
+export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, className }: {
+  variant: ButtonVariant
+  type?: 'button' | 'submit'
+  onClick?: () => void
+  disabled?: boolean
+  busy?: boolean
+  children: ReactNode
+  'aria-label'?: string
+  className?: string
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled || busy}
+      aria-busy={busy ? 'true' : undefined}
+      aria-label={ariaLabel}
+      className={`btn btn-${variant} ${className ?? ''}`.trim()}
+    >
+      {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+      {children}
+    </button>
+  )
+}
+
+// ── Outcome: working, still alive, done, failed ───────────────────────────────
+
+export type OutcomeState =
+  | { kind: 'idle' }
+  | { kind: 'working'; label: string; startedAt: number; now: number; stalledAfterMs?: number }
+  | { kind: 'done'; message: string }
+  | { kind: 'failed'; message: string }
+
+/**
+ * The three states a time taking action can be in are visibly distinct (Dan,
+ * 2026-06-28): started (the label), still alive (elapsed seconds, ticking), and
+ * failed or stalled (an alert). A bare spinner is a defect.
+ */
+export function Outcome({ state }: { state: OutcomeState }) {
+  if (state.kind === 'idle') return null
+  if (state.kind === 'working') {
+    const seconds = Math.max(0, Math.floor((state.now - state.startedAt) / 1000))
+    if (state.stalledAfterMs !== undefined && state.now - state.startedAt >= state.stalledAfterMs) {
+      return <p role="alert" className="outcome outcome-stalled">{state.label}: still waiting after {seconds} s. It may have stalled.</p>
+    }
+    return (
+      <p role="status" className="outcome outcome-working">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        {state.label}, {seconds} s
+      </p>
+    )
+  }
+  if (state.kind === 'done') return <p role="status" className="outcome outcome-done">{state.message}</p>
+  return <p role="alert" className="outcome outcome-failed">{state.message}</p>
+}

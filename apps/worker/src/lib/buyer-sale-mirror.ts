@@ -71,7 +71,10 @@ export async function buyerSaleRowId(partnerId: string, key: EntryKey): Promise<
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function buildBuyerSaleRow(entry: LedgerEntry, meta: BuyerSaleRowMeta): Promise<BuyerSaleRow> {
-  const resolved = entry.status !== 'reserved'
+  // Reserved has no outcome yet; unresolved is the alarm timing a reservation out
+  // with nobody deciding. Neither was resolved by anyone, so neither carries a
+  // resolution source or an actor (the settle that later decides one does).
+  const resolved = entry.status !== 'reserved' && entry.status !== 'unresolved'
   return {
     id: await buyerSaleRowId(meta.partner_id, entry),
     partner_id: meta.partner_id,

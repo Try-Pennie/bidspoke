@@ -52,6 +52,10 @@ describe('buildBuyerSaleRow', () => {
     const row = await buildBuyerSaleRow({ ...entry, status: 'reserved', outcome: null, resolved_at: null, resolution_source: null }, meta)
     expect(row).toMatchObject({ http_status: null, result_code: null, buyer_reference: null, resolution_source: null, resolved_by: null })
   })
+  it('an unresolved entry (the alarm timed it out, nobody decided) has no resolution source and no actor', async () => {
+    const row = await buildBuyerSaleRow({ ...entry, status: 'unresolved', resolved_at: null, resolution_source: null, resolved_by: null, outcome: { buyer_reference: null, result_code: null, http_status: 504, payout_cents: 2190 } }, meta)
+    expect(row).toMatchObject({ status: 'unresolved', http_status: 504, resolution_source: null, resolved_by: null })
+  })
   it('a rehearsal is recorded as resolved by the rehearsal, never by a buyer', async () => {
     const row = await buildBuyerSaleRow({ ...entry, kind: 'rehearsal', resolution_source: 'rehearsal', outcome: { buyer_reference: null, result_code: 'rehearsal_no_call', http_status: null, payout_cents: 2190 } }, meta)
     expect(row.resolution_source).toBe('rehearsal')

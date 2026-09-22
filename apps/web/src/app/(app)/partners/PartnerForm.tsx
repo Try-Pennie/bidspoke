@@ -9,21 +9,23 @@ import {
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
 } from './partner-body'
 import { api } from '@/lib/api'
-import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
+import { Save, Trash2, Loader2, Plus, Check, X } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
+import { SignalRuleBuilder, SIGNAL_SECTIONS, parseRules } from '@/components/partners/SignalRuleBuilder'
+import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
+import { Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
+import { documentToProfile, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
 // Re-exported for the parent page's partner-switch / New guards, and the
 // canvas's own away-click guard (#478), so the prompt copy stays identical.
 export { UNSAVED_CHANGES_MESSAGE }
 
-// ── Signal rule builder ───────────────────────────────────────────────────────
-
-type RuleKind = 'body' | 'status'
+// ── Sub account floors ─────────────────────────────────────────────────────────
 
 function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
   if (!map) return []
@@ -31,213 +33,6 @@ function floorsFromMap(map: Record<string, number> | null | undefined): SubAccou
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
-function emptyBody(): BodyRule   { return { id: uid(), kind: 'body',   field: '',   condition: 'equals',   value: '' } }
-function emptyStatus(): StatusRule { return { id: uid(), kind: 'status', code: '',    bodyField: '',         condition: 'contains', value: '' } }
-
-function parseRules(raw: unknown): SignalRules {
-  const result: SignalRules = { rejection: [], transient: [], permanent: [] }
-  if (!raw || typeof raw !== 'object') return result
-  const obj = raw as Record<string, unknown>
-  const map: [string, SignalCategory][] = [
-    ['rejection_signals', 'rejection'],
-    ['transient_signals', 'transient'],
-    ['permanent_signals', 'permanent'],
-  ]
-  for (const [key, cat] of map) {
-    if (!Array.isArray(obj[key])) continue
-    for (const sig of obj[key] as Record<string, unknown>[]) {
-      if (sig.field != null) {
-        let condition: BodyCondition = 'equals'
-        let value = ''
-        if (sig.present === true)            { condition = 'present' }
-        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
-        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
-        else if (sig.contains != null)       { condition = 'contains'; value = String(sig.contains) }
-        else if (sig.equals != null)         { value = String(sig.equals) }
-        result[cat].push({ id: uid(), kind: 'body', field: String(sig.field), condition, value })
-      } else if (sig.status_code != null || sig.body_field != null || sig.header != null) {
-        let condition: StatusCondition = 'contains'
-        let value = ''
-        if (sig.present === true)            { condition = 'present' }
-        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
-        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
-        else if (sig.contains != null)       { value = String(sig.contains) }
-        result[cat].push({
-          id: uid(), kind: 'status',
-          code:      sig.status_code != null ? String(sig.status_code) : '',
-          bodyField: String(sig.body_field ?? sig.header ?? ''),
-          condition, value,
-        })
-      }
-    }
-  }
-  return result
-}
-
-const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = [
-  { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead. Logged as a business rejection, never retried.' },
-  { cat: 'transient', label: 'Transient error', desc: 'Temporary failure. Will be retried according to the workflow retry policy.' },
-  { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure. No retry, triggers alerts.' },
-]
-
-const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-graphite placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-p-blue-dark'
-
-function RuleRow({ rule, onChange, onRemove, removing }: {
-  rule: Rule
-  onChange: (r: Rule) => void
-  onRemove: () => void
-  removing?: boolean
-}) {
-  return (
-    <div className={`rule-row flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-2${removing ? ' rule-row-exiting' : ''}`}>
-      <select
-        value={rule.kind}
-        onChange={(e) => {
-          const k = e.target.value as RuleKind
-          onChange(k === 'body' ? { ...emptyBody(), id: rule.id } : { ...emptyStatus(), id: rule.id })
-        }}
-        className={`${inputCls} flex-shrink-0`}
-      >
-        <option value="body">Body field</option>
-        <option value="status">HTTP status</option>
-      </select>
-
-      {rule.kind === 'body' ? (
-        <>
-          <input
-            value={rule.field}
-            onChange={(e) => onChange({ ...rule, field: e.target.value })}
-            placeholder="field"
-            className={`${inputCls} w-28`}
-          />
-          <select
-            value={rule.condition}
-            onChange={(e) => onChange({ ...rule, condition: e.target.value as BodyCondition })}
-            className={`${inputCls} flex-shrink-0`}
-          >
-            <option value="equals">equals</option>
-            <option value="contains">contains</option>
-            <option value="in">in (any of)</option>
-            <option value="not_in">not in</option>
-            <option value="present">is present</option>
-          </select>
-          {rule.condition !== 'present' && (
-            <input
-              value={rule.value}
-              onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
-              className={`${inputCls} min-w-0 flex-1`}
-            />
-          )}
-        </>
-      ) : (
-        <>
-          <input
-            value={rule.code}
-            onChange={(e) => onChange({ ...rule, code: e.target.value })}
-            placeholder="status"
-            type="number"
-            className={`${inputCls} w-20`}
-          />
-          <input
-            value={rule.bodyField}
-            onChange={(e) => onChange({ ...rule, bodyField: e.target.value })}
-            placeholder="body field"
-            className={`${inputCls} w-28`}
-          />
-          <select
-            value={rule.condition}
-            onChange={(e) => onChange({ ...rule, condition: e.target.value as StatusCondition })}
-            className={`${inputCls} flex-shrink-0`}
-          >
-            <option value="contains">contains</option>
-            <option value="in">in (any of)</option>
-            <option value="not_in">not in</option>
-            <option value="present">is present</option>
-          </select>
-          {rule.condition !== 'present' && (
-            <input
-              value={rule.value}
-              onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
-              className={`${inputCls} min-w-0 flex-1`}
-            />
-          )}
-        </>
-      )}
-
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove rule"
-        className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  )
-}
-
-function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: (v: SignalRules) => void }) {
-  const [removingIds, setRemovingIds] = useState<Set<string>>(new Set())
-  const valueRef = useRef(value)
-  valueRef.current = value
-
-  function update(cat: SignalCategory, id: string, rule: Rule) {
-    onChange({ ...value, [cat]: value[cat].map((r) => (r.id === id ? rule : r)) })
-  }
-  function remove(cat: SignalCategory, id: string) {
-    setRemovingIds((prev) => new Set([...prev, id]))
-    setTimeout(() => {
-      const cur = valueRef.current
-      onChange({ ...cur, [cat]: cur[cat].filter((r) => r.id !== id) })
-      setRemovingIds((prev) => { const s = new Set(prev); s.delete(id); return s })
-    }, 150)
-  }
-  function add(cat: SignalCategory) {
-    onChange({ ...value, [cat]: [...value[cat], emptyBody()] })
-  }
-
-  return (
-    <div className="space-y-5">
-      {SIGNAL_SECTIONS.map(({ cat, label, desc }) => (
-        <div key={cat}>
-          <div className="mb-2 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-gray-700">{label}</p>
-              <p className="text-xs text-gray-500">{desc}</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => add(cat)}
-              className="flex flex-shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
-            >
-              <Plus className="h-3 w-3" />
-              Add rule
-            </button>
-          </div>
-          {value[cat].length === 0 ? (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500">
-              No rules. Uses default HTTP status classification.
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {value[cat].map((rule) => (
-                <RuleRow
-                  key={rule.id}
-                  rule={rule}
-                  removing={removingIds.has(rule.id)}
-                  onChange={(r) => update(cat, rule.id, r)}
-                  onRemove={() => remove(cat, rule.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
 
 // ── Form field primitives ─────────────────────────────────────────────────────
 
@@ -368,6 +163,19 @@ export default function PartnerForm({
   )
 
   const [signalRules, setSignalRules] = useState<SignalRules>(() => parseRules(partner?.response_classification))
+  // The buyer profile (#1412): the accept rules live on the partner record and
+  // save with it; the document lives in buyer_profiles and saves second, through
+  // its own versioned route. Both are form state so one Save covers the page.
+  const [acceptSignals, setAcceptSignals] = useState<Signal[]>(() => (Array.isArray(partner?.accept_signals) ? (partner.accept_signals as Signal[]) : []))
+  const [profile, setProfile] = useState<BuyerProfileDocument | null>(null)
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
+  const [otherSellers, setOtherSellers] = useState<Array<{ id: string; name: string }>>([])
+  const [profileErrors, setProfileErrors] = useState<ProfileError[]>([])
+  const [conflict, setConflict] = useState<ProfileConflict | null>(null)
+  const [saveOutcome, setSaveOutcome] = useState<OutcomeState>({ kind: 'idle' })
+  // What the profile looked like when it loaded or was last saved, so an edit to
+  // it counts as dirty and a load does not.
+  const profileBaseline = useRef<string | null>(null)
 
   const defaultAlertConfig = partner?.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
@@ -396,6 +204,23 @@ export default function PartnerForm({
       .catch(() => {})
   }, [partner])
 
+  // The buyer profile is read once the partner is known to be a buyer. A read
+  // that fails is its own state on the section, never an empty profile (L10).
+  useEffect(() => {
+    if (!partner || !isBuyerPartner(partnerType) || profile !== null || profileLoadError !== null) return
+    let cancelled = false
+    api.buyerProfiles.get(partner.id)
+      .then((r) => {
+        if (cancelled) return
+        const loaded = r.profile ?? { ...EMPTY_PROFILE, partner_id: partner.id, version: 0 }
+        profileBaseline.current = JSON.stringify(loaded)
+        setProfile(loaded)
+        setOtherSellers(r.other_sellers)
+      })
+      .catch((err: unknown) => { if (!cancelled) setProfileLoadError(err instanceof Error ? err.message : 'unknown error') })
+    return () => { cancelled = true }
+  }, [partner, partnerType, profile, profileLoadError])
+
   // Undo countdown
   useEffect(() => {
     if (undoSecondsLeft <= 0) return
@@ -409,7 +234,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors, acceptSignals }
   }
 
   // Dirty tracking — compare current values against the values at mount (reset
@@ -418,7 +243,8 @@ export default function PartnerForm({
   const dirtyKey = JSON.stringify({ ...captureSnapshot(), slug })
   const baselineDirtyKey = useRef<string | null>(null)
   if (baselineDirtyKey.current === null) baselineDirtyKey.current = dirtyKey
-  const dirty = baselineDirtyKey.current !== dirtyKey
+  const profileDirty = profile !== null && profileBaseline.current !== null && JSON.stringify(profile) !== profileBaseline.current
+  const dirty = baselineDirtyKey.current !== dirtyKey || profileDirty
   // The restorable pre-edit baseline (values at mount / after the last save). Undo
   // re-saves THIS, not the values that were just saved (#98).
   const baselineSnapshot = useRef<FormSnapshot | null>(null)
@@ -470,6 +296,7 @@ export default function PartnerForm({
     setSellOffOfferTitle(snap.sellOffOfferTitle); setSellOffOfferDetails(snap.sellOffOfferDetails)
     setPartnerType(snap.partnerType); setConfirmationWindowMs(snap.confirmationWindowMs)
     setSubAccountFloors(snap.subAccountFloors)
+    setAcceptSignals(snap.acceptSignals as Signal[])
   }
 
   async function handleUndo() {
@@ -495,13 +322,55 @@ export default function PartnerForm({
     }
   }
 
+  /**
+   * Save the buyer profile document through its versioned route (#1412). A
+   * stale version comes back as the side by side; the person's edits stay in
+   * the form whichever way they resolve it (L717).
+   */
+  async function saveProfile(expectedVersion: number): Promise<'saved' | 'conflict' | 'failed'> {
+    if (!partner || !profile) return 'saved'
+    try {
+      const saved = await api.buyerProfiles.save(partner.id, { expected_version: expectedVersion, profile })
+      profileBaseline.current = JSON.stringify(saved.profile)
+      setProfile(saved.profile)
+      setConflict(null)
+      setSaveOutcome({ kind: 'done', message: `Partner saved. Buyer profile saved, version ${saved.profile.version ?? '?'}.` })
+      return 'saved'
+    } catch (err) {
+      const e = err as Error & { status?: number; body?: { error?: string; current?: BuyerProfileDocument } }
+      if (e.status === 409 && e.body?.current) {
+        setConflict({ theirs: e.body.current, changedBy: null })
+        setSaveOutcome({ kind: 'failed', message: 'Partner saved. The buyer profile was not saved: it changed underneath you. Compare below.' })
+        return 'conflict'
+      }
+      setSaveOutcome({ kind: 'failed', message: `Partner saved. The buyer profile was not saved: ${e.message}` })
+      return 'failed'
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
+    setProfileErrors([])
     const snapshot = captureSnapshot()
     // Capture the pre-edit baseline BEFORE we advance it — this is what Undo restores.
     const preEdit = baselineSnapshot.current
+
+    // The buyer profile is validated with the shared package before ANY write, so
+    // a refused profile leaves the partner record untouched too, and the errors
+    // land beside the controls they name (L608).
+    const buyer = isBuyerPartner(partnerType)
+    if (buyer && profile) {
+      const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals })
+      if (!validation.ok) {
+        setProfileErrors(validation.errors)
+        setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${validation.errors.length} problem${validation.errors.length === 1 ? '' : 's'} marked below.` })
+        return
+      }
+    }
+
     setSaveState('saving')
+    setSaveOutcome({ kind: 'working', label: 'Saving the partner', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     try {
       await onSave(buildPartnerBody(snapshot, { slug, isExisting: !!partner }), partner?.id, isNew ? pendingUuids : undefined)
       // The saved values are now the clean baseline — clears the dirty flag.
@@ -509,6 +378,7 @@ export default function PartnerForm({
       baselineSnapshot.current = snapshot
       setSaveState('saved')
       // Offer Undo for an existing partner: restore + re-save the PRE-edit values.
+      // Undo covers the partner record; the profile keeps its own version history.
       if (!isNew && preEdit) {
         setUndoSnapshot(preEdit)
         setUndoSecondsLeft(5)
@@ -516,7 +386,16 @@ export default function PartnerForm({
       setTimeout(() => setSaveState('idle'), 1500)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save partner')
+      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${err instanceof Error ? err.message : 'the partner save failed'}` })
       setSaveState('idle')
+      return
+    }
+
+    if (buyer && partner && profile && profileDirty) {
+      setSaveOutcome({ kind: 'working', label: 'Saving the buyer profile', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
+      await saveProfile(profile.version ?? 0)
+    } else {
+      setSaveOutcome({ kind: 'done', message: 'Partner saved.' })
     }
   }
 
@@ -632,10 +511,12 @@ export default function PartnerForm({
             </div>
           </Field>
           <div className="flex items-center gap-6">
+            {/* Relabelled from Priority (#1412, L118): the buyer profile's priority is
+                who is offered a lead first; this field only orders the partner list. */}
             {isBuyerPartner(partnerType) && (
-              <Field label="Priority">
-                <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
-              </Field>
+              <UiField id="partner-list-order" label="List order" hint="Orders the partner list. It does not affect who is offered a lead.">
+                <NumberInput id="partner-list-order" value={priority === '' ? null : Number(priority)} onChange={(v) => setPriority(v === null ? '' : String(v))} step={1} describedBy={describedBy('partner-list-order', true, false)} />
+              </UiField>
             )}
             <Field label="Status">
               <div className="flex items-center gap-2.5 pt-1">
@@ -646,6 +527,24 @@ export default function PartnerForm({
           </div>
         </Section>
 
+        {isBuyerPartner(partnerType) && (
+          <BuyerProfileSection
+            partnerId={partner?.id ?? null}
+            partnerName={name || partner?.name || 'this buyer'}
+            profile={profile}
+            loadError={profileLoadError}
+            onProfileChange={setProfile}
+            errors={profileErrors}
+            acceptSignals={acceptSignals}
+            onAcceptSignalsChange={setAcceptSignals}
+            signalRules={signalRules}
+            onSignalRulesChange={setSignalRules}
+            otherSellers={otherSellers}
+            conflict={conflict}
+            onSaveOverTheirs={(theirVersion) => { void saveProfile(theirVersion) }}
+            onTakeTheirs={(theirs) => { profileBaseline.current = JSON.stringify(theirs); setProfile(theirs); setConflict(null); setSaveOutcome({ kind: 'done', message: 'Took the saved profile. Your edits to it were replaced.' }) }}
+          />
+        )}
         {isBuyerPartner(partnerType) && <Section title="Bid resolution">
           <BidResolverEditor
             resolverType={resolverType}
@@ -736,9 +635,11 @@ export default function PartnerForm({
 
         {isBuyerPartner(partnerType) && <Section title="Bidding limits">
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Daily cap" hint="Max leads per day. Leave blank for unlimited.">
-              <Input value={dailyCap} onChange={setDailyCap} type="number" placeholder="∞" />
-            </Field>
+            {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
+                daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
+            <UiField id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
+              <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
+            </UiField>
             <Field label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
               <Input value={minBid} onChange={setMinBid} type="number" placeholder="0.00" />
             </Field>
@@ -818,7 +719,9 @@ export default function PartnerForm({
             Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
             Leave all sections empty to use default HTTP status–based classification.
           </p>
-          <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
+          {/* The decline group (rejection) is edited in the Buyer profile section beside
+              the accept rules, so it is not repeated here (#1412, L605). */}
+          <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
         </Section>}
 
         <Section title="Bid confirmation latency">
@@ -971,6 +874,7 @@ export default function PartnerForm({
             {saveState === 'saved'  && <><Check  className="h-4 w-4" /> Saved</>}
             {saveState === 'idle'   && <><Save   className="h-4 w-4" /> {isNew ? 'Create partner' : 'Save changes'}</>}
           </button>
+          <Outcome state={saveOutcome} />
           {undoSnapshot && (
             <button
               type="button"

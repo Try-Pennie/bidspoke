@@ -30,6 +30,8 @@ export interface FormSnapshot {
   partnerType: PartnerType
   confirmationWindowMs: string
   subAccountFloors: SubAccountFloor[]
+  /** The buyer_select accept rules (#1412), the shared Signal shape, saved with the partner record. */
+  acceptSignals: unknown[]
 }
 
 /** Parse a comma-separated value list for in/not_in. Numeric tokens coerced to numbers. */
@@ -126,6 +128,7 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     circuit_window_seconds: parseInt(snap.circuitWindow) || 60,
     circuit_cooldown_seconds: parseInt(snap.circuitCooldown) || 300,
     response_classification: serializeRules(snap.signalRules),
+    accept_signals: snap.acceptSignals,
     alert_config: {
       transient_errors: { alert: snap.alertTransient },
       permanent_errors: { alert: snap.alertPermanent },

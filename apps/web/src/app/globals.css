@@ -161,4 +161,66 @@ html {
   .input {
     @apply w-full rounded border border-gray-200 px-2.5 py-1.5 text-sm text-graphite placeholder-gray-400 focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 disabled:opacity-100;
   }
+  /* The design system controls the buyer profile section is built from (#1412, L607).
+     Each control has its own class because its geometry differs: a select carries
+     the browser's chevron and needs room on the right, a textarea grows, a toggle
+     is a pill, a checkbox is a square that must stay square. */
+  .select {
+    @apply w-full appearance-none rounded border border-gray-200 bg-white py-1.5 pl-2.5 pr-8 text-sm text-graphite focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400;
+    /* The chevron is plain CSS: a data URL holds spaces, which @apply splits into utilities. */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-size: 12px 12px;
+    background-position: right 0.6rem center;
+    background-repeat: no-repeat;
+  }
+  .textarea {
+    @apply w-full rounded border border-gray-200 px-2.5 py-1.5 text-sm text-graphite placeholder-gray-400 focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark;
+  }
+  .checkbox {
+    @apply h-4 w-4 shrink-0 rounded border-gray-300 text-p-blue-dark focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-1;
+  }
+  .toggle {
+    @apply relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-gray-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .toggle-on {
+    @apply bg-p-blue-dark;
+  }
+  .toggle-knob {
+    @apply pointer-events-none inline-block h-4 w-4 translate-x-0 rounded-full bg-white shadow-sm transition-transform duration-150;
+  }
+  .toggle-on .toggle-knob {
+    @apply translate-x-4;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-p-blue-dark text-white hover:bg-[#155E99];
+  }
+  .btn-secondary {
+    @apply border border-gray-200 bg-white text-graphite hover:border-gray-300 hover:bg-gray-50;
+  }
+  .btn-danger {
+    @apply border border-red-200 bg-white text-red-700 hover:bg-red-50;
+  }
+  .btn-ghost {
+    @apply px-2 py-1 text-xs text-p-blue-dark hover:bg-p-blue-light;
+  }
+  /* A row action inside a table: the row's height is set by the text, not the button. */
+  .btn-sm {
+    @apply px-2 py-1 text-xs;
+  }
+  .outcome {
+    @apply inline-flex items-center gap-1.5 text-xs;
+  }
+  .outcome-working {
+    @apply text-gray-600;
+  }
+  .outcome-done {
+    @apply text-green-700;
+  }
+  .outcome-failed,
+  .outcome-stalled {
+    @apply text-red-700;
+  }
 }
