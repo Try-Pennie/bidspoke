@@ -434,6 +434,22 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
     expect(payload.failingSince).toBe('2026-09-21T16:26:00.000Z')
   })
 
+  it('still pages, without a date, when the stored time will not parse (L50)', async () => {
+    // Every sentence built from this runs through a date formatter, which
+    // renders an unreadable value as the words Invalid Date rather than
+    // refusing. A failure demonstrably happened, so the alert stands and only
+    // the claim about when it started is dropped.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: JSON.stringify({ since: 'yesterday afternoon', recovered: false }) })
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBeUndefined()
+    expect(payload.intermittentSince).toBeUndefined()
+  })
+
   it('keeps the original first-failure time across a recovery and a later failure', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })

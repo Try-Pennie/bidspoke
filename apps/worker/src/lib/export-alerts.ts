@@ -80,6 +80,19 @@ export function parsePendingFailure(raw: string | null): PendingFailure | null {
 const writePendingFailure = (pending: PendingFailure): string => JSON.stringify(pending)
 
 /**
+ * The stored instant, or null when it will not parse (L50).
+ *
+ * Every sentence built from this goes through `new Date(...)` and an
+ * Intl formatter, which render an unparseable value as the words "Invalid
+ * Date" rather than refusing. A marker that has been damaged must still PAGE,
+ * since a failure demonstrably happened, so the remedy is to drop the claim
+ * about WHEN rather than the alert itself.
+ */
+function validInstant(iso: string): string | null {
+  return Number.isFinite(new Date(iso).getTime()) ? iso : null
+}
+
+/**
  * What a HEALTHY run of a job that alerts through this module reports (#1441).
  *
  * Two separate things, and the difference is the whole point. The standing
@@ -187,8 +200,10 @@ export async function notifyExportFailure(
     // recorded rather than from the fact that a marker exists (#1441, L11). A
     // run succeeded in between means this is intermittent, and saying "failing
     // since" would name a stretch that demonstrably ended.
-    if (pending.recovered) intermittentSince = pending.since
-    else failingSince = pending.since
+    const since = validInstant(pending.since)
+    if (since === null) console.warn(`[export-alerts] ${jobName}: pending marker holds an unreadable time, alerting without it`)
+    else if (pending.recovered) intermittentSince = since
+    else failingSince = since
   }
 
   // Already paged for this ongoing issue; stay quiet until it recovers (the
