@@ -11,7 +11,7 @@ import type { NodeType } from '@/types/workflow'
 export const PREVIEW_TYPES = [
   'trigger', 'filter', 'branch', 'code', 'webhook', 'transform',
   'parallel', 'bid_group', 'constants', 'salesforce', 'data_store', 'latency_gate',
-  'achieve_offers', 'response', 'exit', 'branch_end', 'parallel_end',
+  'achieve_offers', 'buyer_select', 'response', 'exit', 'branch_end', 'parallel_end',
 ] as const satisfies readonly (NodeType | 'trigger')[]
 
 export const PREVIEW_OMITTED: Readonly<Partial<Record<NodeType, string>>> = {

@@ -17,8 +17,15 @@ vi.mock('../../../lib/github')
 vi.mock('../../../lib/github-backup-alert')
 vi.mock('../../../engine/nodes/index')
 vi.mock('../../../lib/env-loader')
+// The profile read is mocked; partnersPricedFor stays real, because the finder's
+// decision (which partners a buyer_select workflow uses) is what is under test.
+vi.mock('../../../lib/buyer-profile-loader', async () => {
+  const actual = await vi.importActual<typeof import('../../../lib/buyer-profile-loader')>('../../../lib/buyer-profile-loader')
+  return { ...actual, loadBuyerProfiles: vi.fn() }
+})
 
 import { verifyJwt } from '../../../lib/jwt'
+import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../../lib/buyer-profile-loader'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
@@ -814,6 +821,44 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
     const res = await request(app, 'POST', '/workflows/wf-1/test-node', { body: { namespace: 'n' } })
     expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/rename-impact names a workflow whose buyer_select node sells to the partner, through the enabled profiles priced for its population (#1411)', async () => {
+    // buyer_select names no partner in its config. The decision recorded on the
+    // plan: a workflow containing one uses every partner holding an enabled
+    // profile priced for that node's population, so a formula rewrite on Tripoint
+    // names the Engine workflow and is refused by default.
+    const profile = (partnerId: string, population: string): LoadedBuyer => ({
+      partner: { id: partnerId, slug: partnerId, is_active: true, api_endpoint: null, cf_secret_key: null, outbound_field_mapping: null, extra_extraction: null, accept_signals: [], response_classification: null, circuit_enabled: false, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30 },
+      profile: { partnerId, isEnabled: true, priority: 1, allowedStates: ['TX'], debtMin: null, debtMax: null, loanAmountMin: null, hourlyLeadCap: null, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: null, windows: [], blackoutDates: [], tiers: [{ population, debtFrom: 0, debtTo: null, multiplier: 0.001 }] },
+      version: 1,
+      updated_at: '2027-01-01T00:00:00.000Z',
+    })
+    const snapshot: BuyerProfilesSnapshot = { org_id: USER_ORG, loaded_at: '2027-01-01T00:00:00.000Z', updated_at_max: null, served_from: 'database', buyers: [profile('p-tripoint', 'engine'), profile('p-liberty', 'main_flow')] }
+    vi.mocked(loadBuyerProfiles).mockResolvedValue(snapshot)
+
+    const partners = [
+      { id: 'p-tripoint', name: 'Tripoint', slug: 'tripoint', bid_formula: 'steps.trades.output.debt * 0.0012', bid_resolver_config: null },
+      { id: 'p-liberty', name: 'Liberty', slug: 'liberty', bid_formula: 'steps.trades.output.debt * 0.001', bid_resolver_config: null },
+    ]
+    const engineWorkflow = { id: 'wf-engine', name: 'Engine Bidding', definition: { nodes: [{ id: 'bs', namespace: 'sell_off', type: 'buyer_select', config: { population: 'engine', mode: 'live' } }] } }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { list: [engineWorkflow] }],
+        partner_configs: { list: partners },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+
+    const res = await request(app, 'GET', '/workflows/wf-1/rename-impact?old=trades&new=prospect_trades')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { partner_formulas: Array<{ partner_slug: string; shared_with_workflows: Array<{ id: string }>; can_rewrite: boolean }> }
+    const bySlug = Object.fromEntries(body.partner_formulas.map((p) => [p.partner_slug, p]))
+    expect(bySlug.tripoint.shared_with_workflows.map((w) => w.id)).toEqual(['wf-engine'])
+    expect(bySlug.tripoint.can_rewrite).toBe(false)
+    // Liberty is priced for main_flow only, so the Engine node does not use it.
+    expect(bySlug.liberty.shared_with_workflows).toEqual([])
+    expect(bySlug.liberty.can_rewrite).toBe(true)
   })
 
   it('GET /:id/rename-impact returns 5xx when the ownership lookup errors (not 404)', async () => {

@@ -19,6 +19,7 @@ import { SalesforceNode } from './SalesforceNode'
 import { DataStoreNode } from './DataStoreNode'
 import { LatencyGateNode } from './LatencyGateNode'
 import { AchieveOffersNode } from './AchieveOffersNode'
+import { BuyerSelectNode } from './BuyerSelectNode'
 import { RegionNode } from './RegionNode'
 import { withNodeBadges } from './withNodeBadges'
 
@@ -57,6 +58,7 @@ const baseNodeTypesInternal = {
   data_store: DataStoreNode,
   latency_gate: LatencyGateNode,
   achieve_offers: AchieveOffersNode,
+  buyer_select: BuyerSelectNode,
   region: RegionNode,
   // `satisfies` over every NodeType plus the two canvas only entries (#1411):
   // a type added to @bidspoke/node-types with no card here is a compile error,

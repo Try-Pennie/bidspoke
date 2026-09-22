@@ -46,8 +46,9 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import { flowToDef } from '@/lib/flow-to-def'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
+import { isNodeType } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
-import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, type ValidationError } from '@/lib/workflow-validation'
+import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, findUnwiredBuyerSelectHandles, type ValidationError } from '@/lib/workflow-validation'
 import { validateDefinitionReferences, type ReferenceProblem } from '@/lib/reference-validation'
 import { outEdgeForHandle, normalizeHandle, dedupeEdges } from '@/lib/auto-connect'
 import { useRouter } from 'next/navigation'
@@ -580,6 +581,18 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
       no_winner_behavior: 'route',
     }
   }
+  if (type === 'buyer_select') {
+    // No retries, ever: a retried sale is a second send to a buyer (#1411). The
+    // executor runs once whatever the definition says; this keeps the saved
+    // config honest about it. Decide only until a person switches it live.
+    return {
+      ...base,
+      retries: 0,
+      mode: 'decide_only',
+      population: 'engine',
+      sale_payload: { base: '{{trigger.payload}}', set: [], normalise: [] },
+    }
+  }
   return base
 }
 
@@ -642,6 +655,18 @@ function chooseSourceHandle(
       [
         { id: 'winner', x: source.position.x + NODE_W * 0.3 },
         { id: 'no_winner', x: source.position.x + NODE_W * 0.7 },
+      ],
+      dropX
+    )
+  }
+
+  if (type === 'buyer_select') {
+    return nearestHandleId(
+      [
+        { id: 'sold', x: source.position.x + NODE_W * 0.125 },
+        { id: 'no_sale', x: source.position.x + NODE_W * 0.375 },
+        { id: 'not_applicable', x: source.position.x + NODE_W * 0.625 },
+        { id: 'deferred', x: source.position.x + NODE_W * 0.875 },
       ],
       dropX
     )
@@ -1040,10 +1065,26 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     [mode, nodes, edges]
   )
 
-  // Every node that gets the warning ring: unconfigured or mis-wired.
+  // A buyer_select node whose required handles are not all wired (#1411). The
+  // engine fails the step by name when it routes to an unwired handle, so a live
+  // save is refused here for the same reason, on the same predicate.
+  const unwiredHandleErrors: Map<string, ValidationError> = useMemo(() => {
+    if (mode !== 'edit') return new Map()
+    const defNodes = nodes.flatMap((n) => {
+      const d = n.data as unknown as CanvasNodeData
+      const type = n.type
+      if (!type || !isNodeType(type)) return []
+      return [{ id: n.id, namespace: d.namespace, type, config: d.config ?? {} }]
+    })
+    const defEdges = edges.map((e) => ({ id: e.id, source: e.source, target: e.target, source_handle: e.sourceHandle ?? undefined }))
+    return findUnwiredBuyerSelectHandles(defNodes, defEdges)
+  }, [mode, nodes, edges])
+
+  // Every node that gets the warning ring: unconfigured, mis-wired, or a
+  // buyer_select with a required handle unwired.
   const flaggedNodes: Map<string, ValidationError> = useMemo(
-    () => new Map([...validationErrors, ...wiringErrors]),
-    [validationErrors, wiringErrors]
+    () => new Map([...validationErrors, ...wiringErrors, ...unwiredHandleErrors]),
+    [validationErrors, wiringErrors, unwiredHandleErrors]
   )
 
   // Nodes to highlight on the minimap and WHY (unconfigured, from validation, or
@@ -2601,6 +2642,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
     if (validationErrors.size > 0) {
       return `Can't save a live workflow with unconfigured nodes: ${names(validationErrors)}. Fix them or disable the workflow first.`
+    }
+    if (unwiredHandleErrors.size > 0) {
+      const detail = Array.from(unwiredHandleErrors.values()).map((e) => `${e.label || e.namespace}: ${e.message.toLowerCase()}`).join('; ')
+      return `Can't save a live workflow with a Buyer Select node ${detail}. The engine fails the step when it routes to an unwired handle.`
     }
     return null
   }

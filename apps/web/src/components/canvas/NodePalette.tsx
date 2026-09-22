@@ -2,7 +2,7 @@
 
 import type { NodeType } from '@/types/workflow'
 import { nodeIconClass } from './nodes/node-colors'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins, BadgeDollarSign } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -96,6 +96,12 @@ const NODES: PaletteNode[] = [
     label: 'Achieve Offers',
     description: 'Collect Achieve/FDR offers, log only',
     icon: HandCoins,
+  },
+  {
+    type: 'buyer_select',
+    label: 'Buyer Select',
+    description: 'Sell the lead to the top ranked buyer',
+    icon: BadgeDollarSign,
   },
 ]
 

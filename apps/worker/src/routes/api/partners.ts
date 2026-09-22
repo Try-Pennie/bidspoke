@@ -8,6 +8,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
+import { invalidateBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
@@ -208,6 +209,7 @@ partners.post('/', async (c) => {
   // A new partner always affects the constants set (subAccountIdsMap / activeBidding),
   // so invalidate unconditionally rather than gating on the copy fields.
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  await invalidateBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE)
 
   return c.json(withCredentialWarning(c.env, data), 201)
 })
@@ -278,6 +280,9 @@ partners.put('/:id', async (c) => {
   if (affectsConstants) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
+  // The buyer profile snapshot joins the partner row (endpoint, credential name,
+  // accept rules, mapping, active flag), so every edit refreshes it (#1411).
+  await invalidateBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE)
 
   return c.json(withCredentialWarning(c.env, data))
 })
@@ -311,6 +316,7 @@ partners.delete('/:id', async (c) => {
   }
 
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  await invalidateBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE)
 
   return c.json({ ok: true })
 })

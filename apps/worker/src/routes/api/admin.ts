@@ -14,6 +14,7 @@ import {
   extractEnrichment,
   extractBidGroupSummary,
   deriveRejectReason,
+  terminalHandleFor,
 } from '../../engine/lead-sightings'
 import { formatSsn } from '../../engine/persons-crypto'
 import { runSightingsExport } from '../../lib/sightings-export'
@@ -204,15 +205,9 @@ admin.post('/backfill-sightings', async (c) => {
       const lastStep = completedSteps[completedSteps.length - 1]
       const terminalNs = (lastStep?.step_namespace as string | undefined) ?? null
       const terminalNode = terminalNs ? definition.nodes.find((n) => n.namespace === terminalNs) ?? null : null
-      const filterPassed = terminalNode?.type === 'filter' && lastStep
-        ? Boolean((lastStep.output as { passed?: unknown } | null)?.passed) : null
-      const bidRoute = terminalNode?.type === 'bid_group' && lastStep
-        ? ((lastStep.output as { _route?: string } | null)?._route ?? null) : null
-      const terminalHandle =
-        terminalNode?.type === 'filter' && filterPassed === false ? 'exit'
-        : terminalNode?.type === 'filter' && filterPassed === true ? 'pass'
-        : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
-        : null
+      // The same derivation the live finalize uses, so the backfill and the engine
+      // read a node's exit handle identically (#1411, L613).
+      const terminalHandle = terminalHandleFor(terminalNode?.type, lastStep?.output)
 
       // response_body only ever stores the BODY; the status lives in the
       // response_status column written at finalize. Rows from before that

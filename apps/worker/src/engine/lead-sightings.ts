@@ -328,6 +328,13 @@ export function deriveRejectReason(input: {
   if (input.terminal_node_type === 'bid_group' && input.terminal_node_handle === 'no_winner') {
     return 'all_partners_declined'
   }
+  if (input.terminal_node_type === 'buyer_select' && input.terminal_node_handle === 'no_sale') {
+    // The node names why it made no sale (declined_by_buyer, no_eligible_buyer,
+    // outcome_unknown, a cap...). sold, deferred and not_applicable are not
+    // rejections: the lead went on, or was never for sale (#1411).
+    const reason = (input.terminal_step_output as { reason?: unknown } | undefined)?.reason
+    return typeof reason === 'string' && reason ? `buyer_select:${reason}` : 'buyer_select:no_sale'
+  }
   if (input.terminal_node_type === 'code') {
     // Code nodes that throw or return an error sentinel surface their namespace as
     // the reason. This one IS determined: the sentinel is the engine observing a
@@ -651,6 +658,65 @@ export function extractBidGroupSummary(steps: Record<string, StepOutput>): {
 }
 
 // ============================================================
+// extractBuyerSelectSummary (#1411)
+// ============================================================
+// The buyer_select node's equivalent of extractBidGroupSummary, so the finalize
+// winner flip fires on the node's own accept row. Only a LIVE sale is a winner
+// and only a contacted buyer is an attempt: a rehearsal (decide_only) contacted
+// nobody, so it yields no signal and pickBidSummary falls through to the legacy
+// code node summary while both run side by side (Stage A).
+const BUYER_SELECT_ROUTES = new Set(['sold', 'no_sale', 'not_applicable', 'deferred'])
+const CONTACTED = new Set(['sold', 'declined_by_buyer', 'buyer_error', 'outcome_unknown'])
+const RESPONDED = new Set(['sold', 'declined_by_buyer'])
+
+export function extractBuyerSelectSummary(steps: Record<string, StepOutput>): {
+  winner_slug: string | null
+  winner_bid_cents: number | null
+  attempted: number | null
+  responded: number | null
+} {
+  const empty = { winner_slug: null, winner_bid_cents: null, attempted: null, responded: null }
+  for (const step of Object.values(steps)) {
+    const out = step.output
+    if (!out || typeof out !== 'object') continue
+    const obj = out as Record<string, unknown>
+    if (typeof obj._route !== 'string' || !BUYER_SELECT_ROUTES.has(obj._route)) continue
+    const sale = obj.sale
+    if (!sale || typeof sale !== 'object' || !Array.isArray(obj.considered)) continue
+
+    const considered = obj.considered as Array<{ outcome?: unknown }>
+    const attempted = considered.filter((c) => typeof c.outcome === 'string' && CONTACTED.has(c.outcome)).length
+    const responded = considered.filter((c) => typeof c.outcome === 'string' && RESPONDED.has(c.outcome)).length
+    const live = obj.mode_effective === 'live'
+    const s = sale as { accepted?: unknown; skipped?: unknown; partner_slug?: unknown }
+    const winner = live && s.accepted === true && s.skipped === false && typeof s.partner_slug === 'string' ? s.partner_slug : null
+    return { winner_slug: winner, winner_bid_cents: null, attempted: attempted || null, responded: responded || null }
+  }
+  return empty
+}
+
+// ============================================================
+// terminalHandleFor (#1411)
+// ============================================================
+// The edge handle a run left its terminal node by, read from that node's
+// output. Written once here for the live finalize and the admin backfill, which
+// each used to carry their own copy (L613). A node type with no handles, or no
+// output to read, is null.
+export function terminalHandleFor(nodeType: string | null | undefined, output: unknown): string | null {
+  if (!nodeType || !output || typeof output !== 'object') return null
+  const obj = output as Record<string, unknown>
+  switch (nodeType) {
+    case 'filter':
+      return obj.passed ? 'pass' : 'exit'
+    case 'bid_group':
+    case 'buyer_select':
+      return typeof obj._route === 'string' && obj._route ? obj._route : null
+    default:
+      return null
+  }
+}
+
+// ============================================================
 // computeSightingFinalize (#353)
 // ============================================================
 // The rich sighting-finalize fields (terminal node, response, winner/bid summary,
@@ -930,23 +996,13 @@ export function computeSightingFinalize(
 
   // Prefer the bid_group summary; fall back to the code-node (Tripoint) summary
   // so the winner/bid counts work for code-node bidding flows too (#349).
-  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), deriveCodeNodeBidSummary(steps, nodes))
+  // bid_group first, then a live buyer_select sale, then the code node (Tripoint)
+  // summary, so the winner flip and the bid counts work on every flow shape (#349, #1411).
+  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), extractBuyerSelectSummary(steps), deriveCodeNodeBidSummary(steps, nodes))
   const enrichment = extractEnrichment(steps)
   const responseStatusCode = opts.walkStatus
 
-  const filterPassed =
-    terminalNode?.type === 'filter' && terminalStep
-      ? Boolean((terminalStep.output as { passed?: unknown } | null)?.passed)
-      : null
-  const bidRoute =
-    terminalNode?.type === 'bid_group' && terminalStep
-      ? ((terminalStep.output as { _route?: string } | null)?._route ?? null)
-      : null
-  const terminalHandle =
-    terminalNode?.type === 'filter' && filterPassed === false ? 'exit'
-    : terminalNode?.type === 'filter' && filterPassed === true ? 'pass'
-    : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
-    : null
+  const terminalHandle = terminalHandleFor(terminalNode?.type, terminalStep?.output)
 
   const reject_reason = deriveRejectReason({
     winning_partner_slug: bidSummary.winner_slug,

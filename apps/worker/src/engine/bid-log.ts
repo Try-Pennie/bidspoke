@@ -234,11 +234,16 @@ export interface BidSummary {
   responded: number | null
 }
 
-// Choose the bid_group summary when it carries any signal (a winner or counted
-// attempts); otherwise fall back to the code-node (Tripoint) summary so the
-// finalize winner flip + bid counts work for code-node bidding flows too (#349).
-export function pickBidSummary(bidGroup: BidSummary, codeNode: BidSummary): BidSummary {
-  return bidGroup.winner_slug || bidGroup.attempted != null ? bidGroup : codeNode
+// Choose the first summary that carries any signal (a winner or counted
+// attempts), in the caller's order: bid_group, then buyer_select (#1411), then
+// the code-node (Tripoint) summary, so the finalize winner flip + bid counts
+// work for code-node bidding flows too (#349). The last one is the fallback
+// whatever it holds.
+export function pickBidSummary(...summaries: [BidSummary, ...BidSummary[]]): BidSummary {
+  for (const s of summaries.slice(0, -1)) {
+    if (s.winner_slug || s.attempted != null) return s
+  }
+  return summaries[summaries.length - 1]
 }
 
 // Code-node equivalent of extractBidGroupSummary, so the finalize winner UPDATE

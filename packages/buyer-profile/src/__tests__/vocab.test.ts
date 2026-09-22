@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BUYER_SELECT_MODES,
   DAYS_OF_WEEK,
   LEDGER_KINDS,
   MULTIPLIER_CEILING,
+  NODE_REASONS,
+  NODE_REASON_LABELS,
   OUT_REASONS,
   OUT_REASON_LABELS,
   PAYLOAD_NORMALISERS,
@@ -86,5 +89,29 @@ describe('the rest of the vocabulary', () => {
   it('states the priority direction once and caps the multiplier at 1', () => {
     expect(PRIORITY_DIRECTION).toBe('1 is offered the lead first. A lower number outranks a higher one.')
     expect(MULTIPLIER_CEILING).toBe(1)
+  })
+})
+
+describe('buyer_select node vocabulary (#1411)', () => {
+  it('names the two modes, decide only first because it is the safe one', () => {
+    expect([...BUYER_SELECT_MODES]).toEqual(['decide_only', 'live'])
+  })
+  it('names every node level reason the executor can route on, disjoint from the per buyer out reasons', () => {
+    const expected = [
+      'sold', 'sell_off_false', 'bid_not_positive', 'sell_off_unresolved', 'lead_key_empty', 'mode_invalid',
+      'payload_invalid', 'profiles_unavailable', 'no_eligible_buyer', 'canary_out', 'report_only',
+      'decide_only', 'rehearsal_caps_invalid', 'rehearsal_deadline', 'buyer_select_handle_unwired',
+    ]
+    expect([...NODE_REASONS].sort()).toEqual(expected.sort())
+    for (const r of NODE_REASONS) expect(OUT_REASONS as readonly string[]).not.toContain(r)
+  })
+  it('labels every node level reason in plain words with no dash or emoji (L113)', () => {
+    for (const r of NODE_REASONS) {
+      const label = NODE_REASON_LABELS[r]
+      expect(label, r).toBeTruthy()
+      expect(label).toMatch(noDashOrEmoji)
+      expect(label).not.toContain('_')
+    }
+    expect(Object.keys(NODE_REASON_LABELS).sort()).toEqual([...NODE_REASONS].sort())
   })
 })

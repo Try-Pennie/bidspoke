@@ -21,6 +21,7 @@ import type { NodeType } from '@/types/workflow'
 export const CARD_EXECUTORS: Record<string, { type: NodeType | 'trigger'; sources: string[] }> = {
   'AchieveOffersNode.tsx': { type: 'achieve_offers', sources: ['engine/nodes/achieve-offers.ts'] },
   'BidGroupNode.tsx': { type: 'bid_group', sources: ['engine/nodes/bid-group.ts'] },
+  'BuyerSelectNode.tsx': { type: 'buyer_select', sources: ['engine/nodes/buyer-select.ts'] },
   'BranchNode.tsx': { type: 'branch', sources: ['engine/nodes/branch.ts'] },
   'CodeNode.tsx': { type: 'code', sources: ['engine/nodes/code.ts'] },
   'ConstantsNode.tsx': { type: 'constants', sources: ['engine/nodes/constants.ts'] },

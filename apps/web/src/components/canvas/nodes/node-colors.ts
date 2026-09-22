@@ -49,6 +49,7 @@ export const NODE_TYPE_COLOR: Record<ColoredNodeType, NodeColor> = {
   data_store:     { icon: 'text-cyan-500',    hex: '#06b6d4' },
   latency_gate:   { icon: 'text-orange-500',  hex: '#f97316' },
   achieve_offers: { icon: 'text-violet-500',  hex: '#8b5cf6' },
+  buyer_select:   { icon: 'text-emerald-600', hex: '#059669' },
   // Retired (#645), still executable and still in NODE_TYPES, so it still has to
   // draw. Matches the GenericNode card it falls back to.
   partner_bid:    { icon: 'text-slate-400',   hex: '#94a3b8' },

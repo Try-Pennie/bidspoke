@@ -10,11 +10,13 @@ vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
 vi.mock('../../../lib/partner-constants-loader')
+vi.mock('../../../lib/buyer-profile-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
+import { invalidateBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -96,6 +98,8 @@ describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
       p_org: 'org-abc', p_id: 'p-1', p_actor: 'user-1', p_actor_email: 'dan@pennie.com',
     })
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalled()
+    // A deleted partner leaves the buyer profile snapshot too (#1411).
+    expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
@@ -251,6 +255,25 @@ describe('partner_type vocabulary on the write path (#306)', () => {
     const res = await send('PUT', '/partners/p-1', { partner_type: 'both' })
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ partner_type: 'both' })
+  })
+
+  it('PUT invalidates the buyer profile snapshot on every field, because the snapshot joins the partner row (#1411)', async () => {
+    // The endpoint, the credential name, the accept rules, the mapping and the
+    // active flag all ride into the cached snapshot, so an edit that skipped the
+    // invalidation would sell against the old values for up to a minute.
+    vi.mocked(createSupabaseClient).mockReturnValue(supabaseForUpdate({ id: 'p-1', name: 'Renamed' }))
+    const res = await send('PUT', '/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
+  })
+
+  it('PUT does not invalidate the buyer profile snapshot when the write matched nothing', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, partner_configs: [{ single: { id: 'p-1' } }, { single: null }] }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await send('PUT', '/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(404)
+    expect(vi.mocked(invalidateBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
   it('PUT refuses an unknown partner_type with a 400 naming the accepted values', async () => {
