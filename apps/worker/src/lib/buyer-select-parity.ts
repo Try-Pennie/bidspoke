@@ -22,6 +22,7 @@ import { canonicalBodySha256, easternDayStartUtc, easternParts, evaluateSaleOutc
 import { RETENTION_DAYS } from '../archive/candidate-days'
 import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 
 export { RETENTION_DAYS }
 
@@ -439,6 +440,26 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
   }
 }
 
-export function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
-  return runParityRefresh(productionRefreshDeps(supabase, env), only)
+export const BUYER_SELECT_PARITY_REMEDY: AlertRemedy = {
+  consequence:
+    'A parity day could not be summarised or written, so the buyer_select_parity_days record the Stage A exit criteria are read ' +
+    'from is behind for that day. Selling is unaffected; this is the comparison record, not the sale. The lines below name the ' +
+    'workflow, the day and what failed:',
+  fixHint:
+    'A read error (statement timeout, an unreadable table) clears itself on the next hour if the database is healthy; a day that ' +
+    'keeps failing can be re-run by hand with POST /api/admin/buyer-select/parity/refresh {"workflow_id", "day"}. A workflow ' +
+    "reported as having no accept and decline rules needs the incumbent buyer's rules saved on its partner page.",
+  headlineVerb: 'could not summarise a day',
+  itemNoun: { one: 'day', many: 'days' },
+}
+
+/**
+ * What the scheduled handler and the refresh route call. A run whose days could
+ * not all be written pages through the shared alerter (L13), so a day cannot
+ * pass out of retention unsummarised with nothing said; a clean run clears it.
+ */
+export async function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+  const summary = await runParityRefresh(productionRefreshDeps(supabase, env), only)
+  if (!summary.skipped) await notifyExportFailure(supabase, BUYER_SELECT_PARITY_JOB, summary.errors, env.IDEMPOTENCY, BUYER_SELECT_PARITY_REMEDY)
+  return summary
 }
