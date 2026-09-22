@@ -17,6 +17,7 @@ import {
   INCUMBENT_NAMESPACE,
   countsHash,
   runParityRefresh,
+  runParityRefreshAndPage,
   summariseParityDay,
   windowComplete,
   type ParityExecution,
@@ -199,6 +200,26 @@ describe('runParityRefresh', () => {
     const summary = await runParityRefresh(deps)
     expect(summary.skipped).toBe('local_dev')
     expect(upserts).toEqual([])
+  })
+
+  it('a run with failed days pages them and a clean run clears the condition; a skipped run says nothing either way (L13)', async () => {
+    const failing = refreshDeps({
+      read: {
+        listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
+        readRows: async () => [],
+      },
+    })
+    const paged: string[][] = []
+    const notify = async (lines: string[]) => { paged.push(lines) }
+    await runParityRefreshAndPage(failing.deps, notify)
+    expect(paged).toHaveLength(1)
+    expect(paged[0].join(' ')).toMatch(/wf-engine 2027-09-19.*statement timeout/)
+    const clean = refreshDeps()
+    await runParityRefreshAndPage(clean.deps, notify)
+    expect(paged[1]).toEqual([])
+    const skipped = refreshDeps({ localDev: true })
+    await runParityRefreshAndPage(skipped.deps, notify)
+    expect(paged).toHaveLength(2)
   })
 })
 

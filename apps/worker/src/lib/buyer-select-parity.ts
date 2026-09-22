@@ -458,8 +458,17 @@ export const BUYER_SELECT_PARITY_REMEDY: AlertRemedy = {
  * not all be written pages through the shared alerter (L13), so a day cannot
  * pass out of retention unsummarised with nothing said; a clean run clears it.
  */
-export async function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
-  const summary = await runParityRefresh(productionRefreshDeps(supabase, env), only)
-  if (!summary.skipped) await notifyExportFailure(supabase, BUYER_SELECT_PARITY_JOB, summary.errors, env.IDEMPOTENCY, BUYER_SELECT_PARITY_REMEDY)
+export async function runParityRefreshAndPage(deps: RefreshDeps, notify: (lines: string[]) => Promise<void>, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+  const summary = await runParityRefresh(deps, only)
+  // A skipped run measured nothing, so it neither pages nor clears (L11).
+  if (!summary.skipped) await notify(summary.errors)
   return summary
+}
+
+export function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+  return runParityRefreshAndPage(
+    productionRefreshDeps(supabase, env),
+    (lines) => notifyExportFailure(supabase, BUYER_SELECT_PARITY_JOB, lines, env.IDEMPOTENCY, BUYER_SELECT_PARITY_REMEDY),
+    only,
+  )
 }
