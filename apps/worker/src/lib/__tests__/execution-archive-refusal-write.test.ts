@@ -26,7 +26,10 @@ import type { Env } from '../../index'
 // Mocked so the alert can be OBSERVED. The refusal alert is the user-visible
 // half of this fix: during the tenancy outage the ledger and the alert were both
 // silent, and a counter nobody can see firing is not an improvement.
-vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn().mockResolvedValue(undefined),
+  notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
+}))
 
 import { runExecutionArchive, ARCHIVE_STREAM, type ArchiveRow } from '../execution-archive'
 import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'

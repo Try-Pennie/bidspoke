@@ -19,7 +19,10 @@ import { makeArchiveDouble } from './_archive-double'
 import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'
 import type { Env } from '../../index'
 
-vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn(async () => {}) }))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn(async () => {}),
+  notifyExportRecovery: vi.fn(async () => {}),
+}))
 
 const NOW = new Date('2026-08-23T15:00:00.000Z')
 

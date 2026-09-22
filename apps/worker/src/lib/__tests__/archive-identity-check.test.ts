@@ -12,7 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn().mockResolvedValue(undefined),
+  notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
+}))
 
 import { checkArchiveIdentities, ARCHIVE_IDENTITY_JOB, deleteProbeStatement } from '../archive-identity-check'
 import { ARCHIVE_ROLES, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE, type ArchiveIdentity } from '../archive-snowflake'

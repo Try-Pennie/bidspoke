@@ -16,8 +16,10 @@ vi.mock('../../archive/stream-hour', () => ({
 }))
 
 const notifyExportFailure = vi.fn()
+const notifyExportRecovery = vi.fn()
 vi.mock('../export-alerts', () => ({
   notifyExportFailure: (...args: unknown[]) => notifyExportFailure(...args),
+  notifyExportRecovery: (...args: unknown[]) => notifyExportRecovery(...args),
 }))
 
 const { runExecutionArchive, RUN_LOCK_KEY } = await import('../execution-archive')
@@ -223,6 +225,25 @@ describe('runExecutionArchive', () => {
     })
 
     expect(notifyExportFailure).not.toHaveBeenCalled()
+  })
+
+  it('reports a healthy run as a recovery, so the reminders for a past failure stop (#1441)', async () => {
+    // Built is not wired (L3). Both halves of #1441 are unit tested elsewhere;
+    // this asserts the run actually calls the recovery, because before it did,
+    // the alerting layer only ever heard about failures and two timeouts a day
+    // apart arrived as one 21 hour incident.
+    const kv = fakeKv()
+    const { client } = fakeSupabase()
+
+    await runExecutionArchive(envWith(kv), client, {
+      sendBatch: vi.fn(),
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+
+    const cleared = notifyExportRecovery.mock.calls.map((call) => call[1])
+    expect(cleared).toContain('execution-archive-ingest')
+    expect(cleared).toContain('execution-archive-refusal')
+    expect(cleared).toContain('execution-archive-lag')
   })
 
   it('dispatches each alert under its own job name', async () => {

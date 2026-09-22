@@ -212,3 +212,28 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
 
   return alerts
 }
+
+/**
+ * Which conditions this run shows to be CLEAR, so the reminders for them stop
+ * (#1441).
+ *
+ * The counterpart of `alertsFor`, and deliberately in the same file: the two
+ * decide the same conditions from the same result, and split across files they
+ * would drift into a run that both raises and clears one.
+ *
+ * A FAILED RUN CLEARS NOTHING. Its other numbers look healthy without having
+ * been measured: the misconfigured exit returns an empty result whose
+ * `hoursBehind` and refusal count are both zero, and treating those as evidence
+ * would report two conditions clear on a run that never looked at either (L98).
+ *
+ * The killed condition is never cleared here. It is a statement about an
+ * invocation that is already over rather than about the archive's current
+ * health, so a later healthy run is not evidence about it.
+ */
+export function clearedConditionsFor(result: RunResult): string[] {
+  if (result.failed) return []
+  const cleared: string[] = [ARCHIVE_JOB_NAMES.ingest]
+  if (result.executionsRefused === 0) cleared.push(ARCHIVE_JOB_NAMES.refusal)
+  if (result.hoursBehind <= LAG_ALERT_HOURS) cleared.push(ARCHIVE_JOB_NAMES.lag)
+  return cleared
+}

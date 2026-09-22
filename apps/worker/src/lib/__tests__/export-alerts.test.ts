@@ -8,7 +8,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../slack', () => ({ sendExportFailureAlert: vi.fn() }))
 
-import { notifyExportFailure, EXPORT_ALERT_PENDING_TTL_SECONDS } from '../export-alerts'
+import {
+  notifyExportFailure,
+  notifyExportRecovery,
+  parsePendingFailure,
+  EXPORT_ALERT_PENDING_TTL_SECONDS,
+} from '../export-alerts'
 import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import { sendExportFailureAlert } from '../slack'
 
@@ -29,7 +34,7 @@ function makeKv(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial))
   return {
     get: vi.fn((key: string) => Promise.resolve(store.has(key) ? store.get(key)! : null)),
-    put: vi.fn((key: string, value: string) => {
+    put: vi.fn((key: string, value: string, _opts?: { expirationTtl?: number }) => {
       store.set(key, value)
       return Promise.resolve()
     }),
@@ -209,11 +214,16 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
     expect(from).not.toHaveBeenCalled()
-    expect(kv.put).toHaveBeenCalledWith(
-      PENDING_KEY,
-      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
-      { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS },
-    )
+    // Asserted through the reader rather than on the raw string, so the marker's
+    // encoding can carry more than a timestamp (#1441) without this test
+    // becoming a claim about JSON.
+    const [key, written, opts] = kv.put.mock.calls[0]
+    expect(key).toBe(PENDING_KEY)
+    expect(parsePendingFailure(written)).toEqual({
+      since: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      recovered: false,
+    })
+    expect(opts).toEqual({ expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
   })
 
   it('alerts on the second consecutive transient failure and says when the failures started', async () => {
@@ -232,11 +242,10 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-07-24T11:48:00.000Z' })
     await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, kv, 'export-job')
-    expect(kv.put).toHaveBeenCalledWith(
-      PENDING_KEY,
-      '2026-07-24T11:48:00.000Z',
-      { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS },
-    )
+    const [key, written, opts] = kv.put.mock.calls[0]
+    expect(key).toBe(PENDING_KEY)
+    expect(parsePendingFailure(written)).toEqual({ since: '2026-07-24T11:48:00.000Z', recovered: false })
+    expect(opts).toEqual({ expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
   })
 
   it('clears the pending marker on a successful run, so blip-then-recovery never pages', async () => {
@@ -292,11 +301,10 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
-    expect(kv.put).toHaveBeenCalledWith(
-      PENDING_KEY,
-      '2026-07-24T11:48:00.000Z',
-      { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS },
-    )
+    const [key, written, opts] = kv.put.mock.calls[0]
+    expect(key).toBe(PENDING_KEY)
+    expect(parsePendingFailure(written)).toEqual({ since: '2026-07-24T11:48:00.000Z', recovered: false })
+    expect(opts).toEqual({ expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
   })
 })
 
@@ -326,5 +334,130 @@ describe('the consequence sentence travels with the classification (#1180)', () 
 
     const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
     expect(payload.consequence).toBeUndefined()
+  })
+})
+
+/**
+ * A job that reports its health separately from its failures (#1441).
+ *
+ * The archive deliberately never calls the failure notifier on a healthy run,
+ * because that call DELETES the grace marker, and a job alternating a failure
+ * with a clean run would re-arm the grace every other run and never reach the
+ * second consecutive failure that pages. The cost of that was measured on
+ * 2026-09-22: two unrelated timeouts 22 successful runs apart were reported as
+ * one incident, `Failing since Sep 21, 12:26 PM EDT`, `the second consecutive
+ * failed run`, and `standing for ~21h`. All of it untrue.
+ *
+ * So a healthy run now says so, and says it without erasing the history: the
+ * standing condition clears, which is what stops the escalating reminders, and
+ * the marker is kept but stamped as interrupted, which is what keeps the
+ * alternating pattern pageable while stopping the message claiming an outage
+ * that ended hours ago.
+ */
+describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
+  beforeEach(() => vi.clearAllMocks())
+  const JOB = 'execution-archive-ingest'
+  const PENDING_KEY = `export-alert-pending:${JOB}`
+  const CONDITION_KEY = `export-alert:${JOB}:condition`
+  const COOLDOWN_KEY = `export-alert:${JOB}:cooldown`
+  const TRANSIENT = ['archive run stopped on send-failed: Snowflake 524: error code: 524']
+
+  it('clears the standing condition, so the reminders stop and the schedule resets', async () => {
+    const kv = makeKv({ [CONDITION_KEY]: JSON.stringify({ since: '2026-09-21T16:26:00.000Z', alerts: 2 }) })
+
+    await notifyExportRecovery(kv, JOB)
+
+    expect(kv.delete).toHaveBeenCalledWith(CONDITION_KEY)
+    expect(kv.delete).toHaveBeenCalledWith(COOLDOWN_KEY)
+  })
+
+  it('keeps the grace marker rather than deleting it, so an alternating job still pages', async () => {
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+
+    await notifyExportRecovery(kv, JOB)
+
+    expect(kv.delete).not.toHaveBeenCalledWith(PENDING_KEY)
+    expect(await kv.get(PENDING_KEY)).toContain('2026-09-21T16:26:00.000Z')
+  })
+
+  it('does nothing when the job has no failure recorded, so a healthy job writes nothing', async () => {
+    const kv = makeKv()
+
+    await notifyExportRecovery(kv, JOB)
+
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('still pages when a failure follows a recovery, which is the pattern the grace protects', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+    await notifyExportRecovery(kv, JOB)
+    vi.clearAllMocks()
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not claim a standing failure when successful runs came in between', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+    await notifyExportRecovery(kv, JOB)
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBeUndefined()
+    expect(payload.intermittentSince).toBe('2026-09-21T16:26:00.000Z')
+  })
+
+  it('still claims a standing failure when no run succeeded in between', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBe('2026-09-21T16:26:00.000Z')
+    expect(payload.intermittentSince).toBeUndefined()
+  })
+
+  it('reads a marker written before this change, which is a bare timestamp, as a standing failure', async () => {
+    // There is one of these in production KV right now, so the reader has to
+    // accept both shapes or the first failure after the deploy is misread.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBe('2026-09-21T16:26:00.000Z')
+  })
+
+  it('still pages, without a date, when the stored time will not parse (L50)', async () => {
+    // Every sentence built from this runs through a date formatter, which
+    // renders an unreadable value as the words Invalid Date rather than
+    // refusing. A failure demonstrably happened, so the alert stands and only
+    // the claim about when it started is dropped.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: JSON.stringify({ since: 'yesterday afternoon', recovered: false }) })
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBeUndefined()
+    expect(payload.intermittentSince).toBeUndefined()
+  })
+
+  it('keeps the original first-failure time across a recovery and a later failure', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
+    await notifyExportRecovery(kv, JOB)
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.intermittentSince).toBe('2026-09-21T16:26:00.000Z')
   })
 })
