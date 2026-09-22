@@ -91,6 +91,8 @@ export interface DrainBuyerSummary {
   delivered: number
   failed: number
   oldest_age_ms: number | null
+  /** The age of the oldest entry still undelivered after this tick; null when nothing is left. */
+  remaining_oldest_age_ms: number | null
   /** Set when the ledger could not be read; the counts above are then meaningless and zero. */
   unmeasured?: string
 }
@@ -134,13 +136,14 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     summaries.push(summary)
     if (summary.unmeasured) {
       paged.push(`${buyer.slug}: the buyer ledger could not be read, so its backlog is unmeasured (${summary.unmeasured})`)
-    } else if (summary.pending - summary.delivered > 0 && summary.oldest_age_ms !== null && summary.oldest_age_ms > OUTBOX_BACKLOG_MS) {
-      // The age was read before this tick delivered; the page is about what is
-      // LEFT, so a backlog this tick cleared in full says nothing.
+    } else if (summary.remaining_oldest_age_ms !== null && summary.remaining_oldest_age_ms > OUTBOX_BACKLOG_MS) {
+      // The page is about what is LEFT after this tick's attempts, so it is
+      // judged on the oldest entry still undelivered, never on the age the
+      // ledger reported before delivery.
       const lastError = errors.filter((e) => e.startsWith(`${buyer.slug}:`)).at(-1)
       paged.push(
         `${buyer.slug}: ${plural(summary.pending - summary.delivered, 'entry', 'entries')} not yet copied to buyer_sales, ` +
-          `oldest ${describeDuration(summary.oldest_age_ms) ?? `${summary.oldest_age_ms} ms`} old` +
+          `oldest ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old` +
           (lastError ? `; last error: ${lastError.slice(buyer.slug.length + 2)}` : ''),
       )
     }
@@ -152,7 +155,10 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
 
 async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]): Promise<DrainBuyerSummary> {
   const ledger = deps.ledger(buyer.partner_id)
-  const base: DrainBuyerSummary = { partner_id: buyer.partner_id, slug: buyer.slug, pending: 0, delivered: 0, failed: 0, oldest_age_ms: null }
+  const base: DrainBuyerSummary = { partner_id: buyer.partner_id, slug: buyer.slug, pending: 0, delivered: 0, failed: 0, oldest_age_ms: null, remaining_oldest_age_ms: null }
+  const now = deps.now()
+  let oldestRemaining: number | null = null
+  const leave = (entry: LedgerEntry) => { if (oldestRemaining === null || entry.reserved_at < oldestRemaining) oldestRemaining = entry.reserved_at }
 
   let outbox: UnmirroredResult
   try {
@@ -176,7 +182,8 @@ async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]):
     // for good, so the tick waits rather than writing nulls it cannot justify.
     const reason = messageOf(err)
     errors.push(`${buyer.slug}: existing buyer_sales rows unreadable, nothing delivered this tick: ${reason}`)
-    return { ...base, failed: outbox.entries.length }
+    for (const entry of outbox.entries) leave(entry)
+    return { ...base, failed: outbox.entries.length, remaining_oldest_age_ms: oldestRemaining === null ? null : now - oldestRemaining }
   }
 
   for (let i = 0; i < outbox.entries.length; i++) {
@@ -188,9 +195,11 @@ async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]):
       base.delivered += 1
     } catch (err) {
       base.failed += 1
+      leave(entry)
       errors.push(`${buyer.slug}: ${entry.lead_key} (${entry.status}): ${messageOf(err)}`)
     }
   }
+  base.remaining_oldest_age_ms = oldestRemaining === null ? null : now - oldestRemaining
   return base
 }
 

@@ -123,6 +123,17 @@ describe('runBuyerSaleDrain', () => {
     expect(young.notify).toHaveBeenCalledWith([])
   })
 
+  it('a partial delivery pages on the age of what is LEFT: an old entry delivered and a young one failed is a young backlog', async () => {
+    const old = entry({ lead_key: 'lead-old', reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
+    const young = entry({ lead_key: 'lead-young', reserved_at: NOW - 30_000 })
+    const rpc = vi.fn(async (_fn: string, args: { p_row: { id: string; status: string; lead_key: string } }) =>
+      args.p_row.lead_key === 'lead-young' ? { data: null, error: { message: 'db down' } } : { data: { id: args.p_row.id, status: args.p_row.status }, error: null })
+    const d = deps({ ledger: () => fakeLedger([old, young]), supabase: { rpc } as never })
+    const summary = await runBuyerSaleDrain(d)
+    expect(summary.buyers[0]).toMatchObject({ pending: 2, delivered: 1, failed: 1, remaining_oldest_age_ms: 30_000 })
+    expect(d.notify).toHaveBeenCalledWith([])
+  })
+
   it('an old backlog that this tick delivers in full does not page: the age was measured before the delivery, the alert is about what is left', async () => {
     const old = entry({ reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
     const d = deps({ ledger: () => fakeLedger([old]) })
