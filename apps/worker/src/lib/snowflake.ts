@@ -71,19 +71,53 @@ export interface SnowflakeStatementResponse {
 // Public API
 // ============================================================
 
-export async function executeStatement(
+/**
+ * The ceiling this timeout has to stay under, in seconds.
+ *
+ * NOT ours to set. The edge in front of Snowflake answers `error code: 524`
+ * when the origin has not responded, measured twice on the archive at roughly
+ * this point. A statement timeout past it would replace a clean cancellation,
+ * which names the statement and the limit it hit, with an opaque gateway error
+ * carrying neither.
+ */
+export const EDGE_TIMEOUT_CEILING_SECONDS = 100
+
+/**
+ * How long Snowflake may spend on one statement before cancelling it (#1447).
+ *
+ * Was 60, which was cancelling real writes. Measured 2026-09-22: the execution
+ * archive stopped three runs in 40 hours on this limit, and the 15:23 UTC run
+ * spent 642 seconds resubmitting one statement three times, each attempt
+ * cancelled at 60 seconds, and archived nothing for its trouble.
+ *
+ * The statements are not large. A healthy hour uses 9 to 13 sends for about 25
+ * MB, so roughly 2 MB each, and the two failures on one hour landed on its
+ * second and its tenth send, which rules out a single pathological record and
+ * leaves Snowflake itself being slow. So the remedy is room, not smaller work:
+ * this costs nothing on a statement that was always going to finish quickly.
+ *
+ * Shared with the nightly exports, which hold their own wall budget, so a slow
+ * statement now blocks one of them for up to this long instead of 60 seconds.
+ */
+export const STATEMENT_TIMEOUT_SECONDS = 90
+
+/**
+ * The request body for one statement, built where it can be read back.
+ *
+ * Its own function so the timeout it carries is provable without a signing key
+ * or a network: a constant beside a literal in a request nobody can assemble in
+ * a test is a number nothing checks (L3).
+ */
+export function statementRequestBody(
   config: SnowflakeConfig,
   statement: string,
   bindings?: unknown[],
-): Promise<SnowflakeStatementResponse> {
-  const privateKey = await importPrivateKey(config.privateKeyPem)
-  const jwt = await signSnowflakeJwt(config, privateKey)
-  const url = `https://${snowflakeHost(config.account)}/api/v2/statements`
+): Record<string, unknown> {
   // Snowflake stores unquoted identifiers uppercase. Send uppercase to match
   // regardless of how the secret is set.
   const body: Record<string, unknown> = {
     statement,
-    timeout: 60,
+    timeout: STATEMENT_TIMEOUT_SECONDS,
     database: config.database.toUpperCase(),
     schema: config.schema.toUpperCase(),
     warehouse: config.warehouse.toUpperCase(),
@@ -96,6 +130,18 @@ export async function executeStatement(
     }
     body.bindings = bindMap
   }
+  return body
+}
+
+export async function executeStatement(
+  config: SnowflakeConfig,
+  statement: string,
+  bindings?: unknown[],
+): Promise<SnowflakeStatementResponse> {
+  const privateKey = await importPrivateKey(config.privateKeyPem)
+  const jwt = await signSnowflakeJwt(config, privateKey)
+  const url = `https://${snowflakeHost(config.account)}/api/v2/statements`
+  const body = statementRequestBody(config, statement, bindings)
 
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${jwt}`,
@@ -124,8 +170,9 @@ export async function executeStatement(
 // archive run that a resubmit would very likely have carried (#1440): a 524
 // twice, which is the edge in front of Snowflake giving up on the origin, and a
 // 408 carrying `Statement reached its statement or warehouse timeout of 60
-// second(s) and was canceled`, which is Snowflake reporting the `timeout: 60`
-// this client itself sends. Neither can mean the statement failed, which is the
+// second(s) and was canceled`, which is Snowflake reporting the statement
+// timeout this client itself sends (60 at the time, now
+// STATEMENT_TIMEOUT_SECONDS). Neither can mean the statement failed, which is the
 // ambiguity that keeps 500 off this list, so neither needs the body inspected.
 //
 // A 408 says the statement was CANCELED, so the resubmit is a genuine second
