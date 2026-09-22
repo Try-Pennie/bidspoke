@@ -636,10 +636,12 @@ export type Database = {
         Row: {
           classification_agree: number
           classification_disagree: number
+          counts_hash: string | null
           decide_only_latency_p50_ms: number | null
           decide_only_latency_p95_ms: number | null
           disagreement_execution_ids: string[]
           et_day: string
+          executions_unpaired: number
           hash_match: number
           hash_mismatch: number
           hash_unmeasured: number
@@ -649,22 +651,27 @@ export type Database = {
           rehearsal_in_doubt_heals: number
           sell_off_agree: number
           sell_off_disagree: number
+          sign_off_cleared_at: string | null
+          sign_off_counts_hash: string | null
           sign_off_note: string | null
           signed_off_at: string | null
           signed_off_by: string | null
           state_resolved: number
           state_unresolved: number
           summarised_at: string
+          unmeasured: string[]
           window_complete: boolean
           workflow_id: string
         }
         Insert: {
           classification_agree?: number
           classification_disagree?: number
+          counts_hash?: string | null
           decide_only_latency_p50_ms?: number | null
           decide_only_latency_p95_ms?: number | null
           disagreement_execution_ids?: string[]
           et_day: string
+          executions_unpaired?: number
           hash_match?: number
           hash_mismatch?: number
           hash_unmeasured?: number
@@ -674,22 +681,27 @@ export type Database = {
           rehearsal_in_doubt_heals?: number
           sell_off_agree?: number
           sell_off_disagree?: number
+          sign_off_cleared_at?: string | null
+          sign_off_counts_hash?: string | null
           sign_off_note?: string | null
           signed_off_at?: string | null
           signed_off_by?: string | null
           state_resolved?: number
           state_unresolved?: number
           summarised_at?: string
+          unmeasured?: string[]
           window_complete?: boolean
           workflow_id: string
         }
         Update: {
           classification_agree?: number
           classification_disagree?: number
+          counts_hash?: string | null
           decide_only_latency_p50_ms?: number | null
           decide_only_latency_p95_ms?: number | null
           disagreement_execution_ids?: string[]
           et_day?: string
+          executions_unpaired?: number
           hash_match?: number
           hash_mismatch?: number
           hash_unmeasured?: number
@@ -699,12 +711,15 @@ export type Database = {
           rehearsal_in_doubt_heals?: number
           sell_off_agree?: number
           sell_off_disagree?: number
+          sign_off_cleared_at?: string | null
+          sign_off_counts_hash?: string | null
           sign_off_note?: string | null
           signed_off_at?: string | null
           signed_off_by?: string | null
           state_resolved?: number
           state_unresolved?: number
           summarised_at?: string
+          unmeasured?: string[]
           window_complete?: boolean
           workflow_id?: string
         }
@@ -2667,6 +2682,17 @@ export type Database = {
         }
         Returns: Json
       }
+      sign_off_buyer_select_parity_day: {
+        Args: {
+          p_actor: string
+          p_counts_hash: string
+          p_day: string
+          p_note: string
+          p_org: string
+          p_workflow: string
+        }
+        Returns: Json
+      }
       step_duration_percentiles: {
         Args: { p_namespace: string; p_since: string; p_workflow_id: string }
         Returns: {
@@ -2722,6 +2748,7 @@ export type Database = {
           table_name: string
         }[]
       }
+      upsert_buyer_select_parity_day: { Args: { p_row: Json }; Returns: Json }
       user_org_id: { Args: never; Returns: string }
       verified_day_refusal:
         | {

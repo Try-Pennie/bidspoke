@@ -41,6 +41,7 @@ import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
 import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
+import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
@@ -68,6 +69,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
   ['buyer sales mismatch', BUYER_SALES_MISMATCH_REMEDY],
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
+  ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
 ]
 
 /**

@@ -436,6 +436,15 @@ describe('decide only mode (L142)', () => {
     expect(r.failure).toBeUndefined()
   })
 
+  it('records the state it resolved for the lead on the output, null when the value is not a state, so the parity summary can count it (#1413)', async () => {
+    const h = harness()
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r).lead_state).toBe('TX')
+    const h2 = harness()
+    const r2 = await run(h2, ctx(), node({ mode: 'decide_only', state: '{{trigger.payload.personalInformation.firstName}}' }))
+    expect(out(r2).lead_state).toBeNull()
+  })
+
   it('rehearsal caps come from BUYER_SELECT_REHEARSAL_CAPS and an invalid value is a named reason, not a throw (L688)', async () => {
     const h = harness()
     const r = await run(h, ctx({ env: { BUYER_SELECT_REHEARSAL_CAPS: '{not json' } }), node({ mode: 'decide_only' }))

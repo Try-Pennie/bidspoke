@@ -62,7 +62,9 @@ BEGIN
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.record_buyer_sale(jsonb)',
     'public.delete_partner_config(uuid, uuid, uuid, text)',
-    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
+    'public.upsert_buyer_select_parity_day(jsonb)',
+    'public.sign_off_buyer_select_parity_day(uuid, date, uuid, uuid, text, text)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -474,13 +476,100 @@ BEGIN
 END
 $do$;
 
+-- ── 19. upsert_buyer_select_parity_day: writes the counts and the hash, never a sign off, and refuses a missing key by name (#1413) ──
+DO $do$
+DECLARE
+  r jsonb;
+  msg text;
+BEGIN
+  INSERT INTO public.workflows (id, organization_id, name) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'Suite Engine Flow')
+  ON CONFLICT (id) DO NOTHING;
+  r := public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "sell_off_agree": 10, "sell_off_disagree": 1, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 11, "classification_agree": 9, "classification_disagree": 0,
+    "outcome_unknown_count": 0, "state_resolved": 11, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
+    "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001"],
+    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": ["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"]}'::jsonb);
+  IF (r->>'sell_off_agree')::int IS DISTINCT FROM 10 THEN RAISE EXCEPTION 'counts not written: %', r; END IF;
+  IF r->>'counts_hash' IS DISTINCT FROM 'hash-one' THEN RAISE EXCEPTION 'hash not written: %', r; END IF;
+  IF r->>'signed_off_at' IS NOT NULL THEN RAISE EXCEPTION 'a refresh set a sign off: %', r; END IF;
+  IF (r->'unmeasured')::jsonb IS DISTINCT FROM '["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"]'::jsonb THEN RAISE EXCEPTION 'unmeasured not written: %', r; END IF;
+  BEGIN
+    PERFORM public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111"}'::jsonb);
+    RAISE EXCEPTION 'a row missing its counts was written';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'missing_key' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('parity upsert writes counts never sign off');
+END
+$do$;
+
+-- ── 20. sign_off_buyer_select_parity_day: records the hash it approved, refuses a hash that moved, and a refresh with new numbers clears it (L641) ──
+DO $do$
+DECLARE
+  r jsonb;
+  msg text;
+BEGIN
+  BEGIN
+    PERFORM public.sign_off_buyer_select_parity_day('44444444-4444-4444-4444-444444444444', '2026-09-20', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'hash-stale', 'looked fine');
+    RAISE EXCEPTION 'a sign off over a stale hash was recorded';
+  EXCEPTION WHEN SQLSTATE 'BP409' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'counts_changed' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  r := public.sign_off_buyer_select_parity_day('44444444-4444-4444-4444-444444444444', '2026-09-20', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'hash-one', 'one disagreement, a replayed lead');
+  IF r->>'signed_off_at' IS NULL THEN RAISE EXCEPTION 'sign off not recorded: %', r; END IF;
+  IF r->>'sign_off_counts_hash' IS DISTINCT FROM 'hash-one' THEN RAISE EXCEPTION 'approved hash not recorded: %', r; END IF;
+  -- A refresh with the SAME numbers keeps the sign off.
+  r := public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "sell_off_agree": 10, "sell_off_disagree": 1, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 11, "classification_agree": 9, "classification_disagree": 0,
+    "outcome_unknown_count": 0, "state_resolved": 11, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
+    "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001"],
+    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": []}'::jsonb);
+  IF r->>'signed_off_at' IS NULL THEN RAISE EXCEPTION 'a refresh with the same numbers cleared the sign off: %', r; END IF;
+  -- A refresh with DIFFERENT numbers clears it and says when.
+  r := public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "sell_off_agree": 10, "sell_off_disagree": 2, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 12, "classification_agree": 9, "classification_disagree": 0,
+    "outcome_unknown_count": 0, "state_resolved": 12, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
+    "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001", "0192a4f0-0000-7000-8000-000000000002"],
+    "window_complete": true, "counts_hash": "hash-two", "executions_unpaired": 0, "unmeasured": []}'::jsonb);
+  IF r->>'signed_off_at' IS NOT NULL THEN RAISE EXCEPTION 'a refresh with new numbers left the sign off standing: %', r; END IF;
+  IF r->>'sign_off_cleared_at' IS NULL THEN RAISE EXCEPTION 'the clearing was not recorded: %', r; END IF;
+  IF r->>'sign_off_counts_hash' IS DISTINCT FROM 'hash-one' THEN RAISE EXCEPTION 'the approved hash was lost: %', r; END IF;
+  INSERT INTO suite_cases(name) VALUES ('parity sign off is tied to its hash');
+END
+$do$;
+
+-- ── 21. sign_off_buyer_select_parity_day: refuses no actor and an unknown day by name ──
+DO $do$
+DECLARE
+  msg text;
+BEGIN
+  BEGIN
+    PERFORM public.sign_off_buyer_select_parity_day('44444444-4444-4444-4444-444444444444', '2026-09-20', '11111111-1111-1111-1111-111111111111', NULL, 'hash-two', 'x');
+    RAISE EXCEPTION 'a sign off with no actor was recorded';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'actor_required' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  BEGIN
+    PERFORM public.sign_off_buyer_select_parity_day('44444444-4444-4444-4444-444444444444', '2026-01-01', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'hash-two', 'x');
+    RAISE EXCEPTION 'a sign off of a day with no row was recorded';
+  EXCEPTION WHEN SQLSTATE 'P0002' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'parity_day_not_found' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('parity sign off refusals');
+END
+$do$;
+
 -- ── The count. Every case above inserts its name; this is the number of blocks. ──
 DO $do$
 DECLARE
   n int;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 18 THEN RAISE EXCEPTION 'ran % of 18 cases', n; END IF;
-  RAISE NOTICE 'buyer_profiles.test.sql: % of 18 cases passed', n;
+  IF n IS DISTINCT FROM 21 THEN RAISE EXCEPTION 'ran % of 21 cases', n; END IF;
+  RAISE NOTICE 'buyer_profiles.test.sql: % of 21 cases passed', n;
 END
 $do$;

@@ -25,6 +25,7 @@ import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
 import buyerSales from './buyer-sales'
+import buyerSelectParity from './buyer-select-parity'
 
 type Variables = AuthVariables
 
@@ -58,6 +59,10 @@ api.route('/field-coverage', fieldCoverage)
 // do not collide.
 api.route('/partners', buyerProfiles)
 api.route('/buyer-sales', buyerSales)
+// The Stage A parity record (#1413): read, refresh and sign off as three verbs
+// under the admin prefix. Mounted before /admin's own routes cannot matter: a
+// Hono sub app matches only its own paths.
+api.route('/admin/buyer-select/parity', buyerSelectParity)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)
