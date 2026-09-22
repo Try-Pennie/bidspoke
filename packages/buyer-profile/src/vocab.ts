@@ -112,7 +112,7 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   declined_by_buyer: 'Declined by the buyer',
   buyer_error: 'Buyer call failed before the lead was processed',
   outcome_unknown: 'Buyer response could not be classified',
-  not_reached: 'Not reached, an earlier buyer took the lead',
+  not_reached: 'An earlier buyer took the lead',
 }
 
 /**
@@ -163,6 +163,36 @@ export const NODE_REASON_LABELS: Record<NodeReason, string> = {
   rehearsal_caps_invalid: 'The rehearsal caps variable is not valid JSON caps',
   rehearsal_deadline: 'The rehearsal ran past its deadline',
   buyer_select_handle_unwired: 'The handle the node needed to take is not wired',
+}
+
+/**
+ * What the buyer_select node records for each buyer it looked at, in the
+ * output's `considered` list (#1411). Written by the engine, read by the
+ * execution view, so the labels live beside the codes (L113).
+ */
+export const CONSIDERED_OUTCOMES = ['sold', 'rehearsed', 'declined_by_buyer', 'buyer_error', 'outcome_unknown', 'skipped', 'ineligible', 'eligible', 'not_reached'] as const
+export type ConsideredOutcome = (typeof CONSIDERED_OUTCOMES)[number]
+
+export const CONSIDERED_OUTCOME_LABELS: Record<ConsideredOutcome, string> = {
+  sold: 'Sold',
+  rehearsed: 'Would have been offered the lead',
+  declined_by_buyer: 'Declined',
+  buyer_error: 'Buyer call failed',
+  outcome_unknown: 'Answer not classified',
+  skipped: 'Skipped',
+  ineligible: 'Not eligible',
+  eligible: 'Eligible',
+  not_reached: 'Not reached',
+}
+
+/** The mode the node actually ran in, which the configured mode plus the run's context decides. */
+export const MODE_EFFECTIVE = ['live', 'decide_only', 'report_only'] as const
+export type ModeEffective = (typeof MODE_EFFECTIVE)[number]
+
+export const MODE_EFFECTIVE_LABELS: Record<ModeEffective, string> = {
+  live: 'Live',
+  decide_only: 'Rehearsed without calling a buyer',
+  report_only: 'Evaluated and reported only',
 }
 
 /** Stated once here and once on the form (L118). */

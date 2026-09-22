@@ -16,6 +16,8 @@ import { ExpandableError } from '@/components/ExpandableError'
 import { BackToTop } from '@/components/BackToTop'
 import { useExecution } from '@/hooks/useExecution'
 import { LeadMargin } from './LeadMargin'
+import { BuyersConsidered } from './BuyersConsidered'
+import { ToneBadge } from './ToneBadge'
 import { STATUS_STYLES, ExecutionStatusBadge } from '@/components/ExecutionStatusBadge'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
@@ -259,15 +261,6 @@ function describeMode(attempt: PartnerBidOutputShape): string {
   return '—'
 }
 
-function ToneBadge({ tone, children }: { tone: 'green' | 'gray' | 'red' | 'amber'; children: React.ReactNode }) {
-  const cls = {
-    green: 'bg-green-50 text-green-700',
-    gray: 'bg-gray-100 text-gray-600',
-    red: 'bg-red-50 text-red-700',
-    amber: 'bg-amber-50 text-amber-700',
-  }[tone]
-  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{children}</span>
-}
 
 function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attemptSteps: Step[] }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
@@ -875,6 +868,21 @@ export default function ExecutionDetailPage() {
                     ))}
                   </div>
                 </div>
+              )
+            })()}
+
+            {/* Buyer selection (#1412): which buyers the node looked at and why the
+                lead went where it did, in the shared vocabulary's words. */}
+            {(() => {
+              const buyerSteps = execution.steps.filter((s) => s.step_type === 'buyer_select')
+              if (buyerSteps.length === 0) return null
+              return (
+                <section aria-labelledby="buyers-considered-heading">
+                  <h2 id="buyers-considered-heading" className="mb-3 text-sm font-semibold text-gray-700">Buyers considered</h2>
+                  <div className="space-y-3">
+                    {buyerSteps.map((s) => <BuyersConsidered key={s.id} step={s} />)}
+                  </div>
+                </section>
               )
             })()}
 
