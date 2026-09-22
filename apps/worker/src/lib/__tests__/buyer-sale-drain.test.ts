@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
-import { BUYER_SALE_DRAIN_JOB, OUTBOX_BACKLOG_MS, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import { BUYER_SALE_DRAIN_JOB, OUTBOX_BACKLOG_MS, numericOrNull, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
 
 const NOW = Date.UTC(2027, 8, 20, 15, 40)
 const PARTNER = '11111111-1111-4111-8111-111111111111'
@@ -154,6 +154,13 @@ describe('runBuyerSaleDrain', () => {
     expect(summary.skipped).toBe('local_dev')
     expect(d.rpc).not.toHaveBeenCalled()
     expect(d.notify).not.toHaveBeenCalled()
+  })
+
+  it('a stored numeric that does not parse becomes null, never NaN (L50)', () => {
+    expect(numericOrNull('18250.00')).toBe(18250)
+    expect(numericOrNull(0.0012)).toBe(0.0012)
+    expect(numericOrNull(null)).toBeNull()
+    expect(numericOrNull('not a number')).toBeNull()
   })
 
   it('names its job for the heartbeat registry and the mute keys', () => {

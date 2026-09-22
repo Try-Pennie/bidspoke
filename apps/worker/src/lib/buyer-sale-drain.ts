@@ -204,7 +204,17 @@ interface ExistingRowRecord {
   caps_in_force: CapLimits | null
 }
 
-const num = (v: number | string | null): number | null => (v === null ? null : typeof v === 'number' ? v : Number(v))
+/**
+ * A numeric column comes back as a string from PostgREST. A value that does not
+ * parse is null, never NaN, so it cannot ride into the row as a number that
+ * compares false against everything (L50).
+ */
+export function numericOrNull(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined) return null
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+const num = numericOrNull
 
 export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDeps {
   return {
