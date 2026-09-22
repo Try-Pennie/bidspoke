@@ -1,0 +1,231 @@
+{
+  "_source": "Outputs of the LIVE tripoint_ping, build_response_body and patch_prospect_body scripts of the Engine Bidding Workflow (da82a183-1a4a-417e-b0b8-5f3fe5e14840), read from the Try-Pennie/bidspoke-workflows backup on 2026-09-22 and run through the same wrapper the sandbox uses, over the inputs in engine-lead.json. Recorded once by scratchpad/record-expected.mjs; the kept scripts are proved equal to these on every legacy arm.",
+  "arms": {
+    "skipped_not_sell_off": {
+      "tripoint_ping": {
+        "skipped": true,
+        "qualified": null,
+        "createLead": null,
+        "resultCode": null
+      },
+      "response": {
+        "isRejected": false,
+        "body": {
+          "requestId": "trace-9f1e-example",
+          "offers": [
+            {
+              "name": "Pennie",
+              "display_name": "Pennie",
+              "rate": 0.65,
+              "click_url": "https://apply.example-pennie.test/start/a0XSF0000001ABCD",
+              "product_type": "personal_loan",
+              "logo_src": "https://cdn.example-pennie.test/logo.png",
+              "offer_title": "You may qualify for a lower monthly payment",
+              "offer_details": "<ul><li>Fixed rates</li><li>No prepayment penalty</li></ul>"
+            }
+          ]
+        }
+      },
+      "patch_prospect_body": {
+        "BidAmount__c": 0.65,
+        "BidStatus__c": "Bid",
+        "OfferLandingPage__c": "https://apply.example-pennie.test/start/a0XSF0000001ABCD",
+        "Base_Bid__c": 0.5
+      }
+    },
+    "zero_bid": {
+      "tripoint_ping": {
+        "skipped": true,
+        "qualified": null,
+        "createLead": null,
+        "resultCode": null
+      },
+      "response": {
+        "isRejected": true,
+        "body": {
+          "lead_id": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
+          "status": "rejected",
+          "reason": "unqualified_lead"
+        }
+      },
+      "patch_prospect_body": null
+    },
+    "sold_1001": {
+      "tripoint_ping": {
+        "skipped": false,
+        "qualified": true,
+        "createLead": {
+          "id": "masked",
+          "resultCode": 1001,
+          "note": "Lead processing complete",
+          "partnerLeadId": "masked",
+          "bidValue": null
+        },
+        "resultCode": 1001,
+        "debug": {
+          "httpStatus": 200,
+          "rawText": "{\"ok\":true,\"data\":{\"createLead\":{\"id\":\"masked\",\"resultCode\":1001,\"note\":\"Lead processing complete\",\"partnerLeadId\":\"masked\",\"bidValue\":null}}}",
+          "parsed": {
+            "ok": true,
+            "data": {
+              "createLead": {
+                "id": "masked",
+                "resultCode": 1001,
+                "note": "Lead processing complete",
+                "partnerLeadId": "masked",
+                "bidValue": null
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "isRejected": false,
+        "body": {
+          "requestId": "trace-9f1e-example",
+          "offers": [
+            {
+              "name": "Pennie",
+              "display_name": "Pennie",
+              "rate": 0.65,
+              "click_url": "https://go.example-tripoint.test/apply/a0XSF0000001ABCD",
+              "product_type": "personal_loan",
+              "logo_src": "https://cdn.example-pennie.test/logo.png",
+              "offer_title": "You may qualify for a lower monthly payment",
+              "offer_details": "<ul><li>Fixed rates</li><li>No prepayment penalty</li></ul>"
+            }
+          ]
+        }
+      },
+      "patch_prospect_body": {
+        "BidAmount__c": 0.65,
+        "BidStatus__c": "Bid",
+        "OfferLandingPage__c": "https://go.example-tripoint.test/apply/a0XSF0000001ABCD",
+        "Base_Bid__c": 0.5,
+        "TripointLeadID__c": "masked",
+        "Tripoint_Response__c": "Success",
+        "ExternalPartnerName__c": "Tripoint",
+        "ExternalDebtAmount__c": 22100,
+        "ExternalRoutingCode__c": 2,
+        "ExternalExchangeStatus__c": "Bid"
+      }
+    },
+    "declined_1003": {
+      "tripoint_ping": {
+        "skipped": false,
+        "qualified": false,
+        "createLead": {
+          "id": "masked",
+          "resultCode": 1003,
+          "note": "Lead Processing Failed: Duplicate Lead",
+          "partnerLeadId": "masked",
+          "bidValue": null
+        },
+        "resultCode": 1003,
+        "debug": {
+          "httpStatus": 200,
+          "rawText": "{\"ok\":true,\"data\":{\"createLead\":{\"id\":\"masked\",\"resultCode\":1003,\"note\":\"Lead Processing Failed: Duplicate Lead\",\"partnerLeadId\":\"masked\",\"bidValue\":null}}}",
+          "parsed": {
+            "ok": true,
+            "data": {
+              "createLead": {
+                "id": "masked",
+                "resultCode": 1003,
+                "note": "Lead Processing Failed: Duplicate Lead",
+                "partnerLeadId": "masked",
+                "bidValue": null
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "isRejected": true,
+        "body": {
+          "lead_id": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
+          "status": "rejected",
+          "reason": "unqualified_lead"
+        }
+      },
+      "patch_prospect_body": null
+    },
+    "fault_null_id_502": {
+      "tripoint_ping": {
+        "skipped": false,
+        "qualified": false,
+        "createLead": null,
+        "resultCode": null,
+        "tripointTransientFault": true,
+        "debug": {
+          "httpStatus": 502,
+          "rawText": "{\"ok\":false,\"statusCode\":999,\"details\":[{\"message\":\"Cannot return null for non-nullable field CreateLeadResponse.id\",\"path\":[\"createLead\"]}]}",
+          "parsed": {
+            "ok": false,
+            "statusCode": 999,
+            "details": [
+              {
+                "message": "Cannot return null for non-nullable field CreateLeadResponse.id",
+                "path": [
+                  "createLead"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isRejected": true,
+        "body": {
+          "lead_id": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
+          "status": "rejected",
+          "reason": "unqualified_lead"
+        }
+      },
+      "patch_prospect_body": null
+    },
+    "fault_invalid_502": {
+      "tripoint_ping": {
+        "skipped": false,
+        "qualified": false,
+        "createLead": null,
+        "resultCode": null,
+        "tripointLeadRejected": true,
+        "rejectReason": "Invalid email format provided.",
+        "debug": {
+          "httpStatus": 502,
+          "rawText": "{\"ok\":false,\"statusCode\":999,\"details\":[{\"message\":\"Invalid email format provided.\",\"locations\":[{\"line\":9,\"column\":9}],\"path\":[\"createLead\"],\"extensions\":{\"code\":\"INTERNAL_SERVER_ERROR\"}}]}",
+          "parsed": {
+            "ok": false,
+            "statusCode": 999,
+            "details": [
+              {
+                "message": "Invalid email format provided.",
+                "locations": [
+                  {
+                    "line": 9,
+                    "column": 9
+                  }
+                ],
+                "path": [
+                  "createLead"
+                ],
+                "extensions": {
+                  "code": "INTERNAL_SERVER_ERROR"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isRejected": true,
+        "body": {
+          "lead_id": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
+          "status": "rejected",
+          "reason": "unqualified_lead"
+        }
+      },
+      "patch_prospect_body": null
+    }
+  }
+}
