@@ -43,6 +43,8 @@ import {
   type LedgerKind,
   type ModeEffective,
   type NodeReason,
+  parseUsState,
+  type UsState,
   type OutReason,
   type Population,
   type SalePayloadSpec,
@@ -121,6 +123,8 @@ export interface BuyerSelectOutput {
   population: string
   lead_key: string | null
   sale: { skipped: boolean; accepted: boolean; buyer_reference: string | null; result_code: string | null; partner_slug: string | null }
+  /** The state the node resolved for the lead, null when the value was not a state; the parity summary counts it (#1413). */
+  lead_state?: UsState | null
   considered: ConsideredBuyer[]
   live_percent_in_force: number | null
   caps_in_force: Array<{ partner: string } & CapLimits>
@@ -411,6 +415,7 @@ class Run {
       debt: this.resolveMaybe(this.config.debt).value,
       loanAmount: this.resolveMaybe(this.config.loan_amount).value,
     }
+    this.out.lead_state = parseUsState(lead.state)
     const now = this.deps.clock()
     const eligible: Candidate[] = []
     for (const buyer of snapshot.buyers) {

@@ -510,6 +510,9 @@ Query params: `entity_type` (filter), `from`, `to` (ISO timestamps bounding `cha
 | POST | `/api/admin/migrate-code-workers` | Redeploy Code node bundles for the org's workflows. |
 | POST | `/api/admin/backfill-sightings` | Backfill the `persons` / lead-sightings tables. |
 | POST | `/api/admin/run-export-now` | Trigger the nightly Snowflake export immediately. |
+| GET | `/api/admin/buyer-select/parity` | The Stage A parity rows for the org's workflows: per Eastern day, the buyer_select node's decisions counted against the incumbent seller's, with `window_complete`, `counts_hash`, `unmeasured` and any sign off. Reads only. |
+| POST | `/api/admin/buyer-select/parity/refresh` | Recompute the parity rows for the days inside retention (body: optional `workflow_id`, `day`). Writes the counts and their hash; never sets a sign off, and clears one whose numbers moved. |
+| POST | `/api/admin/buyer-select/parity/:workflow_id/:day/sign-off` | Sign off one day against the `counts_hash` you saw (body: `counts_hash`, `note`). 409 `counts_changed` when a refresh has moved the numbers since. |
 
 ## See also
 

@@ -209,6 +209,27 @@
     "note": "Upserts a buyer_sales row (#1409). A WRITE. Probed with an empty row, which the function refuses as missing_key before touching the table."
   },
   {
+    "name": "upsert_buyer_select_parity_day",
+    "args": {
+      "p_row": {}
+    },
+    "anon": "denied",
+    "note": "Writes one day's Stage A parity counts and their hash, never a sign off (#1413). A WRITE. Probed with an empty row, which the function refuses as missing_key before touching the table."
+  },
+  {
+    "name": "sign_off_buyer_select_parity_day",
+    "args": {
+      "p_workflow": "00000000-0000-0000-0000-000000000000",
+      "p_day": "2000-01-01",
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_counts_hash": "probe",
+      "p_note": "probe"
+    },
+    "anon": "denied",
+    "note": "Records a person's sign off of one parity day against the counts hash they saw (#1413). A WRITE. Probed with the all zero workflow and org, which no row carries, so even a successful probe refuses parity_day_not_found and writes nothing."
+  },
+  {
     "name": "delete_partner_config",
     "args": {
       "p_org": "00000000-0000-0000-0000-000000000000",

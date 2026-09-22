@@ -186,6 +186,17 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, and nobody is paged for sales waiting on a person (#1413)',
   },
+  {
+    id: 'buyer-select-parity',
+    label: 'Buyer select parity refresh',
+    triggerCron: '0 * * * *',
+    // 1h cadence, 1h slack, matching the other hourly jobs.
+    staleMs: 2 * H,
+    // Reads two days of steps in three hour windows per workflow; minutes.
+    maxRunMs: 20 * MIN,
+    dependents:
+      'the buyer_select_parity_days rows the Stage A exit criteria are read from stop being refreshed, so a day can pass out of the execution_steps retention window without being summarised (#1413)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {

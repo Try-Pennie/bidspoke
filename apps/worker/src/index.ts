@@ -11,6 +11,7 @@ import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
+import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB } from './lib/buyer-select-parity'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -615,6 +616,24 @@ export default {
         syncAllSalesforceConfigs(env, supabase)
           .then((r) => console.log(`[bid-matrix-sync] ${r.successes.length} succeeded, ${r.failures.length} failed`))
           .catch((e) => console.error('[bid-matrix-sync] failed:', e))
+      )
+      // The Stage A parity rows (#1413): every workflow carrying a buyer_select
+      // node gets its days inside retention re-summarised, so a day is recorded
+      // before the execution_steps purge reaches it (L202). Writes counts only;
+      // a sign off whose numbers moved is cleared by the function that writes them.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, BUYER_SELECT_PARITY_JOB)
+            .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] heartbeat write failed:`, e))
+            .then(() => runBuyerSelectParityRefreshForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} errors=${s.errors.length}`)
+              if (s.errors.length) console.error(`[${BUYER_SELECT_PARITY_JOB}] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] refresh failed:`, e)),
+          BUYER_SELECT_PARITY_JOB,
+        ),
       )
       // Watched, because the audit failed every hour for at least four months
       // with nothing but this console line to show for it (#982). The wrapper
