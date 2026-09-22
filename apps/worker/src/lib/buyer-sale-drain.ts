@@ -134,7 +134,9 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     summaries.push(summary)
     if (summary.unmeasured) {
       paged.push(`${buyer.slug}: the buyer ledger could not be read, so its backlog is unmeasured (${summary.unmeasured})`)
-    } else if (summary.oldest_age_ms !== null && summary.oldest_age_ms > OUTBOX_BACKLOG_MS) {
+    } else if (summary.pending - summary.delivered > 0 && summary.oldest_age_ms !== null && summary.oldest_age_ms > OUTBOX_BACKLOG_MS) {
+      // The age was read before this tick delivered; the page is about what is
+      // LEFT, so a backlog this tick cleared in full says nothing.
       const lastError = errors.filter((e) => e.startsWith(`${buyer.slug}:`)).at(-1)
       paged.push(
         `${buyer.slug}: ${plural(summary.pending - summary.delivered, 'entry', 'entries')} not yet copied to buyer_sales, ` +

@@ -123,6 +123,14 @@ describe('runBuyerSaleDrain', () => {
     expect(young.notify).toHaveBeenCalledWith([])
   })
 
+  it('an old backlog that this tick delivers in full does not page: the age was measured before the delivery, the alert is about what is left', async () => {
+    const old = entry({ reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
+    const d = deps({ ledger: () => fakeLedger([old]) })
+    const summary = await runBuyerSaleDrain(d)
+    expect(summary.buyers[0]).toMatchObject({ pending: 1, delivered: 1, failed: 0 })
+    expect(d.notify).toHaveBeenCalledWith([])
+  })
+
   it('a ledger that cannot be read is reported unmeasured for that buyer and pages, while the other buyers still drain (L98)', async () => {
     const ok = fakeLedger([entry()])
     const d = deps({
