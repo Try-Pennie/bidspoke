@@ -6,7 +6,12 @@ import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
-vi.mock('../../../lib/audit')
+// Only the writer is a double: changedFields is the pure diff the route builds
+// its entry from, and mocking it away would make every entry read as key only.
+vi.mock('../../../lib/audit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/audit')>()),
+  writeAuditLog: vi.fn(),
+}))
 vi.mock('../../../lib/cf-secrets')
 vi.mock('../../../lib/secret-crypto', () => ({
   encryptSecret: vi.fn().mockResolvedValue('encrypted-test-value'),
@@ -512,5 +517,100 @@ describe('PUT /env/:id: zero-row 404 vs real DB error (#595)', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as { value: string }
     expect(body.value).toBe('https://new.example.com')
+  })
+})
+
+/**
+ * #1085 (L529): every env var audit entry carries the old and new value of
+ * what moved, so a setting's history can be read from audit_log alone. On
+ * 2026-08-31 ACHIEVE_MIN_VANTAGE_SCORE's eight entries recorded only the key,
+ * and its history had to be inferred from when sends happened. A secret's
+ * value is never recorded, in plaintext or as ciphertext (L222).
+ */
+describe('env var audit entries carry old and new values (#1085)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const changesOf = () => vi.mocked(writeAuditLog).mock.calls.map((c) => ({ action: c[4], changes: c[6] as Record<string, unknown> | undefined }))
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('a plain variable created records its first value against null, with its scope', async () => {
+    const created = { id: 'v1', key: 'ACHIEVE_MIN_VANTAGE_SCORE', value: '600', is_secret: false, scope: 'global', workflow_id: null }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: { insertResult: created } }) as never)
+    await request(app, 'POST', '/env', { body: { key: 'ACHIEVE_MIN_VANTAGE_SCORE', value: '600' } })
+    expect(changesOf()).toEqual([{ action: 'created', changes: { key: 'ACHIEVE_MIN_VANTAGE_SCORE', scope: 'global', workflow_id: null, value: { old: null, new: '600' } } }])
+  })
+
+  it('a secret created records that a value was set and never the value', async () => {
+    const created = { id: 'v2', key: 'SECRET_KEY', value: 'encrypted-test-value', is_secret: true, scope: 'global', workflow_id: null }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: { insertResult: created } }) as never)
+    await request(app, 'POST', '/env', { body: { key: 'SECRET_KEY', value: 's3cr3t', is_secret: true } })
+    const [entry] = changesOf()
+    expect(entry).toEqual({ action: 'secret_rotated', changes: { key: 'SECRET_KEY', scope: 'global', workflow_id: null, value_set: true } })
+    expect(JSON.stringify(entry.changes)).not.toMatch(/s3cr3t|encrypted-test-value/)
+  })
+
+  it('a plain variable updated records the old and new value', async () => {
+    const existing = { id: 'v1', key: 'ACHIEVE_MIN_VANTAGE_SCORE', value: '600000', is_secret: false, folder_id: null }
+    const updated = { ...existing, value: '600' }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: updated }] }) as never)
+    await request(app, 'PUT', '/env/v1', { body: { value: '600' } })
+    expect(changesOf()).toEqual([{ action: 'updated', changes: { key: 'ACHIEVE_MIN_VANTAGE_SCORE', value: { old: '600000', new: '600' } } }])
+  })
+
+  it('a plain variable renamed records the old name beside the new, and no value when the value stayed', async () => {
+    const existing = { id: 'v1', key: 'API_URL', value: 'https://api.example.com', is_secret: false, scope: 'global', workflow_id: null, folder_id: null }
+    const updated = { ...existing, key: 'API_BASE_URL' }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }, { updateResult: updated }] }) as never)
+    await request(app, 'PUT', '/env/v1', { body: { key: 'API_BASE_URL' } })
+    expect(changesOf()).toEqual([{ action: 'updated', changes: { key: 'API_BASE_URL', renamed_from: 'API_URL' } }])
+  })
+
+  it('a variable moved to a folder records the old and new folder', async () => {
+    const existing = { id: 'v1', key: 'API_URL', value: 'x', is_secret: false, folder_id: null }
+    const updated = { ...existing, folder_id: 'f1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: updated }], env_var_folders: { single: { id: 'f1' } } }) as never)
+    await request(app, 'PUT', '/env/v1', { body: { folder_id: 'f1' } })
+    expect(changesOf()).toEqual([{ action: 'updated', changes: { key: 'API_URL', folder_id: { old: null, new: 'f1' } } }])
+  })
+
+  it('a secret rotated records that it was rotated and never the old or new value, plaintext or ciphertext', async () => {
+    const existing = { id: 'v2', key: 'SECRET_KEY', value: 'old-ciphertext', is_secret: true, folder_id: null }
+    const updated = { ...existing, value: 'encrypted-test-value' }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: updated }] }) as never)
+    await request(app, 'PUT', '/env/v2', { body: { value: 'new_secret_value' } })
+    const [entry] = changesOf()
+    expect(entry).toEqual({ action: 'secret_rotated', changes: { key: 'SECRET_KEY', value_rotated: true } })
+    expect(JSON.stringify(entry.changes)).not.toMatch(/new_secret_value|old-ciphertext|encrypted-test-value/)
+  })
+
+  it('a secret renamed without a new value records the rename and that no rotation happened', async () => {
+    const existing = { id: 'v3', key: 'OLD_KEY', value: 'ciphertext', is_secret: true, scope: 'global', workflow_id: null, folder_id: null }
+    const updated = { ...existing, key: 'NEW_KEY', value: 'encrypted-test-value' }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }, { updateResult: updated }] }) as never)
+    await request(app, 'PUT', '/env/v3', { body: { key: 'NEW_KEY' } })
+    expect(changesOf()).toEqual([{ action: 'secret_rotated', changes: { key: 'NEW_KEY', renamed_from: 'OLD_KEY', value_rotated: false } }])
+  })
+
+  it('a plain variable deleted records its last value against null', async () => {
+    const existing = { id: 'v1', key: 'API_URL', value: 'https://api.example.com', is_secret: false }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { writeRows: [{ id: 'v1' }] }] }) as never)
+    await request(app, 'DELETE', '/env/v1')
+    expect(changesOf()).toEqual([{ action: 'deleted', changes: { key: 'API_URL', value: { old: 'https://api.example.com', new: null } } }])
+  })
+
+  it('a secret deleted records the key only', async () => {
+    const existing = { id: 'v2', key: 'SECRET_KEY', value: 'ciphertext', is_secret: true }
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { writeRows: [{ id: 'v2' }] }] }) as never)
+    await request(app, 'DELETE', '/env/v2')
+    const [entry] = changesOf()
+    expect(entry).toEqual({ action: 'deleted', changes: { key: 'SECRET_KEY' } })
+    expect(JSON.stringify(entry.changes)).not.toContain('ciphertext')
   })
 })

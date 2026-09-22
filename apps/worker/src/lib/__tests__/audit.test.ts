@@ -3,7 +3,7 @@
  * Smoke tests: verify insert shape, no throw when Supabase returns an error.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { writeAuditLog } from '../audit'
+import { changedFields, writeAuditLog } from '../audit'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -182,5 +182,29 @@ describe('writeAuditLog retries', () => {
       writeAuditLog(supabase as never, 'org-1', 'workflow', 'w-1', 'updated', 'u-1', undefined, NO_DELAYS)
     ).resolves.toBeUndefined()
     errSpy.mockRestore()
+  })
+})
+
+/**
+ * #1085, L529: an audit entry records the old and new value of every field that
+ * moved, in the `{ field: { old, new } }` shape the database triggers and the
+ * settle route already write, so one reader can walk any entity's history.
+ */
+describe('changedFields', () => {
+  it('records only the fields whose value moved, each as old and new', () => {
+    const before = { key: 'API_URL', value: 'https://old.example.com', folder_id: null }
+    const after = { key: 'API_URL', value: 'https://new.example.com', folder_id: null }
+    expect(changedFields(before, after, ['key', 'value', 'folder_id'])).toEqual({
+      value: { old: 'https://old.example.com', new: 'https://new.example.com' },
+    })
+  })
+
+  it('treats null becoming a value, and a value becoming null, as changes', () => {
+    expect(changedFields({ folder_id: null }, { folder_id: 'f1' }, ['folder_id'])).toEqual({ folder_id: { old: null, new: 'f1' } })
+    expect(changedFields({ folder_id: 'f1' }, { folder_id: null }, ['folder_id'])).toEqual({ folder_id: { old: 'f1', new: null } })
+  })
+
+  it('is empty when nothing it was asked about moved, so a save that changed nothing records no fields', () => {
+    expect(changedFields({ key: 'A', value: 'x' }, { key: 'A', value: 'x' }, ['key', 'value'])).toEqual({})
   })
 })

@@ -65,6 +65,33 @@ export type AuditAction =
  */
 export const AUDIT_RETRY_DELAYS_MS = [2_000, 5_000]
 
+/** One field's movement, the shape the database audit triggers and the settle route write. */
+export interface FieldChange {
+  old: unknown
+  new: unknown
+}
+
+/**
+ * The fields that moved between two snapshots of a record, each as its old and
+ * new value (#1085, L529). Only the fields named are compared, so a caller
+ * never records a column by accident (a secret's ciphertext, a timestamp), and
+ * only the ones that moved are returned, so an entry says what changed rather
+ * than restating the row. Compared by JSON value, which is what the store holds.
+ */
+export function changedFields<T extends Record<string, unknown>>(
+  before: T,
+  after: T,
+  fields: readonly (keyof T & string)[],
+): Record<string, FieldChange> {
+  const out: Record<string, FieldChange> = {}
+  for (const f of fields) {
+    const was = before[f] ?? null
+    const now = after[f] ?? null
+    if (JSON.stringify(was) !== JSON.stringify(now)) out[f] = { old: was, new: now }
+  }
+  return out
+}
+
 export async function writeAuditLog(
   supabase: SupabaseClient,
   orgId: string,
