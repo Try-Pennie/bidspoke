@@ -40,6 +40,9 @@ export const KNOWN_BIG_TABLES = new Set([
   // day, not by a page. No apostrophes in this comment: the mirror test in
   // apps/web reads every quoted string inside this literal as a table name.
   'execution_archive_hours',
+  // One row per run of every job that takes the archive lock, about 1,166 rows by
+  // 2026-09-22 and never pruned (#1438).
+  'job_runs',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads

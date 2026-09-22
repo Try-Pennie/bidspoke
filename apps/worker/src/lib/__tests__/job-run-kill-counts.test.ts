@@ -22,7 +22,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { countRecentKills } from '../job-run-record'
+import { countRecentKills, KILL_COUNT_READ_LIMIT } from '../job-run-record'
 
 /** The caller's own start. Everything is expressed relative to this. */
 const NOW = new Date('2026-09-15T00:25:28.000Z')
@@ -54,6 +54,14 @@ function supabaseDouble(opts: { rows?: unknown[]; fails?: boolean } = {}) {
         },
         lt: (col: string, v: unknown) => {
           captured.filters[`lt:${col}`] = v
+          return chain
+        },
+        order: (col: string, v: unknown) => {
+          captured.filters[`order:${col}`] = v
+          return chain
+        },
+        limit: (n: number) => {
+          captured.filters.limit = n
           return chain
         },
         then: (resolve: (r: unknown) => unknown) =>
@@ -105,6 +113,47 @@ describe('countRecentKills', () => {
     await countRecentKills(client, 'execution-archive', NOW, NOW.getTime())
 
     expect(captured.filters['gte:started_at']).toBe(new Date(NOW.getTime() - 7 * 24 * HOUR).toISOString())
+  })
+
+  it('asks for a bounded, ordered page rather than every matching row (#1438)', async () => {
+    // job_runs is not partitioned and is never pruned, so an unbounded read of it
+    // truncates at the platform's 1,000 row cap with nothing said. The order is
+    // what makes the bounded page the most recent runs rather than an arbitrary
+    // subset the planner happened to return.
+    const { client, captured } = supabaseDouble({ rows: [] })
+
+    await countRecentKills(client, 'execution-archive', NOW, NOW.getTime())
+
+    expect(captured.filters.limit).toBe(KILL_COUNT_READ_LIMIT)
+    expect(captured.filters['order:started_at']).toEqual({ ascending: false })
+  })
+
+  it('reports a read that filled the bound as unreadable, because a truncated count is not a count', async () => {
+    // Understating the rate fails in the quiet direction: the takeover notice
+    // stays silent while kills accumulate. A count that may be missing rows is
+    // the same kind of answer as a lookup that threw (L215), so it takes the same
+    // state rather than being reported as a number.
+    const { client } = supabaseDouble({
+      rows: Array.from({ length: KILL_COUNT_READ_LIMIT }, () => ({ started_at: ago(HOUR) })),
+    })
+
+    const counts = await countRecentKills(client, 'execution-archive', NOW, NOW.getTime())
+
+    expect(counts.kind).toBe('unreadable')
+    expect(counts.kind === 'unreadable' && counts.detail).toContain(String(KILL_COUNT_READ_LIMIT))
+  })
+
+  it('still counts a read that stopped one row short of the bound', async () => {
+    // The boundary matters in both directions: treating a full result as
+    // unreadable must not swallow the largest honest count the read can carry.
+    const { client } = supabaseDouble({
+      rows: Array.from({ length: KILL_COUNT_READ_LIMIT - 1 }, () => ({ started_at: ago(HOUR) })),
+    })
+
+    const counts = await countRecentKills(client, 'execution-archive', NOW, NOW.getTime())
+
+    expect(counts.kind).toBe('counted')
+    expect(counts.kind === 'counted' && counts.week).toBe(KILL_COUNT_READ_LIMIT - 1)
   })
 
   it('reports a failed read as unreadable, never as a quiet week', async () => {

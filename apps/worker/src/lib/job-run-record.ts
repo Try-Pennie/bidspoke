@@ -204,6 +204,19 @@ export async function readLastUnfinishedRun(
 
 export const ARCHIVE_JOB_RUN = 'execution-archive'
 
+/**
+ * The most unfinished runs this read will fetch in one page (#1438).
+ *
+ * `job_runs` is not partitioned and is never pruned, so an unbounded read of it
+ * truncates at the platform's 1,000 row cap with nothing said. This sits well
+ * under that cap and far above anything real: measured over every kill since the
+ * table shipped on 2026-08-22, the worst day ever recorded carried ten and an
+ * ordinary day carries one, against thresholds of three in a day and seven in a
+ * week. So a full page is not a busy week, it is a state nobody has seen, and it
+ * is reported as one rather than counted.
+ */
+export const KILL_COUNT_READ_LIMIT = 200
+
 /** How far back the two kill-rate windows reach. */
 const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_MS = 7 * DAY_MS
@@ -241,8 +254,19 @@ export async function countRecentKills(
       .is('finished_at', null)
       .gte('started_at', new Date(nowMs - WEEK_MS).toISOString())
       .lt('started_at', before.toISOString())
+      .order('started_at', { ascending: false })
+      .limit(KILL_COUNT_READ_LIMIT)
     if (error) throw new Error(formatErr(error))
     const rows = (data as Array<Record<string, unknown>> | null) ?? []
+    // A page that came back full may be missing rows, and the platform says
+    // nothing when it truncates, so this is a floor rather than a count. It takes
+    // the same state as a lookup that threw: understating the rate fails in the
+    // quiet direction, leaving the notice silent while kills accumulate (L215).
+    if (rows.length >= KILL_COUNT_READ_LIMIT) {
+      const detail = `more than ${KILL_COUNT_READ_LIMIT} unfinished runs in the window, so the count is a floor`
+      console.error(`[job-runs] recent killed ${job} runs: ${detail}`)
+      return { kind: 'unreadable', detail }
+    }
     // A row whose start will not parse is not evidence of a kill at any time, and
     // counting it would put it in every window: NaN fails both comparisons, so
     // it would be excluded from the day and still counted in the week.

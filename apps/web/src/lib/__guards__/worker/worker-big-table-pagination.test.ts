@@ -47,6 +47,10 @@ const BIG_TABLES = [
   // window or by one day's 24 hours, which this scan cannot see, so each one
   // carries a paginate-ok saying so (#1191).
   'execution_archive_hours',
+  // The archive lock and liveness ledger: one row per run of every job that takes
+  // it, about 1,166 rows by 2026-09-22 and never pruned. The daily growth check
+  // flagged it (#1438).
+  'job_runs',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
