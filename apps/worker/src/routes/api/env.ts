@@ -4,7 +4,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../lib/cf-secrets'
-import { writeAuditLog } from '../../lib/audit'
+import { changedFields, writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret } from '../../lib/secret-crypto'
 import type { Database } from '../../types/database'
@@ -89,8 +89,16 @@ env.post('/', async (c) => {
 
   if (error) return dbError(c, error)
 
+  // The entry carries the first value against null so the variable's history
+  // starts from its creation (#1085). A secret's value is never recorded, in
+  // plaintext or as ciphertext; only that one was set (L222).
   await Promise.all([
-    writeAuditLog(supabase, orgId, 'environment_variable', data.id, body.is_secret ? 'secret_rotated' : 'created', userId, { key: body.key }),
+    writeAuditLog(supabase, orgId, 'environment_variable', data.id, body.is_secret ? 'secret_rotated' : 'created', userId, {
+      key: body.key,
+      scope: data.scope,
+      workflow_id: data.workflow_id,
+      ...(body.is_secret ? { value_set: true } : { value: { old: null, new: data.value } }),
+    }),
     invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
 
@@ -202,10 +210,15 @@ env.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Variable not found' }, 404)
 
+  // What moved, as old and new (#1085, L529): the value for a plain variable,
+  // the folder for either kind, the old name on a rename. A secret's value is
+  // never recorded; the entry says only whether this save rotated it (L222).
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, {
-      key: existing.key,
-      ...(newKey !== existing.key ? { renamed_to: newKey } : {}),
+      key: newKey,
+      ...(keyChanged ? { renamed_from: existing.key } : {}),
+      ...(existing.is_secret ? { value_rotated: body.value !== undefined } : changedFields(existing, data, ['value'])),
+      ...changedFields(existing, data, ['folder_id']),
     }),
     invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
@@ -296,7 +309,7 @@ env.delete('/:id', async (c) => {
 
   const { data: existing, error: fetchError } = await supabase
     .from('environment_variables')
-    .select('key, is_secret')
+    .select('key, is_secret, value')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -317,8 +330,13 @@ env.delete('/:id', async (c) => {
   )
   if (deleteBlocked) return deleteBlocked
 
+  // The last value against null closes the variable's history (#1085); a
+  // secret's ciphertext is never recorded (L222).
   await Promise.all([
-    writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, { key: existing.key }),
+    writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, {
+      key: existing.key,
+      ...(existing.is_secret ? {} : { value: { old: existing.value, new: null } }),
+    }),
     invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
 

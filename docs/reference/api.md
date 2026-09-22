@@ -284,6 +284,10 @@ Response `201` (secret value masked):
 
 `GET /api/env/:id/reveal` decrypts and returns the plaintext. The read is recorded in the audit log. Returns `400` if the variable is not a secret, `422` if it has no stored encrypted value (created before the current encryption key, so it needs rotating to re-enable reveal).
 
+### What the audit entries record
+
+Every create, update and delete of a variable writes an `environment_variable` audit entry whose `changes` carry what moved as `{ old, new }` pairs (#1085): a plain variable's `value` (against `null` on create and delete), its `folder_id` when it moved, and `renamed_from` beside the new `key` on a rename. A secret's value is never recorded, in plaintext or as ciphertext; its entries say only `value_set` (created) or `value_rotated` (whether the save supplied a new value). `GET /api/audit-log?entity_type=environment_variable` returns them newest first.
+
 ```json
 { "value": "sk_live_..." }
 ```
