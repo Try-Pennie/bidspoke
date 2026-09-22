@@ -39,7 +39,9 @@ import {
   rankBuyers,
   withDeadline,
   type BuyerSelectMode,
+  type ConsideredOutcome,
   type LedgerKind,
+  type ModeEffective,
   type NodeReason,
   type OutReason,
   type Population,
@@ -97,10 +99,10 @@ export interface BuyerSelectConfig {
 }
 
 export type BuyerSelectRoute = 'sold' | 'no_sale' | 'not_applicable' | 'deferred'
-export type ModeEffective = 'live' | 'decide_only' | 'report_only'
 export type BuyerSelectReason = NodeReason | OutReason
-
-export type ConsideredOutcome = 'sold' | 'rehearsed' | 'declined_by_buyer' | 'buyer_error' | 'outcome_unknown' | 'skipped' | 'ineligible' | 'eligible' | 'not_reached'
+// The considered outcomes and the effective modes are the package's, so the
+// execution view labels the same words the engine writes (#1412, L113).
+export type { ConsideredOutcome, ModeEffective }
 
 export interface ConsideredBuyer {
   partner: string
