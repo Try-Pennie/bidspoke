@@ -26,6 +26,9 @@ importers:
       '@bidspoke/buyer-profile':
         specifier: workspace:*
         version: link:../../packages/buyer-profile
+      '@bidspoke/node-types':
+        specifier: workspace:*
+        version: link:../../packages/node-types
       '@bidspoke/references':
         specifier: workspace:*
         version: link:../../packages/references
@@ -150,6 +153,9 @@ importers:
       '@bidspoke/buyer-profile':
         specifier: workspace:*
         version: link:../../packages/buyer-profile
+      '@bidspoke/node-types':
+        specifier: workspace:*
+        version: link:../../packages/node-types
       '@bidspoke/references':
         specifier: workspace:*
         version: link:../../packages/references
@@ -227,6 +233,27 @@ importers:
       '@types/node':
         specifier: ^26.1.1
         version: 26.1.1
+      '@typescript-eslint/eslint-plugin':
+        specifier: ^8.65.0
+        version: 8.65.0(@typescript-eslint/parser@8.65.0(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+      '@typescript-eslint/parser':
+        specifier: ^8.65.0
+        version: 8.65.0(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+      eslint:
+        specifier: ^10.6.0
+        version: 10.6.0(jiti@2.7.0)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@edge-runtime/vm@3.2.0)(@types/node@26.1.1)(jsdom@29.1.1)(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.11.3)(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0))
+
+  packages/node-types:
+    devDependencies:
+      '@eslint/js':
+        specifier: ^10.0.1
+        version: 10.0.1(eslint@10.6.0(jiti@2.7.0))
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.65.0
         version: 8.65.0(@typescript-eslint/parser@8.65.0(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)

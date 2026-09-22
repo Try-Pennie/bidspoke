@@ -1,4 +1,5 @@
 import type { NodeTypes } from '@xyflow/react'
+import type { NodeType } from '@/types/workflow'
 
 import { FilterNode } from './FilterNode'
 import { BranchNode } from './BranchNode'
@@ -57,7 +58,10 @@ const baseNodeTypesInternal = {
   latency_gate: LatencyGateNode,
   achieve_offers: AchieveOffersNode,
   region: RegionNode,
-}
+  // `satisfies` over every NodeType plus the two canvas only entries (#1411):
+  // a type added to @bidspoke/node-types with no card here is a compile error,
+  // while each entry keeps its own component type.
+} satisfies Record<NodeType | 'trigger' | 'region', unknown>
 
 export const baseNodeTypes: Record<string, (typeof baseNodeTypesInternal)[keyof typeof baseNodeTypesInternal]> =
   baseNodeTypesInternal

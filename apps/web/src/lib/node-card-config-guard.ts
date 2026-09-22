@@ -15,8 +15,10 @@ export interface CardConfigViolation {
   field: string
 }
 
-/** Which worker source files are authoritative for each canvas card's node type. */
-export const CARD_EXECUTORS: Record<string, { type: string; sources: string[] }> = {
+import type { NodeType } from '@/types/workflow'
+
+/** Which worker source files are authoritative for each canvas card's node type. Typed by NodeType (#1411) so a misspelt type is a compile error. */
+export const CARD_EXECUTORS: Record<string, { type: NodeType | 'trigger'; sources: string[] }> = {
   'AchieveOffersNode.tsx': { type: 'achieve_offers', sources: ['engine/nodes/achieve-offers.ts'] },
   'BidGroupNode.tsx': { type: 'bid_group', sources: ['engine/nodes/bid-group.ts'] },
   'BranchNode.tsx': { type: 'branch', sources: ['engine/nodes/branch.ts'] },

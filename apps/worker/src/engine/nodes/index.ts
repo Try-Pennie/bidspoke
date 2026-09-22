@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import { assertNever } from '../../types'
 import type { Env } from '../../index'
 import { executeFilterNode } from './filter'
 import { executeBranchNode } from './branch'
@@ -71,7 +72,10 @@ export async function executeNode(
     case 'achieve_offers':
       return executeAchieveOffersNode(node, ctx, signal)
     default:
-      throw new Error(`Unknown node type: ${(node).type}`)
+      // Exhaustive over NodeType at compile time (#1411): a type added to
+      // @bidspoke/node-types without a case here is a type error on this line,
+      // and a definition carrying a type this build never heard of fails loud.
+      return assertNever(node.type, 'node type')
   }
 }
 

@@ -1,34 +1,20 @@
 /**
- * Every node type a saved definition may contain. A runtime list, not just a
- * type union, so the canvas registry can be checked at test time to cover all of
+ * Every node type a saved definition may contain, as a runtime list, so the
+ * canvas registry and the colour map can be checked at test time to cover all of
  * them: a type with no card renders as a broken node and can take the canvas
  * down (see nodes/registry.tsx).
+ *
+ * The list itself lives in @bidspoke/node-types (#1411), one array the worker
+ * reads too, so the two apps cannot drift. Re-exported here so every existing
+ * import from '@/types/workflow' keeps working.
  *
  * `partner_bid` is retired but still listed: Bid Group replaced it and it is
  * hidden from the palette, yet the engine still executes the type and the format
  * still permits it, so it must still draw.
  */
-export const NODE_TYPES = [
-  'filter',
-  'branch',
-  'branch_end',
-  'code',
-  'response',
-  'exit',
-  'parallel',
-  'parallel_end',
-  'partner_bid',
-  'bid_group',
-  'webhook',
-  'transform',
-  'constants',
-  'salesforce',
-  'data_store',
-  'latency_gate',
-  'achieve_offers',
-] as const
-
-export type NodeType = (typeof NODE_TYPES)[number]
+export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
+export type { NodeType, NodeTraits } from '@bidspoke/node-types'
+import type { NodeType } from '@bidspoke/node-types'
 
 export interface EdgeCondition {
   field: string

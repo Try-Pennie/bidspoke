@@ -15,6 +15,8 @@
  * bundle, and every node icon silently renders colorless. Nothing in the type
  * system or the test suite would catch that; it is a CSS build-time behavior.
  */
+import type { NodeType } from '@/types/workflow'
+
 export interface NodeColor {
   /** Tailwind text-color utility for the card + palette icon. */
   icon: string
@@ -22,7 +24,14 @@ export interface NodeColor {
   hex: string
 }
 
-export const NODE_TYPE_COLOR: Record<string, NodeColor> = {
+/**
+ * Keyed by NodeType plus the trigger, which is a canvas node and never a saved
+ * node type. Typed that way (#1411) so a type added to @bidspoke/node-types
+ * with no colour here is a compile error, not a gray dot found in a screenshot.
+ */
+export type ColoredNodeType = NodeType | 'trigger'
+
+export const NODE_TYPE_COLOR: Record<ColoredNodeType, NodeColor> = {
   trigger:        { icon: 'text-p-blue-dark', hex: '#1B72BA' },
   filter:         { icon: 'text-p-blue-dark', hex: '#1B72BA' },
   branch:         { icon: 'text-purple-500',  hex: '#a855f7' },
@@ -48,15 +57,20 @@ export const NODE_TYPE_COLOR: Record<string, NodeColor> = {
 /** Gray for a type we do not know. A stray or future node still draws. */
 export const UNKNOWN_NODE_COLOR = '#9ca3af'
 
+/** The read side takes any string a definition or step row may carry; the declaration above stays exhaustive. */
+function colorFor(type: string): NodeColor | undefined {
+  return (NODE_TYPE_COLOR as Record<string, NodeColor | undefined>)[type]
+}
+
 /**
  * Minimap fill for a node type. Every type in NODE_TYPES resolves; the fallback
  * is only for a definition carrying something this build has never heard of.
  */
 export function minimapNodeColor(type: string): string {
-  return NODE_TYPE_COLOR[type]?.hex ?? UNKNOWN_NODE_COLOR
+  return colorFor(type)?.hex ?? UNKNOWN_NODE_COLOR
 }
 
 /** Tailwind icon class for a node type, for the cards and the palette. */
 export function nodeIconClass(type: string): string {
-  return NODE_TYPE_COLOR[type]?.icon ?? 'text-slate-400'
+  return colorFor(type)?.icon ?? 'text-slate-400'
 }

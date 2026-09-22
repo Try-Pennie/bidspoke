@@ -38,6 +38,15 @@
     signal matching lives here and is imported back), the profile validator, the
     sale payload builder and the deadline wrapper. `fixtures/tripoint/` holds the
     redacted response shapes captured from production on 2026-09-21.
+  - `packages/node-types`: the one list of node types a saved definition can carry
+    (`NODE_TYPES`, `NodeType`), the traits each has (`NODE_TRAITS`: network,
+    dispatch or storage, walker only, synthesizes attempts, references partners,
+    static handles, executor file) and `assertNever` (#1411). Both apps re-export
+    it from their old paths (`apps/worker/src/types.ts`, `apps/web/src/types/workflow.ts`).
+    Adding a node type: add it here with its traits, and the compiler then names
+    every switch and record that must handle it (`executeNode`, save validation,
+    colours, cards, heights); the coverage tests name the palette, preview, config
+    panel, shadow exemption, changelog glossary and similar fallback placements.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`
