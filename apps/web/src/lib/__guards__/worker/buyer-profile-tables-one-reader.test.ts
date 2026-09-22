@@ -31,6 +31,7 @@ const ALLOWED: Record<string, string> = {
   'lib/buyer-profile-loader.ts': 'the one profile read, with the cache and the last good copy',
   'lib/buyer-sale-mirror.ts': 'writes buyer_sales through record_buyer_sale',
   'lib/buyer-sale-drain.ts': 'the minute drain delivering the ledger outbox to buyer_sales (Phase 6)',
+  'lib/buyer-sales-checks.ts': 'the 15 minute checks comparing the ledgers against the buyer_sales copy, which must list every buyer with a profile (Phase 6)',
   'routes/api/buyer-profiles.ts': 'the profile editor routes (Phase 5)',
   'routes/api/buyer-sales.ts': 'the unresolved queue and settle routes (Phase 6)',
   'routes/api/buyer-select-parity.ts': 'the parity report over buyer_select_parity_days (Phase 6)',

@@ -10,6 +10,7 @@ import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
+import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -787,6 +788,24 @@ export default {
             if (r.errors.length) console.error(`[tripoint-revenue] errors=${r.errors.join(' | ')}`)
           })
           .catch((e) => console.error('[tripoint-revenue] fill failed:', e))
+      )
+      // The buyer sales checks (#1413): completeness of the buyer_sales copy,
+      // consistency with the bid rows, the independent Salesforce write back,
+      // and the page for sales waiting on a person. Under a job run record so a
+      // lifetime of zero passes is visible (L557); both heartbeat stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, BUYER_SALES_CHECKS_JOB)
+            .catch((e) => console.error(`[${BUYER_SALES_CHECKS_JOB}] heartbeat write failed:`, e))
+            .then(() => runBuyerSalesChecksForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              const verdicts = s.buyers.map((b) => `${b.slug}:${b.completeness.verdict}/${b.consistency.verdict}/${b.independent.verdict}/unresolved=${b.unresolved.count}`).join(' ')
+              console.log(`[${BUYER_SALES_CHECKS_JOB}] days=${s.days.join(',')} buyers=${s.buyers.length} paged_mismatches=${s.mismatch_lines.length} paged_unresolved=${s.unresolved_lines.length}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''} ${verdicts}`)
+            })
+            .catch((e) => console.error(`[${BUYER_SALES_CHECKS_JOB}] checks failed:`, e)),
+          BUYER_SALES_CHECKS_JOB,
+        ),
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(

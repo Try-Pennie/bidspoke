@@ -179,6 +179,7 @@ export class BuyerLedgerObject implements DurableObject {
       case '/entry': return this.handleEntry(url)
       case '/peek': return this.handlePeek(url)
       case '/summary': return this.handleSummary(url)
+      case '/entries': return this.handleEntries(url)
       case '/unmirrored': return this.handleUnmirrored()
       case '/unresolved': return this.handleUnresolved()
       case '/mark-mirrored': return this.handleMarkMirrored(request)
@@ -360,6 +361,21 @@ export class BuyerLedgerObject implements DurableObject {
       counted_leads: Number(counted.leads),
       counted_spend_cents: Number(counted.spend),
     })
+  }
+
+  /**
+   * Every entry of one kind for one Eastern day, in reservation order (#1413).
+   * The checks compare these row by row against buyer_sales, the bid logger's
+   * rows and the Salesforce write back, so they need the entries themselves and
+   * not the counts the summary gives. Refuses a malformed kind or day by name
+   * rather than answering for today (L11).
+   */
+  private handleEntries(url: URL): Response {
+    const kind = url.searchParams.get('kind')
+    if (!isKind(kind)) return jsonResponse({ error: 'bad_kind' }, 400)
+    const day = url.searchParams.get('day')
+    if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return jsonResponse({ error: 'bad_day' }, 400)
+    return jsonResponse({ entries: this.rows('SELECT * FROM entries WHERE kind = ? AND et_day = ? ORDER BY reserved_at ASC', kind, day) })
   }
 
   private handleUnmirrored(): Response {
