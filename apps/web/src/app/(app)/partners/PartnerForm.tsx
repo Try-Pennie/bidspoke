@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
-  buildPartnerBody, parseList, listToString,
+  buildPartnerBody, parseList, listToString, parseRules,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
 } from './partner-body'
@@ -15,7 +15,7 @@ import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
-import { SignalRuleBuilder, SIGNAL_SECTIONS, parseRules } from '@/components/partners/SignalRuleBuilder'
+import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
 import { documentToProfile, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'

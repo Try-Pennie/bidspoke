@@ -10,56 +10,20 @@
  */
 import { useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
+import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import {
-  listToString,
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory, type SignalRules,
 } from '@/app/(app)/partners/partner-body'
+import { LIST_OPERATORS } from '@/lib/signal-text'
 
 type RuleKind = 'body' | 'status'
+
+/** The conditions an HTTP status rule can carry, labelled with the same words as the body rules (L118). */
+const STATUS_CONDITIONS: readonly StatusCondition[] = ['contains', 'in', 'not_in', 'present']
 
 function uid() { return Math.random().toString(36).slice(2) }
 export function emptyBody(): BodyRule { return { id: uid(), kind: 'body', field: '', condition: 'equals', value: '' } }
 export function emptyStatus(): StatusRule { return { id: uid(), kind: 'status', code: '', bodyField: '', condition: 'contains', value: '' } }
-
-export function parseRules(raw: unknown): SignalRules {
-  const result: SignalRules = { rejection: [], transient: [], permanent: [] }
-  if (!raw || typeof raw !== 'object') return result
-  const obj = raw as Record<string, unknown>
-  const map: [string, SignalCategory][] = [
-    ['rejection_signals', 'rejection'],
-    ['transient_signals', 'transient'],
-    ['permanent_signals', 'permanent'],
-  ]
-  for (const [key, cat] of map) {
-    if (!Array.isArray(obj[key])) continue
-    for (const sig of obj[key] as Record<string, unknown>[]) {
-      if (sig.field != null) {
-        let condition: BodyCondition = 'equals'
-        let value = ''
-        if (sig.present === true)            { condition = 'present' }
-        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
-        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
-        else if (sig.contains != null)       { condition = 'contains'; value = String(sig.contains) }
-        else if (sig.equals != null)         { value = String(sig.equals) }
-        result[cat].push({ id: uid(), kind: 'body', field: String(sig.field), condition, value })
-      } else if (sig.status_code != null || sig.body_field != null || sig.header != null) {
-        let condition: StatusCondition = 'contains'
-        let value = ''
-        if (sig.present === true)            { condition = 'present' }
-        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
-        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
-        else if (sig.contains != null)       { value = String(sig.contains) }
-        result[cat].push({
-          id: uid(), kind: 'status',
-          code:      sig.status_code != null ? String(sig.status_code) : '',
-          bodyField: String(sig.body_field ?? sig.header ?? ''),
-          condition, value,
-        })
-      }
-    }
-  }
-  return result
-}
 
 export interface SignalSection {
   cat: SignalCategory
@@ -104,7 +68,7 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
             onChange={(e) => onChange({ ...rule, field: e.target.value })}
             placeholder="field"
             aria-label="Field"
-            className={`${inputCls} w-28`}
+            className={`${inputCls} w-44 flex-shrink-0`}
           />
           <select
             value={rule.condition}
@@ -112,19 +76,17 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
             onChange={(e) => onChange({ ...rule, condition: e.target.value as BodyCondition })}
             className={`${inputCls} flex-shrink-0`}
           >
-            <option value="equals">equals</option>
-            <option value="contains">contains</option>
-            <option value="in">in (any of)</option>
-            <option value="not_in">not in</option>
-            <option value="present">is present</option>
+            {SIGNAL_OPERATORS.map((op) => (
+              <option key={op} value={op}>{SIGNAL_OPERATOR_LABELS[op]}</option>
+            ))}
           </select>
           {rule.condition !== 'present' && (
             <input
               value={rule.value}
               onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
+              placeholder={LIST_OPERATORS.has(rule.condition) ? 'value1,value2,value3' : 'value'}
               aria-label="Value"
-              className={`${inputCls} min-w-0 flex-1`}
+              className={`${inputCls} min-w-[16rem] flex-1`}
             />
           )}
         </>
@@ -151,10 +113,9 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
             onChange={(e) => onChange({ ...rule, condition: e.target.value as StatusCondition })}
             className={`${inputCls} flex-shrink-0`}
           >
-            <option value="contains">contains</option>
-            <option value="in">in (any of)</option>
-            <option value="not_in">not in</option>
-            <option value="present">is present</option>
+            {STATUS_CONDITIONS.map((op) => (
+              <option key={op} value={op}>{SIGNAL_OPERATOR_LABELS[op]}</option>
+            ))}
           </select>
           {rule.condition !== 'present' && (
             <input
