@@ -199,6 +199,64 @@ describe('BuyerLedgerObject outcomes', () => {
     const unresolved = await get<{ entries: LedgerEntry[] }>(stub, '/unresolved')
     expect(unresolved.entries).toEqual([])
   })
+
+  it('settle records who settled it and how, and hands the entry back to the mirror (#1412, L83)', async () => {
+    // The ledger is the one home of a settlement: the person's decision lands here
+    // first, and the mirror carries resolution_source and resolved_by to
+    // buyer_sales from the entry, so the drain can deliver it without knowing
+    // who pressed the button.
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await setClock(stub, NOW + PENDING_GRACE_MS)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    // The drain already mirrored the unresolved state.
+    const marked = await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    expect(marked.status).toBe(200)
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved', mirrored: true } })
+
+    const settled = await post(stub, '/settle', { ...key('lead-a'), status: 'released', resolved_by: '22222222-2222-4222-8222-222222222222' })
+    expect(settled.status).toBe(200)
+    const after = await entryOf(stub, 'lead-a')
+    expect(after).toMatchObject({
+      found: true,
+      entry: { status: 'released', mirrored: false, resolution_source: 'settled', resolved_by: '22222222-2222-4222-8222-222222222222' },
+    })
+    const unmirrored = await get<UnmirroredResult>(stub, '/unmirrored')
+    expect(unmirrored.entries.map((e) => e.lead_key)).toEqual(['lead-a'])
+  })
+
+  it('a buyer outcome records the buyer as the source, and a state change after a mirror is unmirrored again', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    const committed = await post(stub, '/commit', { ...key('lead-a'), outcome: OUTCOME })
+    expect(committed.status).toBe(200)
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'accepted', mirrored: false, resolution_source: 'buyer', resolved_by: null } })
+  })
+
+  it('the grace alarm moving a mirrored reservation to unresolved makes it unmirrored again, so the drain delivers the new state', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    await setClock(stub, NOW + PENDING_GRACE_MS)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved', mirrored: false } })
+  })
+
+  it('settle refuses a resolved_by that is not a uuid, by name', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await setClock(stub, NOW + PENDING_GRACE_MS)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    const bad = await post(stub, '/settle', { ...key('lead-a'), status: 'released', resolved_by: 'dan' })
+    expect(bad.status).toBe(400)
+    expect(await bad.json()).toEqual({ error: 'bad_resolved_by' })
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved' } })
+  })
 })
 
 describe('BuyerLedgerObject summary agrees with reserve (L16)', () => {

@@ -13,6 +13,7 @@ const entry: LedgerEntry = {
   et_day: '2027-09-20', hour_bucket: 505_935, reserved_at: Date.UTC(2027, 8, 20, 15, 30), resolved_at: Date.UTC(2027, 8, 20, 15, 30, 2),
   mirrored: false, execution_id: '0192a4f0-0000-7000-8000-000000000001',
   outcome: { buyer_reference: 'L-1', result_code: '1000', http_status: 200, payout_cents: 2190 },
+  resolution_source: 'buyer', resolved_by: null,
 }
 const meta: BuyerSaleRowMeta = {
   partner_id: '11111111-1111-4111-8111-111111111111', organization_id: '22222222-2222-4222-8222-222222222222',
@@ -48,12 +49,17 @@ describe('buildBuyerSaleRow', () => {
     expect(row).toMatchObject({ status: 'accepted', http_status: 200, result_code: '1000', buyer_reference: 'L-1', resolution_source: 'buyer', resolved_by: null })
   })
   it('a reserved entry has no outcome, so the outcome columns are null and the resolution source is null', async () => {
-    const row = await buildBuyerSaleRow({ ...entry, status: 'reserved', outcome: null, resolved_at: null }, meta)
-    expect(row).toMatchObject({ http_status: null, result_code: null, buyer_reference: null, resolution_source: null })
+    const row = await buildBuyerSaleRow({ ...entry, status: 'reserved', outcome: null, resolved_at: null, resolution_source: null }, meta)
+    expect(row).toMatchObject({ http_status: null, result_code: null, buyer_reference: null, resolution_source: null, resolved_by: null })
   })
   it('a rehearsal is recorded as resolved by the rehearsal, never by a buyer', async () => {
-    const row = await buildBuyerSaleRow({ ...entry, kind: 'rehearsal', outcome: { buyer_reference: null, result_code: 'rehearsal_no_call', http_status: null, payout_cents: 2190 } }, meta)
+    const row = await buildBuyerSaleRow({ ...entry, kind: 'rehearsal', resolution_source: 'rehearsal', outcome: { buyer_reference: null, result_code: 'rehearsal_no_call', http_status: null, payout_cents: 2190 } }, meta)
     expect(row.resolution_source).toBe('rehearsal')
+  })
+  it('a settled entry carries who settled it from the ledger, so the drain can mirror it without knowing the actor (#1412, L83)', async () => {
+    const settled: LedgerEntry = { ...entry, status: 'released', resolution_source: 'settled', resolved_by: '22222222-2222-4222-8222-222222222222' }
+    const row = await buildBuyerSaleRow(settled, meta)
+    expect(row).toMatchObject({ status: 'released', resolution_source: 'settled', resolved_by: '22222222-2222-4222-8222-222222222222' })
   })
 })
 

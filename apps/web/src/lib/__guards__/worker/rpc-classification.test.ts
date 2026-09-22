@@ -66,7 +66,7 @@ describe('every worker rpc is classified once in read-only-rpcs.json', () => {
 
   it('the mutating list names the writers the plan and the manifest call writes', () => {
     const { mutating } = lists()
-    for (const w of ['record_archive_day_measurement', 'save_buyer_profile', 'record_buyer_sale', 'settle_buyer_sale', 'delete_partner_config', 'rename_partner_step_namespace']) {
+    for (const w of ['record_archive_day_measurement', 'save_buyer_profile', 'record_buyer_sale', 'delete_partner_config', 'rename_partner_step_namespace']) {
       expect(mutating, w).toContain(w)
     }
   })

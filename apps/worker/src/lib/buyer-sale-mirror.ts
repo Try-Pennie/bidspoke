@@ -49,7 +49,7 @@ export interface BuyerSaleRow {
   buyer_reference: string | null
   live_percent_in_force: number | null
   caps_in_force: CapLimits | null
-  resolution_source: 'buyer' | 'rehearsal' | null
+  resolution_source: 'buyer' | 'rehearsal' | 'settled' | null
   resolved_by: string | null
 }
 
@@ -94,8 +94,11 @@ export async function buildBuyerSaleRow(entry: LedgerEntry, meta: BuyerSaleRowMe
     buyer_reference: entry.outcome?.buyer_reference ?? null,
     live_percent_in_force: meta.live_percent_in_force,
     caps_in_force: meta.caps_in_force,
-    resolution_source: !resolved ? null : entry.kind === 'rehearsal' ? 'rehearsal' : 'buyer',
-    resolved_by: null,
+    // The ledger records how an entry was resolved and by whom (#1412, L83), so a
+    // settled entry mirrors the person who settled it whichever writer delivers
+    // it. An entry from before the ledger recorded the source is derived from its kind.
+    resolution_source: !resolved ? null : (entry.resolution_source as BuyerSaleRow['resolution_source'] | null) ?? (entry.kind === 'rehearsal' ? 'rehearsal' : 'buyer'),
+    resolved_by: resolved ? entry.resolved_by ?? null : null,
   }
 }
 

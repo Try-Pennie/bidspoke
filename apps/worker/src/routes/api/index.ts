@@ -23,6 +23,8 @@ import folders from './folders'
 import envFolders from './env-folders'
 import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
+import buyerProfiles from './buyer-profiles'
+import buyerSales from './buyer-sales'
 
 type Variables = AuthVariables
 
@@ -51,6 +53,11 @@ api.route('/folders', folders)
 api.route('/env-folders', envFolders)
 api.route('/config-warnings', configWarnings)
 api.route('/field-coverage', fieldCoverage)
+// Buyer profile routes share the /partners prefix (#1412); a Hono sub app
+// matches only its own paths, so /partners/:id and /partners/:id/buyer-profile
+// do not collide.
+api.route('/partners', buyerProfiles)
+api.route('/buyer-sales', buyerSales)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)

@@ -1,0 +1,12 @@
+-- #1412: settle_buyer_sale wrote a settlement to buyer_sales, the MIRROR, while the
+-- ledger Durable Object, the authority the caps count from, kept holding the slot
+-- and the dollars (L83, the violation recorded on the Phase 5 issue). Settlement is
+-- now a ledger operation first (POST /api/buyer-sales/:id/settle), and the settled
+-- entry reaches buyer_sales through record_buyer_sale like every other state, so
+-- this function has no caller and no correct use. Dropping it removes the one path
+-- that could make the two stores disagree.
+--
+-- Contract safe: nothing in the deployed worker calls it (the mutating rpc list in
+-- apps/worker/src/lib/read-only-rpcs.json no longer names it), so the drop can land
+-- before or after the worker deploy.
+DROP FUNCTION IF EXISTS public.settle_buyer_sale(uuid, uuid, text, uuid);

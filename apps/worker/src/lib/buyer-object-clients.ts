@@ -165,8 +165,9 @@ export class BuyerLedgerClient implements LedgerApi {
     return r.entry
   }
 
-  async settle(key: EntryKey, status: Extract<SaleStatus, 'accepted' | 'declined' | 'released'>, outcome?: SaleOutcomeRecord): Promise<LedgerEntry> {
-    const r = await call<{ entry: LedgerEntry }>(this.stub, 'buyer ledger settle', 'http://do/settle', postJson({ ...key, status, outcome }), this.opts)
+  /** A person's settlement; `resolvedBy` is their user id, kept on the entry for the mirror (#1412). */
+  async settle(key: EntryKey, status: Extract<SaleStatus, 'accepted' | 'declined' | 'released'>, outcome?: SaleOutcomeRecord, resolvedBy?: string): Promise<LedgerEntry> {
+    const r = await call<{ entry: LedgerEntry }>(this.stub, 'buyer ledger settle', 'http://do/settle', postJson({ ...key, status, outcome, resolved_by: resolvedBy }), this.opts)
     return r.entry
   }
 

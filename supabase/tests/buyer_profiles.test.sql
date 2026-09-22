@@ -52,7 +52,7 @@ VALUES ('33333333-3333-3333-3333-333333330002', '11111111-1111-1111-1111-1111111
 -- The fixture inserts above are audited by the trigger; clear them so the counts below start from zero.
 DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111111111';
 
--- ── 1. Grants: anon and authenticated cannot execute any of the five functions ──
+-- ── 1. Grants: anon and authenticated cannot execute any of the four functions ──
 DO $do$
 DECLARE
   fn text;
@@ -61,7 +61,6 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.record_buyer_sale(jsonb)',
-    'public.settle_buyer_sale(uuid, uuid, text, uuid)',
     'public.delete_partner_config(uuid, uuid, uuid, text)',
     'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
   ] LOOP
@@ -399,34 +398,29 @@ BEGIN
 END
 $do$;
 
--- ── 16. settle_buyer_sale: only an unresolved row can be settled, and settling writes its own audit row with old and new status ──
+-- ── 16. settle_buyer_sale is gone: a settlement is a ledger operation first and reaches buyer_sales through record_buyer_sale (#1412, L83) ──
 DO $do$
-DECLARE
-  msg text;
-  r record;
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'settle_buyer_sale'
+  ) THEN
+    RAISE EXCEPTION 'settle_buyer_sale still exists: a direct mirror write would leave the ledger holding the slot';
+  END IF;
+  -- The mirror path still records a settlement written by the ledger: the row
+  -- carries resolution_source and resolved_by from the entry, through the upsert.
   PERFORM public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550004", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
     "lead_key": "lead-b", "population": "engine", "kind": "live", "status": "unresolved", "payout_cents": 1800, "debt": 18000, "multiplier": 0.001,
     "et_day": "2026-09-21", "hour_bucket": "2026-09-21T17:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t4",
     "http_status": 200, "result_code": null, "buyer_reference": null, "live_percent_in_force": 1, "caps_in_force": {}, "resolution_source": null, "resolved_by": null}'::jsonb);
-  PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'released', '22222222-2222-2222-2222-222222222222');
-  IF (SELECT status FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM 'released' THEN RAISE EXCEPTION 'settle did not land'; END IF;
-  IF (SELECT resolved_by FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'settle did not record who'; END IF;
-  SELECT * INTO r FROM public.audit_log WHERE entity_type = 'buyer_sale' AND entity_id = '55555555-5555-5555-5555-555555550004' ORDER BY changed_at DESC LIMIT 1;
-  IF r.changes->'status'->>'old' IS DISTINCT FROM 'unresolved' OR r.changes->'status'->>'new' IS DISTINCT FROM 'released' THEN RAISE EXCEPTION 'settle audit wrong: %', r.changes; END IF;
-  BEGIN
-    PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'accepted', '22222222-2222-2222-2222-222222222222');
-    RAISE EXCEPTION 'a settled row was settled again';
-  EXCEPTION WHEN SQLSTATE 'BP409' THEN
-    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
-    IF msg IS DISTINCT FROM 'not_unresolved' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
-  END;
-  BEGIN
-    PERFORM public.settle_buyer_sale('55555555-5555-5555-5555-555555550004', '11111111-1111-1111-1111-111111111111', 'reserved', '22222222-2222-2222-2222-222222222222');
-    RAISE EXCEPTION 'settle accepted an outcome that is not a settlement';
-  EXCEPTION WHEN SQLSTATE 'BP422' THEN NULL;
-  END;
-  INSERT INTO suite_cases(name) VALUES ('settle bounded and audited');
+  PERFORM public.record_buyer_sale('{"id": "55555555-5555-5555-5555-555555550004", "partner_id": "33333333-3333-3333-3333-333333330001", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "lead_key": "lead-b", "population": "engine", "kind": "live", "status": "released", "payout_cents": 1800, "debt": null, "multiplier": null,
+    "et_day": "2026-09-21", "hour_bucket": "2026-09-21T17:00:00Z", "workflow_id": null, "execution_id": null, "trace_id": "t4",
+    "http_status": 200, "result_code": null, "buyer_reference": null, "live_percent_in_force": 1, "caps_in_force": {}, "resolution_source": "settled", "resolved_by": "22222222-2222-2222-2222-222222222222"}'::jsonb);
+  IF (SELECT status FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM 'released' THEN RAISE EXCEPTION 'settled mirror did not land'; END IF;
+  IF (SELECT resolved_by FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'settled mirror did not record who'; END IF;
+  IF (SELECT resolution_source FROM public.buyer_sales WHERE id = '55555555-5555-5555-5555-555555550004') IS DISTINCT FROM 'settled' THEN RAISE EXCEPTION 'settled mirror did not record how'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('settle is a ledger operation mirrored through record_buyer_sale');
 END
 $do$;
 
