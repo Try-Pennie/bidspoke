@@ -175,14 +175,20 @@ Output one or two short sentences (max 140 chars) describing exactly what change
 Common node types and what they do:
 - filter: pass/exit gate based on rules
 - branch: N-way conditional split
+- branch_end: where a branch's arms rejoin
 - code: arbitrary JS in a sandbox
 - partner_bid: outbound bid request to a partner
 - bid_group: fan out to partners and pick a winner
 - parallel: fan-out to children
+- parallel_end: where a parallel's children rejoin
 - transform: field mapping
+- constants: workflow constants plus partner data
+- data_store: KV read/write with a TTL
+- latency_gate: mark a time, then gate on the elapsed time
+- achieve_offers: collect Achieve offers, log only
 - response/exit: terminate with HTTP response
 - salesforce: SF object create/update
-- integration/webhook: outbound HTTP call
+- webhook: outbound HTTP call
 
 Rules:
 - Past tense, sentence case, no trailing period.

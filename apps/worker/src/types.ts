@@ -2,24 +2,12 @@
 // Workflow definition types
 // ============================================================
 
-export type NodeType =
-  | 'code'
-  | 'filter'
-  | 'branch'
-  | 'branch_end'
-  | 'parallel'
-  | 'parallel_end'
-  | 'partner_bid'
-  | 'bid_group'
-  | 'webhook'
-  | 'transform'
-  | 'response'
-  | 'exit'
-  | 'constants'
-  | 'salesforce'
-  | 'data_store'
-  | 'latency_gate'
-  | 'achieve_offers'
+// The node type list lives in @bidspoke/node-types (#1411), one array both apps
+// read, so this union and the web's NODE_TYPES cannot drift. Re-exported here so
+// every existing import of NodeType from './types' keeps working.
+export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
+export type { NodeType, NodeTraits } from '@bidspoke/node-types'
+import type { NodeType } from '@bidspoke/node-types'
 
 export interface WorkflowDefinition {
   id: string

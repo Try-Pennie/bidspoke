@@ -11,9 +11,14 @@ describe('suggestionFloorMs', () => {
   })
 
   it('floors network-bound nodes at the HTTP round-trip overhead', () => {
-    for (const t of ['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group']) {
+    for (const t of ['partner_bid', 'achieve_offers', 'salesforce', 'webhook', 'bid_group']) {
       expect(suggestionFloorMs(t)).toBe(50)
     }
+  })
+
+  it('gives a spelling that is not a node type the in memory floor: integration is not one, no live definition carries it (#1411)', () => {
+    expect(suggestionFloorMs('integration')).toBe(10)
+    expect(suggestionFloorReason('integration')).toBeNull()
   })
 
   it('keeps in-memory nodes at the 10ms floor', () => {
@@ -35,7 +40,7 @@ describe('suggestionFloorReason', () => {
   })
 
   it('explains the network floor for outbound-call nodes', () => {
-    for (const t of ['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group']) {
+    for (const t of ['partner_bid', 'achieve_offers', 'salesforce', 'webhook', 'bid_group']) {
       expect(suggestionFloorReason(t)).toMatch(/network round-trip/i)
     }
   })

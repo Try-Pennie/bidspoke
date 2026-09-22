@@ -1,5 +1,6 @@
 import dagre from '@dagrejs/dagre'
 import type { Node, Edge } from '@xyflow/react'
+import type { NodeType } from '@/types/workflow'
 
 // All canvas nodes share this width (w-52 = 208px)
 export const NODE_W = 208
@@ -15,27 +16,34 @@ export const NODE_W = 208
 // next to a webhook in a parallel slot) align at the top. Nodes with extra
 // rows (branch labels, parallel slots, salesforce update tag) stay larger.
 const STANDARD_NODE_H = 144
-const NODE_H: Record<string, number> = {
-  trigger:       STANDARD_NODE_H,
-  filter:        STANDARD_NODE_H,
-  branch:        164,             // adds the branch labels row
-  code:          STANDARD_NODE_H,
-  response:      STANDARD_NODE_H,
-  exit:          STANDARD_NODE_H,
-  parallel:      156,             // adds the slot label row (when slots > 0)
-  parallel_end:  STANDARD_NODE_H,
-  branch_end:    STANDARD_NODE_H,
-  salesforce:    164,             // adds the Update tag row
-  webhook:       STANDARD_NODE_H,
-  partner_bid:   STANDARD_NODE_H,
-  transform:     STANDARD_NODE_H,
-  bid_group:     STANDARD_NODE_H,
-  constants:     STANDARD_NODE_H,
-  default:       STANDARD_NODE_H,
+// Keyed by every NodeType plus the trigger and a default for a type this build
+// does not know (#1411): a node type added without a height here is a compile
+// error rather than a card that lands on the default by accident.
+const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
+  trigger:        STANDARD_NODE_H,
+  filter:         STANDARD_NODE_H,
+  branch:         164,             // adds the branch labels row
+  code:           STANDARD_NODE_H,
+  response:       STANDARD_NODE_H,
+  exit:           STANDARD_NODE_H,
+  parallel:       156,             // adds the slot label row (when slots > 0)
+  parallel_end:   STANDARD_NODE_H,
+  branch_end:     STANDARD_NODE_H,
+  salesforce:     164,             // adds the Update tag row
+  webhook:        STANDARD_NODE_H,
+  partner_bid:    STANDARD_NODE_H,
+  transform:      STANDARD_NODE_H,
+  bid_group:      STANDARD_NODE_H,
+  constants:      STANDARD_NODE_H,
+  data_store:     STANDARD_NODE_H,
+  latency_gate:   STANDARD_NODE_H,
+  achieve_offers: STANDARD_NODE_H,
+  default:        STANDARD_NODE_H,
 }
 
 export function nodeHeight(type: string | undefined) {
-  return NODE_H[type ?? 'default'] ?? NODE_H.default
+  const heights = NODE_H as Record<string, number | undefined>
+  return heights[type ?? 'default'] ?? NODE_H.default
 }
 
 /**
@@ -306,7 +314,9 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // it's a 2-way gate, not a fan-out splitter, so it stays a fixed-width card and
   // its pass/exit wires just bend to their targets — otherwise a filter whose arm
   // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
-  const FANOUT_TYPES = new Set(['branch', 'parallel', 'bid_group', 'latency_gate'])
+  // Typed by NodeType so a misspelt member is a compile error (#1411); which
+  // types belong is a layout judgement, stated above, not a trait.
+  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate'])
 
   // Cross-path edges: a node can be deliberately wired from a second, deeper
   // path (e.g. a filter on one branch routing into a bid_group on another).

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { NODE_TYPES as SAVED_NODE_TYPES } from '@bidspoke/node-types'
 import { suggestedTimeoutMs, roundUpSmart, DEFAULT_RETRIES } from '../timeout-suggestion'
 // The worker is the source of truth; the web copy is a hand-kept mirror. The
 // worker module only depends on its own timeout-floor (also dependency-free),
@@ -9,7 +10,9 @@ import {
   DEFAULT_RETRIES as WORKER_DEFAULT_RETRIES,
 } from '../../../../worker/src/lib/timeout-suggestion'
 
-const NODE_TYPES = ['code', 'constants', 'salesforce', 'webhook', 'partner_bid', 'bid_group', 'branch', 'transform', 'response', undefined]
+// Every saved node type, from the shared list rather than a hand kept subset
+// (#1411), plus undefined to pin the default.
+const NODE_TYPES: Array<string | undefined> = [...SAVED_NODE_TYPES, undefined]
 const P99S = [5, 40, 200, 739, 5000, 29299]
 const MAXES_FACTOR = [1, 1.05, 1.4, 3.7]
 const RETRIES = [0, 1, 2, 5]

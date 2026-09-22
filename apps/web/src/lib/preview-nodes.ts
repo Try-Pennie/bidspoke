@@ -1,15 +1,22 @@
 import type { Node } from '@xyflow/react'
+import type { NodeType } from '@/types/workflow'
 
 // Node-state preview (#227): render every node type across the cross-cutting
 // visual states so canvas styling (warning glow, corner badges, execution rings)
 // can be checked in a browser / Playwright without auth or live data.
 
-// partner_bid is omitted: retired, and it now renders as the generic card (#645).
+// Typed by NodeType plus the trigger (#1411), so a misspelt entry is a compile
+// error; the coverage test beside this file fails on a saved node type that is
+// neither previewed nor named in PREVIEW_OMITTED with a reason.
 export const PREVIEW_TYPES = [
   'trigger', 'filter', 'branch', 'code', 'webhook', 'transform',
   'parallel', 'bid_group', 'constants', 'salesforce', 'data_store', 'latency_gate',
   'achieve_offers', 'response', 'exit', 'branch_end', 'parallel_end',
-] as const
+] as const satisfies readonly (NodeType | 'trigger')[]
+
+export const PREVIEW_OMITTED: Readonly<Partial<Record<NodeType, string>>> = {
+  partner_bid: 'retired (#645): it renders as the generic card, which the preview shows through no type of its own',
+}
 
 export const PREVIEW_STATES = ['default', 'unconfigured', 'timeout', 'failed', 'completed'] as const
 

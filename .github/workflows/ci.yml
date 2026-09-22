@@ -114,6 +114,7 @@ jobs:
           pnpm --filter @bidspoke/uuidv7 test
           pnpm --filter @bidspoke/script-hygiene test
           pnpm --filter @bidspoke/buyer-profile test
+          pnpm --filter @bidspoke/node-types test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the 27 guard files that scan worker source.

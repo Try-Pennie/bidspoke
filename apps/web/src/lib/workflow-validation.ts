@@ -1,5 +1,6 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
+import { assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
 
@@ -11,6 +12,12 @@ export interface ValidationError {
 }
 
 function validateNodeConfig(type: string, config: Record<string, unknown>): string | null {
+  // The trigger is a canvas node, not a saved node type, and always valid. A
+  // spelling this build does not know is the engine's to refuse, not the form's.
+  if (!isNodeType(type)) return null
+  // Exhaustive over NodeType (#1411): a type added to @bidspoke/node-types with
+  // no case here is a type error at assertNever, so save time validation can
+  // no longer silently wave a new node type through.
   switch (type) {
     case 'filter': {
       // Both shapes the engine evaluates count as configured. Checking only
@@ -71,9 +78,23 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // Nothing to configure: Achieve drives product selection on their side, and every
       // other field has a working default.
       return null
-    // response, exit, trigger — always valid
-    default:
+    case 'response':
+    case 'exit':
+    case 'branch_end':
+    case 'parallel_end':
+    case 'constants':
+    case 'salesforce':
+    case 'data_store':
+      // Always valid at save time: the terminal and structural nodes have no
+      // required config, and the others have working defaults.
       return null
+    case 'bid_group':
+      // Not asserted at save time today: a group with no partners saves, and the
+      // engine reports no_winner at run time. Kept as it shipped (behaviour
+      // neutral, #1411); listed so the omission is a decision on the record.
+      return null
+    default:
+      return assertNever(type, 'node type')
   }
 }
 

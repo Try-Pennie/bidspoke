@@ -22,19 +22,31 @@
 // keep the original floor so we don't recommend 0ms.
 //
 // SOURCE OF TRUTH. The web app mirrors this in apps/web/src/lib/timeout-floor.ts
-// so the canvas can flag a sub-floor timeout without an API call. The two apps
-// share no package, so a consistency test (apps/web/src/lib/__tests__/
-// timeout-floor-sync.test.ts) imports both and fails CI if they diverge — edit
-// here, and update the mirror or the test breaks.
+// so the canvas can flag a sub-floor timeout without an API call. A consistency
+// test (apps/web/src/lib/__tests__/timeout-floor-sync.test.ts) imports both and
+// fails CI if they diverge.
+//
+// Which types are network and which are dispatch or storage is a TRAIT in
+// @bidspoke/node-types (#1411), so a new node type declares it once and both
+// copies read it. A string that is not a node type (the trigger, a region, a
+// stray spelling) gets the in memory floor, as before.
+import { NODE_TRAITS, isNodeType } from '@bidspoke/node-types'
+
 const DISPATCH_OR_DB_FLOOR_MS = 150
 const NETWORK_FLOOR_MS = 50
 const INMEMORY_FLOOR_MS = 10
-const DISPATCH_OR_DB_NODE_TYPES = new Set(['code', 'constants', 'data_store', 'latency_gate'])
-const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group', 'achieve_offers'])
+
+function isNetwork(nodeType: string | undefined): boolean {
+  return isNodeType(nodeType) && NODE_TRAITS[nodeType].network
+}
+
+function isDispatchOrDb(nodeType: string | undefined): boolean {
+  return isNodeType(nodeType) && NODE_TRAITS[nodeType].dispatchOrDb
+}
 
 export function suggestionFloorMs(nodeType?: string): number {
-  if (nodeType && DISPATCH_OR_DB_NODE_TYPES.has(nodeType)) return DISPATCH_OR_DB_FLOOR_MS
-  if (nodeType && NETWORK_NODE_TYPES.has(nodeType)) return NETWORK_FLOOR_MS
+  if (isDispatchOrDb(nodeType)) return DISPATCH_OR_DB_FLOOR_MS
+  if (isNetwork(nodeType)) return NETWORK_FLOOR_MS
   return INMEMORY_FLOOR_MS
 }
 
@@ -48,7 +60,7 @@ export function suggestionFloorReason(nodeType?: string): string | null {
     return 'The constants step reads from KV and queries the database on a cold cache, so the first run after a gap is a full round-trip.'
   if (nodeType && (nodeType === 'data_store' || nodeType === 'latency_gate'))
     return 'This step reads or writes Cloudflare KV, a storage round-trip that can take 100ms+ on a cold read.'
-  if (nodeType && NETWORK_NODE_TYPES.has(nodeType))
+  if (isNetwork(nodeType))
     return 'This step makes an outbound API call, so every run pays a network round-trip plus TLS setup.'
   return null
 }

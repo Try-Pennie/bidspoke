@@ -274,23 +274,12 @@ function pctRow(data: unknown): PctRow {
 // reference '../executions' keep working.
 export { suggestionFloorMs, suggestionFloorReason }
 
-// Node types whose duration distribution is consistent enough across workflows
-// that a cross-workflow aggregate is a useful fallback when a fresh workflow
-// has no prior runs. Excludes `code`, `partner_bid`, `bid_group`, and `webhook`
-// — those are too workflow-specific (custom script / partner / external API).
-const SIMILAR_FALLBACK_STABLE = new Set([
-  'constants', 'transform', 'branch', 'filter', 'exit', 'response',
-  'parallel', 'parallel_end',
-])
-const SIMILAR_FALLBACK_BY_SUBTYPE = new Set(['salesforce'])
-
-function qualifiesForSimilarFallback(nodeType: string, subtype?: string): boolean {
-  if (SIMILAR_FALLBACK_STABLE.has(nodeType)) return true
-  if (SIMILAR_FALLBACK_BY_SUBTYPE.has(nodeType) && subtype) return true
-  return false
-}
+// Which node types may borrow a cross workflow duration aggregate lives in
+// lib/similar-fallback.ts, where every node type is placed and a test fails on
+// one that is not (#1411).
+import { qualifiesForSimilarFallback, requiresSubtype } from '../../lib/similar-fallback'
 function subtypeRequired(nodeType: string): boolean {
-  return SIMILAR_FALLBACK_BY_SUBTYPE.has(nodeType)
+  return requiresSubtype(nodeType)
 }
 
 // GET /api/executions/:id

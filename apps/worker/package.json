@@ -17,6 +17,7 @@
     "@bidspoke/uuidv7": "workspace:*",
     "@bidspoke/script-hygiene": "workspace:*",
     "@bidspoke/buyer-profile": "workspace:*",
+    "@bidspoke/node-types": "workspace:*",
     "@supabase/supabase-js": "^2.110.8",
     "hono": "^4.12.32"
   },

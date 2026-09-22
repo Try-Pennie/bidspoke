@@ -99,6 +99,20 @@ const NODES: PaletteNode[] = [
   },
 ]
 
+/** The types a person can drag on, for the coverage test beside this file. */
+export const PALETTE_TYPES: readonly NodeType[] = NODES.map((n) => n.type)
+
+/**
+ * Every saved node type that is deliberately NOT on the palette, with the reason
+ * (#1411, L233). The coverage test fails on a type that is neither here nor in
+ * NODES, so a new node type cannot be forgotten off the palette by accident.
+ */
+export const PALETTE_HIDDEN: Readonly<Partial<Record<NodeType, string>>> = {
+  partner_bid: 'retired (#645): Bid Group replaced it; the engine still executes saved ones',
+  branch_end: 'created by the canvas when a branch is dropped, never placed by hand',
+  parallel_end: 'created by the canvas when a parallel is dropped, never placed by hand',
+}
+
 interface Props {
   onDragStart: (e: React.DragEvent, type: NodeType) => void
 }

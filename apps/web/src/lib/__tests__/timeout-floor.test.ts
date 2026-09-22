@@ -11,7 +11,7 @@ describe('timeoutFloorMs', () => {
   })
 
   it('uses the network floor for outbound nodes', () => {
-    for (const t of ['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group']) {
+    for (const t of ['partner_bid', 'achieve_offers', 'salesforce', 'webhook', 'bid_group']) {
       expect(timeoutFloorMs(t)).toBe(50)
     }
   })
