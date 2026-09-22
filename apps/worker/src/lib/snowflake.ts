@@ -372,7 +372,11 @@ interface PollOptions {
 }
 
 const POLL_INTERVAL_MS = 2000
-const POLL_MAX_ATTEMPTS = 30 // ~60s of polling on top of the 60s server-side timeout
+// ~60s of polling, spent only on a statement that came back 202 because it had
+// not finished inside STATEMENT_TIMEOUT_SECONDS. So the longest one attempt can
+// take is that limit plus this, and the comment names the constant rather than
+// a number, which is what let it go on saying 60 after the limit moved (#1449).
+const POLL_MAX_ATTEMPTS = 30
 
 // Poll GET /api/v2/statements/{handle} until the statement reaches a terminal
 // state. 202 = still running (keep polling); 2xx = complete (return the body);
