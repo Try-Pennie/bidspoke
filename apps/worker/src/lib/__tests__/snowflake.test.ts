@@ -66,8 +66,29 @@ describe('resolveStatementResult', () => {
  * already succeeded.
  */
 describe('isTransientSnowflakeError', () => {
-  it.each([429, 502, 503, 504])('treats %i as transient', (status) => {
+  it.each([408, 429, 502, 503, 504, 524])('treats %i as transient', (status) => {
     expect(isTransientSnowflakeError(status)).toBe(true)
+  })
+
+  /**
+   * 2026-09-22 (#1440). The execution archive stopped three runs in 40 hours on
+   * two timeouts that were not on the list, while the 504 that means the same
+   * thing was already on it.
+   *
+   * Both bodies below are the ones production recorded verbatim in `job_runs`.
+   * Neither status can mean the statement itself failed, which is the ambiguity
+   * that keeps 500 off the list and forces it to match on words: a 524 is the
+   * edge in front of Snowflake giving up on the origin, and a 408 is Snowflake
+   * saying it canceled the statement at its own timeout. So both are judged on
+   * the status alone.
+   */
+  it('treats the 524 the archive receives as transient', () => {
+    expect(isTransientSnowflakeError(524, 'error code: 524\n')).toBe(true)
+  })
+
+  it('treats a 408 carrying the statement or warehouse timeout as transient', () => {
+    const body = '{"code":"000630","message":"Statement reached its statement or warehouse timeout of 60 second(s) and was canceled.","sqlState":"57014"}'
+    expect(isTransientSnowflakeError(408, body)).toBe(true)
   })
 
   it.each([400, 401, 403, 422])('treats %i as permanent', (status) => {
@@ -148,6 +169,31 @@ describe('postStatementWithRetry', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue({ message: 'pool exhausted', code: 'CONN' })
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(/pool exhausted/)
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.not.toThrow(/\[object Object\]/)
+  })
+
+  it('retries the 524 that stopped the archive, resubmitting under the same requestId (#1440)', async () => {
+    const spy = mockFetchSequence([
+      { status: 524, body: 'error code: 524\n' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
+    const retryUrl = spy.mock.calls[1][0] as string
+    expect(retryUrl).toContain('requestId=req-1')
+    expect(retryUrl).toContain('retry=true')
+  })
+
+  it('retries the 408 statement timeout that stopped the archive (#1440)', async () => {
+    const spy = mockFetchSequence([
+      { status: 408, body: '{"code":"000630","message":"Statement reached its statement or warehouse timeout of 60 second(s) and was canceled.","sqlState":"57014"}' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
   })
 
   it('retries a 500 idle timeout and resubmits with the same requestId plus retry=true', async () => {

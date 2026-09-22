@@ -118,7 +118,23 @@ export async function executeStatement(
 // bids export on 2026-07-09 ("upstream connect error or disconnect/reset before
 // headers"). 500 is deliberately NOT here: it can mean the statement itself
 // failed server-side, and retrying would just hide a real error behind a delay.
-const TRANSIENT_STATUSES = new Set([429, 502, 503, 504])
+//
+// 408 and 524 are the two spellings of the SAME timeout the 504 above stands
+// for, and they were added on 2026-09-22 after each one stopped an execution
+// archive run that a resubmit would very likely have carried (#1440): a 524
+// twice, which is the edge in front of Snowflake giving up on the origin, and a
+// 408 carrying `Statement reached its statement or warehouse timeout of 60
+// second(s) and was canceled`, which is Snowflake reporting the `timeout: 60`
+// this client itself sends. Neither can mean the statement failed, which is the
+// ambiguity that keeps 500 off this list, so neither needs the body inspected.
+//
+// A 408 says the statement was CANCELED, so the resubmit is a genuine second
+// attempt rather than a no-op de-duplicated by the requestId contract. That is
+// the intended behaviour: the archive's hours succeed 35 runs in 39, so the
+// slowness is a busy warehouse rather than a statement that can never fit, and
+// a caller whose budget the attempts eat still stops cleanly on its own deadline
+// instead of losing the whole run to one slow write.
+const TRANSIENT_STATUSES = new Set([408, 429, 502, 503, 504, 524])
 
 // The one 500 that is not a statement failure. On 2026-08-11 the 16:37 UTC
 // sightings export died on its first MERGE with HTTP 500 and body
