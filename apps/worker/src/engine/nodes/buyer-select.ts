@@ -56,7 +56,7 @@ import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../durable-objects/buyer-ledger'
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
-import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClientOptions } from '../../lib/buyer-object-clients'
+import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
@@ -190,6 +190,8 @@ export interface BuyerSelectDeps {
   /** In decide_only the node passes a deadline function reading what is left of its budget (#1491); in live, nothing, so the client keeps its own. */
   saleClient: (key: EntryKey, opts?: ClientOptions) => SaleApi
   ledgerClient: (partnerId: string, opts?: ClientOptions) => LedgerApi
+  /** Where cleanup after a rehearsal budget ending runs, off the response path (#1512). The work never rejects. */
+  background?: (work: Promise<void>) => void
   callBuyer: (target: PartnerCallTarget, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
   breaker: (slug: string) => BreakerApi
   mirror: (row: BuyerSaleRow, entry: LedgerEntry, partnerId: string) => Promise<void>
@@ -207,6 +209,9 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase),
     saleClient: (key, opts) => new LeadSaleClient(env.LEAD_SALE, key, opts),
     ledgerClient: (partnerId, opts) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId, opts),
+    // Fire and forget, the pattern partner-bid's breaker writes use (#129): the walk is still
+    // inside the request, so the isolate stays alive for it, and the work never rejects.
+    background: (work) => { void work },
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
     breaker: (slug) => new CircuitBreakerClient(env, slug),
     mirror: async (row, entry, partnerId) => {
@@ -570,7 +575,12 @@ class Run {
     // In decide_only the WHOLE attempt shares the node's budget (#1491): every object call is
     // bounded by what is left of it, read at the call, and the attempt stops between steps
     // once it is spent. In live each call keeps the client's own deadline and the attempt is unbudgeted.
-    const budget: ClientOptions | undefined = live ? undefined : { deadlineMs: () => Math.max(1, this.remaining()), timers: this.deps.timers }
+    // Cleanup after the budget has ended (releasing a reservation that may have landed, freeing the
+    // claim) keeps the standard deadline: bounded by a spent budget it would be a 1 ms attempt, and
+    // the ledger would hold a reservation nobody settles (#1512).
+    const budget: ClientOptions | undefined = live
+      ? undefined
+      : { deadlineMs: (op) => (op === LEDGER_RELEASE_OP || op === SALE_FREE_OP ? OBJECT_CALL_DEADLINE_MS : Math.max(1, this.remaining())), timers: this.deps.timers }
     let result: AttemptResult
     try {
       result = await runBuyerSaleAttempt(
@@ -585,6 +595,7 @@ class Run {
           buyerTimeoutMs: live ? BUYER_CALL_TIMEOUT_MS : Math.max(1, this.remaining()),
           waitIntervalMs: live ? CLAIM_WAIT_INTERVAL_MS : 50,
           budgetLeftMs: live ? undefined : () => this.remaining(),
+          background: live ? undefined : this.deps.background,
         }
       )
     } catch (err) {
