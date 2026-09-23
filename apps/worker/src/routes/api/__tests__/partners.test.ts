@@ -16,7 +16,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
-import { invalidateBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -99,7 +99,7 @@ describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
     })
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalled()
     // A deleted partner leaves the buyer profile snapshot too (#1411).
-    expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
+    expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
@@ -264,7 +264,7 @@ describe('partner_type vocabulary on the write path (#306)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(supabaseForUpdate({ id: 'p-1', name: 'Renamed' }))
     const res = await send('PUT', '/partners/p-1', { name: 'Renamed' })
     expect(res.status).toBe(200)
-    expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
+    expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
   })
 
   it('PUT accepts accept_signals beside response_classification and writes them to the row (#1412)', async () => {
@@ -283,7 +283,7 @@ describe('partner_type vocabulary on the write path (#306)', () => {
     )
     const res = await send('PUT', '/partners/p-1', { name: 'Renamed' })
     expect(res.status).toBe(404)
-    expect(vi.mocked(invalidateBuyerProfilesCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
   it('PUT refuses an unknown partner_type with a 400 naming the accepted values', async () => {

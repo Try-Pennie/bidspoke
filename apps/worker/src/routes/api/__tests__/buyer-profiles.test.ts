@@ -33,7 +33,7 @@ const rpcAnswering = (answers: Record<string, unknown>) => async (name: string) 
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { invalidateBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -129,7 +129,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
       p_org: 'org-abc', p_partner: 'p-1', p_expected_version: 2, p_profile: expect.objectContaining({ is_enabled: true, tiers: doc.tiers }),
       p_actor: 'user-1', p_actor_email: 'dan@pennie.com',
     })
-    expect(vi.mocked(invalidateBuyerProfilesCache).mock.calls.map((c) => c[0])).toEqual(['org-abc'])
+    expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((c) => c[0])).toEqual(['org-abc'])
   })
 
   it('a malformed body is 400 naming every bad field, and nothing is saved', async () => {
@@ -161,7 +161,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(body.error).toBe('profile_invalid')
     expect(body.errors.map((e) => e.code)).toContain('enabled_without_accept_rules')
     expect(rpc).not.toHaveBeenCalled()
-    expect(vi.mocked(invalidateBuyerProfilesCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
   it('a stale version is 409 carrying the CURRENT document from the refusal detail, so the form can show both (L717)', async () => {
@@ -171,7 +171,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
     const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'stale_version', current })
-    expect(vi.mocked(invalidateBuyerProfilesCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
   it('the database tier rule refusals come back as 422 with the function name and detail', async () => {
