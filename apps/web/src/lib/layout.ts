@@ -766,21 +766,32 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!parentPos) continue
       const offsets = handleOffsetsByNode.get(sourceId)
       if (!offsets) continue
+      // Offsets of the CONFIGURED handles feeding each child. An edge on a
+      // handle the node does not have (a stray 'output' on a buyer_select, #1493)
+      // only places the child, at the parent's centre, when no configured handle
+      // feeds it; otherwise it would drag a centred child off centre.
       const offsetsByChild = new Map<string, number[]>()
+      const strayChildren = new Set<string>()
       for (const e of outEdges) {
         if (!e.sourceHandle) continue
         const childPos = pos.get(e.target)
         if (!childPos) continue
         const idx = handles.indexOf(e.sourceHandle)
-        const offset = idx >= 0 ? offsets[idx] : 0
         const childType = nodeMap.get(e.target)?.type
         if (childType === 'branch_end' || childType === 'parallel_end') {
-          childPos.x = parentPos.x + offset
+          childPos.x = parentPos.x + (idx >= 0 ? offsets[idx] : 0)
+          continue
+        }
+        if (idx < 0) {
+          strayChildren.add(e.target)
           continue
         }
         const list = offsetsByChild.get(e.target) ?? []
-        list.push(offset)
+        list.push(offsets[idx])
         offsetsByChild.set(e.target, list)
+      }
+      for (const childId of strayChildren) {
+        if (!offsetsByChild.has(childId)) pos.get(childId)!.x = parentPos.x
       }
       for (const [childId, list] of offsetsByChild) {
         pos.get(childId)!.x = parentPos.x + (Math.min(...list) + Math.max(...list)) / 2
