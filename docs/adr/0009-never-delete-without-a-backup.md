@@ -327,6 +327,19 @@ alert, which fails closed on the actual data. A daily poll written here would
 instead be a second predicate about the same fact, checking a table the archive
 does not yet read.
 
+**Update 2026-09-23 (#1486): the e2e org is now archived by name.** The claim
+above expired the way it said it would: a manual Test run in the `E2E Test`
+organization produced its first execution, and the archiver refused it. A
+refused execution is an orphan the deletion gate never clears, so that one test
+run held its whole day of production data back from deletion. The decision is to
+archive that organization rather than refuse it. The reason for the refusal is
+the 13 months of real identity data, which this organization does not hold, and
+the route's `organization_id` check already confines its rows to its own users.
+Skipping instead was rejected because the gate requires the Postgres and archive
+execution counts to agree. It is one named slug in `archive/disposition.ts`,
+not a rule about test organizations, so any other organization is still refused
+until somebody decides about it.
+
 ## What Phase A2 dropped from the plan, and why
 
 The plan specified the archive's tenant boundary as a secure view filtered on a
@@ -595,11 +608,14 @@ rather than described.
    **One destination is an external vendor**, which appears in no artifact of
    this milestone. The enumeration of where identity data lands was built by
    reading the codebase, and Logpush is configured in a dashboard, so no
-   code-derived list could have found it. Tracked as #1007.
+   code-derived list could have found it. Resolved in #1007 (2026-09-09): the
+   job's field list was narrowed to drop `Logs` and `Event`, and Dan decided the
+   history already delivered to Better Stack is not purged.
 
    **The R2 job reports Pushing while delivering nothing**, against a checked box
    in TODO.md:207 claiming R2 archival was verified queryable by trace id. Both
-   cannot be current. Tracked as #1008.
+   cannot be current. Resolved in #1008 (2026-09-09): the R2 job was deleted and
+   the TODO.md box corrected with the measurement (#1223).
 
    `app_config.logpush_active` gates nothing either way: the 90 day purge it was
    written for was replaced by the partition drop in

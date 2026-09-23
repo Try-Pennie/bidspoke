@@ -8,14 +8,15 @@ import { isUuidV7 } from '@bidspoke/uuidv7'
 import { SETTLE_WINDOW_MS } from './clock'
 
 /**
- * The one organization that has ever produced an execution.
+ * The one production organization, the only one holding real lead data.
  *
  * Measured on prod 2026-08-20 (ADR 0009): the organization named `trypennie.com`
  * had 755,713 executions in the retained window and `E2E Test` had 0. That
  * measurement is what lets the archive skip a database-layer tenant boundary,
- * and it is a fact about today rather than a structural guarantee, because the
- * e2e org does create workflows. So the claim is ENFORCED here, where there is
- * real data to judge, instead of being asserted in a document nothing checks.
+ * and it is a fact about today rather than a structural guarantee. So the claim
+ * is ENFORCED here, where there is real data to judge, instead of being asserted
+ * in a document nothing checks. The e2e org has since produced executions and
+ * is accepted by name below (#1486); any other organization is still refused.
  *
  * This is the SLUG, and the distinction cost the whole archive. The value here
  * used to be `trypennie.com`, which is that organization's NAME; its slug is
@@ -28,6 +29,34 @@ import { SETTLE_WINDOW_MS } from './clock'
  * the name.
  */
 export const EXPECTED_ORGANIZATION_SLUG = 'trypennie-com'
+
+/**
+ * Our own e2e test organization, archived by name (#1486).
+ *
+ * The tenancy refusal exists because the archive's only boundary between
+ * organizations is the read routes' `organization_id` filter, weaker than the
+ * RLS behind the live path, around 13 months of real identity data (ADR 0009).
+ * That reason does not apply here: this org holds nothing but throwaway test
+ * runs we create ourselves, and every archive read is already filtered to the
+ * caller's organization, so its rows are visible only to it.
+ *
+ * Refusing it was not harmless either. Its first execution, a manual Test run
+ * on 2026-09-23, was refused, and a refused execution is an orphan the deletion
+ * gate never clears, so it held its whole day of production data back from
+ * deletion. Skipping it instead would not help: the gate requires the Postgres
+ * and archive counts for a day to agree.
+ *
+ * A slug, for the reason given above, and one named exemption rather than a
+ * rule like "any test organization", so a second organization is still refused
+ * until somebody has reasoned about it.
+ */
+export const E2E_TEST_ORGANIZATION_SLUG = 'e2e-test'
+
+/** Every organization whose executions the archive accepts. Anything else is refused. */
+export const ARCHIVABLE_ORGANIZATION_SLUGS: ReadonlySet<string> = new Set([
+  EXPECTED_ORGANIZATION_SLUG,
+  E2E_TEST_ORGANIZATION_SLUG,
+])
 
 /**
  * How long past the settle window a non-terminal execution is refused before it
@@ -147,14 +176,14 @@ export function dispositionFor(
     }
   }
 
-  if (organization.slug !== EXPECTED_ORGANIZATION_SLUG) {
+  if (!ARCHIVABLE_ORGANIZATION_SLUGS.has(organization.slug)) {
     return {
       action: 'refuse',
       incomplete: false,
       reason:
-        `execution ${id} belongs to organization ${organization.slug}, not ${EXPECTED_ORGANIZATION_SLUG}. ` +
-        `The archive has no database-layer tenant boundary because only one organization has ever produced executions, ` +
-        `and that is no longer true.`,
+        `execution ${id} belongs to organization ${organization.slug}, which the archive does not accept ` +
+        `(it accepts ${[...ARCHIVABLE_ORGANIZATION_SLUGS].join(', ')}). The archive has no database-layer tenant ` +
+        `boundary, so a new organization needs a decision in archive/disposition.ts before its executions are archived.`,
     }
   }
 

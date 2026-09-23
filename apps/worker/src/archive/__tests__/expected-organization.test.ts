@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { A_V7_EXECUTION_ID } from './_ids'
-import { dispositionFor, EXPECTED_ORGANIZATION_SLUG } from '../disposition'
+import { dispositionFor, EXPECTED_ORGANIZATION_SLUG, ARCHIVABLE_ORGANIZATION_SLUGS } from '../disposition'
 import { SETTLE_WINDOW_MS } from '../clock'
 import orgs from '../fixtures/organizations.json'
 
@@ -66,11 +66,31 @@ describe('the tenancy check against the real organizations', () => {
     expect(d.action, d.reason).toBe('archive')
   })
 
-  it('still refuses the e2e organization', () => {
+  // Reversed on 2026-09-23 (#1486). This case used to assert the e2e org was
+  // refused. Its first execution, a manual Test run, was refused and left its
+  // day undeletable, because the gate needs both stores' counts to agree. Every
+  // archive read filters on organization_id, which ADR 0009 names as the
+  // boundary, and this org holds only our own test runs, so it is archived.
+  it('archives an execution from the e2e test organization', () => {
     const e2e = orgs.organizations.find((o) => o.slug === 'e2e-test')
+    expect(e2e, 'the fixture names no e2e organization').toBeDefined()
     const d = dispositionFor(execution(`wf-${e2e?.slug}`), { now: settled, organizationOf })
 
+    expect(d.action, d.reason).toBe('archive')
+  })
+
+  it('accepts exactly the organizations in the fixture, by slug', () => {
+    expect([...ARCHIVABLE_ORGANIZATION_SLUGS].sort()).toEqual(orgs.organizations.map((o) => o.slug).sort())
+  })
+
+  // The exemption is a slug, never the name, for the same reason as the live
+  // org above: the name 'E2E Test' must not be what unlocks it.
+  it('does not accept the e2e organization by its NAME', () => {
+    const d = dispositionFor(execution('wf-by-name'), {
+      now: settled,
+      organizationOf: new Map([['wf-by-name', { id: 'x', slug: 'E2E Test' }]]),
+    })
+
     expect(d.action).toBe('refuse')
-    expect(d.reason).toMatch(/e2e-test/)
   })
 })
