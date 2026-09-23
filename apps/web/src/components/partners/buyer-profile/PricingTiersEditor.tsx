@@ -25,7 +25,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500">
-        A tier prices every lead whose debt falls in its range at debt times the multiplier. $18,250 of debt at 0.0012 pays $21.90. A multiplier is a share of the debt, so it is never above {MULTIPLIER_CEILING}. Tiers must touch with no gap and no overlap, from the debt minimum to the debt maximum.
+        A tier prices every lead whose debt falls in its range at debt times the multiplier. $18,250 of debt at 0.0012 pays $21.90. A multiplier is a share of the debt, so it is never above {MULTIPLIER_CEILING}. Tiers must touch with no gap and no overlap, from the debt minimum to the debt maximum. The upper bound is not included: a Salesforce band written 10,000 to 12,499 is entered as 10,000 to 12,500, and the next tier starts at 12,500.
       </p>
       {POPULATIONS.map((population: Population) => {
         const tiers = forPopulation(population)

@@ -47,6 +47,24 @@ function renderCard(config: Record<string, unknown>) {
   return render(<ReactFlowProvider><BuyerSelectNode {...props} /></ReactFlowProvider>)
 }
 
+// #1495: the engine has no default mode and fails the step as mode_invalid, so
+// a card with no mode must say so rather than read as rehearsing.
+describe('BuyerSelectNode mode badge (#1495)', () => {
+  it('says no mode set when the config carries none, and names the mode when it does', () => {
+    renderCard({})
+    expect(screen.getByText('no mode set')).toBeInTheDocument()
+    expect(screen.queryByText('decide only')).toBeNull()
+  })
+
+  it('names decide only and live when set', () => {
+    const { unmount } = renderCard({ mode: 'decide_only' })
+    expect(screen.getByText('decide only')).toBeInTheDocument()
+    unmount()
+    renderCard({ mode: 'live' })
+    expect(screen.getByText('live')).toBeInTheDocument()
+  })
+})
+
 describe('BuyerSelectNode hand back labels (#1490)', () => {
   it('makes deferred and not applicable keyboard reachable and described by their meaning', () => {
     renderCard({ mode: 'decide_only' })
