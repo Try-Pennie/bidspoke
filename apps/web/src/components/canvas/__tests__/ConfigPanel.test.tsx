@@ -415,3 +415,13 @@ describe('ConfigPanel reference problems', () => {
     expect(box.textContent).toContain('sidecar')
   })
 })
+
+// #1490: deferred is where decide only sends every sell off lead, back to the
+// rest of the workflow, and the mode hint is where the person choosing the mode
+// reads that.
+describe('ConfigPanel: buyer_select mode hint names where decide only sends leads (#1490)', () => {
+  it('says decide only routes every sell off lead to deferred, back to the rest of the workflow', () => {
+    renderPanel(nodeOf('buyer_select', { mode: 'decide_only' }))
+    expect(screen.getByText(/every sell off lead routes to deferred/i).textContent).toMatch(/rest of the workflow/i)
+  })
+})
