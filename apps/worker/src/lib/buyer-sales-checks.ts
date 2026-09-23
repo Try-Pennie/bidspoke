@@ -25,7 +25,11 @@
  * UNRESOLVED: one page per buyer counting every unresolved entry, the oldest
  * age, and the slots and dollars they hold against today's caps, with a link
  * to the list. The dedup stamp is the count, so the page repeats when the count
- * grows (L707, L641), and never names a lead key.
+ * grows (L707, L641), and never names a lead key. Only LIVE entries can be
+ * unresolved: a rehearsal reservation nothing settled is released by the
+ * ledger's own alarm (#1515), and the count of those over the days read is
+ * recorded per buyer as `rehearsals_expired`, a leak measure that pages nobody
+ * because there is nothing for a person to do about one (L112).
  *
  * OUTCOME RATE: a decline and a buyer error are each an expected answer, so a
  * run carrying one succeeds and the outage aggregation, which reads failed
@@ -202,6 +206,8 @@ export interface BuyerCheckSummary {
   consistency: Verdict<'consistent', 'inconsistent'> & { unmeasured_hours?: number }
   independent: Verdict<'verified', 'unverified'>
   unresolved: { count: number; oldest_age_ms: number | null; paged: boolean }
+  /** Rehearsal reservations the ledger alarm released over the days read (#1515): a leak count, never a page. */
+  rehearsals_expired: number
   outcome_rate: Verdict<'normal' | 'quiet', 'elevated'>
 }
 
@@ -471,14 +477,17 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
     consistency: { verdict: 'unmeasured', reason },
     independent: { verdict: 'unmeasured', reason },
     unresolved: { count: 0, oldest_age_ms: null, paged: false, entries: [] },
+    rehearsals_expired: 0,
     outcome_rate: { verdict: 'unmeasured', reason },
   })
 
   let entries: LedgerEntry[]
+  let rehearsals: LedgerEntry[]
   let outbox: UnmirroredResult
   let unresolvedEntries: LedgerEntry[]
   try {
     entries = (await Promise.all(days.map((d) => ledger.entries('live', d)))).flat()
+    rehearsals = (await Promise.all(days.map((d) => ledger.entries('rehearsal', d)))).flat()
     outbox = await ledger.unmirrored()
     unresolvedEntries = await ledger.unresolved()
   } catch (err) {
@@ -528,6 +537,7 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
     consistency,
     independent,
     unresolved: { count: unresolvedEntries.length, oldest_age_ms: oldest === null ? null : now - oldest, paged: false, entries: unresolvedEntries },
+    rehearsals_expired: rehearsals.filter((e) => e.status === 'released' && e.resolution_source === 'expired').length,
     outcome_rate,
   }
 }
@@ -544,7 +554,7 @@ export function endingOf(summary: ChecksSummary): JobRunEnding {
     outcome,
     summary: {
       days: summary.days,
-      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, outcome_rate: b.outcome_rate.verdict })),
+      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, rehearsals_expired: b.rehearsals_expired, outcome_rate: b.outcome_rate.verdict })),
       paged_mismatches: summary.mismatch_lines.length,
       paged_unresolved: summary.unresolved_lines.length,
       paged_outcome_rates: summary.outcome_rate_lines.length,

@@ -237,6 +237,32 @@ describe('runBuyerSalesChecks', () => {
     expect(d.kv.store.has(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:cooldown`)).toBe(false)
   })
 
+  it('rehearsal reservations the ledger alarm released are counted per buyer for the days read, and never page anybody (#1515)', async () => {
+    const expired = (leadKey: string, reservedAt: number): LedgerEntry => ({
+      ...accepted(leadKey, reservedAt), kind: 'rehearsal', status: 'released', outcome: null, payout_cents: 0,
+      resolved_at: reservedAt + 60_000, resolution_source: 'expired',
+    })
+    const rehearsals: Record<string, LedgerEntry[]> = {
+      '2027-09-20': [expired('r-1', NOW - 50 * 60_000), expired('r-2', NOW - 20 * 60_000), { ...accepted('r-3', NOW - 9 * 60_000), kind: 'rehearsal', resolution_source: 'rehearsal' }],
+      '2027-09-19': [expired('r-0', NOW - 20 * HOUR)],
+    }
+    const live = { '2027-09-20': [accepted('lead-1', NOW - 10 * 60_000)], '2027-09-19': [] as LedgerEntry[] }
+    const d = deps({}, {
+      ledger: () => ({
+        entries: async (kind, day) => (kind === 'live' ? live[day as keyof typeof live] ?? [] : rehearsals[day] ?? []),
+        unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+        unresolved: async () => [],
+      }),
+    })
+    const summary = await runBuyerSalesChecks(d)
+    expect(summary.buyers[0].rehearsals_expired).toBe(3)
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([])
+    const ending = endingOf(summary)
+    expect(ending.outcome).toBe('ok')
+    // The count reaches the job record, or it is lost the moment the run ends.
+    expect((ending.summary as { buyers: Array<{ rehearsals_expired: number }> }).buyers[0].rehearsals_expired).toBe(3)
+  })
+
   it('a manual mute (a cooldown with no standing condition) is left alone even when the count grows', async () => {
     const two = [unresolved('lead-u1', NOW - 40 * 60_000), unresolved('lead-u2', NOW - 30 * 60_000)]
     const d = deps({ entries: { '2027-09-20': two, '2027-09-19': [] }, sales: two.map((e) => ({ lead_key: e.lead_key, status: 'unresolved', kind: 'live' })), winners: [] })

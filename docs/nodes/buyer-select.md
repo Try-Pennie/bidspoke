@@ -54,7 +54,7 @@ For each eligible buyer in rank order (priority 1 first, then the higher payout,
 5. Read the answer through the partner's accept rules and decline rules.
 6. On an accept, commit the reservation, mark the lead sold and mirror the sale to `buyer_sales`.
 
-A definite decline releases the reservation and moves on to the next buyer. An answer nobody can classify (a timeout, a bare 504, a 200 matching no rule) stops the cascade and **holds** the reservation and the claim, because the buyer may have taken the lead; a person settles it from the unresolved queue. A timeout or a 5xx of that kind fails the step; an unmatched 200 routes `no_sale` without failing it.
+A definite decline releases the reservation and moves on to the next buyer. An answer nobody can classify (a timeout, a bare 504, a 200 matching no rule) stops the cascade and **holds** the reservation and the claim, because the buyer may have taken the lead; a person settles it from the unresolved queue. A rehearsal reservation nothing settles inside the ledger's grace period is released by the ledger itself (resolution source `expired`), since no buyer was called, and never waits on a person; the buyer sales checks count those releases per buyer as a leak measure. A timeout or a 5xx of that kind fails the step; an unmatched 200 routes `no_sale` without failing it.
 
 A cap refusal, an open breaker or a ledger that cannot be read skips the buyer by name and is never an allow.
 

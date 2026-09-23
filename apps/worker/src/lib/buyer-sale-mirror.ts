@@ -15,7 +15,7 @@
  * unmirrored for the drain to deliver (L33).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { CapLimits, EntryKey, LedgerEntry } from '../durable-objects/buyer-ledger'
+import type { CapLimits, EntryKey, LedgerEntry, ResolutionSource } from '../durable-objects/buyer-ledger'
 
 export interface BuyerSaleRowMeta {
   partner_id: string
@@ -49,7 +49,7 @@ export interface BuyerSaleRow {
   buyer_reference: string | null
   live_percent_in_force: number | null
   caps_in_force: CapLimits | null
-  resolution_source: 'buyer' | 'rehearsal' | 'settled' | null
+  resolution_source: ResolutionSource | null
   resolved_by: string | null
 }
 
@@ -100,7 +100,7 @@ export async function buildBuyerSaleRow(entry: LedgerEntry, meta: BuyerSaleRowMe
     // The ledger records how an entry was resolved and by whom (#1412, L83), so a
     // settled entry mirrors the person who settled it whichever writer delivers
     // it. An entry from before the ledger recorded the source is derived from its kind.
-    resolution_source: !resolved ? null : (entry.resolution_source as BuyerSaleRow['resolution_source'] | null) ?? (entry.kind === 'rehearsal' ? 'rehearsal' : 'buyer'),
+    resolution_source: !resolved ? null : entry.resolution_source ?? (entry.kind === 'rehearsal' ? 'rehearsal' : 'buyer'),
     resolved_by: resolved ? entry.resolved_by ?? null : null,
   }
 }
