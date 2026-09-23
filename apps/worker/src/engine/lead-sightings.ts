@@ -884,9 +884,30 @@ export function extractExternalDebt(
   ctx: ExecutionContext,
   nodes: NodeDefinition[],
 ): number | null {
+  const fromNode = debtFromBuyerSelect(ctx, nodes)
+  if (fromNode !== null) return fromNode
   const fromGroup = debtFromBidGroup(ctx, nodes)
   if (fromGroup !== null) return fromGroup
   return debtFromCodeNode(ctx, nodes)
+}
+
+/**
+ * A buyer_select node IS the pricing once it is placed (#1482): it records the
+ * debt it priced the lead on as `lead_debt`, so that figure is read before any
+ * template or step (L70: one definition, the node's own). Null on the output
+ * means the node had no amount, and the later sources are consulted.
+ */
+function debtFromBuyerSelect(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {
+  for (const node of nodes) {
+    if (node.type !== 'buyer_select') continue
+    const step = ctx.steps[node.namespace]
+    if (step?.status !== 'completed') continue
+    const out = step.output
+    if (out === null || typeof out !== 'object') continue
+    const value = asNumber((out as Record<string, unknown>).lead_debt)
+    if (value !== null) return Math.round(value)
+  }
+  return null
 }
 
 /** Main Flow: the bid_group context map its partner formulas resolve. */
@@ -915,38 +936,32 @@ function debtFromBidGroup(ctx: ExecutionContext, nodes: NodeDefinition[]): numbe
  * map alone therefore filled the column on about two percent of the traffic
  * while reading as done.
  *
- * Taken from the Engine flow's own source (docs/reference/engine-bidding-pipedream.json),
- * whose patch_prospect_body step builds
- *
- *   requestBody["ExternalDebtAmount__c"] =
- *     steps.prospect_trades.$return_value.tradeCalculations.enrollableDebt
- *
- * with the importer rewriting `$return_value` to `output`.
- * `ExternalDebtAmount__c` comes first because it is the number that actually
- * reached Salesforce, and Salesforce is what prices the revenue on it. They are
- * normally the same figure, one copied from the other.
+ * WHICH figure (#1482): `tradeCalculations.engineDebt`, the number every payout
+ * and estimate is computed on since 2026-09-23. The Tripoint buyer profile
+ * prices and bounds on it (Phase 0 item 11, #1407), tripoint_ping sends it as
+ * `unsecuredDebt`, and the Salesforce ExternalExchangeRevenue__c formula
+ * multiplies Prospect__c.EngineDebt__c (changed 17:57 UTC that day). Until then
+ * this read `ExternalDebtAmount__c`, which patch_prospect_body copies from
+ * `tradeCalculations.enrollableDebt`, and the two differ on about 46 percent of
+ * eligible sell off leads, so rows before that date hold the other figure (the
+ * column comment names the boundary). Neither enrollableDebt nor the patch's
+ * copy of it is read now: one column, one unit (L118).
  *
  * The RML flows are deliberately absent: their source carries no debt at all
  * (the only "debt" in it is the loan purpose debt_consolidation), so null is the
  * right answer for them rather than a gap to be closed.
  */
 const DEBT_CODE_NODE_PATHS: readonly (readonly string[])[] = [
-  ['ExternalDebtAmount__c'],
   // The ported flows wrap the trade calculation one level deeper than the
   // Pipedream source they came from. Verified 2026-09-09 against the live
   // definitions in the Try-Pennie/bidspoke-workflows backup: both the Engine and
-  // Lead Economy workflows read
-  //   steps.prospect_trades.output.body.tradeCalculations.enrollableDebt
-  // A fallback written without `body` can never fire, and one that never fires
+  // Lead Economy workflows read steps.prospect_trades.output.body.tradeCalculations.
+  // A path written without `body` can never fire, and one that never fires
   // reads exactly like one that was never needed.
-  //
-  // It IS needed: in the live Engine flow ExternalDebtAmount__c is assigned only
-  // inside `if (tripointBid)`, so a run won by any other partner carries no debt
-  // on patch_prospect_body while prospect_trades holds it either way.
-  ['body', 'tradeCalculations', 'enrollableDebt'],
+  ['body', 'tradeCalculations', 'engineDebt'],
   // The unwrapped shape the Pipedream source had, kept so a re-port that drops
   // the wrapper is still covered.
-  ['tradeCalculations', 'enrollableDebt'],
+  ['tradeCalculations', 'engineDebt'],
 ]
 
 function debtFromCodeNode(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {

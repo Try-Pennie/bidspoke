@@ -43,6 +43,7 @@ import {
   type LedgerKind,
   type ModeEffective,
   type NodeReason,
+  parsePositiveAmount,
   parseUsState,
   type UsState,
   type OutReason,
@@ -137,6 +138,8 @@ export interface BuyerSelectOutput {
   sale: { skipped: boolean; accepted: boolean; buyer_reference: string | null; result_code: string | null; partner_slug: string | null }
   /** The state the node resolved for the lead, null when the value was not a state; the parity summary counts it (#1413). */
   lead_state?: UsState | null
+  /** The debt the node priced the lead on, in whole dollars, null when the value was not an amount; the lead sighting records it as external_debt (#1482). */
+  lead_debt?: number | null
   considered: ConsideredBuyer[]
   live_percent_in_force: number | null
   caps_in_force: Array<{ partner: string } & CapLimits>
@@ -429,6 +432,7 @@ class Run {
       loanAmount: this.resolveMaybe(this.config.loan_amount).value,
     }
     this.out.lead_state = parseUsState(lead.state)
+    this.out.lead_debt = recordedAmount(lead.debt)
     const now = this.deps.clock()
     const eligible: Candidate[] = []
     for (const buyer of snapshot.buyers) {
@@ -717,6 +721,19 @@ class Run {
   private bounded<T>(promise: Promise<T>, operation: string): Promise<T> {
     return withDeadline(promise, Math.max(1, this.remaining()), operation, this.deps.timers)
   }
+}
+
+/**
+ * The debt as a figure to RECORD, in whole dollars: the evaluator's positive
+ * amount, plus zero, because a lead with no debt is a real answer for the
+ * sighting (it is exactly the lead that must not be bid on) even though the
+ * evaluator refuses to price it. Anything else is null.
+ */
+function recordedAmount(v: unknown): number | null {
+  const positive = parsePositiveAmount(v)
+  if (positive !== null) return Math.round(positive)
+  if (v === 0 || (typeof v === 'string' && /^\s*\$?0+(\.0+)?\s*$/.test(v))) return 0
+  return null
 }
 
 interface Candidate {

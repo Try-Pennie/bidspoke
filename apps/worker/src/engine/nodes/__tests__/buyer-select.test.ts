@@ -469,6 +469,15 @@ describe('decide only mode (L142)', () => {
     expect(out(r2).lead_state).toBeNull()
   })
 
+  it('records the debt it priced the lead on, in whole dollars, and null when the value is not an amount, so the sighting carries the figure the payout was computed on (#1482)', async () => {
+    const h = harness()
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r).lead_debt).toBe(18250)
+    const h2 = harness()
+    const r2 = await run(h2, ctx(), node({ mode: 'decide_only', debt: '{{trigger.payload.personalInformation.firstName}}' }))
+    expect(out(r2).lead_debt).toBeNull()
+  })
+
   it('rehearsal caps come from BUYER_SELECT_REHEARSAL_CAPS and an invalid value is a named reason, not a throw (L688)', async () => {
     const h = harness()
     const r = await run(h, ctx({ env: { BUYER_SELECT_REHEARSAL_CAPS: '{not json' } }), node({ mode: 'decide_only' }))
