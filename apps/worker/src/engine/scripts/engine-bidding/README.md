@@ -8,9 +8,18 @@ buyer_select cutover (#1414, Phase 7) so they are tested before they are pasted.
 **The canvas is the source of truth.** Every save mirrors the definition to
 `Try-Pennie/bidspoke-workflows`; these files were read from that mirror on
 2026-09-22 and edited here. A file in this folder is exactly what is pasted into
-the node's script box, byte for byte, and a change to a live script that is not
-mirrored back here is a drift the tests cannot see (L454). Nothing in the worker
-imports these files at runtime.
+the node's script box, byte for byte. A change to a live script that is not mirrored back here is a
+drift the tests cannot see (L454), so the hourly `engine-script-drift` check
+(`apps/worker/src/lib/engine-script-drift.ts`, #1472) reads the mirror and
+compares each file with the code node of the same namespace. Per script it
+records one of three states in `job_runs`: `agree`, `awaiting_paste` (the canvas
+still holds the script the file was derived from, whose hash is recorded beside
+the file in `KEPT_ENGINE_SCRIPTS`) or `drift` (the canvas matches neither), and
+pages only on a drift or a missing node. Its first `agree` after a paste is the
+confirmation the paste landed. When a kept file is re-derived from a newer
+canvas, update its `canvasBaselineSha256` and `baselineReadOn` in the same
+change. The worker bundles these files as text (a wrangler `[[rules]]` entry and
+the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 
 | File | Node | What changed for the cutover |
 | --- | --- | --- |

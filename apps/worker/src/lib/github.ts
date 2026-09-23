@@ -2,6 +2,7 @@
 // Requires GITHUB_TOKEN (secret) and GITHUB_REPO (var, e.g. "Try-Pennie/bidspoke-workflows")
 // Silently no-ops if either is not configured — backup is best-effort.
 
+import { formatErr } from './format-error'
 import { parseJson } from './json'
 
 const BRANCH = 'main'
@@ -30,22 +31,52 @@ function apiUrl(repo: string, filePath: string): string {
   return `https://api.github.com/repos/${repo}/contents/${filePath}`
 }
 
+/**
+ * The headers every GitHub REST call here sends. GitHub rejects a request with
+ * no User-Agent (403 "Request forbidden by administrative rules"), and Workers'
+ * fetch adds none, which is why backups silently 403'd (#240).
+ */
+function githubHeaders(token: string, accept = 'application/vnd.github+json'): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: accept,
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': USER_AGENT,
+  }
+}
+
+export type GitHubFileRead = { ok: true; text: string } | { ok: false; reason: string }
+
+/**
+ * Reads one file of the repo as raw text (#1472). The raw media type returns the
+ * bytes whatever the file's size, where the JSON shape stops carrying content at
+ * one megabyte. A failure is returned by status and body rather than thrown or
+ * emptied, because an empty read of a mirror would compare as an empty canvas
+ * (L215).
+ */
+export async function fetchGitHubFileText(
+  repo: string,
+  filePath: string,
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GitHubFileRead> {
+  let res: Response
+  try {
+    res = await fetchImpl(apiUrl(repo, filePath), { headers: githubHeaders(token, 'application/vnd.github.raw+json') })
+  } catch (err) {
+    return { ok: false, reason: `GitHub GET ${filePath} threw: ${formatErr(err)}` }
+  }
+  const text = await res.text().catch(() => '')
+  if (!res.ok) return { ok: false, reason: `GitHub GET ${filePath} failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}` }
+  return { ok: true, text }
+}
+
 async function getCurrentFileSha(
   repo: string,
   filePath: string,
   token: string
 ): Promise<string | null> {
-  const res = await fetch(apiUrl(repo, filePath), {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      // GitHub's REST API rejects requests with no User-Agent (403 "Request
-      // forbidden by administrative rules"). Workers' fetch doesn't add one, so
-      // set it explicitly — this is why backups silently 403'd (#240).
-      'User-Agent': USER_AGENT,
-    },
-  })
+  const res = await fetch(apiUrl(repo, filePath), { headers: githubHeaders(token) })
   if (res.status === 404) return null
   if (!res.ok) {
     // Surface GitHub's explanation (mirrors the PUT path). A 403 can mean an
@@ -91,13 +122,7 @@ export async function pushWorkflowToGitHub(
     if (sha) body.sha = sha
     return fetch(apiUrl(repo!, filePath), {
       method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token!}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': USER_AGENT,
-      },
+      headers: { ...githubHeaders(token!), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
   }

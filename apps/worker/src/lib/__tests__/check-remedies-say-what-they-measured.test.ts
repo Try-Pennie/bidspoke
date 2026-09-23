@@ -42,6 +42,7 @@ import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
+import { ENGINE_SCRIPT_DRIFT_REMEDY } from '../engine-script-drift'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
@@ -71,6 +72,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
   ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
+  ['engine script drift', ENGINE_SCRIPT_DRIFT_REMEDY],
 ]
 
 /**

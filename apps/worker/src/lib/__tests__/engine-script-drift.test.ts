@@ -1,0 +1,297 @@
+/**
+ * The kept Engine scripts against the canvas mirror (#1472).
+ *
+ * apps/worker/src/engine/scripts/engine-bidding/*.js are byte for byte what is
+ * pasted into the Engine Bidding Workflow's code nodes, and the canvas is the
+ * source of truth. Until the Phase 7 paste the kept copies are deliberately
+ * AHEAD of the canvas, so "differs" alone would page for weeks (L36). The check
+ * therefore tells three states apart per script (L11): the two agree; the
+ * canvas still holds exactly the script the kept copy was derived from, so the
+ * paste is awaited; or the canvas holds something that is neither, which is an
+ * edit nobody mirrored back and the one thing that pages.
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { stripTrailingWhitespace } from '@bidspoke/script-hygiene'
+import {
+  KEPT_ENGINE_SCRIPTS,
+  ENGINE_BIDDING_WORKFLOW_ID,
+  ENGINE_SCRIPT_DRIFT_JOB,
+  describeVerdict,
+  endingOf,
+  judgeKeptScripts,
+  readMirrorDefinition,
+  runEngineScriptDrift,
+  runEngineScriptDriftAndPage,
+  sha256Hex,
+  type DriftDeps,
+  type DriftSummary,
+  type KeptScript,
+} from '../engine-script-drift'
+// The same three files through Vite's own raw loader, a path the text plugin
+// does not touch (its id test excludes a query), so the two readings are
+// independent and their agreement proves the plugin serves the file's bytes.
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no declaration for it.
+import TRIPOINT_PING_RAW from '../../engine/scripts/engine-bidding/tripoint_ping.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_RESPONSE_BODY_RAW from '../../engine/scripts/engine-bidding/build_response_body.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import PATCH_PROSPECT_BODY_RAW from '../../engine/scripts/engine-bidding/patch_prospect_body.js?raw'
+const ON_DISK: Record<string, string> = {
+  'tripoint_ping.js': TRIPOINT_PING_RAW as string,
+  'build_response_body.js': BUILD_RESPONSE_BODY_RAW as string,
+  'patch_prospect_body.js': PATCH_PROSPECT_BODY_RAW as string,
+}
+
+const codeNode = (namespace: string, script: string, type = 'code') => ({ id: `id-${namespace}`, namespace, type, config: { script } })
+const definitionWith = (...nodes: unknown[]) => ({ nodes })
+
+async function keptFor(script: string, baselineOf: string): Promise<KeptScript> {
+  return { namespace: 'tripoint_ping', file: 'tripoint_ping.js', script, canvasBaselineSha256: await sha256Hex(baselineOf), baselineReadOn: '2026-09-22' }
+}
+
+describe('the kept scripts the check compares', () => {
+  it('are the three Engine sale scripts, each the file on disk byte for byte', () => {
+    // The runtime reads the scripts through a text module, and this is the one
+    // place that proves the module holds the file's own bytes rather than a
+    // transformed or stale copy (L3).
+    expect(KEPT_ENGINE_SCRIPTS.map((k) => k.namespace).sort()).toEqual(['build_response_body', 'patch_prospect_body', 'tripoint_ping'])
+    for (const kept of KEPT_ENGINE_SCRIPTS) {
+      expect(kept.script, kept.file).toBe(ON_DISK[kept.file])
+      expect(kept.script.length).toBeGreaterThan(500)
+    }
+  })
+
+  it('carry no whitespace the canvas serialiser would strip on save, so a paste cannot differ from its file by hygiene alone', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
+  })
+
+  it('each record the hash of the canvas script they were derived from, with the day it was read', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS) {
+      expect(kept.canvasBaselineSha256, kept.file).toMatch(/^[0-9a-f]{64}$/)
+      expect(kept.baselineReadOn, kept.file).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    }
+  })
+
+  it('names the Engine Bidding Workflow the parity and contract code already name', () => {
+    expect(ENGINE_BIDDING_WORKFLOW_ID).toBe('da82a183-1a4a-417e-b0b8-5f3fe5e14840')
+    expect(ENGINE_SCRIPT_DRIFT_JOB).toBe('engine-script-drift')
+  })
+})
+
+describe('judgeKeptScripts', () => {
+  const KEPT = 'line one\nline two\nline three\n'
+  const BASELINE = 'line one\nold line two\nline three'
+
+  it('agree when the canvas holds the kept script', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT)))
+    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'agree' })
+  })
+
+  it('agree when only the final newline differs, because a file in git ends with one and a script box need not', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT.replace(/\n$/, ''))))
+    expect(v.state).toBe('agree')
+  })
+
+  it('awaiting_paste when the canvas still holds exactly the script the kept copy was derived from', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', BASELINE)))
+    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'awaiting_paste', baselineReadOn: '2026-09-22' })
+  })
+
+  it('drift when the canvas matches neither, naming the first differing line and both versions of it', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\nsomebody edited this\n')))
+    expect(v).toEqual({
+      namespace: 'tripoint_ping',
+      file: 'tripoint_ping.js',
+      state: 'drift',
+      line: 3,
+      kept: 'line three',
+      canvas: 'somebody edited this',
+    })
+  })
+
+  it('drift when the canvas is a prefix of the kept script, naming the line the canvas lacks', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\n')))
+    expect(v).toMatchObject({ state: 'drift', line: 3, kept: 'line three', canvas: null })
+  })
+
+  it('missing_node when no code node on the canvas carries the namespace, and a non code node of that name does not count', async () => {
+    const kept = await keptFor(KEPT, BASELINE)
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT, 'buyer_select'), codeNode('other', KEPT)))
+    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'missing_node' })
+  })
+
+  it('judges every kept script, in order', async () => {
+    const a = { ...(await keptFor(KEPT, BASELINE)), namespace: 'a', file: 'a.js' }
+    const b = { ...(await keptFor(KEPT, BASELINE)), namespace: 'b', file: 'b.js' }
+    const verdicts = await judgeKeptScripts([a, b], definitionWith(codeNode('a', KEPT), codeNode('b', BASELINE)))
+    expect(verdicts.map((v) => [v.namespace, v.state])).toEqual([['a', 'agree'], ['b', 'awaiting_paste']])
+  })
+})
+
+describe('describeVerdict', () => {
+  it('names the node, the file and the line for a drift, and quotes both lines', () => {
+    const line = describeVerdict({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'drift', line: 4, kept: 'const a = 1', canvas: 'const a = 2' })
+    expect(line).toContain('tripoint_ping')
+    expect(line).toContain('tripoint_ping.js')
+    expect(line).toContain('line 4')
+    expect(line).toContain('const a = 1')
+    expect(line).toContain('const a = 2')
+  })
+
+  it('says the canvas has no such node for a missing node', () => {
+    const line = describeVerdict({ namespace: 'patch_prospect_body', file: 'patch_prospect_body.js', state: 'missing_node' })
+    expect(line).toContain('patch_prospect_body')
+    expect(line.toLowerCase()).toContain('no code node')
+  })
+
+  it('truncates a long differing line rather than posting a script to Slack', () => {
+    const long = 'x'.repeat(500)
+    const line = describeVerdict({ namespace: 'n', file: 'n.js', state: 'drift', line: 1, kept: long, canvas: long })
+    expect(line.length).toBeLessThan(500)
+  })
+})
+
+describe('readMirrorDefinition', () => {
+  const repo = 'Try-Pennie/bidspoke-workflows'
+  const okBody = JSON.stringify({ id: ENGINE_BIDDING_WORKFLOW_ID, name: 'Engine', definition: { nodes: [] } })
+
+  it('asks the backup repo for the raw mirror file with the token and the User-Agent GitHub requires', async () => {
+    const fetchImpl = vi.fn(async () => new Response(okBody, { status: 200 }))
+    const read = await readMirrorDefinition({ repo, token: 'tok', workflowId: ENGINE_BIDDING_WORKFLOW_ID, fetch: fetchImpl as unknown as typeof fetch })
+    expect(read).toEqual({ ok: true, definition: { nodes: [] } })
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`https://api.github.com/repos/${repo}/contents/workflows/${ENGINE_BIDDING_WORKFLOW_ID}.json`)
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer tok')
+    expect(headers.Accept).toBe('application/vnd.github.raw+json')
+    expect(headers['User-Agent']).toBeTruthy()
+  })
+
+  it('reports a non 2xx answer by status and body rather than as an empty canvas (L215)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('Not Found', { status: 404 }))
+    const read = await readMirrorDefinition({ repo, token: 'tok', workflowId: ENGINE_BIDDING_WORKFLOW_ID, fetch: fetchImpl as unknown as typeof fetch })
+    expect(read.ok).toBe(false)
+    if (!read.ok) {
+      expect(read.reason).toContain('404')
+      expect(read.reason).toContain('Not Found')
+    }
+  })
+
+  it('reports a body that is not the mirror shape', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"id":"x"}', { status: 200 }))
+    const read = await readMirrorDefinition({ repo, token: 'tok', workflowId: ENGINE_BIDDING_WORKFLOW_ID, fetch: fetchImpl as unknown as typeof fetch })
+    expect(read).toMatchObject({ ok: false })
+    if (!read.ok) expect(read.reason.toLowerCase()).toContain('definition')
+  })
+
+  it('reports a thrown fetch by its message', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('socket hang up') })
+    const read = await readMirrorDefinition({ repo, token: 'tok', workflowId: ENGINE_BIDDING_WORKFLOW_ID, fetch: fetchImpl as unknown as typeof fetch })
+    expect(read).toMatchObject({ ok: false, reason: expect.stringContaining('socket hang up') })
+  })
+})
+
+describe('runEngineScriptDrift', () => {
+  const KEPT = 'kept\n'
+  const BASELINE = 'baseline'
+  const mirror = (script: string) => JSON.stringify({ id: ENGINE_BIDDING_WORKFLOW_ID, name: 'Engine', definition: { nodes: [codeNode('tripoint_ping', script)] } })
+
+  async function deps(over: Partial<DriftDeps> = {}, canvas = KEPT): Promise<DriftDeps> {
+    return {
+      repo: 'Try-Pennie/bidspoke-workflows',
+      token: 'tok',
+      workflowId: ENGINE_BIDDING_WORKFLOW_ID,
+      kept: [await keptFor(KEPT, BASELINE)],
+      fetch: (async () => new Response(mirror(canvas), { status: 200 })) as unknown as typeof fetch,
+      localDev: false,
+      log: () => {},
+      ...over,
+    }
+  }
+
+  it('is skipped with no repo configured, because then there is no mirror to compare against (the backup is off)', async () => {
+    const s = await runEngineScriptDrift(await deps({ repo: undefined }))
+    expect(s).toEqual({ skipped: 'no_repo', verdicts: [], findings: [] })
+  })
+
+  it('is skipped in local dev, which has no backup token and would page production Slack', async () => {
+    const s = await runEngineScriptDrift(await deps({ localDev: true }))
+    expect(s.skipped).toBe('local_dev')
+    expect(s.findings).toEqual([])
+  })
+
+  it('a repo with no token is a misconfiguration and a finding, as it is for the backup itself', async () => {
+    const fetchImpl = vi.fn()
+    const s = await runEngineScriptDrift(await deps({ token: undefined, fetch: fetchImpl as unknown as typeof fetch }))
+    expect(s.findings).toHaveLength(1)
+    expect(s.findings[0]).toContain('GITHUB_TOKEN')
+    expect(s.unreadable).toBeTruthy()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('an unreadable mirror is its own finding, distinct from a drift, and judges nothing (L11)', async () => {
+    const s = await runEngineScriptDrift(await deps({ fetch: (async () => new Response('boom', { status: 500 })) as unknown as typeof fetch }))
+    expect(s.verdicts).toEqual([])
+    expect(s.unreadable).toContain('500')
+    expect(s.findings).toHaveLength(1)
+    expect(s.findings[0].toLowerCase()).toContain('could not read')
+    expect(s.findings[0]).not.toContain('drift')
+  })
+
+  it('agreement and an awaited paste produce no findings', async () => {
+    expect((await runEngineScriptDrift(await deps({}, KEPT))).findings).toEqual([])
+    const awaiting = await runEngineScriptDrift(await deps({}, BASELINE))
+    expect(awaiting.findings).toEqual([])
+    expect(awaiting.verdicts.map((v) => v.state)).toEqual(['awaiting_paste'])
+  })
+
+  it('a drift is a finding naming the node', async () => {
+    const s = await runEngineScriptDrift(await deps({}, 'edited on the canvas'))
+    expect(s.verdicts.map((v) => v.state)).toEqual(['drift'])
+    expect(s.findings).toHaveLength(1)
+    expect(s.findings[0]).toContain('tripoint_ping')
+  })
+})
+
+describe('runEngineScriptDriftAndPage', () => {
+  const summary = (over: Partial<DriftSummary>): DriftSummary => ({ verdicts: [], findings: [], ...over })
+  const run = (s: DriftSummary) => async () => s
+
+  it('pages the findings and clears a standing page with an empty list on a clean run', async () => {
+    const notify = vi.fn(async () => {})
+    await runEngineScriptDriftAndPage(run(summary({ findings: ['x drifted'] })), notify)
+    expect(notify).toHaveBeenCalledWith(['x drifted'])
+    await runEngineScriptDriftAndPage(run(summary({})), notify)
+    expect(notify).toHaveBeenLastCalledWith([])
+  })
+
+  it('does not speak for the job when the run was skipped, so a skip neither pages nor clears (L11)', async () => {
+    const notify = vi.fn(async () => {})
+    await runEngineScriptDriftAndPage(run(summary({ skipped: 'local_dev' })), notify)
+    expect(notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('endingOf', () => {
+  const agree = { namespace: 'a', file: 'a.js', state: 'agree' as const }
+  const awaiting = { namespace: 'b', file: 'b.js', state: 'awaiting_paste' as const, baselineReadOn: '2026-09-22' }
+  const drift = { namespace: 'c', file: 'c.js', state: 'drift' as const, line: 1, kept: 'k', canvas: 'v' }
+
+  it('records skipped, unmeasured, findings, awaiting_paste and ok as distinct outcomes', () => {
+    expect(endingOf({ skipped: 'no_repo', verdicts: [], findings: [] }).outcome).toBe('skipped')
+    expect(endingOf({ verdicts: [], findings: ['could not read'], unreadable: '500' }).outcome).toBe('unmeasured')
+    expect(endingOf({ verdicts: [agree, drift], findings: ['c drifted'] }).outcome).toBe('findings')
+    expect(endingOf({ verdicts: [agree, awaiting], findings: [] })).toMatchObject({ outcome: 'awaiting_paste', summary: { awaiting: ['b'] } })
+    expect(endingOf({ verdicts: [agree, agree], findings: [] }).outcome).toBe('ok')
+  })
+
+  it('lists every script and its state in the summary, so job_runs shows which paste landed', () => {
+    const ending = endingOf({ verdicts: [agree, awaiting], findings: [] })
+    expect(ending.summary).toMatchObject({ scripts: { a: 'agree', b: 'awaiting_paste' } })
+  })
+})

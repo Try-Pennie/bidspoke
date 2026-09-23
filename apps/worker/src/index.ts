@@ -12,6 +12,7 @@ import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB } from './lib/buyer-select-parity'
+import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -633,6 +634,24 @@ export default {
             })
             .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] refresh failed:`, e)),
           BUYER_SELECT_PARITY_JOB,
+        ),
+      )
+      // The kept Engine scripts against the canvas mirror (#1472): pages when a
+      // code node holds a script the repo has no copy of, records an awaited
+      // paste in job_runs without paging, and its first agreeing run after a
+      // paste is the confirmation the paste landed.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, ENGINE_SCRIPT_DRIFT_JOB)
+            .catch((e) => console.error(`[${ENGINE_SCRIPT_DRIFT_JOB}] heartbeat write failed:`, e))
+            .then(() => runEngineScriptDriftForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              const states = s.verdicts.map((v) => `${v.namespace}=${v.state}`).join(' ')
+              console.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] findings=${s.findings.length}${s.unreadable ? ` unreadable=${s.unreadable}` : ''} ${states}`)
+            })
+            .catch((e) => console.error(`[${ENGINE_SCRIPT_DRIFT_JOB}] check failed:`, e)),
+          ENGINE_SCRIPT_DRIFT_JOB,
         ),
       )
       // Watched, because the audit failed every hour for at least four months

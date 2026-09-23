@@ -20,13 +20,19 @@ import duplicate1003 from '../../../../../../packages/buyer-profile/fixtures/tri
 import invalid502 from '../../../../../../packages/buyer-profile/fixtures/tripoint/invalid-502.json'
 import fixtures from './fixtures/engine-lead.json'
 import expected from './fixtures/expected-live-2026-09-22.json'
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no declaration for it.
-import TRIPOINT_PING from '../engine-bidding/tripoint_ping.js?raw'
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import BUILD_RESPONSE_BODY from '../engine-bidding/build_response_body.js?raw'
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import PATCH_PROSPECT_BODY from '../engine-bidding/patch_prospect_body.js?raw'
+import { KEPT_ENGINE_SCRIPTS } from '../../../lib/engine-script-drift'
 import { answerWith, runCanvasScript, type CanvasRun } from './canvas-script'
+
+// The same text the hourly drift check compares against the canvas (#1472), so
+// the scripts proven here are the scripts that check confirms were pasted.
+const keptScript = (namespace: string): string => {
+  const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === namespace)
+  if (!kept) throw new Error(`no kept script for ${namespace}`)
+  return kept.script
+}
+const TRIPOINT_PING = keptScript('tripoint_ping')
+const BUILD_RESPONSE_BODY = keptScript('build_response_body')
+const PATCH_PROSPECT_BODY = keptScript('patch_prospect_body')
 
 type Json = Record<string, unknown>
 type Sale = { skipped: boolean; accepted: boolean; buyer_reference: string | null; result_code: string | null; partner_slug: string | null }
