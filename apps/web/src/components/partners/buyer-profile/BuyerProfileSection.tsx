@@ -30,6 +30,7 @@ import { ProfileConflictView } from './ProfileConflictView'
 import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
+import { SECTION_LABELS } from './labels'
 
 export const EMPTY_PROFILE: BuyerProfileDocument = {
   is_enabled: false,
@@ -177,14 +178,14 @@ export function BuyerProfileSection(props: Props) {
               </Field>
             </div>
             <div>
-              <h5 className="mb-2 text-xs font-medium text-gray-600">Hours</h5>
+              <h5 className="mb-2 text-xs font-medium text-gray-600">{SECTION_LABELS.windows}</h5>
               <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} />
               {errorFor(errors, 'windows') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'windows')}</p>}
             </div>
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">Pricing</h4>
+            <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
             <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
             {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
           </div>
@@ -212,7 +213,7 @@ export function BuyerProfileSection(props: Props) {
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
             <div>
-              <p className="mb-1 text-sm font-medium text-gray-700">Accept when all of</p>
+              <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.accept_signals}</p>
               <p className="mb-2 text-xs text-gray-500">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
               <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
             </div>
@@ -231,7 +232,7 @@ export function BuyerProfileSection(props: Props) {
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">Blackout dates</h4>
+            <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
           </div>
 

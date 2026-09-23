@@ -17,6 +17,7 @@ import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEdit
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
+import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
 import { documentToProfile, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
@@ -364,7 +365,10 @@ export default function PartnerForm({
       const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals })
       if (!validation.ok) {
         setProfileErrors(validation.errors)
-        setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${validation.errors.length} problem${validation.errors.length === 1 ? '' : 's'} marked below.` })
+        // Names each refused field by its label with the validator's reason (#1464):
+        // the Save button sits under the section, so a direction word pointed the
+        // wrong way and said nothing about which field (L111, L399).
+        setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${describeProfileErrors(validation.errors)}` })
         return
       }
     }
