@@ -257,7 +257,10 @@ describe('runBuyerSalesChecks', () => {
     const summary = await runBuyerSalesChecks(d)
     expect(summary.buyers[0].rehearsals_expired).toBe(3)
     expect(d.notifyUnresolved).toHaveBeenCalledWith([])
-    expect(endingOf(summary).outcome).toBe('ok')
+    const ending = endingOf(summary)
+    expect(ending.outcome).toBe('ok')
+    // The count reaches the job record, or it is lost the moment the run ends.
+    expect((ending.summary as { buyers: Array<{ rehearsals_expired: number }> }).buyers[0].rehearsals_expired).toBe(3)
   })
 
   it('a manual mute (a cooldown with no standing condition) is left alone even when the count grows', async () => {

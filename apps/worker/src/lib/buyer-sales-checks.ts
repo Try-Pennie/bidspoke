@@ -554,7 +554,7 @@ export function endingOf(summary: ChecksSummary): JobRunEnding {
     outcome,
     summary: {
       days: summary.days,
-      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, outcome_rate: b.outcome_rate.verdict })),
+      buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, rehearsals_expired: b.rehearsals_expired, outcome_rate: b.outcome_rate.verdict })),
       paged_mismatches: summary.mismatch_lines.length,
       paged_unresolved: summary.unresolved_lines.length,
       paged_outcome_rates: summary.outcome_rate_lines.length,
