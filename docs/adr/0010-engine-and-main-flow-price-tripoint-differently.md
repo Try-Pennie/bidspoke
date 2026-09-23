@@ -30,8 +30,13 @@ split seen from the other end:
 - Main Flow leads book through `Lead.ExternalRevenue__c`: 0.0009 of debt from
   $10,000 to $12,499, 0.0012 from $12,500, and 0 below $10,000.
 - External partner leads (Engine, AmOne, Lead Economy) book through
-  `Prospect__c.ExternalExchangeRevenue__c`: 0.001 of debt from $10,000 to
-  $19,999 and 0.0016 from $20,000.
+  `Prospect__c.ExternalExchangeRevenue__c`. Since 2026-09-23 the Tripoint part
+  reads `EngineDebt__c`: 0.0009 from $10,000 to $12,499 and 0.0013 from $12,500,
+  with no upper tier (before that day it was 0.001 to $19,999 and 0.0016 from
+  $20,000 on `ExternalDebtAmount__c`, which the patch fills from enrollableDebt;
+  Brian moved both the rates and the field on 2026-09-23 so the estimate prices
+  on the same figure the buyer profile pays out on, #1479). The Tripoint buyer
+  profile's Engine tiers hold the same two rates.
 
 ## Decision
 
