@@ -709,3 +709,87 @@ describe('GET /executions/archive-search (#874)', () => {
     expect(res.status).toBe(503)
   })
 })
+
+// The canvas lights the path a lead took from each routing node's `_route`
+// (#1503). The summary strips output to stay light, so the route has to be
+// carried on its own or the canvas has nothing to judge the exits by.
+describe('the chosen route in the summary response (#1503)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
+    vi.mocked(readArchivedChildren).mockResolvedValue({ kind: 'ok', children: [] })
+    app = await makeApp()
+  })
+
+  it('asks Postgres for the route alongside the summary columns', async () => {
+    const client = makeSupabase({
+      users: { single: testUser },
+      workflow_executions: [{ single: testExecution }, { list: [] }],
+      execution_steps: { list: [{ id: 'step-1', step_namespace: 'buyer_select', step_order: 1, route: 'deferred' }] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'GET', '/executions/exec-1?summary=1')
+    expect(res.status).toBe(200)
+    const selects = (client.calls.execution_steps ?? []).filter(([m]) => m === 'select').map(([, a]) => a[0] as string)
+    expect(selects).toHaveLength(1)
+    expect(selects[0]).toContain('route:output->>_route')
+    expect(selects[0]).not.toContain('output,')
+    const body = await res.json() as { steps: Array<Record<string, unknown>> }
+    expect(body.steps[0].route).toBe('deferred')
+  })
+
+  it('keeps the route of an archived step while stripping its output', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue({
+      kind: 'found',
+      execution: { id: 'exec-old', workflow_id: 'wf-1', status: 'completed' },
+      steps: [
+        { id: 'step-1', step_namespace: 'buyer_select', output: { _route: 'sold', buyer: 'x' } },
+        { id: 'step-2', step_namespace: 'build', output: { body: {} } },
+        { id: 'step-3', step_namespace: 'failed_one', output: null },
+      ],
+      archiveDay: '2026-03-04',
+      archivedIncomplete: false,
+    })
+    const res = await request(app, 'GET', '/executions/exec-old?summary=1')
+    const body = await res.json() as { steps: Array<Record<string, unknown>> }
+    expect(body.steps[0]).not.toHaveProperty('output')
+    expect(body.steps[0].route).toBe('sold')
+    expect(body.steps[1].route).toBeNull()
+    expect(body.steps[2].route).toBeNull()
+  })
+
+  it('carries the route on steps a resume inherits from an archived parent', async () => {
+    const client = makeSupabase({
+      users: { single: testUser },
+      workflow_executions: [
+        { single: { ...testExecution, resumed_from_execution_id: 'exec-parent' } },
+        { list: [] },
+      ],
+      // This run's own steps, then the parent's in Postgres: gone, so the
+      // route falls through to the archive.
+      execution_steps: [
+        { list: [{ id: 'step-2', step_namespace: 'build', step_order: 2, route: null }] },
+        { list: [] },
+      ],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
+    vi.mocked(readArchivedParentSteps).mockResolvedValue({
+      kind: 'ok',
+      steps: [{ id: 'step-1', step_namespace: 'buyer_select', step_order: 1, output: { _route: 'no_sale' }, input: { a: 1 } }],
+    })
+    const res = await request(app, 'GET', '/executions/exec-1?summary=1')
+    const body = await res.json() as { steps: Array<Record<string, unknown>> }
+    const inherited = body.steps.find((st) => st.step_namespace === 'buyer_select')
+    expect(inherited?.route).toBe('no_sale')
+    expect(inherited).not.toHaveProperty('output')
+  })
+})
