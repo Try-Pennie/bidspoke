@@ -138,7 +138,7 @@ Dan shared the Salesforce Apex (`BidMatrixController`) and screenshots. Real sha
 **Sell-off filters** are NOT arbitrary rules — Apex pins them to 5 specific conditions, each with a value + active flag. Model them as a typed JSONB:
 ```json
 {
-  "engine_debt":        { "active": true,  "max_value": 20000 },
+  "engine_debt":        { "active": true,  "max_value": 19000 },
   "collections_percent":{ "active": true,  "min_value": 99 },
   "state_list":         { "active": true,  "states": ["DE","HI","ID","IA","ME","MT","ND","RI","VT","WA","WY"] },
   "loan_amount":        { "active": true,  "max_value": 1000 },
@@ -146,6 +146,8 @@ Dan shared the Salesforce Apex (`BidMatrixController`) and screenshots. Real sha
 }
 ```
 If ANY active filter matches, the lead routes to the sell-off matrix (cheaper pricing) instead of the main matrix.
+
+The engine debt threshold was 20,000 until 2026-09-22, when Brian had `ProspectTradeParserRest` lowered to 19,000 so leads from 19,000 up are worked as MQLs instead of sold off (#1479). Sell off is therefore any one of four conditions and not a debt band: engine debt below 19,000, eligible collections above 99 percent of Pennie debt, a state in the list, or a loan request below 1,000 (the vantage filter is inactive). Leads above 19,000 still sell off through the other three, which is why the Tripoint profile's Engine tiers keep an upper tier. The floor Tripoint receives in practice is the bid matrix's, not the formula's: sell off rows below 15,000 carry a zero bid, so nothing under 15,000 reaches Tripoint from Engine.
 
 **Zero cells are literal $0 bids, not skip signals** — per Dan. The Bid Lookup node returns 0 as a valid bid; downstream logic decides whether to submit a $0 bid or route to sell-off based on the `sell_off_filters`.
 
