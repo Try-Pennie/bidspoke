@@ -327,6 +327,19 @@ alert, which fails closed on the actual data. A daily poll written here would
 instead be a second predicate about the same fact, checking a table the archive
 does not yet read.
 
+**Update 2026-09-23 (#1486): the e2e org is now archived by name.** The claim
+above expired the way it said it would: a manual Test run in the `E2E Test`
+organization produced its first execution, and the archiver refused it. A
+refused execution is an orphan the deletion gate never clears, so that one test
+run held its whole day of production data back from deletion. The decision is to
+archive that organization rather than refuse it. The reason for the refusal is
+the 13 months of real identity data, which this organization does not hold, and
+the route's `organization_id` check already confines its rows to its own users.
+Skipping instead was rejected because the gate requires the Postgres and archive
+execution counts to agree. It is one named slug in `archive/disposition.ts`,
+not a rule about test organizations, so any other organization is still refused
+until somebody decides about it.
+
 ## What Phase A2 dropped from the plan, and why
 
 The plan specified the archive's tenant boundary as a secure view filtered on a

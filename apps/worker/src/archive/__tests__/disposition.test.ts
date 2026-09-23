@@ -27,7 +27,7 @@ const execution = (over: Record<string, unknown> = {}): Record<string, unknown> 
 
 const orgs = new Map([
   ['wf-live', { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG }],
-  ['wf-e2e', { id: 'org-e2e', slug: 'E2E Test' }],
+  ['wf-foreign', { id: 'org-foreign', slug: 'another-tenant' }],
 ])
 
 describe('dispositionFor', () => {
@@ -38,15 +38,15 @@ describe('dispositionFor', () => {
     expect(d.incomplete).toBe(false)
   })
 
-  // The single-tenant decision is what lets the archive skip a database-layer
-  // tenant boundary, and it is a measurement rather than a guarantee: the e2e
-  // org creates workflows and has simply never produced an execution. So the
-  // claim is enforced where there is real data to judge, not asserted in a doc.
+  // The archive has no database-layer tenant boundary, only the read routes'
+  // organization_id filter, so an organization nobody has reasoned about is
+  // refused rather than archived. The e2e test org is the one named exemption
+  // (#1486), asserted in expected-organization.test.ts.
   it('refuses an execution from any other organization', () => {
-    const d = dispositionFor(execution({ workflow_id: 'wf-e2e' }), { now: settled, organizationOf: orgs })
+    const d = dispositionFor(execution({ workflow_id: 'wf-foreign' }), { now: settled, organizationOf: orgs })
 
     expect(d.action).toBe<Disposition['action']>('refuse')
-    expect(d.reason).toMatch(/E2E Test/)
+    expect(d.reason).toMatch(/another-tenant/)
     expect(d.reason).toMatch(new RegExp(EXPECTED_ORGANIZATION_SLUG))
   })
 
@@ -86,13 +86,13 @@ describe('dispositionFor', () => {
   // The tenancy refusal outranks the deadline: archiving another tenant's data
   // "as it stands" would be the one outcome the refusal exists to prevent.
   it('refuses a foreign organization even past the deadline', () => {
-    const d = dispositionFor(execution({ workflow_id: 'wf-e2e', status: 'running' }), {
+    const d = dispositionFor(execution({ workflow_id: 'wf-foreign', status: 'running' }), {
       now: pastDeadline,
       organizationOf: orgs,
     })
 
     expect(d.action).toBe<Disposition['action']>('refuse')
-    expect(d.reason).toMatch(/E2E Test/)
+    expect(d.reason).toMatch(/another-tenant/)
   })
 
   it('matches the deadline used by the stranded-execution finaliser', () => {
