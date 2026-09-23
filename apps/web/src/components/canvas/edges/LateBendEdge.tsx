@@ -62,7 +62,7 @@ export function LateBendEdge({
   markerEnd,
 }: EdgeProps) {
   const key = useStore((s) => siblingKey(s, id, target, targetHandleId ?? null))
-  const { rank } = siblingRank(id, parseSiblings(key), targetX)
+  const { rank, count } = siblingRank(id, parseSiblings(key), targetX)
   const [path] = getSmoothStepPath({
     sourceX,
     sourceY,
@@ -70,7 +70,7 @@ export function LateBendEdge({
     targetY,
     sourcePosition,
     targetPosition,
-    centerY: laneBendY({ rank, sourceY, targetY }),
+    centerY: laneBendY({ rank, count, sourceY, targetY }),
     borderRadius: 8,
   })
   return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />

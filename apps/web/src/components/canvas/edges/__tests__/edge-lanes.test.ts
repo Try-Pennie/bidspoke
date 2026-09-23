@@ -14,11 +14,11 @@ const SOURCE_Y = 100
 const TARGET_Y = 300
 
 /** The three segments a late bend edge draws: down, across, down into the handle. */
-function segments(sourceX: number, targetX: number, bendY: number): Segment[] {
+function segments(sourceX: number, targetX: number, bendY: number, targetY: number): Segment[] {
   return [
     { x1: sourceX, y1: SOURCE_Y, x2: sourceX, y2: bendY },
     { x1: sourceX, y1: bendY, x2: targetX, y2: bendY },
-    { x1: targetX, y1: bendY, x2: targetX, y2: TARGET_Y },
+    { x1: targetX, y1: bendY, x2: targetX, y2: targetY },
   ]
 }
 
@@ -40,13 +40,13 @@ function overlapsOrCrosses(a: Segment, b: Segment): boolean {
 }
 
 /** Lays out siblings from these absolute handle x positions into one target handle and checks them. */
-function assertSeparate(sources: number[], targetX: number) {
+function assertSeparate(sources: number[], targetX: number, targetY = TARGET_Y) {
   const siblings = sources.map((x, i) => ({ id: `e${i}`, sourceX: x }))
   const bends = sources.map((_, i) => {
-    const { rank } = siblingRank(`e${i}`, siblings, targetX)
-    return laneBendY({ rank, sourceY: SOURCE_Y, targetY: TARGET_Y })
+    const { rank, count } = siblingRank(`e${i}`, siblings, targetX)
+    return laneBendY({ rank, count, sourceY: SOURCE_Y, targetY })
   })
-  const segs = sources.map((sx, i) => segments(sx, targetX, bends[i]))
+  const segs = sources.map((sx, i) => segments(sx, targetX, bends[i], targetY))
   for (let i = 0; i < sources.length; i++) {
     for (let j = i + 1; j < sources.length; j++) {
       expect(bends[i], `edges ${i} and ${j} bend at the same height`).not.toBe(bends[j])
@@ -61,7 +61,7 @@ function assertSeparate(sources: number[], targetX: number) {
 
 describe('laneBendY (#1489)', () => {
   it('leaves a lone edge exactly as it was: bend 32 above the handle', () => {
-    expect(laneBendY({ rank: 0, sourceY: SOURCE_Y, targetY: TARGET_Y })).toBe(TARGET_Y - TURN_OFFSET)
+    expect(laneBendY({ rank: 0, count: 1, sourceY: SOURCE_Y, targetY: TARGET_Y })).toBe(TARGET_Y - TURN_OFFSET)
   })
 
   it('keeps two edges from handles LEFT of the target apart (the buyer_select case)', () => {
@@ -81,9 +81,21 @@ describe('laneBendY (#1489)', () => {
   })
 
   it('never bends above the source on a short edge', () => {
-    const y = laneBendY({ rank: 2, sourceY: 100, targetY: 120 })
-    expect(y).toBeGreaterThanOrEqual(100)
-    expect(y).toBeLessThanOrEqual(120)
+    const y = laneBendY({ rank: 2, count: 3, sourceY: 100, targetY: 120 })
+    expect(y).toBeGreaterThan(100)
+    expect(y).toBeLessThan(120)
+  })
+
+  // The layout's normal row gap is 48 px, which the stacked heights do not fit
+  // in, so siblings into a card one row down must still get distinct heights
+  // instead of all clamping to the middle of the gap.
+  it('keeps siblings apart on the normal 48 px row gap', () => {
+    assertSeparate([150, 190], 260, SOURCE_Y + 48)
+    assertSeparate([100, 140, 180], 400, SOURCE_Y + 48)
+  })
+
+  it('still bends a lone short edge halfway down its gap', () => {
+    expect(laneBendY({ rank: 0, count: 1, sourceY: 100, targetY: 148 })).toBe(124)
   })
 })
 

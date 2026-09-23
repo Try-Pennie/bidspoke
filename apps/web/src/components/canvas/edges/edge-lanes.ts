@@ -17,11 +17,18 @@ export const TURN_OFFSET = 32
 /** Vertical distance between sibling bend heights. */
 export const LANE_STEP = 16
 
-/** The height of this edge's horizontal run, for its rank among its siblings. */
-export function laneBendY({ rank, sourceY, targetY }: { rank: number; sourceY: number; targetY: number }): number {
+/**
+ * The height of this edge's horizontal run, for its rank among `count` siblings.
+ * When the stacked heights fit in the upper half of the gap they are used as
+ * they are. When they do not (the layout's normal row gap is 48 px, so a card
+ * one row down is the common case), the siblings are spread evenly across the
+ * gap instead, rank 0 lowest, so they never clamp onto one line; a lone edge
+ * then bends halfway down, as it always has.
+ */
+export function laneBendY({ rank, count, sourceY, targetY }: { rank: number; count: number; sourceY: number; targetY: number }): number {
   const span = Math.max(0, targetY - sourceY)
-  // Clamp to half the vertical span so a short edge never bends above its source.
-  return targetY - Math.min(TURN_OFFSET + rank * LANE_STEP, span / 2)
+  if (TURN_OFFSET + (count - 1) * LANE_STEP <= span / 2) return targetY - (TURN_OFFSET + rank * LANE_STEP)
+  return targetY - (span * (rank + 1)) / (count + 1)
 }
 
 /**
