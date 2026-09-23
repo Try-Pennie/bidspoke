@@ -15,6 +15,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { PURGE_GRACE_HOURS } from '../sightings-export'
+import { PAGE_SIZE } from '../paginate'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../../index'
 import {
   BID_PURGE_HORIZON_MS,
   BUYER_OUTCOME_RATE_JOB,
@@ -27,6 +30,7 @@ import {
   OUTCOME_SATURATION_MIN_ATTEMPTS,
   endingOf,
   judgeOutcomeRate,
+  productionChecksDeps,
   runBuyerSalesChecks,
   type ChecksDeps,
   type CheckBuyer,
@@ -430,3 +434,55 @@ describe('the outcome rate page', () => {
   })
 })
 
+
+describe('productionChecksDeps reads past the row cap (#1497)', () => {
+  /**
+   * A table double that behaves like PostgREST: one answer holds at most
+   * PAGE_SIZE rows whatever `.limit` asks, and only `.range` moves the window.
+   * Both reads asked for 5,000 rows in one call; a buyer's day of rehearsal
+   * entries (up to the 1,695 daily cap) or a busy hour of winner rows would come
+   * back truncated and the completeness and consistency checks would page a
+   * mismatch that is really the reader's.
+   */
+  function cappedTable(table: string, total: number) {
+    const rows = Array.from({ length: total }, (_, i) => ({ id: `r${String(i).padStart(5, '0')}`, lead_key: `lead-${i}`, status: 'accepted', kind: 'live', execution_id: `e${i}`, attempted_at_utc: new Date(Date.UTC(2027, 8, 20, 13, 0, i % 60, i)).toISOString() }))
+    const ranges: Array<[number, number]> = []
+    const orders: string[] = []
+    let limit: number | null = null
+    let range: [number, number] | null = null
+    const builder: Record<string, unknown> = {}
+    const chain = () => builder
+    for (const m of ['select', 'eq', 'gte', 'lt']) builder[m] = chain
+    builder.order = (col: string) => { orders.push(col); return builder }
+    builder.limit = (n: number) => { limit = n; return builder }
+    builder.range = (from: number, to: number) => { range = [from, to]; ranges.push([from, to]); return builder }
+    builder.then = (resolve: (v: unknown) => void) => {
+      const [from, to] = range ?? [0, Math.min(limit ?? PAGE_SIZE, PAGE_SIZE) - 1]
+      const page = rows.slice(from, Math.min(to, from + PAGE_SIZE - 1) + 1)
+      range = null
+      limit = null
+      resolve({ data: page, error: null })
+    }
+    const supabase = { from: (t: string) => { if (t !== table) throw new Error(`unexpected table ${t}`); return builder } } as unknown as SupabaseClient
+    return { supabase, ranges, orders, rows }
+  }
+  const env = {} as unknown as Env
+
+  it('readSalesRows lists every buyer_sales row of the day in pages of at most PAGE_SIZE, ordered by id', async () => {
+    const fake = cappedTable('buyer_sales', 1_700)
+    const rows = await productionChecksDeps(fake.supabase, env).readSalesRows('partner-1', '2027-09-20')
+    expect(rows).toHaveLength(1_700)
+    expect(fake.ranges.length).toBeGreaterThanOrEqual(2)
+    for (const [from, to] of fake.ranges) expect(to - from + 1).toBeLessThanOrEqual(PAGE_SIZE)
+    expect(fake.orders).toContain('id')
+  })
+
+  it('readWinnerRows lists every winner row of the window in pages, ordered by attempted_at_utc with id as the tiebreaker', async () => {
+    const fake = cappedTable('lead_sighting_bids', 2_300)
+    const rows = await productionChecksDeps(fake.supabase, env).readWinnerRows('tripoint', Date.UTC(2027, 8, 20, 13), Date.UTC(2027, 8, 20, 14))
+    expect(rows).toHaveLength(2_300)
+    expect(fake.ranges.length).toBeGreaterThanOrEqual(3)
+    expect(fake.orders[0]).toBe('attempted_at_utc')
+    expect(fake.orders).toContain('id')
+  })
+})

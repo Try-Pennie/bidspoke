@@ -57,6 +57,7 @@ import { BuyerLedgerClient } from './buyer-object-clients'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { parseJson } from './json'
+import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './slack'
@@ -580,29 +581,37 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       }))
     },
     ledger: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
-    readSalesRows: async (partnerId, day) => {
-      const { data, error } = await supabase
-        .from('buyer_sales')
-        .select('lead_key, status, kind')
-        .eq('partner_id', partnerId)
-        .eq('et_day', day)
-        .limit(5000)
-      if (error) throw new Error(`buyer_sales: ${error.message}`)
-      return (data ?? [])
-    },
-    readWinnerRows: async (slug, fromMs, toMs) => {
-      const { data, error } = await supabase
-        .from('lead_sighting_bids')
-        .select('execution_id, attempted_at_utc')
-        .eq('partner_slug', slug)
-        .eq('is_winner', true)
-        .eq('resolver_type', 'buyer_select')
-        .gte('attempted_at_utc', new Date(fromMs).toISOString())
-        .lt('attempted_at_utc', new Date(toMs).toISOString())
-        .limit(5000)
-      if (error) throw new Error(`lead_sighting_bids: ${error.message}`)
-      return (data ?? [])
-    },
+    // Both reads are paged (#1497): PostgREST answers at most 1,000 rows however
+    // high the limit, and a buyer's day (up to the 1,695 daily cap in rehearsal,
+    // more live) or a busy hour of winner rows exceeds that, so a single read
+    // came back short and the completeness and consistency checks would have
+    // paged a mismatch that was the reader's own.
+    readSalesRows: (partnerId, day) =>
+      fetchAllPaged<{ lead_key: string; status: string; kind: string }>(
+        (from, to) => supabase
+          .from('buyer_sales')
+          .select('lead_key, status, kind')
+          .eq('partner_id', partnerId)
+          .eq('et_day', day)
+          .order('id', { ascending: true })
+          .range(from, to),
+        'buyer_sales',
+      ),
+    readWinnerRows: (slug, fromMs, toMs) =>
+      fetchAllPaged<{ execution_id: string; attempted_at_utc: string }>(
+        (from, to) => supabase
+          .from('lead_sighting_bids')
+          .select('execution_id, attempted_at_utc')
+          .eq('partner_slug', slug)
+          .eq('is_winner', true)
+          .eq('resolver_type', 'buyer_select')
+          .gte('attempted_at_utc', new Date(fromMs).toISOString())
+          .lt('attempted_at_utc', new Date(toMs).toISOString())
+          .order('attempted_at_utc', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to),
+        'lead_sighting_bids',
+      ),
     readIndependentRecord: async (buyer, references) => {
       if (!buyer.has_independent_record) return null
       if (references.length === 0) return new Set()

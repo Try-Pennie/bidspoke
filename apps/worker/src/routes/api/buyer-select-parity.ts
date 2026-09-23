@@ -38,7 +38,7 @@ parity.get('/', async (c) => {
 })
 
 /**
- * Recompute the rows for the days inside retention, or one day and workflow.
+ * Recompute the rows for today and yesterday, or one named day and workflow.
  * A POST because it writes; it never sets a sign off, and a sign off whose
  * numbers move is cleared by the function that writes them (L641).
  */

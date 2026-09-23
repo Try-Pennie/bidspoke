@@ -13,9 +13,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { PAGE_SIZE } from '../paginate'
 import {
   INCUMBENT_NAMESPACE,
   countsHash,
+  productionReadDeps,
+  readParityDay,
+  refreshableDays,
   runParityRefresh,
   runParityRefreshAndPage,
   summariseParityDay,
@@ -145,6 +150,7 @@ describe('runParityRefresh', () => {
       listWorkflows: async () => [WF],
       rules: async () => RULES,
       read: {
+        countNodeRows: async () => 1,
         // The ET day 2027-09-20 starts at 04:00Z and is read in three hour windows; the 13:00Z window holds the one execution.
         listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: fromIso }] : []),
         readRows: async (ids) => ids.flatMap((id) => [
@@ -165,7 +171,11 @@ describe('runParityRefresh', () => {
   it('writes one row per workflow and refreshable day, with the counts, the hash and the window flag, and never a sign off column', async () => {
     const { deps, upserts } = refreshDeps()
     const summary = await runParityRefresh(deps)
-    expect(summary.rows_written).toBe(RETENTION_DAYS)
+    // Today and yesterday only (#1497): a day's step rows never change once it
+    // is over, so older days keep the row they have, and re-reading every day
+    // inside retention each hour at the Engine flow's volume would spend the
+    // invocation's subrequest budget.
+    expect(summary.rows_written).toBe(2)
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today).toMatchObject({ workflow_id: 'wf-engine', organization_id: 'org-1', sell_off_agree: 1, hash_match: 1, classification_agree: 1, window_complete: false })
     expect(today?.counts_hash).toMatch(/^[0-9a-f]{64}$/)
@@ -177,6 +187,7 @@ describe('runParityRefresh', () => {
   it('a day whose reads fail is reported by name and the other days are still written (L98)', async () => {
     const { deps, upserts } = refreshDeps({
       read: {
+        countNodeRows: async () => 1,
         // The ET day 2027-09-19 runs from 2027-09-19T04:00Z to 2027-09-20T04:00Z; every window inside it fails.
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
@@ -185,7 +196,7 @@ describe('runParityRefresh', () => {
     const summary = await runParityRefresh(deps)
     expect(summary.errors.join(' ')).toMatch(/2027-09-19.*statement timeout/)
     expect(upserts.map((r) => r.et_day)).not.toContain('2027-09-19')
-    expect(upserts.length).toBe(RETENTION_DAYS - 1)
+    expect(upserts.length).toBe(1)
   })
 
   it('a workflow whose buyer has no rules is skipped by name rather than classified against nothing', async () => {
@@ -205,6 +216,7 @@ describe('runParityRefresh', () => {
   it('a run with failed days pages them and a clean run clears the condition; a skipped run says nothing either way (L13)', async () => {
     const failing = refreshDeps({
       read: {
+        countNodeRows: async () => 1,
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
       },
@@ -241,5 +253,83 @@ describe('countsHash', () => {
     expect(await countsHash(a)).not.toBe(await countsHash(c))
     expect(await countsHash(a)).toMatch(/^[0-9a-f]{64}$/)
     expect(await countsHash({ ...a, unmeasured: [...a.unmeasured, 'nothing that counts'] })).toBe(await countsHash(a))
+  })
+})
+
+describe('productionReadDeps.listExecutions', () => {
+  /**
+   * A workflow_executions double that behaves like PostgREST: whatever `.limit`
+   * asks for, one answer holds at most PAGE_SIZE rows, and only `.range` moves
+   * the window. On 2026-09-23 the first Stage A refresh listed 1,000 of the
+   * 3,500 executions in each three hour window and recorded the day as 3,514
+   * unpaired executions and zero agreements (#1497).
+   */
+  function cappedSupabase(total: number) {
+    const rows = Array.from({ length: total }, (_, i) => ({ id: `e${String(i).padStart(5, '0')}`, started_at: new Date(Date.UTC(2027, 8, 20, 13, 0, i)).toISOString() }))
+    const ranges: Array<[number, number]> = []
+    const orders: string[] = []
+    let limit: number | null = null
+    let range: [number, number] | null = null
+    const builder: Record<string, unknown> = {}
+    const chain = () => builder
+    for (const m of ['select', 'eq', 'gte', 'lt']) builder[m] = chain
+    builder.order = (col: string) => { orders.push(col); return builder }
+    builder.limit = (n: number) => { limit = n; return builder }
+    builder.range = (from: number, to: number) => { range = [from, to]; ranges.push([from, to]); return builder }
+    builder.then = (resolve: (v: unknown) => void) => {
+      const [from, to] = range ?? [0, Math.min(limit ?? PAGE_SIZE, PAGE_SIZE) - 1]
+      const page = rows.slice(from, Math.min(to, from + PAGE_SIZE - 1) + 1)
+      range = null
+      limit = null
+      resolve({ data: page, error: null })
+    }
+    const supabase = { from: (table: string) => { if (table !== 'workflow_executions') throw new Error(`unexpected table ${table}`); return builder } } as unknown as SupabaseClient
+    return { supabase, ranges, orders, rows }
+  }
+
+  it('lists every execution of a window that holds more than one page, in order, one page at a time', async () => {
+    const fake = cappedSupabase(2_500)
+    const listed = await productionReadDeps(fake.supabase).listExecutions('wf', '2027-09-20T13:00:00.000Z', '2027-09-20T16:00:00.000Z')
+    expect(listed).toHaveLength(2_500)
+    expect(listed.map((e) => e.id)).toEqual(fake.rows.map((r) => r.id))
+    expect(fake.ranges.length).toBeGreaterThanOrEqual(3)
+    for (const [from, to] of fake.ranges) expect(to - from + 1).toBeLessThanOrEqual(PAGE_SIZE)
+  })
+
+  it('orders each page by a stable key with a unique tiebreaker, so offset paging cannot skip or repeat an execution', async () => {
+    const fake = cappedSupabase(5)
+    await productionReadDeps(fake.supabase).listExecutions('wf', '2027-09-20T13:00:00.000Z', '2027-09-20T16:00:00.000Z')
+    expect(fake.orders[0]).toBe('started_at')
+    expect(fake.orders).toContain('id')
+  })
+})
+
+describe('refreshableDays', () => {
+  it('is today and yesterday, whatever the retention window, because a finished day is re-read once and older rows stand (#1497)', () => {
+    // 2027-09-20 15:30 UTC is the afternoon of 2027-09-20 Eastern.
+    expect(refreshableDays(Date.parse(T0), RETENTION_DAYS)).toEqual(['2027-09-20', '2027-09-19'])
+    expect(refreshableDays(Date.parse(T0), 30)).toEqual(['2027-09-20', '2027-09-19'])
+  })
+})
+
+describe('readParityDay skips windows the node never ran in', () => {
+  it('asks for the node row count first and lists executions only where it is above zero, so a day before the node was placed costs eight counts and nothing else', async () => {
+    const listed: string[] = []
+    const counted: string[] = []
+    const executions = await readParityDay(
+      {
+        countNodeRows: async (_wf, fromIso) => { counted.push(fromIso); return fromIso.startsWith('2027-09-20T13') ? 3 : 0 },
+        listExecutions: async (_wf, fromIso) => { listed.push(fromIso); return [{ id: 'e1', started_at: fromIso }] },
+        readRows: async (ids) => ids.flatMap((id) => [
+          { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: exec(id).node, duration_ms: 120 },
+          { execution_id: id, step_type: 'code', step_namespace: INCUMBENT_NAMESPACE, output: exec(id).incumbent, duration_ms: 900 },
+        ]),
+      },
+      'wf',
+      '2027-09-20',
+    )
+    expect(counted).toHaveLength(8)
+    expect(listed).toEqual(['2027-09-20T13:00:00.000Z'])
+    expect(executions).toHaveLength(1)
   })
 })
