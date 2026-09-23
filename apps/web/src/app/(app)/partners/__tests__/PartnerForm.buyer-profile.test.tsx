@@ -119,6 +119,15 @@ describe('the Buyer profile section', () => {
     expect(api.buyerProfiles.save).not.toHaveBeenCalled()
   })
 
+  it('the refusal beside the Save button names the field by its label and carries the reason, and never says below (#1464, L111, L399)', async () => {
+    await renderBuyer()
+    fireEvent.change(screen.getByLabelText('Leads per hour'), { target: { value: '900' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const outcome = await screen.findByText(/Nothing saved\./)
+    expect(outcome).toHaveTextContent('Nothing saved. Fix the buyer profile first: Leads per hour: The hourly lead cap is above the daily lead cap.')
+    expect(outcome).not.toHaveTextContent(/below/i)
+  })
+
   it('a stale version shows the side by side, keeps the edits, and Save over theirs re-submits with the new version', async () => {
     const theirs = { ...doc, version: 5, daily_lead_cap: 250 }
     const stale = Object.assign(new Error('stale_version'), { status: 409, body: { error: 'stale_version', current: theirs } })

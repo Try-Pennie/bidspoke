@@ -5,7 +5,7 @@
  * flatten and the package's diff produce: a scalar name, `allowed_states`,
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
-import { DAYS_OF_WEEK, POPULATIONS, type Population } from '@bidspoke/buyer-profile'
+import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError } from '@bidspoke/buyer-profile'
 
 export const FIELD_LABELS: Record<string, string> = {
   is_enabled: 'Enabled',
@@ -18,6 +18,43 @@ export const FIELD_LABELS: Record<string, string> = {
   daily_lead_cap: 'Leads per day',
   hourly_spend_cap_cents: 'Spend per hour',
   daily_spend_cap_cents: 'Spend per day',
+}
+
+/**
+ * The headings of the section's grouped editors, which the validator names as a
+ * whole (`windows`, `tiers`, `blackoutDates`, `acceptSignals`) when the problem
+ * is the set rather than one row. The section renders these same words.
+ */
+export const SECTION_LABELS = {
+  windows: 'Hours',
+  tiers: 'Pricing',
+  blackout_dates: 'Blackout dates',
+  accept_signals: 'Accept when all of',
+} as const
+
+const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+
+/**
+ * The on screen words for a path the shared validator emits (#1464). The
+ * validator speaks the profile's camelCase field names; the labels are keyed by
+ * the snake_case paths the diff and history use, so the two are joined here
+ * rather than kept as a second list (L118, L41). An unknown path comes back as
+ * itself, visibly unlabelled rather than silently blank.
+ */
+export function profileErrorLabel(path: string): string {
+  const snake = camelToSnake(path)
+  return FIELD_LABELS[snake] ?? (SECTION_LABELS as Record<string, string>)[snake] ?? path
+}
+
+/**
+ * The refusal beside the Save button: every refused field by its label with the
+ * validator's own sentence, one field once. It names what to fix and why (L111,
+ * L399) rather than how many problems there are and where to look for them.
+ */
+export function describeProfileErrors(errors: readonly ProfileError[]): string {
+  const byPath = new Map<string, string[]>()
+  for (const e of errors) byPath.set(e.path, [...(byPath.get(e.path) ?? []), e.message])
+  return [...byPath.entries()].map(([path, messages]) => `${profileErrorLabel(path)}: ${messages.join(' ')}`).join(' ')
 }
 
 export const POPULATION_LABELS: Record<Population, string> = {
