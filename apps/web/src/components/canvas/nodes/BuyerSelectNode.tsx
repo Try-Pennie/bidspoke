@@ -32,7 +32,8 @@ interface BuyerSelectOutputPreview {
  */
 export function BuyerSelectNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
-  const mode = (config.mode as string | undefined) ?? 'decide_only'
+  // No default: the engine has none and fails the step as mode_invalid (#1495).
+  const mode = config.mode === 'live' ? 'live' : config.mode === 'decide_only' ? 'decide_only' : null
   const population = (config.population as string | undefined) ?? ''
   const tipId = useId()
 
@@ -72,8 +73,8 @@ export function BuyerSelectNode({ data, selected }: NodeProps) {
       <div className="flex items-center gap-2 rounded-t-lg bg-emerald-50 border-b border-emerald-100 px-3 py-2">
         <BadgeDollarSign className={`h-4 w-4 ${NODE_TYPE_COLOR.buyer_select.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Buyer Select</span>
-        <span className="ml-auto rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700">
-          {mode === 'live' ? 'live' : 'decide only'}
+        <span className={`ml-auto rounded px-1.5 py-0.5 text-xs ${mode === null ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`}>
+          {mode === 'live' ? 'live' : mode === 'decide_only' ? 'decide only' : 'no mode set'}
         </span>
       </div>
 

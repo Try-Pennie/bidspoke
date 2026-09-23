@@ -419,6 +419,23 @@ describe('ConfigPanel reference problems', () => {
 // #1490: deferred is where decide only sends every sell off lead, back to the
 // rest of the workflow, and the mode hint is where the person choosing the mode
 // reads that.
+// #1495: the engine has no default mode, so the toggle must not show one as
+// chosen when none is, and the hint must say the step fails until one is.
+describe('ConfigPanel: buyer_select with no mode set (#1495)', () => {
+  it('leaves neither mode selected and says the step fails until one is chosen', () => {
+    renderPanel(nodeOf('buyer_select', {}))
+    expect(screen.getByRole('button', { name: 'Decide only' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText(/no mode set/i).textContent).toMatch(/mode_invalid/)
+  })
+
+  it('marks the chosen mode as pressed', () => {
+    renderPanel(nodeOf('buyer_select', { mode: 'decide_only' }))
+    expect(screen.getByRole('button', { name: 'Decide only' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'false')
+  })
+})
+
 describe('ConfigPanel: buyer_select mode hint names where decide only sends leads (#1490)', () => {
   it('says decide only routes every sell off lead to deferred, back to the rest of the workflow', () => {
     renderPanel(nodeOf('buyer_select', { mode: 'decide_only' }))

@@ -1612,7 +1612,8 @@ function BuyerSelectConfig({
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
 }) {
-  const mode = config.mode === 'live' ? 'live' : 'decide_only'
+  // No default: the engine has none and fails the step as mode_invalid, so an unset mode is shown as unset (#1495).
+  const mode = config.mode === 'live' ? 'live' : config.mode === 'decide_only' ? 'decide_only' : null
   const population = (config.population as string | undefined) ?? ''
   const livePercentEnv = (config.live_percent_env as string | undefined) ?? ''
   const template = (key: string) => (config[key] as string | undefined) ?? ''
@@ -1631,6 +1632,7 @@ function BuyerSelectConfig({
             <button
               key={m}
               type="button"
+              aria-pressed={mode === m}
               onClick={() => onChange({ mode: m })}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 mode === m ? 'bg-graphite text-white' : 'text-gray-600 hover:text-graphite'
@@ -1640,10 +1642,12 @@ function BuyerSelectConfig({
             </button>
           ))}
         </div>
-        <p className="mt-1 text-xs text-gray-500">
-          {mode === 'decide_only'
-            ? 'Rehearses the whole sale against the buyers, claim and reservation included, and calls nobody. Every sell off lead routes to deferred, which hands it back to the rest of the workflow to sell as it does today.'
-            : 'Sells the lead. Only this mode can send to a buyer or fail the step.'}
+        <p className={`mt-1 text-xs ${mode === null ? 'text-amber-800' : 'text-gray-500'}`}>
+          {mode === null
+            ? 'No mode set. Choose one: the step fails as mode_invalid until it has a mode.'
+            : mode === 'decide_only'
+              ? 'Rehearses the whole sale against the buyers, claim and reservation included, and calls nobody. Every sell off lead routes to deferred, which hands it back to the rest of the workflow to sell as it does today.'
+              : 'Sells the lead. Only this mode can send to a buyer or fail the step.'}
         </p>
       </div>
 

@@ -52,6 +52,14 @@ describe('PricingTiersEditor', () => {
     expect(screen.getAllByText(/never above 1/i)).toHaveLength(1)
   })
 
+  it('says once, on the pricing group, that the upper bound is not included, in the words of the Salesforce bands the numbers are copied from (#1483)', () => {
+    render(<PricingTiersEditor value={tiers} onChange={() => {}} />)
+    const hint = screen.getAllByText(/upper bound is not included/i)
+    expect(hint).toHaveLength(1)
+    expect(hint[0].textContent).toMatch(/10,000 to 12,499/)
+    expect(hint[0].textContent).toMatch(/12,500/)
+  })
+
   it('renders a tier error beside the tier it names', () => {
     render(<PricingTiersEditor value={tiers} onChange={() => {}} errors={{ 'tiers[engine:30000]': 'This tier overlaps the one before it.' }} />)
     expect(screen.getByRole('alert')).toHaveTextContent('This tier overlaps the one before it.')
