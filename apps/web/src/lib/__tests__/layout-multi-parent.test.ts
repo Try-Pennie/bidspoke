@@ -77,6 +77,18 @@ describe('a card with several parents (#1499)', () => {
     expect(centreX(byId(laid, 'tripoint_ping'))).toBeCloseTo(mid, 0)
   })
 
+  // The live Engine definition also carries a stray buyer_select edge on a
+  // handle the node does not have ('output', #1493). It must not pull the card
+  // across: a card is centred on the configured outputs feeding it (seen on the
+  // live canvas 2026-09-23, tripoint_ping sat left of centre).
+  it('ignores a stray edge on a handle the node does not have when centring', () => {
+    const { nodes, edges } = engineShape()
+    edges.push({ id: 'stray', source: 'bs', target: 'tripoint_ping', sourceHandle: 'output' })
+    const laid = layoutWorkflow(nodes, edges)
+    const mid = (handleX(laid, 'not_applicable') + handleX(laid, 'deferred')) / 2
+    expect(centreX(byId(laid, 'tripoint_ping'))).toBeCloseTo(mid, 0)
+  })
+
   it('carries the chain below a centred card with it', () => {
     const { nodes, edges } = engineShape()
     const laid = layoutWorkflow(nodes, edges)
