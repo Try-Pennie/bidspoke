@@ -17,7 +17,7 @@ A lead that fails either routes `not_applicable`. A `sell_off_when` that cannot 
 
 | Mode | What happens |
 |------|--------------|
-| `decide_only` | Everything except the buyer call: eligibility, ranking, the claim, the reservation and the commit, all under the `rehearsal` ledger kind, with caps from the `BUYER_SELECT_REHEARSAL_CAPS` environment variable. The lead routes `deferred` and the output records what would have been sent. This mode never fails the step and gives up after 800 ms with `rehearsal_deadline`. |
+| `decide_only` | Everything except the buyer call: eligibility, ranking, the claim, the reservation and the commit, all under the `rehearsal` ledger kind, with caps from the `BUYER_SELECT_REHEARSAL_CAPS` environment variable. The lead routes `deferred` and the output records what would have been sent. This mode never fails the step and gives up after 800 ms with `rehearsal_deadline`; the 800 ms bounds the whole node, so a slow object call ends the rehearsal at the deadline rather than running its own full time (#1491). |
 | `live` | Sells. Only this mode calls a buyer and only this mode can fail the step. |
 
 There is no default: a missing or unknown mode fails the step as `mode_invalid`.

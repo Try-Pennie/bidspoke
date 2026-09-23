@@ -16,8 +16,16 @@
  *
  * The waiter for a lead another execution holds takes its sleep and clock from
  * `deps`, so a test asserts its schedule instead of living through it (L524).
+ *
+ * Under a budget (`deps.budgetLeftMs`, the decide_only rehearsal, #1491) the
+ * attempt is bounded as a WHOLE rather than per call: it stops between steps
+ * once the budget is spent, and a call that runs out of time is the budget
+ * ending, reported as rehearsal_deadline, never as a cap check error or an
+ * unknown outcome that pages. Nothing real is at risk in a rehearsal, so the
+ * claim is freed and the reservation released wherever the object still
+ * allows it. Without a budget (live) every deadline keeps its live meaning.
  */
-import type { OutReason, SaleOutcome } from '@bidspoke/buyer-profile'
+import { DeadlineError, type OutReason, type SaleOutcome } from '@bidspoke/buyer-profile'
 import type { ClaimBody, ClaimResult, SaleState } from '../durable-objects/lead-sale'
 import type { CapLimits, CapReason, Counts, EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../durable-objects/buyer-ledger'
 import type { LedgerKind, Population } from '@bidspoke/buyer-profile'
@@ -93,11 +101,20 @@ export interface AttemptDeps {
   waitIntervalMs: number
   /** Called after each step lands. A throw here aborts the attempt like a crash would. */
   onStep?: (step: AttemptStep) => void | Promise<void>
+  /**
+   * What is left of a budget the whole attempt must fit in, in ms, read before
+   * each step (#1491). Present only in a rehearsal; when it is, a spent budget
+   * or a call that runs out of time ends the attempt as rehearsal_deadline.
+   */
+  budgetLeftMs?: () => number
 }
+
+/** The attempt's reasons: every out reason, plus the rehearsal budget ending (a node reason, never recorded as an out reason). */
+export type AttemptReason = OutReason | 'rehearsal_deadline'
 
 export type AttemptResult =
   | { result: 'sold'; outcome: SaleOutcomeRecord; replay: boolean; mirrored: boolean }
-  | { result: 'no_sale'; reason: OutReason; detail?: string; page?: boolean }
+  | { result: 'no_sale'; reason: AttemptReason; detail?: string; page?: boolean }
 
 /** How many times the in_doubt resolution may re-read the claim before giving up. */
 const MAX_CLAIM_ROUNDS = 5
@@ -112,6 +129,10 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   if (claimed.kind !== 'claimed') return claimed.result
   let generation = claimed.generation
   await step('claimed')
+  if (budgetSpent(deps)) {
+    await freeQuietly(deps, generation)
+    return budgetEnded('after the claim')
+  }
 
   // ── 2. reserve ──────────────────────────────────────────────────────────────
   let reservation: ReserveResult
@@ -119,6 +140,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
     reservation = await deps.ledger.reserve({ ...key, payout_cents: input.payout_cents, execution_id: input.execution_id, limits: input.limits })
   } catch (err) {
     await freeQuietly(deps, generation)
+    if (budgetTimedOut(deps, err)) return budgetEnded('reserving at the buyer')
     return { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) }
   }
   if (!reservation.reserved) {
@@ -129,6 +151,11 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
     return handleRepeat(input, deps, generation, reservation.entry)
   }
   await step('reserved')
+  if (budgetSpent(deps)) {
+    await deps.ledger.release(key, 'released').catch(() => undefined)
+    await freeQuietly(deps, generation)
+    return budgetEnded('after the reservation')
+  }
 
   // ── 3. call the buyer ───────────────────────────────────────────────────────
   let call: BuyerCall
@@ -163,6 +190,12 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   try {
     entry = await deps.ledger.commit(key, call.record)
   } catch (err) {
+    if (budgetTimedOut(deps, err)) {
+      // A rehearsal: no buyer holds the lead, so let go of what the objects still allow.
+      await deps.ledger.release(key, 'released').catch(() => undefined)
+      await freeQuietly(deps, generation)
+      return budgetEnded('committing at the buyer')
+    }
     return { result: 'no_sale', reason: 'outcome_unknown', page: true, detail: messageOf(err) }
   }
   await step('committed')
@@ -171,6 +204,8 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   try {
     generation = await deps.sale.sold(generation, call.record)
   } catch (err) {
+    // The entry is committed, so the claim heals to sold from it on the next attempt (resolveInDoubt): nothing to undo, nothing to page.
+    if (budgetTimedOut(deps, err)) return budgetEnded('marking the lead sold; the committed entry heals the claim')
     return { result: 'no_sale', reason: 'outcome_unknown', page: true, detail: messageOf(err) }
   }
   await step('marked_sold')
@@ -314,6 +349,20 @@ async function handleRepeat(input: AttemptInput, deps: AttemptDeps, generation: 
 }
 
 // ── Small helpers ──────────────────────────────────────────────────────────────
+
+/** Under a budget, is it spent? Without one, never. */
+function budgetSpent(deps: AttemptDeps): boolean {
+  return deps.budgetLeftMs !== undefined && deps.budgetLeftMs() <= 0
+}
+
+/** Under a budget, a call that ran out of time is the budget ending. Without one, it keeps its own meaning. */
+function budgetTimedOut(deps: AttemptDeps, err: unknown): boolean {
+  return deps.budgetLeftMs !== undefined && err instanceof DeadlineError
+}
+
+function budgetEnded(where: string): AttemptResult {
+  return { result: 'no_sale', reason: 'rehearsal_deadline', detail: `the rehearsal budget ran out ${where}` }
+}
 
 async function freeQuietly(deps: AttemptDeps, generation: number): Promise<void> {
   // A refusal here means the claim already moved on, which is the state we wanted.

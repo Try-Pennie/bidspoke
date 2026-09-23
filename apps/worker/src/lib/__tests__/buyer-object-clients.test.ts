@@ -162,3 +162,22 @@ describe('BuyerLedgerClient', () => {
     expect((err as DeadlineError).ms).toBe(750)
   })
 })
+
+describe('a deadline given as a function (#1491)', () => {
+  it('is read per call, so a shrinking budget bounds each later call more tightly', async () => {
+    const { timers, fire, pending } = manualTimers()
+    const { ns } = namespace(() => new Promise<Response>(() => undefined))
+    const budgets = [300, 50]
+    const client = new LeadSaleClient(ns, { kind: 'rehearsal', population: 'engine', lead_key: 'lead-1' }, { deadlineMs: () => budgets.shift() ?? 1, timers })
+    const first = client.claim({ partner_id: 'p', execution_id: 'e', deadline_ms: 800 })
+    expect(pending[0].ms).toBe(300)
+    fire()
+    await expect(first).rejects.toBeInstanceOf(DeadlineError)
+    const second = client.claim({ partner_id: 'p', execution_id: 'e', deadline_ms: 800 })
+    expect(pending[0].ms).toBe(50)
+    fire()
+    const err = await second.catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeadlineError)
+    expect((err as DeadlineError).ms).toBe(50)
+  })
+})

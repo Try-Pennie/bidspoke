@@ -55,7 +55,7 @@ import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../durable-objects/buyer-ledger'
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
-import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from '../../lib/buyer-object-clients'
+import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
@@ -71,7 +71,19 @@ import { resolveSalePayload } from './buyer-select-payload'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** decide_only sits on Engine's response path, so it gives up before it costs a bid. */
+/**
+ * decide_only sits on Engine's response path, so it gives up before it costs a bid.
+ *
+ * The budget bounds the WHOLE node, not each wait (#1491): every object call
+ * inside the attempt is given what is left of it, read at the call, and the
+ * attempt stops between steps once it is spent. Before that, each call was
+ * bounded by the remaining budget only at the moment it started, so a call
+ * starting with 1 ms left could run its own full time. Measured on the Engine
+ * Bidding Workflow during Stage A (2026-09-23 19:18 to 19:45 UTC, per wait):
+ * deferred rows p50 648 ms, p95 1,087 ms, max 1,209 ms, and by 21:00 UTC a
+ * max of 4,998 ms, none reporting rehearsal_deadline. The after figures go on
+ * #1491 and #1414 from the first full day with this in force.
+ */
 export const BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS = 800
 /** The whole buyer call, the same budget tripoint_ping's fetch carried. */
 export const BUYER_CALL_TIMEOUT_MS = 20_000
@@ -172,8 +184,9 @@ export interface BreakerApi {
 
 export interface BuyerSelectDeps {
   loadProfiles: () => Promise<BuyerProfilesSnapshot>
-  saleClient: (key: EntryKey) => SaleApi
-  ledgerClient: (partnerId: string) => LedgerApi
+  /** In decide_only the node passes a deadline function reading what is left of its budget (#1491); in live, nothing, so the client keeps its own. */
+  saleClient: (key: EntryKey, opts?: ClientOptions) => SaleApi
+  ledgerClient: (partnerId: string, opts?: ClientOptions) => LedgerApi
   callBuyer: (target: PartnerCallTarget, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
   breaker: (slug: string) => BreakerApi
   mirror: (row: BuyerSaleRow, entry: LedgerEntry, partnerId: string) => Promise<void>
@@ -189,8 +202,8 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   const orgId = ctx.trigger.org_id
   return {
     loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase),
-    saleClient: (key) => new LeadSaleClient(env.LEAD_SALE, key),
-    ledgerClient: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
+    saleClient: (key, opts) => new LeadSaleClient(env.LEAD_SALE, key, opts),
+    ledgerClient: (partnerId, opts) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId, opts),
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
     breaker: (slug) => new CircuitBreakerClient(env, slug),
     mirror: async (row, entry, partnerId) => {
@@ -550,19 +563,24 @@ class Run {
       }
     }
 
+    // In decide_only the WHOLE attempt shares the node's budget (#1491): every object call is
+    // bounded by what is left of it, read at the call, and the attempt stops between steps
+    // once it is spent. In live each call keeps the client's own deadline and the attempt is unbudgeted.
+    const budget: ClientOptions | undefined = live ? undefined : { deadlineMs: () => Math.max(1, this.remaining()), timers: this.deps.timers }
     let result: AttemptResult
     try {
       result = await runBuyerSaleAttempt(
         { partner_id: partner.id, execution_id: executionId, lead_key: leadKey, population, kind, payout_cents: c.payoutCents, limits },
         {
-          sale: this.deps.saleClient(key),
-          ledger: this.deps.ledgerClient(partner.id),
+          sale: this.deps.saleClient(key, budget),
+          ledger: this.deps.ledgerClient(partner.id, budget),
           callBuyer,
           mirror,
           clock: this.deps.clock,
           sleep: this.deps.sleep,
           buyerTimeoutMs: live ? BUYER_CALL_TIMEOUT_MS : Math.max(1, this.remaining()),
           waitIntervalMs: live ? CLAIM_WAIT_INTERVAL_MS : 50,
+          budgetLeftMs: live ? undefined : () => this.remaining(),
         }
       )
     } catch (err) {
@@ -609,6 +627,12 @@ class Run {
       case 'already_sold': {
         this.consider(c, 'skipped', reason, detail)
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', reason, detail) }
+      }
+      case 'rehearsal_deadline': {
+        // The rehearsal budget ran out inside this buyer's attempt; the attempt let go of what it held.
+        this.consider(c, 'not_reached', reason, detail)
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'not_reached', detail }, null, null))
+        return { kind: 'stop', result: this.done('deferred', reason, detail) }
       }
       default: {
         // A cap, cap_check_error, or anything else the ledger said: this buyer was never contacted.
