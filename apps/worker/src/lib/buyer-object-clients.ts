@@ -45,8 +45,20 @@ export const MEASURED_OBJECT_CALL_P99_MS = 1_492
 export const OBJECT_CALL_DEADLINE_MS = 5_000
 
 export interface ClientOptions {
-  deadlineMs?: number
+  /**
+   * How long one call may take. A function is read at EVERY call, so a caller
+   * spending one budget across several calls hands in what is left of it and
+   * each later call is bounded more tightly than the one before (#1491). A
+   * number is the same bound on every call.
+   */
+  deadlineMs?: number | (() => number)
   timers?: Timers
+}
+
+function deadlineOf(opts: ClientOptions): number {
+  const d = opts.deadlineMs
+  if (d === undefined) return OBJECT_CALL_DEADLINE_MS
+  return typeof d === 'function' ? Math.max(1, d()) : d
 }
 
 /** An object answered with a status the client does not know how to read. */
@@ -64,7 +76,7 @@ export class ObjectCallError extends Error {
 type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
-  const res = await withDeadline(stub.fetch(url, init), opts.deadlineMs ?? OBJECT_CALL_DEADLINE_MS, op, opts.timers)
+  const res = await withDeadline(stub.fetch(url, init), deadlineOf(opts), op, opts.timers)
   if (res.ok) return res.json<T>()
   const text = await res.text()
   if (res.status === 409 && refusal) {
