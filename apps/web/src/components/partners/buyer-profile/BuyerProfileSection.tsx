@@ -106,6 +106,8 @@ export function BuyerProfileSection(props: Props) {
   const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number; page: number } | null>(null)
   const [unresolvedError, setUnresolvedError] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
+  /** A failed Show more, kept apart from the first read's error so the rows already shown stay on screen with their controls. */
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const [settleOutcomes, setSettleOutcomes] = useState<Record<string, OutcomeState>>({})
 
   useEffect(() => {
@@ -128,11 +130,12 @@ export function BuyerProfileSection(props: Props) {
   async function loadMoreUnresolved() {
     if (!partnerId || !unresolved || loadingMore) return
     setLoadingMore(true)
+    setLoadMoreError(null)
     try {
       const r = await api.buyerSales.list({ status: 'unresolved', page: unresolved.page + 1, limit: UNRESOLVED_PAGE, partner_id: partnerId })
       setUnresolved((u) => (u ? { rows: [...u.rows, ...r.entries.map((e) => toUnresolvedSale(e, partnerName))], total: r.total, page: u.page + 1 } : u))
     } catch (err) {
-      setUnresolvedError(err instanceof Error ? err.message : 'The rest of the unresolved sales could not be read.')
+      setLoadMoreError(`The rest of the unresolved sales could not be read: ${err instanceof Error ? err.message : 'the read failed'}`)
     } finally {
       setLoadingMore(false)
     }
@@ -247,7 +250,10 @@ export function BuyerProfileSection(props: Props) {
             ) : unresolved === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the unresolved sales…</p>
             ) : (
-              <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
+              <>
+                <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
+                {loadMoreError && <p role="alert" className="text-xs text-red-700">{loadMoreError}</p>}
+              </>
             )}
           </div>
 
