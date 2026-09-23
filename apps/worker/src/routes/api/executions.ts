@@ -282,6 +282,15 @@ function subtypeRequired(nodeType: string): boolean {
   return requiresSubtype(nodeType)
 }
 
+// An archived step in the shape the live summary selects: the heavy payloads
+// dropped, and the exit a routing node chose kept as `route`, the same field
+// the live query reads as `route:output->>_route` (#1503).
+function toSummaryStep(step: unknown): Record<string, unknown> {
+  const { input: _i, output, logs: _l, ...rest } = step as Record<string, unknown>
+  const route = output && typeof output === 'object' ? (output as Record<string, unknown>)._route : undefined
+  return { ...rest, route: typeof route === 'string' ? route : null }
+}
+
 // GET /api/executions/:id
 //
 // `?summary=1` strips input/output/logs from step rows. The canvas execution
@@ -373,12 +382,7 @@ executions.get('/:id', async (c) => {
     }
     if (archived.kind === 'not-found') return c.json({ error: 'Execution not found' }, 404)
 
-    const archivedSteps = summary
-      ? archived.steps.map((step) => {
-          const { input: _i, output: _o, logs: _l, ...rest } = step as Record<string, unknown>
-          return rest
-        })
-      : archived.steps
+    const archivedSteps = summary ? archived.steps.map(toSummaryStep) : archived.steps
 
     // A replay or resume can be created any day the parent is still readable,
     // so it lands on its own archive day and the parent's own narrow window
@@ -415,8 +419,10 @@ executions.get('/:id', async (c) => {
     )
   }
 
+  // `route` is the one piece of output the summary keeps: the exit a routing
+  // node chose, which the canvas needs to light the path a lead took (#1503).
   const stepColumns = summary
-    ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order'
+    ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order, route:output->>_route'
     : '*'
 
   // Fetch steps + any executions that reference this one as parent (replays
@@ -494,7 +500,7 @@ executions.get('/:id', async (c) => {
         readBy: userId,
       })
       if (fromArchive.kind === 'ok') {
-        inheritable = fromArchive.steps as unknown as StepRow[]
+        inheritable = (summary ? fromArchive.steps.map(toSummaryStep) : fromArchive.steps) as unknown as StepRow[]
       }
     }
 

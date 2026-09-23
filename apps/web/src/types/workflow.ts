@@ -200,6 +200,12 @@ export interface ExecutionStep {
   error_type: string | null
   duration_ms: number
   retries_used: number
+  /**
+   * The exit a routing node chose (`output._route`), carried in the execution
+   * summary so the canvas can light the path taken without the full output
+   * (#1503). Absent for nodes that do not route.
+   */
+  route?: string | null
   // false until the canvas lazy-loads input/output/logs for this step.
   detail_loaded?: boolean
 }

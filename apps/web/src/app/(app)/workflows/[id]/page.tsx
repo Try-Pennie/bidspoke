@@ -82,6 +82,7 @@ function WorkflowEditorInner() {
           prevStep.error_type === step.error_type &&
           prevStep.duration_ms === step.duration_ms &&
           prevStep.retries_used === step.retries_used &&
+          prevStep.route === (step.route ?? null) &&
           prevStep.detail_loaded === detailLoaded &&
           prevStep.input === cachedInput &&
           prevStep.output === cachedOutput &&
@@ -98,6 +99,7 @@ function WorkflowEditorInner() {
               error_type: step.error_type,
               duration_ms: step.duration_ms,
               retries_used: step.retries_used,
+              route: step.route ?? null,
               detail_loaded: detailLoaded,
             }
       }

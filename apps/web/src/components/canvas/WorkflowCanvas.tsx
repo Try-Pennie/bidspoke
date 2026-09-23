@@ -77,6 +77,7 @@ import {
   renameNamespaceInList,
 } from '@/lib/rename-step-references'
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
+import { edgeRunStates } from './edges/edge-run-state'
 
 
 const edgeTypes = {
@@ -1532,32 +1533,28 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         idToNs.set(n.id, (n.data as unknown as CanvasNodeData).namespace)
       }
     }
-    setEdges((es) =>
-      es.map((edge) => {
-        const sourceNs = idToNs.get(edge.source)
-        const targetNs = idToNs.get(edge.target)
-        const sourceStep = sourceNs !== undefined ? stepsToUse[sourceNs] : undefined
-        const targetStep = targetNs !== undefined ? stepsToUse[targetNs] : undefined
-        const sourceRan = edge.source === 'trigger' || sourceStep != null
-        const targetRan = targetStep != null
-        const sourceFailed = sourceStep?.status === 'failed' || sourceStep?.status === 'failed_with_fallback'
-        const targetFailed = targetStep?.status === 'failed' || targetStep?.status === 'failed_with_fallback'
-
-        if (sourceRan && targetRan) {
-          // Path was taken — red if either endpoint failed, green otherwise
-          if (sourceFailed || targetFailed) {
+    setEdges((es) => {
+      // Judged by the exit each routing node chose, not by whether both ends
+      // ran, which lit every exit whenever they converge (#1503).
+      const states = edgeRunStates(es, (nodeId) => {
+        const ns = idToNs.get(nodeId)
+        return ns !== undefined ? stepsToUse[ns] : undefined
+      })
+      return es.map((edge) => {
+        switch (states.get(edge.id)) {
+          case 'taken_failed':
             return { ...edge, animated: true, style: { stroke: '#ef4444', strokeWidth: 2 } }
-          }
-          return { ...edge, animated: true, style: { stroke: '#22c55e', strokeWidth: 2 } }
-        } else if (sourceRan) {
-          // Source ran but this branch wasn't taken (e.g. filter pass when exit fired)
-          return { ...edge, animated: false, style: { stroke: '#d1d5db', strokeWidth: 1.5 } }
-        } else {
-          // Not yet reached — show as default gray so edges stay visible
-          return { ...edge, animated: false, style: undefined }
+          case 'taken':
+            return { ...edge, animated: true, style: { stroke: '#22c55e', strokeWidth: 2 } }
+          case 'not_taken':
+            // Source ran but this exit was not the one it took
+            return { ...edge, animated: false, style: { stroke: '#d1d5db', strokeWidth: 1.5 } }
+          default:
+            // Not yet reached: default gray so edges stay visible
+            return { ...edge, animated: false, style: undefined }
         }
       })
-    )
+    })
   }, [executionSteps, liveSteps]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Walk a plain-object/array value to produce dotted suggestion paths up to

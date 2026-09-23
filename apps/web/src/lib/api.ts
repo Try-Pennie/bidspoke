@@ -689,6 +689,8 @@ export const api = {
           completed_at: string
           duration_ms: number
           step_order: number
+          /** The exit a routing node chose, present in the summary response (#1503). */
+          route?: string | null
         }>
       }>(`/api/executions/${id}${qs}`)
     },
