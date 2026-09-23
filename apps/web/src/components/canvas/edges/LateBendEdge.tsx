@@ -1,6 +1,6 @@
 import { BaseEdge, getSmoothStepPath, useStore } from '@xyflow/react'
 import type { EdgeProps, ReactFlowState } from '@xyflow/react'
-import { laneGeometry, siblingLane } from './edge-lanes'
+import { laneBendY, siblingRank } from './edge-lanes'
 
 /**
  * Smoothstep-style edge that bends NEAR THE TARGET instead of at the midpoint
@@ -17,9 +17,9 @@ import { laneGeometry, siblingLane } from './edge-lanes'
  * Aligned source/target (same x) renders as a plain vertical line — the
  * horizontal bend segment collapses to zero.
  *
- * Two handles of ONE node wired to the same target handle would otherwise share
- * their last two segments and read as a single bracket (#1489), so each such
- * sibling takes its own lane from `edge-lanes.ts`.
+ * Two handles of ONE node wired to the same target handle would otherwise run
+ * along one horizontal line and read as a single bracket (#1489), so each such
+ * sibling bends at its own height from `edge-lanes.ts`, still ending on the handle.
  */
 /**
  * The edges sharing this edge's source node and target handle, as `id:handleX`
@@ -62,16 +62,15 @@ export function LateBendEdge({
   markerEnd,
 }: EdgeProps) {
   const key = useStore((s) => siblingKey(s, id, source, target, targetHandleId ?? null))
-  const { index, count } = siblingLane(id, parseSiblings(key))
-  const lane = laneGeometry({ index, count, sourceX, sourceY, targetX, targetY })
+  const { rank } = siblingRank(id, parseSiblings(key), sourceX, targetX)
   const [path] = getSmoothStepPath({
     sourceX,
     sourceY,
-    targetX: lane.targetX,
+    targetX,
     targetY,
     sourcePosition,
     targetPosition,
-    centerY: lane.centerY,
+    centerY: laneBendY({ rank, sourceY, targetY }),
     borderRadius: 8,
   })
   return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
