@@ -91,6 +91,24 @@ describe('GET /buyer-sales', () => {
     expect(sb.calls.buyer_sales).toEqual(expect.arrayContaining([['eq', ['organization_id', 'org-abc']], ['eq', ['status', 'unresolved']]]))
   })
 
+  it('narrows to one partner when asked, with the total from the same filtered query (#1457, L16)', async () => {
+    const sb = supabaseWith({ buyer_sales: { list: [saleRow], count: 3 } })
+    const res = await request(app, 'GET', `/buyer-sales?status=unresolved&partner_id=${PARTNER}`)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { entries: unknown[]; total: number }
+    expect(body).toMatchObject({ total: 3 })
+    expect(sb.calls.buyer_sales).toEqual(expect.arrayContaining([['eq', ['organization_id', 'org-abc']], ['eq', ['status', 'unresolved']], ['eq', ['partner_id', PARTNER]]]))
+  })
+
+  it('without a partner the queue is not narrowed, and an empty partner_id is refused rather than read as no partner', async () => {
+    const sb = supabaseWith({ buyer_sales: { list: [saleRow], count: 1 } })
+    expect((await request(app, 'GET', '/buyer-sales?status=unresolved')).status).toBe(200)
+    expect(sb.calls.buyer_sales.some(([op, args]) => op === 'eq' && (args as unknown[])[0] === 'partner_id')).toBe(false)
+    const empty = await request(app, 'GET', '/buyer-sales?status=unresolved&partner_id=')
+    expect(empty.status).toBe(400)
+    expect(await empty.json()).toMatchObject({ error: 'partner_id_invalid' })
+  })
+
   it('refuses a status outside the vocabulary and a page below 1', async () => {
     supabaseWith({ buyer_sales: { list: [] } })
     expect((await request(app, 'GET', '/buyer-sales?status=pending')).status).toBe(400)

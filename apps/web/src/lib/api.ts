@@ -807,8 +807,9 @@ export const api = {
   },
 
   buyerSales: {
-    list: (params: { status: string; page?: number; limit?: number }) => {
+    list: (params: { status: string; page?: number; limit?: number; partner_id?: string }) => {
       const q = new URLSearchParams({ status: params.status, page: String(params.page ?? 1), limit: String(params.limit ?? 20) })
+      if (params.partner_id) q.set('partner_id', params.partner_id)
       return req<{ entries: Array<Record<string, unknown>>; total: number; page: number; limit: number }>(`/api/buyer-sales?${q.toString()}`)
     },
     settle: (id: string, outcome: 'accepted' | 'released') =>

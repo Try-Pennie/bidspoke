@@ -153,6 +153,21 @@ describe('the Buyer profile section', () => {
     expect(screen.queryByLabelText('Leads per day')).toBeNull()
   })
 
+  it('asks the API for this buyer\'s unresolved sales only, shows the API\'s own total, and fetches the next page on Show more (#1457, L16)', async () => {
+    const sale = (n: number) => ({ id: `sale-${n}`, partner_id: 'p1', lead_key: `lead-${n}`, kind: 'live', payout_cents: 2190, reserved_at: '2027-09-20T15:30:00.000Z', http_status: 200, result_code: null, status: 'unresolved', partner_configs: { slug: 'tripoint', name: 'Tripoint' } })
+    vi.mocked(api.buyerSales.list)
+      .mockResolvedValueOnce({ entries: [sale(1)], total: 3, page: 1, limit: 100 })
+      .mockResolvedValueOnce({ entries: [sale(2), sale(3)], total: 3, page: 2, limit: 100 })
+    await renderBuyer()
+    await waitFor(() => expect(api.buyerSales.list).toHaveBeenCalledWith({ status: 'unresolved', page: 1, limit: 100, partner_id: 'p1' }))
+    expect(await screen.findByText('Showing 1 of 3 unresolved sales.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
+    await waitFor(() => expect(api.buyerSales.list).toHaveBeenLastCalledWith({ status: 'unresolved', page: 2, limit: 100, partner_id: 'p1' }))
+    // The lead key cell, so the count is of this list's rows and not of every table on the page.
+    await waitFor(() => expect(screen.getAllByText(/^lead-\d$/)).toHaveLength(3))
+    expect(screen.queryByText(/Showing/)).toBeNull()
+  })
+
   it('shows the usage panel with the other sellers named, and settles an unresolved sale through the API with its outcome on the row', async () => {
     vi.mocked(api.buyerSales.list).mockResolvedValue({
       entries: [{ id: 'sale-1', partner_id: 'p1', lead_key: 'lead-1', kind: 'live', payout_cents: 2190, reserved_at: '2027-09-20T15:30:00.000Z', http_status: 200, result_code: null, status: 'unresolved', partner_configs: { slug: 'tripoint', name: 'Tripoint' } }],

@@ -1,7 +1,7 @@
 /**
  * Buyer sales routes (#1412, Phase 5):
  *
- *   GET  /buyer-sales?status=unresolved&page=&limit=   the queue, from the mirror, paged
+ *   GET  /buyer-sales?status=unresolved&page=&limit=&partner_id=   the queue, from the mirror, paged, one buyer when asked
  *   POST /buyer-sales/:id/settle  { outcome }          settle one sale as accepted or released
  *
  * Settle is a LEDGER operation first (L83, the violation recorded on #1412). The
@@ -44,12 +44,24 @@ buyerSales.get('/', async (c) => {
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
     return c.json({ error: 'page_invalid', message: `page is 1 or more and limit is 1 to ${MAX_LIMIT}` }, 400)
   }
+  // One buyer's queue (#1457): the partner page used to read the whole queue and
+  // keep this buyer's rows, so rows past the first page were never shown while
+  // the total still read as complete. The filter and the count now come from the
+  // same query (L16). An empty value is refused rather than matched, because
+  // eq('partner_id', '') answers with an empty queue that looks like nothing
+  // waiting (L100).
+  const partnerId = c.req.query('partner_id')
+  if (partnerId !== undefined && partnerId.trim() === '') {
+    return c.json({ error: 'partner_id_invalid', message: 'partner_id, when given, is a partner id' }, 400)
+  }
   const from = (page - 1) * limit
-  const { data, error, count } = await supabase
+  let query = supabase
     .from('buyer_sales')
     .select('*, partner_configs(slug, name)', { count: 'exact' })
     .eq('organization_id', orgId)
     .eq('status', status)
+  if (partnerId !== undefined) query = query.eq('partner_id', partnerId)
+  const { data, error, count } = await query
     .order('reserved_at', { ascending: true })
     .range(from, from + limit - 1)
   if (error) return dbError(c, error)
