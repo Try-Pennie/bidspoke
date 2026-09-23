@@ -197,6 +197,17 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'the buyer_select_parity_days rows the Stage A exit criteria are read from stop being refreshed, so a day can pass out of the execution_steps retention window without being summarised (#1413)',
   },
+  {
+    id: 'engine-script-drift',
+    label: 'Engine script drift check',
+    triggerCron: '0 * * * *',
+    // 1h cadence, 1h slack, matching the other hourly jobs.
+    staleMs: 2 * H,
+    // One GitHub read of the mirror file and three string comparisons.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'a code node on the Engine Bidding Workflow can be edited without the kept copy in apps/worker/src/engine/scripts/engine-bidding noticing, so the script tests prove a script that no longer runs, and a paste is confirmed by nothing (#1472)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {

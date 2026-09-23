@@ -205,6 +205,16 @@ PARTNER_PROBE_ALERTS = "on"
 #                                    nothing anybody could query. About 26 rows
 #                                    and one Salesforce query per run.
 
+# The kept Engine canvas scripts as text (#1472). apps/worker/src/engine/scripts/
+# engine-bidding/*.js are byte for byte what is pasted into the Engine Bidding
+# Workflow's code nodes: script bodies, not modules. The hourly drift check
+# imports them to compare against the canvas mirror, so they are bundled as
+# strings. The same import is served by the vitest plugin in vitest.config.ts.
+[[rules]]
+type = "Text"
+globs = ["**/engine-bidding/*.js"]
+fallthrough = true
+
 [triggers]
 crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "*/5 * * * *", "* * * * *"]
 
