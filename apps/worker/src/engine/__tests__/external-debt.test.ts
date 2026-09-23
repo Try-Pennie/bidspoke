@@ -170,24 +170,23 @@ describe('external_debt reaches the database (#1169)', () => {
 })
 
 /**
- * The Engine flow, which is where nearly all the volume is (#1169 follow-up).
+ * The Engine flow, which is where nearly all the volume is (#1169 follow-up,
+ * re-aimed by #1482).
  *
  * Only Main Flow bids through a bid_group. The Engine Bidding Workflow bids
- * Tripoint from a CODE node, so it has no context map to read and recorded no
- * debt at all, which is 48,518 of the 49,311 Tripoint attempts in the 7 days to
- * 2026-09-04. Filling the column on Main Flow alone leaves it filled on about
- * two percent of the traffic while reading as done.
+ * Tripoint from a CODE node, so it has no context map to read: 48,518 of the
+ * 49,311 Tripoint attempts in the 7 days to 2026-09-04. Filling the column on
+ * Main Flow alone leaves it filled on about two percent of the traffic while
+ * reading as done.
  *
- * The paths are taken from the Engine flow's own Pipedream source
- * (docs/reference/engine-bidding-pipedream.json), not guessed. Its
- * patch_prospect_body step builds
- *
- *     requestBody["ExternalDebtAmount__c"] =
- *       steps.prospect_trades.$return_value.tradeCalculations.enrollableDebt
- *
- * and the importer rewrites `$return_value` to `output`. ExternalDebtAmount__c
- * is preferred over the raw enrollableDebt because it is the number that
- * actually reached Salesforce, and Salesforce is what prices the revenue on it.
+ * WHICH figure: since 2026-09-23 the Tripoint buyer profile prices and bounds
+ * on tradeCalculations.engineDebt (Phase 0 item 11, #1407) and the Salesforce
+ * ExternalExchangeRevenue__c formula multiplies Prospect__c.EngineDebt__c
+ * (changed 17:57 UTC that day), so engineDebt is the number every payout and
+ * every estimate is computed on. enrollableDebt, and the ExternalDebtAmount__c
+ * the patch copies it into, differ from it on about 46 percent of eligible
+ * sell off leads (#1482) and are NOT read: a row carrying only those records
+ * null rather than a figure in the wrong unit (L118).
  *
  * The RML flows are deliberately NOT covered: their source carries no debt
  * figure at all (the only "debt" in it is the loan purpose debt_consolidation),
@@ -200,56 +199,52 @@ describe('extractExternalDebt: the Engine flow bids from a code node', () => {
     { id: 'n3', namespace: 'tripoint_ping', type: 'code', config: {} },
   ] as NodeDefinition[]
 
-  it('reads the debt that reached Salesforce', () => {
+  it('reads engineDebt through the body wrapper the live flows use', () => {
     const steps = {
-      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500, BidStatus__c: 'Bid' } },
-    } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(24500)
-  })
-
-  it('falls back to the trade calculation the figure is derived from', () => {
-    const steps = {
-      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 18250 } } },
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 18250, enrollableDebt: 22100 } } } },
     } as unknown as Record<string, StepOutput>
     expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(18250)
   })
 
-  it('prefers the figure sent to Salesforce when both are present', () => {
-    // They are normally the same number, one copied from the other. When they
-    // differ, the one Salesforce priced revenue on is the one worth recording.
+  it('still reads an unwrapped trade calculation, which is the shape the Pipedream source had', () => {
     const steps = {
-      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 18250 } } },
-      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+      prospect_trades: { status: 'completed', output: { tradeCalculations: { engineDebt: 9100, enrollableDebt: 9100 } } },
     } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(24500)
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(9100)
   })
 
-  it('records a rejected Engine run with no debt as null', () => {
-    // The rejected branch builds a body with no debt field at all.
+  it('does not read enrollableDebt or the ExternalDebtAmount__c the patch copies it into: a run carrying only those records null (#1482)', () => {
     const steps = {
-      patch_prospect_body: { status: 'completed', output: { BidStatus__c: 'Rejected', RejectionReason__c: 'x' } },
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { enrollableDebt: 22100 } } } },
+      patch_prospect_body: { status: 'completed', output: { ExternalPartnerName__c: 'Tripoint', ExternalDebtAmount__c: 22100, BidStatus__c: 'Bid' } },
     } as unknown as Record<string, StepOutput>
     expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
   })
 
-  it('ignores a non-code node carrying the same field name', () => {
-    const nodes = [{ id: 'n1', namespace: 'sf_patch', type: 'salesforce', config: {} }] as NodeDefinition[]
+  it('covers an Engine run Tripoint did not win: the trades step holds the debt either way', () => {
     const steps = {
-      sf_patch: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 15400, enrollableDebt: 15400 } } } },
+      patch_prospect_body: { status: 'completed', output: { BidAmount__c: 12.5, BidStatus__c: 'Bid' } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(15400)
+  })
+
+  it('records a run whose trades step did not complete as null', () => {
+    const steps = {
+      prospect_trades: { status: 'failed', output: { body: { tradeCalculations: { engineDebt: 15400 } } } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
+  })
+
+  it('ignores a non-code node carrying the same shape', () => {
+    const nodes = [{ id: 'n1', namespace: 'sf_read', type: 'salesforce', config: {} }] as NodeDefinition[]
+    const steps = {
+      sf_read: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 24500 } } } },
     } as unknown as Record<string, StepOutput>
     expect(extractExternalDebt(ctxWith(steps), nodes)).toBeNull()
   })
 
-  it('ignores a failed step', () => {
-    const steps = {
-      patch_prospect_body: { status: 'failed', output: { ExternalDebtAmount__c: 24500 } },
-    } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
-  })
-
   it('an RML shaped run records no debt, which is correct rather than a gap', () => {
-    // Loan amount and income, no debt anywhere. Recording null here is the right
-    // answer, so this asserts the absence deliberately rather than by omission.
     const nodes = [{ id: 'n1', namespace: 'build_response', type: 'code', config: {} }] as NodeDefinition[]
     const steps = {
       build_response: { status: 'completed', output: { loanAmount: 15000, annualIncome: 80000 } },
@@ -258,89 +253,62 @@ describe('extractExternalDebt: the Engine flow bids from a code node', () => {
   })
 
   it('the bid group context still wins when a workflow has both', () => {
-    // Main Flow must not change behaviour: the context map is what its pricing
-    // reads, so it stays the first source consulted.
     const nodes = [
       ...engineNodes,
       { id: 'n4', namespace: 'bid_race', type: 'bid_group', config: { context: { finalDebt: '{{steps.elig.output.final}}' } } },
     ] as NodeDefinition[]
     const steps = {
       elig: { status: 'completed', output: { final: 31000 } },
-      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 18250 } } } },
     } as unknown as Record<string, StepOutput>
     expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(31000)
   })
 })
 
 /**
- * The fallback path, read from the LIVE definitions rather than the Pipedream
- * original (#1169 follow-up).
- *
- * The ported flows wrap the trade calculation one level deeper than the source
- * they were ported from. Both the Engine and Lead Economy workflows read
- *
- *     steps.prospect_trades.output.body.tradeCalculations.enrollableDebt
- *
- * verified 2026-09-09 against the definitions in the Try-Pennie/bidspoke-workflows
- * backup, which is what production is actually running. A fallback written
- * without the `body` level can never match, and a fallback that never fires is
- * indistinguishable from one that was not needed.
- *
- * It IS needed. In the live Engine flow `ExternalDebtAmount__c` is assigned only
- * inside `if (tripointBid)`, so an Engine run won by anyone else carries no debt
- * on patch_prospect_body at all, while prospect_trades holds it either way.
+ * The buyer_select node is the pricing once it is placed (#1482): it records
+ * the debt it priced the lead on as `lead_debt`, and that recorded figure is
+ * the sighting's debt before any template or step is consulted (L70: one
+ * definition of where the debt comes from, the node's own).
  */
-describe('extractExternalDebt: the trade calculation the ported flows actually use', () => {
+describe('extractExternalDebt: the buyer_select node records the debt it priced on', () => {
   const nodes = [
     { id: 'n1', namespace: 'prospect_trades', type: 'code', config: {} },
-    { id: 'n2', namespace: 'patch_prospect_body', type: 'code', config: {} },
+    { id: 'n2', namespace: 'buyer_select', type: 'buyer_select', config: {} },
   ] as NodeDefinition[]
 
-  it('reads the debt through the body wrapper the live flows use', () => {
+  it('reads the node output first, ahead of the trades step', () => {
     const steps = {
-      prospect_trades: {
-        status: 'completed',
-        output: { body: { tradeCalculations: { enrollableDebt: 21750 } } },
-      },
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 18250 } } } },
+      buyer_select: { status: 'completed', output: { _route: 'deferred', lead_debt: 18300 } },
     } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(21750)
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(18300)
   })
 
-  it('covers an Engine run that Tripoint did not win, which carries no ExternalDebtAmount__c', () => {
-    // patch_prospect_body only sets the debt inside the Tripoint branch, so this
-    // is the shape of every Engine run won by another partner.
-    const steps = {
-      prospect_trades: {
-        status: 'completed',
-        output: { body: { tradeCalculations: { enrollableDebt: 15400 } } },
-      },
-      patch_prospect_body: {
-        status: 'completed',
-        output: { BidAmount__c: 12.5, BidStatus__c: 'Bid' },
-      },
-    } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(15400)
+  it('rounds the recorded debt to a whole number and keeps a zero', () => {
+    const steps = { buyer_select: { status: 'completed', output: { _route: 'not_applicable', lead_debt: 0 } } } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(0)
+    const half = { buyer_select: { status: 'completed', output: { _route: 'deferred', lead_debt: 12499.62 } } } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(half), nodes)).toBe(12500)
   })
 
-  it('still prefers the figure that reached Salesforce when Tripoint did win', () => {
-    const steps = {
-      prospect_trades: {
-        status: 'completed',
-        output: { body: { tradeCalculations: { enrollableDebt: 15400 } } },
-      },
-      patch_prospect_body: {
-        status: 'completed',
-        output: { ExternalPartnerName__c: 'Tripoint', ExternalDebtAmount__c: 15400 },
-      },
+  it('falls through to the trades step when the node recorded no debt, and ignores a failed node step', () => {
+    const noDebt = {
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 18250 } } } },
+      buyer_select: { status: 'completed', output: { _route: 'not_applicable', lead_debt: null } },
     } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(15400)
+    expect(extractExternalDebt(ctxWith(noDebt), nodes)).toBe(18250)
+    const failed = {
+      prospect_trades: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 18250 } } } },
+      buyer_select: { status: 'failed', output: { lead_debt: 99999 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(failed), nodes)).toBe(18250)
   })
 
-  it('still reads an unwrapped trade calculation, which is the shape the source had', () => {
-    const steps = {
-      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 9100 } } },
-    } as unknown as Record<string, StepOutput>
-    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(9100)
+  it('ignores a step of another type that happens to carry lead_debt', () => {
+    const other = [{ id: 'n1', namespace: 'shape', type: 'code', config: {} }] as NodeDefinition[]
+    const steps = { shape: { status: 'completed', output: { lead_debt: 5000 } } } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), other)).toBeNull()
   })
 })
 
