@@ -1,6 +1,27 @@
 const pt = steps.prospect_trades.output.body;
 const engineBid = pt.engineBid;
 
+// What patch_prospect_reject writes on a rejection (#1471): the two fields it wrote by
+// template today, plus Tripoint's response class when a sale was declined with a result
+// code, so Salesforce can tell a duplicate Tripoint already holds from a lead nobody
+// wanted. The mapping is the one patch_prospect_body uses on the offer path; a test holds
+// the two copies equal. A rejection with no code (a zero bid, a 502 fault) carries the
+// two fields alone, which is why this is built here and not by the node's body template:
+// a template cannot leave a field out. The node's body is
+// {{steps.build_response_body.output.reject_patch}}.
+const rejectPatch = (reason, resultCode) => {
+  const patch = { BidStatus__c: 'Rejected', RejectionReason__c: reason };
+  const rc = resultCode != null ? Number(resultCode) : null;
+  if (rc != null) {
+    const success   = new Set([1000, 1001, 1013, 1014, 1015, 1016, 1017]);
+    const duplicate = new Set([1003, 1004, 1020]);
+    if (success.has(rc))         patch.Tripoint_Response__c = 'Success';
+    else if (duplicate.has(rc))  patch.Tripoint_Response__c = 'Duplicate';
+    else                         patch.Tripoint_Response__c = 'Fail';
+  }
+  return patch;
+};
+
 // Early rejection: no bid
 if (engineBid === 0) {
   return {
@@ -10,6 +31,7 @@ if (engineBid === 0) {
       status: 'rejected',
       reason: 'unqualified_lead',
     },
+    reject_patch: rejectPatch('unqualified_lead', null),
   };
 }
 
@@ -32,6 +54,7 @@ const declined = sale
         status: 'rejected',
         reason: 'unqualified_lead',
       },
+      reject_patch: rejectPatch('unqualified_lead', sale ? sale.result_code : (tp?.resultCode ?? null)),
     };
   }
 

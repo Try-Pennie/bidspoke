@@ -24,13 +24,20 @@ the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 | File | Node | What changed for the cutover |
 | --- | --- | --- |
 | `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). |
-| `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, and falls back to the legacy `qualified` field while the older `tripoint_ping` is on the canvas. The zero bid early return is untouched. |
+| `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, and falls back to the legacy `qualified` field while the older `tripoint_ping` is on the canvas. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` (Success, Duplicate or Fail, the mapping `patch_prospect_body` uses) when a sale was declined with a result code; a rejection with no code carries the two fields alone. |
 | `patch_prospect_body.js` | Patch Prospect Body | Reads `TripointLeadID__c` and `Tripoint_Response__c` from the same sale, with the same fallback. The click URL test for the four External fields and the Duplicate mapping are untouched. |
 
 The scripts can be pasted in any order: each reads the older shape when the
 newer one is absent. `tripoint_ping` can go first and alone, which starts
 recording `sent_body_sha256` for the Stage A parity report before the topology
 changes.
+
+One canvas change is not a paste and has an order (#1471): AFTER
+`build_response_body` is pasted, set the `patch_prospect_reject` Salesforce
+node's body to `{{steps.build_response_body.output.reject_patch}}`, replacing
+its two templated fields. Done the other way round the body would resolve to
+nothing on every rejection until the paste. The drift check does not cover a
+Salesforce node's body, so confirm it by reading the node after saving.
 
 ## Tests
 

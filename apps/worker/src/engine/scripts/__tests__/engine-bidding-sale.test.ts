@@ -63,6 +63,12 @@ const withoutNewFields = (tp: Json): Json => {
   return rest
 }
 
+/** The recorded responses predate `reject_patch` (#1471), so byte equality is on the fields they hold; the new field has its own tests below. */
+const legacyResponse = (r: Arm['response'] & { reject_patch?: unknown }): Arm['response'] => {
+  const { reject_patch: _patch, ...rest } = r
+  return rest
+}
+
 const sale = (over: Partial<Sale>): Sale => ({ skipped: false, accepted: false, buyer_reference: null, result_code: null, partner_slug: 'tripoint', ...over })
 const nodeStep = (route: string, s: Sale) => ({ output: { _route: route, reason: route, mode_effective: 'live', population: 'engine', sale: s } })
 
@@ -79,7 +85,7 @@ describe('legacy arms: a lead tripoint_ping decides gets exactly what it gets to
   for (const [name, pt, answer] of legacy) {
     it(`${name}: response body and patch body are byte for byte the live scripts' output, and every live tripoint_ping field is unchanged`, async () => {
       const got = await runChain(baseSteps(pt), answer ? answerWith(answer.httpStatus, answer.body) : null)
-      expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS[name].response))
+      expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS[name].response))
       expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS[name].patch_prospect_body))
       expect(JSON.stringify(withoutNewFields(got.tripoint_ping as Json))).toBe(JSON.stringify(ARMS[name].tripoint_ping))
     })
@@ -150,7 +156,7 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     const steps = baseSteps(fixtures.prospect_trades_sell_off)
     steps.buyer_select = nodeStep('sold', sale({ accepted: true, buyer_reference: 'masked', result_code: '1001' }))
     const got = await runChain(steps, null, false)
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.sold_1001.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.sold_1001.response))
     expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS.sold_1001.patch_prospect_body))
   })
 
@@ -158,7 +164,7 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     const steps = baseSteps(fixtures.prospect_trades_sell_off)
     steps.buyer_select = nodeStep('no_sale', sale({ accepted: false, buyer_reference: 'masked', result_code: '1003' }))
     const got = await runChain(steps, null, false)
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.declined_1003.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.declined_1003.response))
     expect(got.patch).toBeNull()
   })
 
@@ -166,14 +172,14 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     const steps = baseSteps(fixtures.prospect_trades_sell_off)
     steps.buyer_select = nodeStep('no_sale', sale({ accepted: false }))
     const got = await runChain(steps, null, false)
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.fault_invalid_502.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.fault_invalid_502.response))
   })
 
   it('node not_applicable: tripoint_ping still runs and still decides, so a non sell off lead gets its usual offer', async () => {
     const steps = baseSteps(fixtures.prospect_trades_not_sell_off)
     steps.buyer_select = nodeStep('not_applicable', sale({ skipped: true, partner_slug: null }))
     const got = await runChain(steps, null)
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.skipped_not_sell_off.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.skipped_not_sell_off.response))
     expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS.skipped_not_sell_off.patch_prospect_body))
   })
 
@@ -181,7 +187,7 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     const steps = baseSteps(fixtures.prospect_trades_sell_off)
     steps.buyer_select = nodeStep('deferred', sale({ skipped: true, partner_slug: null }))
     const got = await runChain(steps, answerWith(success1001.httpStatus, success1001.body))
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.sold_1001.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.sold_1001.response))
     expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS.sold_1001.patch_prospect_body))
   })
 
@@ -189,7 +195,7 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     const steps = baseSteps(fixtures.prospect_trades_zero_bid)
     steps.buyer_select = nodeStep('sold', sale({ accepted: true, buyer_reference: 'masked', result_code: '1001' }))
     const got = await runChain(steps, null, false)
-    expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS.zero_bid.response))
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.zero_bid.response))
   })
 
   it('a duplicate code on the offer path maps to Duplicate in the patch body, kept exactly as today even though no live path reaches it', async () => {
@@ -213,8 +219,57 @@ describe('mixed versions on the canvas (L640): the new response and patch script
       steps.tripoint_ping = { output: ARMS[name].tripoint_ping }
       expect('sale' in ARMS[name].tripoint_ping).toBe(false)
       const got = await runChain(steps, null, false)
-      expect(JSON.stringify(got.response)).toBe(JSON.stringify(ARMS[name].response))
+      expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS[name].response))
       expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS[name].patch_prospect_body))
     })
   }
+})
+
+describe('the reject patch (#1471): what patch_prospect_reject writes, built where the rejection is decided', () => {
+  type Rejected = Arm['response'] & { reject_patch?: Record<string, unknown> }
+  const rejectPatchOf = async (steps: CanvasRun['steps'], fetch: CanvasRun['fetch'] | null, runTripoint: boolean) =>
+    ((await runChain(steps, fetch, runTripoint)).response as Rejected).reject_patch
+
+  it('a declined sell off lead carries the class of its result code beside the two fields the node writes today', async () => {
+    const patch = await rejectPatchOf(baseSteps(fixtures.prospect_trades_sell_off), answerWith(duplicate1003.httpStatus, duplicate1003.body), true)
+    expect(patch).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead', Tripoint_Response__c: 'Duplicate' })
+  })
+
+  it('a rejection with no result code (a zero bid, a 502 fault) carries exactly the two fields and no response class', async () => {
+    expect(await rejectPatchOf(baseSteps(fixtures.prospect_trades_zero_bid), null, true)).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+    const fault = await rejectPatchOf(baseSteps(fixtures.prospect_trades_sell_off), answerWith(502, fixtures.tripoint_null_id_502.body), true)
+    expect(fault).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+    expect(fault).not.toHaveProperty('Tripoint_Response__c')
+  })
+
+  it('an offer carries no reject patch at all', async () => {
+    expect(await rejectPatchOf(baseSteps(fixtures.prospect_trades_sell_off), answerWith(success1001.httpStatus, success1001.body), true)).toBeUndefined()
+    expect(await rejectPatchOf(baseSteps(fixtures.prospect_trades_not_sell_off), null, true)).toBeUndefined()
+  })
+
+  it('a decline the buyer_select node recorded maps its code the same way, and a code outside success and duplicate is Fail', async () => {
+    const steps = baseSteps(fixtures.prospect_trades_sell_off)
+    steps.buyer_select = nodeStep('no_sale', sale({ accepted: false, buyer_reference: 'masked', result_code: '1020' }))
+    expect(await rejectPatchOf(steps, null, false)).toMatchObject({ Tripoint_Response__c: 'Duplicate' })
+    steps.buyer_select = nodeStep('no_sale', sale({ accepted: false, buyer_reference: null, result_code: '2001' }))
+    expect(await rejectPatchOf(steps, null, false)).toMatchObject({ Tripoint_Response__c: 'Fail' })
+  })
+
+  it('the old tripoint_ping on the canvas still yields the class, from its legacy resultCode (L640)', async () => {
+    const steps = baseSteps(fixtures.prospect_trades_sell_off)
+    steps.tripoint_ping = { output: ARMS.declined_1003.tripoint_ping }
+    expect(await rejectPatchOf(steps, null, false)).toMatchObject({ Tripoint_Response__c: 'Duplicate' })
+  })
+
+  it('maps every code exactly as patch_prospect_body does on the offer path, so the two copies of the mapping cannot drift (L370)', async () => {
+    for (const code of ['1000', '1001', '1002', '1003', '1004', '1005', '1013', '1014', '1015', '1016', '1017', '1020', '2001', '9999']) {
+      const rejected = baseSteps(fixtures.prospect_trades_sell_off)
+      rejected.buyer_select = nodeStep('no_sale', sale({ accepted: false, buyer_reference: 'masked', result_code: code }))
+      const viaReject = (await rejectPatchOf(rejected, null, false))?.Tripoint_Response__c
+      const offered = baseSteps(fixtures.prospect_trades_sell_off)
+      offered.buyer_select = nodeStep('sold', sale({ accepted: true, buyer_reference: 'masked', result_code: code }))
+      const viaOffer = ((await runChain(offered, null, false)).patch as Json).Tripoint_Response__c
+      expect(viaReject, code).toBe(viaOffer)
+    }
+  })
 })
