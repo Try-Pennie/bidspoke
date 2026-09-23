@@ -1,5 +1,6 @@
 /**
- * Lanes for edges that share a source node and a target handle (#1489).
+ * Lanes for edges that enter the same target handle (#1489, widened to every
+ * source card by #1499).
  *
  * A late bend edge bends a fixed distance above its target and drops onto the
  * target handle, so two handles of one node wired to the same target (the
@@ -16,27 +17,33 @@ export const TURN_OFFSET = 32
 /** Vertical distance between sibling bend heights. */
 export const LANE_STEP = 16
 
-/** The height of this edge's horizontal run, for its rank among its siblings. */
-export function laneBendY({ rank, sourceY, targetY }: { rank: number; sourceY: number; targetY: number }): number {
+/**
+ * The height of this edge's horizontal run, for its rank among `count` siblings.
+ * When the stacked heights fit in the upper half of the gap they are used as
+ * they are. When they do not (the layout's normal row gap is 48 px, so a card
+ * one row down is the common case), the siblings are spread evenly across the
+ * gap instead, rank 0 lowest, so they never clamp onto one line; a lone edge
+ * then bends halfway down, as it always has.
+ */
+export function laneBendY({ rank, count, sourceY, targetY }: { rank: number; count: number; sourceY: number; targetY: number }): number {
   const span = Math.max(0, targetY - sourceY)
-  // Clamp to half the vertical span so a short edge never bends above its source.
-  return targetY - Math.min(TURN_OFFSET + rank * LANE_STEP, span / 2)
+  if (TURN_OFFSET + (count - 1) * LANE_STEP <= span / 2) return targetY - (TURN_OFFSET + rank * LANE_STEP)
+  return targetY - (span * (rank + 1)) / (count + 1)
 }
 
 /**
- * This edge's rank among its siblings, farthest horizontal travel first, then
- * edge id. `handleX` is each sibling's handle x relative to the shared source
- * node, so it is converted to absolute through this edge's own `sourceX`.
+ * This edge's rank among the edges entering the same target handle, farthest
+ * horizontal travel first, then edge id. `sourceX` is each edge's absolute
+ * start, so edges from different source cards rank together (#1499): three
+ * lines into one card each get their own height.
  */
 export function siblingRank(
   edgeId: string,
-  siblings: Array<{ id: string; handleX: number }>,
-  sourceX: number,
+  siblings: Array<{ id: string; sourceX: number }>,
   targetX: number,
 ): { rank: number; count: number } {
-  const mine = siblings.find((s) => s.id === edgeId)
-  if (!mine) return { rank: 0, count: 1 }
-  const travel = (s: { handleX: number }) => Math.abs(sourceX + (s.handleX - mine.handleX) - targetX)
+  if (!siblings.some((s) => s.id === edgeId)) return { rank: 0, count: 1 }
+  const travel = (s: { sourceX: number }) => Math.abs(s.sourceX - targetX)
   const ordered = [...siblings].sort((a, b) => travel(b) - travel(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return { rank: ordered.findIndex((s) => s.id === edgeId), count: ordered.length }
 }

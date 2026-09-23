@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
 import { layoutWorkflow, nodeWidth, nodeHeight } from '../layout'
 
-// A node deliberately wired from a second, deeper path (a "cross-link") must be
-// DRAWN but must not drive dagre's ranking — otherwise the shared target is
-// forced to a deep rank to satisfy the long edge and the whole graph stretches
-// sideways. See the FANOUT/cross-edge handling in layout.ts.
+// A node wired from a second, deeper path. Until #1499 every deeper parent was a
+// "cross-link", drawn but kept out of dagre's ranking so the shared target stayed
+// shallow. Dan reversed that on 2026-09-23 for every parent except a filter: a
+// card now sits below every non-filter card that feeds it, so no line climbs back
+// up. Measured on all 11 live workflows, only the Engine canvas moved and Main
+// Flow kept its 4,464 px width, because its widening came from a filter fork,
+// which is still a cross-link (tested below).
 //
 // Graph:
 //   trigger -> start (branch: left | right)
@@ -13,8 +16,7 @@ import { layoutWorkflow, nodeWidth, nodeHeight } from '../layout'
 //     right -> R1               (a single shallow node)
 //   cross-link: L3 -> R1        (deep node wires back to the shallow R1)
 //
-// Without the cross-link exclusion, R1 gets pushed below L3 (its rank must
-// exceed L3's), the start->R1 edge becomes long, and the layout sprawls.
+// R1 is fed by L3, a deeper non-filter parent, so it sits below L3.
 function build(withCrossLink: boolean): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [
     { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: {} },
@@ -51,16 +53,10 @@ function overlapCount(laid: Node[]): number {
 }
 
 describe('cross-link layout', () => {
-  it('keeps a cross-linked shallow node at its shallow rank', () => {
-    const base = build(false)
+  it('places a node below a deeper non-filter parent that feeds it (#1499)', () => {
     const withX = build(true)
-    const laidBase = layoutWorkflow(base.nodes, base.edges)
     const laidX = layoutWorkflow(withX.nodes, withX.edges)
-
-    // R1 should sit at roughly the same depth with or without the cross-link —
-    // i.e. the cross-link did NOT drag it down below L3.
-    expect(y(laidX, 'R1')).toBeLessThan(y(laidX, 'L3'))
-    expect(y(laidX, 'R1')).toBeCloseTo(y(laidBase, 'R1'), -1)
+    expect(y(laidX, 'R1')).toBeGreaterThan(y(laidX, 'L3'))
   })
 
   it('produces no overlapping nodes', () => {
