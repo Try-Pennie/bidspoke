@@ -23,6 +23,7 @@ import { RETENTION_DAYS } from '../archive/candidate-days'
 import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { fetchAllPaged } from './paginate'
 
 export { RETENTION_DAYS }
 
@@ -215,7 +216,9 @@ export function countsHash(counts: ParityCounts): Promise<string> {
 // ── Reading a day ─────────────────────────────────────────────────────────────
 
 export interface ParityReadDeps {
-  /** Executions of the workflow started inside [fromIso, toIso), oldest first, capped. */
+  /** How many buyer_select rows the workflow wrote inside [fromIso, toIso); zero means the node was not on the canvas then. */
+  countNodeRows(workflowId: string, fromIso: string, toIso: string): Promise<number>
+  /** Executions of the workflow started inside [fromIso, toIso), oldest first, every one of them (paged past the row cap). */
   listExecutions(workflowId: string, fromIso: string, toIso: string): Promise<Array<{ id: string; started_at: string }>>
   /** The node and incumbent rows for the executions given. */
   readRows(executionIds: string[], fromIso: string, toIso: string): Promise<Array<{ execution_id: string; step_type: string; step_namespace: string; output: unknown; duration_ms: number | null }>>
@@ -232,6 +235,13 @@ export async function readParityDay(deps: ParityReadDeps, workflowId: string, da
     const to = Math.min(from + READ_WINDOW_MS, end)
     const fromIso = new Date(from).toISOString()
     const toIso = new Date(to).toISOString()
+    // One cheap count before the expensive listing (#1497): a window with no
+    // node row at all is one the node was not on the canvas for, and listing
+    // its executions (about 10,000 per window on the Engine flow, in pages of
+    // 1,000) would only count every one of them as unpaired. A window where the
+    // node ran and some executions lack its row is still read in full, and
+    // those executions are the unpaired count.
+    if ((await deps.countNodeRows(workflowId, fromIso, toIso)) === 0) continue
     const executions = await deps.listExecutions(workflowId, fromIso, toIso)
     if (executions.length === 0) continue
     const rows = await deps.readRows(executions.map((e) => e.id), fromIso, toIso)
@@ -265,19 +275,38 @@ export async function incumbentRules(orgId: string, env: Env, supabase: Supabase
 
 export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   return {
-    listExecutions: async (workflowId, fromIso, toIso) => {
-      const { data, error } = await supabase
-        .from('workflow_executions')
-        .select('id, started_at')
+    countNodeRows: async (workflowId, fromIso, toIso) => {
+      const { count, error } = await supabase
+        .from('execution_steps')
+        .select('execution_id', { count: 'exact', head: true })
         .eq('workflow_id', workflowId)
-        .eq('is_test', false)
-        .gte('started_at', fromIso)
-        .lt('started_at', toIso)
-        .order('started_at', { ascending: true })
-        .limit(5000)
-      if (error) throw new Error(`workflow_executions: ${error.message}`)
-      return (data ?? [])
+        .eq('step_type', 'buyer_select')
+        .gte('execution_started_at', fromIso)
+        .lt('execution_started_at', toIso)
+      if (error) throw new Error(`execution_steps count: ${error.message}`)
+      // A null count is an unanswered question, not zero rows (L215): read the
+      // window rather than skip it.
+      return count ?? 1
     },
+    // Paged, because a three hour window of the Engine flow holds about 10,000
+    // executions and PostgREST answers at most 1,000 rows however high the limit
+    // (#1497): the first Stage A refresh listed each window's first 1,000 and
+    // recorded the day as unpaired. Ordered by started_at with id as the
+    // tiebreaker so offset pages neither skip nor repeat an execution.
+    listExecutions: (workflowId, fromIso, toIso) =>
+      fetchAllPaged<{ id: string; started_at: string }>(
+        (from, to) => supabase
+          .from('workflow_executions')
+          .select('id, started_at')
+          .eq('workflow_id', workflowId)
+          .eq('is_test', false)
+          .gte('started_at', fromIso)
+          .lt('started_at', toIso)
+          .order('started_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to),
+        'workflow_executions',
+      ),
     readRows: async (executionIds, fromIso, toIso) => {
       const out: Array<{ execution_id: string; step_type: string; step_namespace: string; output: unknown; duration_ms: number | null }> = []
       // PostgREST caps a read at 1,000 rows, so the ids are read in slices that
@@ -300,16 +329,20 @@ export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   }
 }
 
-/** The days a refresh summarises: today (incomplete by construction) and the days inside retention before it. */
+/**
+ * The days the hourly refresh summarises: today (incomplete by construction)
+ * and yesterday, so a finished day is re-read once with window_complete true.
+ * Older days keep the row they have: their step rows never change, and reading
+ * every day inside retention each hour costs about 300 database requests per
+ * day at the Engine flow's volume (10,000 executions per three hour window in
+ * pages of 1,000 plus the row slices), against an invocation budget of about
+ * 900 shared with the other hourly work (#1497). Any day can still be re-read
+ * by hand through POST /api/admin/buyer-select/parity/refresh with a `day`.
+ */
 export function refreshableDays(nowMs: number, retentionDays: number): string[] {
   const today = easternParts(nowMs).date
-  const days = [today]
-  let day = today
-  for (let i = 1; i < retentionDays; i++) {
-    day = previousIsoDate(day)
-    if (windowComplete(day, nowMs, retentionDays)) days.push(day)
-  }
-  return days
+  const yesterday = previousIsoDate(today)
+  return windowComplete(yesterday, nowMs, retentionDays) ? [today, yesterday] : [today]
 }
 
 // ── The refresh ───────────────────────────────────────────────────────────────
