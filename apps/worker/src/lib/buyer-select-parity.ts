@@ -8,7 +8,10 @@
  * Every comparison names what it could not measure rather than counting it as
  * agreement (L11, L90): a body hash missing on either side is hash_unmeasured,
  * an execution missing one of the two rows is unpaired, and the counts the node
- * does not yet record are listed in `unmeasured` by name. The row carries a
+ * does not yet record are listed in `unmeasured` by name. The latency
+ * percentiles and the state counts describe only the rows that rehearsed: a
+ * lead the node decided was not for sale took no time and resolved no state,
+ * and on a real day those are most rows (#1506, #1507). The row carries a
  * hash of its counts, so a sign off is tied to the numbers it approved (L641);
  * the refresh clears a sign off whose numbers have moved. A day is complete
  * only when its Eastern midnight has passed AND the purge has not yet reached
@@ -126,12 +129,18 @@ export function summariseParityDay(executions: ParityExecution[], rules: ParityR
   let expiredRecorded = false
 
   for (const e of executions) {
-    if (e.node && typeof e.node_duration_ms === 'number' && e.node.mode_effective === 'decide_only') durations.push(e.node_duration_ms)
+    // A lead the node decided was not for sale did no rehearsal: it took no time and
+    // resolved no state, so it says nothing about either (#1506, #1507). Only the rows
+    // that rehearsed are the population these two measurements describe.
+    const rehearsed = e.node !== null && e.node._route !== 'not_applicable'
+    if (e.node && rehearsed && typeof e.node_duration_ms === 'number' && e.node.mode_effective === 'decide_only') durations.push(e.node_duration_ms)
 
-    if (e.node) {
+    if (e.node && rehearsed) {
       if (e.node.lead_state === undefined) stateNotRecorded += 1
       else if (e.node.lead_state === null) counts.state_unresolved += 1
       else counts.state_resolved += 1
+    }
+    if (e.node) {
       if (typeof e.node.rehearsal_in_doubt_heals === 'number') { healsRecorded = true; counts.rehearsal_in_doubt_heals += e.node.rehearsal_in_doubt_heals }
       if (typeof e.node.rehearsal_expired_in_flight === 'number') { expiredRecorded = true; counts.rehearsal_expired_in_flight += e.node.rehearsal_expired_in_flight }
     }
@@ -175,7 +184,7 @@ export function summariseParityDay(executions: ParityExecution[], rules: ParityR
     counts.decide_only_latency_p50_ms = nearestRank(sorted, 0.5)
     counts.decide_only_latency_p95_ms = nearestRank(sorted, 0.95)
   }
-  if (stateNotRecorded > 0) counts.unmeasured.push(`state:${stateNotRecorded} execution${stateNotRecorded === 1 ? '' : 's'} from a node version that did not record it`)
+  if (stateNotRecorded > 0) counts.unmeasured.push(`state:${stateNotRecorded} rehearsed execution${stateNotRecorded === 1 ? '' : 's'} with no recorded state`)
   if (classificationNoResponse > 0) counts.unmeasured.push(`classification:${classificationNoResponse} execution${classificationNoResponse === 1 ? '' : 's'} without a recorded response`)
   if (!healsRecorded) counts.unmeasured.push('rehearsal_in_doubt_heals')
   if (!expiredRecorded) counts.unmeasured.push('rehearsal_expired_in_flight')
