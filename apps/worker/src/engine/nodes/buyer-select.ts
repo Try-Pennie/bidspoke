@@ -205,13 +205,15 @@ export interface BuyerSelectDeps {
 
 export function productionDeps(ctx: ExecutionContext, env: Env, supabase: SupabaseClient): BuyerSelectDeps {
   const orgId = ctx.trigger.org_id
+  // Fire and forget, the pattern partner-bid's breaker writes use (#129): the walk is still
+  // inside the request, so the isolate stays alive for it, and the work never rejects.
+  const background = (work: Promise<unknown>) => { void work }
   return {
-    loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase),
+    // The loader rebuilds an ageing cached snapshot in the background (#1492), so the read this lead pays stays a cache hit.
+    loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
     saleClient: (key, opts) => new LeadSaleClient(env.LEAD_SALE, key, opts),
     ledgerClient: (partnerId, opts) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId, opts),
-    // Fire and forget, the pattern partner-bid's breaker writes use (#129): the walk is still
-    // inside the request, so the isolate stays alive for it, and the work never rejects.
-    background: (work) => { void work },
+    background,
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
     breaker: (slug) => new CircuitBreakerClient(env, slug),
     mirror: async (row, entry, partnerId) => {

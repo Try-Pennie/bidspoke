@@ -11,7 +11,7 @@
  * hot path that reads the same rows over and over.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor } from '../buyer-profile-loader'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -94,7 +94,6 @@ describe('loadBuyerProfiles', () => {
     expect(b.version).toBe(3)
     // Cached for the hot path, with the TTL the plan set, and kept as the last good copy.
     expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
-    expect(BUYER_PROFILES_CACHE_TTL_SECONDS).toBe(60)
     expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
   })
 
@@ -153,6 +152,87 @@ describe('loadBuyerProfiles', () => {
     await invalidateBuyerProfilesCache('org-1', kv)
     expect(store.has('buyer-profiles:org-1')).toBe(false)
     expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+})
+
+// #1492: a save used to only delete the cache, so the very next lead paid the cold
+// read inside its 800 ms budget and could route profiles_unavailable. A save now
+// rebuilds the snapshot, and a cache hit past the refresh age rebuilds it in the
+// background, so steady traffic never meets a cold cache.
+describe('refreshBuyerProfilesCache (#1492)', () => {
+  it('reads the profiles and writes the cache and the last good copy, so the very next lead is served warm', async () => {
+    const { kv, store } = fakeKv()
+    const { supabase, calls } = fakeSupabase({ data: [ROW], error: null })
+    const snapshot = await refreshBuyerProfilesCache('org-1', kv, supabase)
+    expect(calls).toHaveLength(1)
+    expect(snapshot?.buyers.map((b) => b.partner.slug)).toEqual(['tripoint'])
+    expect(store.has('buyer-profiles:org-1')).toBe(true)
+    expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+    const next = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [], error: null }).supabase)
+    expect(next.served_from).toBe('cache')
+    expect(next.buyers).toHaveLength(1)
+  })
+
+  it('a failed refresh drops the stale cache copy rather than keeping it, answers null and never throws, so a save cannot fail on its cache', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const result = await refreshBuyerProfilesCache('org-1', kv, fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase)
+    expect(result).toBeNull()
+    expect(store.has('buyer-profiles:org-1')).toBe(false)
+    expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+})
+
+describe('the cache is refreshed before it expires (#1492)', () => {
+  const T0 = Date.parse('2026-09-23T20:00:00.000Z')
+
+  it('a cache hit older than the refresh age answers from cache and hands a rebuild to the background', async () => {
+    const { kv, store } = fakeKv()
+    let now = T0
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+    now = T0 + (BUYER_PROFILES_REFRESH_AFTER_SECONDS + 1) * 1000
+    const handed: Promise<unknown>[] = []
+    const fresh = fakeSupabase({ data: [{ ...ROW, version: 4, updated_at: '2026-09-23T19:59:00.000Z' }], error: null })
+    const snapshot = await loadBuyerProfiles('org-1', kv, fresh.supabase, { now: () => now, background: (work) => { handed.push(work) } })
+    expect(snapshot.served_from).toBe('cache')
+    expect(handed).toHaveLength(1)
+    await Promise.all(handed)
+    expect(fresh.calls).toHaveLength(1)
+    expect((JSON.parse(store.get('buyer-profiles:org-1')!.value) as { buyers: Array<{ version: number }> }).buyers[0].version).toBe(4)
+  })
+
+  it('a younger hit hands nothing, and an old hit with no background hook reads nothing either', async () => {
+    const { kv } = fakeKv()
+    let now = T0
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+    const handed: Promise<unknown>[] = []
+    now = T0 + (BUYER_PROFILES_REFRESH_AFTER_SECONDS - 1) * 1000
+    const young = fakeSupabase({ data: [ROW], error: null })
+    await loadBuyerProfiles('org-1', kv, young.supabase, { now: () => now, background: (work) => { handed.push(work) } })
+    expect(handed).toHaveLength(0)
+    now = T0 + (BUYER_PROFILES_REFRESH_AFTER_SECONDS + 1) * 1000
+    const noHook = fakeSupabase({ data: [ROW], error: null })
+    await loadBuyerProfiles('org-1', kv, noHook.supabase, { now: () => now })
+    expect(noHook.calls).toHaveLength(0)
+  })
+
+  it('a background rebuild that fails is swallowed and leaves the cache as it was', async () => {
+    const { kv, store } = fakeKv()
+    let now = T0
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+    now = T0 + (BUYER_PROFILES_REFRESH_AFTER_SECONDS + 1) * 1000
+    const handed: Promise<unknown>[] = []
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase, { now: () => now, background: (work) => { handed.push(work) } })
+    await expect(Promise.all(handed)).resolves.toBeDefined()
+    expect(store.has('buyer-profiles:org-1')).toBe(true)
+  })
+
+  it('the cache outlives the refresh age by enough that steady traffic keeps it warm, and the cache write carries that TTL', async () => {
+    expect(BUYER_PROFILES_CACHE_TTL_SECONDS).toBeGreaterThanOrEqual(BUYER_PROFILES_REFRESH_AFTER_SECONDS * 2)
+    const { kv, spies } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const put = spies.put.mock.calls.find(([k]) => k === 'buyer-profiles:org-1')
+    expect(put?.[2]).toEqual({ expirationTtl: BUYER_PROFILES_CACHE_TTL_SECONDS })
   })
 })
 

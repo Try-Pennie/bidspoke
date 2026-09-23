@@ -29,7 +29,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
-import { invalidateBuyerProfilesCache } from '../../lib/buyer-profile-loader'
+import { refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import type { Json } from '../../types/database'
@@ -150,7 +150,8 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
     return dbError(c, error)
   }
 
-  await invalidateBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE)
+  // Rebuild the snapshot now, so the next lead is served warm (#1492).
+  await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
   return c.json({ profile: data })
 })
 
