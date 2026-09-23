@@ -16,6 +16,8 @@ import {
   statementRequestBody,
   STATEMENT_TIMEOUT_SECONDS,
   EDGE_TIMEOUT_CEILING_SECONDS,
+  REQUEST_DEADLINE_MS,
+  SnowflakeRequestTimeoutError,
   type SnowflakeConfig,
 } from '../snowflake'
 
@@ -498,5 +500,82 @@ describe('the statement timeout (#1447)', () => {
       '2': { type: 'TEXT', value: '' },
     })
     expect(statementRequestBody(config, 'select 1', []).bindings).toBeUndefined()
+  })
+})
+
+/**
+ * A deadline on every request (2026-09-23).
+ *
+ * The 14:23 UTC archive run ended `exceededWallTime` at 899,991 ms of wall time
+ * against 5,174 ms of CPU: it sat for the platform's whole 15 minute cron limit
+ * waiting on one call that never answered. The run's own wall budget is checked
+ * between pieces of work, so it cannot end a call already in flight, and none of
+ * these fetches carried a signal. A request that neither answers nor fails must
+ * become a failure the caller can act on.
+ */
+describe('the request deadline', () => {
+  // A fetch that answers only by rejecting when its signal aborts, which is what
+  // a stalled connection looks like from inside the Worker.
+  function hangingFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal
+          if (!signal) return // no deadline: hangs for ever, and the test times out
+          signal.addEventListener('abort', () => reject(new Error('The operation was aborted')))
+        }),
+    )
+  }
+
+  it('outlasts the edge, which answers a slow statement itself at its ceiling', () => {
+    // Shorter than the edge and a slow but healthy statement would be abandoned
+    // before the 524 that names it arrives.
+    expect(REQUEST_DEADLINE_MS).toBeGreaterThan(EDGE_TIMEOUT_CEILING_SECONDS * 1000)
+  })
+
+  it('stays a small fraction of the 15 minute cron limit, so a run survives one stall', () => {
+    expect(REQUEST_DEADLINE_MS * 3).toBeLessThan(15 * 60 * 1000 / 2)
+  })
+
+  it('abandons a statement POST that never answers, and says it timed out', async () => {
+    const spy = hangingFetch()
+    const err = await postStatementWithRetry(
+      'https://acct.snowflakecomputing.com/api/v2/statements', headers, '{}', 'req-1',
+      { maxAttempts: 2, delaysMs: [0], sleep: async () => {}, requestDeadlineMs: 5 },
+    ).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(SnowflakeRequestTimeoutError)
+    expect((err as Error).message).toMatch(/no answer within 5 ms/)
+    // Resubmitted under the same requestId, which Snowflake dedupes (retry=true).
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(spy.mock.calls[1][0] as string).toContain('retry=true')
+  })
+
+  it('abandons a poll that never answers', async () => {
+    hangingFetch()
+    await expect(
+      pollStatement(config, headers, 'h1', { intervalMs: 0, maxAttempts: 3, requestDeadlineMs: 5 }),
+    ).rejects.toBeInstanceOf(SnowflakeRequestTimeoutError)
+  })
+
+  it('abandons a result partition fetch that never answers', async () => {
+    hangingFetch()
+    await expect(
+      resolveStatementResult(
+        config, headers, 200,
+        JSON.stringify({ statementHandle: 'h1', data: [['a']], resultSetMetaData: { numRows: 2, partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }] } }),
+        { requestDeadlineMs: 5 },
+      ),
+    ).rejects.toBeInstanceOf(SnowflakeRequestTimeoutError)
+  })
+
+  it('still reports a real network failure as itself, not as a timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Network connection lost.'))
+    const err = await postStatementWithRetry(
+      'https://acct.snowflakecomputing.com/api/v2/statements', headers, '{}', 'req-1',
+      { maxAttempts: 1, requestDeadlineMs: 5 },
+    ).catch((e: unknown) => e)
+    expect(err).not.toBeInstanceOf(SnowflakeRequestTimeoutError)
+    expect((err as Error).message).toMatch(/Network connection lost/)
   })
 })

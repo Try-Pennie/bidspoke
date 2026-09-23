@@ -102,6 +102,55 @@ export const EDGE_TIMEOUT_CEILING_SECONDS = 100
 export const STATEMENT_TIMEOUT_SECONDS = 90
 
 /**
+ * The longest any one request to Snowflake may go without a complete answer.
+ *
+ * None of these fetches carried a deadline, and on 2026-09-23 the 14:23 UTC
+ * archive run ended `exceededWallTime` at 899,991 ms of wall time against 5,174
+ * ms of CPU: it waited out the platform's whole 15 minute cron limit on a call
+ * that neither answered nor failed. The run's own wall budget is consulted
+ * between pieces of work, so it cannot end a call already in flight (L110).
+ *
+ * Set past EDGE_TIMEOUT_CEILING_SECONDS because the edge answers a slow
+ * statement itself at that ceiling with a 524 the retry path already handles, so
+ * this only fires on a request that the edge did not answer either. The
+ * relationship is asserted in the tests, not only stated here.
+ */
+export const REQUEST_DEADLINE_MS = (EDGE_TIMEOUT_CEILING_SECONDS + 20) * 1000
+
+/** A request abandoned at its deadline, distinct from one that failed outright. */
+export class SnowflakeRequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SnowflakeRequestTimeoutError'
+  }
+}
+
+/**
+ * fetch, then read the whole body, inside one deadline. The body is covered too
+ * because a response whose headers arrive and whose body then stalls hangs the
+ * run exactly as a silent connection does.
+ */
+async function fetchTextWithDeadline(
+  url: string,
+  init: RequestInit,
+  deadlineMs: number,
+): Promise<{ res: Response; text: string }> {
+  const signal = AbortSignal.timeout(deadlineMs)
+  try {
+    const res = await fetch(url, { ...init, signal })
+    const text = await res.text()
+    return { res, text }
+  } catch (e) {
+    if (signal.aborted) {
+      throw new SnowflakeRequestTimeoutError(
+        `Snowflake ${init.method ?? 'GET'} sent no answer within ${deadlineMs} ms, so the request was abandoned`,
+      )
+    }
+    throw e
+  }
+}
+
+/**
  * The request body for one statement, built where it can be read back.
  *
  * Its own function so the timeout it carries is provable without a signing key
@@ -204,6 +253,7 @@ export function isTransientSnowflakeError(status: number, body?: string): boolea
 
 export interface RetryOptions {
   maxAttempts?: number
+  requestDeadlineMs?: number
   delaysMs?: number[]
   sleep?: (ms: number) => Promise<void>
 }
@@ -234,6 +284,7 @@ export async function postStatementWithRetry(
   const maxAttempts = opts.maxAttempts ?? RETRY_MAX_ATTEMPTS
   const delaysMs = opts.delaysMs ?? RETRY_DELAYS_MS
   const doSleep = opts.sleep ?? sleep
+  const deadlineMs = opts.requestDeadlineMs ?? REQUEST_DEADLINE_MS
 
   for (let attempt = 1; ; attempt++) {
     const target = `${url}?requestId=${encodeURIComponent(requestId)}${attempt > 1 ? '&retry=true' : ''}`
@@ -241,14 +292,14 @@ export async function postStatementWithRetry(
     let error: Error
 
     try {
-      const res = await fetch(target, { method: 'POST', headers, body })
-      const text = await res.text()
+      const { res, text } = await fetchTextWithDeadline(target, { method: 'POST', headers, body }, deadlineMs)
       if (res.ok) return { status: res.status, text }
       retryable = isTransientSnowflakeError(res.status, text)
       error = new SnowflakeStatementError(`Snowflake ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
     } catch (e) {
-      // fetch rejected, so no response ever arrived. Always retryable: the
-      // requestId contract covers the ambiguity about whether it executed.
+      // fetch rejected or hit its deadline, so no complete response arrived.
+      // Always retryable: the requestId contract covers the ambiguity about
+      // whether it executed.
       retryable = true
       error = e instanceof Error ? e : new Error(formatErr(e))
     }
@@ -287,9 +338,9 @@ export async function resolveStatementResult(
     // The handle we polled with is the fallback, so a terminal body that does not
     // echo it can still have its later partitions fetched. Anything the body does
     // carry wins.
-    return assembleResultPartitions(config, headers, { statementHandle: handle, ...polled })
+    return assembleResultPartitions(config, headers, { statementHandle: handle, ...polled }, pollOpts?.requestDeadlineMs)
   }
-  return assembleResultPartitions(config, headers, parseResponse(text))
+  return assembleResultPartitions(config, headers, parseResponse(text), pollOpts?.requestDeadlineMs)
 }
 
 /**
@@ -318,6 +369,7 @@ export async function assembleResultPartitions(
   config: SnowflakeConfig,
   headers: Record<string, string>,
   response: SnowflakeStatementResponse,
+  requestDeadlineMs: number = REQUEST_DEADLINE_MS,
 ): Promise<SnowflakeStatementResponse> {
   const partitions = response.resultSetMetaData?.partitionInfo
   const declaredRows = response.resultSetMetaData?.numRows
@@ -332,7 +384,7 @@ export async function assembleResultPartitions(
       )
     }
     for (let index = 1; index < partitions.length; index++) {
-      rows.push(...(await fetchPartition(config, headers, handle, index, partitions.length)))
+      rows.push(...(await fetchPartition(config, headers, handle, index, partitions.length, requestDeadlineMs)))
     }
   }
 
@@ -352,10 +404,10 @@ async function fetchPartition(
   handle: string,
   index: number,
   total: number,
+  requestDeadlineMs: number,
 ): Promise<unknown[][]> {
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements/${handle}?partition=${index}`
-  const res = await fetch(url, { method: 'GET', headers })
-  const text = await res.text()
+  const { res, text } = await fetchTextWithDeadline(url, { method: 'GET', headers }, requestDeadlineMs)
   if (!res.ok) {
     throw new SnowflakeStatementError(
       `Snowflake returned ${res.status} for partition ${index} of ${total}: ${text}`,
@@ -369,6 +421,7 @@ async function fetchPartition(
 interface PollOptions {
   intervalMs?: number
   maxAttempts?: number
+  requestDeadlineMs?: number
 }
 
 const POLL_INTERVAL_MS = 2000
@@ -391,12 +444,12 @@ export async function pollStatement(
 ): Promise<SnowflakeStatementResponse> {
   const intervalMs = pollOpts.intervalMs ?? POLL_INTERVAL_MS
   const maxAttempts = pollOpts.maxAttempts ?? POLL_MAX_ATTEMPTS
+  const deadlineMs = pollOpts.requestDeadlineMs ?? REQUEST_DEADLINE_MS
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements/${handle}?partition=0`
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await sleep(intervalMs)
-    const res = await fetch(url, { method: 'GET', headers })
-    const text = await res.text()
+    const { res, text } = await fetchTextWithDeadline(url, { method: 'GET', headers }, deadlineMs)
     if (res.status === 202) continue // still running
     if (!res.ok) throw new SnowflakeStatementError(`Snowflake poll ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
     return parseResponse(text)
