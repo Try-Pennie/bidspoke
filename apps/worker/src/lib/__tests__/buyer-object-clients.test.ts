@@ -163,6 +163,22 @@ describe('BuyerLedgerClient', () => {
   })
 })
 
+describe('a deadline function is told which operation is asking (#1512)', () => {
+  it('lets a caller give cleanup calls their own deadline while the budget bounds the rest', async () => {
+    const { timers, fire, pending } = manualTimers()
+    const { ns } = namespace(() => new Promise<Response>(() => undefined))
+    const client = new LeadSaleClient(ns, { kind: 'rehearsal', population: 'engine', lead_key: 'lead-1' }, { deadlineMs: (op) => (op === 'lead sale free' ? 5_000 : 50), timers })
+    const claim = client.claim({ partner_id: 'p', execution_id: 'e', deadline_ms: 800 })
+    expect(pending[0].ms).toBe(50)
+    fire()
+    await expect(claim).rejects.toBeInstanceOf(DeadlineError)
+    const free = client.free(1)
+    expect(pending[0].ms).toBe(5_000)
+    fire()
+    await expect(free).rejects.toBeInstanceOf(DeadlineError)
+  })
+})
+
 describe('a deadline given as a function (#1491)', () => {
   it('is read per call, so a shrinking budget bounds each later call more tightly', async () => {
     const { timers, fire, pending } = manualTimers()

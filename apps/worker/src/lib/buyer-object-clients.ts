@@ -46,19 +46,25 @@ export const OBJECT_CALL_DEADLINE_MS = 5_000
 
 export interface ClientOptions {
   /**
-   * How long one call may take. A function is read at EVERY call, so a caller
-   * spending one budget across several calls hands in what is left of it and
-   * each later call is bounded more tightly than the one before (#1491). A
-   * number is the same bound on every call.
+   * How long one call may take. A function is read at EVERY call and told which
+   * operation is asking, so a caller spending one budget across several calls
+   * hands in what is left of it, each later call is bounded more tightly than
+   * the one before (#1491), and a cleanup call after the budget has ended can be
+   * given a real deadline instead of the spent budget's floor (#1512). A number
+   * is the same bound on every call.
    */
-  deadlineMs?: number | (() => number)
+  deadlineMs?: number | ((operation: string) => number)
   timers?: Timers
 }
 
-function deadlineOf(opts: ClientOptions): number {
+/** The operation names a cleanup after an abandoned attempt uses; a caller exempts these from its budget (#1512). */
+export const SALE_FREE_OP = 'lead sale free'
+export const LEDGER_RELEASE_OP = 'buyer ledger release'
+
+function deadlineOf(opts: ClientOptions, op: string): number {
   const d = opts.deadlineMs
   if (d === undefined) return OBJECT_CALL_DEADLINE_MS
-  return typeof d === 'function' ? Math.max(1, d()) : d
+  return typeof d === 'function' ? Math.max(1, d(op)) : d
 }
 
 /** An object answered with a status the client does not know how to read. */
@@ -76,7 +82,7 @@ export class ObjectCallError extends Error {
 type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
-  const res = await withDeadline(stub.fetch(url, init), deadlineOf(opts), op, opts.timers)
+  const res = await withDeadline(stub.fetch(url, init), deadlineOf(opts, op), op, opts.timers)
   if (res.ok) return res.json<T>()
   const text = await res.text()
   if (res.status === 409 && refusal) {
@@ -137,7 +143,7 @@ export class LeadSaleClient implements SaleApi {
   }
 
   async free(generation: number): Promise<number> {
-    const r = await call<{ generation: number }>(this.stub, 'lead sale free', 'http://do/free', postJson({ generation }), this.opts, claimRefusal)
+    const r = await call<{ generation: number }>(this.stub, SALE_FREE_OP, 'http://do/free', postJson({ generation }), this.opts, claimRefusal)
     return r.generation
   }
 
@@ -173,7 +179,7 @@ export class BuyerLedgerClient implements LedgerApi {
   }
 
   async release(key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry> {
-    const r = await call<{ entry: LedgerEntry }>(this.stub, 'buyer ledger release', 'http://do/release', postJson({ ...key, status }), this.opts)
+    const r = await call<{ entry: LedgerEntry }>(this.stub, LEDGER_RELEASE_OP, 'http://do/release', postJson({ ...key, status }), this.opts)
     return r.entry
   }
 

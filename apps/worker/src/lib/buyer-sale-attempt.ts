@@ -3,7 +3,8 @@
  * buyer_select node drives for one buyer, against the two objects.
  *
  *   1. claim the lead        (LeadSaleObject)   a timeout is cap_check_error, claim untouched
- *   2. reserve at the buyer  (BuyerLedgerObject) a timeout is cap_check_error, claim freed
+ *   2. reserve at the buyer  (BuyerLedgerObject) a timeout is cap_check_error; the reservation
+ *                                                 MAY have landed, so it is released, then the claim freed (#1512)
  *   3. call the buyer
  *   4. commit                (ledger)           a timeout after an accept is outcome_unknown, everything held, page
  *   5. mark sold             (claim)            the same
@@ -23,7 +24,9 @@
  * ending, reported as rehearsal_deadline, never as a cap check error or an
  * unknown outcome that pages. Nothing real is at risk in a rehearsal, so the
  * claim is freed and the reservation released wherever the object still
- * allows it. Without a budget (live) every deadline keeps its live meaning.
+ * allows it, and that cleanup is handed to `deps.background` when the caller
+ * gives one, so a rehearsal that ran out of budget does not then wait on its
+ * own cleanup. Without a budget (live) every deadline keeps its live meaning.
  */
 import { DeadlineError, type OutReason, type SaleOutcome } from '@bidspoke/buyer-profile'
 import type { ClaimBody, ClaimResult, SaleState } from '../durable-objects/lead-sale'
@@ -107,6 +110,12 @@ export interface AttemptDeps {
    * or a call that runs out of time ends the attempt as rehearsal_deadline.
    */
   budgetLeftMs?: () => number
+  /**
+   * Where cleanup after a budget ending runs (#1512). Given one, the attempt
+   * hands the release and free off and returns at once; without one it awaits
+   * them. The work never rejects.
+   */
+  background?: (work: Promise<void>) => void
 }
 
 /** The attempt's reasons: every out reason, plus the rehearsal budget ending (a node reason, never recorded as an out reason). */
@@ -130,7 +139,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   let generation = claimed.generation
   await step('claimed')
   if (budgetSpent(deps)) {
-    await freeQuietly(deps, generation)
+    await handOff(deps, letGo(deps, key, generation, false))
     return budgetEnded('after the claim')
   }
 
@@ -139,8 +148,14 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   try {
     reservation = await deps.ledger.reserve({ ...key, payout_cents: input.payout_cents, execution_id: input.execution_id, limits: input.limits })
   } catch (err) {
-    await freeQuietly(deps, generation)
-    if (budgetTimedOut(deps, err)) return budgetEnded('reserving at the buyer')
+    // The reserve MAY have landed on the ledger even though this side gave up on
+    // it (#1512, L157), so release it before freeing the claim. A release of an
+    // entry the ledger never recorded is a refusal the helper swallows.
+    if (budgetTimedOut(deps, err)) {
+      await handOff(deps, letGo(deps, key, generation, true))
+      return budgetEnded('reserving at the buyer')
+    }
+    await letGo(deps, key, generation, true)
     return { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) }
   }
   if (!reservation.reserved) {
@@ -152,8 +167,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   }
   await step('reserved')
   if (budgetSpent(deps)) {
-    await deps.ledger.release(key, 'released').catch(() => undefined)
-    await freeQuietly(deps, generation)
+    await handOff(deps, letGo(deps, key, generation, true))
     return budgetEnded('after the reservation')
   }
 
@@ -192,8 +206,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   } catch (err) {
     if (budgetTimedOut(deps, err)) {
       // A rehearsal: no buyer holds the lead, so let go of what the objects still allow.
-      await deps.ledger.release(key, 'released').catch(() => undefined)
-      await freeQuietly(deps, generation)
+      await handOff(deps, letGo(deps, key, generation, true))
       return budgetEnded('committing at the buyer')
     }
     return { result: 'no_sale', reason: 'outcome_unknown', page: true, detail: messageOf(err) }
@@ -362,6 +375,21 @@ function budgetTimedOut(deps: AttemptDeps, err: unknown): boolean {
 
 function budgetEnded(where: string): AttemptResult {
   return { result: 'no_sale', reason: 'rehearsal_deadline', detail: `the rehearsal budget ran out ${where}` }
+}
+
+/** Let go of what this attempt holds: the reservation (when it may exist) and then the claim. Never throws. */
+async function letGo(deps: AttemptDeps, key: EntryKey, generation: number, releaseReservation: boolean): Promise<void> {
+  if (releaseReservation) await deps.ledger.release(key, 'released').catch(() => undefined)
+  await freeQuietly(deps, generation)
+}
+
+/** Run cleanup in the caller's background when it offers one, otherwise inline. */
+async function handOff(deps: AttemptDeps, work: Promise<void>): Promise<void> {
+  if (deps.background) {
+    deps.background(work.catch(() => undefined))
+    return
+  }
+  await work
 }
 
 async function freeQuietly(deps: AttemptDeps, generation: number): Promise<void> {

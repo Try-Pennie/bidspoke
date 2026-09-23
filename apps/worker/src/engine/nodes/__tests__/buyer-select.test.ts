@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { DeadlineError } from '@bidspoke/buyer-profile'
-import type { ClientOptions } from '../../../lib/buyer-object-clients'
+import { OBJECT_CALL_DEADLINE_MS, type ClientOptions } from '../../../lib/buyer-object-clients'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
@@ -173,6 +173,8 @@ interface Harness {
   clockMs: number
   /** The options each ledger client was built with, in order; undefined when the node passed none. */
   ledgerClientOpts: Array<ClientOptions | undefined>
+  /** Work the node handed to the background; a test awaits it before asserting what landed. */
+  background: Promise<void>[]
 }
 
 function harness(opts: {
@@ -186,7 +188,7 @@ function harness(opts: {
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
-  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], deps: undefined as unknown as BuyerSelectDeps }
+  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
   h.deps = {
     loadProfiles: async () => {
@@ -198,6 +200,7 @@ function harness(opts: {
       h.sales.push(s)
       return s
     },
+    background: (work) => { h.background.push(work) },
     ledgerClient: (partnerId, clientOpts) => {
       h.ledgerClientOpts.push(clientOpts)
       const ledgerError = opts.ledgerError
@@ -216,7 +219,7 @@ function harness(opts: {
       return {
         reserve: async (body) => {
           const d = clientOpts?.deadlineMs
-          const limit = typeof d === 'function' ? d() : d
+          const limit = typeof d === 'function' ? d('buyer ledger reserve') : d
           if (limit !== undefined && slow > limit) {
             h.clockMs += limit
             throw new DeadlineError('ledger reserve', limit)
@@ -589,6 +592,23 @@ describe('the decide only budget bounds the whole attempt (#1491)', () => {
     expect(h.sales[0].state).toBe('free')
     expect(h.ledgerClientOpts[0]?.deadlineMs).toBeTypeOf('function')
     expect(r.failure).toBeUndefined()
+  })
+
+  it('a reserve that overran the budget is released in the background with a real deadline, so the ledger never holds a reservation nobody settles (#1512)', async () => {
+    const h = harness({ slowReserveMs: 5_000 })
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'rehearsal_deadline' })
+    expect(h.background).toHaveLength(1)
+    await Promise.all(h.background)
+    expect(h.ledgers.get('p-1')?.calls).toEqual(['release:released'])
+    expect(h.sales[0].state).toBe('free')
+    const deadline = h.ledgerClientOpts[0]?.deadlineMs
+    expect(deadline).toBeTypeOf('function')
+    if (typeof deadline !== 'function') return
+    // The budget is spent, so an ordinary call would get the 1 ms floor; cleanup keeps the standard deadline.
+    expect(deadline('buyer ledger reserve')).toBeLessThanOrEqual(1)
+    expect(deadline('buyer ledger release')).toBe(OBJECT_CALL_DEADLINE_MS)
+    expect(deadline('lead sale free')).toBe(OBJECT_CALL_DEADLINE_MS)
   })
 
   it('in live mode the ledger client keeps its own deadline: no budget function is handed to it', async () => {

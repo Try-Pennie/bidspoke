@@ -415,7 +415,7 @@ describe('a budgeted attempt (decide only, #1491)', () => {
     expect(h.buyerCalls).toBe(0)
   })
 
-  it('a ledger call that runs out of time under a budget is rehearsal_deadline, not a cap check error, and holds nothing', async () => {
+  it('a reserve that runs out of time under a budget is rehearsal_deadline, not a cap check error, and RELEASES the reservation it may have landed before freeing the claim (#1512)', async () => {
     const sale = claimed()
     const ledger = new FakeLedger(new DeadlineError('ledger reserve', 120))
     const h = harness({ sale, ledger })
@@ -423,7 +423,25 @@ describe('a budgeted attempt (decide only, #1491)', () => {
     const result = await runBuyerSaleAttempt(INPUT, h.deps)
     expect(result).toMatchObject({ result: 'no_sale', reason: 'rehearsal_deadline' })
     expect(result).not.toHaveProperty('page', true)
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
     expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+  })
+
+  it('hands the cleanup after a budget ending to the background hook when one is given, so the caller is not kept waiting on it', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger })
+    const left = [100, 0]
+    h.deps.budgetLeftMs = () => left.shift() ?? 0
+    const handed: Promise<void>[] = []
+    h.deps.background = (work) => { handed.push(work) }
+    const result = await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(result).toMatchObject({ result: 'no_sale', reason: 'rehearsal_deadline' })
+    expect(handed).toHaveLength(1)
+    await handed[0]
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+    expect(h.buyerCalls).toBe(0)
   })
 
   it('a commit that runs out of time under a budget releases the reservation and frees the claim instead of holding and paging', async () => {
@@ -450,9 +468,13 @@ describe('a budgeted attempt (decide only, #1491)', () => {
     expect(sale.calls).toEqual(['claim:exec-1', 'sold:1:1000'])
   })
 
-  it('control: without a budget the same ledger deadline is still a cap check error, so live attempts are unchanged', async () => {
-    const h = harness({ sale: claimed(), ledger: new FakeLedger(new DeadlineError('ledger reserve', 5000)) })
+  it('control: without a budget the same ledger deadline is still a cap check error, and the reservation it may have landed is released too (#1512)', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger(new DeadlineError('ledger reserve', 5000))
+    const h = harness({ sale, ledger })
     const result = await runBuyerSaleAttempt(INPUT, h.deps)
     expect(result).toMatchObject({ result: 'no_sale', reason: 'cap_check_error' })
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
   })
 })
