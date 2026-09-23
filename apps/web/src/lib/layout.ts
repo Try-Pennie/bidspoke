@@ -324,15 +324,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // types belong is a layout judgement, stated above, not a trait.
   const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate', 'buyer_select'])
 
-  // Cross-path edges: a node can be deliberately wired from a second, deeper
+  // Cross-path edges: a filter can fork into a node that already sits on another
   // path (e.g. a filter on one branch routing into a bid_group on another).
   // That edge must be DRAWN but must NOT drive dagre's ranking OR the width-
   // reservation math — otherwise the shared target is forced to a deep rank and
   // the branch that owns the forking arm balloons to "reserve" a subtree that
-  // actually lives elsewhere, scattering its arms. For each multi-parent node
-  // we keep its shallowest incoming edge as the ranking ("primary") edge and
-  // treat any strictly-deeper parent as a cross-link. branch_end / parallel_end
-  // joins keep their own multi-parent handling and are never cross-links.
+  // actually lives elsewhere, scattering its arms (Main Flow went from about
+  // 4.8k to 8.8k px wide). Every OTHER parent ranks normally, so a card sits
+  // below every non-filter card that feeds it and no line climbs back up to it
+  // (#1499, Dan 2026-09-23, reversing the June rule that ranked a card by its
+  // shallowest parent only). branch_end / parallel_end joins keep their own
+  // multi-parent handling and are never cross-links.
   const incomingByTarget = new Map<string, typeof edges>()
   for (const e of edges) {
     const arr = incomingByTarget.get(e.target) ?? []
@@ -372,9 +374,9 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     for (const e of ins) {
       if (e === primary) continue
-      // De-rank a genuine cross-link: any filter fork, or a non-filter parent
-      // strictly deeper than the primary. Same-depth non-filter diamonds stay.
-      if (isFilter(e.source) || (nodeDepth.get(e.source) ?? Infinity) > primaryDepth) crossEdgeIds.add(e.id)
+      // Only a filter fork is a cross-link; the primary is kept ranked even when
+      // every parent is a filter, so the target still has a place.
+      if (isFilter(e.source)) crossEdgeIds.add(e.id)
     }
   }
 
@@ -750,7 +752,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // occupy if every configured handle had a child attached. This keeps a
   // 1-of-N child directly under its specific handle (instead of centered),
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
-  // middle handle.
+  // middle handle. A child fed by SEVERAL handles of one node sits centred
+  // under them (#1499, Dan 2026-09-23); before, each edge overwrote the last
+  // and the child landed under whichever handle happened to be visited last.
+  // Branch and parallel ends keep their own per-edge placement.
   const applyMultiOutputOverride = () => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
       const src = nodeMap.get(sourceId)
@@ -761,16 +766,24 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!parentPos) continue
       const offsets = handleOffsetsByNode.get(sourceId)
       if (!offsets) continue
+      const offsetsByChild = new Map<string, number[]>()
       for (const e of outEdges) {
         if (!e.sourceHandle) continue
         const childPos = pos.get(e.target)
         if (!childPos) continue
         const idx = handles.indexOf(e.sourceHandle)
-        if (idx >= 0) {
-          childPos.x = parentPos.x + offsets[idx]
-        } else {
-          childPos.x = parentPos.x
+        const offset = idx >= 0 ? offsets[idx] : 0
+        const childType = nodeMap.get(e.target)?.type
+        if (childType === 'branch_end' || childType === 'parallel_end') {
+          childPos.x = parentPos.x + offset
+          continue
         }
+        const list = offsetsByChild.get(e.target) ?? []
+        list.push(offset)
+        offsetsByChild.set(e.target, list)
+      }
+      for (const [childId, list] of offsetsByChild) {
+        pos.get(childId)!.x = parentPos.x + (Math.min(...list) + Math.max(...list)) / 2
       }
     }
     // For each branch, align its first convergence node (smallest Y among

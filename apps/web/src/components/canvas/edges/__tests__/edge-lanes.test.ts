@@ -5,6 +5,8 @@ import { laneBendY, siblingRank, TURN_OFFSET } from '../edge-lanes'
 // bracket, because every edge into a target bent at the same height. Each
 // sibling now bends at its own height, and every edge still ENDS on the target
 // handle, so the only segment two siblings may share is the final drop into it.
+// #1499 widened "sibling" to every edge entering the same target handle, from
+// any source, so three lines into one card stay three lines.
 
 interface Segment { x1: number; y1: number; x2: number; y2: number }
 
@@ -39,9 +41,9 @@ function overlapsOrCrosses(a: Segment, b: Segment): boolean {
 
 /** Lays out siblings from these absolute handle x positions into one target handle and checks them. */
 function assertSeparate(sources: number[], targetX: number) {
-  const siblings = sources.map((x, i) => ({ id: `e${i}`, handleX: x }))
-  const bends = sources.map((sx, i) => {
-    const { rank } = siblingRank(`e${i}`, siblings, sx, targetX)
+  const siblings = sources.map((x, i) => ({ id: `e${i}`, sourceX: x }))
+  const bends = sources.map((_, i) => {
+    const { rank } = siblingRank(`e${i}`, siblings, targetX)
     return laneBendY({ rank, sourceY: SOURCE_Y, targetY: TARGET_Y })
   })
   const segs = sources.map((sx, i) => segments(sx, targetX, bends[i]))
@@ -85,27 +87,28 @@ describe('laneBendY (#1489)', () => {
   })
 })
 
-describe('siblingRank (#1489)', () => {
+describe('siblingRank (#1489, #1499)', () => {
   it('ranks the edge that travels farther across first, so it bends lowest', () => {
-    const siblings = [{ id: 'near', handleX: 190 }, { id: 'far', handleX: 150 }]
-    expect(siblingRank('far', siblings, 150, 260)).toEqual({ rank: 0, count: 2 })
-    expect(siblingRank('near', siblings, 190, 260)).toEqual({ rank: 1, count: 2 })
+    const siblings = [{ id: 'near', sourceX: 190 }, { id: 'far', sourceX: 150 }]
+    expect(siblingRank('far', siblings, 260)).toEqual({ rank: 0, count: 2 })
+    expect(siblingRank('near', siblings, 260)).toEqual({ rank: 1, count: 2 })
   })
 
-  it('measures siblings from this edge own absolute source x', () => {
-    // Handle x is relative to the source node; the source x is absolute.
-    const siblings = [{ id: 'a', handleX: 10 }, { id: 'b', handleX: 50 }]
-    expect(siblingRank('b', siblings, 1050, 1200)).toEqual({ rank: 1, count: 2 })
-    expect(siblingRank('a', siblings, 1010, 1200)).toEqual({ rank: 0, count: 2 })
+  it('ranks edges from different source cards together (the Engine build_response_body case)', () => {
+    // sold drops straight in, no_sale comes from just right, tripoint_ping from far right.
+    const siblings = [{ id: 'sold', sourceX: 400 }, { id: 'no_sale', sourceX: 580 }, { id: 'tripoint', sourceX: 960 }]
+    expect(siblingRank('tripoint', siblings, 490)).toEqual({ rank: 0, count: 3 })
+    expect(siblingRank('no_sale', siblings, 490)).toEqual({ rank: 1, count: 3 })
+    expect(siblingRank('sold', siblings, 490)).toEqual({ rank: 2, count: 3 })
   })
 
   it('breaks a tie by edge id so two renders agree', () => {
-    const siblings = [{ id: 'z', handleX: 150 }, { id: 'y', handleX: 250 }]
-    expect(siblingRank('y', siblings, 250, 200)).toEqual({ rank: 0, count: 2 })
-    expect(siblingRank('z', siblings, 150, 200)).toEqual({ rank: 1, count: 2 })
+    const siblings = [{ id: 'z', sourceX: 150 }, { id: 'y', sourceX: 250 }]
+    expect(siblingRank('y', siblings, 200)).toEqual({ rank: 0, count: 2 })
+    expect(siblingRank('z', siblings, 200)).toEqual({ rank: 1, count: 2 })
   })
 
   it('treats an edge missing from the list as a lone edge', () => {
-    expect(siblingRank('q', [], 0, 0)).toEqual({ rank: 0, count: 1 })
+    expect(siblingRank('q', [], 0)).toEqual({ rank: 0, count: 1 })
   })
 })
