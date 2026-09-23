@@ -608,11 +608,14 @@ rather than described.
    **One destination is an external vendor**, which appears in no artifact of
    this milestone. The enumeration of where identity data lands was built by
    reading the codebase, and Logpush is configured in a dashboard, so no
-   code-derived list could have found it. Tracked as #1007.
+   code-derived list could have found it. Resolved in #1007 (2026-09-09): the
+   job's field list was narrowed to drop `Logs` and `Event`, and Dan decided the
+   history already delivered to Better Stack is not purged.
 
    **The R2 job reports Pushing while delivering nothing**, against a checked box
    in TODO.md:207 claiming R2 archival was verified queryable by trace id. Both
-   cannot be current. Tracked as #1008.
+   cannot be current. Resolved in #1008 (2026-09-09): the R2 job was deleted and
+   the TODO.md box corrected with the measurement (#1223).
 
    `app_config.logpush_active` gates nothing either way: the 90 day purge it was
    written for was replaced by the partition drop in
