@@ -1642,7 +1642,7 @@ function BuyerSelectConfig({
         </div>
         <p className="mt-1 text-xs text-gray-500">
           {mode === 'decide_only'
-            ? 'Rehearses the whole sale against the buyers, claim and reservation included, and calls nobody. Sell off leads route to deferred.'
+            ? 'Rehearses the whole sale against the buyers, claim and reservation included, and calls nobody. Every sell off lead routes to deferred, which hands it back to the rest of the workflow to sell as it does today.'
             : 'Sells the lead. Only this mode can send to a buyer or fail the step.'}
         </p>
       </div>

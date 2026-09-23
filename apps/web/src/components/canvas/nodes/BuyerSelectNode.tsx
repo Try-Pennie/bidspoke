@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
@@ -5,6 +6,7 @@ import { BadgeDollarSign } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { handBackMeaning } from './buyer-select-exits'
 
 /** The four outgoing handles, in the order the layout places them left to right. */
 export const BUYER_SELECT_HANDLES = ['sold', 'no_sale', 'not_applicable', 'deferred'] as const
@@ -32,6 +34,7 @@ export function BuyerSelectNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const mode = (config.mode as string | undefined) ?? 'decide_only'
   const population = (config.population as string | undefined) ?? ''
+  const tipId = useId()
 
   let preview: string | null = null
   let route: BuyerSelectHandle | null = null
@@ -95,12 +98,33 @@ export function BuyerSelectNode({ data, selected }: NodeProps) {
         {BUYER_SELECT_HANDLES.map((h, i) => (
           <span
             key={h}
-            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 px-0.5 text-center ${
+            className={`group absolute top-1/2 -translate-x-1/2 -translate-y-1/2 px-0.5 text-center ${
               h === 'sold' ? 'font-semibold text-emerald-700' : 'text-slate-500'
             }`}
             style={{ left: handleLeftPct(i), width: '25%' }}
           >
-            {HANDLE_LABEL[h]}
+            {h === 'deferred' || h === 'not_applicable' ? (
+              // The two exits that hand the lead back are domain terms nobody can
+              // guess (#1490, L604), so each explains itself on hover and on focus.
+              <>
+                <button
+                  type="button"
+                  aria-describedby={`${tipId}-${h}`}
+                  className="nodrag nopan cursor-help rounded-sm underline decoration-dotted underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+                >
+                  {HANDLE_LABEL[h]}
+                </button>
+                <span
+                  role="tooltip"
+                  id={`${tipId}-${h}`}
+                  className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-60 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-left text-xs font-normal leading-snug text-gray-600 shadow-md group-hover:block group-focus-within:block"
+                >
+                  {handBackMeaning(h, config)}
+                </span>
+              </>
+            ) : (
+              HANDLE_LABEL[h]
+            )}
           </span>
         ))}
       </div>
