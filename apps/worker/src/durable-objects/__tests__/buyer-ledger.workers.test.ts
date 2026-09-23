@@ -340,6 +340,29 @@ describe('BuyerLedgerObject alarm', () => {
   })
 })
 
+describe('BuyerLedgerObject alarm on a rehearsal (#1515)', () => {
+  it('a rehearsal reservation still pending at the grace deadline is released by the alarm itself, source expired, and stops counting, while a live one beside it becomes unresolved', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-r', { kind: 'rehearsal' })
+    await reserve(stub, 'lead-l', { kind: 'live' })
+    await setClock(stub, NOW + PENDING_GRACE_MS)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    const rehearsal = await get<EntryResult>(stub, '/entry', { lead_key: 'lead-r', population: 'engine', kind: 'rehearsal' })
+    expect(rehearsal).toMatchObject({ found: true, entry: { status: 'released', resolution_source: 'expired', resolved_by: null, resolved_at: NOW + PENDING_GRACE_MS, mirrored: false } })
+    const live = await get<EntryResult>(stub, '/entry', { lead_key: 'lead-l', population: 'engine', kind: 'live' })
+    expect(live).toMatchObject({ found: true, entry: { status: 'unresolved', resolution_source: null } })
+    // The released rehearsal counts toward nothing and waits on nobody; the live one still does both.
+    expect((await get<Counts>(stub, '/peek', { kind: 'rehearsal' })).hour_leads).toBe(0)
+    expect((await get<Counts>(stub, '/peek', { kind: 'live' })).hour_leads).toBe(1)
+    const unresolved = await get<{ entries: LedgerEntry[] }>(stub, '/unresolved')
+    expect(unresolved.entries.map((e) => e.lead_key)).toEqual(['lead-l'])
+    // Both changed state, so both are delivered to the mirror again.
+    const unmirrored = await get<UnmirroredResult>(stub, '/unmirrored')
+    expect(unmirrored.entries.map((e) => e.lead_key).sort()).toEqual(['lead-l', 'lead-r'])
+  })
+})
+
 describe('BuyerLedgerObject rollover', () => {
   it('the hour bucket rolls on the clock hour while the day keeps counting', async () => {
     const stub = ledger()

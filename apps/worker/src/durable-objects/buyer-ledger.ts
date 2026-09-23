@@ -16,11 +16,15 @@
  * day. Hours are UTC epoch hours and days are Eastern, through the shared clock
  * helpers (L39).
  *
- * The alarm turns a reservation still pending after PENDING_GRACE_MS into
+ * The alarm turns a LIVE reservation still pending after PENDING_GRACE_MS into
  * `unresolved`: it keeps counting, it is reported by `unresolved`, and only a
- * `settle` moves it on. The alarm also prunes entries older than RETENTION_MS,
- * but only ones that are both resolved and mirrored (L5); an unresolved entry
- * is never pruned.
+ * `settle` moves it on, because the buyer may hold the lead. A REHEARSAL
+ * reservation past the same grace is released by the alarm itself, source
+ * `expired` (#1515): no buyer was called and no money moved, so the only
+ * settlement a person could give is the release, and holding rehearsal caps
+ * while waiting for that click distorts the rehearsal readings. The alarm also
+ * prunes entries older than RETENTION_MS, but only ones that are both resolved
+ * and mirrored (L5); an unresolved entry is never pruned.
  */
 import {
   LEDGER_KINDS,
@@ -72,14 +76,16 @@ export interface LedgerEntry extends EntryKey {
   /**
    * How the entry left `reserved` or `unresolved` (#1412, L83): 'buyer' for an
    * answer the buyer gave, 'rehearsal' for a decide_only commit, 'settled' for a
-   * person's decision through the settle route. Null while reserved.
+   * person's decision through the settle route, 'expired' for a rehearsal
+   * reservation the grace alarm released because nothing settled it (#1515).
+   * Null while reserved.
    */
   resolution_source: ResolutionSource | null
   /** The user id of the person who settled it; null for every other source. */
   resolved_by: string | null
 }
 
-export type ResolutionSource = 'buyer' | 'rehearsal' | 'settled'
+export type ResolutionSource = 'buyer' | 'rehearsal' | 'settled' | 'expired'
 
 export interface Counts {
   hour_leads: number
@@ -437,9 +443,19 @@ export class BuyerLedgerObject implements DurableObject {
 
   async alarm(): Promise<void> {
     const now = this.clock()
+    // A rehearsal nobody settled is released here (#1515): no buyer was called, so
+    // the release is the only answer a person could give, and a held rehearsal
+    // slot distorts the caps. mirrored is cleared with the status, as every state
+    // change does (#1412), so the mirror delivers the release.
     this.sql.exec(
-      // mirrored is cleared with the status, as every state change does (#1412):
-      // a reservation the drain already delivered must be delivered again as unresolved.
+      `UPDATE entries SET status = 'released', resolved_at = ?, resolution_source = 'expired', resolved_by = NULL, mirrored = 0
+       WHERE status = 'reserved' AND kind = 'rehearsal' AND reserved_at + ? <= ?`,
+      now, PENDING_GRACE_MS, now
+    )
+    this.sql.exec(
+      // A live reservation may be a lead the buyer took, so it is held for a person.
+      // mirrored is cleared with the status: a reservation the drain already
+      // delivered must be delivered again as unresolved.
       "UPDATE entries SET status = 'unresolved', mirrored = 0 WHERE status = 'reserved' AND reserved_at + ? <= ?",
       PENDING_GRACE_MS, now
     )
