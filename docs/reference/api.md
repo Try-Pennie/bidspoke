@@ -374,7 +374,7 @@ Response `201` (the only time the key is shown in full):
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/buyer-sales?status=unresolved&page=&limit=` | The queue, paged, with the partner slug on each row and the total. |
+| GET | `/api/buyer-sales?status=unresolved&page=&limit=&partner_id=` | The queue, paged, with the partner slug on each row and the total. `partner_id` narrows it to one buyer, and the total is then that buyer's; an empty value is refused (400 `partner_id_invalid`). |
 | POST | `/api/buyer-sales/:id/settle` | Body `{ outcome: 'accepted' \| 'released' }`. Accepted counts as sold to that buyer; released frees the slot. 409 `not_unresolved` names the state the sale is in; 503 when the ledger does not answer, with nothing changed. |
 
 ## Partner bid configs

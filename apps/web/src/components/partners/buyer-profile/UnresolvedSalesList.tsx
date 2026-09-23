@@ -34,11 +34,14 @@ function reservedAt(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
-export function UnresolvedSalesList({ rows, total, onSettle, outcomes }: {
+export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, loadingMore = false }: {
   rows: readonly UnresolvedSale[]
   total: number
   onSettle: (id: string, outcome: SettleOutcome) => void | Promise<void>
   outcomes: Record<string, OutcomeState>
+  /** Asks for the next page of this buyer's queue; offered only while `total` is above the rows shown (#1457). */
+  onMore?: () => void
+  loadingMore?: boolean
 }) {
   const [confirming, setConfirming] = useState<{ id: string; outcome: SettleOutcome } | null>(null)
 
@@ -46,7 +49,16 @@ export function UnresolvedSalesList({ rows, total, onSettle, outcomes }: {
 
   return (
     <div className="space-y-2">
-      {total > rows.length && <p className="text-xs text-gray-600">Showing {rows.length} of {total} unresolved sales.</p>}
+      {total > rows.length && (
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-gray-600">Showing {rows.length} of {total} unresolved sales.</p>
+          {onMore && (
+            <Button variant="secondary" className="btn-sm" busy={loadingMore} disabled={loadingMore} onClick={onMore}>
+              Show {total - rows.length} more
+            </Button>
+          )}
+        </div>
+      )}
       <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>

@@ -40,6 +40,22 @@ describe('UnresolvedSalesList', () => {
     expect(onSettle).toHaveBeenCalledWith('sale-2', 'released')
   })
 
+  it('offers the rest when the total is above the rows shown, and asks for them once (#1457)', () => {
+    const onMore = vi.fn()
+    render(<UnresolvedSalesList rows={rows} total={5} onSettle={vi.fn()} outcomes={{}} onMore={onMore} />)
+    expect(screen.getByText('Showing 2 of 5 unresolved sales.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show 3 more' }))
+    expect(onMore).toHaveBeenCalledTimes(1)
+  })
+
+  it('says it is loading the rest while more rows are on their way, and offers nothing when every row is shown', () => {
+    const loading = render(<UnresolvedSalesList rows={rows} total={5} onSettle={vi.fn()} outcomes={{}} onMore={vi.fn()} loadingMore />)
+    expect(screen.getByRole('button', { name: /show 3 more/i })).toBeDisabled()
+    loading.unmount()
+    render(<UnresolvedSalesList rows={rows} total={2} onSettle={vi.fn()} outcomes={{}} onMore={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /more/i })).toBeNull()
+  })
+
   it('cancelling a confirmation settles nothing', () => {
     const onSettle = vi.fn()
     render(<UnresolvedSalesList rows={rows} total={2} onSettle={onSettle} outcomes={{}} />)

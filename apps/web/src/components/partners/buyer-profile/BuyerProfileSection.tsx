@@ -87,14 +87,28 @@ function errorsByPath(errors: readonly ProfileError[]): Record<string, string> {
   return out
 }
 
+/** Rows per read of this buyer's unresolved queue; the API's ceiling. */
+const UNRESOLVED_PAGE = 100
+
+function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): UnresolvedSale {
+  return {
+    id: String(e.id), lead_key: String(e.lead_key), kind: String(e.kind), payout_cents: Number(e.payout_cents),
+    reserved_at: String(e.reserved_at), http_status: typeof e.http_status === 'number' ? e.http_status : null,
+    result_code: typeof e.result_code === 'string' ? e.result_code : null, partner_name: partnerName,
+  }
+}
+
 export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs } = props
   const [usage, setUsage] = useState<BuyerUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
-  const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number } | null>(null)
+  const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number; page: number } | null>(null)
   const [unresolvedError, setUnresolvedError] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  /** A failed Show more, kept apart from the first read's error so the rows already shown stay on screen with their controls. */
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const [settleOutcomes, setSettleOutcomes] = useState<Record<string, OutcomeState>>({})
 
   useEffect(() => {
@@ -102,21 +116,31 @@ export function BuyerProfileSection(props: Props) {
     let cancelled = false
     api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(err instanceof Error ? err.message : 'The usage counts could not be read.') })
     api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(err instanceof Error ? err.message : 'The history could not be read.') })
-    api.buyerSales.list({ status: 'unresolved', page: 1, limit: 100 })
+    // This buyer's queue only, with the API's own total for it (#1457, L16): the
+    // filter and the count come from one query, so "Showing N of M" is about the
+    // rows the button can reach.
+    api.buyerSales.list({ status: 'unresolved', page: 1, limit: UNRESOLVED_PAGE, partner_id: partnerId })
       .then((r) => {
         if (cancelled) return
-        const rows = r.entries
-          .filter((e) => e.partner_id === partnerId)
-          .map((e) => ({
-            id: String(e.id), lead_key: String(e.lead_key), kind: String(e.kind), payout_cents: Number(e.payout_cents),
-            reserved_at: String(e.reserved_at), http_status: typeof e.http_status === 'number' ? e.http_status : null,
-            result_code: typeof e.result_code === 'string' ? e.result_code : null, partner_name: partnerName,
-          }))
-        setUnresolved({ rows, total: rows.length + Math.max(0, r.total - r.entries.length) })
+        setUnresolved({ rows: r.entries.map((e) => toUnresolvedSale(e, partnerName)), total: r.total, page: 1 })
       })
       .catch((err: unknown) => { if (!cancelled) setUnresolvedError(err instanceof Error ? err.message : 'The unresolved sales could not be read.') })
     return () => { cancelled = true }
   }, [partnerId, partnerName])
+
+  async function loadMoreUnresolved() {
+    if (!partnerId || !unresolved || loadingMore) return
+    setLoadingMore(true)
+    setLoadMoreError(null)
+    try {
+      const r = await api.buyerSales.list({ status: 'unresolved', page: unresolved.page + 1, limit: UNRESOLVED_PAGE, partner_id: partnerId })
+      setUnresolved((u) => (u ? { rows: [...u.rows, ...r.entries.map((e) => toUnresolvedSale(e, partnerName))], total: r.total, page: u.page + 1 } : u))
+    } catch (err) {
+      setLoadMoreError(`The rest of the unresolved sales could not be read: ${err instanceof Error ? err.message : 'the read failed'}`)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   async function settle(id: string, outcome: SettleOutcome) {
     const startedAt = Date.now()
@@ -227,7 +251,10 @@ export function BuyerProfileSection(props: Props) {
             ) : unresolved === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the unresolved sales…</p>
             ) : (
-              <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} />
+              <>
+                <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
+                {loadMoreError && <p role="alert" className="text-xs text-red-700">{loadMoreError}</p>}
+              </>
             )}
           </div>
 
