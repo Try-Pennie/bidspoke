@@ -105,7 +105,17 @@ describe('summariseParityDay', () => {
     ], RULES)
     expect(counts).toMatchObject({ state_resolved: 1, state_unresolved: 1 })
     const older = summariseParityDay([exec('e1', { node: { _route: 'deferred', reason: 'decide_only', mode_effective: 'decide_only' } })], RULES)
-    expect(older.unmeasured).toContain('state:1 execution from a node version that did not record it')
+    expect(older.unmeasured).toContain('state:1 rehearsed execution with no recorded state')
+  })
+
+  it('a lead the node never rehearsed has no state to record, so it counts toward nothing about state and earns no unmeasured note (#1507)', () => {
+    const counts = summariseParityDay([
+      exec('e1'),
+      exec('e2', { node: { _route: 'not_applicable', reason: 'sell_off_false', mode_effective: 'decide_only' }, incumbent: { skipped: true, qualified: null, resultCode: null } }),
+      exec('e3', { node: { _route: 'not_applicable', reason: 'bid_not_positive', mode_effective: 'decide_only' }, incumbent: { skipped: true, qualified: null, resultCode: null } }),
+    ], RULES)
+    expect(counts).toMatchObject({ state_resolved: 1, state_unresolved: 0 })
+    expect(counts.unmeasured.some((u) => u.startsWith('state:'))).toBe(false)
   })
 
   it('the rehearsal heal and expired claim counts are unmeasured until the node records them, never zero passed off as measured (L90)', () => {
@@ -119,6 +129,20 @@ describe('summariseParityDay', () => {
     expect(counts.decide_only_latency_p50_ms).toBe(300)
     expect(counts.decide_only_latency_p95_ms).toBe(1000)
     expect(summariseParityDay([], RULES).decide_only_latency_p50_ms).toBeNull()
+  })
+
+  it('measures the latency over the rows that rehearsed only: a lead the node decided was not for sale took no time and must not drown the median (#1506)', () => {
+    const notForSale = (id: string) => exec(id, {
+      node: { _route: 'not_applicable', reason: 'sell_off_false', mode_effective: 'decide_only' },
+      node_duration_ms: 0,
+      incumbent: { skipped: true, qualified: null, resultCode: null },
+    })
+    const rehearsed = [500, 600, 700].map((ms, i) => exec(`r${i}`, { node_duration_ms: ms }))
+    const counts = summariseParityDay([...rehearsed, ...Array.from({ length: 20 }, (_, i) => notForSale(`n${i}`))], RULES)
+    expect(counts.decide_only_latency_p50_ms).toBe(600)
+    expect(counts.decide_only_latency_p95_ms).toBe(700)
+    const onlyNotForSale = summariseParityDay(Array.from({ length: 5 }, (_, i) => notForSale(`n${i}`)), RULES)
+    expect(onlyNotForSale.decide_only_latency_p50_ms).toBeNull()
   })
 
   it('an execution with one of the two rows missing is unpaired and compared on nothing', () => {
