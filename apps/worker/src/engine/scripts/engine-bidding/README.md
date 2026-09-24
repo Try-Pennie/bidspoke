@@ -26,6 +26,17 @@ the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 | `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape, carrying Tripoint's own name, click URL, routing code 2 and Success, Duplicate or Fail class, because this script IS Tripoint, #1416) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). Two more added last on every return by #1540: `tripoint_answer` (accepted, declined, in_progress for 1009, invalid_data and null_id_fault for the two known 502 answers, skipped, or unknown) and `unknown_reason`. Unknown is anything not positively recognised (any other 5xx, any 4xx, a 2xx that does not parse, is not ok or has no result code, a fetch that throws, and a call aborted after 15 s); it no longer throws, it returns a no sale that `build_response_body` rejects normally. |
 | `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, completes an older Tripoint Ping's sale with Tripoint's values (transitional, removed at Stage C), and publishes the normalised sale on its output. A sold lead lands on the sale's click URL, never on a constant (#1416); a sell off lead nobody bought takes the Pennie pages. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` with the sale's class when Tripoint declined with one; a rejection with no class carries the two fields alone. |
 | `patch_prospect_body.js` | Patch Prospect Body | Reads the sale from `build_response_body`'s output. The four External fields (partner name, debt, routing code, exchange status) come from the sale on every accepted sale, whichever buyer; `TripointLeadID__c` and `Tripoint_Response__c` are written only when Tripoint is the buyer, because Salesforce has no field for another buyer's reference or class yet. |
+| `known_no_gate.js` | Known No Gate (new, #1544) | Written here first, for a node the canvas does not have yet. Says whether the node that decided the lead gave a KNOWN no (tripoint_ping's `tripoint_answer` declined, invalid_data or null_id_fault; buyer_select no_sale declined_by_buyer), read by the same precedence `build_response_body` reads its sale by. The Branch after it sends a known no to the buyer_click_check node. Recorded in `KEPT_ENGINE_SCRIPTS` with `newNodeSince` instead of a baseline, so until the node is added the drift check reports awaiting_paste, not a missing node. |
+
+**#1544 (a click sold buyer on a known Tripoint no)** changed `build_response_body` (a
+known no the buyer_click_check node found eligible is offered to that buyer: the
+Tripoint sell off offer at engineBid, landing on the check's click URL with the prospect
+id, its sale published as `sale` with `sold_on: 'click'`, Tripoint's decline beside it as
+`declined_sale`, and the decision as `click_offer`) and `patch_prospect_body` (keeps
+`Tripoint_Response__c` from that decline). Every partner fact comes from the check's
+output. The paste order and the canvas wiring are in
+[`docs/workflows/engine-bidding/liberty1-wiring.md`](../../../../../../docs/workflows/engine-bidding/liberty1-wiring.md);
+the gate and the check go on the canvas BEFORE the two scripts are pasted.
 
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
@@ -52,6 +63,12 @@ nothing on every rejection until the paste. The drift check does not cover a
 Salesforce node's body, so confirm it by reading the node after saving.
 
 ## Tests
+
+`../__tests__/engine-bidding-liberty1.test.ts` covers #1544: the gate over every
+Tripoint answer and every buyer_select reason (Stage A and Stage B), the offer and
+the patch, and every path that must stay a reject. `../../__tests__/engine-bidding-liberty1-walk.test.ts`
+walks the live tail excerpt (`../__tests__/fixtures/engine-bidding-tail-v100.json`)
+with the wiring in `docs/workflows/engine-bidding/liberty1-wiring.json` applied.
 
 `../__tests__/engine-bidding-sale.test.ts` runs each script through the same
 wrapper the sandbox builds (`../__tests__/canvas-script.ts`, mirroring

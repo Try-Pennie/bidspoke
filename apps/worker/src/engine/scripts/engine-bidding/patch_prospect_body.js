@@ -27,6 +27,13 @@
         if (sale.response_class) requestBody.Tripoint_Response__c = sale.response_class;
       }
 
+      // A click sold buyer offered on a known Tripoint no (#1544): the sale is that buyer's,
+      // and Tripoint's decline travels beside it, so its class is still recorded.
+      const declinedSale = steps.build_response_body?.output?.declined_sale ?? null;
+      if (sold && declinedSale && declinedSale.partner_slug === 'tripoint' && declinedSale.response_class) {
+        requestBody.Tripoint_Response__c = declinedSale.response_class;
+      }
+
     if (sold) {
       requestBody.ExternalPartnerName__c = sale.partner_name;
       requestBody.ExternalDebtAmount__c =

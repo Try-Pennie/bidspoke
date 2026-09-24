@@ -60,6 +60,56 @@ export function payloadCandidates(output: unknown, wrapperKeys: readonly string[
   return candidates
 }
 
+/**
+ * A click sold buyer offered on a known Tripoint no (#1544). The buyer is sold when
+ * the lead CLICKS, so at the time of the run it is offered, not contacted: its bid row
+ * is marked by this resolver_type, the way buyer_select marks its own rows, so a count
+ * of click sales can find them.
+ */
+export const CLICK_RESOLVER_TYPE = 'click'
+
+export interface ClickOffer {
+  partner_slug: string
+}
+
+/**
+ * The click sold buyer this run offered the lead to, or null. Two facts must agree,
+ * each from the node that owns it: a buyer_click_check node routed eligible for a
+ * buyer, and a producer (code) node's output made that buyer's click sale on an offer
+ * it did not reject (build_response_body's `sale`, sold_on click). Gated on node TYPE
+ * for the same reason as every recogniser here: a branch_end after the check re-emits
+ * its output, and only the check itself can say eligible.
+ */
+export function deriveClickOffer(steps: Record<string, StepOutput>, nodes: NodeDefinition[]): ClickOffer | null {
+  const typeByNamespace = new Map(nodes.map((n) => [n.namespace, n.type as string]))
+  const eligible = new Set<string>()
+  for (const [namespace, step] of Object.entries(steps)) {
+    if (typeByNamespace.get(namespace) !== 'buyer_click_check' || step?.status !== 'completed') continue
+    const out = step.output as { _route?: unknown; partner_slug?: unknown } | null
+    if (out && out._route === 'eligible' && typeof out.partner_slug === 'string' && out.partner_slug) eligible.add(out.partner_slug)
+  }
+  if (eligible.size === 0) return null
+  for (const [, step] of bidProducerSteps(steps, nodes)) {
+    if (step?.status !== 'completed') continue
+    const out = step.output as { isRejected?: unknown; sale?: unknown } | null
+    if (!out || out.isRejected !== false) continue
+    const sale = out.sale as { accepted?: unknown; sold_on?: unknown; partner_slug?: unknown } | null
+    if (!sale || sale.accepted !== true || sale.sold_on !== 'click') continue
+    if (typeof sale.partner_slug === 'string' && eligible.has(sale.partner_slug)) return { partner_slug: sale.partner_slug }
+  }
+  return null
+}
+
+/**
+ * The run's bid summary with a click sale folded in (#1544): the click buyer is the
+ * winner when nothing else won, and it counts as attempted (it has a bid row) but not
+ * as responded, because it was offered, never called.
+ */
+export function withClickOffer(summary: BidSummary, offer: ClickOffer | null): BidSummary {
+  if (!offer || summary.winner_slug) return summary
+  return { ...summary, winner_slug: offer.partner_slug, winner_bid_cents: null, attempted: (summary.attempted ?? 0) + 1 }
+}
+
 export interface DerivedBidMeta {
   sighting_id: string
   trace_id: string
@@ -268,6 +318,26 @@ export function deriveCodeNodeBidAttempts(
       }
       continue
     }
+  }
+  const click = deriveClickOffer(steps, nodes)
+  if (click) {
+    rows.push({
+      sighting_id: meta.sighting_id,
+      trace_id: meta.trace_id,
+      execution_id: meta.execution_id,
+      partner_slug: click.partner_slug,
+      attempted_at_utc: meta.attempted_at_utc,
+      attempted_at_et: meta.attempted_at_utc,
+      responded_at_utc: null,
+      responded_at_et: null,
+      http_status: null,
+      bid_cents: null,
+      resolver_type: CLICK_RESOLVER_TYPE,
+      is_test: meta.is_test,
+      classification: 'accept',
+      decline_reason: null,
+      skip_reason: null,
+    })
   }
   return rows
 }

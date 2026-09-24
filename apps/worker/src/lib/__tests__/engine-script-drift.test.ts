@@ -39,6 +39,8 @@ import BUILD_RESPONSE_BODY_RAW from '../../engine/scripts/engine-bidding/build_r
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import PATCH_PROSPECT_BODY_RAW from '../../engine/scripts/engine-bidding/patch_prospect_body.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import KNOWN_NO_GATE_RAW from '../../engine/scripts/engine-bidding/known_no_gate.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import RESOLVE_CLICK_INPUT_RAW from '../../engine/scripts/liberty1-click/resolve_click_input.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import BUILD_LIBERTY1_REQUEST_RAW from '../../engine/scripts/liberty1-click/build_liberty1_request.js?raw'
@@ -53,6 +55,7 @@ const ON_DISK: Record<string, string> = {
   'tripoint_ping.js': TRIPOINT_PING_RAW as string,
   'build_response_body.js': BUILD_RESPONSE_BODY_RAW as string,
   'patch_prospect_body.js': PATCH_PROSPECT_BODY_RAW as string,
+  'known_no_gate.js': KNOWN_NO_GATE_RAW as string,
 }
 
 const codeNode = (namespace: string, script: string, type = 'code') => ({ id: `id-${namespace}`, namespace, type, config: { script } })
@@ -63,11 +66,11 @@ async function keptFor(script: string, baselineOf: string): Promise<KeptScript> 
 }
 
 describe('the kept scripts the check compares', () => {
-  it('are the three Engine sale scripts, each the file on disk byte for byte', () => {
+  it('are the three Engine sale scripts and the known no gate (#1544), each the file on disk byte for byte', () => {
     // The runtime reads the scripts through a text module, and this is the one
     // place that proves the module holds the file's own bytes rather than a
     // transformed or stale copy (L3).
-    expect(KEPT_ENGINE_SCRIPTS.map((k) => k.namespace).sort()).toEqual(['build_response_body', 'patch_prospect_body', 'tripoint_ping'])
+    expect(KEPT_ENGINE_SCRIPTS.map((k) => k.namespace).sort()).toEqual(['build_response_body', 'known_no_gate', 'patch_prospect_body', 'tripoint_ping'])
     for (const kept of KEPT_ENGINE_SCRIPTS) {
       expect(kept.script, kept.file).toBe(ON_DISK[kept.file])
       expect(kept.script.length).toBeGreaterThan(500)
@@ -79,9 +82,18 @@ describe('the kept scripts the check compares', () => {
   })
 
   it('each record the hash of the canvas script they were derived from, with the day it was read', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS) {
+    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => !k.newNodeSince)) {
       expect(kept.canvasBaselineSha256, kept.file).toMatch(/^[0-9a-f]{64}$/)
       expect(kept.baselineReadOn, kept.file).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    }
+  })
+
+  it('a script for a node the canvas does not have yet carries no baseline, only the day it was written (#1544)', () => {
+    const fresh = KEPT_ENGINE_SCRIPTS.filter((k) => k.newNodeSince)
+    expect(fresh.map((k) => k.namespace)).toEqual(['known_no_gate'])
+    for (const kept of fresh) {
+      expect(kept.canvasBaselineSha256, kept.file).toBeNull()
+      expect(kept.newNodeSince, kept.file).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     }
   })
 
@@ -137,6 +149,19 @@ describe('judgeKeptScripts', () => {
     const kept = await keptFor(KEPT, BASELINE)
     const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT, 'buyer_select'), codeNode('other', KEPT)), 'W')
     expect(v).toEqual({ workflow: 'W', namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'missing_node' })
+  })
+
+  it('a new node not yet on the canvas is a first paste awaited, never a missing node, and says so in its own words (#1544)', async () => {
+    const kept: KeptScript = { namespace: 'gate', file: 'gate.js', script: KEPT, canvasBaselineSha256: null, baselineReadOn: null, newNodeSince: '2026-09-24' }
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('other', KEPT)), 'W')
+    expect(v).toEqual({ workflow: 'W', namespace: 'gate', file: 'gate.js', state: 'awaiting_paste', baselineReadOn: '2026-09-24', newNode: true })
+    expect(describeVerdict(v)).toBe('W, gate: the canvas has no such node yet; gate.js was written for it on 2026-09-24 and awaits its first paste.')
+  })
+
+  it('once the new node is on the canvas it is judged like any other: its own script agrees, anything else is a drift', async () => {
+    const kept: KeptScript = { namespace: 'gate', file: 'gate.js', script: KEPT, canvasBaselineSha256: null, baselineReadOn: null, newNodeSince: '2026-09-24' }
+    expect((await judgeKeptScripts([kept], definitionWith(codeNode('gate', KEPT)), 'W'))[0].state).toBe('agree')
+    expect((await judgeKeptScripts([kept], definitionWith(codeNode('gate', 'return 1')), 'W'))[0].state).toBe('drift')
   })
 
   it('judges every kept script, in order', async () => {
