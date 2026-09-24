@@ -888,7 +888,7 @@ export function extractExternalDebt(
   if (fromNode !== null) return fromNode
   const fromGroup = debtFromBidGroup(ctx, nodes)
   if (fromGroup !== null) return fromGroup
-  return debtFromCodeNode(ctx, nodes)
+  return debtFromTradesStep(ctx, nodes)
 }
 
 /**
@@ -928,13 +928,13 @@ function debtFromBidGroup(ctx: ExecutionContext, nodes: NodeDefinition[]): numbe
 }
 
 /**
- * The paths a CODE node carries the debt on, most authoritative first.
+ * The paths the TRADES step carries the debt on, most authoritative first.
  *
- * Only Main Flow bids through a bid_group. The Engine Bidding Workflow bids
- * Tripoint from a code node, and it is where nearly all the volume is: 48,518 of
- * the 49,311 Tripoint attempts in the 7 days to 2026-09-04. Reading the context
- * map alone therefore filled the column on about two percent of the traffic
- * while reading as done.
+ * Only Main Flow bids through a bid_group. The Engine Bidding Workflow computes
+ * the debt in its `prospect_trades` step, and it is where nearly all the volume
+ * is: 48,518 of the 49,311 Tripoint attempts in the 7 days to 2026-09-04. Reading
+ * the context map alone therefore filled the column on about two percent of the
+ * traffic while reading as done.
  *
  * WHICH figure (#1482): `tradeCalculations.engineDebt`, the number every payout
  * and estimate is computed on since 2026-09-23. The Tripoint buyer profile
@@ -951,7 +951,7 @@ function debtFromBidGroup(ctx: ExecutionContext, nodes: NodeDefinition[]): numbe
  * (the only "debt" in it is the loan purpose debt_consolidation), so null is the
  * right answer for them rather than a gap to be closed.
  */
-const DEBT_CODE_NODE_PATHS: readonly (readonly string[])[] = [
+const DEBT_TRADES_STEP_PATHS: readonly (readonly string[])[] = [
   // The ported flows wrap the trade calculation one level deeper than the
   // Pipedream source they came from. Verified 2026-09-09 against the live
   // definitions in the Try-Pennie/bidspoke-workflows backup: both the Engine and
@@ -964,16 +964,33 @@ const DEBT_CODE_NODE_PATHS: readonly (readonly string[])[] = [
   ['tradeCalculations', 'engineDebt'],
 ]
 
-function debtFromCodeNode(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {
-  // Gate on the node TYPE, the same invariant bid-log.ts applies: only a code
-  // node produces these, and a shape-only rule would also match any later node
-  // the object travelled through.
-  const codeNamespaces = new Set(
-    nodes.filter((n) => n.type === 'code').map((n) => n.namespace),
+/**
+ * The node types whose step output is a response body the flow computed or
+ * fetched, so a trade calculation found under one of them is the source and not
+ * a copy. On the live Engine definition `prospect_trades` is a SALESFORCE node
+ * (its output.body is the Apex response carrying tradeCalculations); a code node
+ * is the shape the Pipedream port had and Lead Economy still has.
+ *
+ * #1528: this read code nodes alone until 2026-09-24. The PATH had been verified
+ * against the live definitions but the node TYPE had not, so on Engine the
+ * fallback never fired: measured on the first Stage A day, external_debt was
+ * filled on every lead the buyer_select node priced (it records lead_debt) and on
+ * none of the 12,100 leads it routed not_applicable, 5.48 percent overall. A gate
+ * that never fires reads exactly like one that was never needed, which is why the
+ * fill rate is measured over the live population after a change (L712).
+ */
+const DEBT_TRADES_STEP_NODE_TYPES: ReadonlySet<NodeDefinition['type']> = new Set<NodeDefinition['type']>(['code', 'salesforce'])
+
+function debtFromTradesStep(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {
+  // Gate on the node TYPE, the same invariant bid-log.ts applies: only a step
+  // that computed or fetched the body produces these, and a shape-only rule
+  // would also match any later node the object travelled through.
+  const producerNamespaces = new Set(
+    nodes.filter((n) => DEBT_TRADES_STEP_NODE_TYPES.has(n.type)).map((n) => n.namespace),
   )
-  for (const path of DEBT_CODE_NODE_PATHS) {
+  for (const path of DEBT_TRADES_STEP_PATHS) {
     for (const [namespace, step] of Object.entries(ctx.steps)) {
-      if (!codeNamespaces.has(namespace)) continue
+      if (!producerNamespaces.has(namespace)) continue
       if (step?.status !== 'completed') continue
       let cur: unknown = step.output
       for (const part of path) {
