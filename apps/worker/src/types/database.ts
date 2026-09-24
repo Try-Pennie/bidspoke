@@ -453,6 +453,7 @@ export type Database = {
           organization_id: string
           partner_id: string
           priority: number | null
+          sold_on: string
           updated_at: string
           updated_by: string | null
           updated_by_email: string | null
@@ -473,6 +474,7 @@ export type Database = {
           organization_id: string
           partner_id: string
           priority?: number | null
+          sold_on?: string
           updated_at?: string
           updated_by?: string | null
           updated_by_email?: string | null
@@ -493,6 +495,7 @@ export type Database = {
           organization_id?: string
           partner_id?: string
           priority?: number | null
+          sold_on?: string
           updated_at?: string
           updated_by?: string | null
           updated_by_email?: string | null

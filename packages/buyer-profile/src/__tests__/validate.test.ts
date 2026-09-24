@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
-import { validateProfile, type PartnerRulesForValidation, type ProfileError } from '../validate'
+import { validateProfile, type PartnerRulesForValidation, type ProfileError, type StoredKind } from '../validate'
 
 const base: BuyerProfile = {
   partnerId: 'liberty-one',
+  soldOn: 'offer',
   isEnabled: true,
   priority: 2,
   allowedStates: ['ND', 'SD', 'WY'],
@@ -21,8 +22,8 @@ const base: BuyerProfile = {
 const partnerWithRules: PartnerRulesForValidation = { acceptSignals: [{ field: 'ok', equals: true }], clickUrl: 'https://liberty.example/apply', externalRoutingCode: 7 }
 const partnerWithoutRules: PartnerRulesForValidation = { ...partnerWithRules, acceptSignals: [] }
 
-const codes = (profile: BuyerProfile, partner = partnerWithRules): string[] => {
-  const r = validateProfile(profile, partner)
+const codes = (profile: BuyerProfile, partner = partnerWithRules, stored?: StoredKind): string[] => {
+  const r = validateProfile(profile, partner, stored)
   return r.ok ? [] : r.errors.map((e: ProfileError) => e.code)
 }
 
@@ -180,5 +181,69 @@ describe('enabling is gated (L72)', () => {
       expect(r.errors[0].message).toMatch(/^[^\u{2013}\u{2014}]*$/u)
       expect(r.errors[0].message.length).toBeGreaterThan(10)
     }
+  })
+})
+
+// #1541: a click sold buyer is quoted at the Engine bid and posted to only on the
+// click, so it is never ranked, priced or judged by accept rules, and the click
+// counter counts clicks per day and nothing else.
+describe('the sold_on kind', () => {
+  const click: BuyerProfile = {
+    ...base,
+    soldOn: 'click',
+    priority: null,
+    hourlyLeadCap: null,
+    hourlySpendCapCents: null,
+    dailySpendCapCents: null,
+    tiers: [],
+  }
+  const clickPartner: PartnerRulesForValidation = { ...partnerWithRules, acceptSignals: [] }
+
+  it('refuses a profile whose kind was never chosen, even a disabled draft, so the save cannot default it', () => {
+    const r = validateProfile({ ...base, soldOn: null, isEnabled: false }, partnerWithRules)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.errors.map((e) => [e.code, e.path])).toEqual([['sold_on_unset', 'soldOn']])
+  })
+
+  it('enables a click buyer with no priority, no tiers and no accept rules', () => {
+    expect(validateProfile(click, clickPartner)).toEqual({ ok: true })
+  })
+
+  it('still requires states, hours, a click URL, a routing code and a daily cap to enable a click buyer', () => {
+    const bare: BuyerProfile = { ...click, allowedStates: [], windows: [], dailyLeadCap: null }
+    expect(codes(bare, { acceptSignals: [], clickUrl: null, externalRoutingCode: null }).sort()).toEqual([
+      'enabled_without_click_url',
+      'enabled_without_daily_cap',
+      'enabled_without_routing_code',
+      'enabled_without_states',
+      'enabled_without_windows',
+    ])
+  })
+
+  it('refuses an hourly lead cap and both spend caps on a click buyer, each by its own field, because nothing counts them', () => {
+    const r = validateProfile({ ...click, hourlyLeadCap: 5, hourlySpendCapCents: 100, dailySpendCapCents: 1000 }, clickPartner)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.errors.filter((e) => e.code === 'click_buyer_cap_unsupported').map((e) => e.path).sort()).toEqual(['dailySpendCapCents', 'hourlyLeadCap', 'hourlySpendCapCents'])
+    }
+  })
+
+  it('refuses pricing tiers on a click buyer, because buyer selection would then price and sell it', () => {
+    expect(codes({ ...click, tiers: base.tiers }, clickPartner)).toContain('click_buyer_priced')
+  })
+
+  it('leaves an offer buyer exactly as before: the offer box is still ok and still needs its priority, tiers and accept rules', () => {
+    expect(validateProfile(base, partnerWithRules)).toEqual({ ok: true })
+    expect(codes({ ...base, priority: null, tiers: [] }, partnerWithoutRules).sort()).toEqual(['enabled_without_accept_rules', 'enabled_without_priority', 'enabled_without_tiers'])
+  })
+
+  it('refuses switching the kind of a stored profile while it has tiers or accept rules stored', () => {
+    const storedOffer = { soldOn: 'offer' as const, tierCount: 1, acceptRuleCount: 0 }
+    expect(codes(click, clickPartner, storedOffer)).toContain('sold_on_locked')
+    expect(codes(base, partnerWithRules, { soldOn: 'click', tierCount: 0, acceptRuleCount: 1 })).toContain('sold_on_locked')
+    // Nothing stored that the kind governs: the switch is allowed.
+    expect(codes(click, clickPartner, { soldOn: 'offer', tierCount: 0, acceptRuleCount: 0 })).toEqual([])
+    // The same kind as stored is never a switch.
+    expect(codes(base, partnerWithRules, { soldOn: 'offer', tierCount: 3, acceptRuleCount: 2 })).toEqual([])
   })
 })

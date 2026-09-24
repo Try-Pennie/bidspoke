@@ -45,7 +45,7 @@ function buyer(partnerId: string, slug: string, priority: number, over: Partial<
       circuit_enabled: true, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30,
     },
     profile: {
-      partnerId, isEnabled: true, priority, allowedStates: ['TX'], debtMin: 15000, debtMax: null, loanAmountMin: null,
+      partnerId, soldOn: 'offer', isEnabled: true, priority, allowedStates: ['TX'], debtMin: 15000, debtMax: null, loanAmountMin: null,
       hourlyLeadCap: null, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: null,
       windows: ALL_WEEK, blackoutDates: [], tiers: [{ population: 'engine', debtFrom: 12500, debtTo: null, multiplier: 0.0012 }],
       ...over,
@@ -443,6 +443,17 @@ describe('live mode', () => {
     expect(out(r).considered.map((c) => [c.partner, c.reason])).toEqual([['tripoint', 'state_not_allowed'], ['liberty', 'debt_below_min']])
     expect(h.buyerCalls).toEqual([])
     expect(h.sales).toEqual([])
+  })
+
+  // #1541: a click sold buyer is enabled and inside the box, but carries no tiers,
+  // so buyer selection sees no price for it and can never sell it or reserve for it.
+  it('an enabled click sold buyer is never sold: it is out as no_pricing_for_population and nobody reserves or calls it', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-9', 'liberty', 1, { soldOn: 'click', priority: null, tiers: [] }), buyer('p-1', 'tripoint', 2)) })
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'sold', sale: { partner_slug: 'tripoint' } })
+    expect(out(r).considered.find((c) => c.partner === 'liberty')).toMatchObject({ reason: 'no_pricing_for_population' })
+    expect(h.buyerCalls.map((c) => c.slug)).toEqual(['tripoint'])
+    expect(h.ledgers.get('p-9')?.calls ?? []).toEqual([])
   })
 
   it('an open breaker skips the buyer with circuit_open and releases nothing it never took', async () => {

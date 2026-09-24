@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { diffProfileDocuments, type BuyerProfileDocument } from '../index'
 
 const base: BuyerProfileDocument = {
-  partner_id: 'p', version: 3, is_enabled: true, priority: 1, allowed_states: ['FL', 'TX'],
+  partner_id: 'p', version: 3, sold_on: 'offer', is_enabled: true, priority: 1, allowed_states: ['FL', 'TX'],
   debt_min: 15000, debt_max: null, loan_amount_min: null,
   hourly_lead_cap: null, daily_lead_cap: 500, hourly_spend_cap_cents: null, daily_spend_cap_cents: null,
   windows: [{ day_of_week: 1, opens_minute: 540, closes_minute: 1080 }],
@@ -54,5 +54,11 @@ describe('diffProfileDocuments', () => {
     const b = diffProfileDocuments({ ...base, priority: 2 }, base)
     expect(a).toEqual([{ path: 'priority', mine: 1, theirs: 2 }])
     expect(b).toEqual([{ path: 'priority', mine: 2, theirs: 1 }])
+  })
+})
+
+describe('diffProfileDocuments names the sold_on kind (#1541)', () => {
+  it('reports a changed kind as its own path, the way buyer_profile_flatten keys it', () => {
+    expect(diffProfileDocuments(base, { ...base, sold_on: 'click' })).toEqual([{ path: 'sold_on', mine: 'offer', theirs: 'click' }])
   })
 })

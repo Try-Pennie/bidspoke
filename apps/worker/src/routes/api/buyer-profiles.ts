@@ -29,7 +29,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
-import { refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
+import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import type { Json } from '../../types/database'
@@ -194,6 +194,13 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
   const loaded = await loadPartner(c, supabase, id, orgId)
   if ('response' in loaded) return loaded.response
 
+  // A click sold buyer (#1541) never reserves in the ledger, so its counts here
+  // would read as zero sales against a cap that counts clicks. Refused by name
+  // until the click counter is read here instead (#1542); an unreadable kind is
+  // its own refusal, never the numbers of a buyer that may be sold on the click.
+  const refused = await refuseClickSoldBuyer(c, supabase, orgId, id)
+  if (refused) return refused
+
   // The ledger is the authority the caps refuse from, so the panel reads the
   // same counted() the refusal uses (L16). A ledger that does not answer is a
   // 503, never a zero (L633).
@@ -240,6 +247,30 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
     unmeasured,
   })
 })
+
+/**
+ * The answer a ledger or daily cap count route gives for a buyer sold on the
+ * click (#1541), or null for any other partner. Shared by the usage route here
+ * and the partner cap-count route, so both refuse the same way.
+ */
+export async function refuseClickSoldBuyer(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  partnerId: string
+): Promise<Response | null> {
+  let soldOn
+  try {
+    soldOn = await readBuyerSoldOn(supabase, orgId, partnerId)
+  } catch (err) {
+    console.error(`[buyer-kind] could not read how partner ${partnerId} is sold: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'sold_on_unavailable', message: 'Whether this buyer is sold on the offer or on the click could not be read, so no count is shown.' }, 503)
+  }
+  if (soldOn === 'click') {
+    return c.json({ error: 'sold_on_click', message: 'This buyer is sold on the click. Its sales are not counted by the buyer ledger or the daily cap object.' }, 409)
+  }
+  return null
+}
 
 function nextIsoDate(day: string): string {
   const [y, m, d] = day.split('-').map(Number)

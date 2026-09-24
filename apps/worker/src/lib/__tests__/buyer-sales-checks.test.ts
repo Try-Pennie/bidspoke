@@ -18,6 +18,7 @@ import { PURGE_GRACE_HOURS } from '../sightings-export'
 import { PAGE_SIZE } from '../paginate'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
+import { profilesTableDouble } from './_profiles-table-double'
 import {
   BID_PURGE_HORIZON_MS,
   BUYER_OUTCOME_RATE_JOB,
@@ -510,5 +511,20 @@ describe('productionChecksDeps reads past the row cap (#1497)', () => {
     expect(fake.ranges.length).toBeGreaterThanOrEqual(3)
     expect(fake.orders[0]).toBe('attempted_at_utc')
     expect(fake.orders).toContain('id')
+  })
+})
+
+// #1541: a click sold buyer has no ledger day and no buyer_sales rows, so
+// listing it here would turn every 15 minute run unmeasured.
+describe('productionChecksDeps lists offer buyers only', () => {
+  it('leaves a click sold buyer out of the checks', async () => {
+    const partner = (slug: string) => ({ organization_id: 'org-1', slug })
+    const caps = { hourly_lead_cap: null, daily_lead_cap: 50, hourly_spend_cap_cents: null, daily_spend_cap_cents: null }
+    const supabase = profilesTableDouble([
+      { partner_id: 'p-offer', sold_on: 'offer', ...caps, partner_configs: partner('tripoint') },
+      { partner_id: 'p-click', sold_on: 'click', ...caps, partner_configs: partner('liberty1') },
+    ])
+    const buyers = await productionChecksDeps(supabase, {} as unknown as Env).listBuyers()
+    expect(buyers.map((b) => b.partner_id)).toEqual(['p-offer'])
   })
 })

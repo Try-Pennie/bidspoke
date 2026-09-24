@@ -33,7 +33,7 @@ const rpcAnswering = (answers: Record<string, unknown>) => async (name: string) 
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -46,7 +46,7 @@ const ACCEPT = [{ field: 'ok', equals: true }]
 const partnerRow = { id: 'p-1', slug: 'tripoint', is_active: true, accept_signals: ACCEPT, click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, organization_id: 'org-abc' }
 
 const doc: BuyerProfileDocument = {
-  partner_id: 'p-1', version: 2, is_enabled: true, priority: 1, allowed_states: ['TX'],
+  partner_id: 'p-1', version: 2, sold_on: 'offer', is_enabled: true, priority: 1, allowed_states: ['TX'],
   debt_min: 15000, debt_max: null, loan_amount_min: null,
   hourly_lead_cap: null, daily_lead_cap: 500, hourly_spend_cap_cents: null, daily_spend_cap_cents: null,
   windows: [{ day_of_week: 1, opens_minute: 0, closes_minute: 1440 }],
@@ -192,6 +192,48 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(await res.json()).toEqual({ error: 'tiers_gap', detail: 'engine: nothing covers 20000 to 25000' })
   })
 
+  // #1541: the kind is chosen, never defaulted, and a click buyer is judged by its own rules.
+  it('a profile with no sold_on is 422 sold_on_unset, and nothing is saved', async () => {
+    const rpc = vi.fn()
+    supabaseWith({ partner_configs: { single: partnerRow } }, { rpc })
+    const { sold_on: _s, ...noKind } = doc
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: noKind })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { errors: Array<{ code: string }> }
+    expect(body.errors.map((e) => e.code)).toEqual(['sold_on_unset'])
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('an enabled click buyer with no priority, tiers or accept rules is saved with its kind', async () => {
+    const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+    const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+    expect(res.status).toBe(200)
+    expect(rpc).toHaveBeenCalledWith('save_buyer_profile', expect.objectContaining({ p_profile: expect.objectContaining({ sold_on: 'click', tiers: [] }) }))
+  })
+
+  it('a click buyer with an hourly cap is 422 click_buyer_cap_unsupported before the database is asked', async () => {
+    const rpc = vi.fn()
+    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], hourly_lead_cap: 10 }
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { errors: Array<{ code: string }> }
+    expect(body.errors.map((e) => e.code)).toEqual(['click_buyer_cap_unsupported'])
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('switching the kind while tiers or accept rules are stored is refused by the database and comes back as 422 sold_on_locked', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { code: 'BP422', message: 'sold_on_locked', details: 'offer cannot become click while pricing tiers or accept rules are stored. Remove them and save first.' } })
+    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [] }
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({ error: 'sold_on_locked' })
+    expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
+  })
+
   it('P0002 from the function is 404, and a real database error is 500', async () => {
     supabaseWith({ partner_configs: { single: partnerRow } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: 'P0002', message: 'partner_not_found' } }) })
     expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 0, profile: doc })).status).toBe(404)
@@ -235,6 +277,7 @@ describe('GET /partners/:id/buyer-usage', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     ledgerStub.summary.mockResolvedValue(summary)
     ledgerStub.peek.mockResolvedValue(counts)
+    vi.mocked(readBuyerSoldOn).mockResolvedValue('offer')
     app = await makeApp()
   })
 
@@ -269,5 +312,29 @@ describe('GET /partners/:id/buyer-usage', () => {
     const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ outside_wins_today: null, unmeasured: ['outside_wins_today'] })
+  })
+  // #1541: a click sold buyer never reserves in the buyer ledger, so its ledger
+  // counts would read as zero sales against a cap that counts clicks. It is
+  // refused by name until the click counter (#1542) is wired here.
+  it('a click sold buyer is 409 sold_on_click with no ledger numbers, and the ledger is never asked', async () => {
+    vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+    supabaseWith({ partner_configs: { single: partnerRow }, lead_sighting_bids: { count: 3 } })
+    const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
+    expect(res.status).toBe(409)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.error).toBe('sold_on_click')
+    expect(body).not.toHaveProperty('day')
+    expect(ledgerStub.summary).not.toHaveBeenCalled()
+    expect(ledgerStub.peek).not.toHaveBeenCalled()
+  })
+
+  it('a kind that cannot be read is 503, never the ledger numbers of a buyer that may be sold on the click (L10)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(readBuyerSoldOn).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    supabaseWith({ partner_configs: { single: partnerRow }, lead_sighting_bids: { count: 3 } })
+    const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ error: 'sold_on_unavailable' })
+    expect(ledgerStub.summary).not.toHaveBeenCalled()
   })
 })

@@ -137,6 +137,67 @@ export function TextArea({ id, value, onChange, rows = 3, placeholder, described
   return <textarea id={id} value={value} rows={rows} placeholder={placeholder} aria-describedby={db} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value)} className="textarea" />
 }
 
+// ── Choice group ──────────────────────────────────────────────────────────────
+
+/**
+ * One answer out of a few named ones, where no answer may be preselected
+ * (#1541): a radio group of radios (L560), with a visible label that is also its
+ * accessible name, one tab stop (the chosen option, or the first when nothing
+ * is chosen), and arrow keys that move and choose as the radio pattern does.
+ * Every option is a button of type button, so no key it handles submits the
+ * form around it (L596).
+ */
+export function ChoiceGroup<T extends string>({ id, label, value, options, onChange, disabled, describedBy: db }: {
+  id: string
+  label: string
+  value: T | null
+  options: ReadonlyArray<{ value: T; label: string }>
+  onChange: (value: T) => void
+  disabled?: boolean
+  describedBy?: string
+}) {
+  const labelId = `${id}-label`
+  const chosen = options.findIndex((o) => o.value === value)
+  const tabStop = chosen === -1 ? 0 : chosen
+  const choose = (index: number, group: HTMLElement | null) => {
+    if (disabled) return
+    const next = options[(index + options.length) % options.length]
+    onChange(next.value)
+    const radios = group?.querySelectorAll<HTMLElement>('[role="radio"]')
+    radios?.[(index + options.length) % options.length]?.focus()
+  }
+  return (
+    <div>
+      <span id={labelId} className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className="choice-group">
+        {options.map((o, i) => {
+          const on = o.value === value
+          return (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              tabIndex={i === tabStop ? 0 : -1}
+              disabled={disabled}
+              onClick={() => { if (!disabled) onChange(o.value) }}
+              onKeyDown={(e) => {
+                const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+                if (step === 0) return
+                e.preventDefault()
+                choose(i + step, e.currentTarget.parentElement)
+              }}
+              className={`choice ${on ? 'choice-on' : ''}`.trim()}
+            >
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Toggle and checkbox ───────────────────────────────────────────────────────
 
 export function Toggle({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {

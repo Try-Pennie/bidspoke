@@ -256,11 +256,13 @@ export async function readExistingBuyerSaleRows(supabase: SupabaseClient, ids: s
 export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDeps {
   return {
     listBuyers: async () => {
-      // Every partner with a buyer profile, enabled or not: a disabled buyer can
-      // still hold entries from before it was disabled.
+      // Every offer buyer with a profile, enabled or not: a disabled buyer can
+      // still hold entries from before it was disabled. A click sold buyer
+      // (#1541) never reserves in the ledger, so it has no outbox here.
       const { data, error } = await supabase
         .from('buyer_profiles')
         .select('partner_id, partner_configs!inner(organization_id, slug)')
+        .eq('sold_on', 'offer')
       if (error) throw new Error(`buyer_profiles: ${error.message}`)
       return ((data ?? []) as unknown as Array<{ partner_id: string; partner_configs: { organization_id: string; slug: string } }>).map((r) => ({
         partner_id: r.partner_id,

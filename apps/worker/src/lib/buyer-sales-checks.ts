@@ -581,6 +581,9 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       const { data, error } = await supabase
         .from('buyer_profiles')
         .select('partner_id, hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, partner_configs!inner(organization_id, slug)')
+        // A click sold buyer (#1541) has no ledger day and no buyer_sales rows,
+        // so listing it would turn every run unmeasured.
+        .eq('sold_on', 'offer')
       if (error) throw new Error(`buyer_profiles: ${error.message}`)
       return ((data ?? []) as unknown as ProfileRow[]).map((r) => ({
         partner_id: r.partner_id,

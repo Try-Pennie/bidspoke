@@ -5,9 +5,10 @@
  * flatten and the package's diff produce: a scalar name, `allowed_states`,
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
-import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError } from '@bidspoke/buyer-profile'
+import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
 
 export const FIELD_LABELS: Record<string, string> = {
+  sold_on: 'Sold on',
   is_enabled: 'Enabled',
   priority: 'Priority',
   allowed_states: 'States',
@@ -36,6 +37,17 @@ export const SECTION_LABELS = {
   duplicate_signals: 'Duplicate when any of',
 } as const
 
+/** The two answers to Sold on (#1541), in the order the choice offers them. The Record type makes a new kind without a label a compile error (L113). */
+export const SOLD_ON_LABELS: Record<SoldOn, string> = {
+  offer: 'The offer',
+  click: 'The click',
+}
+
+/** A click buyer's one cap counts clicks, so its field is named for them wherever the form names it (#1541, L118). */
+export const CLICK_FIELD_LABELS: Record<string, string> = {
+  daily_lead_cap: 'Clicks per day',
+}
+
 const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
 
 /**
@@ -43,10 +55,12 @@ const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_$
  * validator speaks the profile's camelCase field names; the labels are keyed by
  * the snake_case paths the diff and history use, so the two are joined here
  * rather than kept as a second list (L118, L41). An unknown path comes back as
- * itself, visibly unlabelled rather than silently blank.
+ * itself, visibly unlabelled rather than silently blank. A click buyer's cap is
+ * named as its form names it.
  */
-export function profileErrorLabel(path: string): string {
+export function profileErrorLabel(path: string, soldOn?: SoldOn | null): string {
   const snake = camelToSnake(path)
+  if (soldOn === 'click' && CLICK_FIELD_LABELS[snake]) return CLICK_FIELD_LABELS[snake]
   return FIELD_LABELS[snake] ?? (SECTION_LABELS as Record<string, string>)[snake] ?? path
 }
 
@@ -55,10 +69,10 @@ export function profileErrorLabel(path: string): string {
  * validator's own sentence, one field once. It names what to fix and why (L111,
  * L399) rather than how many problems there are and where to look for them.
  */
-export function describeProfileErrors(errors: readonly ProfileError[]): string {
+export function describeProfileErrors(errors: readonly ProfileError[], soldOn?: SoldOn | null): string {
   const byPath = new Map<string, string[]>()
   for (const e of errors) byPath.set(e.path, [...(byPath.get(e.path) ?? []), e.message])
-  return [...byPath.entries()].map(([path, messages]) => `${profileErrorLabel(path)}: ${messages.join(' ')}`).join(' ')
+  return [...byPath.entries()].map(([path, messages]) => `${profileErrorLabel(path, soldOn)}: ${messages.join(' ')}`).join(' ')
 }
 
 export const POPULATION_LABELS: Record<Population, string> = {
@@ -101,6 +115,7 @@ export function profileFieldLabel(path: string): string {
 /** A human value for a diff or history value at a path. */
 export function formatProfileValue(path: string, value: unknown): string {
   if (value === null || value === undefined) return 'none'
+  if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]
   if (path.endsWith('_cents') && typeof value === 'number') return formatCents(value)
   if (path === 'allowed_states' && Array.isArray(value)) return value.length ? [...value].map(String).sort().join(', ') : 'none'
   if (path.startsWith('windows[') && typeof value === 'object') {

@@ -39,7 +39,7 @@ const partner: Partner = {
 }
 
 const doc: BuyerProfileDocument = {
-  partner_id: 'p1', version: 3, is_enabled: true, priority: 1, allowed_states: ['TX'],
+  partner_id: 'p1', version: 3, sold_on: 'offer', is_enabled: true, priority: 1, allowed_states: ['TX'],
   debt_min: 15000, debt_max: null, loan_amount_min: null,
   hourly_lead_cap: null, daily_lead_cap: 500, hourly_spend_cap_cents: null, daily_spend_cap_cents: null,
   windows: [{ day_of_week: 1, opens_minute: 0, closes_minute: 1440 }],
@@ -234,5 +234,71 @@ describe('the Buyer profile section', () => {
     render(<PartnerForm onSave={vi.fn()} onCancel={vi.fn()} />)
     expect(screen.getByRole('region', { name: 'Buyer profile' })).toHaveTextContent(/save the partner first/i)
     expect(api.buyerProfiles.get).not.toHaveBeenCalled()
+  })
+})
+
+// #1541: a buyer is sold on the offer (through buyer selection) or on the click
+// (quoted at the Engine bid, posted to only when the person clicks).
+describe('how the buyer is sold', () => {
+  const clickDoc: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+
+  async function renderWith(profile: BuyerProfileDocument | null, partnerOver: Partial<Partner> = {}) {
+    vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile, accept_signals: [], other_sellers: [] })
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<PartnerForm partner={{ ...partner, ...partnerOver }} onSave={onSave} onCancel={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Sold on' })).toBeInTheDocument())
+    return onSave
+  }
+
+  it('a partner with no profile yet has no answer chosen, and saving the partner alone does not ask for one', async () => {
+    const onSave = await renderWith(null)
+    expect(within(screen.getByRole('radiogroup', { name: 'Sold on' })).getAllByRole('radio').map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(api.buyerProfiles.save).not.toHaveBeenCalled()
+  })
+
+  it('an edited new profile is refused until the kind is chosen, then saved with it', async () => {
+    const onSave = await renderWith(null)
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '50' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const outcome = await screen.findByText(/Nothing saved\./)
+    expect(outcome).toHaveTextContent('Sold on: Choose whether this buyer is sold on the offer or on the click.')
+    expect(onSave).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 0, profile: expect.objectContaining({ sold_on: 'click', daily_lead_cap: 50 }) }))
+  })
+
+  it('a click buyer shows no priority, pricing, accept rules or ledger counts, and its cap reads clicks per day', async () => {
+    await renderWith(clickDoc)
+    expect(screen.getByRole('radio', { name: 'The click' })).toHaveAttribute('aria-checked', 'true')
+    const region = screen.getByRole('region', { name: 'Buyer profile' })
+    expect(within(region).queryByLabelText('Priority')).toBeNull()
+    expect(within(region).queryByRole('heading', { name: 'Pricing' })).toBeNull()
+    expect(within(region).queryByText('Accept when all of')).toBeNull()
+    expect(screen.getByLabelText('Clicks per day')).toHaveValue(50)
+    for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) expect(screen.queryByLabelText(label)).toBeNull()
+    expect(api.buyerProfiles.usage).not.toHaveBeenCalled()
+    expect(within(region).queryByText(/Counted for/)).toBeNull()
+  })
+
+  it('an offer buyer with pricing stored cannot be switched, and says why beside the choice', async () => {
+    await renderWith(doc)
+    const group = screen.getByRole('radiogroup', { name: 'Sold on' })
+    expect(group).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    expect(screen.getByRole('radio', { name: 'The offer' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(/pricing and accept rules are stored/i)).toBeInTheDocument()
+  })
+
+  it('an offer buyer with nothing stored that the kind governs can become a click buyer, and the save carries it', async () => {
+    const bare: BuyerProfileDocument = { ...doc, is_enabled: false, tiers: [], hourly_lead_cap: null }
+    await renderWith(bare, { accept_signals: [] })
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    expect(screen.queryByRole('heading', { name: 'Pricing' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 3, profile: expect.objectContaining({ sold_on: 'click' }) }))
   })
 })
