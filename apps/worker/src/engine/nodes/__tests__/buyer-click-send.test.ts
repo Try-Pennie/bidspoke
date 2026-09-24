@@ -15,6 +15,7 @@ import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { PartnerCallResult } from '../../../lib/post-to-partner'
 import type { ClickAlert, ClickAlertOutcome } from '../../../lib/buyer-click-alert'
+import { NODE_TRAITS } from '@bidspoke/node-types'
 import { buildContext } from '../../context'
 import {
   BUYER_CLICK_SEND_ROUTES,
@@ -118,8 +119,10 @@ function harness(opts: {
         },
       }
     },
-    post: async (url, body, o) => {
-      h.posts.push({ url, body, timeoutMs: o.timeoutMs })
+    post: async (target, body, o) => {
+      // The buyer's own slug, so an error or a log names the buyer that answered.
+      expect(target.slug).toBe('liberty1')
+      h.posts.push({ url: target.url, body, timeoutMs: o.timeoutMs })
       const p = opts.post ?? answer(200, `Records created successfully : ${SF_ID}`)
       return typeof p === 'function' ? p() : p
     },
@@ -143,8 +146,8 @@ describe('the deadline constants carry their reasoning', () => {
     expect(CLICK_CLAIM_DEADLINE_MS).toBeGreaterThan(CLICK_POST_TIMEOUT_MS + 2 * OBJECT_CALL_DEADLINE_MS)
   })
 
-  it('routes are the fixed handle list', () => {
-    expect([...BUYER_CLICK_SEND_ROUTES]).toEqual(['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'])
+  it('routes are exactly the handles the node type declares, so the two lists cannot drift', () => {
+    expect([...BUYER_CLICK_SEND_ROUTES]).toEqual(NODE_TRAITS.buyer_click_send.staticHandles)
   })
 })
 

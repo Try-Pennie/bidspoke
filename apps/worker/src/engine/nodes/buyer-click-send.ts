@@ -182,7 +182,7 @@ export interface ClickCounterApi {
 export interface BuyerClickSendDeps {
   saleClient: (key: ClickClaimKey) => ClickSaleApi
   counter: (slug: string, nowMs: number) => ClickCounterApi
-  post: (url: string, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
+  post: (target: { slug: string; url: string }, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
   alert: (alert: ClickAlert) => Promise<ClickAlertOutcome>
   clock: () => number
   timers?: Timers
@@ -196,7 +196,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     saleClient: (key) => new LeadSaleClient(env.LEAD_SALE, key),
     counter: (slug, nowMs) => new ClickCounterClient(env.DAILY_CAP, slug, nowMs),
     // The one outbound POST (L613): the URL is the node's, and a click buyer carries no stored credential.
-    post: (url, body, opts) => postToPartner({ slug: 'buyer_click_send', api_endpoint: url, cf_secret_key: null }, body, env, opts),
+    post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
     alert: (alert) =>
       postClickAlert(
         {
@@ -357,7 +357,7 @@ class Run {
     // 2. post
     let res: PartnerCallResult
     try {
-      res = await withDeadline(this.deps.post(v.url, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', this.deps.timers)
+      res = await withDeadline(this.deps.post({ slug: v.slug, url: v.url }, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', this.deps.timers)
     } catch (err) {
       const detail = `no answer from the buyer: ${messageOf(err)}`
       await this.page(v, 'outcome_unknown', detail)
