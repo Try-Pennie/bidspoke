@@ -186,6 +186,14 @@ export interface ExecutionContext {
    * it to node executors, which only ever see the context.
    */
   isTest?: boolean
+  /**
+   * Set when this run is an operator's recovery action: `resume` for a resume of an
+   * earlier execution, `replay` for a fresh replay of its payload (#1542). A node that
+   * must never repeat a send it may already have made (buyer_click_send) refuses to
+   * run on either, because resume re-runs every node from the entry, so a resumed
+   * click would otherwise post to the buyer a second time.
+   */
+  recovery?: 'resume' | 'replay'
 }
 
 export interface StepOutput {

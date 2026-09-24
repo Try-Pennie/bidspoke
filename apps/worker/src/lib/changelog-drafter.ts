@@ -187,6 +187,7 @@ Common node types and what they do:
 - latency_gate: mark a time, then gate on the elapsed time
 - achieve_offers: collect Achieve offers, log only
 - buyer_select: sell the lead to the highest ranked eligible buyer
+- buyer_click_send: send one clicked prospect to a click buyer once, and count it
 - response/exit: terminate with HTTP response
 - salesforce: SF object create/update
 - webhook: outbound HTTP call

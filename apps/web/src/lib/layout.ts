@@ -1,6 +1,7 @@
 import dagre from '@dagrejs/dagre'
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeType } from '@/types/workflow'
+import { NODE_TRAITS } from '@/types/workflow'
 
 // All canvas nodes share this width (w-52 = 208px)
 export const NODE_W = 208
@@ -39,6 +40,7 @@ const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
   latency_gate:   STANDARD_NODE_H,
   achieve_offers: STANDARD_NODE_H,
   buyer_select:   STANDARD_NODE_H,
+  buyer_click_send: STANDARD_NODE_H,
   default:        STANDARD_NODE_H,
 }
 
@@ -97,6 +99,8 @@ export function nodeWidth(type: string | undefined, data: unknown): number {
       : (raw as Array<{ label: string }>).map((s) => s.label || '')
     return widthForFooterLabels(labels)
   }
+  // Seven exits: sized for their labels from the first drop, before any child widens it.
+  if (type === 'buyer_click_send') return widthForFooterLabels((NODE_TRAITS.buyer_click_send.staticHandles ?? []).map((h) => h.replace(/_/g, ' ')))
   return NODE_W
 }
 
@@ -193,6 +197,7 @@ export function configuredHandleIds(node: Node): string[] | null {
   if (type === 'filter') return ['pass', 'exit']
   if (type === 'bid_group') return ['winner', 'no_winner']
   if (type === 'buyer_select') return ['sold', 'no_sale', 'not_applicable', 'deferred']
+  if (type === 'buyer_click_send') return [...(NODE_TRAITS.buyer_click_send.staticHandles ?? [])]
   if (type === 'latency_gate') {
     const op = (config?.operation as string | undefined) ?? 'mark'
     return op === 'check' ? ['within', 'exceeded'] : null
@@ -224,6 +229,10 @@ function handleSortIndex(
   }
   if (nodeType === 'buyer_select') {
     const idx = ['sold', 'no_sale', 'not_applicable', 'deferred'].indexOf(handleId)
+    return idx >= 0 ? idx : 999
+  }
+  if (nodeType === 'buyer_click_send') {
+    const idx = (NODE_TRAITS.buyer_click_send.staticHandles ?? []).indexOf(handleId)
     return idx >= 0 ? idx : 999
   }
   if (nodeType === 'latency_gate') {
@@ -322,7 +331,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
   // Typed by NodeType so a misspelt member is a compile error (#1411); which
   // types belong is a layout judgement, stated above, not a trait.
-  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate', 'buyer_select'])
+  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate', 'buyer_select', 'buyer_click_send'])
 
   // Cross-path edges: a filter can fork into a node that already sits on another
   // path (e.g. a filter on one branch routing into a bid_group on another).

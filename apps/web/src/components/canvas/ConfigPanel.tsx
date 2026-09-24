@@ -421,6 +421,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'buyer_select' && <BuyerSelectConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'buyer_click_send' && <BuyerClickSendConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -1737,6 +1738,84 @@ function BuyerSelectConfig({
       <p className="text-xs text-slate-400">
         The buyers are every partner holding an enabled profile priced for this population, in priority order. This node runs once per lead: there is no retry setting, because a retried sale is a second send.
       </p>
+    </section>
+  )
+}
+
+/**
+ * The Buyer Click Send form (#1542). The partner is picked from the buyer
+ * partners by name and stored by slug (L611); a stored slug the list does not
+ * hold stays shown and selected rather than being replaced by the first option
+ * (L652), and a list that cannot load says so (L10).
+ */
+function BuyerClickSendConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const [partners, setPartners] = useState<Partner[] | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  useEffect(() => {
+    api.partners.list().then(setPartners).catch(() => setLoadFailed(true))
+  }, [])
+  const slug = typeof config.partner_slug === 'string' ? config.partner_slug : ''
+  const buyers = (partners ?? []).filter((p) => isBuyerPartner(p.partner_type))
+  // A stored slug stays an option until the list proves it is not a buyer, and while the
+  // list is loading or failed to load, so the picker never shows "Choose" over a real value
+  // and the next save cannot drop it (L652).
+  const storedUnlisted = slug !== '' && !buyers.some((p) => p.slug === slug)
+  const storedLabel = partners === null ? `${slug} (partner list not loaded)` : `${slug} (not a buyer partner)`
+  const text = (key: string) => (config[key] as string | undefined) ?? ''
+  const cap = config.daily_lead_cap
+  const capText = typeof cap === 'number' ? String(cap) : typeof cap === 'string' ? cap : ''
+  const percent = (config.alert_over_percent as number | undefined) ?? 120
+
+  return (
+    <section className="space-y-4">
+      <Field label="Partner">
+        <select className="select" aria-label="Partner" value={slug} onChange={(e) => onChange({ partner_slug: e.target.value || undefined })}>
+          <option value="">Choose a buyer partner</option>
+          {storedUnlisted && <option value={slug}>{storedLabel}</option>}
+          {buyers.map((p) => (
+            <option key={p.id} value={p.slug}>{p.name}</option>
+          ))}
+        </select>
+        {loadFailed && <p className="mt-1 text-xs text-red-700">Partners could not be loaded. Reopen this step to try again.</p>}
+      </Field>
+
+      <Field label="Prospect id" hint="A prospect clicked twice is sent to this buyer once: this is the key that holds it.">
+        <input className="input" placeholder="{{steps.resolve_prospect.output.prospect_id}}" value={text('prospect_id')} onChange={(e) => onChange({ prospect_id: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Request URL">
+        <input className="input" placeholder="{{steps.build_request.output.url}}" value={text('request_url')} onChange={(e) => onChange({ request_url: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Request body">
+        <input className="input" placeholder="{{steps.build_request.output.body}}" value={text('request_body')} onChange={(e) => onChange({ request_body: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Success line" hint="The buyer's answer that confirms it created the record, as a pattern matched against the whole answer, with an (?<id>...) group for the buyer's record id. Any other answer holds the prospect until a person checks with the buyer.">
+        <input className="input font-mono" placeholder="Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)" value={text('success_pattern')} onChange={(e) => onChange({ success_pattern: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Daily lead cap" hint="The buyer's clicks per Pacific day. Offers stop at it; the Slack notice below fires when clicks already offered carry the count past it.">
+        <input
+          className="input"
+          placeholder="50"
+          value={capText}
+          onChange={(e) => {
+            const v = e.target.value.trim()
+            onChange({ daily_lead_cap: v === '' ? undefined : /^\d+$/.test(v) ? Number(v) : e.target.value })
+          }}
+        />
+      </Field>
+
+      <Field label="Notify at percent of the cap">
+        <input type="number" className="input" min={1} max={1000} value={percent} onChange={(e) => onChange({ alert_over_percent: e.target.value === '' ? undefined : Number(e.target.value) })} />
+      </Field>
     </section>
   )
 }

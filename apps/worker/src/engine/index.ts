@@ -18,6 +18,7 @@ import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
+import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
@@ -323,6 +324,10 @@ export async function executeWorkflow(
   // Node executors only ever see the context, so the test flag has to ride along on it.
   // The circuit-breaker trip alert needs it to stay silent on Test Runner runs (#547).
   if (options.isTest) ctx.isTest = true
+  // A node that must never repeat a send refuses a recovery run (#1542): resume re-runs
+  // every node from the entry, so it would post a click a second time.
+  if (options.resumeFromExecutionId) ctx.recovery = 'resume'
+  else if (options.parentExecutionId) ctx.recovery = 'replay'
 
   // Resume re-runs the workflow from the entry node — no completed steps are
   // pre-loaded and nothing is skipped (it behaves like a fresh run, same as
@@ -1461,6 +1466,51 @@ export async function walkGraph(
 
       current = selectEdge ? findNode(selectEdge.target, definition.nodes) : undefined
       stepOrder = attemptOrderBase + selectResult.attempts.length
+      continue
+    }
+
+    // ── Buyer Click Send node (#1542): claim, post and count one click ──
+    // Walker only like buyer_select: it runs exactly once, never through
+    // executeNode's retry loop, because a retried send is a duplicate. One step
+    // row under the node's id; the route is checked before the row is written,
+    // so an unwired handle is a failed row with its own name.
+    if (node.type === 'buyer_click_send') {
+      const clickStartedAt = new Date().toISOString()
+      const clickStartMs = Date.now()
+      log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
+
+      const clickResult = await executeBuyerClickSendNode(node, ctx, buyerClickSendProductionDeps(ctx, env, supabase))
+      const clickOutput = clickResult.output
+      const clickEdge = outgoingEdges(node.id, definition.edges).find((e) => e.source_handle === clickOutput._route)
+      let clickFailure = clickResult.failure
+      if (!clickFailure && !clickEdge) {
+        clickFailure = {
+          message: `buyer_click_send buyer_click_send_handle_unwired: the node routed ${clickOutput._route} and that handle is not wired`,
+          errorType: 'permanent',
+          reason: 'buyer_click_send_handle_unwired',
+        }
+      }
+      const clickStatus: StepStatus = clickFailure ? 'failed' : 'completed'
+      const clickErrorType: ErrorType = clickFailure?.errorType ?? null
+      recordStepOutput(ctx, node.namespace, { output: clickOutput, status: clickStatus, error: clickFailure?.message, error_type: clickErrorType }, { chainStep: true })
+      const clickConfig = node.config as Record<string, unknown>
+      const clickInput: ResolvedStepInput = {
+        // Never the body: it carries the prospect's identity (L222).
+        template: { partner_slug: clickConfig.partner_slug, prospect_id: clickConfig.prospect_id, request_url: clickConfig.request_url, daily_lead_cap: clickConfig.daily_lead_cap },
+        resolved: { partner_slug: clickOutput.partner_slug, prospect_id: clickOutput.prospect_id, mode_effective: clickOutput.mode_effective },
+      }
+      logStep(stepLogQueue, executionId, executionStartedAt, node, clickStatus, clickInput, clickOutput, clickFailure?.message, clickErrorType, 0, clickStartedAt, stepOrder)
+      lastOutput = clickOutput
+
+      const clickDurationMs = Date.now() - clickStartMs
+      if (clickFailure) {
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: clickDurationMs, error_message: clickFailure.message, error_type: clickErrorType })
+        throw new StepFailureError(clickFailure.message, node.namespace, clickErrorType)
+      }
+      log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: clickDurationMs })
+
+      current = clickEdge ? findNode(clickEdge.target, definition.nodes) : undefined
+      stepOrder++
       continue
     }
 

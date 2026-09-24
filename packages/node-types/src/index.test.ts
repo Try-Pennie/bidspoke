@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS, NODE_TYPES, assertNever, isNodeType, type NodeType } from './index'
 
 const SORTED = [
-  'achieve_offers', 'bid_group', 'branch', 'branch_end', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
+  'achieve_offers', 'bid_group', 'branch', 'branch_end', 'buyer_click_send', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
   'latency_gate', 'parallel', 'parallel_end', 'partner_bid', 'response', 'salesforce', 'transform', 'webhook',
 ]
 
@@ -16,7 +16,7 @@ const withTrait = (pick: (t: (typeof NODE_TRAITS)[NodeType]) => boolean): string
   NODE_TYPES.filter((t) => pick(NODE_TRAITS[t])).sort()
 
 describe('NODE_TYPES', () => {
-  it('lists the eighteen node types a saved definition can carry, once each', () => {
+  it('lists the nineteen node types a saved definition can carry, once each', () => {
     expect([...NODE_TYPES].sort()).toEqual(SORTED)
     expect(new Set(NODE_TYPES).size).toBe(NODE_TYPES.length)
   })
@@ -39,7 +39,7 @@ describe('NODE_TRAITS', () => {
   })
 
   it('names the network nodes: the ones whose every run pays an outbound round trip', () => {
-    expect(withTrait((t) => t.network)).toEqual(['achieve_offers', 'bid_group', 'buyer_select', 'partner_bid', 'salesforce', 'webhook'])
+    expect(withTrait((t) => t.network)).toEqual(['achieve_offers', 'bid_group', 'buyer_click_send', 'buyer_select', 'partner_bid', 'salesforce', 'webhook'])
   })
 
   it('names the dispatch or storage nodes: a cold path no retry can rescue', () => {
@@ -50,8 +50,8 @@ describe('NODE_TRAITS', () => {
     expect(withTrait((t) => t.network && t.dispatchOrDb)).toEqual([])
   })
 
-  it('names the four types the walker runs itself and the executor refuses', () => {
-    expect(withTrait((t) => t.walkGraphOnly)).toEqual(['bid_group', 'buyer_select', 'parallel', 'parallel_end'])
+  it('names the five types the walker runs itself and the executor refuses', () => {
+    expect(withTrait((t) => t.walkGraphOnly)).toEqual(['bid_group', 'buyer_click_send', 'buyer_select', 'parallel', 'parallel_end'])
   })
 
   it('bid_group and buyer_select synthesize attempt rows; only partner_bid and bid_group name partners in config', () => {
@@ -66,7 +66,8 @@ describe('NODE_TRAITS', () => {
     expect(NODE_TRAITS.filter.staticHandles).toEqual(['pass', 'exit'])
     expect(NODE_TRAITS.bid_group.staticHandles).toEqual(['winner', 'no_winner'])
     expect(NODE_TRAITS.buyer_select.staticHandles).toEqual(['sold', 'no_sale', 'not_applicable', 'deferred'])
-    expect(withTrait((t) => t.staticHandles !== null)).toEqual(['bid_group', 'buyer_select', 'filter'])
+    expect(NODE_TRAITS.buyer_click_send.staticHandles).toEqual(['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'])
+    expect(withTrait((t) => t.staticHandles !== null)).toEqual(['bid_group', 'buyer_click_send', 'buyer_select', 'filter'])
   })
 
   it('maps each type to its executor file, in kebab case, or null for the walk only and inline types', () => {
@@ -76,6 +77,7 @@ describe('NODE_TRAITS', () => {
       bid_group: 'bid-group',
       branch: 'branch',
       branch_end: null,
+      buyer_click_send: 'buyer-click-send',
       buyer_select: 'buyer-select',
       code: 'code',
       constants: 'constants',

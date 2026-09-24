@@ -39,6 +39,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Latency Gate](https://bidspoke.trypennie.dev/docs/nodes/latency-gate.md): mark and check a partner match-latency window.
 - [Achieve Offers](https://bidspoke.trypennie.dev/docs/nodes/achieve-offers.md): send the lead to Achieve (FDR) and log the offers returned.
 - [Buyer Select](https://bidspoke.trypennie.dev/docs/nodes/buyer-select.md): sell a sell off lead to the highest ranked eligible buyer, from buyer profiles.
+- [Buyer Click Send](https://bidspoke.trypennie.dev/docs/nodes/buyer-click-send.md): send a clicked prospect to a click sold buyer once, and count it once.
 
 ## Guides
 
