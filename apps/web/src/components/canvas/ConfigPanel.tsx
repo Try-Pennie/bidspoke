@@ -1762,7 +1762,11 @@ function BuyerClickSendConfig({
   }, [])
   const slug = typeof config.partner_slug === 'string' ? config.partner_slug : ''
   const buyers = (partners ?? []).filter((p) => isBuyerPartner(p.partner_type))
-  const storedMissing = slug !== '' && partners !== null && !buyers.some((p) => p.slug === slug)
+  // A stored slug stays an option until the list proves it is not a buyer, and while the
+  // list is loading or failed to load, so the picker never shows "Choose" over a real value
+  // and the next save cannot drop it (L652).
+  const storedUnlisted = slug !== '' && !buyers.some((p) => p.slug === slug)
+  const storedLabel = partners === null ? `${slug} (partner list not loaded)` : `${slug} (not a buyer partner)`
   const text = (key: string) => (config[key] as string | undefined) ?? ''
   const cap = config.daily_lead_cap
   const capText = typeof cap === 'number' ? String(cap) : typeof cap === 'string' ? cap : ''
@@ -1773,7 +1777,7 @@ function BuyerClickSendConfig({
       <Field label="Partner">
         <select className="select" aria-label="Partner" value={slug} onChange={(e) => onChange({ partner_slug: e.target.value || undefined })}>
           <option value="">Choose a buyer partner</option>
-          {storedMissing && <option value={slug}>{slug} (not a buyer partner)</option>}
+          {storedUnlisted && <option value={slug}>{storedLabel}</option>}
           {buyers.map((p) => (
             <option key={p.id} value={p.slug}>{p.name}</option>
           ))}

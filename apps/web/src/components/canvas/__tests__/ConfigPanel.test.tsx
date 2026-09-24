@@ -517,6 +517,15 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers (#1542
     expect(screen.getByRole('option', { name: /evafi \(not a buyer partner\)/ })).toBeInTheDocument()
   })
 
+  it('keeps the stored slug selected when the partners cannot be loaded, so a save cannot drop it (L652)', async () => {
+    vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
+    renderPanel(nodeOf('buyer_click_send', { partner_slug: 'liberty1' }))
+    await screen.findByText(/Partners could not be loaded/)
+    const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
+    expect(picker.value).toBe('liberty1')
+    expect(screen.getByRole('option', { name: /liberty1 \(partner list not loaded\)/ })).toBeInTheDocument()
+  })
+
   it('says so when the partners cannot be loaded, instead of an empty picker', async () => {
     vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
     renderPanel(nodeOf('buyer_click_send', {}))
