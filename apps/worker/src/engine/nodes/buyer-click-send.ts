@@ -43,7 +43,7 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { canonicalBodySha256, withDeadline, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
@@ -90,7 +90,6 @@ export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 /** How long the node waits on one Slack alert before recording it as failed. */
 export const CLICK_ALERT_DEADLINE_MS = 5_000
 
-export const DEFAULT_ALERT_OVER_PERCENT = 120
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
 export const BUYER_CLICK_SEND_ROUTES = ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'] as const
@@ -504,10 +503,9 @@ class Run {
       return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${messageOf(err)}`)
     }
 
-    const percent = c.alert_over_percent ?? DEFAULT_ALERT_OVER_PERCENT
-    if (typeof percent !== 'number' || !Number.isInteger(percent) || percent < 1 || percent > 1000) {
-      return this.fail('alert_over_percent_invalid', 'permanent', `alert_over_percent ${JSON.stringify(percent)} is not a whole number from 1 to 1000`)
-    }
+    const percentRule = alertOverPercentOf(c.alert_over_percent)
+    if (!percentRule.ok) return this.fail('alert_over_percent_invalid', 'permanent', percentRule.reason)
+    const percent = percentRule.percent
 
     const prospect = this.resolve(c.prospect_id)
     const prospectId = typeof prospect === 'string' ? prospect.trim() : typeof prospect === 'number' ? String(prospect) : ''

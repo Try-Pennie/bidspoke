@@ -49,7 +49,7 @@ All seven handles must be wired before a live workflow saves, because the node c
 | `request_body` | template | Yes | none | Resolves to the body object the preceding code node built. Sent as JSON. |
 | `success_pattern` | string | Yes | none | The buyer's success line as a regular expression with a named `id` group, matched against the WHOLE answer. There is no default, so a buyer's line can never confirm another buyer's answer. |
 | `daily_lead_cap` | number or template | Yes | none | The buyer's clicks per Pacific day. Read here only for the over cap notice; offering is capped by the offer side. |
-| `alert_over_percent` | number | No | `120` | The notice fires once the day's count reaches this percent of the cap (60 at a cap of 50). |
+| `alert_over_percent` | number | No | `120` | The notice fires once the day's count reaches this percent of the cap (60 at a cap of 50). A whole number from 1 to 1000; anything else is refused when a live workflow saves, and fails the step as `alert_over_percent_invalid` if it reaches a run. One rule decides both (`alertOverPercentOf` in `@bidspoke/buyer-profile`). |
 
 `retries` is ignored and reported as `retries_ignored`: the node runs once, because a retried click is a second send.
 

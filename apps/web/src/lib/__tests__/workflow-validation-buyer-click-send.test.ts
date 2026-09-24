@@ -52,6 +52,31 @@ describe('buyer_click_send config validation', () => {
   }
 })
 
+describe('buyer_click_send notify percent (#1553): refused at save exactly where the executor refuses it', () => {
+  const PERCENT_MESSAGE = 'The notify percent must be a whole number from 1 to 1000'
+
+  it('absent is allowed, because the node then uses 120', () => {
+    expect(messages(click({ ...COMPLETE, alert_over_percent: undefined }))).toEqual([])
+  })
+
+  it('a whole number at either end of the range is allowed', () => {
+    for (const n of [1, 1000]) expect(messages(click({ ...COMPLETE, alert_over_percent: n }))).toEqual([])
+  })
+
+  const refused: Array<[string, unknown]> = [
+    ['zero', 0],
+    ['one past the top', 1001],
+    ['a fraction', 1.5],
+    ['NaN', Number.NaN],
+    ['a numeric string', '120'],
+  ]
+  for (const [name, value] of refused) {
+    it(`refuses ${name}`, () => {
+      expect(messages(click({ ...COMPLETE, alert_over_percent: value }))).toContain(PERCENT_MESSAGE)
+    })
+  }
+})
+
 describe('buyer_click_send handles', () => {
   const handles = NODE_TRAITS.buyer_click_send.staticHandles as readonly string[]
   const wire = (hs: readonly string[]): EdgeDef[] => [...attached, ...hs.map((h) => ({ id: `e-${h}`, source: 'c1', target: `t-${h}`, source_handle: h }))]

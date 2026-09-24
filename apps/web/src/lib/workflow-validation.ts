@@ -3,6 +3,7 @@ import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
+import { alertOverPercentOf } from '@bidspoke/buyer-profile'
 
 export interface ValidationError {
   nodeId: string
@@ -110,6 +111,8 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       const cap = config.daily_lead_cap
       const capSet = (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) || (typeof cap === 'string' && cap.trim() !== '')
       if (!capSet) return 'No daily lead cap set'
+      // The executor's own rule (#1553): a value it refuses fails every run, so it is refused here first.
+      if (!alertOverPercentOf(config.alert_over_percent).ok) return 'The notify percent must be a whole number from 1 to 1000'
       return null
     }
     case 'response':

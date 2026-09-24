@@ -19,7 +19,7 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
-import { PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -1777,7 +1777,7 @@ function BuyerClickSendConfig({
   const text = (key: string) => (config[key] as string | undefined) ?? ''
   const cap = config.daily_lead_cap
   const capText = typeof cap === 'number' ? String(cap) : typeof cap === 'string' ? cap : ''
-  const percent = (config.alert_over_percent as number | undefined) ?? 120
+  const percent = (config.alert_over_percent as number | undefined) ?? DEFAULT_ALERT_OVER_PERCENT
 
   return (
     <section className="space-y-4">
