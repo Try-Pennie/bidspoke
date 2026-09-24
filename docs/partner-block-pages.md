@@ -88,9 +88,11 @@ the page markers changed). A run on which the control's own fetch fails holds ev
 reading as unmeasured and, after ten minutes, posts one "the probe cannot fetch" line
 instead of a partner outage per host.
 
-**Observe mode.** `PARTNER_PROBE_ALERTS` in `wrangler.toml` ships `off`: the state machine
-runs in full and every would-be post is a `would_post=` log line. #1396 flips it after a
-clean day. `LOCAL_DEV` probes and logs and writes nothing.
+**Alert mode.** `PARTNER_PROBE_ALERTS` in `wrangler.toml` ships `on` (#1396, 2026-09-21):
+the probe shipped observing on 2026-09-17 (#1274), the state machine running in full with
+every would-be post as a `would_post=` log line, and was flipped once a clean day on real
+traffic proved the setup. Any value other than exactly `on` is still observe mode.
+`LOCAL_DEV` probes and logs and writes nothing.
 
 The probe never enters the engine, so executions, sightings and the field presence check
 never count it. Log lines: `event=partner_probe` per host per run (`control=true` on the
