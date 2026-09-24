@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateSaleOutcome, getBodyField, looseEquals, matchSignal, type Signal } from '../outcome'
+import { evaluateSaleOutcome, getBodyField, looseEquals, matchSignal, responseClassOf, type Signal } from '../outcome'
 import success1001 from '../../fixtures/tripoint/success-1001.json'
 import duplicate1002 from '../../fixtures/tripoint/duplicate-1002.json'
 import duplicate1003 from '../../fixtures/tripoint/duplicate-1003.json'
@@ -37,6 +37,35 @@ describe('evaluateSaleOutcome on the captured Tripoint fixtures', () => {
   })
   it('declines the invalid lead 502 through the word prefix operator, even though the status is 5xx', () => {
     expect(outcomeOf(invalid502.httpStatus, invalid502.body)).toBe('declined_by_buyer')
+  })
+})
+
+/**
+ * #1416: the class Salesforce records for a sale (Success, Duplicate, Fail) is
+ * derived from the outcome and the buyer's own duplicate rules, so the response
+ * and patch scripts read it from the winner rather than carrying Tripoint's code
+ * mapping. A buyer with no duplicate rule reports every decline as Fail, which
+ * is honest; nothing about a second buyer's codes is assumed.
+ */
+describe('responseClassOf: the Salesforce class of a sale, from the outcome and the duplicate rules', () => {
+  const tripointDuplicate: Signal[] = [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }]
+
+  it('an accepted sale is Success whatever the body says', () => {
+    expect(responseClassOf('accepted', tripointDuplicate, success1001.body)).toBe('Success')
+  })
+  it('a decline matching a duplicate rule is Duplicate (the captured 1003)', () => {
+    expect(responseClassOf('declined_by_buyer', tripointDuplicate, duplicate1003.body)).toBe('Duplicate')
+  })
+  it('a decline matching no duplicate rule is Fail (the captured invalid 502, and a 1002 the rule does not list)', () => {
+    expect(responseClassOf('declined_by_buyer', tripointDuplicate, invalid502.body)).toBe('Fail')
+    expect(responseClassOf('declined_by_buyer', tripointDuplicate, duplicate1002.body)).toBe('Fail')
+  })
+  it('a buyer with no duplicate rules reports every decline as Fail, never a guessed Duplicate', () => {
+    expect(responseClassOf('declined_by_buyer', [], duplicate1003.body)).toBe('Fail')
+  })
+  it('a buyer error or an unknown outcome has no class: the buyer gave no answer to classify', () => {
+    expect(responseClassOf('buyer_error', tripointDuplicate, null)).toBeNull()
+    expect(responseClassOf('outcome_unknown', tripointDuplicate, { ok: true })).toBeNull()
   })
 })
 

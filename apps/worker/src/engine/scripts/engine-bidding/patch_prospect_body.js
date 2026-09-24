@@ -1,4 +1,3 @@
- const constants = steps.constants.output;
   const responseBody = steps.offer_response.output.body ?? {};
   const responseOffers = responseBody.offers ?? [];
 
@@ -6,8 +5,6 @@
 
   if (responseOffers.length > 0 && responseOffers[0]) {
     const offer = responseOffers[0];
-    const tripointClickUrl = constants.TripointClickUrl ?? '';
-    const tripointBid = tripointClickUrl && offer.click_url.includes(tripointClickUrl);
     const clickUrl = offer.click_url;
 
     requestBody = {
@@ -17,28 +14,24 @@
       Base_Bid__c: steps.prospect_trades.output.body?.baseBid,
     };
 
-      // The sale from whichever node decided it (#1414, Phase 7), falling back to
-      // tripoint_ping's legacy fields while the older script is still on the canvas.
-      const tp = steps.tripoint_ping?.output;
-      const sale = tp?.sale ?? steps.buyer_select?.output?.sale;
-      const tripointLeadId = sale ? sale.buyer_reference : (tp?.createLead?.id ?? null);
-      if (tripointLeadId) {
-        requestBody.TripointLeadID__c = tripointLeadId;
-      }
-      const rc = sale ? (sale.result_code != null ? Number(sale.result_code) : null) : (tp?.resultCode ?? null);
-      if (rc != null) {
-        const success   = new Set([1000, 1001, 1013, 1014, 1015, 1016, 1017]);
-        const duplicate = new Set([1003, 1004, 1020]);
-        if (success.has(rc))         requestBody.Tripoint_Response__c = 'Success';
-        else if (duplicate.has(rc))  requestBody.Tripoint_Response__c = 'Duplicate';
-        else                         requestBody.Tripoint_Response__c = 'Fail';
+      // The sale as build_response_body normalised it (#1416): one shape whichever node
+      // decided the lead, carrying the winner's name, routing code and class. Nothing
+      // here holds a Tripoint literal; a second buyer is named by its own facts.
+      const sale = steps.build_response_body?.output?.sale ?? null;
+      const sold = !!sale && sale.accepted === true;
+
+      // Tripoint's own Salesforce fields, written only when Tripoint is the buyer:
+      // Salesforce has no field for another buyer's reference or class yet.
+      if (sold && sale.partner_slug === 'tripoint') {
+        if (sale.buyer_reference) requestBody.TripointLeadID__c = sale.buyer_reference;
+        if (sale.response_class) requestBody.Tripoint_Response__c = sale.response_class;
       }
 
-    if (tripointBid) {
-      requestBody.ExternalPartnerName__c = 'Tripoint';
+    if (sold) {
+      requestBody.ExternalPartnerName__c = sale.partner_name;
       requestBody.ExternalDebtAmount__c =
   steps.prospect_trades.output.body?.tradeCalculations?.enrollableDebt;
-      requestBody.ExternalRoutingCode__c = 2;
+      requestBody.ExternalRoutingCode__c = sale.routing_code;
       requestBody.ExternalExchangeStatus__c = 'Bid';
     }
     if (steps.prospect_trades.output.body?.discountApplied === true) {

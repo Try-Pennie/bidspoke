@@ -61,31 +61,33 @@ export interface KeptScript {
 }
 
 /**
- * Baselines computed on 2026-09-23 from the mirror at its 2026-09-17 commit
- * (`Strip trailing whitespace from code nodes (#1384)`), the same canvas the
- * files were read from on 2026-09-22 (PR #1470).
+ * Baselines read on 2026-09-24 from the live definition (version 100, the Stage
+ * A paste of 2026-09-23): the SHA-256 of each code node's script exactly as the
+ * canvas holds it, which is the kept file of PR #1470 (tripoint_ping without
+ * its final newline). The kept files were then re-derived for #1416, so until
+ * Stage C pastes them the check reports awaiting_paste, not drift.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
     namespace: 'tripoint_ping',
     file: 'tripoint_ping.js',
     script: TRIPOINT_PING,
-    canvasBaselineSha256: '41ed17192899c2893c9e7c8c2d027c993022d2b0e3a61774298c56e33ec656c9',
-    baselineReadOn: '2026-09-22',
+    canvasBaselineSha256: '9cda1574d6d2735636656615f7ad8df743afd508a182af87f7c21db28e91f2fb',
+    baselineReadOn: '2026-09-24',
   },
   {
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: '85d41fc345d10e4255ea3e1edfffaff599dc577ddecba04d6b34b33f9a26e470',
-    baselineReadOn: '2026-09-22',
+    canvasBaselineSha256: 'e9a9af5788469160f7a845473aa472f9d13c031ffb17da162245a2b90c47dd04',
+    baselineReadOn: '2026-09-24',
   },
   {
     namespace: 'patch_prospect_body',
     file: 'patch_prospect_body.js',
     script: PATCH_PROSPECT_BODY,
-    canvasBaselineSha256: 'ec7a24dee91690bb32379c0f7fa746b86c24e46d1b37a3bd381ab1c91c06cf4a',
-    baselineReadOn: '2026-09-22',
+    canvasBaselineSha256: '13d25373e7e22a26df3c9ce14e03d7a33d61cff0540a59524ae0f5d68b61e2f5',
+    baselineReadOn: '2026-09-24',
   },
 ]
 

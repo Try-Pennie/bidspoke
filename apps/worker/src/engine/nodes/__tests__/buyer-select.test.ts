@@ -36,6 +36,12 @@ function buyer(partnerId: string, slug: string, priority: number, over: Partial<
       id: partnerId, slug, is_active: true, api_endpoint: `https://${slug}.example/leads`, cf_secret_key: null,
       outbound_field_mapping: null, extra_extraction: { buyer_reference: 'data.createLead.id', result_code: 'data.createLead.resultCode' }, accept_signals: TRIPOINT_ACCEPT,
       response_classification: { rejection_signals: TRIPOINT_DECLINE as never },
+      // The winner's own facts (#1416): a name, a landing page and a routing code per buyer, so a
+      // second buyer's sale is visibly not Tripoint's.
+      name: slug === 'tripoint' ? 'Tripoint' : slug.charAt(0).toUpperCase() + slug.slice(1),
+      click_url: `https://${slug}.example/apply`,
+      external_routing_code: slug === 'tripoint' ? 2 : 7,
+      duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }],
       circuit_enabled: true, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30,
     },
     profile: {
@@ -307,6 +313,57 @@ describe('applicability, before any object or database call', () => {
 })
 
 // ── Live sales ────────────────────────────────────────────────────────────────
+
+/**
+ * #1416: the sale carries the winner's own facts, so the response and patch
+ * scripts derive the click URL, the partner name, the routing code and the
+ * Success, Duplicate and Fail class from it, never from a Tripoint literal.
+ */
+describe("the sale carries the winner's own facts (#1416)", () => {
+  it('a sold lead names the buyer, where it lands, its routing code and Success', async () => {
+    const r = await run(harness())
+    expect(out(r).sale).toEqual({
+      skipped: false, accepted: true, buyer_reference: 'L-1', result_code: '1000', partner_slug: 'tripoint',
+      partner_name: 'Tripoint', click_url: 'https://tripoint.example/apply', routing_code: 2, response_class: 'Success',
+    })
+  })
+
+  it('a decline matching the buyer duplicate rules is Duplicate, with the code and the declining buyer named, and no landing page', async () => {
+    const r = await run(harness({ answers: { tripoint: [DUPLICATE] } }))
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'declined_by_buyer' })
+    expect(out(r).sale).toEqual({
+      skipped: false, accepted: false, buyer_reference: null, result_code: '1020', partner_slug: 'tripoint',
+      partner_name: 'Tripoint', click_url: null, routing_code: null, response_class: 'Duplicate',
+    })
+  })
+
+  it('a decline matching no duplicate rule is Fail (the invalid 502 shape)', async () => {
+    const r = await run(harness({ answers: { tripoint: [INVALID_502] } }))
+    expect(out(r).sale).toMatchObject({ accepted: false, partner_slug: 'tripoint', response_class: 'Fail', result_code: null })
+  })
+
+  it('a second buyer sells with ITS name, landing page and routing code after the first declined', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [DUPLICATE], liberty: [ACCEPTED] } })
+    const r = await run(h)
+    expect(out(r).sale).toEqual({
+      skipped: false, accepted: true, buyer_reference: 'L-1', result_code: '1000', partner_slug: 'liberty',
+      partner_name: 'Liberty', click_url: 'https://liberty.example/apply', routing_code: 7, response_class: 'Success',
+    })
+  })
+
+  it('a lead not for sale carries a skipped sale with every winner fact null', async () => {
+    const r = await run(harness(), ctx({ sellOff: false }))
+    expect(out(r).sale).toEqual({
+      skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null,
+      partner_name: null, click_url: null, routing_code: null, response_class: null,
+    })
+  })
+
+  it('a rehearsal sale carries the same facts, so the parity report and the scripts read one shape', async () => {
+    const r = await run(harness(), ctx(), node({ mode: 'decide_only' }))
+    expect(out(r).sale).toMatchObject({ accepted: true, partner_slug: 'tripoint', partner_name: 'Tripoint', click_url: 'https://tripoint.example/apply', routing_code: 2, response_class: 'Success' })
+  })
+})
 
 describe('live mode', () => {
   it('sells to the eligible buyer: claim, reserve, call, commit, mark sold, mirror, one bid row, breaker success', async () => {

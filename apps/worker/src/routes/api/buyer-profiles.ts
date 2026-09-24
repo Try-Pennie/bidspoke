@@ -41,6 +41,9 @@ interface PartnerForProfile {
   slug: string
   is_active: boolean
   accept_signals: unknown
+  /** Read for the enabling refusals (#1416): a buyer sells nowhere without them. */
+  click_url: string | null
+  external_routing_code: number | null
 }
 
 /** The partner in this org, or the response that ends the request. */
@@ -52,7 +55,7 @@ async function loadPartner(
 ): Promise<{ partner: PartnerForProfile } | { response: Response }> {
   const { data, error } = await supabase
     .from('partner_configs')
-    .select('id, slug, is_active, accept_signals')
+    .select('id, slug, is_active, accept_signals, click_url, external_routing_code')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -122,7 +125,11 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
   if (!parsed.ok) return c.json({ error: 'profile_malformed', errors: parsed.errors }, 400)
 
   const profile = documentToProfile({ ...parsed.document, partner_id: id })
-  const validation = validateProfile(profile, { acceptSignals: acceptSignalsOf(loaded.partner) })
+  const validation = validateProfile(profile, {
+    acceptSignals: acceptSignalsOf(loaded.partner),
+    clickUrl: loaded.partner.click_url ?? null,
+    externalRoutingCode: typeof loaded.partner.external_routing_code === 'number' ? loaded.partner.external_routing_code : null,
+  })
   if (!validation.ok) return c.json({ error: 'profile_invalid', errors: validation.errors }, 422)
 
   const { partner_id: _partner, version: _version, ...toSave } = parsed.document

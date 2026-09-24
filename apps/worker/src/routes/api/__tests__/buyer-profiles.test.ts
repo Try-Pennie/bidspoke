@@ -43,7 +43,7 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, BU
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
 const ACCEPT = [{ field: 'ok', equals: true }]
-const partnerRow = { id: 'p-1', slug: 'tripoint', is_active: true, accept_signals: ACCEPT, organization_id: 'org-abc' }
+const partnerRow = { id: 'p-1', slug: 'tripoint', is_active: true, accept_signals: ACCEPT, click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, organization_id: 'org-abc' }
 
 const doc: BuyerProfileDocument = {
   partner_id: 'p-1', version: 2, is_enabled: true, priority: 1, allowed_states: ['TX'],
@@ -162,6 +162,16 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(body.errors.map((e) => e.code)).toContain('enabled_without_accept_rules')
     expect(rpc).not.toHaveBeenCalled()
     expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
+  })
+
+  it('enabling a buyer whose partner record has no click URL or no routing code is 422 by name, because the scripts write both from the winner (#1416)', async () => {
+    const rpc = vi.fn()
+    supabaseWith({ partner_configs: { single: { ...partnerRow, click_url: null, external_routing_code: null } } }, { rpc })
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { errors: Array<{ code: string }> }
+    expect(body.errors.map((e) => e.code)).toEqual(expect.arrayContaining(['enabled_without_click_url', 'enabled_without_routing_code']))
+    expect(rpc).not.toHaveBeenCalled()
   })
 
   it('a stale version is 409 carrying the CURRENT document from the refusal detail, so the form can show both (L717)', async () => {

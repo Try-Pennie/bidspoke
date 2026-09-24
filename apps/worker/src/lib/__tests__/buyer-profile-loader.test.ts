@@ -28,9 +28,10 @@ const ROW = {
   daily_spend_cap_cents: 500000,
   updated_at: '2026-09-22T10:00:00.000Z',
   partner_configs: {
-    id: 'p-1', slug: 'tripoint', is_active: true, api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create',
+    id: 'p-1', slug: 'tripoint', name: 'Tripoint', is_active: true, api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create',
     cf_secret_key: 'TRIPOINT_PROXY_SECRET', outbound_field_mapping: null, extra_extraction: null,
     accept_signals: [{ field: 'ok', operator: 'equals', value: true }], response_classification: null,
+    click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }],
     circuit_enabled: true, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30,
   },
   buyer_operating_windows: [{ day_of_week: 1, opens_minute: 540, closes_minute: 1080 }],
@@ -84,6 +85,9 @@ describe('loadBuyerProfiles', () => {
     const b = snapshot.buyers[0]
     expect(b.partner.slug).toBe('tripoint')
     expect(b.partner.accept_signals).toEqual([{ field: 'ok', operator: 'equals', value: true }])
+    // #1416: the winner's own facts the sale carries, read here so the scripts never hold a Tripoint literal.
+    for (const col of ['name', 'click_url', 'external_routing_code', 'duplicate_signals']) expect(calls[0].select, col).toContain(col)
+    expect(b.partner).toMatchObject({ name: 'Tripoint', click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] })
     expect(b.profile).toEqual({
       partnerId: 'p-1', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null,
       hourlyLeadCap: 50, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: 500000,

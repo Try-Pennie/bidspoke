@@ -37,6 +37,16 @@ export interface FormSnapshot {
   subAccountFloors: SubAccountFloor[]
   /** The buyer_select accept rules (#1412), the shared Signal shape, saved with the partner record. */
   acceptSignals: unknown[]
+  /** The Salesforce routing code as typed, a whole number or blank (#1416). */
+  externalRoutingCode: string
+  /** The duplicate rules (#1416), the shared Signal shape, saved with the partner record. */
+  duplicateSignals: unknown[]
+}
+
+/** A routing code is a whole number Salesforce recognises or nothing at all: a fraction or a word is null, never a rounded guess (L50). */
+export function parseRoutingCode(text: string): number | null {
+  const t = text.trim()
+  return /^\d+$/.test(t) ? parseInt(t, 10) : null
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -156,6 +166,8 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     circuit_cooldown_seconds: parseInt(snap.circuitCooldown) || 300,
     response_classification: serializeRules(snap.signalRules),
     accept_signals: snap.acceptSignals,
+    duplicate_signals: snap.duplicateSignals,
+    external_routing_code: parseRoutingCode(snap.externalRoutingCode),
     alert_config: {
       transient_errors: { alert: snap.alertTransient },
       permanent_errors: { alert: snap.alertPermanent },
