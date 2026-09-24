@@ -274,6 +274,28 @@ describe('how the buyer is sold', () => {
     await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 0, profile: expect.objectContaining({ sold_on: 'click', daily_lead_cap: 50 }) }))
   })
 
+  // #1546: the Engine offer replaces {prospect_id} in the click URL and refuses a
+  // URL without it, so an enabled click buyer without it would never be offered.
+  it('an enabled click buyer whose click URL has no {prospect_id} is refused, with the error on the Click URL field, and nothing is saved', async () => {
+    const onSave = await renderWith(clickDoc, { click_url: 'https://trypennie.com/portal/libertyone/' })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const outcome = await screen.findByText(/Nothing saved\./)
+    expect(outcome).toHaveTextContent('Click URL: Put {prospect_id} in the click URL')
+    const field = screen.getByLabelText('Click URL')
+    const describedBy = field.getAttribute('aria-describedby') ?? ''
+    const fieldError = describedBy.split(' ').map((id) => document.getElementById(id)).find((el) => el?.getAttribute('role') === 'alert')
+    expect(fieldError).toHaveTextContent('Put {prospect_id} in the click URL')
+    expect(onSave).not.toHaveBeenCalled()
+    expect(api.buyerProfiles.save).not.toHaveBeenCalled()
+  })
+
+  it('the same click buyer with the placeholder in its click URL saves, and the field carries no error', async () => {
+    const onSave = await renderWith(clickDoc, { click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(screen.getByLabelText('Click URL').getAttribute('aria-describedby') ?? '').not.toMatch(/error/)
+  })
+
   it('a click buyer shows no priority, pricing, accept rules or ledger counts, and its cap reads clicks per day', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
@@ -340,7 +362,7 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 3, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     const message = 'This buyer is sold on the click in live workflows: Engine Bidding. Nothing was saved. Take it off their click nodes, or switch those workflows off, before selling it on the offer.'
     vi.mocked(api.buyerProfiles.save).mockRejectedValue(Object.assign(new Error('sold_on_in_use'), { status: 409, body: { error: 'sold_on_in_use', message, workflows: [{ id: 'wf-1', name: 'Engine Bidding' }] } }))
-    await renderWith({ ...clickDoc, daily_lead_cap: 60 })
+    await renderWith({ ...clickDoc, daily_lead_cap: 60 }, { click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' })
     fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '55' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     expect(await screen.findByText(/The buyer profile was not saved: This buyer is sold on the click in live workflows: Engine Bidding/)).toBeInTheDocument()

@@ -40,7 +40,7 @@
     their executors and save validation share: the buyer_click_send over cap
     percent (#1553), the partner id rule both click nodes store their buyer by (#1543),
     and the one cap predicate `isCap` that save validation and both click nodes judge
-    a cap by, with buyer_click_check's budget and last good copy bound (#1557). `fixtures/tripoint/` holds the
+    a cap by, with buyer_click_check's budget and last good copy bound (#1557), and the `{prospect_id}` click URL rule both enabling a click buyer and buyer_click_check read (#1546). `fixtures/tripoint/` holds the
     redacted response shapes captured from production on 2026-09-21.
   - `packages/node-types`: the one list of node types a saved definition can carry
     (`NODE_TYPES`, `NodeType`), the traits each has (`NODE_TRAITS`: network,

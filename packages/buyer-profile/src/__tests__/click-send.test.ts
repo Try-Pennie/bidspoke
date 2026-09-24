@@ -4,7 +4,18 @@
  * must refuse the same value before it is saved), so the two cannot drift.
  */
 import { describe, expect, it } from 'vitest'
-import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, isCap, isPartnerId, partnerIdOf } from '../click-send'
+import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, CLICK_URL_PROSPECT_PLACEHOLDER, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, clickUrlCarriesProspectId, isCap, isPartnerId, partnerIdOf } from '../click-send'
+
+describe('clickUrlCarriesProspectId (#1546)', () => {
+  it('is true only for a string holding the {prospect_id} placeholder', () => {
+    expect(CLICK_URL_PROSPECT_PLACEHOLDER).toBe('{prospect_id}')
+    expect(clickUrlCarriesProspectId('https://trypennie.com/portal/libertyone/{prospect_id}')).toBe(true)
+    expect(clickUrlCarriesProspectId('https://trypennie.com/portal/libertyone/')).toBe(false)
+    expect(clickUrlCarriesProspectId('https://x.test/{prospectId}')).toBe(false)
+    expect(clickUrlCarriesProspectId(null)).toBe(false)
+    expect(clickUrlCarriesProspectId(undefined)).toBe(false)
+  })
+})
 
 describe('isCap (#1557): the one cap predicate', () => {
   it('accepts a whole number above zero', () => {

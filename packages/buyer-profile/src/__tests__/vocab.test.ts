@@ -59,6 +59,9 @@ describe('out reasons', () => {
       // #1557: buyer_click_check's own outcomes, each named for what happened
       // rather than folded into cap_check_error, which reads as an outage.
       'partner_not_click', 'no_daily_cap', 'daily_click_cap', 'profile_copy_stale',
+      // #1546: a click URL without the {prospect_id} placeholder, which the
+      // offer script would refuse on every lead.
+      'click_url_has_no_prospect_id',
     ]
     expect([...OUT_REASONS].sort()).toEqual(expected.sort())
   })

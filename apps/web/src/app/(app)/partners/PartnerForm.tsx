@@ -61,15 +61,19 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
-function Input({ value, onChange, placeholder, type = 'text', mono }: {
+function Input({ id, value, onChange, placeholder, type = 'text', mono, describedBy }: {
+  id?: string
   value: string | number
   onChange: (v: string) => void
   placeholder?: string
   type?: string
   mono?: boolean
+  describedBy?: string
 }) {
   return (
     <input
+      id={id}
+      aria-describedby={describedBy}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -183,6 +187,8 @@ export default function PartnerForm({
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
   const [otherSellers, setOtherSellers] = useState<Array<{ id: string; name: string }>>([])
   const [profileErrors, setProfileErrors] = useState<ProfileError[]>([])
+  /** A buyer profile refusal about the partner's click URL, shown on that field (#1546). */
+  const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
   const [conflict, setConflict] = useState<ProfileConflict | null>(null)
   const [saveOutcome, setSaveOutcome] = useState<OutcomeState>({ kind: 'idle' })
   // What the profile looked like when it loaded or was last saved, so an edit to
@@ -617,12 +623,15 @@ export default function PartnerForm({
         </Section>}
 
         {isBuyerPartner(partnerType) && <Section title="Endpoints">
-          <Field
+          {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
+          <UiField
+            id="partner-click-url"
             label="Click URL"
             hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
+            error={clickUrlError}
           >
-            <Input value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" />
-          </Field>
+            <Input id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
+          </UiField>
           <Field
             label="Dedup endpoint"
             hint="Optional. Called before each bid to check if this lead has already been sold to this partner."

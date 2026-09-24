@@ -129,7 +129,11 @@ const ROUTED: Array<[string, () => Harness, ExecutionContext | undefined, BuyerC
   ['a switched off partner', () => harness({ profiles: snapshot(clickBuyer({}, { is_active: false })) }), undefined, 'inactive'],
   ['a state not in the list', () => harness(), ctx({ state: 'ND' }), 'state_not_allowed'],
   ['outside the hours', () => harness({ clockMs: Date.UTC(2027, 8, 25, 18, 0) }), undefined, 'closed'],
+  ['a click URL with no {prospect_id} placeholder', () => harness({ profiles: snapshot(clickBuyer({}, { click_url: 'https://trypennie.com/portal/libertyone/' })) }), undefined, 'click_url_has_no_prospect_id'],
 ]
+
+/** The reasons that page a person, each through the click alert path's cooldown. */
+const PAGING_REASONS: ReadonlySet<string> = new Set(['partner_not_click', 'click_url_has_no_prospect_id'])
 
 const run = (h: Harness, n = node(), c = ctx()) => executeBuyerClickCheckNode(n, c, h.deps)
 
@@ -343,8 +347,31 @@ describe('refusals', () => {
     for (const [what, make, c] of ROUTED) {
       const h = make()
       const { output } = await run(h, node(), c ?? ctx())
-      if (output.reason !== 'partner_not_click') expect(h.alerts, what).toEqual([])
+      if (!PAGING_REASONS.has(output.reason)) expect(h.alerts, what).toEqual([])
     }
+  })
+
+  // #1546: build_response_body refuses a click URL without {prospect_id} as
+  // click_url_has_no_prospect_id, so without this every eligible lead would pass
+  // the check and then fail to be offered one step later, silently.
+  it('a click URL with no {prospect_id} placeholder routes not_eligible by name before the count is read, and pages', async () => {
+    for (const click_url of ['https://trypennie.com/portal/libertyone/', null]) {
+      const h = harness({ profiles: snapshot(clickBuyer({}, { click_url })) })
+      const r = await run(h)
+      expect(r.failure).toBeUndefined()
+      expect(r.output, String(click_url)).toMatchObject({ _route: 'not_eligible', reason: 'click_url_has_no_prospect_id', partner_slug: 'liberty1', count: null })
+      expect(r.output.detail).toContain('{prospect_id}')
+      expect(h.counterReads).toEqual([])
+      expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'click_url_has_no_prospect_id', partner_id: PARTNER_ID, partner_slug: 'liberty1', prospect_id: null, workflow_id: 'wf-1', trace_id: 'trace-1' })])
+    }
+  })
+
+  it('a click URL carrying the placeholder does not page and goes on to the count', async () => {
+    const h = harness()
+    const r = await run(h)
+    expect(r.output.reason).toBe('eligible')
+    expect(h.alerts).toEqual([])
+    expect(h.counterReads).toHaveLength(1)
   })
 
   it('an alert that throws is caught, and the answer still routes', async () => {

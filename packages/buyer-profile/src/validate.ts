@@ -1,4 +1,4 @@
-import { isCap } from './click-send'
+import { CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, isCap } from './click-send'
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
 import type { PricingTier } from './tiers'
@@ -25,6 +25,7 @@ export type ProfileErrorCode =
   | 'enabled_without_tiers'
   | 'enabled_without_accept_rules'
   | 'enabled_without_click_url'
+  | 'click_url_has_no_prospect_id'
   | 'enabled_without_routing_code'
   | 'enabled_without_daily_cap'
   | 'sold_on_unset'
@@ -163,6 +164,10 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     // winner (#1416); a buyer enabled without them sells leads that land nowhere.
     if (partner.clickUrl === null || partner.clickUrl.trim() === '') {
       err('enabled_without_click_url', 'clickUrl', 'Set the click URL on the partner before enabling. A sold lead is sent to it.')
+    } else if (click && !clickUrlCarriesProspectId(partner.clickUrl)) {
+      // #1546: the offer replaces the placeholder with the prospect's id, and a
+      // URL without it is refused on every lead, so the buyer is never offered.
+      err('click_url_has_no_prospect_id', 'clickUrl', `Put ${CLICK_URL_PROSPECT_PLACEHOLDER} in the click URL where the prospect's id goes. Without it no offer can be made to this buyer.`)
     }
     if (partner.externalRoutingCode === null) {
       err('enabled_without_routing_code', 'externalRoutingCode', 'Set the Salesforce routing code on the partner before enabling. The prospect patch carries it on every sale.')

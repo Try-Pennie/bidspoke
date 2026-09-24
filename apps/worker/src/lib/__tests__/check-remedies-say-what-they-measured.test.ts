@@ -44,6 +44,7 @@ import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
 import { ENGINE_SCRIPT_DRIFT_REMEDY } from '../engine-script-drift'
+import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
@@ -75,6 +76,10 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
   ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
   ['engine script drift', ENGINE_SCRIPT_DRIFT_REMEDY],
+  ['click check errors', CLICK_CHECK_ERRORS_REMEDY],
+  ['click path quiet', CLICK_PATH_QUIET_REMEDY],
+  ['click send refusals', CLICK_SEND_REFUSALS_REMEDY],
+  ['click reconcile', CLICK_RECONCILE_REMEDY],
 ]
 
 /**

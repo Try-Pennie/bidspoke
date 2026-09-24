@@ -125,6 +125,10 @@ export const OUT_REASONS = [
   'no_daily_cap',
   'daily_click_cap',
   'profile_copy_stale',
+  // #1546: a click buyer whose click URL has no {prospect_id} placeholder. The
+  // offer script refuses such a URL on every lead, so the check routes it out
+  // by name and pages rather than let every offer fail one step later.
+  'click_url_has_no_prospect_id',
 ] as const
 export type OutReason = (typeof OUT_REASONS)[number]
 
@@ -160,6 +164,7 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   no_daily_cap: 'No clicks per day set',
   daily_click_cap: 'Daily click cap reached',
   profile_copy_stale: 'Only an old copy of the buyer profiles could be read, so the buyer was not offered',
+  click_url_has_no_prospect_id: 'Click URL has no place for the prospect id, so no offer can be made',
 }
 
 /**

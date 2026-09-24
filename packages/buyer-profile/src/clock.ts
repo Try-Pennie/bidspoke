@@ -89,6 +89,29 @@ export function easternDayStartUtc(isoDate: string): number {
   throw new Error(`${isoDate} has no Eastern midnight at a 4 or 5 hour offset`)
 }
 
+/**
+ * The UTC instant a calendar day begins in a named zone (#1546): the click
+ * counter's day is the PACIFIC day, and the daily reconcile bounds its
+ * Salesforce read to that day. Both zones' offsets are whole hours between 4
+ * and 8, so each candidate is checked against zonedParts rather than assumed,
+ * exactly as easternDayStartUtc does.
+ */
+export function zonedDayStartUtc(isoDate: string, zone: ClockZone): number {
+  const m = ISO_DATE.exec(isoDate)
+  if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const probe = new Date(Date.UTC(y, mo - 1, d))
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
+    throw new Error(`${isoDate} is not a calendar date`)
+  }
+  for (const offsetHours of [4, 5, 7, 8]) {
+    const candidate = Date.UTC(y, mo - 1, d, offsetHours)
+    const parts = zonedParts(candidate, zone)
+    if (parts.date === isoDate && parts.minuteOfDay === 0) return candidate
+  }
+  throw new Error(`${isoDate} has no midnight in ${zone} at a 4 to 8 hour offset`)
+}
+
 export function easternParts(instantMs: number): EasternParts {
   return zonedParts(instantMs, EASTERN)
 }
