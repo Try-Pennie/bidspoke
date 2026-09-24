@@ -1,7 +1,13 @@
 /**
- * One Eastern clock (L39, L74). Every hour, day, window and blackout the buyer
+ * One clock (L39, L74). Every hour, day, window and blackout the buyer
  * profiles reason about is America/New_York, and nothing here reads a local
  * Date getter, so the machine zone cannot leak in.
+ *
+ * The zone is a parameter of the one reader, `zonedParts`, for the few facts
+ * that live on another day (#1542): the click counter's day ends at midnight
+ * Pacific, because clicks arrive after offers and an Eastern day would push a
+ * late evening click into the next day's count. `easternParts` is
+ * `zonedParts` in New York, so the two readings cannot drift apart.
  */
 
 export interface OperatingWindow {
@@ -24,16 +30,31 @@ export interface EasternParts {
   hourBucket: number
 }
 
-const EASTERN = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
-  hourCycle: 'h23',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  weekday: 'short',
-})
+/** The zones the product reasons in. A closed list, so a typo is a compile error rather than a formatter throwing at run time. */
+export const CLOCK_ZONES = ['America/New_York', 'America/Los_Angeles'] as const
+export type ClockZone = (typeof CLOCK_ZONES)[number]
+export const EASTERN: ClockZone = 'America/New_York'
+export const PACIFIC: ClockZone = 'America/Los_Angeles'
+
+const FORMATTERS = new Map<ClockZone, Intl.DateTimeFormat>()
+
+function formatterFor(zone: ClockZone): Intl.DateTimeFormat {
+  let f = FORMATTERS.get(zone)
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'short',
+    })
+    FORMATTERS.set(zone, f)
+  }
+  return f
+}
 
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
@@ -69,8 +90,13 @@ export function easternDayStartUtc(isoDate: string): number {
 }
 
 export function easternParts(instantMs: number): EasternParts {
+  return zonedParts(instantMs, EASTERN)
+}
+
+/** The calendar date, weekday and minute of the day at an instant in a named zone. */
+export function zonedParts(instantMs: number, zone: ClockZone): EasternParts {
   const fields: Record<string, string> = {}
-  for (const part of EASTERN.formatToParts(new Date(instantMs))) {
+  for (const part of formatterFor(zone).formatToParts(new Date(instantMs))) {
     if (part.type !== 'literal') fields[part.type] = part.value
   }
   const hour = Number(fields.hour) % 24

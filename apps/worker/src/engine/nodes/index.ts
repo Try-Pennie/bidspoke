@@ -51,6 +51,9 @@ export async function executeNode(
     case 'buyer_select':
       // Buyer selection is handled directly in walkGraph too: one attempt row per buyer tried (#1411).
       throw new Error('Buyer Select node must be executed through walkGraph, not executeNode directly')
+    case 'buyer_click_send':
+      // Run once by walkGraph and never retried: a retried click is a duplicate send (#1542).
+      throw new Error('Buyer Click Send node must be executed through walkGraph, not executeNode directly')
     case 'parallel_end':
       throw new Error('Parallel End node must be executed through walkGraph, not executeNode directly')
     case 'branch_end':

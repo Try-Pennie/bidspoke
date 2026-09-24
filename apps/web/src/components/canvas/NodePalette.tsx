@@ -2,7 +2,7 @@
 
 import type { NodeType } from '@/types/workflow'
 import { nodeIconClass } from './nodes/node-colors'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins, BadgeDollarSign } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins, BadgeDollarSign, MousePointerClick } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -102,6 +102,12 @@ const NODES: PaletteNode[] = [
     label: 'Buyer Select',
     description: 'Sell the lead to the top ranked buyer',
     icon: BadgeDollarSign,
+  },
+  {
+    type: 'buyer_click_send',
+    label: 'Buyer Click Send',
+    description: 'Send a clicked prospect to a click buyer once',
+    icon: MousePointerClick,
   },
 ]
 

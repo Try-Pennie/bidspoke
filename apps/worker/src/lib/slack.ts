@@ -2082,6 +2082,28 @@ export async function postMessage(
   return data.ts ?? null
 }
 
+// ── Click sold buyer pages and the over cap notice (#1542) ───────────────────
+
+/** Composed by lib/buyer-click-alert.ts, which owns the wording; this only lays it out. */
+export interface BuyerClickAlertMessage {
+  header: string
+  body: string
+  link: string | null
+}
+
+export async function sendBuyerClickAlert(
+  slack: { bot_token: string },
+  channel: string,
+  message: BuyerClickAlertMessage,
+): Promise<string | null> {
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: message.header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: message.body } },
+  ]
+  if (message.link) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${message.link}|Open the executions>` } })
+  return postMessage(slack.bot_token, channel, blocks, message.header)
+}
+
 // ── Partner firewall block page (#1265) ──────────────────────────────────────
 
 export interface PartnerBlockAlertPayload {

@@ -106,6 +106,7 @@ The valid `type` values. Each links to its config and output shape where a dedic
 | `response` | Send a structured HTTP response. | Terminates (or continues) | ../nodes/response.md |
 | `exit` | End the execution early, optional body. | Terminates | ../nodes/exit.md |
 | `latency_gate` | Mark/check a partner match latency window. | `within` / `exceeded` handles | ../nodes/latency-gate.md |
+| `buyer_click_send` | Claim, post and count one click for a click sold buyer. | Seven handles, named by outcome | ../nodes/buyer-click-send.md |
 
 ## Edges
 
@@ -130,6 +131,7 @@ How the engine picks the next node from a node's outgoing edges:
   - `branch`: `_route` is the matched branch's `label`, or `"else"` when no branch matches.
   - `bid_group`: `_route` is `"winner"` or `"no_winner"`.
   - `latency_gate`: `_route` is `"within"` or `"exceeded"`.
+  - `buyer_click_send`: `_route` is one of `"sent"`, `"refused"`, `"unknown"`, `"already_sent"`, `"in_progress"`, `"needs_review"` or `"not_sent"`, and an unwired one fails the step by name.
 - **Unwired handle.** For `filter` and `branch`, if the chosen handle has no outgoing edge, the walk stops (the execution ends there). It does not fall through to another edge.
 - **Parallel children.** A `parallel` node's children are the targets of its edges whose `source_handle` starts with `child-` (for example `child-0`, `child-1`). The matching `parallel_end` joins them.
 - **Plain nodes.** For all other node types, the engine follows the first outgoing edge whose `condition` evaluates true (an edge with no `condition` always matches).

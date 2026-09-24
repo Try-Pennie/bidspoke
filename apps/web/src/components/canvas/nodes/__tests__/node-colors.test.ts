@@ -32,6 +32,7 @@ const TAILWIND_HEX: Record<string, string> = {
   'text-cyan-500': '#06b6d4',
   'text-violet-500': '#8b5cf6',
   'text-emerald-600': '#059669',
+  'text-lime-700': '#4d7c0f',
 }
 
 describe('NODE_TYPE_COLOR', () => {

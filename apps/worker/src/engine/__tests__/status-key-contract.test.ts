@@ -23,6 +23,7 @@ import { executeIntegrationNode } from '../nodes/integration'
 import { executeSalesforceNode } from '../nodes/salesforce'
 import { executePartnerBidNode } from '../nodes/partner-bid'
 import { executeAchieveOffersNode } from '../nodes/achieve-offers'
+import { executeBuyerClickSendNode } from '../nodes/buyer-click-send'
 import type { NodeDefinition, NodeType, ExecutionContext } from '../../types'
 import type { Env } from '../../index'
 
@@ -34,6 +35,7 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
   salesforce: 'emits-status',
   partner_bid: 'emits-status',
   achieve_offers: 'emits-status',
+  buyer_click_send: 'emits-status', // the click buyer's answer
   code: 'no-http-status', // output is the script's return value, user-controlled
   bid_group: 'no-http-status', // composes partner_bid outputs, covered via partner_bid
   buyer_select: 'no-http-status', // the parent output carries the sale and the considered buyers; each attempt is a partner_bid row, covered via partner_bid
@@ -50,7 +52,7 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
 }
 
 /** Node types exercised by a behavioral test in this file. */
-const BEHAVIORALLY_TESTED: NodeType[] = ['response', 'webhook', 'salesforce', 'partner_bid', 'achieve_offers']
+const BEHAVIORALLY_TESTED: NodeType[] = ['response', 'webhook', 'salesforce', 'partner_bid', 'achieve_offers', 'buyer_click_send']
 
 describe('node classification is exhaustive', () => {
   it('every status-emitting node type has a behavioral test below', () => {
@@ -206,5 +208,26 @@ describe('status output key contract', () => {
       makeCtx(payload, { ACHIEVE_USERNAME: 'user', ACHIEVE_PASSWORD: 'pass' })
     )
     expectCanonicalStatus(result.output, 200)
+  })
+
+  it('buyer_click_send node emits output.status', async () => {
+    const ctx = makeCtx({ prospect: 'p-1', url: 'https://buyer.example/lead', body: { a: 1 } })
+    const result = await executeBuyerClickSendNode(
+      makeNode('buyer_click_send', {
+        partner_slug: 'buyer', prospect_id: '{{trigger.payload.prospect}}', request_url: '{{trigger.payload.url}}', request_body: '{{trigger.payload.body}}',
+        success_pattern: 'created (?<id>\\w+)', daily_lead_cap: 50,
+      }),
+      ctx,
+      {
+        saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
+        counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),
+        post: async () => ({ status: 201, text: 'created abc123', json: null, isHtml: false, headers: {} }),
+        alert: async () => 'posted',
+        clock: () => 0,
+        log: () => undefined,
+        localDev: false,
+      }
+    )
+    expectCanonicalStatus(result.output, 201)
   })
 })

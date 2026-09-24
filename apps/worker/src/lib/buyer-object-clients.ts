@@ -8,7 +8,8 @@
  * anything else is an ObjectCallError naming the call and the status, so no
  * failure can read as an answer (L11).
  */
-import { withDeadline, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
+import { PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
+import type { AddMemberResult, MembersResult } from '../durable-objects/daily-cap'
 import type {
   CapLimits,
   Counts,
@@ -116,7 +117,23 @@ export interface LeadSaleKey {
   lead_key: string
 }
 
-export function leadSaleObjectName(key: LeadSaleKey): string {
+/**
+ * The click claim's kind (#1542). Deliberately NOT a ledger kind: a click sold
+ * buyer is paid per click, has no reservation in the ledger, and its claim is
+ * keyed by the buyer and the prospect rather than a population and a lead, so
+ * a click claim can never share an object with a sale.
+ */
+export const CLICK_CLAIM_KIND = 'click'
+
+/** One claim per buyer per prospect: a second click on the same prospect for the same buyer finds it. */
+export interface ClickClaimKey {
+  kind: typeof CLICK_CLAIM_KIND
+  partner_slug: string
+  prospect_id: string
+}
+
+export function leadSaleObjectName(key: LeadSaleKey | ClickClaimKey): string {
+  if (key.kind === CLICK_CLAIM_KIND) return `sale:${CLICK_CLAIM_KIND}:${key.partner_slug}:${key.prospect_id}`
   return `sale:${key.kind}:${key.population}:${key.lead_key}`
 }
 
@@ -129,7 +146,7 @@ const claimRefusal: Refusal = (body) => {
 
 export class LeadSaleClient implements SaleApi {
   private readonly stub: DurableObjectStub
-  constructor(ns: DurableObjectNamespace, key: LeadSaleKey, private readonly opts: ClientOptions = {}) {
+  constructor(ns: DurableObjectNamespace, key: LeadSaleKey | ClickClaimKey, private readonly opts: ClientOptions = {}) {
     this.stub = ns.get(ns.idFromName(leadSaleObjectName(key)))
   }
 
@@ -154,6 +171,49 @@ export class LeadSaleClient implements SaleApi {
 
   read(): Promise<SaleState> {
     return call<SaleState>(this.stub, 'lead sale read', 'http://do/read', undefined, this.opts)
+  }
+}
+
+// ── The click counter (a DailyCapObject) ───────────────────────────────────────
+
+/**
+ * The one derivation of a click sold buyer's counter name (#1542):
+ * `clicks-{slug}-{YYYY-MM-DD}` on the PACIFIC date, so the count resets at
+ * midnight Pacific (Dan). Clicks arrive after offers, so an Eastern day would
+ * move a late evening click into the next day's count. The date comes back with
+ * the name so a caller can say which day it counted (L589).
+ */
+export function clickCounterObjectName(slug: string, nowMs: number): { name: string; date: string } {
+  const { date } = zonedParts(nowMs, PACIFIC)
+  return { name: `clicks-${slug}-${date}`, date }
+}
+
+function isAddMemberResult(v: unknown): v is AddMemberResult {
+  const r = v as AddMemberResult | null
+  return r !== null && typeof r === 'object' && typeof r.added === 'boolean' && typeof r.count === 'number' && Number.isInteger(r.count) && r.count >= 0
+}
+
+/** The day's distinct set of prospects a click sold buyer was sent, one object per buyer per Pacific day. */
+export class ClickCounterClient {
+  private readonly stub: DurableObjectStub
+  readonly name: string
+  readonly date: string
+  constructor(ns: DurableObjectNamespace, slug: string, nowMs: number, private readonly opts: ClientOptions = {}) {
+    const n = clickCounterObjectName(slug, nowMs)
+    this.name = n.name
+    this.date = n.date
+    this.stub = ns.get(ns.idFromName(n.name))
+  }
+
+  /** Adds the member once; a repeat answers added false with the unchanged count. */
+  async addMember(member: string): Promise<AddMemberResult> {
+    const r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
+    if (!isAddMemberResult(r)) throw new Error(`click counter add answered an unreadable body: ${JSON.stringify(r)}`)
+    return r
+  }
+
+  members(): Promise<MembersResult> {
+    return call<MembersResult>(this.stub, 'click counter members', 'http://do/members', undefined, this.opts)
   }
 }
 

@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
-import { assertNever, isNodeType } from '@/types/workflow'
+import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
 
@@ -89,6 +89,27 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!(config.sell_off_when as string | undefined)?.trim()) return 'No sell off condition set'
       const payload = config.sale_payload as { base?: unknown } | undefined
       if (typeof payload?.base !== 'string' || !payload.base.trim()) return 'No sale payload base set'
+      return null
+    }
+    case 'buyer_click_send': {
+      // Everything the node needs before it may claim a click (#1542). The success
+      // line is the partner's own, with no default: without it no answer can be
+      // confirmed, so every send would hold its claim and page (L72).
+      if (!(config.partner_slug as string | undefined)?.trim()) return 'No partner selected'
+      if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
+      if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
+      if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'
+      const pattern = config.success_pattern as string | undefined
+      if (!pattern?.trim()) return 'No success line set'
+      try {
+        new RegExp(pattern)
+      } catch {
+        return 'The success line is not a valid pattern'
+      }
+      if (!pattern.includes('(?<id>')) return 'The success line needs an (?<id>...) group'
+      const cap = config.daily_lead_cap
+      const capSet = (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) || (typeof cap === 'string' && cap.trim() !== '')
+      if (!capSet) return 'No daily lead cap set'
       return null
     }
     case 'response':
@@ -229,18 +250,31 @@ export function buyerSelectRequiredHandles(config: Record<string, unknown>): str
 }
 
 /**
- * Attached buyer_select nodes with a required outgoing handle no edge leaves
- * from. At run time an unwired handle the node needs to take is a named step
- * failure in every mode, so a live workflow must not save with one (L72).
+ * The handles a walker node that routes by name must have wired, or null for a
+ * type with no such rule. buyer_click_send can take every one of its handles
+ * at run time (#1542), so all of them are required; the list is the trait's.
  */
-export function findUnwiredBuyerSelectHandles(nodes: NodeDef[], edges: EdgeDef[]): Map<string, ValidationError> {
+function requiredHandles(node: NodeDef): string[] | null {
+  if (node.type === 'buyer_select') return buyerSelectRequiredHandles(node.config ?? {})
+  if (node.type === 'buyer_click_send') return [...(NODE_TRAITS.buyer_click_send.staticHandles ?? [])]
+  return null
+}
+
+/**
+ * Attached buyer_select and buyer_click_send nodes with a required outgoing
+ * handle no edge leaves from. At run time an unwired handle the node needs to
+ * take is a named step failure in every mode, so a live workflow must not save
+ * with one (L72).
+ */
+export function findUnwiredRequiredHandles(nodes: NodeDef[], edges: EdgeDef[]): Map<string, ValidationError> {
   const errors = new Map<string, ValidationError>()
   for (const node of nodes) {
-    if (node.type !== 'buyer_select') continue
+    const required = requiredHandles(node)
+    if (!required) continue
     const attached = edges.some((e) => e.source === node.id || e.target === node.id)
     if (!attached) continue
     const wired = new Set(edges.filter((e) => e.source === node.id).map((e) => normalizeHandle(e.source_handle)))
-    const missing = buyerSelectRequiredHandles(node.config ?? {}).filter((h) => !wired.has(h))
+    const missing = required.filter((h) => !wired.has(h))
     if (missing.length === 0) continue
     errors.set(node.id, {
       nodeId: node.id,

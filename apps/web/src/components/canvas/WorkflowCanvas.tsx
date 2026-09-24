@@ -46,9 +46,9 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import { flowToDef } from '@/lib/flow-to-def'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
-import { isNodeType } from '@/types/workflow'
+import { NODE_TRAITS, isNodeType } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
-import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, findUnwiredBuyerSelectHandles, type ValidationError } from '@/lib/workflow-validation'
+import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, findUnwiredRequiredHandles, type ValidationError } from '@/lib/workflow-validation'
 import { validateDefinitionReferences, type ReferenceProblem } from '@/lib/reference-validation'
 import { outEdgeForHandle, normalizeHandle, dedupeEdges } from '@/lib/auto-connect'
 import { useRouter } from 'next/navigation'
@@ -594,6 +594,11 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
       sale_payload: { base: '{{trigger.payload}}', set: [], normalise: [] },
     }
   }
+  if (type === 'buyer_click_send') {
+    // No retries, ever: a retried click is a second send (#1542). No success line
+    // either: it is the partner's own, and a default would confirm the wrong buyer.
+    return { ...base, retries: 0, alert_over_percent: 120 }
+  }
   return base
 }
 
@@ -669,6 +674,15 @@ function chooseSourceHandle(
         { id: 'not_applicable', x: source.position.x + NODE_W * 0.625 },
         { id: 'deferred', x: source.position.x + NODE_W * 0.875 },
       ],
+      dropX
+    )
+  }
+
+  if (type === 'buyer_click_send') {
+    const ids = NODE_TRAITS.buyer_click_send.staticHandles ?? []
+    const w = nodeWidth('buyer_click_send', source.data)
+    return nearestHandleId(
+      ids.map((id, i) => ({ id, x: source.position.x + (w * (i + 0.5)) / ids.length })),
       dropX
     )
   }
@@ -1066,7 +1080,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     [mode, nodes, edges]
   )
 
-  // A buyer_select node whose required handles are not all wired (#1411). The
+  // A buyer_select or buyer_click_send node whose required handles are not all wired (#1411, #1542). The
   // engine fails the step by name when it routes to an unwired handle, so a live
   // save is refused here for the same reason, on the same predicate.
   const unwiredHandleErrors: Map<string, ValidationError> = useMemo(() => {
@@ -1078,11 +1092,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       return [{ id: n.id, namespace: d.namespace, type, config: d.config ?? {} }]
     })
     const defEdges = edges.map((e) => ({ id: e.id, source: e.source, target: e.target, source_handle: e.sourceHandle ?? undefined }))
-    return findUnwiredBuyerSelectHandles(defNodes, defEdges)
+    return findUnwiredRequiredHandles(defNodes, defEdges)
   }, [mode, nodes, edges])
 
   // Every node that gets the warning ring: unconfigured, mis-wired, or a
-  // buyer_select with a required handle unwired.
+  // buyer_select or buyer_click_send with a required handle unwired.
   const flaggedNodes: Map<string, ValidationError> = useMemo(
     () => new Map([...validationErrors, ...wiringErrors, ...unwiredHandleErrors]),
     [validationErrors, wiringErrors, unwiredHandleErrors]

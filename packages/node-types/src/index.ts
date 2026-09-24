@@ -29,6 +29,7 @@ export const NODE_TYPES = [
   'latency_gate',
   'achieve_offers',
   'buyer_select',
+  'buyer_click_send',
 ] as const
 
 export type NodeType = (typeof NODE_TYPES)[number]
@@ -103,6 +104,16 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     synthesizesAttempts: true,
     staticHandles: ['sold', 'no_sale', 'not_applicable', 'deferred'],
     executorFile: 'buyer-select',
+  }),
+  // Claims, posts and counts one click for a click sold buyer (#1542). Walker
+  // only, because a retried send is a duplicate: it runs exactly once and
+  // refuses a resumed or replayed execution. It names its partner by SLUG, not
+  // id, so it is not among the id referencing types the partner finder reads.
+  buyer_click_send: inMemory({
+    network: true,
+    walkGraphOnly: true,
+    staticHandles: ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'],
+    executorFile: 'buyer-click-send',
   }),
 }
 

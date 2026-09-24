@@ -78,6 +78,7 @@ const CASES: { type: string; marker: RegExp | null }[] = [
   { type: 'latency_gate', marker: /Correlation key/ },
   { type: 'achieve_offers', marker: /Hold for inline offers/ },
   { type: 'parallel', marker: /First to succeed/ },
+  { type: 'buyer_click_send', marker: /Success line/ },
   { type: 'parallel_end', marker: /join point for the parallel/ },
   { type: 'branch_end', marker: /Convergence point for the branch/ },
   { type: 'code', marker: null },
@@ -491,5 +492,34 @@ describe('ConfigPanel: buyer_select mode hint names where decide only sends lead
   it('says decide only routes every sell off lead to deferred, back to the rest of the workflow', () => {
     renderPanel(nodeOf('buyer_select', { mode: 'decide_only' }))
     expect(screen.getByText(/every sell off lead routes to deferred/i).textContent).toMatch(/rest of the workflow/i)
+  })
+})
+
+describe('ConfigPanel: buyer_click_send picks its partner from the buyers (#1542, L611)', () => {
+  const partnerOf = (slug: string, name: string, partner_type: 'source' | 'buyer' | 'both') =>
+    ({ id: `id-${slug}`, name, slug, partner_type, is_active: true, priority: 0 }) as unknown as Awaited<ReturnType<typeof api.partners.list>>[number]
+
+  it('offers buyer partners by name, never a source, and stores the slug', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf('liberty1', 'Liberty1', 'buyer'), partnerOf('engine', 'Engine', 'source')])
+    const { onUpdate } = renderPanel(nodeOf('buyer_click_send', {}))
+    const picker = await screen.findByRole('combobox', { name: 'Partner' })
+    expect(await screen.findByRole('option', { name: 'Liberty1' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Engine' })).not.toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: 'liberty1' } })
+    expect(onUpdate).toHaveBeenCalledWith('n1', expect.objectContaining({ config: expect.objectContaining({ partner_slug: 'liberty1' }) }))
+  })
+
+  it('keeps showing a stored slug the list does not hold, rather than silently picking another', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf('liberty1', 'Liberty1', 'buyer')])
+    renderPanel(nodeOf('buyer_click_send', { partner_slug: 'evafi' }))
+    const picker = (await screen.findByRole('combobox', { name: 'Partner' })) as HTMLSelectElement
+    expect(picker.value).toBe('evafi')
+    expect(screen.getByRole('option', { name: /evafi \(not a buyer partner\)/ })).toBeInTheDocument()
+  })
+
+  it('says so when the partners cannot be loaded, instead of an empty picker', async () => {
+    vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
+    renderPanel(nodeOf('buyer_click_send', {}))
+    expect(await screen.findByText(/Partners could not be loaded/)).toBeInTheDocument()
   })
 })
