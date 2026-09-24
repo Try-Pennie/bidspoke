@@ -55,7 +55,7 @@ function buyer(partnerId: string, slug: string, priority: number, over: Partial<
   }
 }
 
-const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), updated_at_max: null, served_from: 'database', buyers })
+const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), content_hash: 'test', served_from: 'database', buyers })
 
 const CONFIG = {
   population: 'engine',

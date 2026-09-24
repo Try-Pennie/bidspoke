@@ -6,22 +6,27 @@
  *      which a web guard keeps the only one) and find the partner by its
  *      partner_configs id. No enabled profile for it is `profile_disabled`: the
  *      profile's enabled flag is the on and off switch, and it ships off. A
- *      profile sold on the offer is refused by name, because buyer_select sells
- *      that buyer and this node would offer it a second way.
+ *      profile sold on the offer routes not_eligible as partner_not_click and
+ *      pages a person (#1557), because buyer_select sells that buyer and this
+ *      node would offer it a second way. It never fails the step: a failed
+ *      walker step fails Engine's whole execution, its reject response included.
+ *      A last good copy of the profiles older than
+ *      CLICK_CHECK_LAST_GOOD_MAX_AGE_MS routes profile_copy_stale.
  *   2. The partner's own active flag, then the buyer's box through the shared
  *      evaluateClickEligibility (states, blackout days, hours, debt, loan
  *      amount), judged at the instant the node RUNS, not when the lead arrived
  *      (Dan, 2026-09-24).
  *   3. Today's distinct click count from the click counter (the Pacific day,
  *      keyed on the partner id), compared with the profile's daily cap: eligible
- *      only while count < cap. A slight overshoot is accepted, because clicks
- *      arrive after offers and the send side counts exactly.
+ *      only while count < cap, else daily_click_cap. A slight overshoot is
+ *      accepted, because clicks arrive after offers and the send side counts
+ *      exactly. A profile with no cap routes no_daily_cap.
  *
- * One 300 ms budget covers the profile load and the count together, with
- * injected timers (L524, and one timer for the whole path rather than one per
- * step). A read that fails, overruns, or a profile holding no daily cap routes
- * not_eligible with cap_check_error, so the node fails toward under sending
- * (Dan: cap unreadable is no offer). The decision is computed as a value and
+ * One budget (CLICK_CHECK_BUDGET_MS) covers the profile load and the count
+ * together, with injected timers (L524, and one timer for the whole path rather
+ * than one per step). A read that fails or overruns, or a stored cap isCap
+ * refuses, routes not_eligible with cap_check_error, so the node fails toward
+ * under sending (Dan: cap unreadable is no offer). The decision is computed as a value and
  * written to the output only after the budget answered, so a read landing late
  * cannot rewrite what the walker already routed.
  *
@@ -33,23 +38,23 @@
  * executeNode's retry loop, so the budget is the only bound on it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { evaluateClickEligibility, partnerIdOf, POPULATIONS, withDeadline, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, evaluateClickEligibility, isCap, partnerIdOf, POPULATIONS, withDeadline, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { ClickCounterClient } from '../../lib/buyer-object-clients'
+import { productionClickAlert, type ClickAlert } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
 import { resolveValue } from '../context'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /**
- * The whole check, profile load and count read together. Set by the issue
- * (#1543): the node sits on Engine's synchronous response path, and a warm run
- * is a KV hit plus one Durable Object read (about 25 ms warm, #1428). A cold
- * object or a cold profile read past it is an under send, never a late answer.
+ * The whole check, profile load and count read together (#1543), from the
+ * package so the node form states the same number. A cold object or a cold
+ * profile read past it is an under send, never a late answer.
  */
-export const CLICK_CHECK_BUDGET_MS = 300
+export { CLICK_CHECK_BUDGET_MS }
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
 export const BUYER_CLICK_CHECK_ROUTES = ['eligible', 'not_eligible'] as const
@@ -58,7 +63,6 @@ export type BuyerClickCheckRoute = (typeof BUYER_CLICK_CHECK_ROUTES)[number]
 export type BuyerClickCheckFailureReason =
   | 'partner_id_invalid'
   | 'population_invalid'
-  | 'partner_not_click'
   | 'buyer_click_check_handle_unwired'
 
 // ── Config and output ─────────────────────────────────────────────────────────
@@ -118,6 +122,12 @@ export interface BuyerClickCheckDeps {
   counter: (partnerId: string, nowMs: number) => ClickCountApi
   clock: () => number
   timers?: Timers
+  /**
+   * Pages a person, fire and forget: the node is on Engine's response path and
+   * never waits on Slack. The click alert claim is the cooldown, so a burst of
+   * leads is one page per buyer per reason per quarter hour.
+   */
+  alert: (alert: ClickAlert) => void
   log: (fields: { event: string } & Record<string, unknown>) => void
 }
 
@@ -130,6 +140,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
     counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, partnerId, nowMs, { deadlineMs: CLICK_CHECK_BUDGET_MS }),
     clock: () => Date.now(),
+    alert: (alert) => background(productionClickAlert(orgId, env, supabase)(alert)),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
   }
 }
@@ -140,8 +151,7 @@ type PartnerFacts = Pick<BuyerClickCheckOutput, 'partner_slug' | 'partner_name' 
 
 /** What the budgeted part decided, as a value, so nothing it does after the budget ends can reach the output. */
 type Decision =
-  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; servedFrom?: BuyerProfilesSnapshot['served_from'] }
-  | { kind: 'refuse'; reason: BuyerClickCheckFailureReason; detail: string; facts: PartnerFacts; servedFrom: BuyerProfilesSnapshot['served_from'] }
+  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: boolean }
 
 export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps): Promise<BuyerClickCheckResult> {
   const startedAt = deps.clock()
@@ -184,11 +194,6 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
     decision = { kind: 'route', route: 'not_eligible', reason: 'cap_check_error', detail: `the check did not complete, so the buyer is not offered: ${messageOf(err)}` }
   }
 
-  if (decision.kind === 'refuse') {
-    Object.assign(output, decision.facts)
-    output.profile_served_from = decision.servedFrom
-    return fail(decision.reason, decision.detail)
-  }
   output._route = decision.route
   output.reason = decision.reason
   if (decision.detail !== undefined) output.detail = decision.detail
@@ -198,6 +203,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
   if (decision.countDate !== undefined) output.count_date = decision.countDate
   if (decision.servedFrom !== undefined) output.profile_served_from = decision.servedFrom
   finish()
+  if (decision.page) page(node, ctx, deps, output)
   deps.log({ event: 'buyer_click_check_reason', step_namespace: node.namespace, partner_id: output.partner_id, partner_slug: output.partner_slug, route: output._route, reason: output.reason, count: output.count, daily_lead_cap: output.daily_lead_cap, detail: output.detail })
   return { output }
 }
@@ -215,13 +221,21 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
     return { kind: 'route', route: 'not_eligible', reason: 'cap_check_error', detail: `the buyer profiles could not be read, so the buyer is not offered: ${messageOf(err)}` }
   }
   const servedFrom = snapshot.served_from
+  // A last good copy is served only when the database read failed. Past the
+  // bound it may still offer a buyer switched off, or a cap lowered, since.
+  if (servedFrom === 'last_good') {
+    const ageMs = instantMs - Date.parse(snapshot.loaded_at)
+    if (!(ageMs <= CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)) {
+      return { kind: 'route', route: 'not_eligible', reason: 'profile_copy_stale', detail: `the database read failed and the last good copy of the buyer profiles was loaded at ${snapshot.loaded_at}, older than ${CLICK_CHECK_LAST_GOOD_MAX_AGE_MS / 60_000} minutes`, servedFrom }
+    }
+  }
   const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
   if (!buyer) {
     return { kind: 'route', route: 'not_eligible', reason: 'profile_disabled', detail: `partner ${partnerId} has no enabled buyer profile in this organization`, servedFrom }
   }
   const facts = factsOf(buyer)
   if (buyer.profile.soldOn !== 'click') {
-    return { kind: 'refuse', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this node never offers it; pick a buyer sold on the click`, facts, servedFrom }
+    return { kind: 'route', route: 'not_eligible', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this check never offers it`, facts, servedFrom, page: true }
   }
   const cap = buyer.profile.dailyLeadCap
   const base = { kind: 'route' as const, facts, servedFrom, cap }
@@ -231,7 +245,11 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
   if (!verdict.eligible) return { ...base, route: 'not_eligible', reason: verdict.reason }
 
   if (cap === null) {
-    return { ...base, route: 'not_eligible', reason: 'cap_check_error', detail: 'the profile holds no daily cap, so there is nothing to judge the clicks against and the buyer is not offered' }
+    return { ...base, route: 'not_eligible', reason: 'no_daily_cap', detail: 'the profile holds no clicks per day, so the buyer is not offered' }
+  }
+  // The one cap rule (isCap), shared with save validation and buyer_click_send.
+  if (!isCap(cap)) {
+    return { ...base, cap: null, route: 'not_eligible', reason: 'cap_check_error', detail: `the profile holds clicks per day ${JSON.stringify(cap)}, not a whole number above zero, so the buyer is not offered` }
   }
   let counter: ClickCountApi
   let count: number
@@ -242,8 +260,26 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
     return { ...base, route: 'not_eligible', reason: 'cap_check_error', detail: `today's click count could not be read, so the buyer is not offered: ${messageOf(err)}` }
   }
   const counted = { ...base, count, countDate: counter.date }
-  if (count >= cap) return { ...counted, route: 'not_eligible', reason: 'daily_lead_cap', detail: `${count} clicks today (${counter.date}, Pacific) of a cap of ${cap}` }
+  if (count >= cap) return { ...counted, route: 'not_eligible', reason: 'daily_click_cap', detail: `${count} clicks on ${counter.date} (Pacific) of a cap of ${cap}` }
   return { ...counted, route: 'eligible', reason: 'eligible' }
+}
+
+/**
+ * A buyer picked on the node but sold on the offer is a configuration fault a
+ * person must fix. It routes not eligible rather than failing the step, because
+ * a failed walker step fails Engine's whole execution, its reject response
+ * included; the page is how somebody hears. Caught, because the answer has
+ * already been decided.
+ */
+function page(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps, output: BuyerClickCheckOutput): void {
+  try {
+    deps.alert({
+      kind: 'page', reason: 'partner_not_click', partner_id: output.partner_id ?? '', partner_slug: output.partner_slug ?? output.partner_id ?? '',
+      prospect_id: null, detail: output.detail ?? 'the buyer is not sold on the click', workflow_id: ctx.trigger.workflow_id, trace_id: ctx.trigger.trace_id, at: deps.clock(),
+    })
+  } catch (err) {
+    deps.log({ event: 'buyer_click_check_alert_failed', step_namespace: node.namespace, partner_id: output.partner_id, error_message: messageOf(err) })
+  }
 }
 
 function factsOf(buyer: LoadedBuyer): PartnerFacts {

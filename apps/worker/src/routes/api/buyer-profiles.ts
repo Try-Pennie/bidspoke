@@ -137,6 +137,9 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
   })
   if (!validation.ok) return c.json({ error: 'profile_invalid', errors: validation.errors }, 422)
 
+  const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
+  if (inUse) return inUse
+
   const { partner_id: _partner, version: _version, ...toSave } = parsed.document
   const { data, error } = await supabase.rpc('save_buyer_profile', {
     p_org: orgId,
@@ -166,6 +169,53 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
   await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
   return c.json({ profile: data })
 })
+
+/**
+ * A click buyer switched to the offer while a LIVE workflow names it on a
+ * buyer_click_check or buyer_click_send node is refused, naming each workflow
+ * (#1557): the check would stop offering it and the send would stop judging its
+ * cap, with nothing on the page saying why. Only the switch AWAY from the click
+ * is refused. Switching to the click is how a click node that names an offer
+ * buyer gets fixed, and a bid_group or partner_bid sells the partner whichever
+ * way its profile is sold. The stored kind is read first, and the workflows only
+ * when the kind is actually leaving the click, so an ordinary save pays one read.
+ */
+async function refuseSwitchAwayFromClick(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  partnerId: string,
+  nextSoldOn: string | null
+): Promise<Response | null> {
+  if (nextSoldOn === 'click') return null
+  let stored
+  try {
+    stored = await readBuyerSoldOn(supabase, orgId, partnerId)
+  } catch (err) {
+    console.error(`[buyer-profile] stored sold_on unreadable for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'sold_on_unavailable', message: 'Whether this buyer is sold on the offer or on the click now could not be read, so nothing was saved. Try again.' }, 503)
+  }
+  if (stored !== 'click') return null
+
+  const { data: workflows, error } = await supabase
+    .from('workflows')
+    .select('id, name, is_active, definition')
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+  if (error) return dbError(c, error)
+  const using = workflowsUsingPartner(
+    workflows ?? [],
+    new Map(),
+    { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true, liveOnly: true }
+  )(partnerId)
+  if (using.length === 0) return null
+  const names = using.map((w) => w.name).join(', ')
+  return c.json({
+    error: 'sold_on_in_use',
+    message: `This buyer is sold on the click in live workflows: ${names}. Nothing was saved. Take it off their click nodes, or switch those workflows off, before selling it on the offer.`,
+    workflows: using,
+  }, 409)
+}
 
 // ── History ───────────────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@
  * save_buyer_profile, and turns each named refusal into its own status: a stale
  * version is a 409 carrying the current document (L717), never a silent overwrite.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Env } from '../../../index'
 import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 
@@ -232,6 +232,63 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(res.status).toBe(422)
     expect(await res.json()).toMatchObject({ error: 'sold_on_locked' })
     expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
+  })
+
+  // #1557: a live click workflow names this buyer; switched to the offer, its
+  // check would stop offering and its send would stop judging the cap, silently.
+  describe('switching a click buyer to the offer while a live workflow names it on a click node', () => {
+    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1' } }] } }
+    const clickSendFlow = { id: 'wf-send', name: 'Liberty1 click', is_active: true, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
+    afterEach(() => { vi.mocked(readBuyerSoldOn).mockReset() })
+
+    it('is refused 409 sold_on_in_use, naming each live workflow, and nothing is saved', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [clickCheckFlow, clickSendFlow, mainFlow] } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
+      expect(res.status).toBe(409)
+      const body = await res.json() as { error: string; message: string; workflows: Array<{ id: string; name: string }> }
+      expect(body.error).toBe('sold_on_in_use')
+      // Only the click nodes block: Main Flow's bid_group sells it either way.
+      expect(body.workflows.map((w) => w.id)).toEqual(['wf-l1', 'wf-send'])
+      expect(body.message).toContain('Engine Bidding')
+      expect(body.message).toContain('Liberty1 click')
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it('an inactive workflow does not block, and neither does a bid_group alone', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const rpc = vi.fn().mockResolvedValue({ data: { ...doc, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [{ ...clickCheckFlow, is_active: false }, mainFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })).status).toBe(200)
+    })
+
+    it('an ordinary save of a click buyer that stays on the click (a new cap, say) is never blocked by its own live click workflow', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 60 }
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow, clickSendFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
+    })
+
+    it('switching TO the click is never blocked by it: that is how a click node naming an offer buyer gets fixed', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('offer')
+      const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
+    })
+
+    it('a stored kind that cannot be read is 503, never a save that might break a live click workflow', async () => {
+      vi.mocked(readBuyerSoldOn).mockRejectedValue(new Error('buyer_profiles: timeout'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [] } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'sold_on_unavailable' })
+      expect(rpc).not.toHaveBeenCalled()
+    })
   })
 
   it('P0002 from the function is 404, and a real database error is 500', async () => {

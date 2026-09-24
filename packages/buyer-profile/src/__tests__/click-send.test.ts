@@ -4,7 +4,17 @@
  * must refuse the same value before it is saved), so the two cannot drift.
  */
 import { describe, expect, it } from 'vitest'
-import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, isPartnerId, partnerIdOf } from '../click-send'
+import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, isCap, isPartnerId, partnerIdOf } from '../click-send'
+
+describe('isCap (#1557): the one cap predicate', () => {
+  it('accepts a whole number above zero', () => {
+    for (const n of [1, 50, 100_000]) expect(isCap(n), String(n)).toBe(true)
+  })
+
+  it('refuses zero, which would judge every click over the cap, and everything else that is not a whole number above zero', () => {
+    for (const v of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '50', null, undefined]) expect(isCap(v), String(v)).toBe(false)
+  })
+})
 
 describe('alertOverPercentOf', () => {
   it('an absent value takes the default of 120', () => {

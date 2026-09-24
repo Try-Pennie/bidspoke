@@ -72,14 +72,14 @@ describe('productionDeps.resolvePartner (#1553)', () => {
  */
 describe('productionDeps.profileCap (#1543)', () => {
   const buyerSnapshot = (org: string, cap: number | null) => ({
-    org_id: org, loaded_at: new Date().toISOString(), updated_at_max: null, served_from: 'database',
+    org_id: org, loaded_at: new Date().toISOString(), content_hash: 'test', served_from: 'database',
     buyers: [{ partner: { id: LIBERTY1, slug: 'liberty1' }, profile: { partnerId: LIBERTY1, soldOn: 'click', isEnabled: true, dailyLeadCap: cap }, version: 1, updated_at: '2027-09-20T10:00:00.000Z' }],
   })
 
-  it('answers the enabled profile daily cap from the cached snapshot', async () => {
+  it('answers the enabled profile daily cap and how the buyer is sold from the cached snapshot', async () => {
     const org = 'org-cap-hit'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: buyerSnapshot(org, 50) })), failingSupabase())
-    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: true, cap: 50 })
+    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click' })
   })
 
   it('answers found false when the org holds no enabled profile for the partner', async () => {

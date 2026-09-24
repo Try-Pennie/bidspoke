@@ -10,6 +10,35 @@
  * number and a string means the config was written some other way.
  */
 
+/**
+ * The cap rule every cap reader shares (#1557): a whole number above zero.
+ * validateProfile refuses anything else on save, and buyer_click_check and
+ * buyer_click_send treat anything else as no readable cap, so a cap of zero
+ * (which would judge every click over the cap) can neither be saved nor
+ * honoured.
+ */
+export function isCap(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
+/**
+ * buyer_click_check's whole budget, the profile load and the count read
+ * together (#1543). It sits on Engine's synchronous response path, and a warm
+ * run is a KV hit plus one Durable Object read (about 25 ms warm, #1428). Here
+ * rather than in the executor so the node form states the same number.
+ */
+export const CLICK_CHECK_BUDGET_MS = 300
+
+/**
+ * The oldest a last good copy of the buyer profiles may be for buyer_click_check
+ * to still offer from it (#1557). The copy is served only when the database read
+ * fails; past this it may miss a buyer switched off or a cap lowered since, so
+ * the check routes not eligible (profile_copy_stale) rather than offer on it.
+ * Fifteen minutes rides out a short database wobble without offering for long
+ * on rules nobody can confirm.
+ */
+export const CLICK_CHECK_LAST_GOOD_MAX_AGE_MS = 15 * 60 * 1000
+
 export const DEFAULT_ALERT_OVER_PERCENT = 120
 export const ALERT_OVER_PERCENT_MIN = 1
 export const ALERT_OVER_PERCENT_MAX = 1000

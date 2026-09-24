@@ -81,6 +81,21 @@ export const POPULATION_LABELS: Record<Population, string> = {
   lead_economy: 'Lead Economy',
 }
 
+/** The share of a cap at which a usage panel says the cap is within reach (#1557: one number for both panels). */
+export const CAP_NEAR_SHARE = 0.8
+
+/**
+ * The sentence naming the workflows that sell to this buyer outside what the
+ * panel counts, grammatical for one seller or many (#1557): "Main Flow also sells
+ * to Tripoint", "Main Flow and Lead Economy also sell to Tripoint", "A, B and C
+ * also sell to Tripoint". Both usage panels read it.
+ */
+export function alsoSellTo(sellers: ReadonlyArray<{ name: string }>, partnerName: string): string {
+  const names = sellers.map((s) => s.name)
+  const list = names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `${list} also ${names.length === 1 ? 'sells' : 'sell'} to ${partnerName}`
+}
+
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
 const whole = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 

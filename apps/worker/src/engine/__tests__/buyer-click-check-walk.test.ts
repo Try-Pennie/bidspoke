@@ -84,9 +84,9 @@ describe('buyer_click_check in the walker', () => {
   })
 
   it('the executor failure fails the step with its message and type', async () => {
-    vi.mocked(executeBuyerClickCheckNode).mockResolvedValue({ output: output('not_eligible'), failure: { message: 'buyer_click_check partner_not_click: tripoint is sold on the offer', errorType: 'permanent', reason: 'partner_not_click' } })
+    vi.mocked(executeBuyerClickCheckNode).mockResolvedValue({ output: output('not_eligible'), failure: { message: 'buyer_click_check partner_id_invalid: partner_id "tripoint" is not a partner id', errorType: 'permanent', reason: 'partner_id_invalid' } })
     const queue: StepLogEntry[] = []
-    await expect(walk(definition(BUYER_CLICK_CHECK_ROUTES), queue)).rejects.toThrow(/partner_not_click/)
+    await expect(walk(definition(BUYER_CLICK_CHECK_ROUTES), queue)).rejects.toThrow(/partner_id_invalid/)
     expect(queue.find((r) => r.step_type === 'buyer_click_check')).toMatchObject({ status: 'failed', error_type: 'permanent' })
   })
 })

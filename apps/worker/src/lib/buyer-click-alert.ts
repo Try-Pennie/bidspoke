@@ -24,16 +24,26 @@
  * the claim is released so the next occurrence can try again, and the caller
  * records the outcome on the step.
  */
-import type { AlertClaims } from './alert-claim'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../index'
+import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
-import { etTime, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
+import { resolveSlackForBlockAlert } from './partner-block-alert'
+import { etTime, getSlackConnection, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
+import { readLastGoodSlackConnections } from './volume-cliff'
 
 /** One page per buyer per reason per quarter hour. */
 export const CLICK_PAGE_COOLDOWN_SECONDS = 15 * 60
 /** Longer than any day, so the per date key cannot post twice inside one. */
 export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
 
-export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'free_failed', 'cap_unreadable'] as const
+/**
+ * The send side's six, plus partner_not_click from buyer_click_check (#1557): a
+ * buyer picked on the offer side check whose profile is sold on the offer. The
+ * check routes not eligible rather than failing Engine's execution, so this page
+ * is how a person hears about it.
+ */
+export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'free_failed', 'cap_unreadable', 'partner_not_click'] as const
 export type ClickPageReason = (typeof CLICK_PAGE_REASONS)[number]
 
 export type ClickAlert =
@@ -44,7 +54,8 @@ export type ClickAlert =
       partner_id: string
       /** For the words only. */
       partner_slug: string
-      prospect_id: string
+      /** The click's prospect; null for a page from the offer side, which judges a lead before any prospect clicked. */
+      prospect_id: string | null
       detail: string
       workflow_id: string
       trace_id: string
@@ -108,6 +119,10 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
     header: "click buyer has no readable daily cap",
     held: "The click was handled, but the over cap notice cannot be judged, so it will not post for this buyer until its buyer profile can be read and holds clicks per day.",
   },
+  partner_not_click: {
+    header: 'is named on a Buyer Click Check but is not sold on the click',
+    held: 'No lead is offered to it through this check. Either set its buyer profile to be sold on the click, or pick a buyer sold on the click on the node.',
+  },
 }
 
 export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClickAlertMessage {
@@ -116,7 +131,7 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
     return {
       header: `${alert.partner_slug} ${w.header}`,
       body: [
-        `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
+        alert.prospect_id === null ? `${alert.detail}.` : `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
         w.held,
         `Further ${alert.reason} pages for ${alert.partner_slug} are held for ${CLICK_PAGE_COOLDOWN_SECONDS / 60} minutes; the executions list shows every occurrence. Seen at ${etTime(alert.at)}.`,
       ].join('\n\n'),
@@ -131,6 +146,29 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
     ].join('\n\n'),
     link: `${appUrl}/workflows/${alert.workflow_id}/executions`,
   }
+}
+
+/**
+ * The production alert both click nodes post through (#1557): the alert claim
+ * object for the cooldown, and the org's Slack connection from the database
+ * first and the last good copy second, so a page still goes out while Supabase
+ * wobbles (L682).
+ */
+export function productionClickAlert(orgId: string, env: Env, supabase: SupabaseClient): (alert: ClickAlert) => Promise<ClickAlertOutcome> {
+  return (alert) =>
+    postClickAlert(
+      {
+        claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+        resolveSlack: () =>
+          resolveSlackForBlockAlert(
+            orgId,
+            () => getSlackConnection(supabase, orgId),
+            () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+          ),
+        appUrl: env.APP_URL,
+      },
+      alert,
+    )
 }
 
 export async function postClickAlert(deps: ClickAlertDeps, alert: ClickAlert): Promise<ClickAlertOutcome> {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
+import { isCap } from '../click-send'
 import { validateProfile, type PartnerRulesForValidation, type ProfileError, type StoredKind } from '../validate'
 
 const base: BuyerProfile = {
@@ -218,6 +219,23 @@ describe('the sold_on kind', () => {
       'enabled_without_states',
       'enabled_without_windows',
     ])
+  })
+
+  it('says a click buyer with no clicks per day is never offered, which is what buyer_click_check does (#1557)', () => {
+    const r = validateProfile({ ...click, dailyLeadCap: null }, clickPartner)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      const message = r.errors.find((e) => e.code === 'enabled_without_daily_cap')?.message ?? ''
+      expect(message).toMatch(/never offered/)
+      expect(message).not.toMatch(/every eligible lead/)
+    }
+  })
+
+  it('a cap validateProfile accepts is exactly one isCap accepts (#1557, one predicate)', () => {
+    for (const cap of [1, 50, 0, -1, 1.5, Number.NaN]) {
+      const refused = codes({ ...base, dailyLeadCap: cap }).includes('cap_invalid')
+      expect(refused, String(cap)).toBe(!isCap(cap))
+    }
   })
 
   it('refuses an hourly lead cap and both spend caps on a click buyer, each by its own field, because nothing counts them', () => {

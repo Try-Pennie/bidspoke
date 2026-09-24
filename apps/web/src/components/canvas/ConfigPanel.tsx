@@ -19,7 +19,8 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
-import { DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -1817,7 +1818,7 @@ function BuyerClickSendConfig({
       </Field>
 
       {/* No cap here (#1543, L83): offering stops at the profile's cap, and the notice reads the same number. */}
-      <Field label="Notify at percent of the cap" hint="Of the clicks per day on the buyer profile. The Slack notice fires once a Pacific day when clicks already offered carry the count past it.">
+      <Field label="Notify at percent of the cap" hint="The Slack notice fires once a Pacific day when clicks already offered carry the count past it.">
         <input type="number" className="input" min={1} max={1000} value={percent} onChange={(e) => onChange({ alert_over_percent: e.target.value === '' ? undefined : Number(e.target.value) })} />
       </Field>
     </section>
@@ -1839,6 +1840,10 @@ function BuyerClickCheckConfig({
   const partnerId = typeof config.partner_id === 'string' ? config.partner_id : ''
   const text = (key: string) => (config[key] as string | undefined) ?? ''
   const population = typeof config.population === 'string' ? config.population : ''
+  // A stored value the vocabulary does not hold stays shown and selected as its own
+  // option, as ClickBuyerPartnerField does for a partner, so a save cannot quietly
+  // swap it for the first population (L652, #1557).
+  const storedUnknown = population !== '' && !(POPULATIONS as readonly string[]).includes(population)
 
   return (
     <section className="space-y-4">
@@ -1847,8 +1852,9 @@ function BuyerClickCheckConfig({
       <Field label="Population">
         <select className="select" aria-label="Population" value={population} onChange={(e) => onChange({ population: e.target.value || undefined })}>
           {population === '' && <option value="">Choose a population</option>}
+          {storedUnknown && <option value={population}>{population} (not a population Bidspoke knows)</option>}
           {POPULATIONS.map((p) => (
-            <option key={p} value={p}>{p}</option>
+            <option key={p} value={p}>{POPULATION_LABELS[p]}</option>
           ))}
         </select>
       </Field>
@@ -1865,8 +1871,8 @@ function BuyerClickCheckConfig({
         <input className="input" aria-label="Loan amount" placeholder="{{trigger.payload.loanInformation.loanAmount}}" value={text('loan_amount')} onChange={(e) => onChange({ loan_amount: e.target.value || undefined })} />
       </Field>
 
-      <p className="text-xs text-slate-400">
-        Judged when this step runs, against the buyer profile and today&apos;s clicks, within 300 ms. A check that cannot finish routes not eligible, so the buyer is never offered on a guess.
+      <p className="text-xs text-gray-600">
+        Judged when this step runs, against the buyer profile and today&apos;s clicks, within {CLICK_CHECK_BUDGET_MS} ms. A check that cannot finish routes not eligible, so the buyer is never offered on a guess.
       </p>
     </section>
   )

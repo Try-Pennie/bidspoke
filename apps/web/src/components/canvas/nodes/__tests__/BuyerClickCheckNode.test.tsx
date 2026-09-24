@@ -42,14 +42,15 @@ describe('BuyerClickCheckNode', () => {
     expect(screen.getByText('not eligible')).toBeInTheDocument()
   })
 
-  it('after an eligible run names the buyer and the clicks judged against the cap', () => {
-    renderCard({ partner_id: PARTNER_ID }, { _route: 'eligible', reason: 'eligible', partner_slug: 'liberty1', partner_name: 'Liberty1', count: 12, daily_lead_cap: 50 })
+  it('after an eligible run names the buyer and the clicks judged against the cap on the date the run counted, never "today" about a stored run (#1557)', () => {
+    renderCard({ partner_id: PARTNER_ID }, { _route: 'eligible', reason: 'eligible', partner_slug: 'liberty1', partner_name: 'Liberty1', count: 12, daily_lead_cap: 50, count_date: '2027-09-21' })
     expect(screen.getByText('Liberty1')).toBeInTheDocument()
-    expect(screen.getByText('eligible, 12 of 50 clicks today')).toBeInTheDocument()
+    expect(screen.getByText('eligible, 12 of 50 clicks on 2027-09-21')).toBeInTheDocument()
+    expect(screen.queryByText(/today/)).toBeNull()
   })
 
-  it('after a not eligible run shows the reason in its plain label', () => {
-    renderCard({ partner_id: PARTNER_ID }, { _route: 'not_eligible', reason: 'daily_lead_cap', partner_name: 'Liberty1', count: 50, daily_lead_cap: 50 })
-    expect(screen.getByText('not eligible: Daily lead cap reached')).toBeInTheDocument()
+  it('after a not eligible run shows the reason in its plain label, a click cap in clicks', () => {
+    renderCard({ partner_id: PARTNER_ID }, { _route: 'not_eligible', reason: 'daily_click_cap', partner_name: 'Liberty1', count: 50, daily_lead_cap: 50 })
+    expect(screen.getByText('not eligible: Daily click cap reached')).toBeInTheDocument()
   })
 })

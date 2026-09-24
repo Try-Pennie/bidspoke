@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AlertClaims } from '../alert-claim'
-import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, clickAlertKey, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
+import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, clickAlertKey, clickAlertMessage, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
 
 const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const SLACK = { bot_token: 'xoxb-test', default_channel: 'C1' }
@@ -65,6 +65,15 @@ describe('clickAlertKey', () => {
   it('keys on the partner id, so a slug renamed mid day neither repeats the notice nor lifts a cooldown (#1553)', () => {
     expect(clickAlertKey({ ...overCap, partner_slug: 'liberty-one' })).toEqual(clickAlertKey(overCap))
     expect(clickAlertKey({ ...page, partner_slug: 'liberty-one' })).toEqual(clickAlertKey(page))
+  })
+
+  it('pages partner_not_click from the offer side, which has no prospect, keyed like any page and saying what to fix (#1557)', async () => {
+    const offerSide: ClickAlert = { ...page, reason: 'partner_not_click', prospect_id: null, detail: 'liberty1 is sold on the offer, not the click' }
+    expect(clickAlertKey(offerSide)).toEqual({ key: `buyer-click-page:${LIBERTY1}:partner_not_click`, ttlSeconds: CLICK_PAGE_COOLDOWN_SECONDS })
+    const message = clickAlertMessage(offerSide, 'https://app.test')
+    expect(message.body).not.toMatch(/Prospect/)
+    expect(message.body).toMatch(/liberty1 is sold on the offer, not the click/)
+    expect(`${message.header} ${message.body}`).toMatch(/sold on the click/)
   })
 
   it('the over cap window outlives a whole day, so the notice cannot repeat inside one', () => {

@@ -10,12 +10,13 @@
  * injected, so nothing waits and nothing leaves the process.
  */
 import { describe, expect, it } from 'vitest'
-import { OUT_REASONS, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS as PACKAGE_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, OUT_REASONS, OUT_REASON_LABELS, type OutReason, type Timers } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@bidspoke/node-types'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
+import type { ClickAlert } from '../../../lib/buyer-click-alert'
 import { buildContext } from '../../context'
-import { BUYER_CLICK_CHECK_ROUTES, CLICK_CHECK_BUDGET_MS, executeBuyerClickCheckNode, type BuyerClickCheckDeps } from '../buyer-click-check'
+import { BUYER_CLICK_CHECK_ROUTES, CLICK_CHECK_BUDGET_MS, executeBuyerClickCheckNode, type BuyerClickCheckDeps, type BuyerClickCheckOutput } from '../buyer-click-check'
 
 const PARTNER_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const OTHER_ID = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a'
@@ -44,7 +45,7 @@ function clickBuyer(over: Partial<LoadedBuyer['profile']> = {}, partner: Partial
   }
 }
 
-const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), updated_at_max: null, served_from: 'cache', buyers })
+const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), content_hash: 'test', served_from: 'cache', buyers })
 
 const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
   id: 'n-check',
@@ -69,6 +70,7 @@ interface Harness {
   counterReads: Array<{ partnerId: string; nowMs: number }>
   loads: number
   timeouts: number[]
+  alerts: ClickAlert[]
   fire: () => void
 }
 
@@ -80,7 +82,7 @@ function harness(opts: {
 } = {}): Harness {
   const pending: Array<() => void> = []
   const h: Harness = {
-    counterReads: [], loads: 0, timeouts: [], deps: undefined as never,
+    counterReads: [], loads: 0, timeouts: [], alerts: [], deps: undefined as never,
     fire: () => pending.splice(0).forEach((fn) => fn()),
   }
   const timers: Timers | undefined = opts.manualTimers
@@ -104,10 +106,30 @@ function harness(opts: {
     },
     clock: () => opts.clockMs ?? NOW,
     timers,
+    alert: (alert) => { h.alerts.push(alert) },
     log: () => undefined,
   }
   return h
 }
+
+/**
+ * Every case the node can route, with the reason it must route. The vocabulary
+ * test below derives its reasons from this table (plus the eligibility cases),
+ * so a reason added to the node without a label fails the build and the test.
+ */
+const ROUTED: Array<[string, () => Harness, ExecutionContext | undefined, BuyerClickCheckOutput['reason']]> = [
+  ['room under the cap', () => harness({ count: 12 }), undefined, 'eligible'],
+  ['at the cap', () => harness({ count: 50 }), undefined, 'daily_click_cap'],
+  ['no clicks per day on the profile', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: null })) }), undefined, 'no_daily_cap'],
+  ['a cap of zero, which no save allows', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: 0 })) }), undefined, 'cap_check_error'],
+  ['an offer sold buyer picked on the node', () => harness({ profiles: snapshot(clickBuyer({ soldOn: 'offer' })) }), undefined, 'partner_not_click'],
+  ['no enabled profile', () => harness({ profiles: snapshot() }), undefined, 'profile_disabled'],
+  ['a failed profile load', () => harness({ profiles: async () => { throw new Error('down') } }), undefined, 'cap_check_error'],
+  ['a last good copy past the bound', () => harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: new Date(NOW - CLICK_CHECK_LAST_GOOD_MAX_AGE_MS - 1).toISOString() } }), undefined, 'profile_copy_stale'],
+  ['a switched off partner', () => harness({ profiles: snapshot(clickBuyer({}, { is_active: false })) }), undefined, 'inactive'],
+  ['a state not in the list', () => harness(), ctx({ state: 'ND' }), 'state_not_allowed'],
+  ['outside the hours', () => harness({ clockMs: Date.UTC(2027, 8, 25, 18, 0) }), undefined, 'closed'],
+]
 
 const run = (h: Harness, n = node(), c = ctx()) => executeBuyerClickCheckNode(n, c, h.deps)
 
@@ -116,8 +138,39 @@ describe('the node type', () => {
     expect([...BUYER_CLICK_CHECK_ROUTES]).toEqual(NODE_TRAITS.buyer_click_check.staticHandles)
   })
 
-  it('its budget is 300 ms', () => {
-    expect(CLICK_CHECK_BUDGET_MS).toBe(300)
+  it('its budget is the package constant the form states, and the one timer it arms is that budget', async () => {
+    // The node form reads the same constant from the package, so the hint and the executor cannot disagree.
+    expect(CLICK_CHECK_BUDGET_MS).toBe(PACKAGE_BUDGET_MS)
+    const h = harness({ manualTimers: true })
+    const p = run(h)
+    await Promise.resolve()
+    expect(h.timeouts).toEqual([CLICK_CHECK_BUDGET_MS])
+    h.fire()
+    await p
+  })
+})
+
+describe('every routed case', () => {
+  for (const [what, make, c, reason] of ROUTED) {
+    it(`${what} routes ${reason === 'eligible' ? 'eligible' : 'not_eligible'} as ${reason}, never failing the step`, async () => {
+      const r = await run(make(), node(), c ?? ctx())
+      expect(r.failure).toBeUndefined()
+      expect(r.output.reason).toBe(reason)
+      expect(r.output._route).toBe(reason === 'eligible' ? 'eligible' : 'not_eligible')
+    })
+  }
+
+  it('every reason the node actually routed across the cases above is in the package vocabulary with a label', async () => {
+    const reasons = new Set<string>()
+    for (const [, make, c] of ROUTED) {
+      const { output } = await run(make(), node(), c ?? ctx())
+      if (output.reason !== 'eligible') reasons.add(output.reason)
+    }
+    expect(reasons.size).toBeGreaterThan(5)
+    for (const reason of reasons) {
+      expect((OUT_REASONS as readonly string[]).includes(reason), reason).toBe(true)
+      expect(OUT_REASON_LABELS[reason as OutReason], reason).toBeTruthy()
+    }
   })
 })
 
@@ -141,19 +194,49 @@ describe('the cap boundary', () => {
     expect((await run(harness({ count: 49 }))).output).toMatchObject({ _route: 'eligible', count: 49, daily_lead_cap: 50 })
   })
 
-  it('50 clicks of a cap of 50 is not eligible, as daily_lead_cap', async () => {
-    expect((await run(harness({ count: 50 }))).output).toMatchObject({ _route: 'not_eligible', reason: 'daily_lead_cap', count: 50, daily_lead_cap: 50 })
+  it('50 clicks of a cap of 50 is not eligible, as daily_click_cap (a count of clicks, not leads)', async () => {
+    expect((await run(harness({ count: 50 }))).output).toMatchObject({ _route: 'not_eligible', reason: 'daily_click_cap', count: 50, daily_lead_cap: 50 })
   })
 
   it('over the cap (the slight overshoot a click race allows) is not eligible either', async () => {
-    expect((await run(harness({ count: 53 }))).output).toMatchObject({ _route: 'not_eligible', reason: 'daily_lead_cap', count: 53 })
+    expect((await run(harness({ count: 53 }))).output).toMatchObject({ _route: 'not_eligible', reason: 'daily_click_cap', count: 53 })
   })
 
-  it('a profile with no daily cap offers nothing: cap_check_error, never an uncapped offer', async () => {
+  it('a profile with no daily cap offers nothing, named no_daily_cap rather than an outage, and never reads the counter', async () => {
     const h = harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: null })) })
     const r = await run(h)
-    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'cap_check_error', daily_lead_cap: null, count: null })
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'no_daily_cap', daily_lead_cap: null, count: null })
     expect(h.counterReads).toEqual([])
+  })
+
+  it('a cap of zero is not a cap (the one isCap rule): not offered as cap_check_error, never judged as every click over it', async () => {
+    const h = harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: 0 })) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'cap_check_error', count: null })
+    expect(r.output.detail).toMatch(/not a whole number above zero/)
+    expect(h.counterReads).toEqual([])
+  })
+})
+
+describe('a last good copy of the profiles', () => {
+  const lastGood = (ageMs: number): BuyerProfilesSnapshot => ({ ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: new Date(NOW - ageMs).toISOString() })
+
+  it(`within ${CLICK_CHECK_LAST_GOOD_MAX_AGE_MS / 60_000} minutes still offers, and says where the profile came from`, async () => {
+    const r = await run(harness({ profiles: lastGood(CLICK_CHECK_LAST_GOOD_MAX_AGE_MS) }))
+    expect(r.output).toMatchObject({ _route: 'eligible', profile_served_from: 'last_good' })
+  })
+
+  it('older than the bound is not offered, as profile_copy_stale, and the counter is never read', async () => {
+    const h = harness({ profiles: lastGood(CLICK_CHECK_LAST_GOOD_MAX_AGE_MS + 1) })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_copy_stale', profile_served_from: 'last_good' })
+    expect(h.counterReads).toEqual([])
+  })
+
+  it('a cached copy of any age is not judged by the bound: the cache has its own TTL', async () => {
+    const r = await run(harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'cache', loaded_at: new Date(NOW - CLICK_CHECK_LAST_GOOD_MAX_AGE_MS - 1).toISOString() } }))
+    expect(r.output._route).toBe('eligible')
   })
 })
 
@@ -193,16 +276,10 @@ describe('each eligibility reason, from the shared evaluator', () => {
     expect(r.failure).toBeUndefined()
     expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_disabled', partner_id: PARTNER_ID, partner_name: null, click_url: null })
   })
-
-  it('every reason the node can route is in the package vocabulary', async () => {
-    for (const reason of ['state_not_allowed', 'daily_lead_cap', 'cap_check_error', 'profile_disabled', 'inactive', 'closed']) {
-      expect((OUT_REASONS as readonly string[]).includes(reason), reason).toBe(true)
-    }
-  })
 })
 
 describe('cap_check_error inside the budget, failing toward under sending', () => {
-  it('a counter that never answers routes cap_check_error once the 300 ms budget ends', async () => {
+  it('a counter that never answers routes cap_check_error once the budget ends', async () => {
     const h = harness({ count: () => new Promise<number>(() => undefined), manualTimers: true })
     const p = run(h)
     await Promise.resolve()
@@ -211,8 +288,8 @@ describe('cap_check_error inside the budget, failing toward under sending', () =
     const r = await p
     expect(r.failure).toBeUndefined()
     expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'cap_check_error', count: null })
-    expect(r.output.detail).toMatch(/did not answer within 300 ms/)
-    expect(h.timeouts).toEqual([300])
+    expect(r.output.detail).toContain(`did not answer within ${CLICK_CHECK_BUDGET_MS} ms`)
+    expect(h.timeouts).toEqual([CLICK_CHECK_BUDGET_MS])
   })
 
   it('a profile load that never answers routes cap_check_error on the same budget, and the counter is never read', async () => {
@@ -251,13 +328,31 @@ describe('cap_check_error inside the budget, failing toward under sending', () =
 })
 
 describe('refusals', () => {
-  it('an offer sold buyer is refused by name: this node never offers a buyer that buyer_select sells', async () => {
+  it('an offer sold buyer is never offered here, and never fails the step (which would fail Engine\'s whole execution): not_eligible as partner_not_click, and a person is paged', async () => {
     const offer = clickBuyer({ soldOn: 'offer', priority: 1, tiers: [{ population: 'engine', debtFrom: 0, debtTo: null, multiplier: 0.001 }] })
     const h = harness({ profiles: snapshot(offer) })
     const r = await run(h)
-    expect(r.failure).toMatchObject({ reason: 'partner_not_click', errorType: 'permanent' })
-    expect(r.output._route).toBe('not_eligible')
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'partner_not_click', partner_slug: 'liberty1', count: null })
     expect(h.counterReads).toEqual([])
+    // Through the click alert path, whose claim is keyed by buyer and reason, so a burst of leads is one page per cooldown.
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'partner_not_click', partner_id: PARTNER_ID, partner_slug: 'liberty1', prospect_id: null, workflow_id: 'wf-1', trace_id: 'trace-1' })])
+  })
+
+  it('no other routed reason pages', async () => {
+    for (const [what, make, c] of ROUTED) {
+      const h = make()
+      const { output } = await run(h, node(), c ?? ctx())
+      if (output.reason !== 'partner_not_click') expect(h.alerts, what).toEqual([])
+    }
+  })
+
+  it('an alert that throws is caught, and the answer still routes', async () => {
+    const h = harness({ profiles: snapshot(clickBuyer({ soldOn: 'offer' })) })
+    h.deps.alert = () => { throw new Error('alert claim down') }
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(r.output.reason).toBe('partner_not_click')
   })
 
   it('a partner_id that is not a partner id fails by name before anything is read', async () => {

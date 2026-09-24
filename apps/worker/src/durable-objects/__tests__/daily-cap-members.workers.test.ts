@@ -6,7 +6,7 @@
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import type { DailyCapObject } from '../daily-cap'
 
@@ -78,6 +78,32 @@ describe('DailyCapObject /add-member and /members', () => {
     await add(stub, 'p-1')
     for (let i = 0; i < 3; i++) expect(await (await stub.fetch('http://do/member-count')).json()).toEqual({ count: 2 })
     expect(await (await stub.fetch('http://do/members')).json()).toEqual({ count: 2, members: [{ member: 'p-1', added_at: NOW }, { member: 'p-2', added_at: NOW }] })
+  })
+
+  it('/member-count equals the size of the member list after repeats, concurrent repeats included (#1557: it reads the sequence, one key)', async () => {
+    const stub = counter()
+    await setClock(stub, NOW)
+    for (const m of ['p-1', 'p-2', 'p-1', 'p-3', 'p-2', 'p-1']) await add(stub, m)
+    await Promise.all(['p-4', 'p-4', 'p-3', 'p-4'].map((m) => add(stub, m)))
+    const listed = await (await stub.fetch('http://do/members')).json<{ count: number; members: unknown[] }>()
+    expect(listed.members).toHaveLength(4)
+    expect(await (await stub.fetch('http://do/member-count')).json()).toEqual({ count: listed.members.length })
+    // The add's own answer is the same number.
+    expect(await (await add(stub, 'p-1')).json()).toEqual({ added: false, count: 4 })
+  })
+
+  it('/member-count reads one key and never lists the members', async () => {
+    const stub = counter()
+    await setClock(stub, NOW)
+    await add(stub, 'p-1')
+    await add(stub, 'p-2')
+    await runInDurableObject(stub, async (instance: DailyCapObject, state) => {
+      const list = vi.spyOn(state.storage, 'list')
+      const res = await instance.fetch(new Request('http://do/member-count'))
+      expect(await res.json()).toEqual({ count: 2 })
+      expect(list).not.toHaveBeenCalled()
+      list.mockRestore()
+    })
   })
 
   it('leaves the existing counter untouched: members are not the check-and-increment count', async () => {

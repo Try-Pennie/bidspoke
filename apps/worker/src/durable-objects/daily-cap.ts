@@ -175,10 +175,14 @@ export class DailyCapObject implements DurableObject {
 
   /**
    * The distinct count alone, a pure read (#1543): buyer_click_check asks it on
-   * every Engine offer, so it never adds a member and never lists them.
+   * every Engine offer, so it never adds a member and never lists them. It is
+   * the stored sequence, one key: /add-member raises the sequence only when the
+   * member was not already there, under blockConcurrencyWhile, and nothing ever
+   * removes a member, so the sequence is exactly the number of distinct members
+   * (#1557; the workerd suite checks it against the member list after repeats).
    */
   private async handleMemberCount(): Promise<Response> {
-    const count = (await this.state.storage.list({ prefix: MEMBER_PREFIX })).size
+    const count = (await this.state.storage.get<number>(MEMBER_SEQ_KEY)) ?? 0
     return json<MemberCountResult>({ count })
   }
 

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import ConfigPanel from '../ConfigPanel'
 import { api } from '@/lib/api'
+import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 
 // Characterization tests (#239): every node type's config form mounts via the
 // public ConfigPanel (the per-type sub-forms are internal, not exported), so a
@@ -507,8 +508,8 @@ describe.each(['buyer_click_send', 'buyer_click_check'])('ConfigPanel: %s picks 
     vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer'), partnerOf('id-engine', 'engine', 'Engine', 'source')])
     const { onUpdate } = renderPanel(nodeOf(clickType, {}))
     const picker = await screen.findByRole('combobox', { name: 'Partner' })
-    expect(await screen.findByRole('option', { name: 'Liberty1' })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: 'Engine' })).not.toBeInTheDocument()
+    expect(await within(picker).findByRole('option', { name: 'Liberty1' })).toBeInTheDocument()
+    expect(within(picker).queryByRole('option', { name: 'Engine' })).not.toBeInTheDocument()
     fireEvent.change(picker, { target: { value: LIBERTY1_ID } })
     const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
     expect(config.partner_id).toBe(LIBERTY1_ID)
@@ -571,7 +572,7 @@ describe('ConfigPanel: buyer_click_send holds no cap of its own (#1543, L83)', (
     vi.mocked(api.partners.list).mockResolvedValue([])
     renderPanel(nodeOf('buyer_click_send', {}))
     expect(screen.queryByText('Daily lead cap')).not.toBeInTheDocument()
-    expect(screen.getByText(/clicks per day on the buyer profile/)).toBeInTheDocument()
+    expect(screen.getByText('Notify at percent of the cap')).toBeInTheDocument()
   })
 })
 
@@ -584,5 +585,37 @@ describe('ConfigPanel: buyer_click_check (#1543)', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Debt' }), { target: { value: '{{steps.trades.output.tradeCalculations.engineDebt}}' } })
     const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
     expect(config.debt).toBe('{{steps.trades.output.tradeCalculations.engineDebt}}')
+  })
+
+  it('labels each population by name, never its stored code (#1557)', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_check', { population: 'engine' }))
+    const population = screen.getByRole('combobox', { name: 'Population' }) as HTMLSelectElement
+    expect([...population.options].map((o) => o.textContent)).toEqual(['Engine', 'Main Flow', 'Lead Economy'])
+    expect(population.value).toBe('engine')
+  })
+
+  it('a stored population outside the vocabulary stays shown and selected as its own labelled option, so a save cannot swap it for another (L652)', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_check', { population: 'enginee' }))
+    const population = screen.getByRole('combobox', { name: 'Population' }) as HTMLSelectElement
+    expect(population.value).toBe('enginee')
+    expect(population.selectedOptions[0].textContent).toBe('enginee (not a population Bidspoke knows)')
+  })
+
+  it('states the budget from the one constant, in text that is not the low contrast slate 400 (#1557)', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_check', { population: 'engine' }))
+    const hint = screen.getByText(new RegExp(`within ${CLICK_CHECK_BUDGET_MS} ms`))
+    expect(hint.className).not.toMatch(/text-slate-400/)
+  })
+})
+
+describe('ConfigPanel: buyer_click_send notify percent hint (#1557)', () => {
+  it('explains the domain, not the interface: it never says where the cap lives on screen', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_send', {}))
+    expect(screen.queryByText(/Of the clicks per day on the buyer profile/)).toBeNull()
+    expect(screen.getByText(/once a Pacific day/)).toBeInTheDocument()
   })
 })

@@ -116,6 +116,19 @@ describe('buyer_click_check names its partner by id (#1543)', () => {
   })
 })
 
+describe('clickNodesOnly (#1557): the workflows a sold_on switch away from the click would break', () => {
+  it('finds a click node and never a bid_group, partner_bid or buyer_select naming the same partner', () => {
+    const mixed = [
+      wf('check', [{ type: 'buyer_click_check', config: { partner_id: 'p-liberty', population: 'engine' } }]),
+      wf('send', [{ type: 'buyer_click_send', config: { partner_id: 'p-liberty' } }]),
+      wf('group', [{ type: 'bid_group', config: { partner_ids: ['p-liberty'] } }]),
+      wf('bid', [{ type: 'partner_bid', config: { partner_id: 'p-liberty' } }]),
+    ]
+    const find = workflowsUsingPartner(mixed, new Map([['engine', new Set(['p-liberty'])]]), { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true })
+    expect(find('p-liberty').map((w) => w.id)).toEqual(['check', 'send'])
+  })
+})
+
 describe('populationsInUse', () => {
   it('collects the populations buyer_select nodes name, once each', () => {
     const second = wf('engine2', [{ type: 'buyer_select', config: { population: 'engine' } }, { type: 'buyer_select', config: { population: 'main_flow' } }])

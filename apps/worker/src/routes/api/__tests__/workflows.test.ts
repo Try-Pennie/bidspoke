@@ -834,7 +834,7 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
       version: 1,
       updated_at: '2027-01-01T00:00:00.000Z',
     })
-    const snapshot: BuyerProfilesSnapshot = { org_id: USER_ORG, loaded_at: '2027-01-01T00:00:00.000Z', updated_at_max: null, served_from: 'database', buyers: [profile('p-tripoint', 'engine'), profile('p-liberty', 'main_flow')] }
+    const snapshot: BuyerProfilesSnapshot = { org_id: USER_ORG, loaded_at: '2027-01-01T00:00:00.000Z', content_hash: 'test', served_from: 'database', buyers: [profile('p-tripoint', 'engine'), profile('p-liberty', 'main_flow')] }
     vi.mocked(loadBuyerProfiles).mockResolvedValue(snapshot)
 
     const partners = [

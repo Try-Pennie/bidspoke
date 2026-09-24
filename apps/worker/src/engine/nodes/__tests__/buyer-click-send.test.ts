@@ -24,6 +24,7 @@ import {
   classifyClickAnswer,
   executeBuyerClickSendNode,
   type BuyerClickSendDeps,
+  type ProfileCap,
 } from '../buyer-click-send'
 import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
 
@@ -94,7 +95,7 @@ function harness(opts: {
   /** Shared across runs, so a second run sees the first run's count. */
   memberSet?: Set<string>
   /** The profile's daily cap: a number, null for a profile holding none, 'none' for no enabled profile, or a read that throws. */
-  cap?: number | null | 'none' | (() => Promise<{ found: false } | { found: true; cap: number | null }>)
+  cap?: number | null | 'none' | (() => Promise<ProfileCap>)
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
   const h: Harness = {
@@ -106,7 +107,7 @@ function harness(opts: {
       expect(partnerId).toBe(PARTNER_ID)
       const c = opts.cap === undefined ? 50 : opts.cap
       if (typeof c === 'function') return c()
-      return c === 'none' ? { found: false } : { found: true, cap: c }
+      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click' }
     },
     resolvePartner: async (partnerId) => {
       h.resolved.push(partnerId)
@@ -284,6 +285,22 @@ describe('the over cap notice', () => {
     const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable' })
     expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['cap_unreadable'])
+  })
+
+  it('a cap of zero is no readable cap (the one isCap rule), never a notice on every click (#1557)', async () => {
+    const h = harness({ cap: 0, members: upTo(3) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
+    expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
+  })
+
+  it('a profile sold on the offer is an unreadable cap: its leads cap is never judged against clicks (#1557)', async () => {
+    const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer' }), members: upTo(80) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
+    expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toMatch(/sold on the offer/)
   })
 
   it('no enabled profile (switched off while offers were out) is recorded as no_enabled_profile and pages nothing', async () => {

@@ -48,7 +48,7 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, partnerIdOf, withDeadline, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, isCap, partnerIdOf, withDeadline, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
@@ -58,11 +58,7 @@ import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type Click
 import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
-import { makeAlertClaims } from '../../lib/alert-claim'
-import { postClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
-import { resolveSlackForBlockAlert } from '../../lib/partner-block-alert'
-import { getSlackConnection } from '../../lib/slack'
-import { readLastGoodSlackConnections } from '../../lib/volume-cliff'
+import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
 import { resolveValue } from '../context'
 import { isShadowDryRun } from '../shadow'
@@ -209,7 +205,8 @@ export interface ClickCounterApi {
   addMember(member: string): Promise<AddMemberResult>
 }
 
-export type ProfileCap = { found: false } | { found: true; cap: number | null }
+/** The enabled profile's cap and how the buyer is sold, so an offer buyer's leads cap is never judged against clicks (#1557). */
+export type ProfileCap = { found: false } | { found: true; cap: number | null; soldOn: SoldOn | null }
 
 export interface BuyerClickSendDeps {
   /** The buyer's enabled profile's daily cap, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
@@ -234,7 +231,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     profileCap: async (partnerId) => {
       const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })
       const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
-      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap } : { found: false }
+      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn } : { found: false }
     },
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
@@ -248,21 +245,8 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, partnerId, nowMs),
     // The one outbound POST (L613): the URL is the node's, and a click buyer carries no stored credential.
     post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
-    alert: (alert) =>
-      postClickAlert(
-        {
-          claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-          // The database first, then the last good copy, so a page still goes out while Supabase wobbles (L682).
-          resolveSlack: () =>
-            resolveSlackForBlockAlert(
-              orgId,
-              () => getSlackConnection(supabase, orgId),
-              () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
-            ),
-          appUrl: env.APP_URL,
-        },
-        alert,
-      ),
+    // The one production alert, shared with buyer_click_check (#1557).
+    alert: productionClickAlert(orgId, env, supabase),
     clock: () => Date.now(),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
     localDev: Boolean(env.LOCAL_DEV),
@@ -490,10 +474,18 @@ class Run {
       this.deps.log({ event: 'buyer_click_send_no_enabled_profile', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug })
       return
     }
-    const cap = profile.cap
-    if (cap === null || !Number.isInteger(cap) || cap < 0) {
+    // An offer buyer's daily cap counts leads sold through buyer_select, so it is
+    // no cap on clicks: judging clicks against it would be a wrong notice (#1557).
+    if (profile.soldOn !== 'click') {
       this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the enabled buyer profile holds daily cap ${JSON.stringify(cap)}, not a whole number`)
+      await this.page(v, 'cap_unreadable', `the enabled buyer profile is sold on the ${String(profile.soldOn)}, not the click, so its daily cap counts leads rather than clicks`)
+      return
+    }
+    const cap = profile.cap
+    // The one cap rule (isCap), shared with save validation and buyer_click_check.
+    if (!isCap(cap)) {
+      this.out.over_cap = 'cap_unreadable'
+      await this.page(v, 'cap_unreadable', `the enabled buyer profile holds daily cap ${JSON.stringify(cap)}, not a whole number above zero`)
       return
     }
     this.out.daily_lead_cap = cap

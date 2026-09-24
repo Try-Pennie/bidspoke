@@ -40,7 +40,7 @@ describe('buyer_click_check config validation', () => {
     ['debt', { debt: undefined }, 'No debt template set'],
     ['loan amount', { loan_amount: '' }, 'No loan amount template set'],
     ['population', { population: undefined }, 'No population selected'],
-    ['population outside the vocabulary', { population: 'enginee' }, 'No population selected'],
+    ['population outside the vocabulary', { population: 'enginee' }, 'enginee is not a population Bidspoke knows'],
   ]
   for (const [name, patch, message] of missing) {
     it(`a missing or bad ${name} is unconfigured`, () => {

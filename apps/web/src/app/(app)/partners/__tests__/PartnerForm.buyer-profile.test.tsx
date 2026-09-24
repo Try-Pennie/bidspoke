@@ -286,27 +286,63 @@ describe('how the buyer is sold', () => {
   })
 
   // #1543: the click counter replaces the ledger counts for a click buyer, the
-  // same count buyer_click_check stops offering at, on the Pacific day.
-  it('a click buyer shows today\'s clicks against its cap, on the Pacific day', async () => {
+  // same count buyer_click_check stops offering at. The Pacific day is stated
+  // once, in the caps note; the panel shows the date and the count (#1557, L605).
+  it('a click buyer shows the clicks against its cap for the date counted, and the Pacific day once on the page', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
-    expect(await screen.findByText('17 of 50 clicks today')).toBeInTheDocument()
-    expect(screen.getByText(/Counted for 2027-09-21, a day that runs midnight to midnight Pacific time/)).toBeInTheDocument()
-    expect(screen.getByText('Room under the cap today.')).toBeInTheDocument()
+    expect(await screen.findByText('17 of 50 clicks on 2027-09-21')).toBeInTheDocument()
+    expect(screen.getByText('Room under the cap.')).toBeInTheDocument()
+    const region = screen.getByRole('region', { name: 'Buyer profile' })
+    expect(within(region).getAllByText(/Pacific/)).toHaveLength(1)
+    expect(within(region).getAllByText(/not offered/)).toHaveLength(1)
   })
 
-  it('a click buyer at its cap says it is no longer offered today', async () => {
+  it('a click buyer at its cap says the cap is reached', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 50, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
-    expect(await screen.findByText('50 of 50 clicks today')).toBeInTheDocument()
-    expect(screen.getByText('The cap is reached. This buyer is not offered again until midnight Pacific.')).toBeInTheDocument()
+    expect(await screen.findByText('50 of 50 clicks on 2027-09-21')).toBeInTheDocument()
+    expect(screen.getByText('The cap is reached.')).toBeInTheDocument()
   })
 
-  it('a click count that cannot be read says so, with no number', async () => {
-    vi.mocked(api.buyerProfiles.usage).mockRejectedValue(new Error('The click counter did not answer, so the clicks today cannot be shown.'))
+  // #1557: req() puts the body's error CODE in the message, so these reject with
+  // exactly what req() throws, and the page must show the body's sentence.
+  it('a click count that cannot be read shows the route\'s sentence, never its code, and no number', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockRejectedValue(Object.assign(new Error('click_count_unavailable'), { status: 503, body: { error: 'click_count_unavailable', message: 'The click counter did not answer, so the clicks today cannot be shown.' } }))
     await renderWith(clickDoc)
-    expect(await screen.findByText('The click counter did not answer, so the clicks today cannot be shown.')).toBeInTheDocument()
-    expect(screen.queryByText(/clicks today$/)).toBeNull()
+    expect(await screen.findByText('The click counter did not answer, so the clicks today cannot be shown.')).toHaveAttribute('role', 'alert')
+    expect(screen.queryByText(/click_count_unavailable/)).toBeNull()
+    expect(screen.queryByText(/ clicks on /)).toBeNull()
+  })
+
+  it('an offer buyer whose ledger does not answer shows the route\'s sentence, never its code', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockRejectedValue(Object.assign(new Error('usage_unavailable'), { status: 503, body: { error: 'usage_unavailable', message: 'The buyer ledger did not answer, so the counts cannot be shown.' } }))
+    await renderWith(doc)
+    expect(await screen.findByText('The buyer ledger did not answer, so the counts cannot be shown.')).toBeInTheDocument()
+    expect(screen.queryByText(/usage_unavailable/)).toBeNull()
+  })
+
+  it('an unsaved change of kind is a neutral not saved yet note, not an error, and reads nothing again', async () => {
+    const bare: BuyerProfileDocument = { ...doc, is_enabled: false, tiers: [], hourly_lead_cap: null }
+    await renderWith(bare, { accept_signals: [] })
+    await waitFor(() => expect(api.buyerProfiles.usage).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    const note = await screen.findByText('The clicks show once the change to the click is saved.')
+    expect(note).toHaveAttribute('role', 'status')
+    expect(note.className).not.toMatch(/red/)
+    // Choosing a kind is not a save, so the usage is not read again.
+    expect(api.buyerProfiles.usage).toHaveBeenCalledTimes(1)
+  })
+
+  it('a save refused because a live click workflow names the buyer says so in the route\'s words (#1557)', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 3, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
+    const message = 'This buyer is sold on the click in live workflows: Engine Bidding. Nothing was saved. Take it off their click nodes, or switch those workflows off, before selling it on the offer.'
+    vi.mocked(api.buyerProfiles.save).mockRejectedValue(Object.assign(new Error('sold_on_in_use'), { status: 409, body: { error: 'sold_on_in_use', message, workflows: [{ id: 'wf-1', name: 'Engine Bidding' }] } }))
+    await renderWith({ ...clickDoc, daily_lead_cap: 60 })
+    fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '55' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    expect(await screen.findByText(/The buyer profile was not saved: This buyer is sold on the click in live workflows: Engine Bidding/)).toBeInTheDocument()
+    expect(screen.queryByText(/sold_on_in_use/)).toBeNull()
   })
 
   it('an offer buyer with pricing stored cannot be switched, and says why beside the choice', async () => {

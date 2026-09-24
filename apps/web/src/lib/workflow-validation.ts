@@ -136,7 +136,9 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!templateSet(config.state)) return 'No state template set'
       if (!templateSet(config.debt)) return 'No debt template set'
       if (!templateSet(config.loan_amount)) return 'No loan amount template set'
-      if (!(POPULATIONS as readonly unknown[]).includes(config.population)) return 'No population selected'
+      if (config.population === undefined || config.population === null || config.population === '') return 'No population selected'
+      // A stored value outside the vocabulary is named as such, never as nothing chosen (#1557).
+      if (!(POPULATIONS as readonly unknown[]).includes(config.population)) return `${String(config.population)} is not a population Bidspoke knows`
       return null
     }
     case 'response':

@@ -32,6 +32,13 @@ export interface FinderOptions {
   includeClickNodes: boolean
   /** Report only active workflows. */
   liveOnly?: boolean
+  /**
+   * Count ONLY the two click nodes (#1557), for the profile save route, which
+   * refuses switching a click buyer to the offer while a live click node names
+   * it. A bid_group or partner_bid sells the partner whichever way its profile
+   * is sold, so they never block that switch. Requires includeClickNodes.
+   */
+  clickNodesOnly?: boolean
 }
 
 type DefNode = { type?: unknown; config?: Record<string, unknown> | null }
@@ -63,9 +70,10 @@ export function workflowsUsingPartner(
     for (const w of candidates) {
       const used = nodesOf(w).some((n) => {
         if (!n || !n.config) return false
-        if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
         // A click sold buyer's send (#1553) and its offer side check (#1543).
         if (options.includeClickNodes && (n.type === 'buyer_click_send' || n.type === 'buyer_click_check') && n.config.partner_id === partnerId) return true
+        if (options.clickNodesOnly) return false
+        if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group') {
           const ids = n.config.partner_ids
           if (Array.isArray(ids) && ids.includes(partnerId)) return true

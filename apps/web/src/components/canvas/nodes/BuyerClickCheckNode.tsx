@@ -20,6 +20,7 @@ interface ClickCheckOutputPreview {
   partner_name?: string | null
   count?: number | null
   daily_lead_cap?: number | null
+  count_date?: string | null
 }
 
 function reasonLabel(reason: string): string {
@@ -45,7 +46,10 @@ export function BuyerClickCheckNode({ data, selected }: NodeProps) {
     if (typeof out.partner_name === 'string') partnerName = out.partner_name
     else if (typeof out.partner_slug === 'string') partnerName = out.partner_slug
     if (out._route === 'eligible') {
-      preview = typeof out.count === 'number' && typeof out.daily_lead_cap === 'number' ? `eligible, ${out.count} of ${out.daily_lead_cap} clicks today` : 'eligible'
+      // The date the run counted, never "today": the card shows a stored run (#1557).
+      preview = typeof out.count === 'number' && typeof out.daily_lead_cap === 'number'
+        ? `eligible, ${out.count} of ${out.daily_lead_cap} clicks${typeof out.count_date === 'string' ? ` on ${out.count_date}` : ''}`
+        : 'eligible'
     } else if (out._route) {
       preview = `${label(out._route)}${out.reason ? `: ${reasonLabel(out.reason)}` : ''}`
     }

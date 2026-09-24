@@ -11,7 +11,8 @@
  * hot path that reads the same rows over and over.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -141,16 +142,73 @@ describe('loadBuyerProfiles', () => {
     expect(snapshot.served_from).toBe('database')
   })
 
-  it('rewrites the last good copy only when the newest updated_at moves', async () => {
+  it('rewrites the last good copy when the content changes, and not for a re-read of the same rows', async () => {
     const { kv, store, spies } = fakeKv()
+    const lastGoodWrites = () => spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
     store.delete('buyer-profiles:org-1')
-    const writesBefore = spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
+    const writesBefore = lastGoodWrites()
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
-    expect(spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood')).toHaveLength(writesBefore)
+    expect(lastGoodWrites()).toBe(writesBefore)
     store.delete('buyer-profiles:org-1')
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [{ ...ROW, updated_at: '2026-09-22T11:00:00.000Z', version: 4 }], error: null }).supabase)
-    expect(spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood')).toHaveLength(writesBefore + 1)
+    expect(lastGoodWrites()).toBe(writesBefore + 1)
+  })
+
+  // #1557: the key used to be the newest updated_at over the ENABLED rows, so
+  // disabling a buyer that did not hold the newest updated_at left it in the last
+  // good copy, which a failed read would then serve, offering the disabled buyer.
+  it('a buyer disabled without holding the newest updated_at is gone from the last good copy', async () => {
+    const newer = { ...ROW, partner_id: 'p-2', updated_at: '2026-09-22T12:00:00.000Z', partner_configs: { ...ROW.partner_configs, id: 'p-2', slug: 'liberty1', name: 'Liberty1' } }
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW, newer], error: null }).supabase)
+    // ROW (the older one) is disabled, so the enabled read returns only the newer row, whose updated_at is unchanged.
+    store.delete('buyer-profiles:org-1')
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [newer], error: null }).supabase)
+    store.delete('buyer-profiles:org-1')
+    const served = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase)
+    expect(served.served_from).toBe('last_good')
+    expect(served.buyers.map((b) => b.partner.slug)).toEqual(['liberty1'])
+  })
+
+  it('a partner switched off (a partner row change no profile version records) reaches the last good copy too', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    store.delete('buyer-profiles:org-1')
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [{ ...ROW, partner_configs: { ...ROW.partner_configs, is_active: false } }], error: null }).supabase)
+    store.delete('buyer-profiles:org-1')
+    const served = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase)
+    expect(served.buyers[0].partner.is_active).toBe(false)
+  })
+
+  it('the same rows in another order are the same content, and do not rewrite', async () => {
+    const other = { ...ROW, partner_id: 'p-2', partner_configs: { ...ROW.partner_configs, id: 'p-2', slug: 'liberty1' } }
+    const { kv, store, spies } = fakeKv()
+    const lastGoodWrites = () => spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW, other], error: null }).supabase)
+    store.delete('buyer-profiles:org-1')
+    const before = lastGoodWrites()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [other, ROW], error: null }).supabase)
+    expect(lastGoodWrites()).toBe(before)
+  })
+
+  it('unchanged content is rewritten once it is older than the refresh age, so its loaded_at says when it was last confirmed', async () => {
+    const { kv, store, spies } = fakeKv()
+    const lastGoodWrites = () => spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
+    const t0 = Date.UTC(2026, 8, 22, 12)
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 })
+    store.delete('buyer-profiles:org-1')
+    const before = lastGoodWrites()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS })
+    expect(lastGoodWrites()).toBe(before)
+    store.delete('buyer-profiles:org-1')
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS + 1 })
+    expect(lastGoodWrites()).toBe(before + 1)
+    expect(JSON.parse(store.get('buyer-profiles:org-1:lastgood')?.value ?? '{}').loaded_at).toBe(new Date(t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS + 1).toISOString())
+  })
+
+  it('refreshes the last good copy well inside the age buyer_click_check will still offer from', () => {
+    expect(BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS * 2).toBeLessThanOrEqual(CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)
   })
 
   it('invalidate clears the cache and leaves the last good copy', async () => {
