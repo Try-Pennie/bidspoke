@@ -11,8 +11,8 @@
  * must find the same claims and the same count.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
-import { DeadlineError, LEDGER_KINDS, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, ClickCounterClient, clickCounterObjectName, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
+import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CLAIM_KIND, ClickCounterClient, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -126,5 +126,30 @@ describe('ClickCounterClient', () => {
     const { ns, requests } = namespace(() => json({ count: 1, members: [{ member: 'p-1', added_at: 5 }] }))
     expect(await new ClickCounterClient(ns, LIBERTY1, 0).members()).toEqual({ count: 1, members: [{ member: 'p-1', added_at: 5 }] })
     expect(new URL(requests[0].url).pathname).toBe('/members')
+  })
+
+  it('reads the plain count through /member-count, a GET that sends no member (#1543)', async () => {
+    const { ns, requests } = namespace(() => json({ count: 49 }))
+    expect(await new ClickCounterClient(ns, LIBERTY1, 0).memberCount()).toBe(49)
+    expect(new URL(requests[0].url).pathname).toBe('/member-count')
+    expect(requests[0].method).toBe('GET')
+  })
+
+  it('a count answer that is not a whole number is refused rather than compared with the cap', async () => {
+    for (const body of [{}, { count: -1 }, { count: 1.5 }, { count: '3' }]) {
+      const { ns } = namespace(() => json(body))
+      await expect(new ClickCounterClient(ns, LIBERTY1, 0).memberCount(), JSON.stringify(body)).rejects.toThrow(/click counter count answered an unreadable body/)
+    }
+  })
+
+  it('a failed count read is an ObjectCallError, never a zero', async () => {
+    const { ns } = namespace(() => json({ error: 'boom' }, 500))
+    await expect(new ClickCounterClient(ns, LIBERTY1, 0).memberCount()).rejects.toBeInstanceOf(ObjectCallError)
+  })
+})
+
+describe('the partner id rule is the package one (#1543)', () => {
+  it('the worker re-exports the exact function save validation calls', () => {
+    expect(workerIsPartnerId).toBe(packageIsPartnerId)
   })
 })

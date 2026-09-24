@@ -9,6 +9,7 @@ import {
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
 } from './partner-body'
 import { api } from '@/lib/api'
+import { errorSentence } from '@/lib/error-sentence'
 import { Save, Trash2, Loader2, Plus, Check, X } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
@@ -365,7 +366,8 @@ export default function PartnerForm({
         setSaveOutcome({ kind: 'failed', message: 'Partner saved. The buyer profile was not saved: it changed underneath you. Compare below.' })
         return 'conflict'
       }
-      setSaveOutcome({ kind: 'failed', message: `Partner saved. The buyer profile was not saved: ${e.message}` })
+      // The route's sentence, never the code req() puts in the message (#1557): a sold_on_in_use refusal names the live workflows.
+      setSaveOutcome({ kind: 'failed', message: `Partner saved. The buyer profile was not saved: ${errorSentence(e, 'the save failed')}` })
       return 'failed'
     }
   }

@@ -19,12 +19,14 @@ import { PRIORITY_DIRECTION, SOLD_ON, type BuyerProfileDocument, type ProfileErr
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-body'
 import { api } from '@/lib/api'
+import { errorSentence } from '@/lib/error-sentence'
 import { ChoiceGroup, Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
 import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
+import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
 import { PricingTiersEditor } from './PricingTiersEditor'
 import { ProfileConflictView } from './ProfileConflictView'
@@ -117,7 +119,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 
 export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs, soldOnLock } = props
-  const [usage, setUsage] = useState<BuyerUsage | null>(null)
+  const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -131,7 +133,7 @@ export function BuyerProfileSection(props: Props) {
   useEffect(() => {
     if (!partnerId) return
     let cancelled = false
-    api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(err instanceof Error ? err.message : 'The history could not be read.') })
+    api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(errorSentence(err, 'The history could not be read.')) })
     // This buyer's queue only, with the API's own total for it (#1457, L16): the
     // filter and the count come from one query, so "Showing N of M" is about the
     // rows the button can reach.
@@ -140,20 +142,27 @@ export function BuyerProfileSection(props: Props) {
         if (cancelled) return
         setUnresolved({ rows: r.entries.map((e) => toUnresolvedSale(e, partnerName)), total: r.total, page: 1 })
       })
-      .catch((err: unknown) => { if (!cancelled) setUnresolvedError(err instanceof Error ? err.message : 'The unresolved sales could not be read.') })
+      .catch((err: unknown) => { if (!cancelled) setUnresolvedError(errorSentence(err, 'The unresolved sales could not be read.')) })
     return () => { cancelled = true }
   }, [partnerId, partnerName])
 
-  // The ledger counts are read once the profile is known to be sold on the
-  // offer: a click buyer (#1541) never reserves in the ledger, so its counts
-  // would read as zero sales against a cap that counts clicks.
-  const countsOnLedger = profile !== null && profile.sold_on !== 'click'
+  // Read once the profile is known, and again after each save. The route answers
+  // by the SAVED kind (#1543): an offer buyer's ledger counts, or a click buyer's
+  // clicks today from its click counter, since a click buyer never reserves in
+  // the ledger and its counts there would read as zero sales against a cap that
+  // counts clicks. Keyed on the saved version, never on the kind being edited
+  // (#1557): choosing a kind is not a save, and the route would answer the old one.
+  const profileLoaded = profile !== null
+  const savedVersion = profile?.version ?? 0
   useEffect(() => {
-    if (!partnerId || !countsOnLedger) return
+    if (!partnerId || !profileLoaded) return
     let cancelled = false
-    api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(err instanceof Error ? err.message : 'The usage counts could not be read.') })
+    setUsage(null)
+    setUsageError(null)
+    // The route's own sentence, never the error code req() puts in the message (#1557).
+    api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(errorSentence(err, 'The usage counts could not be read.')) })
     return () => { cancelled = true }
-  }, [partnerId, countsOnLedger])
+  }, [partnerId, profileLoaded, savedVersion])
 
   async function loadMoreUnresolved() {
     if (!partnerId || !unresolved || loadingMore) return
@@ -163,7 +172,7 @@ export function BuyerProfileSection(props: Props) {
       const r = await api.buyerSales.list({ status: 'unresolved', page: unresolved.page + 1, limit: UNRESOLVED_PAGE, partner_id: partnerId })
       setUnresolved((u) => (u ? { rows: [...u.rows, ...r.entries.map((e) => toUnresolvedSale(e, partnerName))], total: r.total, page: u.page + 1 } : u))
     } catch (err) {
-      setLoadMoreError(`The rest of the unresolved sales could not be read: ${err instanceof Error ? err.message : 'the read failed'}`)
+      setLoadMoreError(`The rest of the unresolved sales could not be read: ${errorSentence(err, 'the read failed')}`)
     } finally {
       setLoadingMore(false)
     }
@@ -178,7 +187,7 @@ export function BuyerProfileSection(props: Props) {
       const message = outcome === 'accepted' ? `Counted as sold to ${partnerName}.` : 'Released. The slot is free.'
       setSettleOutcomes((o) => ({ ...o, [id]: { kind: 'done', message: result.mirrored ? message : `${message} The record copy is behind; it will catch up within a minute.` } }))
     } catch (err) {
-      setSettleOutcomes((o) => ({ ...o, [id]: { kind: 'failed', message: err instanceof Error ? err.message : 'The settlement failed.' } }))
+      setSettleOutcomes((o) => ({ ...o, [id]: { kind: 'failed', message: errorSentence(err, 'The settlement failed.') } }))
     } finally {
       clearInterval(tick)
     }
@@ -274,11 +283,22 @@ export function BuyerProfileSection(props: Props) {
               errors={capErrors}
               soldOn={profile.sold_on}
             />
-            {click ? null : usage === null && usageError === null ? (
+            {usage === null && usageError === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the usage counts…</p>
+            ) : usageError === null && usage !== null && profile.sold_on !== null && usage.sold_on !== profile.sold_on ? (
+              // An unsaved change of kind (#1557): nothing is wrong, the route answers the saved kind.
+              <p role="status" className="text-xs text-gray-600">{click ? 'The clicks show once the change to the click is saved.' : 'The ledger counts show once the change to the offer is saved.'}</p>
+            ) : click ? (
+              <ClickUsagePanel
+                usage={usage?.sold_on === 'click' ? usage : null}
+                error={usageError}
+                cap={profile.daily_lead_cap}
+                otherSellers={otherSellers}
+                partnerName={partnerName}
+              />
             ) : (
               <BuyerUsagePanel
-                usage={usage}
+                usage={usage?.sold_on === 'offer' ? usage : null}
                 error={usageError}
                 caps={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
                 otherSellers={otherSellers}

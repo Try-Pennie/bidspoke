@@ -1144,7 +1144,7 @@ workflows.get('/:id/rename-impact', async (c) => {
       pricedPartnersByPopulation.set(population, new Set(partnersPricedFor(snapshot, population)))
     }
   }
-  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartnersByPopulation, { includeBuyerSelect: true })
+  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartnersByPopulation, { includeBuyerSelect: true, includeClickNodes: true })
 
   const partner_formulas = affected.map((p) => {
     const resolverFormula =

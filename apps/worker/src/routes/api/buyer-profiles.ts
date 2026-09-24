@@ -5,7 +5,8 @@
  *   GET  /partners/:id/buyer-profile          the document, the partner's accept rules, other sellers
  *   PUT  /partners/:id/buyer-profile          validate, save_buyer_profile, invalidate the cache
  *   GET  /partners/:id/buyer-profile/history  the audit rows for this profile
- *   GET  /partners/:id/buyer-usage            the ledger's counts for the current Eastern hour and day
+ *   GET  /partners/:id/buyer-usage            the ledger's counts for the current Eastern hour and day,
+ *                                             or a click sold buyer's clicks today on the Pacific day
  *
  * Every query filters organization_id explicitly: the Worker is service_role and
  * bypasses RLS. Any allowlisted member of the org may call these, the same as the
@@ -23,6 +24,7 @@ import {
   validateProfile,
   WIRED_POPULATIONS,
   easternDayStartUtc,
+  PACIFIC,
   type Signal,
 } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
@@ -30,7 +32,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
-import { BuyerLedgerClient } from '../../lib/buyer-object-clients'
+import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import type { Json } from '../../types/database'
 
@@ -83,6 +85,9 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   // Other sellers: live workflows whose bid_group or partner_bid nodes name this
   // partner. Buyer selection itself is not an OTHER seller, so buyer_select nodes
   // are left out; the caps panel names these because their wins are not counted (L582).
+  // The click nodes are left out too (#1543): a click buyer's clicks through
+  // buyer_click_send are exactly what its cap counts, and buyer_click_check only
+  // offers, so neither is a seller whose wins the cap leaves uncounted.
   const { data: workflows, error: wfError } = await supabase
     .from('workflows')
     .select('id, name, is_active, definition')
@@ -92,7 +97,7 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   const finder = workflowsUsingPartner(
     (workflows ?? []) as Array<{ id: string; name: string; is_active: boolean | null; definition: unknown }>,
     new Map(),
-    { includeBuyerSelect: false, liveOnly: true }
+    { includeBuyerSelect: false, includeClickNodes: false, liveOnly: true }
   )
 
   return c.json({
@@ -132,6 +137,9 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
   })
   if (!validation.ok) return c.json({ error: 'profile_invalid', errors: validation.errors }, 422)
 
+  const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
+  if (inUse) return inUse
+
   const { partner_id: _partner, version: _version, ...toSave } = parsed.document
   const { data, error } = await supabase.rpc('save_buyer_profile', {
     p_org: orgId,
@@ -161,6 +169,53 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
   await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
   return c.json({ profile: data })
 })
+
+/**
+ * A click buyer switched to the offer while a LIVE workflow names it on a
+ * buyer_click_check or buyer_click_send node is refused, naming each workflow
+ * (#1557): the check would stop offering it and the send would stop judging its
+ * cap, with nothing on the page saying why. Only the switch AWAY from the click
+ * is refused. Switching to the click is how a click node that names an offer
+ * buyer gets fixed, and a bid_group or partner_bid sells the partner whichever
+ * way its profile is sold. The stored kind is read first, and the workflows only
+ * when the kind is actually leaving the click, so an ordinary save pays one read.
+ */
+async function refuseSwitchAwayFromClick(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  partnerId: string,
+  nextSoldOn: string | null
+): Promise<Response | null> {
+  if (nextSoldOn === 'click') return null
+  let stored
+  try {
+    stored = await readBuyerSoldOn(supabase, orgId, partnerId)
+  } catch (err) {
+    console.error(`[buyer-profile] stored sold_on unreadable for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'sold_on_unavailable', message: 'Whether this buyer is sold on the offer or on the click now could not be read, so nothing was saved. Try again.' }, 503)
+  }
+  if (stored !== 'click') return null
+
+  const { data: workflows, error } = await supabase
+    .from('workflows')
+    .select('id, name, is_active, definition')
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+  if (error) return dbError(c, error)
+  const using = workflowsUsingPartner(
+    workflows ?? [],
+    new Map(),
+    { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true, liveOnly: true }
+  )(partnerId)
+  if (using.length === 0) return null
+  const names = using.map((w) => w.name).join(', ')
+  return c.json({
+    error: 'sold_on_in_use',
+    message: `This buyer is sold on the click in live workflows: ${names}. Nothing was saved. Take it off their click nodes, or switch those workflows off, before selling it on the offer.`,
+    workflows: using,
+  }, 409)
+}
 
 // ── History ───────────────────────────────────────────────────────────────────
 
@@ -195,11 +250,11 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
   if ('response' in loaded) return loaded.response
 
   // A click sold buyer (#1541) never reserves in the ledger, so its counts here
-  // would read as zero sales against a cap that counts clicks. Refused by name
-  // until the click counter is read here instead (#1542); an unreadable kind is
-  // its own refusal, never the numbers of a buyer that may be sold on the click.
-  const refused = await refuseClickSoldBuyer(c, supabase, orgId, id)
-  if (refused) return refused
+  // would read as zero sales against a cap that counts clicks: it answers with
+  // today's clicks instead (#1543). An unreadable kind is its own refusal, never
+  // the numbers of a buyer that may be sold on the click.
+  const clickAnswer = await clickCountIfClickSold(c, supabase, orgId, id)
+  if (clickAnswer) return clickAnswer
 
   // The ledger is the authority the caps refuse from, so the panel reads the
   // same counted() the refusal uses (L16). A ledger that does not answer is a
@@ -238,6 +293,7 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
   }
 
   return c.json({
+    sold_on: 'offer',
     et_day: summary.et_day,
     hour_bucket: counts.hour_bucket,
     hour: { leads: counts.hour_leads, spend_cents: counts.hour_spend_cents },
@@ -250,10 +306,15 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
 
 /**
  * The answer a ledger or daily cap count route gives for a buyer sold on the
- * click (#1541), or null for any other partner. Shared by the usage route here
- * and the partner cap-count route, so both refuse the same way.
+ * click (#1541, #1543), or null for any other partner. Shared by the usage route
+ * here and the partner cap-count route, so both answer the same way: today's
+ * distinct clicks from the click counter, keyed on the partner id, on the
+ * PACIFIC day the counter resets on (the day CapsGrid names), read with the
+ * plain count call that never adds a member. The count is the one
+ * buyer_click_check judges the cap against, so the panel and the node agree
+ * (L16). A counter that does not answer is a 503, never a zero (L633).
  */
-export async function refuseClickSoldBuyer(
+export async function clickCountIfClickSold(
   c: Context<{ Bindings: Env; Variables: AuthVariables }>,
   supabase: ReturnType<typeof createSupabaseClient>,
   orgId: string,
@@ -266,10 +327,15 @@ export async function refuseClickSoldBuyer(
     console.error(`[buyer-kind] could not read how partner ${partnerId} is sold: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     return c.json({ error: 'sold_on_unavailable', message: 'Whether this buyer is sold on the offer or on the click could not be read, so no count is shown.' }, 503)
   }
-  if (soldOn === 'click') {
-    return c.json({ error: 'sold_on_click', message: 'This buyer is sold on the click. Its sales are not counted by the buyer ledger or the daily cap object.' }, 409)
+  if (soldOn !== 'click') return null
+  try {
+    const counter = new ClickCounterClient(c.env.DAILY_CAP, partnerId, Date.now())
+    const count = await counter.memberCount()
+    return c.json({ sold_on: 'click', count, date: counter.date, day_zone: PACIFIC })
+  } catch (err) {
+    console.error(`[click-count] could not read today's clicks for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'click_count_unavailable', message: 'The click counter did not answer, so the clicks today cannot be shown.' }, 503)
   }
-  return null
 }
 
 function nextIsoDate(day: string): string {

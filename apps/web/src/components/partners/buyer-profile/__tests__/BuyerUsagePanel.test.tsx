@@ -11,6 +11,7 @@ import { BuyerUsagePanel, type BuyerUsage } from '../BuyerUsagePanel'
 import type { CapsValue } from '../CapsGrid'
 
 const usage: BuyerUsage = {
+  sold_on: 'offer',
   et_day: '2027-09-20',
   hour_bucket: 505_935,
   hour: { leads: 7, spend_cents: 15_330 },
@@ -55,6 +56,9 @@ describe('BuyerUsagePanel', () => {
     expect(screen.getByText(/Main Flow also sells to Tripoint\. Those 3 sales today are not counted here\./)).toBeInTheDocument()
     rerender(<BuyerUsagePanel usage={usage} error={null} caps={caps} otherSellers={[]} partnerName="Tripoint" />)
     expect(screen.queryByText(/also sells to/)).toBeNull()
+    // Two sellers take the plural (#1557).
+    rerender(<BuyerUsagePanel usage={usage} error={null} caps={caps} otherSellers={[{ id: 'wf', name: 'Main Flow' }, { id: 'le', name: 'Lead Economy' }]} partnerName="Tripoint" />)
+    expect(screen.getByText(/Main Flow and Lead Economy also sell to Tripoint\./)).toBeInTheDocument()
   })
 
   it('an unreadable ledger is its own state with no numbers, and an unmeasured count is named', () => {

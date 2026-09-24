@@ -21,7 +21,7 @@ describe('similar fallback placement', () => {
   it('keeps the placements the suggester shipped with', () => {
     expect([...SIMILAR_FALLBACK_STABLE].sort()).toEqual(['branch', 'constants', 'exit', 'filter', 'parallel', 'parallel_end', 'response', 'transform'])
     expect([...SIMILAR_FALLBACK_BY_SUBTYPE]).toEqual(['salesforce'])
-    expect(Object.keys(SIMILAR_FALLBACK_EXCLUDED).sort()).toEqual(['achieve_offers', 'bid_group', 'branch_end', 'buyer_click_send', 'buyer_select', 'code', 'data_store', 'latency_gate', 'partner_bid', 'webhook'])
+    expect(Object.keys(SIMILAR_FALLBACK_EXCLUDED).sort()).toEqual(['achieve_offers', 'bid_group', 'branch_end', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'code', 'data_store', 'latency_gate', 'partner_bid', 'webhook'])
   })
 
   it('qualifies a stable type, a subtyped type only with its subtype, and nothing excluded or unknown', () => {

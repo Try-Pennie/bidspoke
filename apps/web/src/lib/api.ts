@@ -787,7 +787,7 @@ export const api = {
     delete: (id: string) =>
       req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
-      req<{ count: number; date: string }>(`/api/partners/${id}/cap-count`),
+      req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
   },
 
   // The buyer profile routes (#1412). A refused save throws an Error carrying
@@ -800,16 +800,21 @@ export const api = {
       req<{ profile: BuyerProfileDocument }>(`/api/partners/${partnerId}/buyer-profile`, { method: 'PUT', body: JSON.stringify(body) }),
     history: (partnerId: string) =>
       req<{ entries: Array<{ changed_at: string; changed_by: string | null; action: string; changes: Record<string, { old: unknown; new: unknown }> | null }> }>(`/api/partners/${partnerId}/buyer-profile/history`),
+    // An offer buyer's ledger counts, or a click buyer's clicks today (#1543), told apart by sold_on.
     usage: (partnerId: string) =>
-      req<{
-        et_day: string
-        hour_bucket: number
-        hour: { leads: number; spend_cents: number }
-        day: { leads: number; spend_cents: number; by_status: Record<string, number> }
-        counted_populations: string[]
-        outside_wins_today: number | null
-        unmeasured: string[]
-      }>(`/api/partners/${partnerId}/buyer-usage`),
+      req<
+        | {
+            sold_on: 'offer'
+            et_day: string
+            hour_bucket: number
+            hour: { leads: number; spend_cents: number }
+            day: { leads: number; spend_cents: number; by_status: Record<string, number> }
+            counted_populations: string[]
+            outside_wins_today: number | null
+            unmeasured: string[]
+          }
+        | { sold_on: 'click'; count: number; date: string; day_zone: string }
+      >(`/api/partners/${partnerId}/buyer-usage`),
   },
 
   buyerSales: {

@@ -41,6 +41,7 @@ const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
   achieve_offers: STANDARD_NODE_H,
   buyer_select:   STANDARD_NODE_H,
   buyer_click_send: STANDARD_NODE_H,
+  buyer_click_check: STANDARD_NODE_H,
   default:        STANDARD_NODE_H,
 }
 
@@ -198,6 +199,7 @@ export function configuredHandleIds(node: Node): string[] | null {
   if (type === 'bid_group') return ['winner', 'no_winner']
   if (type === 'buyer_select') return ['sold', 'no_sale', 'not_applicable', 'deferred']
   if (type === 'buyer_click_send') return [...(NODE_TRAITS.buyer_click_send.staticHandles ?? [])]
+  if (type === 'buyer_click_check') return [...(NODE_TRAITS.buyer_click_check.staticHandles ?? [])]
   if (type === 'latency_gate') {
     const op = (config?.operation as string | undefined) ?? 'mark'
     return op === 'check' ? ['within', 'exceeded'] : null
@@ -233,6 +235,10 @@ function handleSortIndex(
   }
   if (nodeType === 'buyer_click_send') {
     const idx = (NODE_TRAITS.buyer_click_send.staticHandles ?? []).indexOf(handleId)
+    return idx >= 0 ? idx : 999
+  }
+  if (nodeType === 'buyer_click_check') {
+    const idx = (NODE_TRAITS.buyer_click_check.staticHandles ?? []).indexOf(handleId)
     return idx >= 0 ? idx : 999
   }
   if (nodeType === 'latency_gate') {

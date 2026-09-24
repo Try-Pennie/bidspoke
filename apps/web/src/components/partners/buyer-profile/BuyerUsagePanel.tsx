@@ -8,9 +8,10 @@
  * with no numbers (L633).
  */
 import type { CapsValue } from './CapsGrid'
-import { formatCents, formatWhole } from './labels'
+import { alsoSellTo, CAP_NEAR_SHARE, formatCents, formatWhole } from './labels'
 
 export interface BuyerUsage {
+  sold_on: 'offer'
   et_day: string
   hour_bucket: number
   hour: { leads: number; spend_cents: number }
@@ -19,8 +20,6 @@ export interface BuyerUsage {
   outside_wins_today: number | null
   unmeasured: string[]
 }
-
-const NEAR = 0.8
 
 function line(count: string, cap: string | null, period: string): string {
   return cap === null ? `${count} ${period}, no cap` : `${count} of ${cap} ${period}`
@@ -39,16 +38,16 @@ export function BuyerUsagePanel({ usage, error, caps, otherSellers, partnerName 
   const s = usage.day.by_status
   const inFlight = s.reserved ?? 0
   const near =
-    (caps.daily_lead_cap !== null && usage.day.leads >= caps.daily_lead_cap * NEAR) ||
-    (caps.hourly_lead_cap !== null && usage.hour.leads >= caps.hourly_lead_cap * NEAR) ||
-    (caps.daily_spend_cap_cents !== null && usage.day.spend_cents >= caps.daily_spend_cap_cents * NEAR) ||
-    (caps.hourly_spend_cap_cents !== null && usage.hour.spend_cents >= caps.hourly_spend_cap_cents * NEAR)
-  const sellers = otherSellers.map((w) => w.name).join(' and ')
+    (caps.daily_lead_cap !== null && usage.day.leads >= caps.daily_lead_cap * CAP_NEAR_SHARE) ||
+    (caps.hourly_lead_cap !== null && usage.hour.leads >= caps.hourly_lead_cap * CAP_NEAR_SHARE) ||
+    (caps.daily_spend_cap_cents !== null && usage.day.spend_cents >= caps.daily_spend_cap_cents * CAP_NEAR_SHARE) ||
+    (caps.hourly_spend_cap_cents !== null && usage.hour.spend_cents >= caps.hourly_spend_cap_cents * CAP_NEAR_SHARE)
+  const sellers = alsoSellTo(otherSellers, partnerName)
   const outsideSentence = otherSellers.length === 0
     ? null
     : usage.unmeasured.includes('outside_wins_today') || usage.outside_wins_today === null
-      ? `${sellers} also sells to ${partnerName}. Today's count of those sales could not be read.`
-      : `${sellers} also sells to ${partnerName}. Those ${usage.outside_wins_today} sales today are not counted here.`
+      ? `${sellers}. Today's count of those sales could not be read.`
+      : `${sellers}. Those ${usage.outside_wins_today} sales today are not counted here.`
 
   return (
     <div className="space-y-2 text-sm text-graphite">

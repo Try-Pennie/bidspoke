@@ -13,6 +13,7 @@ vi.mock('../supabase/client', () => ({
 }))
 
 import { api } from '../api'
+import { errorSentence } from '../error-sentence'
 
 function mockResponse(status: number, body: string) {
   return vi.fn().mockResolvedValue({
@@ -89,5 +90,23 @@ describe('req() spells out folder contents on a 409 "folder not empty" (#479)', 
   it('falls back to the bare message when no counts are present', async () => {
     vi.stubGlobal('fetch', mockResponse(409, JSON.stringify({ error: 'folder not empty' })))
     await expect(api.folders.delete('f3')).rejects.toThrow(/^folder not empty$/)
+  })
+})
+
+// #1557: a route that answers a machine code in `error` and a sentence in
+// `message` reached the page as the code ("click_count_unavailable"), because
+// req() puts `error` in the message. errorSentence reads the sentence.
+describe('errorSentence', () => {
+  it('reads the body sentence from what req() really throws, not the code in its message', async () => {
+    vi.stubGlobal('fetch', mockResponse(503, JSON.stringify({ error: 'click_count_unavailable', message: 'The click counter did not answer, so the clicks today cannot be shown.' })))
+    const err = await api.buyerProfiles.usage('p1').catch((e: unknown) => e)
+    expect((err as Error).message).toBe('click_count_unavailable')
+    expect(errorSentence(err, 'fallback')).toBe('The click counter did not answer, so the clicks today cannot be shown.')
+  })
+
+  it('falls back to the error message when the body holds no sentence, and to the fallback for a non Error', () => {
+    expect(errorSentence(Object.assign(new Error('Workflow has a loop'), { body: { error: 'Workflow has a loop' } }), 'fallback')).toBe('Workflow has a loop')
+    expect(errorSentence('nope', 'The usage counts could not be read.')).toBe('The usage counts could not be read.')
+    expect(errorSentence(new Error(''), 'fallback')).toBe('fallback')
   })
 })

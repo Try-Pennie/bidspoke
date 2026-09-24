@@ -8,7 +8,7 @@
  * anything else is an ObjectCallError naming the call and the status, so no
  * failure can read as an answer (L11).
  */
-import { PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
+import { isPartnerId, PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
 import type { AddMemberResult, MembersResult } from '../durable-objects/daily-cap'
 import type {
   CapLimits,
@@ -136,12 +136,8 @@ export interface ClickClaimKey {
   prospect_id: string
 }
 
-const PARTNER_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** True when the value has the shape of a partner_configs id (a uuid), which a slug never does. */
-export function isPartnerId(value: unknown): value is string {
-  return typeof value === 'string' && PARTNER_ID_SHAPE.test(value)
-}
+/** The one partner id rule, shared with save validation through the package (#1543). */
+export { isPartnerId }
 
 /**
  * Refuses to name a click object by anything but a partner id (#1553): a slug
@@ -238,6 +234,14 @@ export class ClickCounterClient {
 
   members(): Promise<MembersResult> {
     return call<MembersResult>(this.stub, 'click counter members', 'http://do/members', undefined, this.opts)
+  }
+
+  /** The day's distinct count, a pure read that adds nothing (#1543). An unreadable answer throws, never reads as zero. */
+  async memberCount(): Promise<number> {
+    const r = await call<unknown>(this.stub, 'click counter count', 'http://do/member-count', undefined, this.opts)
+    const count = (r as { count?: unknown } | null)?.count
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) throw new Error(`click counter count answered an unreadable body: ${JSON.stringify(r)}`)
+    return count
   }
 }
 

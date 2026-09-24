@@ -68,13 +68,15 @@ describe('Partner routes — DB error => 5xx, not 404 (#320)', () => {
     expect(res.status).toBe(500)
   })})
 
-// #1541: the cap-count route reads the Partner Bid node's daily cap object. A
-// click sold buyer is never counted there, so its zero would read as no clicks
-// today; it is refused by name until the click counter (#1542) is wired here.
+// #1541, #1543: the cap-count route reads the Partner Bid node's daily cap
+// object. A click sold buyer is never counted there, so its zero would read as
+// no clicks today; it answers with the click counter's distinct count instead.
 describe('GET /partners/:id/cap-count for a click sold buyer', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
-  const stubFetch = vi.fn(async () => new Response(JSON.stringify({ count: 7 })))
-  const capEnv = { ...testEnv, DAILY_CAP: { idFromName: (n: string) => n, get: () => ({ fetch: stubFetch }) } } as unknown as Env
+  const CLICK_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
+  const stubFetch = vi.fn(async (url: string) => new Response(JSON.stringify({ count: new URL(url).pathname === '/member-count' ? 23 : 7 })))
+  const names: string[] = []
+  const capEnv = { ...testEnv, DAILY_CAP: { idFromName: (n: string) => { names.push(n); return n }, get: () => ({ fetch: stubFetch }) } } as unknown as Env
 
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -85,14 +87,26 @@ describe('GET /partners/:id/cap-count for a click sold buyer', () => {
     app = await makeApp()
   })
 
-  const get = () => app.request('/partners/p-1/cap-count', { method: 'GET', headers: { Authorization: 'Bearer tok' } }, capEnv, mockCtx)
+  const get = (id = 'p-1') => app.request(`/partners/${id}/cap-count`, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, capEnv, mockCtx)
 
-  it('is 409 sold_on_click and never reads the daily cap object', async () => {
+  it('answers the click counter\'s count on the Pacific day and never reads the daily cap object', async () => {
+    names.length = 0
     vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
-    const res = await get()
-    expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ error: 'sold_on_click' })
-    expect(stubFetch).not.toHaveBeenCalled()
+    const res = await get(CLICK_ID)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { count: number; date: string; sold_on: string; day_zone: string }
+    expect(body).toMatchObject({ sold_on: 'click', count: 23, day_zone: 'America/Los_Angeles' })
+    expect(names).toEqual([`clicks-${CLICK_ID}-${body.date}`])
+    expect(stubFetch.mock.calls.map(([u]) => new URL(u).pathname)).toEqual(['/member-count'])
+  })
+
+  it('a click counter that fails is 503, never a zero', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+    stubFetch.mockImplementationOnce(async () => new Response('boom', { status: 500 }))
+    const res = await get(CLICK_ID)
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ error: 'click_count_unavailable' })
   })
 
   it('an offer buyer, or a partner with no profile, still gets the daily cap count', async () => {

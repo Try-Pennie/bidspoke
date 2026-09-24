@@ -1,3 +1,4 @@
+import { isCap } from './click-send'
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
 import type { PricingTier } from './tiers'
@@ -105,10 +106,10 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     err('debt_min_above_max', 'debtMin', 'The debt minimum is above the debt maximum.')
   }
 
-  checkCap(profile.hourlyLeadCap, 'hourlyLeadCap', 'Hourly lead cap', true, err)
-  checkCap(profile.dailyLeadCap, 'dailyLeadCap', 'Daily lead cap', true, err)
-  checkCap(profile.hourlySpendCapCents, 'hourlySpendCapCents', 'Hourly spend cap', true, err)
-  checkCap(profile.dailySpendCapCents, 'dailySpendCapCents', 'Daily spend cap', true, err)
+  checkCap(profile.hourlyLeadCap, 'hourlyLeadCap', 'Hourly lead cap', err)
+  checkCap(profile.dailyLeadCap, 'dailyLeadCap', 'Daily lead cap', err)
+  checkCap(profile.hourlySpendCapCents, 'hourlySpendCapCents', 'Hourly spend cap', err)
+  checkCap(profile.dailySpendCapCents, 'dailySpendCapCents', 'Daily spend cap', err)
   if (profile.hourlyLeadCap !== null && profile.dailyLeadCap !== null && profile.hourlyLeadCap > profile.dailyLeadCap) {
     err('hourly_cap_above_daily', 'hourlyLeadCap', 'The hourly lead cap is above the daily lead cap.')
   }
@@ -152,9 +153,11 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     if (!click && partner.acceptSignals.length === 0) {
       err('enabled_without_accept_rules', 'acceptSignals', 'Add at least one accept rule on the partner before enabling. Without one no sale can be recorded as accepted.')
     }
-    // The click cap is the only thing that stops the buyer being offered all day.
+    // buyer_click_check offers a click buyer only while today's clicks are under
+    // this cap, and never when there is none (#1557), so an enabled click buyer
+    // without one would be switched on and never offered.
     if (click && profile.dailyLeadCap === null) {
-      err('enabled_without_daily_cap', 'dailyLeadCap', 'Set the clicks per day before enabling. Without it the buyer is offered every eligible lead.')
+      err('enabled_without_daily_cap', 'dailyLeadCap', 'Set the clicks per day before enabling. Without it the buyer is never offered.')
     }
     // The scripts that answer Engine and patch the prospect read both from the
     // winner (#1416); a buyer enabled without them sells leads that land nowhere.
@@ -176,11 +179,10 @@ function checkBound(value: number | null, path: string, label: string, err: Err)
   if (!Number.isFinite(value) || value <= 0) err('bound_invalid', path, `${label} must be above zero.`)
 }
 
-function checkCap(value: number | null, path: string, label: string, integer: boolean, err: Err): void {
+/** Every cap is read through isCap, the rule both click nodes judge a stored cap by (#1557). */
+function checkCap(value: number | null, path: string, label: string, err: Err): void {
   if (value === null) return
-  if (!Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
-    err('cap_invalid', path, `${label} must be a whole number above zero.`)
-  }
+  if (!isCap(value)) err('cap_invalid', path, `${label} must be a whole number above zero.`)
 }
 
 function checkWindows(profile: BuyerProfile, err: Err): void {

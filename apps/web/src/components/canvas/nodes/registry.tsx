@@ -21,6 +21,7 @@ import { LatencyGateNode } from './LatencyGateNode'
 import { AchieveOffersNode } from './AchieveOffersNode'
 import { BuyerSelectNode } from './BuyerSelectNode'
 import { BuyerClickSendNode } from './BuyerClickSendNode'
+import { BuyerClickCheckNode } from './BuyerClickCheckNode'
 import { RegionNode } from './RegionNode'
 import { withNodeBadges } from './withNodeBadges'
 
@@ -61,6 +62,7 @@ const baseNodeTypesInternal = {
   achieve_offers: AchieveOffersNode,
   buyer_select: BuyerSelectNode,
   buyer_click_send: BuyerClickSendNode,
+  buyer_click_check: BuyerClickCheckNode,
   region: RegionNode,
   // `satisfies` over every NodeType plus the two canvas only entries (#1411):
   // a type added to @bidspoke/node-types with no card here is a compile error,

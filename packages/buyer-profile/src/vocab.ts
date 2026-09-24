@@ -116,6 +116,15 @@ export const OUT_REASONS = [
   // because the reason field is what every count is grouped on (L11).
   'object_deadline',
   'breaker_unreadable',
+  // #1557: buyer_click_check's own outcomes. A buyer picked on the node whose
+  // profile is sold on the offer, a click buyer with no clicks per day, a click
+  // buyer at its cap (counted in clicks, not leads), and profiles served only
+  // from a last good copy too old to offer on. None is folded into
+  // cap_check_error, which reads as an outage.
+  'partner_not_click',
+  'no_daily_cap',
+  'daily_click_cap',
+  'profile_copy_stale',
 ] as const
 export type OutReason = (typeof OUT_REASONS)[number]
 
@@ -147,6 +156,10 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   not_reached: 'An earlier buyer took the lead',
   object_deadline: 'An internal call did not answer in time, so the buyer was not called',
   breaker_unreadable: 'Circuit breaker could not be read, so the buyer was skipped',
+  partner_not_click: 'Buyer is sold on the offer, not the click',
+  no_daily_cap: 'No clicks per day set',
+  daily_click_cap: 'Daily click cap reached',
+  profile_copy_stale: 'Only an old copy of the buyer profiles could be read, so the buyer was not offered',
 }
 
 /**

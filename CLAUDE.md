@@ -36,8 +36,11 @@
     ladder in `bid-resolver.ts` is adapted into it), the Eastern clock, the
     eligibility evaluator and ranking, the sale outcome rules (the classifier's
     signal matching lives here and is imported back), the profile validator, the
-    sale payload builder, the deadline wrapper, and the buyer_click_send over cap
-    percent rule that its executor and save validation share (#1553). `fixtures/tripoint/` holds the
+    sale payload builder, the deadline wrapper, and the two click node rules that
+    their executors and save validation share: the buyer_click_send over cap
+    percent (#1553), the partner id rule both click nodes store their buyer by (#1543),
+    and the one cap predicate `isCap` that save validation and both click nodes judge
+    a cap by, with buyer_click_check's budget and last good copy bound (#1557). `fixtures/tripoint/` holds the
     redacted response shapes captured from production on 2026-09-21.
   - `packages/node-types`: the one list of node types a saved definition can carry
     (`NODE_TYPES`, `NodeType`), the traits each has (`NODE_TRAITS`: network,

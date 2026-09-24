@@ -30,6 +30,7 @@ export const NODE_TYPES = [
   'achieve_offers',
   'buyer_select',
   'buyer_click_send',
+  'buyer_click_check',
 ] as const
 
 export type NodeType = (typeof NODE_TYPES)[number]
@@ -115,6 +116,20 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     referencesPartners: true,
     staticHandles: ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'],
     executorFile: 'buyer-click-send',
+  }),
+  // Decides on Engine's response path whether a click sold buyer may be offered
+  // this lead (#1543): the buyer profile's box, judged when the node runs, then
+  // today's distinct click count against the profile's daily cap. Its reads are
+  // a KV or database load and one Durable Object round trip, so it takes the
+  // dispatch floor, not the network one. Walker only, like buyer_click_send, so
+  // its own 300 ms budget is the only bound and no retry loop repeats it. It
+  // names its partner by id in `partner_id`.
+  buyer_click_check: inMemory({
+    dispatchOrDb: true,
+    walkGraphOnly: true,
+    referencesPartners: true,
+    staticHandles: ['eligible', 'not_eligible'],
+    executorFile: 'buyer-click-check',
   }),
 }
 

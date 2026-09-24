@@ -34,6 +34,7 @@ For the JSON shape of a node and how edges route between them, see the [workflow
 | [Latency Gate](latency-gate.md) | `latency_gate` | Mark and check a partner match-latency window. | `within` / `exceeded` |
 | [Achieve Offers](achieve-offers.md) | `achieve_offers` | Send the lead to Achieve (FDR) and log the offers returned; collect-only. | single next |
 | [Buyer Select](buyer-select.md) | `buyer_select` | Sell a sell off lead to the highest ranked eligible buyer, from buyer profiles rather than a script. | `sold` / `no_sale` / `not_applicable` / `deferred` |
+| [Buyer Click Check](buyer-click-check.md) | `buyer_click_check` | Decide on Engine's response path whether a click sold buyer may be offered this lead, against its profile and today's clicks. | `eligible` / `not_eligible` |
 | [Buyer Click Send](buyer-click-send.md) | `buyer_click_send` | Send a clicked prospect to a click sold buyer once, and count it once, in one step. | `sent` / `refused` / `unknown` / `already_sent` / `in_progress` / `needs_review` / `not_sent` |
 
 The [Bid Group](bid-group.md) node is the primary, first-class way to run a parallel auction across partners: it is one canvas node that fans out to the partners internally. [Partner Bid](partner-bid.md) is the lower-level building block (a single partner attempt) used in hand-built or imported flows. The default node palette surfaces Bid Group; Partner Bid is available as a node type in definitions even though it is not a separate palette entry.

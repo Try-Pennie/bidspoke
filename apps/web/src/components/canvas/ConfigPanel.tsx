@@ -19,7 +19,8 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
-import { DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -422,6 +423,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'buyer_select' && <BuyerSelectConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'buyer_click_send' && <BuyerClickSendConfig key={node.id} config={data.config} onChange={updateConfig} />}
+        {type === 'buyer_click_check' && <BuyerClickCheckConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -1743,25 +1745,20 @@ function BuyerSelectConfig({
 }
 
 /**
- * The Buyer Click Send form (#1542). The partner is picked from the buyer
- * partners by name and stored by its id (L611, #1553), because the node keys its
- * claims and its click count on the id and a slug can be renamed. A stored id
- * the list does not hold stays shown and selected rather than being replaced by
- * the first option (L652), and a list that cannot load says so (L10).
+ * The click buyer picker both click nodes use (#1542, #1543, L613). The partner is
+ * picked from the buyer partners by name and stored by its id (L611, #1553),
+ * because the nodes key their claims and click counts on the id and a slug can be
+ * renamed. A stored id the list does not hold stays shown and selected rather
+ * than being replaced by the first option (L652), and a list that cannot load
+ * says so (L10). Whether the buyer is sold on the click lives on its profile,
+ * which the executors refuse by name when it is not.
  */
-function BuyerClickSendConfig({
-  config,
-  onChange,
-}: {
-  config: Record<string, unknown>
-  onChange: (patch: Record<string, unknown>) => void
-}) {
+function ClickBuyerPartnerField({ partnerId, onChange }: { partnerId: string; onChange: (partnerId: string | undefined) => void }) {
   const [partners, setPartners] = useState<Partner[] | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   useEffect(() => {
     api.partners.list().then(setPartners).catch(() => setLoadFailed(true))
   }, [])
-  const partnerId = typeof config.partner_id === 'string' ? config.partner_id : ''
   const buyers = (partners ?? []).filter((p) => isBuyerPartner(p.partner_type))
   // A stored id stays an option until the list proves it is a buyer, and while the list is
   // loading or failed to load, so the picker never shows "Choose" over a real value and the
@@ -1774,23 +1771,35 @@ function BuyerClickSendConfig({
       : storedPartner
         ? `${storedPartner.name} (not a buyer partner)`
         : `${partnerId} (no such partner)`
+  return (
+    <Field label="Partner">
+      <select className="select" aria-label="Partner" value={partnerId} onChange={(e) => onChange(e.target.value || undefined)}>
+        <option value="">Choose a buyer partner</option>
+        {storedUnlisted && <option value={partnerId}>{storedLabel}</option>}
+        {buyers.map((p) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
+      {loadFailed && <p className="mt-1 text-xs text-red-700">Partners could not be loaded. Reopen this step to try again.</p>}
+    </Field>
+  )
+}
+
+/** The Buyer Click Send form (#1542). */
+function BuyerClickSendConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const partnerId = typeof config.partner_id === 'string' ? config.partner_id : ''
   const text = (key: string) => (config[key] as string | undefined) ?? ''
-  const cap = config.daily_lead_cap
-  const capText = typeof cap === 'number' ? String(cap) : typeof cap === 'string' ? cap : ''
   const percent = (config.alert_over_percent as number | undefined) ?? DEFAULT_ALERT_OVER_PERCENT
 
   return (
     <section className="space-y-4">
-      <Field label="Partner">
-        <select className="select" aria-label="Partner" value={partnerId} onChange={(e) => onChange({ partner_id: e.target.value || undefined })}>
-          <option value="">Choose a buyer partner</option>
-          {storedUnlisted && <option value={partnerId}>{storedLabel}</option>}
-          {buyers.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-        {loadFailed && <p className="mt-1 text-xs text-red-700">Partners could not be loaded. Reopen this step to try again.</p>}
-      </Field>
+      <ClickBuyerPartnerField partnerId={partnerId} onChange={(id) => onChange({ partner_id: id })} />
 
       <Field label="Prospect id" hint="A prospect clicked twice is sent to this buyer once: this is the key that holds it.">
         <input className="input" placeholder="{{steps.resolve_prospect.output.prospect_id}}" value={text('prospect_id')} onChange={(e) => onChange({ prospect_id: e.target.value || undefined })} />
@@ -1808,21 +1817,63 @@ function BuyerClickSendConfig({
         <input className="input font-mono" placeholder="Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)" value={text('success_pattern')} onChange={(e) => onChange({ success_pattern: e.target.value || undefined })} />
       </Field>
 
-      <Field label="Daily lead cap" hint="The buyer's clicks per Pacific day. Offers stop at it; the Slack notice below fires when clicks already offered carry the count past it.">
-        <input
-          className="input"
-          placeholder="50"
-          value={capText}
-          onChange={(e) => {
-            const v = e.target.value.trim()
-            onChange({ daily_lead_cap: v === '' ? undefined : /^\d+$/.test(v) ? Number(v) : e.target.value })
-          }}
-        />
-      </Field>
-
-      <Field label="Notify at percent of the cap">
+      {/* No cap here (#1543, L83): offering stops at the profile's cap, and the notice reads the same number. */}
+      <Field label="Notify at percent of the cap" hint="The Slack notice fires once a Pacific day when clicks already offered carry the count past it.">
         <input type="number" className="input" min={1} max={1000} value={percent} onChange={(e) => onChange({ alert_over_percent: e.target.value === '' ? undefined : Number(e.target.value) })} />
       </Field>
+    </section>
+  )
+}
+
+/**
+ * The Buyer Click Check form (#1543): the buyer, the lead's three fields as
+ * templates, and the lead source it runs on, picked from the one vocabulary
+ * (L611). The rules themselves live on the buyer profile.
+ */
+function BuyerClickCheckConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const partnerId = typeof config.partner_id === 'string' ? config.partner_id : ''
+  const text = (key: string) => (config[key] as string | undefined) ?? ''
+  const population = typeof config.population === 'string' ? config.population : ''
+  // A stored value the vocabulary does not hold stays shown and selected as its own
+  // option, as ClickBuyerPartnerField does for a partner, so a save cannot quietly
+  // swap it for the first population (L652, #1557).
+  const storedUnknown = population !== '' && !(POPULATIONS as readonly string[]).includes(population)
+
+  return (
+    <section className="space-y-4">
+      <ClickBuyerPartnerField partnerId={partnerId} onChange={(id) => onChange({ partner_id: id })} />
+
+      <Field label="Population">
+        <select className="select" aria-label="Population" value={population} onChange={(e) => onChange({ population: e.target.value || undefined })}>
+          {population === '' && <option value="">Choose a population</option>}
+          {storedUnknown && <option value={population}>{population} (not a population Bidspoke knows)</option>}
+          {POPULATIONS.map((p) => (
+            <option key={p} value={p}>{POPULATION_LABELS[p]}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="State">
+        <input className="input" aria-label="State" placeholder="{{trigger.payload.state}}" value={text('state')} onChange={(e) => onChange({ state: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Debt">
+        <input className="input" aria-label="Debt" placeholder="{{steps.trades.output.tradeCalculations.engineDebt}}" value={text('debt')} onChange={(e) => onChange({ debt: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Loan amount">
+        <input className="input" aria-label="Loan amount" placeholder="{{trigger.payload.loanInformation.loanAmount}}" value={text('loan_amount')} onChange={(e) => onChange({ loan_amount: e.target.value || undefined })} />
+      </Field>
+
+      <p className="text-xs text-gray-600">
+        Judged when this step runs, against the buyer profile and today&apos;s clicks, within {CLICK_CHECK_BUDGET_MS} ms. A check that cannot finish routes not eligible, so the buyer is never offered on a guess.
+      </p>
     </section>
   )
 }

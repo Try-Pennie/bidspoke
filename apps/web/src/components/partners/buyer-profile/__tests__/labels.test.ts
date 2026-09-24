@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { SOLD_ON } from '@bidspoke/buyer-profile'
-import { describeProfileErrors, formatProfileValue, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS } from '../labels'
+import { alsoSellTo, describeProfileErrors, formatProfileValue, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS } from '../labels'
 
 describe('profileErrorLabel', () => {
   it('maps every path the shared validator can emit to the words on the form', () => {
@@ -58,6 +58,14 @@ describe('the sold_on vocabulary on screen (#1541)', () => {
     expect(profileFieldLabel('sold_on')).toBe('Sold on')
     expect(formatProfileValue('sold_on', 'click')).toBe(SOLD_ON_LABELS.click)
     expect(formatProfileValue('sold_on', 'offer')).toBe(SOLD_ON_LABELS.offer)
+  })
+})
+
+describe('alsoSellTo (#1557): one sentence for both usage panels, grammatical for one seller or many', () => {
+  it('agrees with one seller, two, and three', () => {
+    expect(alsoSellTo([{ name: 'Main Flow' }], 'Tripoint')).toBe('Main Flow also sells to Tripoint')
+    expect(alsoSellTo([{ name: 'Main Flow' }, { name: 'Lead Economy' }], 'Tripoint')).toBe('Main Flow and Lead Economy also sell to Tripoint')
+    expect(alsoSellTo([{ name: 'A' }, { name: 'B' }, { name: 'C' }], 'Tripoint')).toBe('A, B and C also sell to Tripoint')
   })
 })
 

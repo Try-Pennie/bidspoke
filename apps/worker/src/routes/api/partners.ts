@@ -14,7 +14,7 @@ import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
-import { refuseClickSoldBuyer } from './buyer-profiles'
+import { clickCountIfClickSold } from './buyer-profiles'
 
 type Variables = AuthVariables
 
@@ -347,9 +347,9 @@ partners.get('/:id/cap-count', async (c) => {
   if (!data) return c.json({ error: 'Partner not found' }, 404)
 
   // A click sold buyer is never counted by this object (#1541): its zero would
-  // read as no clicks today. The click counter replaces it here in #1542.
-  const refused = await refuseClickSoldBuyer(c, supabase, orgId, id)
-  if (refused) return refused
+  // read as no clicks today, so it answers with the click counter instead (#1543).
+  const clickAnswer = await clickCountIfClickSold(c, supabase, orgId, id)
+  if (clickAnswer) return clickAnswer
 
   // The Eastern day, through the one derivation the Partner Bid node also uses
   // (#1410). The date comes back so the caller can say which day was counted.

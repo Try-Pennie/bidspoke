@@ -24,6 +24,7 @@ import {
   classifyClickAnswer,
   executeBuyerClickSendNode,
   type BuyerClickSendDeps,
+  type ProfileCap,
 } from '../buyer-click-send'
 import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
 
@@ -44,7 +45,6 @@ const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
     request_url: '{{steps.build.output.url}}',
     request_body: '{{steps.build.output.body}}',
     success_pattern: LIBERTY1_PATTERN,
-    daily_lead_cap: 50,
     ...over,
   },
 })
@@ -94,6 +94,8 @@ function harness(opts: {
   slug?: string
   /** Shared across runs, so a second run sees the first run's count. */
   memberSet?: Set<string>
+  /** The profile's daily cap: a number, null for a profile holding none, 'none' for no enabled profile, or a read that throws. */
+  cap?: number | null | 'none' | (() => Promise<ProfileCap>)
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
   const h: Harness = {
@@ -101,6 +103,12 @@ function harness(opts: {
     saleKeys: [], counterNames: [], resolved: [], deps: undefined as never,
   }
   h.deps = {
+    profileCap: async (partnerId) => {
+      expect(partnerId).toBe(PARTNER_ID)
+      const c = opts.cap === undefined ? 50 : opts.cap
+      if (typeof c === 'function') return c()
+      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click' }
+    },
     resolvePartner: async (partnerId) => {
       h.resolved.push(partnerId)
       const p = opts.partner === undefined ? 'liberty1' : opts.partner
@@ -243,12 +251,18 @@ describe('the over cap notice', () => {
     expect((await run(again)).output.over_cap).toBe('claimed_elsewhere')
   })
 
-  it('honours a configured percent and a templated cap', async () => {
-    const h = harness({ members: upTo(9) })
-    const c = ctx()
-    c.steps.profile = { output: { daily_lead_cap: 10 } } as never
-    const r = await run(h, node({ daily_lead_cap: '{{steps.profile.output.daily_lead_cap}}', alert_over_percent: 100 }), c)
-    expect(r.output).toMatchObject({ count: 10, over_cap: 'posted' })
+  it('honours a configured percent against the profile cap', async () => {
+    const h = harness({ members: upTo(9), cap: 10 })
+    const r = await run(h, node({ alert_over_percent: 100 }))
+    expect(r.output).toMatchObject({ count: 10, over_cap: 'posted', daily_lead_cap: 10 })
+  })
+
+  // #1543, L83: the cap has one home, the buyer profile, which buyer_click_check
+  // stops offering against. A cap still stored on the node is ignored and shown.
+  it('reads the cap from the buyer profile, never the node config, and reports a stale node value as ignored', async () => {
+    const h = harness({ members: upTo(9), cap: 10 })
+    const r = await run(h, node({ daily_lead_cap: 500, alert_over_percent: 100 }))
+    expect(r.output).toMatchObject({ count: 10, over_cap: 'posted', daily_lead_cap: 10, daily_lead_cap_ignored: 500 })
   })
 
   it('a Slack failure is logged and never fails the node', async () => {
@@ -259,11 +273,41 @@ describe('the over cap notice', () => {
     expect(h.logs.some((l) => l.event === 'buyer_click_alert_failed' && /slack is down/.test(String(l.error_message)))).toBe(true)
   })
 
-  it('an unreadable cap pages cap_unreadable and still sends', async () => {
-    const h = harness()
-    const r = await run(h, node({ daily_lead_cap: '{{steps.nowhere.output.cap}}' }))
+  it('a profile that cannot be read pages cap_unreadable and still sends: the click already happened', async () => {
+    const h = harness({ cap: async () => { throw new Error('buyer profiles read failed for org org-1: timeout') } })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', counted: true, over_cap: 'cap_unreadable', daily_lead_cap: null })
+    expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['cap_unreadable'])
+  })
+
+  it('an enabled profile holding no cap pages cap_unreadable too', async () => {
+    const h = harness({ cap: null })
+    const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable' })
     expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['cap_unreadable'])
+  })
+
+  it('a cap of zero is no readable cap (the one isCap rule), never a notice on every click (#1557)', async () => {
+    const h = harness({ cap: 0, members: upTo(3) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
+    expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
+  })
+
+  it('a profile sold on the offer is an unreadable cap: its leads cap is never judged against clicks (#1557)', async () => {
+    const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer' }), members: upTo(80) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
+    expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toMatch(/sold on the offer/)
+  })
+
+  it('no enabled profile (switched off while offers were out) is recorded as no_enabled_profile and pages nothing', async () => {
+    const h = harness({ cap: 'none', members: upTo(80) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', counted: true, over_cap: 'no_enabled_profile', daily_lead_cap: null })
+    expect(h.alerts).toEqual([])
   })
 })
 

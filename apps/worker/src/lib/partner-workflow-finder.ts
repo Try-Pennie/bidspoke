@@ -4,9 +4,13 @@
  * buyer profile route (`other_sellers`, the sellers OUTSIDE buyer selection
  * whose wins the buyer's caps do not count, L582).
  *
- * A bid_group, partner_bid or buyer_click_send node names its partner by id in
- * its config; the node types whose trait says so (NODE_TRAITS.referencesPartners)
- * are each matched below, which a test enforces. A
+ * A bid_group, partner_bid, buyer_click_send or buyer_click_check node names
+ * its partner by id in its config; the node types whose trait says so
+ * (NODE_TRAITS.referencesPartners) are each matched below, which a test
+ * enforces. The two click nodes are counted only when the caller asks
+ * (`includeClickNodes`): the rename impact route wants every reference, while
+ * `other_sellers` must leave them out, because a click buyer's own clicks are
+ * exactly what its cap counts, and a check offers rather than sells (#1543). A
  * buyer_select node names none: the decision recorded on #1411 is that a
  * workflow carrying one uses every partner holding an enabled profile priced for
  * that node's population, which the caller supplies as `pricedPartnersByPopulation`
@@ -24,8 +28,17 @@ export interface WorkflowForFinder {
 export interface FinderOptions {
   /** Count buyer_select nodes through the priced partner sets. */
   includeBuyerSelect: boolean
+  /** Count buyer_click_send and buyer_click_check nodes (#1543). Stated by every caller, never defaulted. */
+  includeClickNodes: boolean
   /** Report only active workflows. */
   liveOnly?: boolean
+  /**
+   * Count ONLY the two click nodes (#1557), for the profile save route, which
+   * refuses switching a click buyer to the offer while a live click node names
+   * it. A bid_group or partner_bid sells the partner whichever way its profile
+   * is sold, so they never block that switch. Requires includeClickNodes.
+   */
+  clickNodesOnly?: boolean
 }
 
 type DefNode = { type?: unknown; config?: Record<string, unknown> | null }
@@ -57,9 +70,10 @@ export function workflowsUsingPartner(
     for (const w of candidates) {
       const used = nodesOf(w).some((n) => {
         if (!n || !n.config) return false
+        // A click sold buyer's send (#1553) and its offer side check (#1543).
+        if (options.includeClickNodes && (n.type === 'buyer_click_send' || n.type === 'buyer_click_check') && n.config.partner_id === partnerId) return true
+        if (options.clickNodesOnly) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
-        // A click sold buyer's send (#1553): a seller in its own right, so counted whatever the caller says about buyer_select.
-        if (n.type === 'buyer_click_send' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group') {
           const ids = n.config.partner_ids
           if (Array.isArray(ids) && ids.includes(partnerId)) return true

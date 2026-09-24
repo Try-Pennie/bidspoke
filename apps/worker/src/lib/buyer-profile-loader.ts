@@ -13,9 +13,13 @@
  * that bypassed the routes. A separate last good copy with no TTL is served
  * ONLY when the read fails, never when it returns empty (L682, L214): an org
  * with no enabled buyer is a true answer, and a transient error must never be
- * cached as one. The last good copy is rewritten only when the newest
- * updated_at moves, so a hot path re-reading unchanged rows never hits KV's one
- * write a second per key.
+ * cached as one. The last good copy is rewritten when its content hash changes
+ * (every field of every enabled buyer, partner rows included, in partner id
+ * order), or when the copy held is older than BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS,
+ * so a hot path re-reading unchanged rows never hits KV's one write a second per
+ * key, and the copy's loaded_at says when its content was last confirmed. It used
+ * to be keyed on the newest updated_at over the ENABLED rows, which disabling a
+ * buyer that did not hold the newest one never moved (#1557).
  *
  * This module is the only reader of the six profile tables outside the profile
  * routes, the parity route and the mirror job; a web guard fails on any other
@@ -29,6 +33,15 @@ import type { ResponseClassificationConfig } from '../engine/error-classifier'
 export const BUYER_PROFILES_CACHE_TTL_SECONDS = 300
 /** A cache hit older than this hands a background rebuild, so steady traffic keeps the copy warm long before it expires (#1492). */
 export const BUYER_PROFILES_REFRESH_AFTER_SECONDS = 60
+/**
+ * A last good copy whose content is unchanged is still rewritten once it is
+ * older than this, so its loaded_at stays recent under traffic (#1557):
+ * buyer_click_check refuses to offer from a copy older than
+ * CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, and a copy stamped only when its content
+ * last changed would read as old however recently it was confirmed. At most one
+ * extra write per org per five minutes.
+ */
+export const BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS = 5 * 60 * 1000
 
 export interface LoadOptions {
   now?: () => number
@@ -75,8 +88,8 @@ export interface LoadedBuyer {
 export interface BuyerProfilesSnapshot {
   org_id: string
   loaded_at: string
-  /** The newest updated_at across the rows, the key the last good rewrite is gated on. */
-  updated_at_max: string | null
+  /** SHA-256 of the buyers in partner id order, the key the last good rewrite is gated on (#1557). */
+  content_hash: string
   served_from: 'database' | 'cache' | 'last_good'
   buyers: LoadedBuyer[]
 }
@@ -184,7 +197,7 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
   }
 }
 
-/** The one read of the profile tables: shape the rows, write the cache, and the last good copy when the newest updated_at moved. Throws on a failed read. */
+/** The one read of the profile tables: shape the rows, write the cache, and the last good copy when its content changed or it has aged. Throws on a failed read. */
 async function readAndCache(orgId: string, kv: KVNamespace, supabase: SupabaseClient, now: () => number): Promise<BuyerProfilesSnapshot> {
   const { data, error } = await supabase
     .from('buyer_profiles')
@@ -195,16 +208,29 @@ async function readAndCache(orgId: string, kv: KVNamespace, supabase: SupabaseCl
 
   const rows = (data ?? []) as unknown as ProfileRow[]
   const buyers = rows.map(shape)
-  const updated_at_max = buyers.reduce<string | null>((max, b) => (max === null || b.updated_at > max ? b.updated_at : max), null)
-  const snapshot: BuyerProfilesSnapshot = { org_id: orgId, loaded_at: new Date(now()).toISOString(), updated_at_max, served_from: 'database', buyers }
+  const content_hash = await contentHash(buyers)
+  const snapshot: BuyerProfilesSnapshot = { org_id: orgId, loaded_at: new Date(now()).toISOString(), content_hash, served_from: 'database', buyers }
   const serialized = JSON.stringify(snapshot)
   await kv.put(cacheKey(orgId), serialized, { expirationTtl: BUYER_PROFILES_CACHE_TTL_SECONDS })
 
   const previous = await kv.get<BuyerProfilesSnapshot>(lastGoodKey(orgId), 'json')
-  if (!previous || previous.updated_at_max !== updated_at_max) {
+  const previousAgeMs = previous ? now() - Date.parse(previous.loaded_at) : Number.POSITIVE_INFINITY
+  if (!previous || previous.content_hash !== content_hash || !(previousAgeMs <= BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS)) {
     await kv.put(lastGoodKey(orgId), serialized)
   }
   return snapshot
+}
+
+/**
+ * The whole content of the enabled buyers, in partner id order so the order the
+ * database happens to return rows in does not count as a change (L343). Every
+ * field is in it: a partner switched off changes a partner row, which no
+ * profile version or updated_at records.
+ */
+async function contentHash(buyers: readonly LoadedBuyer[]): Promise<string> {
+  const ordered = [...buyers].sort((a, b) => (a.partner.id < b.partner.id ? -1 : a.partner.id > b.partner.id ? 1 : 0))
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(ordered)))
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**

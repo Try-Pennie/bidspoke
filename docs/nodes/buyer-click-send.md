@@ -43,15 +43,16 @@ All seven handles must be wired before a live workflow saves, because the node c
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `partner_id` | string | Yes | none | The buyer's partner id, picked from the buyer partners by name. Names the claim, the counter and the page cooldowns. A value that is not a partner id (a slug, for instance) fails the step as `partner_id_invalid`. |
+| `partner_id` | string | Yes | none | The buyer's partner id, picked from the buyer partners by name. Names the claim, the counter and the page cooldowns. A value that is not a partner id (a slug, for instance) is refused when a live workflow saves, and fails the step as `partner_id_invalid` if it reaches a run. One rule decides both (`partnerIdOf` in `@bidspoke/buyer-profile`). |
 | `prospect_id` | template | Yes | none | Resolves to the prospect id: the key that stops one prospect being sent twice and counted twice. |
 | `request_url` | template | Yes | none | Resolves to the https URL the preceding code node picked. |
 | `request_body` | template | Yes | none | Resolves to the body object the preceding code node built. Sent as JSON. |
 | `success_pattern` | string | Yes | none | The buyer's success line as a regular expression with a named `id` group, matched against the WHOLE answer. There is no default, so a buyer's line can never confirm another buyer's answer. |
-| `daily_lead_cap` | number or template | Yes | none | The buyer's clicks per Pacific day. Read here only for the over cap notice; offering is capped by the offer side. |
 | `alert_over_percent` | number | No | `120` | The notice fires once the day's count reaches this percent of the cap (60 at a cap of 50). A whole number from 1 to 1000; anything else is refused when a live workflow saves, and fails the step as `alert_over_percent_invalid` if it reaches a run. One rule decides both (`alertOverPercentOf` in `@bidspoke/buyer-profile`). |
 
 `retries` is ignored and reported as `retries_ignored`: the node runs once, because a retried click is a second send.
+
+There is no cap on the node. The daily cap is the buyer profile's clicks per day, the one number [Buyer Click Check](buyer-click-check.md) stops offering at (#1543). A `daily_lead_cap` still stored on an older node is ignored and reported as `daily_lead_cap_ignored`.
 
 For Liberty1 the success line is:
 
@@ -75,8 +76,8 @@ A count that fails after a confirmed send pages `count_failed`; the route is sti
 
 The node posts to the org's Slack connection for two things:
 
-- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
-- **The over cap notice** when the count after an add reaches `daily_lead_cap * alert_over_percent / 100`, once per buyer per Pacific day.
+- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. Buyer Click Check pages through the same path as `partner_not_click`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
+- **The over cap notice** when the count after an add reaches the profile's clicks per day times `alert_over_percent / 100`, once per buyer per Pacific day. The profile is read after the click is counted, through the same profile reader the offer side uses, within 5 seconds. A profile that cannot be read, an enabled one holding no clicks per day (or a cap that is not a whole number above zero), or one sold on the offer, whose cap counts leads rather than clicks, pages `cap_unreadable`. No enabled profile at all (the buyer was switched off while offers were still out) is recorded as `no_enabled_profile` and pages nothing, because no more offers are being made.
 
 Both are decided by the alert claim object, so two clicks that page together post once. A Slack failure is logged and recorded on the step (`pages[].outcome`, `over_cap`), and never fails the node, because the click it reports on has already happened.
 
@@ -97,12 +98,13 @@ Both are decided by the alert claim object, so two clicks that page together pos
   "counted": true,
   "count_date": "2026-09-29",
   "over_cap": "not_due",
+  "daily_lead_cap": 50,
   "pages": [],
   "duration_ms": 842
 }
 ```
 
-`partner_slug` is the slug the partner had when the node ran (null when the partner could not be looked up). `status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable` or `not_counted`. The request body is never written to the step row.
+`partner_slug` is the slug the partner had when the node ran (null when the partner could not be looked up). `status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable`, `no_enabled_profile` or `not_counted`. `daily_lead_cap` is the profile cap the notice was judged against (null when it was not read). The request body is never written to the step row.
 
 ## Timing
 
@@ -110,5 +112,6 @@ The claim deadline is 40 seconds: the 20 second post, then two object calls of u
 
 ## See also
 
+- [Buyer Click Check](buyer-click-check.md), the offer side's check that decides whether this buyer may be offered a lead.
 - [Buyer Select](buyer-select.md), the offer side's sale node for a lead sold on the ping.
 - [Workflow definition schema](../concepts/workflow-definition-schema.md)

@@ -600,6 +600,18 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     // either: it is the partner's own, and a default would confirm the wrong buyer.
     return { ...base, retries: 0, alert_over_percent: DEFAULT_ALERT_OVER_PERCENT }
   }
+  if (type === 'buyer_click_check') {
+    // No retries: the walker runs it once under its own budget (#1543). The lead
+    // templates are the Engine flow's; a person picks the buyer.
+    return {
+      ...base,
+      retries: 0,
+      population: 'engine',
+      state: '{{trigger.payload.state}}',
+      debt: '',
+      loan_amount: '',
+    }
+  }
   return base
 }
 
@@ -684,6 +696,14 @@ function chooseSourceHandle(
     const w = nodeWidth('buyer_click_send', source.data)
     return nearestHandleId(
       ids.map((id, i) => ({ id, x: source.position.x + (w * (i + 0.5)) / ids.length })),
+      dropX
+    )
+  }
+
+  if (type === 'buyer_click_check') {
+    const ids = NODE_TRAITS.buyer_click_check.staticHandles ?? []
+    return nearestHandleId(
+      ids.map((id, i) => ({ id, x: source.position.x + (NODE_W * (i + 0.5)) / ids.length })),
       dropX
     )
   }

@@ -55,7 +55,7 @@ function buyer(partnerId: string, slug: string, priority: number, over: Partial<
   }
 }
 
-const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), updated_at_max: null, served_from: 'database', buyers })
+const snapshot = (...buyers: LoadedBuyer[]): BuyerProfilesSnapshot => ({ org_id: 'org-1', loaded_at: new Date(NOW).toISOString(), content_hash: 'test', served_from: 'database', buyers })
 
 const CONFIG = {
   population: 'engine',
@@ -445,13 +445,16 @@ describe('live mode', () => {
     expect(h.sales).toEqual([])
   })
 
-  // #1541: a click sold buyer is enabled and inside the box, but carries no tiers,
-  // so buyer selection sees no price for it and can never sell it or reserve for it.
-  it('an enabled click sold buyer is never sold: it is out as no_pricing_for_population and nobody reserves or calls it', async () => {
+  // #1541, #1543: a click sold buyer is sold by buyer_click_check and the click
+  // workflow, never by this node. It is left out of the considered list rather
+  // than shown as "No pricing for this lead source", which was false: it has no
+  // pricing because it is quoted at the Engine bid, and this node never offers it.
+  it('an enabled click sold buyer is never sold and never listed as considered: nobody reserves or calls it', async () => {
     const h = harness({ profiles: snapshot(buyer('p-9', 'liberty', 1, { soldOn: 'click', priority: null, tiers: [] }), buyer('p-1', 'tripoint', 2)) })
     const r = await run(h)
     expect(out(r)).toMatchObject({ _route: 'sold', sale: { partner_slug: 'tripoint' } })
-    expect(out(r).considered.find((c) => c.partner === 'liberty')).toMatchObject({ reason: 'no_pricing_for_population' })
+    expect(out(r).considered.map((c) => c.partner)).toEqual(['tripoint'])
+    expect(out(r).considered.some((c) => c.reason === 'no_pricing_for_population')).toBe(false)
     expect(h.buyerCalls.map((c) => c.slug)).toEqual(['tripoint'])
     expect(h.ledgers.get('p-9')?.calls ?? []).toEqual([])
   })

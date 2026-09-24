@@ -38,6 +38,12 @@ export const SHADOW_EXEMPT_NODES = [
   // resolver and returns it (#1411). The node that sends it (buyer-select) carries the
   // shadow guard.
   'buyer-select-payload',
+  // Read only (#1543): buyer_click_check reads the buyer profiles through the one
+  // loader and today's click count through the counter client, and decides. It
+  // claims, sends and counts nothing, so a shadow run may run it as is. (The
+  // loader may rebuild its own KV cache copy, as it does for buyer_select; that
+  // is a cache of the profile rows, not a side effect on the lead.)
+  'buyer-click-check',
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).

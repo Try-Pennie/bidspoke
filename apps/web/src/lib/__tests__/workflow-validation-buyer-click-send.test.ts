@@ -1,14 +1,15 @@
 /**
  * Save time validation for the buyer_click_send node (#1542).
  *
- * The node cannot run without a partner, a prospect id, a request url and body,
- * the partner's success line and a daily cap, so a live workflow must not save
+ * The node cannot run without a partner, a prospect id, a request url and body
+ * and the partner's success line, so a live workflow must not save
  * without them. Every one of its seven handles can be taken at run time, and
  * an unwired handle the node takes is a named step failure, so all seven must
  * be wired before a live workflow saves (L72).
  */
 import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS } from '@bidspoke/node-types'
+import { partnerIdOf } from '@bidspoke/buyer-profile'
 import { findUnwiredRequiredHandles, validateWorkflowDef } from '../workflow-validation'
 import type { EdgeDef, NodeDef, NodeType } from '@/types/workflow'
 
@@ -18,7 +19,6 @@ const COMPLETE = {
   request_url: '{{steps.build.output.url}}',
   request_body: '{{steps.build.output.body}}',
   success_pattern: 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)',
-  daily_lead_cap: 50,
 }
 
 function click(config: Record<string, unknown>): NodeDef {
@@ -28,9 +28,8 @@ const attached: EdgeDef[] = [{ id: 'e0', source: 'trigger', target: 'c1' }]
 const messages = (node: NodeDef) => validateWorkflowDef([node], attached).map((e) => e.message)
 
 describe('buyer_click_send config validation', () => {
-  it('a complete config is valid, with the cap as a number or a template', () => {
+  it('a complete config is valid with no cap on the node: the cap is the buyer profile\'s (#1543)', () => {
     expect(messages(click(COMPLETE))).toEqual([])
-    expect(messages(click({ ...COMPLETE, daily_lead_cap: '{{steps.profile.output.daily_lead_cap}}' }))).toEqual([])
   })
 
   const missing: Array<[string, Record<string, unknown>, string]> = [
@@ -42,8 +41,7 @@ describe('buyer_click_send config validation', () => {
     ['success line', { success_pattern: undefined }, 'No success line set'],
     ['success line with no id group', { success_pattern: 'Records created' }, 'The success line needs an (?<id>...) group'],
     ['success line that is not a pattern', { success_pattern: '(' }, 'The success line is not a valid pattern'],
-    ['daily cap', { daily_lead_cap: undefined }, 'No daily lead cap set'],
-    ['a zero daily cap', { daily_lead_cap: 0 }, 'No daily lead cap set'],
+    ['partner stored as a slug', { partner_id: 'liberty1' }, 'The partner is not a partner id; pick the buyer again'],
   ]
   for (const [name, patch, message] of missing) {
     it(`a missing or bad ${name} is unconfigured`, () => {
@@ -95,4 +93,22 @@ describe('buyer_click_send handles', () => {
     const errors = findUnwiredRequiredHandles([bs], [{ id: 'x', source: 'trigger', target: 'b1' }])
     expect(errors.get('b1')?.message).toBe('Outgoing handle not wired: sold, no_sale, not_applicable')
   })
+})
+
+/**
+ * The partner id rule (#1543): the executor refuses a partner_id that is not a
+ * partner_configs uuid on every run, so save validation refuses exactly the
+ * same values, through the one rule both read from the package.
+ */
+describe('buyer_click_send partner id: refused at save exactly where the executor refuses it', () => {
+  const values: unknown[] = [
+    COMPLETE.partner_id, `  ${COMPLETE.partner_id} `, COMPLETE.partner_id.toUpperCase(),
+    'liberty1', '', '   ', undefined, null, 7, `${COMPLETE.partner_id}x`,
+  ]
+  for (const value of values) {
+    it(`agrees with partnerIdOf on ${JSON.stringify(value ?? null)}`, () => {
+      const refusedAtSave = messages(click({ ...COMPLETE, partner_id: value })).some((m) => m === 'No partner selected' || m.startsWith('The partner is not a partner id'))
+      expect(refusedAtSave).toBe(!partnerIdOf(value).ok)
+    })
+  }
 })

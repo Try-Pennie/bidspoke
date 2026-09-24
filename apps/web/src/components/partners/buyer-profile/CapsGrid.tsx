@@ -52,7 +52,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null }: { valu
             <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
           ))}
         </div>
-        <p id={noteId} className="text-xs text-gray-500">An empty box is no cap. Once the clicks in a day reach it, the buyer is no longer offered that day. A day runs midnight to midnight Pacific time.</p>
+        <p id={noteId} className="text-xs text-gray-500">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. A day runs midnight to midnight Pacific time.</p>
       </div>
     )
   }

@@ -56,6 +56,9 @@ describe('out reasons', () => {
       // #1530 and #1508: an internal call that ran out of time before the buyer was
       // called, and a breaker that could not be read, each named for what happened.
       'object_deadline', 'breaker_unreadable',
+      // #1557: buyer_click_check's own outcomes, each named for what happened
+      // rather than folded into cap_check_error, which reads as an outage.
+      'partner_not_click', 'no_daily_cap', 'daily_click_cap', 'profile_copy_stale',
     ]
     expect([...OUT_REASONS].sort()).toEqual(expected.sort())
   })

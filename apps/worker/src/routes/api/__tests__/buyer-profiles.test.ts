@@ -5,7 +5,7 @@
  * save_buyer_profile, and turns each named refusal into its own status: a stale
  * version is a 409 carrying the current document (L717), never a silent overwrite.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Env } from '../../../index'
 import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 
@@ -234,6 +234,63 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
+  // #1557: a live click workflow names this buyer; switched to the offer, its
+  // check would stop offering and its send would stop judging the cap, silently.
+  describe('switching a click buyer to the offer while a live workflow names it on a click node', () => {
+    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1' } }] } }
+    const clickSendFlow = { id: 'wf-send', name: 'Liberty1 click', is_active: true, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
+    afterEach(() => { vi.mocked(readBuyerSoldOn).mockReset() })
+
+    it('is refused 409 sold_on_in_use, naming each live workflow, and nothing is saved', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [clickCheckFlow, clickSendFlow, mainFlow] } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
+      expect(res.status).toBe(409)
+      const body = await res.json() as { error: string; message: string; workflows: Array<{ id: string; name: string }> }
+      expect(body.error).toBe('sold_on_in_use')
+      // Only the click nodes block: Main Flow's bid_group sells it either way.
+      expect(body.workflows.map((w) => w.id)).toEqual(['wf-l1', 'wf-send'])
+      expect(body.message).toContain('Engine Bidding')
+      expect(body.message).toContain('Liberty1 click')
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it('an inactive workflow does not block, and neither does a bid_group alone', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const rpc = vi.fn().mockResolvedValue({ data: { ...doc, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [{ ...clickCheckFlow, is_active: false }, mainFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })).status).toBe(200)
+    })
+
+    it('an ordinary save of a click buyer that stays on the click (a new cap, say) is never blocked by its own live click workflow', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 60 }
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow, clickSendFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
+    })
+
+    it('switching TO the click is never blocked by it: that is how a click node naming an offer buyer gets fixed', async () => {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('offer')
+      const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow] } }, { rpc })
+      expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
+    })
+
+    it('a stored kind that cannot be read is 503, never a save that might break a live click workflow', async () => {
+      vi.mocked(readBuyerSoldOn).mockRejectedValue(new Error('buyer_profiles: timeout'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [] } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: doc })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'sold_on_unavailable' })
+      expect(rpc).not.toHaveBeenCalled()
+    })
+  })
+
   it('P0002 from the function is 404, and a real database error is 500', async () => {
     supabaseWith({ partner_configs: { single: partnerRow } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: 'P0002', message: 'partner_not_found' } }) })
     expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 0, profile: doc })).status).toBe(404)
@@ -286,6 +343,7 @@ describe('GET /partners/:id/buyer-usage', () => {
     const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
+      sold_on: 'offer',
       et_day: '2027-09-20',
       hour_bucket: 505_935,
       hour: { leads: 7, spend_cents: 15_330 },
@@ -313,19 +371,53 @@ describe('GET /partners/:id/buyer-usage', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ outside_wins_today: null, unmeasured: ['outside_wins_today'] })
   })
-  // #1541: a click sold buyer never reserves in the buyer ledger, so its ledger
-  // counts would read as zero sales against a cap that counts clicks. It is
-  // refused by name until the click counter (#1542) is wired here.
-  it('a click sold buyer is 409 sold_on_click with no ledger numbers, and the ledger is never asked', async () => {
-    vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
-    supabaseWith({ partner_configs: { single: partnerRow }, lead_sighting_bids: { count: 3 } })
-    const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
-    expect(res.status).toBe(409)
-    const body = await res.json() as Record<string, unknown>
-    expect(body.error).toBe('sold_on_click')
-    expect(body).not.toHaveProperty('day')
-    expect(ledgerStub.summary).not.toHaveBeenCalled()
-    expect(ledgerStub.peek).not.toHaveBeenCalled()
+  // #1541, #1543: a click sold buyer never reserves in the buyer ledger, so its
+  // ledger counts would read as zero sales against a cap that counts clicks. The
+  // route answers with today's distinct clicks from the click counter instead,
+  // the same count buyer_click_check judges the cap against, on the Pacific day.
+  describe('a click sold buyer', () => {
+    const CLICK_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
+    const counterNames: string[] = []
+    const counterPaths: string[] = []
+    let answer: () => Response = () => new Response(JSON.stringify({ count: 17 }))
+    const clickEnv = {
+      ...testEnv,
+      DAILY_CAP: {
+        idFromName: (n: string) => { counterNames.push(n); return n },
+        get: () => ({ fetch: async (url: string) => { counterPaths.push(new URL(url).pathname); return answer() } }),
+      },
+    } as unknown as Env
+    const get = () => app.request(`/partners/${CLICK_ID}/buyer-usage`, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, clickEnv, mockCtx)
+
+    beforeEach(() => {
+      counterNames.length = 0
+      counterPaths.length = 0
+      answer = () => new Response(JSON.stringify({ count: 17 }))
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      supabaseWith({ partner_configs: { single: { ...partnerRow, id: CLICK_ID, slug: 'liberty1' } }, lead_sighting_bids: { count: 3 } })
+    })
+
+    it('answers today\'s clicks from the click counter, on the Pacific day, keyed on the partner id; the ledger is never asked', async () => {
+      const res = await get()
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(body).toMatchObject({ sold_on: 'click', count: 17, day_zone: 'America/Los_Angeles' })
+      expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(counterNames).toEqual([`clicks-${CLICK_ID}-${body.date as string}`])
+      // A plain read: the count route never adds a member.
+      expect(counterPaths).toEqual(['/member-count'])
+      expect(body).not.toHaveProperty('day')
+      expect(ledgerStub.summary).not.toHaveBeenCalled()
+      expect(ledgerStub.peek).not.toHaveBeenCalled()
+    })
+
+    it('a counter that fails is 503 click_count_unavailable, never a zero (L633)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      answer = () => new Response('boom', { status: 500 })
+      const res = await get()
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'click_count_unavailable' })
+    })
   })
 
   it('a kind that cannot be read is 503, never the ledger numbers of a buyer that may be sold on the click (L10)', async () => {
