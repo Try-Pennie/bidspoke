@@ -71,11 +71,65 @@ if (engineBid === 0) {
   };
 }
 
+// A click sold buyer on a KNOWN no (#1544): when the known_no_gate node said the node
+// that decided this lead gave a known no, and the buyer_click_check node routed eligible,
+// the lead is offered to that buyer instead of rejected. The buyer is sold when the lead
+// clicks, not now. Every fact about the buyer (its slug, name, landing page and
+// Salesforce routing code) comes from the check's output, so no buyer is named here and
+// a second click buyer needs no script change. The check's click URL carries the
+// placeholder {prospect_id}, replaced by the created prospect's id.
+//
+// `click_offer` records the decision whenever the gate ran, offered or not, with the
+// reason; without the gate node on the canvas nothing here runs. A lead the deciding node
+// sold is never offered again, whatever the gate says.
+const readClickOffer = () => {
+  const gate = steps.known_no_gate?.output;
+  if (!gate) return null;
+  const check = steps.buyer_click_check?.output ?? null;
+  const decision = { known_no: gate.known_no === true, check_route: check?._route ?? null, offered: false, reason: null };
+  const refuse = (reason) => ({ decision: { ...decision, reason }, sale: null });
+  if (!decision.known_no) return refuse('not_a_known_no');
+  if (sale && sale.accepted === true) return refuse('sold_by_deciding_node');
+  if (!check) return refuse('check_not_run');
+  if (check._route !== 'eligible') return refuse(check.reason ?? 'not_eligible');
+  if (typeof check.partner_slug !== 'string' || !check.partner_slug) return refuse('check_names_no_buyer');
+  if (typeof check.click_url !== 'string' || !check.click_url) return refuse('no_click_url');
+  if (!check.click_url.includes('{prospect_id}')) return refuse('click_url_has_no_prospect_id');
+  const prospectId = steps.create_prospect?.output?.body?.id;
+  if (!prospectId) return refuse('no_prospect_id');
+  return {
+    decision: { ...decision, offered: true, reason: 'offered' },
+    sale: {
+      skipped: false,
+      accepted: true,
+      buyer_reference: null,
+      result_code: null,
+      partner_slug: check.partner_slug,
+      partner_name: check.partner_name ?? null,
+      click_url: check.click_url.split('{prospect_id}').join(String(prospectId)),
+      routing_code: check.external_routing_code ?? null,
+      response_class: null,
+      sold_on: 'click',
+    },
+  };
+};
+const clickOffer = readClickOffer();
+const clickSale = clickOffer ? clickOffer.sale : null;
+// The deciding node's own decline, kept beside the click sale so the prospect patch still
+// records Tripoint's class (#1544).
+const declinedSale = clickSale ? sale : null;
+const offerSale = clickSale ?? sale;
+const withClick = (out) => {
+  if (clickOffer) out.click_offer = clickOffer.decision;
+  if (declinedSale) out.declined_sale = declinedSale;
+  return out;
+};
+
 // A sale that was made and not accepted rejects the lead exactly as `qualified === false`
 // did before the node existed.
-const declined = sale ? (!sale.skipped && sale.accepted === false) : false;
+const declined = offerSale ? (!offerSale.skipped && offerSale.accepted === false) : false;
   if (declined) {
-    return {
+    return withClick({
       isRejected: true,
       body: {
         lead_id: payload.leadUuid,
@@ -84,7 +138,7 @@ const declined = sale ? (!sale.skipped && sale.accepted === false) : false;
       },
       reject_patch: rejectPatch('unqualified_lead', sale),
       sale,
-    };
+    });
   }
 
 const sellOff           = pt.sellOff;
@@ -105,7 +159,7 @@ const constants = steps.constants.output;
 // Tripoint's constant whether or not Tripoint had taken it. A sell off lead nobody bought
 // now takes the Pennie pages below, which is where a lead with no sale belongs.
 const getRedirectUrl = () => {
-  if (sale && sale.accepted && sale.click_url) return sale.click_url;
+  if (offerSale && offerSale.accepted && offerSale.click_url) return offerSale.click_url;
   if (expLandingPage)  return constants.pennieExpLandingPage;
   if (altLandingPage)  return constants.pennieAlternateClickUrl;
   return constants.pennieClickUrl;
@@ -143,7 +197,7 @@ if (!filteredAccountId && sellOff === false && testOfferLanguage === true) {
   offer = defaultOffer;
 }
 
-return {
+return withClick({
   isRejected: false,
   body: {
     requestId: execution.trace_id,
@@ -152,12 +206,13 @@ return {
         name:         constants.offerName,
         display_name: constants.offerName,
         rate:         engineBid,
-        click_url:    redirectUrl + `/${steps.create_prospect.output.body.id}`,
+        // A click sale's landing page already carries the prospect id (#1544).
+        click_url:    clickSale ? redirectUrl : redirectUrl + `/${steps.create_prospect.output.body.id}`,
         product_type: constants.productType,
         logo_src:     constants.logoSrc,
         ...offer,
       },
     ],
   },
-  sale,
-};
+  sale: offerSale,
+});

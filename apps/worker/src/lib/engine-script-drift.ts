@@ -34,6 +34,7 @@ import type { Env } from '../index'
 import BUILD_RESPONSE_BODY from '../engine/scripts/engine-bidding/build_response_body.js'
 import PATCH_PROSPECT_BODY from '../engine/scripts/engine-bidding/patch_prospect_body.js'
 import TRIPOINT_PING from '../engine/scripts/engine-bidding/tripoint_ping.js'
+import KNOWN_NO_GATE from '../engine/scripts/engine-bidding/known_no_gate.js'
 import RESOLVE_CLICK_INPUT from '../engine/scripts/liberty1-click/resolve_click_input.js'
 import BUILD_LIBERTY1_REQUEST from '../engine/scripts/liberty1-click/build_liberty1_request.js'
 import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_click_patch.js'
@@ -65,6 +66,16 @@ export interface KeptScript {
    */
   canvasBaselineSha256: string | null
   baselineReadOn: string | null
+  /**
+   * Set only for a script written here for a node the canvas does not have yet
+   * (#1544): the day it was written. While no code node carries the namespace,
+   * the check records awaiting_paste (a first paste not made) instead of paging
+   * missing_node. Once the node is on the canvas this changes nothing: the
+   * script is judged like any other, and with no baseline any difference is a
+   * drift. Remove it in the change after the paste, so a node deleted later
+   * pages as missing again.
+   */
+  newNodeSince?: string
 }
 
 /** One workflow whose code node scripts are kept in the repo. */
@@ -94,6 +105,11 @@ export interface KeptWorkflow {
  * the same version 100 script, so its baseline is unchanged: the edit is one
  * more paste not yet made, and the check keeps reporting awaiting_paste until
  * it lands. A baseline moves only when the CANVAS moves.
+ *
+ * build_response_body and patch_prospect_body were edited again for #1544 (the
+ * click sold buyer offered on a known Tripoint no). The mirror was re-read on
+ * 2026-09-24 for that change and all three code nodes still hash to the
+ * baselines below, so those edits too are pastes not yet made.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -116,6 +132,17 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     script: PATCH_PROSPECT_BODY,
     canvasBaselineSha256: '13d25373e7e22a26df3c9ce14e03d7a33d61cff0540a59524ae0f5d68b61e2f5',
     baselineReadOn: '2026-09-24',
+  },
+  // The known no gate (#1544) is a new code node: it was written here first, so it
+  // has no canvas baseline, and until Dan adds the node the check reads its absence
+  // as a first paste awaited rather than a missing node.
+  {
+    namespace: 'known_no_gate',
+    file: 'known_no_gate.js',
+    script: KNOWN_NO_GATE,
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
+    newNodeSince: '2026-09-24',
   },
 ]
 
@@ -143,7 +170,7 @@ export const KEPT_CANVAS_WORKFLOWS: readonly KeptWorkflow[] = [
 type VerdictBase = { workflow: string; namespace: string; file: string }
 export type ScriptVerdict =
   | (VerdictBase & { state: 'agree' })
-  | (VerdictBase & { state: 'awaiting_paste'; baselineReadOn: string })
+  | (VerdictBase & { state: 'awaiting_paste'; baselineReadOn: string; newNode?: true })
   | (VerdictBase & { state: 'drift'; line: number; kept: string | null; canvas: string | null })
   | (VerdictBase & { state: 'missing_node' })
   | (VerdictBase & { state: 'not_built' })
@@ -193,7 +220,8 @@ export async function judgeKeptScripts(kept: readonly KeptScript[], definition: 
     const base = { workflow, namespace: k.namespace, file: k.file }
     const canvas = canvasScriptFor(definition, k.namespace)
     if (canvas === null) {
-      out.push({ ...base, state: 'missing_node' })
+      if (k.newNodeSince) out.push({ ...base, state: 'awaiting_paste', baselineReadOn: k.newNodeSince, newNode: true })
+      else out.push({ ...base, state: 'missing_node' })
       continue
     }
     const keptText = withoutFinalNewline(k.script)
@@ -221,6 +249,7 @@ export function describeVerdict(v: ScriptVerdict): string {
     case 'missing_node':
       return `${v.workflow}, ${v.namespace}: the workflow has no code node with this namespace, so ${v.file} has nothing to run as.`
     case 'awaiting_paste':
+      if (v.newNode) return `${v.workflow}, ${v.namespace}: the canvas has no such node yet; ${v.file} was written for it on ${v.baselineReadOn} and awaits its first paste.`
       return `${v.workflow}, ${v.namespace}: the canvas still holds the script ${v.file} was derived from on ${v.baselineReadOn}; the paste has not happened yet.`
     case 'agree':
       return `${v.workflow}, ${v.namespace}: the canvas holds ${v.file}.`

@@ -6,7 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
-import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, type ProjectedBidAttempt } from './bid-log'
+import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, deriveClickOffer, withClickOffer, type ProjectedBidAttempt } from './bid-log'
 import { resolveValue } from './context'
 import { readEquifaxOutcome, readEquifaxReportOutput } from './nodes/achieve-credit-report'
 
@@ -111,7 +111,7 @@ export interface BidAttemptInsert {
   bid_cents?: number | null
   classification?: string | null   // 'accept' | 'decline' | 'no_bid' | 'transient' | 'permanent' | 'unknown' (a Tripoint answer nobody could read, #1540)
   decline_reason?: string | null
-  resolver_type?: string | null    // 'formula' | 'matrix' | 'api'
+  resolver_type?: string | null    // 'formula' | 'matrix' | 'api' | 'buyer_select' (#1411) | 'click', a click sold buyer offered on a known no (#1544)
   skip_reason?: string | null      // 'cap_hit' | 'circuit_open' | 'dedup' | 'inactive' | 'partner_inactive' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected'
   is_test: boolean
 }
@@ -1034,7 +1034,12 @@ export function computeSightingFinalize(
   // so the winner/bid counts work for code-node bidding flows too (#349).
   // bid_group first, then a live buyer_select sale, then the code node (Tripoint)
   // summary, so the winner flip and the bid counts work on every flow shape (#349, #1411).
-  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), extractBuyerSelectSummary(steps), deriveCodeNodeBidSummary(steps, nodes))
+  // A click sold buyer offered on a known no (#1544) is the winner when nothing else won,
+  // whichever node decided the no (tripoint_ping today, buyer_select live at Stage B).
+  const bidSummary = withClickOffer(
+    pickBidSummary(extractBidGroupSummary(steps), extractBuyerSelectSummary(steps), deriveCodeNodeBidSummary(steps, nodes)),
+    deriveClickOffer(steps, nodes),
+  )
   const enrichment = extractEnrichment(steps)
   const responseStatusCode = opts.walkStatus
 
