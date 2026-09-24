@@ -48,6 +48,7 @@ The executor reads `node.config` as:
 | `timeout_ms` | number | No | unset (wait for all) | `highest_bid` only (and tiers in highest-bid mode). Race deadline in ms. Partners that do not settle in time are recorded as failed. The underlying fetch keeps running. Each partner still has its own 15s API timeout. The main flow uses `5000` for parity with the legacy Pipedream flow. |
 | `cascade_total_timeout_ms` | number | No | `30000` | `cascade` only. Max wall-clock time to spend trying partners in order. On exceed, returns no winner with `reason: 'cascade_timeout'`. |
 | `context` | object (name to template string) | No | none | Name-to-template pairs resolved once at group entry against the current execution context, then exposed to partner formulas as `context.<name>`. Keeps partner configs workflow-agnostic. See [Context](#context). |
+| `outbound_fields` | object (wire field name to template string) | No | none | Resolved once at group entry like `context`, then added to the request body of every partner attempt in the group, on top of the partner's own outbound field mapping. See [Outbound fields](#outbound-fields). |
 
 ### Tier shape
 
@@ -64,6 +65,21 @@ Each entry in `tiers`:
 ### Context
 
 `context` is a map of name to template string, resolved once when the group starts. Each value may reference `steps.*`, `trigger.*`, or `env.*`. Partner formulas then reference the names as `context.<name>`, so the same partner formula works across workflows with different step names. Example: `{ "finalDebt": "{{steps.eligibility.output.final}}" }`, and a partner formula uses `context.finalDebt`. See [data references](../concepts/data-references.md).
+
+### Outbound fields
+
+`outbound_fields` is a map of wire field name to template string, resolved once when the group starts, exactly like `context`. Where `context` feeds the partner's price formula, `outbound_fields` feeds the partner's request: each resolved value is added to the body sent to every partner attempt in the group, after the partner's own [outbound field mapping](./partner-bid.md) has run, and a field named here wins over a same-named payload key.
+
+It exists because a partner API request is otherwise the trigger payload passed through, and the partner mapping can only rename fields that payload already has. A figure a step computed, such as the verified debt, has no other way onto the wire. Example, from the Main Flow's Bid Race:
+
+```json
+"outbound_fields": {
+  "unsecuredDebt": "{{steps.pennie_or_eligibility.output.final}}",
+  "maxUnsecuredDebt": "{{steps.pennie_debt_calculation.output.maxUnsecuredDebt}}"
+}
+```
+
+A template that resolves to nothing is sent as `null`, so the receiver sees the key rather than a missing field, and the field name is recorded on the `bid_group` step row under `unresolved_outbound_fields` with a `bid_group_outbound_field_unresolved` warning in the worker log. The full merged body of each attempt is visible in the Results panel as `outbound_body`.
 
 ## No-winner behavior
 

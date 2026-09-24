@@ -603,3 +603,71 @@ describe('api resolver: non-finite bids are rejected (#506)', () => {
     expect(result.bid_reason).toContain("bid_path 'data.bid'")
   })
 })
+
+// #1518: the Main Flow's Tripoint request was the raw form payload, which carries no
+// debt figure; 4,278 of 4,278 attempts in 7 days went out without unsecuredDebt or
+// maxUnsecuredDebt while Bidspoke priced each on context.finalDebt. The Bid Group now
+// resolves `outbound_fields` at entry onto ctx.bidGroupOutboundFields and the API
+// resolver merges them into every partner attempt's body.
+describe('api resolver: bid group outbound fields (#1518)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function okResponse() {
+    return new Response(JSON.stringify({ ok: true, data: { createLead: { id: 'L-1', resultCode: 1000 } } }), { status: 200 })
+  }
+
+  function ctxWithOutbound(payload: Record<string, unknown>, fields: Record<string, unknown> | undefined): ExecutionContext {
+    return { ...makeCtx(payload), bidGroupOutboundFields: fields }
+  }
+
+  it('POSTs the pass-through payload WITH the resolved outbound fields added', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse())
+    const partner = makePartner({ bid_resolver_type: 'api', api_endpoint: 'https://proxy.example/leads/create' })
+    const ctx = ctxWithOutbound({ personalInformation: { firstName: 'A' }, BegDebtRange: '$10,000 - $14,999' }, { unsecuredDebt: 24500, maxUnsecuredDebt: 31000 })
+
+    const result = await resolveBid(partner, ctx, env)
+
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init!.body))).toEqual({
+      personalInformation: { firstName: 'A' },
+      BegDebtRange: '$10,000 - $14,999',
+      unsecuredDebt: 24500,
+      maxUnsecuredDebt: 31000,
+    })
+    // The Results panel shows exactly what went over the wire, merged fields included.
+    expect((result.resolved_input as { outbound_body: Record<string, unknown> }).outbound_body).toMatchObject({ unsecuredDebt: 24500, maxUnsecuredDebt: 31000 })
+  })
+
+  it('merges on top of the partner outbound_field_mapping when one is set', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse())
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://proxy.example/leads/create',
+      outbound_field_mapping: { mappings: [{ source: 'debt_amount', target: 'DebtAmount' }] },
+    })
+    await resolveBid(partner, ctxWithOutbound({ debt_amount: 1000, ignored: true }, { unsecuredDebt: 24500 }), env)
+
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init!.body))).toEqual({ DebtAmount: 1000, unsecuredDebt: 24500 })
+  })
+
+  it('a field that resolved to nothing is sent as null, so the receiver sees the key', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse())
+    const partner = makePartner({ bid_resolver_type: 'api', api_endpoint: 'https://proxy.example/leads/create' })
+    await resolveBid(partner, ctxWithOutbound({ a: 1 }, { unsecuredDebt: undefined }), env)
+
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init!.body))).toEqual({ a: 1, unsecuredDebt: null })
+  })
+
+  it('without outbound fields the body is the payload exactly as before', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse())
+    const partner = makePartner({ bid_resolver_type: 'api', api_endpoint: 'https://proxy.example/leads/create' })
+    await resolveBid(partner, ctxWithOutbound({ a: 1 }, undefined), env)
+
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init!.body))).toEqual({ a: 1 })
+  })
+})
