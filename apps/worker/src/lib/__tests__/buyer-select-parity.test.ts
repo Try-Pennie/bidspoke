@@ -62,6 +62,36 @@ describe('summariseParityDay', () => {
     expect(counts.disagreement_execution_ids).not.toContain('e1')
   })
 
+  /**
+   * #1533: the Stage A exit criteria ask for a non zero count of EACH of the four
+   * cap refusals, and the budget refusals sit beside them; until now those were
+   * hand queries. Counted per considered buyer, because a cap refuses a buyer,
+   * not a lead; a node that ran out of time before it considered anyone is
+   * counted once from its own reason.
+   */
+  it('counts every refusal the node recorded, by reason, per considered buyer, and reports zero for a reason it never saw', () => {
+    const deferred = (reason: string, considered: Array<{ outcome: string; reason?: string }>) =>
+      ({ _route: 'deferred', reason, mode_effective: 'decide_only', lead_state: 'TX', considered })
+    const counts = summariseParityDay([
+      exec('e1', { node: deferred('hourly_spend_cap', [{ outcome: 'skipped', reason: 'hourly_spend_cap' }]) }),
+      exec('e2', { node: deferred('hourly_spend_cap', [{ outcome: 'skipped', reason: 'hourly_spend_cap' }]) }),
+      exec('e3', { node: deferred('daily_lead_cap', [{ outcome: 'skipped', reason: 'hourly_lead_cap' }, { outcome: 'skipped', reason: 'daily_lead_cap' }]) }),
+      exec('e4', { node: deferred('cap_check_error', [{ outcome: 'skipped', reason: 'cap_check_error' }]) }),
+      exec('e5', { node: deferred('rehearsal_deadline', [{ outcome: 'not_reached', reason: 'rehearsal_deadline' }]) }),
+      // Out of time before any buyer was considered: the node's own reason is the refusal.
+      exec('e6', { node: deferred('rehearsal_deadline', []) }),
+      // A rehearsal that went through is not a refusal, and neither is a lead not for sale.
+      exec('e7', { node: deferred('decide_only', [{ outcome: 'rehearsed' }]) }),
+      exec('e8', { node: { _route: 'not_applicable', reason: 'bid_not_positive', mode_effective: 'decide_only' }, incumbent: { skipped: true, qualified: null, resultCode: null } }),
+      // Unpaired executions still count their refusals: the refusal is the node's own fact.
+      exec('e9', { node: deferred('breaker_unreadable', [{ outcome: 'skipped', reason: 'breaker_unreadable' }]), incumbent: null }),
+    ], RULES)
+    expect(counts.refusal_counts).toEqual({
+      hourly_lead_cap: 1, daily_lead_cap: 1, hourly_spend_cap: 2, daily_spend_cap: 0,
+      rehearsal_deadline: 2, object_deadline: 0, cap_check_error: 1, breaker_unreadable: 1, circuit_open: 0,
+    })
+  })
+
   it('compares the body hashes only when both sides carry one; a missing side is unmeasured, never a match', () => {
     const counts = summariseParityDay([
       exec('e1'),
@@ -203,6 +233,7 @@ describe('runParityRefresh', () => {
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today).toMatchObject({ workflow_id: 'wf-engine', organization_id: 'org-1', sell_off_agree: 1, hash_match: 1, classification_agree: 1, window_complete: false })
     expect(today?.counts_hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(today?.refusal_counts).toMatchObject({ hourly_lead_cap: 0, daily_lead_cap: 0, hourly_spend_cap: 0, daily_spend_cap: 0 })
     expect(Object.keys(today ?? {})).not.toContain('signed_off_at')
     const yesterday = upserts.find((r) => r.et_day === '2027-09-19')
     expect(yesterday).toMatchObject({ sell_off_agree: 0, window_complete: true })
@@ -277,6 +308,8 @@ describe('countsHash', () => {
     expect(await countsHash(a)).not.toBe(await countsHash(c))
     expect(await countsHash(a)).toMatch(/^[0-9a-f]{64}$/)
     expect(await countsHash({ ...a, unmeasured: [...a.unmeasured, 'nothing that counts'] })).toBe(await countsHash(a))
+    // A refusal count is a count: moving one clears a sign off like any other (#1533).
+    expect(await countsHash({ ...a, refusal_counts: { ...a.refusal_counts, daily_lead_cap: a.refusal_counts.daily_lead_cap + 1 } })).not.toBe(await countsHash(a))
   })
 })
 

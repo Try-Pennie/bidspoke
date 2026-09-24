@@ -647,6 +647,7 @@ export type Database = {
           hash_unmeasured: number
           organization_id: string
           outcome_unknown_count: number
+          refusal_counts: Json
           rehearsal_expired_in_flight: number
           rehearsal_in_doubt_heals: number
           sell_off_agree: number
@@ -677,6 +678,7 @@ export type Database = {
           hash_unmeasured?: number
           organization_id: string
           outcome_unknown_count?: number
+          refusal_counts?: Json
           rehearsal_expired_in_flight?: number
           rehearsal_in_doubt_heals?: number
           sell_off_agree?: number
@@ -707,6 +709,7 @@ export type Database = {
           hash_unmeasured?: number
           organization_id?: string
           outcome_unknown_count?: number
+          refusal_counts?: Json
           rehearsal_expired_in_flight?: number
           rehearsal_in_doubt_heals?: number
           sell_off_agree?: number

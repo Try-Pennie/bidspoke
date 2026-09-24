@@ -21,7 +21,7 @@
  * the bottom of the file and in routes/api/buyer-select-parity.ts.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { canonicalBodySha256, easternDayStartUtc, easternParts, evaluateSaleOutcome, type Signal } from '@bidspoke/buyer-profile'
+import { canonicalBodySha256, easternDayStartUtc, easternParts, evaluateSaleOutcome, type OutReason, type Signal } from '@bidspoke/buyer-profile'
 import { RETENTION_DAYS } from '../archive/candidate-days'
 import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
@@ -49,6 +49,27 @@ export interface NodeOutputLike {
   lead_state?: string | null
   rehearsal_in_doubt_heals?: number
   rehearsal_expired_in_flight?: number
+  /** One entry per buyer the node considered, with the reason it was skipped or not reached (#1533). */
+  considered?: Array<{ outcome?: unknown; reason?: unknown }>
+}
+
+/**
+ * The reasons a buyer is refused before it is called, counted per day on the
+ * parity row (#1533): the four caps the Stage A exit criteria require a non
+ * zero count of each, and the budget and infrastructure refusals beside them.
+ * The list is the vocabulary the node writes (OUT_REASONS plus the rehearsal
+ * budget's own reason), so a count is grouped on the same word the execution
+ * view shows (L113).
+ */
+export const REFUSAL_REASONS = [
+  'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap', 'daily_spend_cap',
+  'rehearsal_deadline', 'object_deadline', 'cap_check_error', 'breaker_unreadable', 'circuit_open',
+] as const satisfies readonly (OutReason | 'rehearsal_deadline')[]
+export type RefusalReason = (typeof REFUSAL_REASONS)[number]
+const REFUSALS: ReadonlySet<string> = new Set(REFUSAL_REASONS)
+
+export function emptyRefusalCounts(): Record<RefusalReason, number> {
+  return Object.fromEntries(REFUSAL_REASONS.map((r) => [r, 0])) as Record<RefusalReason, number>
 }
 
 /** The fields of tripoint_ping's output the comparison reads (its live script, 2026-09-22). */
@@ -90,6 +111,8 @@ export interface ParityCounts {
   decide_only_latency_p50_ms: number | null
   decide_only_latency_p95_ms: number | null
   executions_unpaired: number
+  /** Buyers refused before they were called, by reason, over every execution the node ran in (#1533). */
+  refusal_counts: Record<RefusalReason, number>
   disagreement_execution_ids: string[]
   /** What this summary could not measure, by name, with a count where one applies. */
   unmeasured: string[]
@@ -118,11 +141,25 @@ export function summariseParityDay(executions: ParityExecution[], rules: ParityR
     rehearsal_in_doubt_heals: 0, rehearsal_expired_in_flight: 0,
     decide_only_latency_p50_ms: null, decide_only_latency_p95_ms: null,
     executions_unpaired: 0,
+    refusal_counts: emptyRefusalCounts(),
     disagreement_execution_ids: [],
     unmeasured: [],
   }
   const disagree = new Set<string>()
   const durations: number[] = []
+
+  // A refusal is the node's own fact, so it is counted before the pairing (#1533):
+  // one per considered buyer that carries a refusal reason, or once from the node's
+  // own reason when it ran out of time before considering anyone.
+  const countRefusal = (reason: unknown) => {
+    if (typeof reason === 'string' && REFUSALS.has(reason)) counts.refusal_counts[reason as RefusalReason] += 1
+  }
+  for (const e of executions) {
+    if (!e.node) continue
+    const considered = Array.isArray(e.node.considered) ? e.node.considered : []
+    if (considered.length === 0) countRefusal(e.node.reason)
+    for (const c of considered) if (isRecord(c)) countRefusal(c.reason)
+  }
   let stateNotRecorded = 0
   let classificationNoResponse = 0
   let healsRecorded = false
