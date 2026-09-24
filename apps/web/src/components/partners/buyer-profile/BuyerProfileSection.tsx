@@ -16,6 +16,7 @@
  */
 import { useEffect, useState } from 'react'
 import { PRIORITY_DIRECTION, SOLD_ON, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
+import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-body'
 import { api } from '@/lib/api'
 import { ChoiceGroup, Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'
@@ -214,7 +215,7 @@ export function BuyerProfileSection(props: Props) {
               label={FIELD_LABELS.sold_on}
               value={profile.sold_on}
               options={SOLD_ON_OPTIONS}
-              onChange={(sold_on) => patch({ sold_on })}
+              onChange={(sold_on) => patch(soldOnPatch(sold_on))}
               disabled={soldOnLock !== null}
               describedBy={['bp-sold-on-hint', soldOnLock ? 'bp-sold-on-lock' : null, soldOnError ? 'bp-sold-on-error' : null].filter(Boolean).join(' ')}
             />
