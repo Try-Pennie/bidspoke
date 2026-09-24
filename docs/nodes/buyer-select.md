@@ -67,7 +67,10 @@ A cap refusal, an open breaker or a ledger that cannot be read skips the buyer b
   "mode_effective": "live",
   "population": "engine",
   "lead_key": "…",
-  "sale": { "skipped": false, "accepted": true, "buyer_reference": "L-1", "result_code": "1000", "partner_slug": "tripoint" },
+  "sale": {
+    "skipped": false, "accepted": true, "buyer_reference": "L-1", "result_code": "1000", "partner_slug": "tripoint",
+    "partner_name": "Tripoint", "click_url": "https://trypennie.com/portal/tpl", "routing_code": 2, "response_class": "Success"
+  },
   "considered": [
     { "partner": "tripoint", "priority": 1, "payout_cents": 2190, "outcome": "sold" },
     { "partner": "liberty", "priority": 2, "payout_cents": 1800, "outcome": "not_reached" }
@@ -78,7 +81,7 @@ A cap refusal, an open breaker or a ledger that cannot be read skips the buyer b
 }
 ```
 
-`considered` carries every buyer with an enabled profile and why it was in or out, in plain vocabulary the execution view labels. `reason` names why the node routed where it did. The output is deliberately not shaped like a Tripoint response, so nothing downstream mistakes it for the replaced script's output.
+`sale` carries the winner's own facts so the Engine response and the Salesforce patch derive everything buyer specific from it and a second buyer needs no script change: the partner's name, the click URL a sold lead lands on, the Salesforce routing code the prospect patch carries, and the class Salesforce records (`Success` on an accept, `Duplicate` when a decline matches one of the partner's duplicate rules, `Fail` on any other decline, none when the buyer gave no answer to classify). A decline names the declining buyer, its code and its class and carries no click URL or routing code; a skipped sale carries nothing. `considered` carries every buyer with an enabled profile and why it was in or out, in plain vocabulary the execution view labels. `reason` names why the node routed where it did. The output is deliberately not shaped like a Tripoint response, so nothing downstream mistakes it for the replaced script's output.
 
 ## Step rows
 

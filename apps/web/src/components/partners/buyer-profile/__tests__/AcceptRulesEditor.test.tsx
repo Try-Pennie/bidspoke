@@ -65,4 +65,19 @@ describe('AcceptRulesEditor', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('An enabled profile needs at least one accept rule.')
     expect(screen.getByText(/without a rule, no answer is an accept/i)).toBeInTheDocument()
   })
+
+  // #1416: the same editor edits the duplicate rules, named as such everywhere a
+  // screen reader or a test reaches it, and its empty state says what an empty
+  // list means for THIS list: every decline is Fail, which is honest, not a gap.
+  it('as the duplicate rules editor it names its rows and its add button as duplicate rules, and an empty list says every decline is Fail', () => {
+    const onChange = vi.fn()
+    render(<AcceptRulesEditor kind="duplicate" value={[]} onChange={onChange} />)
+    expect(screen.queryByRole('group', { name: /accept rule/i })).toBeNull()
+    expect(screen.getByText(/every decline is recorded as Fail/i)).toBeInTheDocument()
+    expect(screen.queryByText(/without a rule, no answer is an accept/i)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /add duplicate rule/i }))
+    expect(onChange).toHaveBeenLastCalledWith([{ field: '', equals: '' }])
+    render(<AcceptRulesEditor kind="duplicate" value={rules} onChange={onChange} />)
+    expect(screen.getAllByRole('group', { name: /duplicate rule/i })).toHaveLength(2)
+  })
 })

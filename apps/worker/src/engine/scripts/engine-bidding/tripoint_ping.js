@@ -20,7 +20,29 @@
 // The kept copy and its tests: apps/worker/src/engine/scripts/engine-bidding/.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NO_SALE = { skipped: false, accepted: false, buyer_reference: null, result_code: null, partner_slug: 'tripoint' };
+// The sale in the buyer_select node's shape (#1416): this script IS Tripoint, so the
+// winner's facts are Tripoint's own, and build_response_body and patch_prospect_body
+// read them from here exactly as they read them from the node for any other buyer.
+// The class is the one the node computes from the buyer's rules: Success on an
+// accept, Duplicate on a code in Tripoint's duplicate set, Fail on any other code,
+// and none when Tripoint gave no code (the two 502 faults).
+const tripointSale = (accepted, buyerReference, resultCode) => {
+  let response_class = null;
+  if (accepted) response_class = 'Success';
+  else if (resultCode != null) response_class = [1003, 1004, 1020].includes(Number(resultCode)) ? 'Duplicate' : 'Fail';
+  return {
+    skipped: false,
+    accepted,
+    buyer_reference: buyerReference ?? null,
+    result_code: resultCode != null ? String(resultCode) : null,
+    partner_slug: 'tripoint',
+    partner_name: 'Tripoint',
+    click_url: accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,
+    routing_code: accepted ? 2 : null,
+    response_class,
+  };
+};
+const NO_SALE = tripointSale(false, null, null);
 
 const pt = steps.prospect_trades.output.body;
 
@@ -29,7 +51,10 @@ const pt = steps.prospect_trades.output.body;
 if (!pt.sellOff || pt.engineBid === 0) {
   return {
     skipped: true, qualified: null, createLead: null, resultCode: null,
-    sale: { skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null },
+    sale: {
+      skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null,
+      partner_name: null, click_url: null, routing_code: null, response_class: null,
+    },
     sent_body_sha256: null,
   };
 }
@@ -170,12 +195,6 @@ return {
     rawText: rawText ?? null,
     parsed: body,
   },
-  sale: {
-    skipped: false,
-    accepted: qualified,
-    buyer_reference: createLead?.id ?? null,
-    result_code: resultCode != null ? String(resultCode) : null,
-    partner_slug: 'tripoint',
-  },
+  sale: tripointSale(qualified, createLead?.id ?? null, resultCode),
   sent_body_sha256,
 };

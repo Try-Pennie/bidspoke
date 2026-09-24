@@ -110,7 +110,9 @@ The response can also be classified and have extra fields pulled out. See [Respo
 |-------|------|----------|---------|-------------|
 | `api_endpoint` | string (URL) | Required for the `api` resolver | `null` | URL the Partner Bid node POSTs the lead to. |
 | `cf_secret_key` | string | No | `null` | Name of a Cloudflare Worker secret. Its value is sent as a bearer token on the API call. The secret value itself is never stored in the partner row. |
-| `click_url` | string (URL) | No | `null` | Landing page URL for leads routed to this partner. Exposed to the Constants node as `{Slug}ClickUrl`. |
+| `click_url` | string (URL) | No | `null` | Landing page URL for leads routed to this partner. Exposed to the Constants node as `{Slug}ClickUrl`, and carried on the buyer_select sale so a sold lead lands on it. A buyer profile cannot be enabled without one. |
+| `external_routing_code` | integer | No | `null` | The `ExternalRoutingCode__c` the Salesforce prospect patch carries for a sale to this buyer (Tripoint's is 2). Carried on the buyer_select sale; a buyer profile cannot be enabled without one. |
+| `duplicate_signals` | Signal[] | No | `[]` | Decline answers that mean the buyer already holds the lead. A decline matching any of them is recorded as `Duplicate`, any other decline as `Fail`, an accept as `Success`. Same Signal shape as `accept_signals`. Empty means every decline is `Fail`. |
 | `dedup_endpoint` | string (URL) | No | `null` | Optional dedup check called before each bid. See [Dedup](#dedup). |
 
 ## Bid mode and response handling

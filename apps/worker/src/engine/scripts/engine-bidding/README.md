@@ -23,14 +23,17 @@ the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 
 | File | Node | What changed for the cutover |
 | --- | --- | --- |
-| `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). |
-| `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, and falls back to the legacy `qualified` field while the older `tripoint_ping` is on the canvas. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` (Success, Duplicate or Fail, the mapping `patch_prospect_body` uses) when a sale was declined with a result code; a rejection with no code carries the two fields alone. |
-| `patch_prospect_body.js` | Patch Prospect Body | Reads `TripointLeadID__c` and `Tripoint_Response__c` from the same sale, with the same fallback. The click URL test for the four External fields and the Duplicate mapping are untouched. |
+| `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape, carrying Tripoint's own name, click URL, routing code 2 and Success, Duplicate or Fail class, because this script IS Tripoint, #1416) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). |
+| `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, completes an older Tripoint Ping's sale with Tripoint's values (transitional, removed at Stage C), and publishes the normalised sale on its output. A sold lead lands on the sale's click URL, never on a constant (#1416); a sell off lead nobody bought takes the Pennie pages. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` with the sale's class when Tripoint declined with one; a rejection with no class carries the two fields alone. |
+| `patch_prospect_body.js` | Patch Prospect Body | Reads the sale from `build_response_body`'s output. The four External fields (partner name, debt, routing code, exchange status) come from the sale on every accepted sale, whichever buyer; `TripointLeadID__c` and `Tripoint_Response__c` are written only when Tripoint is the buyer, because Salesforce has no field for another buyer's reference or class yet. |
 
-The scripts can be pasted in any order: each reads the older shape when the
-newer one is absent. `tripoint_ping` can go first and alone, which starts
-recording `sent_body_sha256` for the Stage A parity report before the topology
-changes.
+**Paste all three in one canvas save.** `patch_prospect_body` reads the sale
+from `build_response_body`, so it must never sit beside the older
+`build_response_body`; and both read an older `tripoint_ping` (with or without
+its `sale`) through the transitional completion in `build_response_body`, so an
+older Tripoint Ping beside the new pair changes nothing. One save covers all
+three nodes and leaves no partial state; the hourly drift check confirms each
+one afterwards.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce

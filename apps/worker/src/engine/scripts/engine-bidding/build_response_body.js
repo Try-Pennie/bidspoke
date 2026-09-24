@@ -1,24 +1,59 @@
 const pt = steps.prospect_trades.output.body;
 const engineBid = pt.engineBid;
 
-// What patch_prospect_reject writes on a rejection (#1471): the two fields it wrote by
-// template today, plus Tripoint's response class when a sale was declined with a result
-// code, so Salesforce can tell a duplicate Tripoint already holds from a lead nobody
-// wanted. The mapping is the one patch_prospect_body uses on the offer path; a test holds
-// the two copies equal. A rejection with no code (a zero bid, a 502 fault) carries the
-// two fields alone, which is why this is built here and not by the node's body template:
-// a template cannot leave a field out. The node's body is
-// {{steps.build_response_body.output.reject_patch}}.
-const rejectPatch = (reason, resultCode) => {
-  const patch = { BidStatus__c: 'Rejected', RejectionReason__c: reason };
-  const rc = resultCode != null ? Number(resultCode) : null;
-  if (rc != null) {
-    const success   = new Set([1000, 1001, 1013, 1014, 1015, 1016, 1017]);
-    const duplicate = new Set([1003, 1004, 1020]);
-    if (success.has(rc))         patch.Tripoint_Response__c = 'Success';
-    else if (duplicate.has(rc))  patch.Tripoint_Response__c = 'Duplicate';
-    else                         patch.Tripoint_Response__c = 'Fail';
+// The sale, from whichever node decided it (#1414, Phase 7): tripoint_ping when it ran
+// (every lead today; the not_applicable and deferred routes after the cutover), else the
+// buyer_select node. It carries the winner's own facts (#1416): who bought, where the lead
+// lands, the Salesforce routing code and the Success, Duplicate or Fail class, so nothing
+// below holds a Tripoint literal. The sale is published on this step's output as `sale`,
+// and patch_prospect_body reads it from there: one normalised shape, read in one place.
+//
+// TRANSITIONAL, removed with tripoint_ping at Stage C: an older tripoint_ping on the canvas
+// carries either no `sale` (the script before 2026-09-22) or a `sale` without the winner
+// facts (the Stage A script). Both are Tripoint, so they are completed with Tripoint's own
+// values here, and Tripoint's result code classes are mapped here for them, the only copy
+// of that mapping outside tripoint_ping itself.
+const readSale = () => {
+  const tp = steps.tripoint_ping?.output;
+  let sale = tp?.sale ?? steps.buyer_select?.output?.sale ?? null;
+  if (!sale && tp) {
+    sale = {
+      skipped: tp.skipped === true,
+      accepted: tp.qualified === true,
+      buyer_reference: tp.createLead?.id ?? null,
+      result_code: tp.resultCode != null ? String(tp.resultCode) : null,
+      partner_slug: tp.skipped === true ? null : 'tripoint',
+    };
   }
+  if (!sale) return null;
+  if (sale.partner_slug === 'tripoint' && sale.response_class === undefined) {
+    const rc = sale.result_code != null ? Number(sale.result_code) : null;
+    let response_class = null;
+    if (sale.accepted) response_class = 'Success';
+    else if (rc != null) response_class = [1003, 1004, 1020].includes(rc) ? 'Duplicate' : 'Fail';
+    sale = {
+      ...sale,
+      partner_name: 'Tripoint',
+      click_url: sale.accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,
+      routing_code: sale.accepted ? 2 : null,
+      response_class,
+    };
+  }
+  return sale;
+};
+const sale = readSale();
+
+// What patch_prospect_reject writes on a rejection (#1471): the two fields it wrote by
+// template today, plus the class of a declined sale, so Salesforce can tell a duplicate the
+// buyer already holds from a lead nobody wanted. The class is the sale's own (#1416).
+// Tripoint_Response__c is Tripoint's field, so it is written only when Tripoint declined;
+// Salesforce has no field for another buyer's class yet. A rejection with no class (a zero
+// bid, a 502 fault, a buyer error) carries the two fields alone, which is why this is
+// built here and not by the node's body template: a template cannot leave a field out.
+// The node's body is {{steps.build_response_body.output.reject_patch}}.
+const rejectPatch = (reason, s) => {
+  const patch = { BidStatus__c: 'Rejected', RejectionReason__c: reason };
+  if (s && s.partner_slug === 'tripoint' && s.response_class) patch.Tripoint_Response__c = s.response_class;
   return patch;
 };
 
@@ -32,20 +67,13 @@ if (engineBid === 0) {
       reason: 'unqualified_lead',
     },
     reject_patch: rejectPatch('unqualified_lead', null),
+    sale,
   };
 }
 
-// The sale, from whichever node decided it (#1414, Phase 7): tripoint_ping when it ran
-// (every lead today; the not_applicable and deferred routes after the cutover), else the
-// buyer_select node. A sale that was made and not accepted rejects the lead exactly as
-// `qualified === false` does today. While the older tripoint_ping script, which carries no
-// `sale`, is still on the canvas, its legacy fields decide, so the two versions can be
-// pasted in either order.
-const tp = steps.tripoint_ping?.output;
-const sale = tp?.sale ?? steps.buyer_select?.output?.sale;
-const declined = sale
-  ? (!sale.skipped && sale.accepted === false)
-  : (tp ? (!tp.skipped && tp.qualified === false) : false);
+// A sale that was made and not accepted rejects the lead exactly as `qualified === false`
+// did before the node existed.
+const declined = sale ? (!sale.skipped && sale.accepted === false) : false;
   if (declined) {
     return {
       isRejected: true,
@@ -54,7 +82,8 @@ const declined = sale
         status: 'rejected',
         reason: 'unqualified_lead',
       },
-      reject_patch: rejectPatch('unqualified_lead', sale ? sale.result_code : (tp?.resultCode ?? null)),
+      reject_patch: rejectPatch('unqualified_lead', sale),
+      sale,
     };
   }
 
@@ -72,8 +101,11 @@ const annualIncome = formatter.format(payload.financialInformation.annualIncome)
 
 const constants = steps.constants.output;
 
+// A sold lead lands where the winner says (#1416); before this a sell off lead was sent to
+// Tripoint's constant whether or not Tripoint had taken it. A sell off lead nobody bought
+// now takes the Pennie pages below, which is where a lead with no sale belongs.
 const getRedirectUrl = () => {
-  if (sellOff)         return constants.TripointClickUrl;
+  if (sale && sale.accepted && sale.click_url) return sale.click_url;
   if (expLandingPage)  return constants.pennieExpLandingPage;
   if (altLandingPage)  return constants.pennieAlternateClickUrl;
   return constants.pennieClickUrl;
@@ -127,4 +159,5 @@ return {
       },
     ],
   },
+  sale,
 };

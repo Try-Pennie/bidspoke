@@ -37,6 +37,10 @@ export interface Partner {
   response_classification: unknown
   /** The buyer_select accept rules, the shared Signal shape (#1412). */
   accept_signals?: unknown[] | null
+  /** Decline answers that mean the buyer already holds the lead, recorded as Duplicate (#1416). Same Signal shape. */
+  duplicate_signals?: unknown[] | null
+  /** The Salesforce routing code the prospect patch carries for a sale to this buyer (#1416). */
+  external_routing_code?: number | null
   alert_config: unknown
   circuit_error_threshold: number
   circuit_window_seconds: number

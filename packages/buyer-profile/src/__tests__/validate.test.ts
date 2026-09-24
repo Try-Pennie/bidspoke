@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
-import { validateProfile, type ProfileError } from '../validate'
+import { validateProfile, type PartnerRulesForValidation, type ProfileError } from '../validate'
 
 const base: BuyerProfile = {
   partnerId: 'liberty-one',
@@ -18,8 +18,8 @@ const base: BuyerProfile = {
   blackoutDates: ['2026-11-26'],
   tiers: [{ population: 'engine', debtFrom: 20000, debtTo: null, multiplier: 0.001 }],
 }
-const partnerWithRules = { acceptSignals: [{ field: 'ok', equals: true }] }
-const partnerWithoutRules = { acceptSignals: [] }
+const partnerWithRules: PartnerRulesForValidation = { acceptSignals: [{ field: 'ok', equals: true }], clickUrl: 'https://liberty.example/apply', externalRoutingCode: 7 }
+const partnerWithoutRules: PartnerRulesForValidation = { ...partnerWithRules, acceptSignals: [] }
 
 const codes = (profile: BuyerProfile, partner = partnerWithRules): string[] => {
   const r = validateProfile(profile, partner)
@@ -154,6 +154,19 @@ describe('enabling is gated (L72)', () => {
   })
   it('refuses to enable when the partner has no accept rules, because an empty accept list would accept nothing and mark nothing', () => {
     expect(codes(base, partnerWithoutRules)).toContain('enabled_without_accept_rules')
+  })
+  // #1416: the response and patch scripts write the winner's click URL and routing
+  // code to Engine and Salesforce; a buyer enabled without them would sell leads
+  // that land nowhere and patch prospects with no route, silently.
+  it('refuses to enable when the partner has no click URL, because a sold lead would have nowhere to land', () => {
+    expect(codes(base, { ...partnerWithRules, clickUrl: null })).toContain('enabled_without_click_url')
+    expect(codes(base, { ...partnerWithRules, clickUrl: '   ' })).toContain('enabled_without_click_url')
+  })
+  it('refuses to enable when the partner has no Salesforce routing code, because the prospect patch would carry no route', () => {
+    expect(codes(base, { ...partnerWithRules, externalRoutingCode: null })).toContain('enabled_without_routing_code')
+  })
+  it('a disabled draft needs neither', () => {
+    expect(validateProfile({ ...base, isEnabled: false }, { acceptSignals: [], clickUrl: null, externalRoutingCode: null })).toEqual({ ok: true })
   })
   it('reports every problem at once rather than the first', () => {
     const bad: BuyerProfile = { ...base, priority: null, allowedStates: [], windows: [] }

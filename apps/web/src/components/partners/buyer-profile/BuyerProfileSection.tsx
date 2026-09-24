@@ -63,6 +63,12 @@ interface Props {
   errors: readonly ProfileError[]
   acceptSignals: Signal[]
   onAcceptSignalsChange: (next: Signal[]) => void
+  /** The duplicate rules (#1416): decline answers that mean the buyer already holds the lead. On the partner record, beside the accept rules. */
+  duplicateSignals: Signal[]
+  onDuplicateSignalsChange: (next: Signal[]) => void
+  /** The Salesforce routing code as typed (#1416); the partner record field the prospect patch carries on every sale. */
+  externalRoutingCode: string
+  onExternalRoutingCodeChange: (next: string) => void
   signalRules: SignalRules
   onSignalRulesChange: (next: SignalRules) => void
   otherSellers: Array<{ id: string; name: string }>
@@ -99,7 +105,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 }
 
 export function BuyerProfileSection(props: Props) {
-  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs } = props
+  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs } = props
   const [usage, setUsage] = useState<BuyerUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
@@ -164,6 +170,7 @@ export function BuyerProfileSection(props: Props) {
     hourlySpendCapCents: byPath.hourlySpendCapCents, dailySpendCapCents: byPath.dailySpendCapCents,
   }
   const acceptRefusal = errorFor(errors, 'acceptSignals') ?? errorFor(errors, 'accept_signals') ?? null
+  const routingCodeRefusal = errorFor(errors, 'externalRoutingCode') ?? null
 
   return (
     <section aria-label="Buyer profile" className="space-y-6 rounded-lg border border-emerald-100 bg-emerald-50/30 p-4">
@@ -242,6 +249,14 @@ export function BuyerProfileSection(props: Props) {
               <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
             </div>
             <SignalRuleBuilder value={signalRules} onChange={onSignalRulesChange} sections={DECLINE_SECTION} />
+            <div>
+              <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.duplicate_signals}</p>
+              <p className="mb-2 text-xs text-gray-500">The buyer already holds this lead. A decline matching any rule here is recorded in Salesforce as Duplicate; any other decline as Fail.</p>
+              <AcceptRulesEditor kind="duplicate" value={duplicateSignals} onChange={onDuplicateSignalsChange} />
+            </div>
+            <Field id="bp-routing-code" label="Salesforce routing code" hint="Written to the prospect as ExternalRoutingCode__c on every sale to this buyer. Tripoint is 2." error={routingCodeRefusal}>
+              <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('bp-routing-code', true, Boolean(routingCodeRefusal))} className="w-32" />
+            </Field>
           </div>
 
           <div className="space-y-3">

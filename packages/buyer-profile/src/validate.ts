@@ -23,6 +23,8 @@ export type ProfileErrorCode =
   | 'enabled_without_windows'
   | 'enabled_without_tiers'
   | 'enabled_without_accept_rules'
+  | 'enabled_without_click_url'
+  | 'enabled_without_routing_code'
 
 export interface ProfileError {
   code: ProfileErrorCode
@@ -35,6 +37,10 @@ export type ProfileValidation = { ok: true } | { ok: false; errors: ProfileError
 
 export interface PartnerRulesForValidation {
   acceptSignals: readonly Signal[]
+  /** Where a sold lead lands: written to Engine's offer and to the prospect by the scripts that read the winner (#1416). */
+  clickUrl: string | null
+  /** The Salesforce routing code the prospect patch carries for a sale to this buyer (#1416). */
+  externalRoutingCode: number | null
 }
 
 const STATE_SET: ReadonlySet<string> = new Set(US_STATES)
@@ -96,6 +102,14 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     if (profile.tiers.length === 0) err('enabled_without_tiers', 'tiers', 'Add pricing before enabling. With no tiers no lead can be priced.')
     if (partner.acceptSignals.length === 0) {
       err('enabled_without_accept_rules', 'acceptSignals', 'Add at least one accept rule on the partner before enabling. Without one no sale can be recorded as accepted.')
+    }
+    // The scripts that answer Engine and patch the prospect read both from the
+    // winner (#1416); a buyer enabled without them sells leads that land nowhere.
+    if (partner.clickUrl === null || partner.clickUrl.trim() === '') {
+      err('enabled_without_click_url', 'clickUrl', 'Set the click URL on the partner before enabling. A sold lead is sent to it.')
+    }
+    if (partner.externalRoutingCode === null) {
+      err('enabled_without_routing_code', 'externalRoutingCode', 'Set the Salesforce routing code on the partner before enabling. The prospect patch carries it on every sale.')
     }
   }
 

@@ -49,6 +49,16 @@ export interface LoadedBuyerPartner {
   extra_extraction: Record<string, unknown> | null
   accept_signals: Signal[]
   response_classification: ResponseClassificationConfig | null
+  /**
+   * The winner's own facts the sale carries to the Engine response and the
+   * Salesforce patch (#1416), so the scripts that write them hold no Tripoint
+   * literal: the name Salesforce records, where a sold lead lands, the routing
+   * code the patch carries, and the decline answers that mean "already held".
+   */
+  name: string
+  click_url: string | null
+  external_routing_code: number | null
+  duplicate_signals: Signal[]
   circuit_enabled: boolean
   circuit_error_threshold: number
   circuit_window_seconds: number
@@ -74,8 +84,9 @@ export interface BuyerProfilesSnapshot {
 const SELECT =
   'partner_id, version, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, ' +
   'hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, updated_at, ' +
-  'partner_configs!inner(id, slug, is_active, api_endpoint, cf_secret_key, outbound_field_mapping, extra_extraction, ' +
-  'accept_signals, response_classification, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds), ' +
+  'partner_configs!inner(id, slug, name, is_active, api_endpoint, cf_secret_key, outbound_field_mapping, extra_extraction, ' +
+  'accept_signals, response_classification, click_url, external_routing_code, duplicate_signals, ' +
+  'circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds), ' +
   'buyer_operating_windows(day_of_week, opens_minute, closes_minute), ' +
   'buyer_blackout_dates(blackout_date), ' +
   'buyer_pricing_tiers(population, debt_from, debt_to, multiplier)'
@@ -94,7 +105,7 @@ interface ProfileRow {
   hourly_spend_cap_cents: number | null
   daily_spend_cap_cents: number | null
   updated_at: string
-  partner_configs: LoadedBuyerPartner & { accept_signals: unknown }
+  partner_configs: LoadedBuyerPartner & { accept_signals: unknown; duplicate_signals: unknown }
   buyer_operating_windows: Array<{ day_of_week: number; opens_minute: number; closes_minute: number }> | null
   buyer_blackout_dates: Array<{ blackout_date: string }> | null
   buyer_pricing_tiers: Array<{ population: string; debt_from: number | string; debt_to: number | string | null; multiplier: number | string }> | null
@@ -115,6 +126,10 @@ function shape(row: ProfileRow): LoadedBuyer {
       extra_extraction: p.extra_extraction,
       accept_signals: Array.isArray(p.accept_signals) ? (p.accept_signals as Signal[]) : [],
       response_classification: p.response_classification,
+      name: p.name,
+      click_url: p.click_url,
+      external_routing_code: p.external_routing_code,
+      duplicate_signals: Array.isArray(p.duplicate_signals) ? (p.duplicate_signals as Signal[]) : [],
       circuit_enabled: p.circuit_enabled,
       circuit_error_threshold: p.circuit_error_threshold,
       circuit_window_seconds: p.circuit_window_seconds,

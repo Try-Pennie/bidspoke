@@ -1614,6 +1614,8 @@ export type Database = {
           created_at: string
           daily_cap: number | null
           dedup_endpoint: string | null
+          duplicate_signals: Json
+          external_routing_code: number | null
           extra_extraction: Json | null
           id: string
           is_active: boolean
@@ -1653,6 +1655,8 @@ export type Database = {
           created_at?: string
           daily_cap?: number | null
           dedup_endpoint?: string | null
+          duplicate_signals?: Json
+          external_routing_code?: number | null
           extra_extraction?: Json | null
           id?: string
           is_active?: boolean
@@ -1692,6 +1696,8 @@ export type Database = {
           created_at?: string
           daily_cap?: number | null
           dedup_endpoint?: string | null
+          duplicate_signals?: Json
+          external_routing_code?: number | null
           extra_extraction?: Json | null
           id?: string
           is_active?: boolean

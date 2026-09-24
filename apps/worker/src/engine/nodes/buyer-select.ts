@@ -45,6 +45,8 @@ import {
   type NodeReason,
   parsePositiveAmount,
   parseUsState,
+  responseClassOf,
+  type ResponseClass,
   type UsState,
   type OutReason,
   type Population,
@@ -149,6 +151,27 @@ export interface ConsideredBuyer {
   detail?: string
 }
 
+/**
+ * The sale, in the shape the Engine response and Salesforce patch scripts read
+ * (docs/nodes/buyer-select.md). The winner's own facts travel on it (#1416):
+ * the name Salesforce records, where the sold lead lands, the routing code the
+ * prospect patch carries, and the Success, Duplicate or Fail class, so a
+ * second buyer needs no script change. A decline carries the declining buyer,
+ * its code and its class, and no landing page or routing code, because nothing
+ * was sold; a skipped sale carries nothing.
+ */
+export interface BuyerSelectSale {
+  skipped: boolean
+  accepted: boolean
+  buyer_reference: string | null
+  result_code: string | null
+  partner_slug: string | null
+  partner_name: string | null
+  click_url: string | null
+  routing_code: number | null
+  response_class: ResponseClass | null
+}
+
 export interface BuyerSelectOutput {
   _route: BuyerSelectRoute
   reason: BuyerSelectReason
@@ -156,7 +179,7 @@ export interface BuyerSelectOutput {
   mode_effective: ModeEffective
   population: string
   lead_key: string | null
-  sale: { skipped: boolean; accepted: boolean; buyer_reference: string | null; result_code: string | null; partner_slug: string | null }
+  sale: BuyerSelectSale
   /** The state the node resolved for the lead, null when the value was not a state; the parity summary counts it (#1413). */
   lead_state?: UsState | null
   /** The debt the node priced the lead on, in whole dollars, null when the value was not an amount; the lead sighting records it as external_debt (#1482). */
@@ -251,7 +274,10 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
 
 // ── The executor ──────────────────────────────────────────────────────────────
 
-const SKIPPED_SALE: BuyerSelectOutput['sale'] = { skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null }
+const SKIPPED_SALE: BuyerSelectSale = {
+  skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null,
+  partner_name: null, click_url: null, routing_code: null, response_class: null,
+}
 
 export async function executeBuyerSelectNode(
   node: NodeDefinition,
@@ -551,6 +577,9 @@ class Run {
     // What the buyer call saw, for the breaker and for deciding whether an unknown outcome fails the step.
     let lastCall: { status: number | null; thrown: boolean } | null = null
     let buyerCalled = false
+    // What the buyer answered, kept beside the outcome so a decline's sale can name
+    // the code and the class Salesforce records (#1416). Null until an answer arrives.
+    let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null = null
 
     const callBuyer = async (): Promise<BuyerCall> => {
       if (!live) {
@@ -578,8 +607,23 @@ class Run {
       await this.breakerOutcome(breaker, res.status >= 500 ? 'error' : 'success', partner.slug)
       const decline = partner.response_classification?.rejection_signals ?? []
       const verdict = evaluateSaleOutcome(partner.accept_signals, decline as unknown as Signal[], res.status, res.json, res.isHtml, true)
-      return { outcome: verdict.outcome, record: recordFrom(partner, res, c.payoutCents) }
+      const record = recordFrom(partner, res, c.payoutCents)
+      lastAnswer = { record, response_class: responseClassOf(verdict.outcome, partner.duplicate_signals, res.json) }
+      return { outcome: verdict.outcome, record }
     }
+
+    /** The winner's own facts on a sale (#1416); a decline names the buyer and its class but has no landing page or route. */
+    const saleOf = (accepted: boolean, record: SaleOutcomeRecord | null, response_class: ResponseClass | null): BuyerSelectSale => ({
+      skipped: false,
+      accepted,
+      buyer_reference: record?.buyer_reference ?? null,
+      result_code: record?.result_code ?? null,
+      partner_slug: partner.slug,
+      partner_name: partner.name,
+      click_url: accepted ? partner.click_url : null,
+      routing_code: accepted ? partner.external_routing_code : null,
+      response_class,
+    })
 
     const mirror = async (entry: LedgerEntry) => {
       const row = await buildBuyerSaleRow(entry, {
@@ -641,7 +685,8 @@ class Run {
     const status = lastCall === null ? null : (lastCall as { status: number | null }).status
 
     if (result.result === 'sold') {
-      this.out.sale = { skipped: false, accepted: true, buyer_reference: result.outcome.buyer_reference, result_code: result.outcome.result_code, partner_slug: partner.slug }
+      // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
+      this.out.sale = saleOf(true, result.outcome, 'Success')
       this.out.mirrored = result.mirrored
       this.out.replay = result.replay
       this.consider(c, live ? 'sold' : 'rehearsed', undefined, result.replay ? 'replay of an earlier sale' : undefined)
@@ -654,7 +699,10 @@ class Run {
     switch (reason) {
       case 'declined_by_buyer':
       case 'buyer_error': {
-        this.out.sale = { ...SKIPPED_SALE, skipped: false }
+        // The declining buyer, its code and its class travel on the sale so the reject
+        // patch can record them (#1471, #1416); a buyer that was never reached has none.
+        const answer = lastAnswer as { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null
+        this.out.sale = saleOf(false, answer?.record ?? null, answer?.response_class ?? null)
         this.consider(c, reason, reason, detail)
         this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: reason, detail, http_status: status }, null, null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'decline', detail ?? reason)
@@ -662,7 +710,7 @@ class Run {
       }
       case 'outcome_unknown': {
         // The buyer may have taken the lead: the reservation and the claim are held, and the cascade stops.
-        this.out.sale = { ...SKIPPED_SALE, skipped: false }
+        this.out.sale = saleOf(false, null, null)
         this.consider(c, 'outcome_unknown', 'outcome_unknown', detail)
         const failing = lastCall === null || (lastCall as { thrown: boolean }).thrown || status === null || status >= 500
         this.attempts.push(this.row(c, kind, startedAt, completedAt, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))

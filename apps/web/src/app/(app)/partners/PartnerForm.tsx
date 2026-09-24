@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
-  buildPartnerBody, parseList, listToString, parseRules,
+  buildPartnerBody, parseList, listToString, parseRules, parseRoutingCode,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
 } from './partner-body'
@@ -168,6 +168,9 @@ export default function PartnerForm({
   // save with it; the document lives in buyer_profiles and saves second, through
   // its own versioned route. Both are form state so one Save covers the page.
   const [acceptSignals, setAcceptSignals] = useState<Signal[]>(() => (Array.isArray(partner?.accept_signals) ? (partner.accept_signals as Signal[]) : []))
+  // The two facts the Engine scripts read from the winner (#1416), on the partner record beside the accept rules.
+  const [duplicateSignals, setDuplicateSignals] = useState<Signal[]>(() => (Array.isArray(partner?.duplicate_signals) ? (partner.duplicate_signals as Signal[]) : []))
+  const [externalRoutingCode, setExternalRoutingCode] = useState(partner?.external_routing_code != null ? String(partner.external_routing_code) : '')
   const [profile, setProfile] = useState<BuyerProfileDocument | null>(null)
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
   const [otherSellers, setOtherSellers] = useState<Array<{ id: string; name: string }>>([])
@@ -235,7 +238,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors, acceptSignals }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors, acceptSignals, externalRoutingCode, duplicateSignals }
   }
 
   // Dirty tracking — compare current values against the values at mount (reset
@@ -298,6 +301,7 @@ export default function PartnerForm({
     setPartnerType(snap.partnerType); setConfirmationWindowMs(snap.confirmationWindowMs)
     setSubAccountFloors(snap.subAccountFloors)
     setAcceptSignals(snap.acceptSignals as Signal[])
+    setExternalRoutingCode(snap.externalRoutingCode); setDuplicateSignals(snap.duplicateSignals as Signal[])
   }
 
   async function handleUndo() {
@@ -362,7 +366,7 @@ export default function PartnerForm({
     // land beside the controls they name (L608).
     const buyer = isBuyerPartner(partnerType)
     if (buyer && profile) {
-      const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals })
+      const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals, clickUrl: clickUrl || null, externalRoutingCode: parseRoutingCode(externalRoutingCode) })
       if (!validation.ok) {
         setProfileErrors(validation.errors)
         // Names each refused field by its label with the validator's reason (#1464):
@@ -541,6 +545,10 @@ export default function PartnerForm({
             errors={profileErrors}
             acceptSignals={acceptSignals}
             onAcceptSignalsChange={setAcceptSignals}
+            duplicateSignals={duplicateSignals}
+            onDuplicateSignalsChange={setDuplicateSignals}
+            externalRoutingCode={externalRoutingCode}
+            onExternalRoutingCodeChange={setExternalRoutingCode}
             signalRules={signalRules}
             onSignalRulesChange={setSignalRules}
             otherSellers={otherSellers}
@@ -588,7 +596,7 @@ export default function PartnerForm({
         {isBuyerPartner(partnerType) && <Section title="Endpoints">
           <Field
             label="Click URL"
-            hint="Landing page URL for leads routed to this partner. Exposed as {Slug}ClickUrl in the Constants node."
+            hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
           >
             <Input value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" />
           </Field>

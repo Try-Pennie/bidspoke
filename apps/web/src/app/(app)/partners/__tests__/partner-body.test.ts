@@ -20,6 +20,8 @@ function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
     sellOffOfferTitle: '', sellOffOfferDetails: '', partnerType: 'buyer', confirmationWindowMs: '',
     subAccountFloors: [],
     acceptSignals: [],
+    externalRoutingCode: '',
+    duplicateSignals: [],
     ...overrides,
   }
 }
@@ -52,6 +54,18 @@ describe('buildPartnerBody (#98)', () => {
     expect(b.daily_cap).toBe(250)
     expect(b.min_bid).toBe(1.5)
     expect(b.confirmation_window_ms).toBe(4000)
+  })
+
+  it('carries the routing code as a whole number or null, and the duplicate rules as they are (#1416)', () => {
+    const blank = buildPartnerBody(snap(), { slug: 's', isExisting: true })
+    expect(blank.external_routing_code).toBeNull()
+    expect(blank.duplicate_signals).toEqual([])
+    const set = buildPartnerBody(snap({ externalRoutingCode: '2', duplicateSignals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] }), { slug: 's', isExisting: true })
+    expect(set.external_routing_code).toBe(2)
+    expect(set.duplicate_signals).toEqual([{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }])
+    // A routing code that is not a whole number is not a routing code (L50): null, never a rounded guess.
+    expect(buildPartnerBody(snap({ externalRoutingCode: '2.5' }), { slug: 's', isExisting: true }).external_routing_code).toBeNull()
+    expect(buildPartnerBody(snap({ externalRoutingCode: 'two' }), { slug: 's', isExisting: true }).external_routing_code).toBeNull()
   })
 
   it('serializes signal rules into response_classification', () => {

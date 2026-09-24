@@ -18,6 +18,9 @@ export const FIELD_LABELS: Record<string, string> = {
   daily_lead_cap: 'Leads per day',
   hourly_spend_cap_cents: 'Spend per hour',
   daily_spend_cap_cents: 'Spend per day',
+  // Partner record fields the validator names when a profile cannot be enabled without them (#1416).
+  click_url: 'Click URL',
+  external_routing_code: 'Salesforce routing code',
 }
 
 /**
@@ -30,6 +33,7 @@ export const SECTION_LABELS = {
   tiers: 'Pricing',
   blackout_dates: 'Blackout dates',
   accept_signals: 'Accept when all of',
+  duplicate_signals: 'Duplicate when any of',
 } as const
 
 const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)

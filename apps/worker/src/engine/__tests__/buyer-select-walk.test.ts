@@ -49,7 +49,10 @@ function definition(wired: Array<'sold' | 'no_sale' | 'deferred' | 'not_applicab
 function outputFor(route: BuyerSelectResult['output']['_route'], reason: BuyerSelectResult['output']['reason']): BuyerSelectResult['output'] {
   return {
     _route: route, reason, mode_effective: 'live', population: 'engine', lead_key: 'lead-1',
-    sale: { skipped: route !== 'sold', accepted: route === 'sold', buyer_reference: route === 'sold' ? 'L-1' : null, result_code: route === 'sold' ? '1000' : null, partner_slug: route === 'sold' ? 'tripoint' : null },
+    sale: {
+      skipped: route !== 'sold', accepted: route === 'sold', buyer_reference: route === 'sold' ? 'L-1' : null, result_code: route === 'sold' ? '1000' : null, partner_slug: route === 'sold' ? 'tripoint' : null,
+      partner_name: route === 'sold' ? 'Tripoint' : null, click_url: route === 'sold' ? 'https://trypennie.com/portal/tpl' : null, routing_code: route === 'sold' ? 2 : null, response_class: route === 'sold' ? 'Success' : null,
+    },
     considered: [], live_percent_in_force: 100, caps_in_force: [], duration_ms: 12,
   }
 }

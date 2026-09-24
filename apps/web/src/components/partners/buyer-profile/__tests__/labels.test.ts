@@ -25,6 +25,9 @@ describe('profileErrorLabel', () => {
     expect(profileErrorLabel('blackoutDates')).toBe(SECTION_LABELS.blackout_dates)
     expect(profileErrorLabel('tiers')).toBe(SECTION_LABELS.tiers)
     expect(profileErrorLabel('acceptSignals')).toBe(SECTION_LABELS.accept_signals)
+    // The two partner record fields an enabled profile needs (#1416), named as the form names them.
+    expect(profileErrorLabel('clickUrl')).toBe('Click URL')
+    expect(profileErrorLabel('externalRoutingCode')).toBe('Salesforce routing code')
   })
 
   it('is one vocabulary with the field labels the history list uses, not a second copy', () => {

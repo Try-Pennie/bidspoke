@@ -123,3 +123,26 @@ export function evaluateSaleOutcome(
   if (status !== null && status >= 400 && status < 500) return { outcome: 'buyer_error', acceptFailed, declineMatched }
   return { outcome: 'outcome_unknown', acceptFailed, declineMatched }
 }
+
+/** The class Salesforce records for a sale: the values of the Tripoint_Response__c picklist, now derived per buyer (#1416). */
+export const RESPONSE_CLASSES = ['Success', 'Duplicate', 'Fail'] as const
+export type ResponseClass = (typeof RESPONSE_CLASSES)[number]
+
+/**
+ * The Salesforce class of a sale, from the winner's own rules (#1416): an
+ * accepted sale is Success; a decline is Duplicate when any of the buyer's
+ * duplicate rules matches the answer and Fail otherwise; a buyer error or an
+ * unknown outcome has no class, because the buyer gave no answer to classify.
+ * Before this the two Engine scripts each carried Tripoint's result code
+ * mapping, so a second buyer would have been classified by Tripoint's codes. A
+ * buyer with no duplicate rules reports every decline as Fail, never a guess.
+ */
+export function responseClassOf(outcome: SaleOutcome, duplicateRules: readonly Signal[], body: unknown): ResponseClass | null {
+  switch (outcome) {
+    case 'accepted': return 'Success'
+    case 'declined_by_buyer': return duplicateRules.some((sig) => matchSignal(sig, body)) ? 'Duplicate' : 'Fail'
+    case 'buyer_error':
+    case 'outcome_unknown':
+      return null
+  }
+}

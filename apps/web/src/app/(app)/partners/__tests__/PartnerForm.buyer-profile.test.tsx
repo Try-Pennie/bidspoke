@@ -33,7 +33,8 @@ const partner: Partner = {
   response_classification: { rejection_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] },
   accept_signals: [{ field: 'ok', equals: true }],
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
-  confirmation_window_ms: null, is_active: true, priority: 2, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
+  confirmation_window_ms: null, is_active: true, priority: 2, sell_off_offer_title: null, sell_off_offer_details: null, click_url: 'https://trypennie.com/portal/tpl',
+  external_routing_code: 2, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }],
   sub_account_min_bids: null, partner_type: 'buyer', created_at: '', updated_at: '2027-09-20T15:00:00.000Z', updated_by_email: null, updated_by_name: null,
 }
 
@@ -108,6 +109,30 @@ describe('the Buyer profile section', () => {
     expect(onSave.mock.calls[0][0]).toMatchObject({ accept_signals: [{ field: 'ok', equals: true }] })
     expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }) })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
+  })
+
+  // #1416: the two facts the Engine scripts read from the winner live on the partner
+  // record, edited here, saved with it, and required before the profile can be enabled.
+  it('saves the Salesforce routing code and the duplicate rules on the partner record, beside the accept rules', async () => {
+    const onSave = await renderBuyer()
+    expect(screen.getByLabelText('Salesforce routing code')).toHaveValue(2)
+    fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '4' } })
+    const duplicateRows = screen.getAllByRole('group', { name: /duplicate rule/i })
+    expect(duplicateRows).toHaveLength(1)
+    expect(within(duplicateRows[0]).getByLabelText(/value/i)).toHaveValue('1003,1004,1020')
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][0]).toMatchObject({ external_routing_code: 4, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] })
+  })
+
+  it('an enabled profile whose partner has no routing code is refused by the field name, and nothing is saved', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const outcome = await screen.findByText(/Nothing saved\./)
+    expect(outcome).toHaveTextContent('Salesforce routing code: Set the Salesforce routing code on the partner before enabling.')
+    expect(onSave).not.toHaveBeenCalled()
+    expect(api.buyerProfiles.save).not.toHaveBeenCalled()
   })
 
   it('a profile the shared validator refuses is not saved on either side, and the errors sit beside their controls', async () => {
