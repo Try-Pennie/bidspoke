@@ -645,6 +645,7 @@ export type Database = {
           hash_match: number
           hash_mismatch: number
           hash_unmeasured: number
+          incumbent_unknown_count: number | null
           organization_id: string
           outcome_unknown_count: number
           refusal_counts: Json
@@ -676,6 +677,7 @@ export type Database = {
           hash_match?: number
           hash_mismatch?: number
           hash_unmeasured?: number
+          incumbent_unknown_count?: number | null
           organization_id: string
           outcome_unknown_count?: number
           refusal_counts?: Json
@@ -707,6 +709,7 @@ export type Database = {
           hash_match?: number
           hash_mismatch?: number
           hash_unmeasured?: number
+          incumbent_unknown_count?: number | null
           organization_id?: string
           outcome_unknown_count?: number
           refusal_counts?: Json

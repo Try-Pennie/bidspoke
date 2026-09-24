@@ -419,3 +419,66 @@ describe('bidAttemptsForProjection: Lead Economy (#1157)', () => {
     ])
   })
 })
+
+/**
+ * #1540: tripoint_ping names what Tripoint answered. An answer nobody could read
+ * (a timeout, a proxy 5xx, a firewall page, a 200 with no result code) is not a
+ * decline: recording it as one (Number(null) is 0, so it became result_code_0)
+ * would tell every reader of lead_sighting_bids that Tripoint said no to a lead
+ * it may have bought. It is its own class, `unknown`, with no decline reason.
+ * The two known 502 answers carry no result code either, so they are named too.
+ */
+describe('deriveCodeNodeBidAttempts: the Tripoint answer (#1540)', () => {
+  const tp = (over: Record<string, unknown>) => steps({ tripoint_ping: { skipped: false, qualified: false, createLead: null, resultCode: null, ...over } })
+
+  it('records an unknown answer as its own class, never a decline, with no decline reason', () => {
+    for (const reason of ['http_504', 'timeout', 'http_403', 'unparseable_body', 'network_error']) {
+      const rows = attemptsOf(tp({ tripoint_answer: 'unknown', unknown_reason: reason }))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ partner_slug: 'tripoint', classification: 'unknown', decline_reason: null, skip_reason: null })
+    }
+  })
+
+  it('an unknown answer that still carries a parsed code is unknown, not a decline by that code', () => {
+    const rows = attemptsOf(tp({ tripoint_answer: 'unknown', unknown_reason: 'http_409', resultCode: 1003 }))
+    expect(rows[0]).toMatchObject({ classification: 'unknown', decline_reason: null, skip_reason: null })
+  })
+
+  it('an output from an older script with no code and no fault flag is unknown, never result_code_0', () => {
+    const rows = attemptsOf(tp({}))
+    expect(rows[0]).toMatchObject({ classification: 'unknown', decline_reason: null, skip_reason: null })
+  })
+
+  it('the known 502 refusal of bad lead data is a decline for invalid data', () => {
+    expect(attemptsOf(tp({ tripoint_answer: 'invalid_data', tripointLeadRejected: true }))[0])
+      .toMatchObject({ classification: 'decline', decline_reason: 'invalid_data', skip_reason: 'rejected' })
+    // The older script says the same thing through its flag.
+    expect(attemptsOf(tp({ tripointLeadRejected: true }))[0])
+      .toMatchObject({ classification: 'decline', decline_reason: 'invalid_data', skip_reason: 'rejected' })
+  })
+
+  it('the known 502 null id glitch is transient, named, and not a decline', () => {
+    expect(attemptsOf(tp({ tripoint_answer: 'null_id_fault', tripointTransientFault: true }))[0])
+      .toMatchObject({ classification: 'transient', decline_reason: 'null_id_fault', skip_reason: null })
+    expect(attemptsOf(tp({ tripointTransientFault: true }))[0])
+      .toMatchObject({ classification: 'transient', decline_reason: 'null_id_fault', skip_reason: null })
+  })
+
+  it('leaves every answer that carries a code exactly as it was recorded before', () => {
+    expect(attemptsOf(tp({ tripoint_answer: 'accepted', qualified: true, resultCode: 1001 }))[0]).toMatchObject({ classification: 'accept', decline_reason: null, skip_reason: null })
+    expect(attemptsOf(tp({ tripoint_answer: 'declined', resultCode: 1003 }))[0]).toMatchObject({ classification: 'decline', decline_reason: 'result_code_1003', skip_reason: 'duplicate' })
+    expect(attemptsOf(tp({ tripoint_answer: 'in_progress', resultCode: 1009 }))[0]).toMatchObject({ classification: 'decline', decline_reason: 'result_code_1009', skip_reason: 'rejected' })
+    expect(attemptsOf(steps({ tripoint_ping: { skipped: true, qualified: null, resultCode: null, tripoint_answer: 'skipped' } }))[0]).toMatchObject({ skip_reason: 'skipped', classification: null })
+  })
+
+  it('projects the unknown class onto the strand projection unchanged', () => {
+    expect(projectionOf(tp({ tripoint_answer: 'unknown', unknown_reason: 'timeout' }))).toEqual([
+      { partner_slug: 'tripoint', classification: 'unknown', decline_reason: null, skip_reason: null, resolver_type: 'api', bid_cents: null, http_status: null },
+    ])
+  })
+
+  it('counts an unknown answer as attempted but not responded, and never as a winner', () => {
+    expect(summaryOf(tp({ tripoint_answer: 'unknown', unknown_reason: 'timeout' }))).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: null })
+    expect(summaryOf(tp({ tripoint_answer: 'declined', resultCode: 1003 }))).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+})

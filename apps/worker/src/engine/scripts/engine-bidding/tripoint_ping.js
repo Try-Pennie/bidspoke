@@ -18,6 +18,23 @@
 //     Null when nothing was sent or the sandbox has no Web Crypto (unmeasured, never a
 //     wrong hash).
 // The kept copy and its tests: apps/worker/src/engine/scripts/engine-bidding/.
+//
+// Updated 2026-09-24 (#1540): every path names what Tripoint answered, and no path
+// throws any more. Two fields ADDED at the end of every return, nothing removed or
+// reordered:
+//   • tripoint_answer: accepted | declined | in_progress (1009) | invalid_data (the known
+//     502 refusal) | null_id_fault (the known 502 glitch) | skipped | unknown. Unknown is
+//     everything not positively recognised: any other 5xx, any 4xx (a firewall page
+//     included), a 2xx that does not parse, is not ok or has no result code, a fetch that
+//     throws, and a call still unanswered after 15 s, which is aborted (the node's own
+//     timeout is 20 s). A second buyer may act only on a KNOWN no, because an unknown can
+//     be a sale Tripoint made and never told us about.
+//   • unknown_reason: why the answer is unknown (http_504, timeout, network_error,
+//     unparseable_body, not_ok, no_result_code), null otherwise.
+// An unknown answer is a no sale (qualified false, a sale with no class), so
+// build_response_body rejects the lead with a normal response instead of the run failing.
+// The per run failure page that the old throw produced is replaced by the aggregated
+// Tripoint outage page, which counts these steps (lib/upstream-outage.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The sale in the buyer_select node's shape (#1416): this script IS Tripoint, so the
@@ -56,6 +73,7 @@ if (!pt.sellOff || pt.engineBid === 0) {
       partner_name: null, click_url: null, routing_code: null, response_class: null,
     },
     sent_body_sha256: null,
+    tripoint_answer: 'skipped', unknown_reason: null,
   };
 }
 
@@ -92,30 +110,59 @@ try {
   sent_body_sha256 = null;
 }
 
+// An answer nobody could read (#1540): a no sale in every field older readers key on, with
+// the reason it is unknown. Never a throw, so the lead gets a normal reject response.
+const unknownAnswer = (reason, debug) => ({
+  skipped: false,
+  qualified: false,
+  createLead: null,
+  resultCode: null,
+  debug,
+  sale: NO_SALE,
+  sent_body_sha256,
+  tripoint_answer: 'unknown',
+  unknown_reason: reason,
+});
+
+// Below the node's 20 s timeout, so the script decides the answer rather than the engine
+// failing the step.
+const TRIPOINT_TIMEOUT_MS = 15000;
+
 let body = {};
 let httpStatus = null;
 let rawText = null;
 
-const res = await fetch('https://tripoint-proxy.trypennie.dev/leads/create', {
-  method: 'POST',
-  headers: {
-    authorization: `Bearer ${env.TRIPOINT_PROXY_SECRET}`,
-    'content-type': 'application/json',
-  },
-  body: JSON.stringify(proxyPayload),
-});
-httpStatus = res.status;
-rawText = await res.text();
+const controller = new AbortController();
+let timedOut = false;
+const timer = setTimeout(() => { timedOut = true; controller.abort(); }, TRIPOINT_TIMEOUT_MS);
+try {
+  const res = await fetch('https://tripoint-proxy.trypennie.dev/leads/create', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.TRIPOINT_PROXY_SECRET}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(proxyPayload),
+    signal: controller.signal,
+  });
+  httpStatus = res.status;
+  rawText = await res.text();
+} catch (err) {
+  const reason = timedOut ? 'timeout' : 'network_error';
+  const message = err instanceof Error ? err.message : 'non Error thrown';
+  console.warn(`tripoint answer unknown (${reason}): ${message}`);
+  return unknownAnswer(reason, { httpStatus, rawText, parsed: null, error: message });
+} finally {
+  clearTimeout(timer);
+}
 
-// Fail the step on 5xx (proxy 504 = Tripoint upstream timeout) so the
-// failure-alert pipeline fires instead of silently treating it as unqualified.
-if (res.status >= 500) {
+if (httpStatus >= 500) {
     // Brian's proxy returns 502 when Tripoint's upstream GraphQL has ok:false.
     // The known intermittent fault is `createLead` returning null for a
     // non-nullable id: Tripoint's own schema-contract violation, not anything
     // we sent. Route those leads to the engine fallback (qualified=false) so
-    // Engine gets a proper response instead of a 5xx, but keep fail-fast for
-    // all other 5xx (real proxy/network/timeout outages).
+    // Engine gets a proper response instead of a 5xx. Every other 5xx (a real
+    // proxy/network/timeout outage) is an unknown answer (#1540).
     let proxyBody = null;
     try { proxyBody = JSON.parse(rawText ?? ''); } catch {}
     const isTripointNullIdFault =
@@ -137,6 +184,8 @@ if (res.status >= 500) {
         debug: { httpStatus, rawText, parsed: proxyBody },
         sale: NO_SALE,
         sent_body_sha256,
+        tripoint_answer: 'null_id_fault',
+        unknown_reason: null,
       };
     }
 
@@ -144,8 +193,7 @@ if (res.status >= 500) {
     // 502 wrapper the proxy uses for real outages. These are business rejections,
     // not infra faults: the lead data is bad and a retry won't help: so route
     // them to the engine fallback (qualified=false, → reject path in
-    // build_response_body) instead of failing the whole execution. Keep fail-fast
-    // for every other 5xx (genuine proxy/network/timeout outages).
+    // build_response_body) instead of failing the whole execution.
     const rejectionDetail = Array.isArray(proxyBody?.details)
       ? proxyBody.details.find((d) =>
           typeof d?.message === 'string' && /^\s*invalid\b/i.test(d.message)
@@ -166,24 +214,48 @@ if (res.status >= 500) {
         debug: { httpStatus, rawText, parsed: proxyBody },
         sale: NO_SALE,
         sent_body_sha256,
+        tripoint_answer: 'invalid_data',
+        unknown_reason: null,
       };
     }
 
-    throw new Error(`Tripoint proxy ${res.status}: ${rawText ?? ''}`);
+    console.warn(`tripoint answer unknown (http_${httpStatus})`);
+    return unknownAnswer(`http_${httpStatus}`, { httpStatus, rawText, parsed: proxyBody });
   }
 
+let parsedOk = true;
 try {
   body = rawText ? JSON.parse(rawText) : {};
+  if (!rawText) parsedOk = false;
 } catch {
   body = {};
+  parsedOk = false;
 }
 
 const createLead = body?.data?.createLead ?? null;
 const resultCode = createLead?.resultCode != null ? Number(createLead.resultCode) : null;
+
+// Only a 2xx that parses, says ok and carries a numeric result code is an answer
+// (#1540); anything else is unknown, whatever it contains.
+let unknownReason = null;
+if (httpStatus < 200 || httpStatus >= 300) unknownReason = `http_${httpStatus}`;
+else if (!parsedOk || body === null || typeof body !== 'object') unknownReason = 'unparseable_body';
+else if (body.ok !== true) unknownReason = 'not_ok';
+else if (resultCode === null || !Number.isFinite(resultCode)) unknownReason = 'no_result_code';
+
+if (unknownReason) {
+  console.warn(`tripoint answer unknown (${unknownReason})`);
+  return unknownAnswer(unknownReason, { httpStatus, rawText: rawText ?? null, parsed: body });
+}
+
 const qualified =
   body.ok === true &&
   (resultCode === 1000 || resultCode === 1001 ||
    (resultCode >= 1013 && resultCode <= 1017));
+
+let tripoint_answer = 'declined';
+if (qualified) tripoint_answer = 'accepted';
+else if (resultCode === 1009) tripoint_answer = 'in_progress';
 
 return {
   skipped: false,
@@ -197,4 +269,6 @@ return {
   },
   sale: tripointSale(qualified, createLead?.id ?? null, resultCode),
   sent_body_sha256,
+  tripoint_answer,
+  unknown_reason: null,
 };

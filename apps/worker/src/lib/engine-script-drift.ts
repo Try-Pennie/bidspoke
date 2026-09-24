@@ -66,6 +66,12 @@ export interface KeptScript {
  * canvas holds it, which is the kept file of PR #1470 (tripoint_ping without
  * its final newline). The kept files were then re-derived for #1416, so until
  * Stage C pastes them the check reports awaiting_paste, not drift.
+ *
+ * tripoint_ping was edited again for #1540 (every answer named, no throw, a 15 s
+ * abort). The canvas was re-read on 2026-09-24 for that change and still holds
+ * the same version 100 script, so its baseline is unchanged: the edit is one
+ * more paste not yet made, and the check keeps reporting awaiting_paste until
+ * it lands. A baseline moves only when the CANVAS moves.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {

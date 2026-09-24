@@ -495,6 +495,11 @@ BEGIN
   IF r->>'signed_off_at' IS NOT NULL THEN RAISE EXCEPTION 'a refresh set a sign off: %', r; END IF;
   IF (r->'unmeasured')::jsonb IS DISTINCT FROM '["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"]'::jsonb THEN RAISE EXCEPTION 'unmeasured not written: %', r; END IF;
   IF (r->'refusal_counts'->>'hourly_spend_cap')::int IS DISTINCT FROM 7 THEN RAISE EXCEPTION 'refusal counts not written: %', r; END IF;
+  -- A row from a Worker that does not measure the incumbent unknown count is written NULL, never a made up zero (#1540).
+  IF r ? 'incumbent_unknown_count' IS NOT TRUE OR r->'incumbent_unknown_count' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'an unmeasured incumbent unknown count was not NULL: %', r; END IF;
+  -- One that does measure it is written as given.
+  r := public.upsert_buyer_select_parity_day((r - 'id' - 'summarised_at' - 'signed_off_by' - 'signed_off_at' - 'sign_off_note' - 'sign_off_counts_hash' - 'sign_off_cleared_at') || '{"incumbent_unknown_count": 4}'::jsonb);
+  IF (r->>'incumbent_unknown_count')::int IS DISTINCT FROM 4 THEN RAISE EXCEPTION 'incumbent unknown count not written: %', r; END IF;
   -- refusal_counts must be an object, refused by name (#1533).
   BEGIN
     PERFORM public.upsert_buyer_select_parity_day((r - 'id' - 'summarised_at' - 'signed_off_by' - 'signed_off_at' - 'sign_off_note' - 'sign_off_counts_hash' - 'sign_off_cleared_at') || '{"refusal_counts": 7}'::jsonb);

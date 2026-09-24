@@ -84,6 +84,10 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     ],
   },
   {
+    // The failed runs of an older tripoint_ping that throws on a proxy 5xx. Since
+    // #1540 the kept script returns an unknown answer instead of throwing, and
+    // those steps are counted under this same cause by tripointUnknownRows, so
+    // both versions page as one Tripoint outage behind one cooldown.
     key: 'tripoint',
     label: 'Tripoint',
     matchers: ['tripoint proxy 5'],
@@ -390,6 +394,8 @@ export const DEFAULT_COOLDOWN_MINUTES = 30
 export const LOOKBACK_MINUTES = 60
 
 interface FailedRow {
+  /** The execution id: what keeps one execution from being counted twice (#1540). */
+  id?: string
   workflow_id: string
   error_message: string | null
   completed_at: string | null
@@ -401,6 +407,88 @@ interface FailedRow {
   started_at?: string | null
   /** Node type of the step that failed, used to attribute generic timeouts (#332). */
   failed_step_type?: string | null
+  /**
+   * The cause this row belongs to, decided by where it was read rather than by
+   * its message (#1540). Set only on a row that is not a failed run: an unknown
+   * Tripoint answer, which is Tripoint's by construction.
+   */
+  cause_key?: string
+}
+
+// ---------------------------------------------------------------------------
+// Unknown Tripoint answers (#1540)
+// ---------------------------------------------------------------------------
+
+/**
+ * The step whose answer is read. tripoint_ping used to THROW on a proxy 5xx, so
+ * a Tripoint outage showed up here as failed runs matching 'tripoint proxy 5'.
+ * Since #1540 it returns `tripoint_answer: 'unknown'` instead and the run
+ * rejects the lead normally, so without this read the check would go quiet at
+ * exactly the moment Tripoint is down. A code node has no type to key on, so
+ * the namespace is the key, as in the parity summary.
+ */
+export const TRIPOINT_ANSWER_NAMESPACE = 'tripoint_ping'
+
+/**
+ * How long before the window a counted step may have STARTED. A step is judged
+ * by when it completed, like a failed run, but the read is bounded on
+ * started_at because that is what execution_steps is partitioned and indexed
+ * on. tripoint_ping aborts at 15 s and its node times out at 20 s, so a minute
+ * of slack cannot drop a step that completed inside the window.
+ */
+export const TRIPOINT_STEP_START_SLACK_MS = 60 * 1000
+
+export interface TripointUnknownStep {
+  execution_id: string
+  workflow_id: string | null
+  started_at?: string | null
+  completed_at: string | null
+  /** The script's own reason: http_504, timeout, network_error, unparseable_body, not_ok, no_result_code. */
+  unknown_reason: string | null
+}
+
+/**
+ * The message an unknown answer is shown and grouped by. Worded so the shape
+ * advice reads right: a 5xx carries '(5' and a timeout says 'timed out', both
+ * of which point the reader at Tripoint's health, while a 4xx or a body nobody
+ * could read points at the runs themselves.
+ */
+function unknownAnswerMessage(reason: string | null): string {
+  const status = reason ? /^http_(\d{3})$/.exec(reason) : null
+  if (status) return `Tripoint answer unknown (${status[1]})`
+  if (reason === 'timeout') return 'Tripoint answer unknown: timed out after 15 s'
+  if (reason === 'network_error') return 'Tripoint answer unknown: the call to the proxy failed'
+  return `Tripoint answer unknown: ${reason ?? 'no reason recorded'}`
+}
+
+/**
+ * Unknown Tripoint answers as rows of the Tripoint cause, less any execution
+ * already counted there as a failed run (an older script on the canvas still
+ * throws). An execution whose run failed for ANOTHER cause is kept: that
+ * failure is counted under its own cause and this is a different fact.
+ */
+export function tripointUnknownRows(steps: TripointUnknownStep[], failed: FailedRow[]): FailedRow[] {
+  const countedAsTripoint = new Set(
+    failed
+      .filter((r) => r.id && attributeOutageCause(r.error_message, r.failed_step_type)?.key === 'tripoint')
+      .map((r) => r.id as string),
+  )
+  const seen = new Set<string>()
+  const out: FailedRow[] = []
+  for (const st of steps) {
+    if (!st.workflow_id) continue
+    if (countedAsTripoint.has(st.execution_id) || seen.has(st.execution_id)) continue
+    seen.add(st.execution_id)
+    out.push({
+      id: st.execution_id,
+      workflow_id: st.workflow_id,
+      error_message: unknownAnswerMessage(st.unknown_reason),
+      completed_at: st.completed_at,
+      started_at: st.started_at ?? null,
+      cause_key: 'tripoint',
+    })
+  }
+  return out
 }
 
 interface KvLike {
@@ -446,7 +534,9 @@ export function groupOutages(
   >()
   for (const r of rows) {
     if (!r.completed_at || new Date(r.completed_at).getTime() < windowStartMs) continue
-    const cause = attributeOutageCause(r.error_message, r.failed_step_type, causes)
+    const cause = r.cause_key
+      ? causes.find((c) => c.key === r.cause_key) ?? null
+      : attributeOutageCause(r.error_message, r.failed_step_type, causes)
     if (!cause) continue
     // A per-workflow cause gets one group per workflow, so its count, its shapes
     // and its cooldown are all about the one partner the page names (#1361).
@@ -652,7 +742,7 @@ export async function runUpstreamOutageCheck(
   const failed = await fetchAllPaged<FailedRow>(
     (from, to) => supabase
       .from('workflow_executions')
-      .select('workflow_id, error_message, completed_at, started_at, failed_step_type')
+      .select('id, workflow_id, error_message, completed_at, started_at, failed_step_type')
       .in('workflow_id', workflowIds)
       .gte('started_at', lookbackStart)
       .gte('completed_at', windowStart)
@@ -664,6 +754,36 @@ export async function runUpstreamOutageCheck(
       .range(from, to),
     'upstream-outage failed query',
   )
+
+  // Unknown Tripoint answers (#1540): runs that no longer fail, read from their
+  // tripoint_ping step. Only the cause rule's own one minute window is read,
+  // because saturation judges failed runs and these did not fail. A read failure
+  // is logged and the failed runs still page: losing this half must not also
+  // silence the half that did read.
+  let unknownSteps: TripointUnknownStep[] = []
+  try {
+    unknownSteps = await fetchAllPaged<TripointUnknownStep>(
+      (from, to) => supabase
+        .from('execution_steps')
+        .select('id, execution_id, workflow_id, started_at, completed_at, unknown_reason:output->>unknown_reason')
+        .in('workflow_id', workflowIds)
+        .eq('step_namespace', TRIPOINT_ANSWER_NAMESPACE)
+        .gte('started_at', new Date(windowStartMs - TRIPOINT_STEP_START_SLACK_MS).toISOString())
+        .gte('completed_at', new Date(windowStartMs).toISOString())
+        .eq('is_test', false)
+        .eq('output->>tripoint_answer', 'unknown')
+        .order('started_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to),
+      'upstream-outage tripoint answers query',
+    )
+  } catch (err) {
+    console.error(
+      `[upstream-outage] tripoint answers could not be read, so unknown Tripoint answers are not counted this minute: ` +
+        (err instanceof Error ? err.message : 'non Error thrown'),
+    )
+  }
+  const tripointRows = tripointUnknownRows(unknownSteps, failed)
 
   // Run totals for saturation's denominator, from the same started_at basis its
   // numerator is windowed on. A read failure leaves the map EMPTY, which makes
@@ -708,6 +828,16 @@ export async function runUpstreamOutageCheck(
     rowsByOrg.set(org, list)
   }
 
+  const unknownByOrg = new Map<string, FailedRow[]>()
+  for (const r of tripointRows) {
+    const org = orgByWorkflow.get(r.workflow_id)
+    if (!org) continue
+    const list = unknownByOrg.get(org) ?? []
+    list.push(r)
+    unknownByOrg.set(org, list)
+    if (!rowsByOrg.has(org)) rowsByOrg.set(org, [])
+  }
+
   for (const [orgId, rows] of rowsByOrg) {
     // Saturation first: it is the rule that can see a lane whose per-minute
     // count is too small for the absolute threshold, so it must not be gated on
@@ -741,7 +871,9 @@ export async function runUpstreamOutageCheck(
       }
     }
 
-    const groups = groupOutages(rows, nameById, windowStartMs)
+    // Saturation above judged failed runs only; the cause rule also counts the
+    // unknown Tripoint answers, which are Tripoint's by construction (#1540).
+    const groups = groupOutages([...rows, ...(unknownByOrg.get(orgId) ?? [])], nameById, windowStartMs)
     for (const group of groups) {
       if (!detectOutageSpike(group.count, DEFAULT_OUTAGE_THRESHOLD)) continue
 

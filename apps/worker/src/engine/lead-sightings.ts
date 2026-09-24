@@ -109,7 +109,7 @@ export interface BidAttemptInsert {
   responded_at_et?: Date | null
   http_status?: number | null
   bid_cents?: number | null
-  classification?: string | null   // 'accept' | 'decline' | 'no_bid' | 'transient' | 'permanent'
+  classification?: string | null   // 'accept' | 'decline' | 'no_bid' | 'transient' | 'permanent' | 'unknown' (a Tripoint answer nobody could read, #1540)
   decline_reason?: string | null
   resolver_type?: string | null    // 'formula' | 'matrix' | 'api'
   skip_reason?: string | null      // 'cap_hit' | 'circuit_open' | 'dedup' | 'inactive' | 'partner_inactive' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected'

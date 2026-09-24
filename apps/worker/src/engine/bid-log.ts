@@ -73,6 +73,35 @@ interface TripointBidOutput {
   qualified?: unknown
   resultCode?: unknown
   createLead?: unknown
+  /** What Tripoint answered, named by the script on every path since #1540. */
+  tripoint_answer?: unknown
+  /** The older script's two flags for its known 502 answers, read when tripoint_answer is absent. */
+  tripointLeadRejected?: unknown
+  tripointTransientFault?: unknown
+}
+
+/**
+ * What Tripoint answered (#1540), in tripoint_ping's own vocabulary. The script
+ * names it on every path; an output from an older script (or Lead Economy's
+ * wrapped copy) is read from the fields it did carry: its skip, its two 502
+ * flags, and its result code. Anything with no code and no flag is `unknown`,
+ * because nothing in it says what Tripoint decided.
+ */
+export type TripointAnswer = 'accepted' | 'declined' | 'in_progress' | 'invalid_data' | 'null_id_fault' | 'skipped' | 'unknown'
+const TRIPOINT_ANSWERS: ReadonlySet<string> = new Set<TripointAnswer>(['accepted', 'declined', 'in_progress', 'invalid_data', 'null_id_fault', 'skipped', 'unknown'])
+
+export function tripointAnswerOf(output: TripointBidOutput): TripointAnswer {
+  if (typeof output.tripoint_answer === 'string' && TRIPOINT_ANSWERS.has(output.tripoint_answer)) return output.tripoint_answer as TripointAnswer
+  // An answer word this reader does not know is not a decline either.
+  if (output.tripoint_answer != null) return 'unknown'
+  if (output.skipped === true) return 'skipped'
+  if (output.tripointLeadRejected === true) return 'invalid_data'
+  if (output.tripointTransientFault === true) return 'null_id_fault'
+  if (output.resultCode == null) return 'unknown'
+  const code = Number(output.resultCode)
+  if (!Number.isFinite(code)) return 'unknown'
+  if (classifyTripointResultCode(code) === 'Success') return 'accepted'
+  return code === 1009 ? 'in_progress' : 'declined'
 }
 
 // A Tripoint ping output is an object carrying `resultCode` plus the
@@ -196,6 +225,22 @@ export function deriveCodeNodeBidAttempts(
         rows.push({ ...base, classification: null, decline_reason: null, skip_reason: 'skipped' })
         continue
       }
+      // An answer with no result code is recorded by what it was (#1540), never as a
+      // decline by code: Number(null) is 0, which read as result_code_0. An unknown
+      // answer is its own class, because Tripoint may have bought the lead.
+      const answer = tripointAnswerOf(tripoint)
+      if (answer === 'unknown') {
+        rows.push({ ...base, classification: 'unknown', decline_reason: null, skip_reason: null })
+        continue
+      }
+      if (answer === 'invalid_data') {
+        rows.push({ ...base, classification: 'decline', decline_reason: 'invalid_data', skip_reason: 'rejected' })
+        continue
+      }
+      if (answer === 'null_id_fault') {
+        rows.push({ ...base, classification: 'transient', decline_reason: 'null_id_fault', skip_reason: null })
+        continue
+      }
       const code = Number(tripoint.resultCode)
       const result = Number.isFinite(code) ? classifyTripointResultCode(code) : 'Fail'
       const declineReason = Number.isFinite(code) ? `result_code_${code}` : null
@@ -266,6 +311,8 @@ export function deriveCodeNodeBidSummary(
     if (tripoint) {
       if (tripoint.skipped === true) continue
       attempted++
+      // An unknown answer is one nobody could read (a timeout, a proxy 5xx), so it is not a response (#1540).
+      if (tripointAnswerOf(tripoint) === 'unknown') continue
       responded++
       const code = Number(tripoint.resultCode)
       if (Number.isFinite(code) && classifyTripointResultCode(code) === 'Success') winner = 'tripoint'

@@ -27,6 +27,7 @@ import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { fetchAllPaged } from './paginate'
+import { tripointAnswerOf } from '../engine/bid-log'
 
 export { RETENTION_DAYS }
 
@@ -80,6 +81,10 @@ export interface IncumbentOutputLike {
   /** Added by Phase 7; absent until then. */
   sent_body_sha256?: unknown
   debug?: { httpStatus?: unknown; rawText?: unknown }
+  /** What Tripoint answered (#1540); an older row is read from its code and its two 502 flags. */
+  tripoint_answer?: unknown
+  tripointLeadRejected?: unknown
+  tripointTransientFault?: unknown
 }
 
 export interface ParityExecution {
@@ -104,6 +109,12 @@ export interface ParityCounts {
   classification_agree: number
   classification_disagree: number
   outcome_unknown_count: number
+  /**
+   * Executions whose incumbent answer could not be read (#1540): a timeout, a
+   * proxy 5xx, a firewall page, a 2xx with no result code. Counted here rather
+   * than as the incumbent declining, because Tripoint may have bought the lead.
+   */
+  incumbent_unknown_count: number
   state_resolved: number
   state_unresolved: number
   rehearsal_in_doubt_heals: number
@@ -137,6 +148,7 @@ export function summariseParityDay(executions: ParityExecution[], rules: ParityR
     sell_off_agree: 0, sell_off_disagree: 0,
     hash_match: 0, hash_mismatch: 0, hash_unmeasured: 0,
     classification_agree: 0, classification_disagree: 0, outcome_unknown_count: 0,
+    incumbent_unknown_count: 0,
     state_resolved: 0, state_unresolved: 0,
     rehearsal_in_doubt_heals: 0, rehearsal_expired_in_flight: 0,
     decide_only_latency_p50_ms: null, decide_only_latency_p95_ms: null,
@@ -202,15 +214,30 @@ export function summariseParityDay(executions: ParityExecution[], rules: ParityR
       counts.hash_unmeasured += 1
     }
 
+    // An answer the incumbent could not read is its own bucket (#1540), never the
+    // incumbent declining: that "no" was never given.
+    const incumbentUnknown = tripointAnswerOf(e.incumbent) === 'unknown'
+    if (incumbentUnknown) counts.incumbent_unknown_count += 1
+
     // Classification: the shared classifier over what the incumbent recorded.
     const debug = isRecord(e.incumbent.debug) ? e.incumbent.debug : null
     const status = debug && typeof debug.httpStatus === 'number' ? debug.httpStatus : null
     const rawText = debug && typeof debug.rawText === 'string' ? debug.rawText : null
-    if (status === null || rawText === null) { classificationNoResponse += 1; continue }
+    if (status === null || rawText === null) {
+      // A timeout records no response, and it is measured: as unknown, above.
+      if (!incumbentUnknown) classificationNoResponse += 1
+      continue
+    }
     let body: unknown
     try { body = JSON.parse(rawText) } catch { body = null }
     const isHtml = /^\s*</.test(rawText)
     const verdict = evaluateSaleOutcome(rules.accept, rules.decline, status, body, isHtml, true).outcome
+    if (incumbentUnknown) {
+      // The incumbent could not read this answer, and the classifier could: the node
+      // would act on something the incumbent did not, which is worth naming.
+      if (verdict === 'accepted' || verdict === 'declined_by_buyer') { counts.classification_disagree += 1; disagree.add(e.execution_id) }
+      continue
+    }
     if (verdict === 'outcome_unknown') { counts.outcome_unknown_count += 1; disagree.add(e.execution_id); continue }
     if (verdict === incumbentVerdict(e.incumbent)) counts.classification_agree += 1
     else { counts.classification_disagree += 1; disagree.add(e.execution_id) }
