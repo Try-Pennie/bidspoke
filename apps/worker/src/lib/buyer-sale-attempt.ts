@@ -2,8 +2,8 @@
  * runBuyerSaleAttempt (#1410, milestone 52): the six step attempt the
  * buyer_select node drives for one buyer, against the two objects.
  *
- *   1. claim the lead        (LeadSaleObject)   a timeout is cap_check_error, claim untouched
- *   2. reserve at the buyer  (BuyerLedgerObject) a timeout is cap_check_error; the reservation
+ *   1. claim the lead        (LeadSaleObject)   a timeout is object_deadline, claim untouched
+ *   2. reserve at the buyer  (BuyerLedgerObject) a timeout is object_deadline; the reservation
  *                                                 MAY have landed, so it is released, then the claim freed (#1512)
  *   3. call the buyer
  *   4. commit                (ledger)           a timeout after an accept is outcome_unknown, everything held, page
@@ -26,7 +26,18 @@
  * claim is freed and the reservation released wherever the object still
  * allows it, and that cleanup is handed to `deps.background` when the caller
  * gives one, so a rehearsal that ran out of budget does not then wait on its
- * own cleanup. Without a budget (live) every deadline keeps its live meaning.
+ * own cleanup.
+ *
+ * Live has a budget of its own, but only BEFORE the buyer call
+ * (`deps.preCallBudgetLeftMs`, #1508): read between the steps up to the
+ * reservation and inside the wait on another holder, a spent budget ends the
+ * attempt as object_deadline after releasing and freeing what it holds, awaited
+ * inline because money was about to move. The budget stops at the buyer call:
+ * commit and mark sold keep their own deadlines and the outcome_unknown page,
+ * because an accepted answer must be recorded whatever the clock says. A call
+ * that runs out of time on its own deadline is object_deadline before the buyer
+ * call and outcome_unknown after it; an object that answered with an error is
+ * cap_check_error (L11: the reason names the cause, the detail carries the message).
  */
 import { DeadlineError, type OutReason, type SaleOutcome } from '@bidspoke/buyer-profile'
 import type { ClaimBody, ClaimResult, SaleState } from '../durable-objects/lead-sale'
@@ -111,6 +122,14 @@ export interface AttemptDeps {
    */
   budgetLeftMs?: () => number
   /**
+   * What is left of the LIVE budget for the steps before the buyer call, in ms
+   * (#1508). Read after the claim, after the reservation and inside the wait on
+   * another holder; a spent budget ends the attempt as object_deadline with the
+   * claim freed and any reservation released, awaited. Never read once the
+   * buyer has been called.
+   */
+  preCallBudgetLeftMs?: () => number
+  /**
    * Where cleanup after a budget ending runs (#1512). Given one, the attempt
    * hands the release and free off and returns at once; without one it awaits
    * them. The work never rejects.
@@ -142,6 +161,10 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
     await handOff(deps, letGo(deps, key, generation, false))
     return budgetEnded('after the claim')
   }
+  if (preCallSpent(deps)) {
+    await letGo(deps, key, generation, false)
+    return preCallEnded('after the claim')
+  }
 
   // ── 2. reserve ──────────────────────────────────────────────────────────────
   let reservation: ReserveResult
@@ -156,7 +179,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
       return budgetEnded('reserving at the buyer')
     }
     await letGo(deps, key, generation, true)
-    return { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) }
+    return objectFailure(deps, err)
   }
   if (!reservation.reserved) {
     await freeQuietly(deps, generation)
@@ -169,6 +192,10 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
   if (budgetSpent(deps)) {
     await handOff(deps, letGo(deps, key, generation, true))
     return budgetEnded('after the reservation')
+  }
+  if (preCallSpent(deps)) {
+    await letGo(deps, key, generation, true)
+    return preCallEnded('after the reservation')
   }
 
   // ── 3. call the buyer ───────────────────────────────────────────────────────
@@ -242,7 +269,7 @@ async function acquireClaim(input: AttemptInput, deps: AttemptDeps, startedAt: n
     try {
       claim = await deps.sale.claim(body)
     } catch (err) {
-      return { kind: 'done', result: { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) } }
+      return { kind: 'done', result: objectFailure(deps, err) }
     }
     switch (claim.state) {
       case 'claimed':
@@ -281,11 +308,19 @@ async function waitForHolder(deps: AttemptDeps, body: ClaimBody, startedAt: numb
         result: { result: 'no_sale', reason: 'sale_in_flight', detail: `${current.holder_execution_id} held the lead past the ${deps.buyerTimeoutMs} ms budget` },
       }
     }
+    // The wait happens before the buyer call, so the live pre-call budget bounds it too (#1508).
+    const preCallLeft = deps.preCallBudgetLeftMs?.()
+    if (preCallLeft !== undefined && preCallLeft < deps.waitIntervalMs) {
+      return {
+        kind: 'done',
+        result: { result: 'no_sale', reason: 'sale_in_flight', detail: `${current.holder_execution_id} held the lead for the whole pre-call budget` },
+      }
+    }
     await deps.sleep(deps.waitIntervalMs)
     try {
       current = await deps.sale.claim(body)
     } catch (err) {
-      return { kind: 'done', result: { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) } }
+      return { kind: 'done', result: objectFailure(deps, err) }
     }
   }
   if (current.state === 'claimed') return { kind: 'claimed', generation: current.generation }
@@ -314,7 +349,7 @@ async function resolveInDoubt(input: AttemptInput, deps: AttemptDeps, claim: Ext
       await deps.sale.heal(claim.generation, outcome)
     } catch (err) {
       if (err instanceof GenerationMovedError || err instanceof WrongStateError) return { kind: 'retry' }
-      return { kind: 'done', result: { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) } }
+      return { kind: 'done', result: objectFailure(deps, err) }
     }
     return { kind: 'done', result: { result: 'sold', outcome, replay: true, mirrored: false } }
   }
@@ -375,6 +410,26 @@ function budgetTimedOut(deps: AttemptDeps, err: unknown): boolean {
 
 function budgetEnded(where: string): AttemptResult {
   return { result: 'no_sale', reason: 'rehearsal_deadline', detail: `the rehearsal budget ran out ${where}` }
+}
+
+/** Under a live pre-call budget, is it spent? Without one, never. */
+function preCallSpent(deps: AttemptDeps): boolean {
+  return deps.preCallBudgetLeftMs !== undefined && deps.preCallBudgetLeftMs() <= 0
+}
+
+function preCallEnded(where: string): AttemptResult {
+  return { result: 'no_sale', reason: 'object_deadline', detail: `the pre-call budget ran out ${where}` }
+}
+
+/**
+ * An object call before the buyer call threw. Under the rehearsal budget a
+ * deadline is the budget ending; otherwise a deadline is object_deadline and any
+ * other error is cap_check_error, the object having answered with one (L11).
+ */
+function objectFailure(deps: AttemptDeps, err: unknown): AttemptResult {
+  if (budgetTimedOut(deps, err)) return budgetEnded('waiting on an object')
+  if (err instanceof DeadlineError) return { result: 'no_sale', reason: 'object_deadline', detail: messageOf(err) }
+  return { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) }
 }
 
 /** Let go of what this attempt holds: the reservation (when it may exist) and then the claim. Never throws. */

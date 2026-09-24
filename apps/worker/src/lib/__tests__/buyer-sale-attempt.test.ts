@@ -178,14 +178,20 @@ describe('runBuyerSaleAttempt claim outcomes', () => {
     expect(ledger.calls).toEqual([])
   })
 
-  it('a claim that does not answer is cap_check_error and touches nothing (L110)', async () => {
-    const sale = new FakeSale([new DeadlineError('claim', 500) as unknown as ClaimResult])
+  it('a claim that does not answer is object_deadline, named for what happened, and touches nothing (L110, #1530)', async () => {
+    const sale = new FakeSale([new DeadlineError('lead sale claim', 500) as unknown as ClaimResult])
     const ledger = new FakeLedger()
     const h = harness({ sale, ledger })
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'claim did not answer within 500 ms' })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'lead sale claim did not answer within 500 ms' })
     expect(sale.calls).toEqual(['claim:exec-1'])
     expect(ledger.calls).toEqual([])
     expect(h.buyerCalls).toBe(0)
+  })
+
+  it('a claim that fails with anything but a deadline is still cap_check_error: the object answered, with an error', async () => {
+    const sale = new FakeSale([new Error('lead sale 500') as unknown as ClaimResult])
+    const h = harness({ sale, ledger: new FakeLedger() })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'lead sale 500' })
   })
 })
 
@@ -293,11 +299,22 @@ describe('runBuyerSaleAttempt reserve outcomes', () => {
     expect(h.buyerCalls).toBe(0)
   })
 
-  it('a reserve that does not answer frees the claim and is cap_check_error', async () => {
+  it('a reserve that does not answer is object_deadline: it releases the reservation it may have landed, then frees the claim (#1512, #1530)', async () => {
     const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
-    const ledger = new FakeLedger(new DeadlineError('reserve', 500))
+    const ledger = new FakeLedger(new DeadlineError('buyer ledger reserve', 500))
     const h = harness({ sale, ledger })
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'reserve did not answer within 500 ms' })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'buyer ledger reserve did not answer within 500 ms' })
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('a reserve that fails with anything but a deadline is cap_check_error, and is released and freed the same way', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger(new Error('ledger 500'))
+    const h = harness({ sale, ledger })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'ledger 500' })
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
     expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
   })
 
@@ -468,13 +485,97 @@ describe('a budgeted attempt (decide only, #1491)', () => {
     expect(sale.calls).toEqual(['claim:exec-1', 'sold:1:1000'])
   })
 
-  it('control: without a budget the same ledger deadline is still a cap check error, and the reservation it may have landed is released too (#1512)', async () => {
+  it('control: without a rehearsal budget the same ledger deadline is object_deadline, never rehearsal_deadline, and the reservation it may have landed is released too (#1512)', async () => {
     const sale = claimed()
     const ledger = new FakeLedger(new DeadlineError('ledger reserve', 5000))
     const h = harness({ sale, ledger })
     const result = await runBuyerSaleAttempt(INPUT, h.deps)
-    expect(result).toMatchObject({ result: 'no_sale', reason: 'cap_check_error' })
+    expect(result).toMatchObject({ result: 'no_sale', reason: 'object_deadline' })
     expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
     expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+  })
+
+  it('a claim that runs out of time under the rehearsal budget is rehearsal_deadline too, not a cap check error: the 22 rows of 2026-09-24 (#1530)', async () => {
+    const sale = new FakeSale([new DeadlineError('lead sale claim', 533) as unknown as ClaimResult])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger })
+    h.deps.budgetLeftMs = () => 533
+    const result = await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(result).toMatchObject({ result: 'no_sale', reason: 'rehearsal_deadline' })
+    expect(ledger.calls).toEqual([])
+    expect(h.buyerCalls).toBe(0)
+  })
+})
+
+/**
+ * #1508: in live the steps BEFORE the buyer call share one budget, read between
+ * steps like the rehearsal one, but a spent budget is object_deadline (a live
+ * out reason the execution view labels), the cleanup is awaited because money
+ * is about to move, and the budget stops at the buyer call: commit and mark
+ * sold keep their own deadlines and the outcome_unknown page, because an
+ * accepted buyer answer must still be recorded whatever the clock says.
+ */
+describe('a live attempt bounded before the buyer call (#1508)', () => {
+  const claimed = () => new FakeSale([{ state: 'claimed', generation: 1 }])
+
+  it('a pre-call budget already spent after the claim frees the claim, reserves nothing and reports object_deadline', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger })
+    h.deps.preCallBudgetLeftMs = () => 0
+    const result = await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(result).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'the pre-call budget ran out after the claim' })
+    expect(ledger.calls).toEqual([])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('a pre-call budget spent after the reservation releases it, frees the claim and never calls the buyer', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger })
+    const left = [900, 0]
+    h.deps.preCallBudgetLeftMs = () => left.shift() ?? 0
+    const result = await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(result).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'the pre-call budget ran out after the reservation' })
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('the wait on another holder stops at the pre-call budget, not the buyer timeout, and holds nothing', async () => {
+    const inFlight: ClaimResult = { state: 'in_flight', holder_execution_id: 'exec-0', since: NOW - 1000, generation: 1 }
+    const sale = new FakeSale([inFlight])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger, buyerTimeoutMs: 20_000, waitIntervalMs: 250 })
+    // The budget is read off the same clock the fake sleep advances, so the wait ends by the clock, never by a counter.
+    const start = h.deps.clock()
+    h.deps.preCallBudgetLeftMs = () => 600 - (h.deps.clock() - start)
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'sale_in_flight', detail: 'exec-0 held the lead for the whole pre-call budget' })
+    // Two intervals fit inside 600 ms; the third would start with 100 ms left, less than an interval.
+    expect(h.sleeps).toEqual([250, 250])
+    expect(ledger.calls).toEqual([])
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('once the buyer has been called the budget no longer applies: a commit that does not answer is outcome_unknown, everything held, paged', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger(undefined, undefined, new DeadlineError('buyer ledger commit', 5000))
+    const h = harness({ sale, ledger })
+    h.deps.preCallBudgetLeftMs = () => 0.5
+    const result = await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(result).toMatchObject({ result: 'no_sale', reason: 'outcome_unknown', page: true })
+    expect(h.buyerCalls).toBe(1)
+    expect(ledger.calls).toEqual(['reserve:lead-1', 'commit:1000'])
+    expect(sale.calls).toEqual(['claim:exec-1'])
+  })
+
+  it('with budget to spare the attempt runs to a sale exactly as an unbudgeted one does', async () => {
+    const sale = claimed()
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger })
+    h.deps.preCallBudgetLeftMs = () => 1500
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'sold', outcome: OUTCOME, replay: false, mirrored: true })
+    expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called', 'committed', 'marked_sold', 'mirrored'])
   })
 })

@@ -53,6 +53,9 @@ describe('out reasons', () => {
       'daily_lead_cap', 'hourly_spend_cap', 'daily_spend_cap', 'cap_check_error',
       'already_sold', 'sale_in_flight', 'live_percent_unset', 'declined_by_buyer',
       'buyer_error', 'outcome_unknown', 'not_reached',
+      // #1530 and #1508: an internal call that ran out of time before the buyer was
+      // called, and a breaker that could not be read, each named for what happened.
+      'object_deadline', 'breaker_unreadable',
     ]
     expect([...OUT_REASONS].sort()).toEqual(expected.sort())
   })

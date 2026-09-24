@@ -16,7 +16,7 @@ import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, Sa
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
-import { BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, executeBuyerSelectNode, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
+import { BUYER_CALL_TIMEOUT_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -182,6 +182,8 @@ function harness(opts: {
   answers?: Record<string, BuyerAnswer[]>
   refuse?: Record<string, ReserveResult | Error>
   breakerOpen?: string[]
+  /** A breaker whose check throws, by slug: an unreadable breaker, not an open one. */
+  breakerError?: Record<string, Error>
   mirrorError?: Error
   ledgerError?: Error
   advanceOnBuyerCall?: number
@@ -241,7 +243,12 @@ function harness(opts: {
       return next
     },
     breaker: (slug) => ({
-      check: async () => { h.breakerCalls.push(`check:${slug}`); return { allowed: !(opts.breakerOpen ?? []).includes(slug), state: (opts.breakerOpen ?? []).includes(slug) ? 'open' : 'closed' } },
+      check: async () => {
+        h.breakerCalls.push(`check:${slug}`)
+        const unreadable = opts.breakerError?.[slug]
+        if (unreadable) throw unreadable
+        return { allowed: !(opts.breakerOpen ?? []).includes(slug), state: (opts.breakerOpen ?? []).includes(slug) ? 'open' : 'closed' }
+      },
       recordSuccess: async () => { h.breakerCalls.push(`success:${slug}`) },
       recordError: async () => { h.breakerCalls.push(`error:${slug}`) },
       releaseProbe: async () => { h.breakerCalls.push(`release:${slug}`) },
@@ -611,10 +618,77 @@ describe('the decide only budget bounds the whole attempt (#1491)', () => {
     expect(deadline('lead sale free')).toBe(OBJECT_CALL_DEADLINE_MS)
   })
 
-  it('in live mode the ledger client keeps its own deadline: no budget function is handed to it', async () => {
+})
+
+/**
+ * #1508: live has a ceiling of its own before the buyer call. Everything up to
+ * and including the reservation shares BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS from
+ * the node's start; the buyer call keeps BUYER_CALL_TIMEOUT_MS, and the calls
+ * after it (commit, mark sold) and every cleanup keep OBJECT_CALL_DEADLINE_MS,
+ * because an accepted answer must still be recorded whatever the clock says.
+ */
+describe('the live pre-call budget (#1508)', () => {
+  it('is 2,000 ms: above the rehearsal p95 of 913 ms and the measured object call p99 of 1,492 ms, and a fraction of the 20 s Engine allows', () => {
+    expect(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS).toBe(2_000)
+    expect(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS).toBeGreaterThan(MEASURED_OBJECT_CALL_P99_MS)
+    expect(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS).toBeGreaterThan(BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS)
+    expect(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS).toBeLessThan(BUYER_CALL_TIMEOUT_MS)
+  })
+
+  it('hands the ledger client a deadline function: pre-call operations are bounded by what is left of the budget, cleanup keeps the standard deadline', async () => {
+    const h = harness({ slowReserveMs: 5_000 })
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline', mode_effective: 'live' })
+    expect(out(r).considered[0]).toMatchObject({ partner: 'tripoint', outcome: 'skipped', reason: 'object_deadline' })
+    expect(out(r).duration_ms).toBeLessThanOrEqual(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS)
+    expect(h.buyerCalls).toEqual([])
+    // The reservation that may have landed is released and the claim freed, inline: money was about to move.
+    expect(h.ledgers.get('p-1')?.calls).toEqual(['release:released'])
+    expect(h.sales[0].state).toBe('free')
+    expect(h.background).toHaveLength(0)
+    expect(r.failure).toBeUndefined()
+    const deadline = h.ledgerClientOpts[0]?.deadlineMs
+    expect(deadline).toBeTypeOf('function')
+    if (typeof deadline !== 'function') return
+    expect(deadline('buyer ledger release')).toBe(OBJECT_CALL_DEADLINE_MS)
+    expect(deadline('lead sale free')).toBe(OBJECT_CALL_DEADLINE_MS)
+  })
+
+  it('a pre-call operation is never given more than the standard object deadline, and never less than a millisecond', async () => {
     const h = harness()
     await run(h)
-    expect(h.ledgerClientOpts).toHaveLength(1)
-    expect(h.ledgerClientOpts[0]?.deadlineMs).toBeUndefined()
+    const deadline = h.ledgerClientOpts[0]?.deadlineMs
+    expect(deadline).toBeTypeOf('function')
+    if (typeof deadline !== 'function') return
+    // After the buyer call the phase has moved on: commit and mark sold get the standard deadline.
+    expect(deadline('buyer ledger commit')).toBe(OBJECT_CALL_DEADLINE_MS)
+    expect(deadline('buyer ledger reserve')).toBe(OBJECT_CALL_DEADLINE_MS)
+  })
+
+  it('a sale that fits inside the budget is unchanged: claim, reserve, call, commit, mark sold, mirror', async () => {
+    const h = harness()
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'sold', reason: 'sold', mode_effective: 'live' })
+    expect(h.ledgers.get('p-1')!.calls).toEqual(['reserve:live:2190', 'commit'])
+    expect(h.sales[0].state).toBe('sold')
+  })
+
+  it('profiles that take the whole budget route no_sale with object_deadline and call nobody', async () => {
+    const h = harness()
+    const slowProfiles = async () => { h.clockMs += BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS + 1; return snapshot(buyer('p-1', 'tripoint', 1)) }
+    h.deps.loadProfiles = slowProfiles
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+    expect(h.buyerCalls).toEqual([])
+    expect(h.sales).toHaveLength(0)
+    expect(r.failure).toBeUndefined()
+  })
+
+  it('a breaker that cannot be read skips the buyer as breaker_unreadable, never as an open breaker and never as an allow (#1530)', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), breakerError: { tripoint: new DeadlineError('circuit check tripoint', 206) } })
+    const r = await run(h)
+    expect(out(r).considered[0]).toMatchObject({ partner: 'tripoint', outcome: 'skipped', reason: 'breaker_unreadable', detail: 'circuit check tripoint did not answer within 206 ms' })
+    expect(out(r)).toMatchObject({ _route: 'sold', sale: { partner_slug: 'liberty' } })
+    expect(h.buyerCalls.map((c) => c.slug)).toEqual(['liberty'])
   })
 })
