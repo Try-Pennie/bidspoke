@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
-import { BUYER_SALE_DRAIN_JOB, OUTBOX_BACKLOG_MS, numericOrNull, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import { BUYER_SALE_DRAIN_JOB, EXISTING_ROWS_PER_READ, OUTBOX_BACKLOG_MS, numericOrNull, readExistingBuyerSaleRows, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
 
 const NOW = Date.UTC(2027, 8, 20, 15, 40)
 const PARTNER = '11111111-1111-4111-8111-111111111111'
@@ -185,5 +185,55 @@ describe('runBuyerSaleDrain', () => {
   it('names its job for the heartbeat registry and the mute keys', () => {
     expect(BUYER_SALE_DRAIN_JOB).toBe('buyer-sale-drain')
     expect(OUTBOX_BACKLOG_MS).toBe(5 * 60 * 1000)
+  })
+  describe('readExistingBuyerSaleRows: a backlog past one request', () => {
+    // A stand in for PostgREST: every id sits in the query string, so a request
+    // naming more than URL_ID_LIMIT ids is refused as too long, and a response
+    // is capped at 1,000 rows. A day long outage leaves thousands uncopied.
+    const URL_ID_LIMIT = 400
+    function fakeSales(stored: string[]) {
+      const requests: number[] = []
+      const supabase = {
+        from: (table: string) => ({
+          select: () => ({
+            in: async (_col: string, ids: string[]) => {
+              expect(table).toBe('buyer_sales')
+              requests.push(ids.length)
+              if (ids.length > URL_ID_LIMIT) return { data: null, error: { message: '414 URI Too Long' } }
+              const rows = ids.filter((id) => stored.includes(id)).slice(0, 1_000)
+              return { data: rows.map((id) => ({ id, workflow_id: 'wf', trace_id: 't', debt: '18250.00', multiplier: 0.0012, live_percent_in_force: 100, caps_in_force: null })), error: null }
+            },
+          }),
+        }),
+      }
+      return { supabase: supabase as never, requests }
+    }
+    const idsOf = (n: number) => Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+
+    it('reads a 2,500 entry backlog in bounded requests and returns every stored row', async () => {
+      const ids = idsOf(2_500)
+      const { supabase, requests } = fakeSales(ids)
+      const out = await readExistingBuyerSaleRows(supabase, ids)
+      expect(out.size).toBe(2_500)
+      expect(out.get(ids[2_499])).toEqual({ workflow_id: 'wf', trace_id: 't', debt: 18250, multiplier: 0.0012, live_percent_in_force: 100, caps_in_force: null })
+      expect(Math.max(...requests)).toBeLessThanOrEqual(EXISTING_ROWS_PER_READ)
+      expect(requests.reduce((a, b) => a + b, 0)).toBe(2_500)
+    })
+
+    it('makes no request for an empty backlog', async () => {
+      const { supabase, requests } = fakeSales([])
+      expect((await readExistingBuyerSaleRows(supabase, [])).size).toBe(0)
+      expect(requests).toEqual([])
+    })
+
+    it('a batch that fails throws with the database message, so the tick waits rather than writing a first copy without its pricing', async () => {
+      const supabase = { from: () => ({ select: () => ({ in: async () => ({ data: null, error: { message: 'statement timeout' } }) }) }) } as never
+      await expect(readExistingBuyerSaleRows(supabase, idsOf(3))).rejects.toThrow('buyer_sales: statement timeout')
+    })
+
+    it('the batch fits both the URL and the row cap', () => {
+      expect(EXISTING_ROWS_PER_READ).toBeGreaterThan(0)
+      expect(EXISTING_ROWS_PER_READ).toBeLessThanOrEqual(Math.min(URL_ID_LIMIT, 1_000))
+    })
   })
 })

@@ -43,6 +43,9 @@ export const KNOWN_BIG_TABLES = new Set([
   // One row per run of every job that takes the archive lock, about 1,166 rows by
   // 2026-09-22 and never pruned (#1438).
   'job_runs',
+  // One row per buyer sale, about 825 in the first day of Stage A and never
+  // pruned; the daily growth check flagged it on 2026-09-24.
+  'buyer_sales',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads

@@ -51,6 +51,10 @@ const BIG_TABLES = [
   // it, about 1,166 rows by 2026-09-22 and never pruned. The daily growth check
   // flagged it (#1438).
   'job_runs',
+  // One row per buyer sale, about 825 in the first day of Stage A and never
+  // pruned. The daily growth check flagged it on 2026-09-24. Its one bounded
+  // by batch read is the drain looking up earlier copies, 200 ids at a time.
+  'buyer_sales',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])

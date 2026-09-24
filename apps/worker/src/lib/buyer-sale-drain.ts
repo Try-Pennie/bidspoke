@@ -27,6 +27,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { CapLimits, EntryKey, LedgerEntry, UnmirroredResult } from '../durable-objects/buyer-ledger'
 import type { Env } from '../index'
 import { BuyerLedgerClient } from './buyer-object-clients'
+import { chunk } from './chunk'
 import { buildBuyerSaleRow, buyerSaleRowId, mirrorBuyerSale, type BuyerSaleRowMeta } from './buyer-sale-mirror'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { describeDuration } from './slack'
@@ -227,6 +228,31 @@ export function numericOrNull(v: number | string | null | undefined): number | n
 }
 const num = numericOrNull
 
+/**
+ * Ids per buyer_sales lookup. Every id rides in the request URL, 37 characters
+ * each, so 200 keep the URL near 7.5 KB and the answer well under the 1,000 row
+ * cap. The outbox itself has no bound: a Supabase outage of a day leaves
+ * thousands of entries uncopied, and one request naming them all is refused as
+ * too long on every tick, so the drain would never catch up.
+ */
+export const EXISTING_ROWS_PER_READ = 200
+
+/** The earlier copy of each row the drain is about to deliver, read in bounded batches. */
+export async function readExistingBuyerSaleRows(supabase: SupabaseClient, ids: string[]): Promise<Map<string, ExistingRowMeta>> {
+  const out = new Map<string, ExistingRowMeta>()
+  for (const batch of chunk(ids, EXISTING_ROWS_PER_READ)) {
+    const { data, error } = await supabase
+      .from('buyer_sales')
+      .select('id, workflow_id, trace_id, debt, multiplier, live_percent_in_force, caps_in_force')
+      .in('id', batch) // paginate-ok: at most EXISTING_ROWS_PER_READ ids, one row each
+    if (error) throw new Error(`buyer_sales: ${error.message}`)
+    for (const r of (data ?? []) as unknown as ExistingRowRecord[]) {
+      out.set(r.id, { workflow_id: r.workflow_id, trace_id: r.trace_id, debt: num(r.debt), multiplier: num(r.multiplier), live_percent_in_force: r.live_percent_in_force, caps_in_force: r.caps_in_force })
+    }
+  }
+  return out
+}
+
 export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDeps {
   return {
     listBuyers: async () => {
@@ -243,19 +269,7 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
       }))
     },
     ledger: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
-    readExistingRows: async (ids) => {
-      if (ids.length === 0) return new Map()
-      const { data, error } = await supabase
-        .from('buyer_sales')
-        .select('id, workflow_id, trace_id, debt, multiplier, live_percent_in_force, caps_in_force')
-        .in('id', ids)
-      if (error) throw new Error(`buyer_sales: ${error.message}`)
-      const out = new Map<string, ExistingRowMeta>()
-      for (const r of (data ?? []) as unknown as ExistingRowRecord[]) {
-        out.set(r.id, { workflow_id: r.workflow_id, trace_id: r.trace_id, debt: num(r.debt), multiplier: num(r.multiplier), live_percent_in_force: r.live_percent_in_force, caps_in_force: r.caps_in_force })
-      }
-      return out
-    },
+    readExistingRows: (ids) => readExistingBuyerSaleRows(supabase, ids),
     supabase,
     notify: (lines) => notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, env.IDEMPOTENCY, BUYER_SALE_DRAIN_REMEDY),
     now: () => Date.now(),

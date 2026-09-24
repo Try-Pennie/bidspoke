@@ -46,6 +46,7 @@ import { pickSalesforceCreds, resolveSalesforceCredsFor } from './salesforce-cre
 // and call sites alike; the resolution itself lives in salesforce-creds.ts (#1174).
 export { pickSalesforceCreds }
 import type { Env } from '../index'
+import { chunk } from './chunk'
 
 export interface FillCandidate {
   bid_id: string
@@ -139,12 +140,6 @@ export interface FillSummary {
   /** Rows that reached the warehouse with no estimate. The visible residual. */
   exported_unpriced: number
   errors: string[]
-}
-
-export function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
 }
 
 /**

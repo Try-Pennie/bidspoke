@@ -32,6 +32,7 @@ import {
   type ErasureVerdict,
 } from '../archive/erasure'
 import type { Env } from '../index'
+import { chunk } from './chunk'
 
 const ARCHIVE = `${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`
 const SIGHTINGS = 'BIDSPOKE.PUBLIC.LEAD_SIGHTINGS'
@@ -156,12 +157,6 @@ async function deleteTarget(
     // target is in an unknown state.
     return { target, rowsDeleted: null, error: formatErr(err) }
   }
-}
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
 }
 
 export async function eraseSubject(

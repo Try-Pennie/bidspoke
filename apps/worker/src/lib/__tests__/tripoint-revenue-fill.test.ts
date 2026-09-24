@@ -145,7 +145,8 @@ describe('revenueUpdates', () => {
 
 import { vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { runTripointRevenueFill, resolveTripointOrg, pickSalesforceCreds, revenueSoql, indexRevenueRecords, chunk, LOOKBACK_MINUTES } from '../tripoint-revenue-fill'
+import { runTripointRevenueFill, resolveTripointOrg, pickSalesforceCreds, revenueSoql, indexRevenueRecords, LOOKBACK_MINUTES } from '../tripoint-revenue-fill'
+import { chunk } from '../chunk'
 
 interface DbResponses {
   bids?: { data?: unknown[] | null; error?: { message: string } | null }
