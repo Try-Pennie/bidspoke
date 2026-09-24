@@ -173,11 +173,13 @@ describe('external_debt reaches the database (#1169)', () => {
  * The Engine flow, which is where nearly all the volume is (#1169 follow-up,
  * re-aimed by #1482).
  *
- * Only Main Flow bids through a bid_group. The Engine Bidding Workflow bids
- * Tripoint from a CODE node, so it has no context map to read: 48,518 of the
- * 49,311 Tripoint attempts in the 7 days to 2026-09-04. Filling the column on
- * Main Flow alone leaves it filled on about two percent of the traffic while
- * reading as done.
+ * Only Main Flow bids through a bid_group. The Engine Bidding Workflow computes
+ * the debt in its prospect_trades step and bids Tripoint from a code node, so it
+ * has no context map to read: 48,518 of the 49,311 Tripoint attempts in the 7
+ * days to 2026-09-04. Filling the column on Main Flow alone leaves it filled on
+ * about two percent of the traffic while reading as done. The trades step is a
+ * code node on the Pipedream shaped fixtures below and a Salesforce node on the
+ * live Engine definition (#1528); both are read.
  *
  * WHICH figure: since 2026-09-23 the Tripoint buyer profile prices and bounds
  * on tradeCalculations.engineDebt (Phase 0 item 11, #1407) and the Salesforce
@@ -192,7 +194,7 @@ describe('external_debt reaches the database (#1169)', () => {
  * figure at all (the only "debt" in it is the loan purpose debt_consolidation),
  * so null is the correct answer for them rather than a gap.
  */
-describe('extractExternalDebt: the Engine flow bids from a code node', () => {
+describe('extractExternalDebt: the Engine flow carries the debt on its trades step', () => {
   const engineNodes = [
     { id: 'n1', namespace: 'prospect_trades', type: 'code', config: {} },
     { id: 'n2', namespace: 'patch_prospect_body', type: 'code', config: {} },
@@ -236,10 +238,33 @@ describe('extractExternalDebt: the Engine flow bids from a code node', () => {
     expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
   })
 
-  it('ignores a non-code node carrying the same shape', () => {
-    const nodes = [{ id: 'n1', namespace: 'sf_read', type: 'salesforce', config: {} }] as NodeDefinition[]
+  /**
+   * #1528: the live Engine definition's prospect_trades is a SALESFORCE node, not
+   * a code node (read from a production execution on 2026-09-24, step_type
+   * salesforce, output.body.tradeCalculations.engineDebt 6063). A gate on code
+   * nodes alone never read it, so the column was filled only on the leads the
+   * buyer_select node priced (100 percent of deferred rows, 0 percent of the
+   * not_applicable ones, 5.48 percent overall). The fixture is that execution's
+   * shape: the node bailed on bid_when_positive and recorded no lead_debt.
+   */
+  it('reads engineDebt from a Salesforce prospect_trades step beside a buyer_select that did not price the lead (#1528)', () => {
+    const nodes = [
+      { id: 'n1', namespace: 'prospect_trades', type: 'salesforce', config: {} },
+      { id: 'n2', namespace: 'buyer_select', type: 'buyer_select', config: {} },
+      { id: 'n3', namespace: 'tripoint_ping', type: 'code', config: {} },
+    ] as NodeDefinition[]
     const steps = {
-      sf_read: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 24500 } } } },
+      prospect_trades: { status: 'completed', output: { body: { engineBid: 0, sellOff: true, tradeCalculations: { engineDebt: 6063, enrollableDebt: 7010 } } } },
+      buyer_select: { status: 'completed', output: { _route: 'not_applicable', reason: 'bid_not_positive', detail: 'bid_when_positive resolved to 0' } },
+      tripoint_ping: { status: 'completed', output: { skipped: true, sale: { skipped: true, accepted: false } } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(6063)
+  })
+
+  it('ignores a pass-through node carrying the same shape, so a step the object merely travelled through is not the source', () => {
+    const nodes = [{ id: 'n1', namespace: 'route_end', type: 'branch_end', config: {} }] as NodeDefinition[]
+    const steps = {
+      route_end: { status: 'completed', output: { body: { tradeCalculations: { engineDebt: 24500 } } } },
     } as unknown as Record<string, StepOutput>
     expect(extractExternalDebt(ctxWith(steps), nodes)).toBeNull()
   })
