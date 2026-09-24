@@ -45,7 +45,7 @@ The Salesforce writes are Brian's three bodies, field for field: exchange status
 
 ## What Dan builds
 
-The Liberty1 partner must exist first: a partner of type Buyer on the Partners page, which is what the send node's partner picker lists. There is none yet (checked 2026-09-24). That partner record names the click claim and the daily click count, so create it once and keep it.
+The Liberty1 partner must exist first: a partner of type Buyer on the Partners page, which is what the send node's partner picker lists. There is none yet (checked 2026-09-24). That partner record names the click claim and the daily click count, so create it once and keep it. The 50 clicks a day is set on its buyer profile (Clicks per day), not on this workflow: the offer side stops offering at it and the send node judges its over cap notice against the same number (#1543).
 
 Then, either:
 

@@ -268,7 +268,6 @@
           "request_url": "{{steps.build_request.output.url}}",
           "request_body": "{{steps.build_request.output.body}}",
           "success_pattern": "Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)",
-          "daily_lead_cap": 50,
           "alert_over_percent": 120,
           "retries": 0
         },
