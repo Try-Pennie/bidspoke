@@ -44,6 +44,8 @@ const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
 const ACCEPT = [{ field: 'ok', equals: true }]
 const partnerRow = { id: 'p-1', slug: 'tripoint', is_active: true, accept_signals: ACCEPT, click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, organization_id: 'org-abc' }
+/** A click buyer's partner: no accept rules, and a click URL carrying the prospect id placeholder the offer replaces (#1546). */
+const clickPartnerRow = { ...partnerRow, accept_signals: [], click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' }
 
 const doc: BuyerProfileDocument = {
   partner_id: 'p-1', version: 2, sold_on: 'offer', is_enabled: true, priority: 1, allowed_states: ['TX'],
@@ -207,15 +209,27 @@ describe('PUT /partners/:id/buyer-profile', () => {
   it('an enabled click buyer with no priority, tiers or accept rules is saved with its kind', async () => {
     const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
     const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
-    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
     const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
     expect(res.status).toBe(200)
     expect(rpc).toHaveBeenCalledWith('save_buyer_profile', expect.objectContaining({ p_profile: expect.objectContaining({ sold_on: 'click', tiers: [] }) }))
   })
 
+  // #1546: the Engine offer replaces {prospect_id} in the click URL and refuses a URL without it.
+  it('an enabled click buyer whose partner click URL has no {prospect_id} is 422 click_url_has_no_prospect_id before the database is asked', async () => {
+    const rpc = vi.fn()
+    supabaseWith({ partner_configs: { single: { ...clickPartnerRow, click_url: 'https://trypennie.com/portal/libertyone/' } } }, { rpc })
+    const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { errors: Array<{ code: string; path: string }> }
+    expect(body.errors.map((e) => [e.code, e.path])).toEqual([['click_url_has_no_prospect_id', 'clickUrl']])
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('a click buyer with an hourly cap is 422 click_buyer_cap_unsupported before the database is asked', async () => {
     const rpc = vi.fn()
-    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
     const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], hourly_lead_cap: 10 }
     const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
     expect(res.status).toBe(422)
@@ -226,7 +240,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
 
   it('switching the kind while tiers or accept rules are stored is refused by the database and comes back as 422 sold_on_locked', async () => {
     const rpc = vi.fn().mockResolvedValue({ data: null, error: { code: 'BP422', message: 'sold_on_locked', details: 'offer cannot become click while pricing tiers or accept rules are stored. Remove them and save first.' } })
-    supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } } }, { rpc })
+    supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
     const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [] }
     const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
     expect(res.status).toBe(422)
@@ -267,7 +281,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
       vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
       const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 60 }
       const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
-      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow, clickSendFlow] } }, { rpc })
+      supabaseWith({ partner_configs: { single: clickPartnerRow }, workflows: { list: [clickCheckFlow, clickSendFlow] } }, { rpc })
       expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
     })
 
@@ -275,7 +289,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
       vi.mocked(readBuyerSoldOn).mockResolvedValue('offer')
       const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
       const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
-      supabaseWith({ partner_configs: { single: { ...partnerRow, accept_signals: [] } }, workflows: { list: [clickCheckFlow] } }, { rpc })
+      supabaseWith({ partner_configs: { single: clickPartnerRow }, workflows: { list: [clickCheckFlow] } }, { rpc })
       expect((await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })).status).toBe(200)
     })
 

@@ -487,16 +487,15 @@ async function judgeQuiet(
   }
 
   // No click: offers made by this org's own eligible check runs, and no click execution.
-  let offers = 0
-  if (read.slug !== null) {
-    try {
-      const eligibleIds = new Set(read.checks.filter((r) => r.route === 'eligible').map((r) => r.execution_id))
-      offers = (await deps.readOfferExecutionIds(read.slug, from, now + 1)).filter((id) => eligibleIds.has(id)).length
-    } catch (err) {
-      return { verdict: 'unmeasured', reason: `the offers could not be read: ${messageOf(err)}` }
-    }
-  } else {
+  if (read.slug === null) {
     return { verdict: 'unmeasured', reason: `the partner could not be read, so its offers could not be counted${read.partnerError ? `: ${read.partnerError}` : ''}` }
+  }
+  let offers: number
+  try {
+    const eligibleIds = new Set(read.checks.filter((r) => r.route === 'eligible').map((r) => r.execution_id))
+    offers = (await deps.readOfferExecutionIds(read.slug, from, now + 1)).filter((id) => eligibleIds.has(id)).length
+  } catch (err) {
+    return { verdict: 'unmeasured', reason: `the offers could not be read: ${messageOf(err)}` }
   }
   if (offers >= NO_CLICK_MIN_OFFERS) {
     if (subject.send.workflow_ids.length === 0) {
