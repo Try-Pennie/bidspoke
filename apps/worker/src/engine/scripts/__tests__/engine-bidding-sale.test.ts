@@ -64,8 +64,9 @@ async function runChain(steps: CanvasRun['steps'], fetch: CanvasRun['fetch'] | n
   return { tripoint_ping: steps.tripoint_ping?.output as Json | undefined, response, patch }
 }
 
+/** The fields added since the live recording: `sale` and `sent_body_sha256` (#1414), `tripoint_answer` and `unknown_reason` (#1540, tested in tripoint-answer.test.ts). */
 const withoutNewFields = (tp: Json): Json => {
-  const { sale: _sale, sent_body_sha256: _hash, ...rest } = tp
+  const { sale: _sale, sent_body_sha256: _hash, tripoint_answer: _answer, unknown_reason: _reason, ...rest } = tp
   return rest
 }
 

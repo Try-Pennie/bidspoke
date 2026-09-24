@@ -122,6 +122,66 @@ describe('summariseParityDay', () => {
     expect(counts.disagreement_execution_ids).not.toContain('e2')
   })
 
+  /**
+   * #1540: an incumbent answer nobody could read (a timeout, a proxy 5xx, a
+   * firewall page, a 200 with no result code) is not a decline. Counting it as
+   * declined_by_buyer would score the node's classifier against a "no" Tripoint
+   * never gave, so it has its own bucket. The script names it since #1540; an
+   * older incumbent row is read from the fields it carried (no code, no known
+   * 502 flag), so a day already recorded moves its count here when refreshed.
+   */
+  describe('an incumbent answer that is unknown has its own bucket (#1540)', () => {
+    const unknownIncumbent = (debug: { httpStatus?: unknown; rawText?: unknown } | undefined, over: Record<string, unknown> = {}) =>
+      ({ skipped: false, qualified: false, resultCode: null, tripoint_answer: 'unknown', ...(debug ? { debug } : {}), ...over })
+
+    it('a 504, a timeout and an HTML 403 are counted as unknown, never as a decline agreed or disputed', () => {
+      const counts = summariseParityDay([
+        exec('e504', { incumbent: unknownIncumbent({ httpStatus: 504, rawText: 'gateway timeout' }, { unknown_reason: 'http_504' }) }),
+        exec('eTimeout', { incumbent: unknownIncumbent({ httpStatus: null, rawText: null }, { unknown_reason: 'timeout' }) }),
+        exec('e403', { incumbent: unknownIncumbent({ httpStatus: 403, rawText: '<!DOCTYPE html><html>blocked</html>' }, { unknown_reason: 'http_403' }) }),
+      ], RULES)
+      expect(counts.incumbent_unknown_count).toBe(3)
+      expect(counts).toMatchObject({ classification_agree: 0, classification_disagree: 0, outcome_unknown_count: 0 })
+      expect(counts.disagreement_execution_ids).toEqual([])
+      // The timeout is measured, as unknown: it is not a missing response.
+      expect(counts.unmeasured.some((u) => u.startsWith('classification:'))).toBe(false)
+    })
+
+    it('reads an older incumbent row with no code and no 502 flag as unknown, so recorded days shift their count here', () => {
+      const counts = summariseParityDay([
+        exec('eOld', { incumbent: { skipped: false, qualified: false, resultCode: null, debug: { httpStatus: 403, rawText: '<html>blocked</html>' } } }),
+        // The two known 502 answers of the older script are not unknown.
+        exec('eInvalid', { incumbent: { skipped: false, qualified: false, resultCode: null, tripointLeadRejected: true, debug: { httpStatus: 502, rawText: '{"ok":false}' } } }),
+      ], RULES)
+      expect(counts.incumbent_unknown_count).toBe(1)
+    })
+
+    it('when the classifier reaches a verdict the incumbent could not, that is a disagreement naming the execution', () => {
+      // A 409 carrying a duplicate code: the incumbent script calls a non 2xx unknown, the rules decline it.
+      const counts = summariseParityDay([
+        exec('e409', { incumbent: unknownIncumbent({ httpStatus: 409, rawText: '{"ok":true,"data":{"createLead":{"resultCode":1003}}}' }) }),
+      ], RULES)
+      expect(counts.incumbent_unknown_count).toBe(1)
+      expect(counts.classification_disagree).toBe(1)
+      expect(counts.disagreement_execution_ids).toEqual(['e409'])
+    })
+
+    it('a known answer is compared exactly as before', () => {
+      const declinedBody = '{"ok":true,"data":{"createLead":{"resultCode":1003}}}'
+      const counts = summariseParityDay([
+        exec('e1', { incumbent: { skipped: false, qualified: true, resultCode: 1000, tripoint_answer: 'accepted', debug: { httpStatus: 200, rawText: '{"ok":true,"data":{"createLead":{"resultCode":1000,"id":"L-1"}}}' } } }),
+        exec('e2', { incumbent: { skipped: false, qualified: false, resultCode: 1003, tripoint_answer: 'declined', debug: { httpStatus: 200, rawText: declinedBody } } }),
+      ], RULES)
+      expect(counts).toMatchObject({ incumbent_unknown_count: 0, classification_agree: 2, classification_disagree: 0 })
+    })
+
+    it('is a count the hash covers, so a moved unknown count clears a sign off', async () => {
+      const a = summariseParityDay([exec('e1')], RULES)
+      expect(a.incumbent_unknown_count).toBe(0)
+      expect(await countsHash({ ...a, incumbent_unknown_count: 1 })).not.toBe(await countsHash(a))
+    })
+  })
+
   it('an incumbent row without the recorded response is unmeasured for classification, not agreement', () => {
     const counts = summariseParityDay([exec('e1', { incumbent: { skipped: false, qualified: true, resultCode: 1000 } })], RULES)
     expect(counts.classification_agree + counts.classification_disagree + counts.outcome_unknown_count).toBe(0)
@@ -231,7 +291,7 @@ describe('runParityRefresh', () => {
     // invocation's subrequest budget.
     expect(summary.rows_written).toBe(2)
     const today = upserts.find((r) => r.et_day === '2027-09-20')
-    expect(today).toMatchObject({ workflow_id: 'wf-engine', organization_id: 'org-1', sell_off_agree: 1, hash_match: 1, classification_agree: 1, window_complete: false })
+    expect(today).toMatchObject({ workflow_id: 'wf-engine', organization_id: 'org-1', sell_off_agree: 1, hash_match: 1, classification_agree: 1, incumbent_unknown_count: 0, window_complete: false })
     expect(today?.counts_hash).toMatch(/^[0-9a-f]{64}$/)
     expect(today?.refusal_counts).toMatchObject({ hourly_lead_cap: 0, daily_lead_cap: 0, hourly_spend_cap: 0, daily_spend_cap: 0 })
     expect(Object.keys(today ?? {})).not.toContain('signed_off_at')
