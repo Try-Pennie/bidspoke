@@ -25,6 +25,7 @@
  * records the outcome on the step.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { HELD_CLICK_REASONS } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
 import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
@@ -128,11 +129,16 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
 export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClickAlertMessage {
   if (alert.kind === 'page') {
     const w = PAGE_WORDING[alert.reason]
+    // Where the person releases it (#1552): the partner page lists every held claim.
+    const release = (HELD_CLICK_REASONS as readonly string[]).includes(alert.reason)
+      ? [`Release it under Held clicks on the ${alert.partner_slug} partner page: ${appUrl}/partners?selected=${encodeURIComponent(alert.partner_slug)}`]
+      : []
     return {
       header: `${alert.partner_slug} ${w.header}`,
       body: [
         alert.prospect_id === null ? `${alert.detail}.` : `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
         w.held,
+        ...release,
         `Further ${alert.reason} pages for ${alert.partner_slug} are held for ${CLICK_PAGE_COOLDOWN_SECONDS / 60} minutes; the executions list shows every occurrence. Seen at ${etTime(alert.at)}.`,
       ].join('\n\n'),
       link: `${appUrl}/workflows/${alert.workflow_id}/executions?trace=${encodeURIComponent(alert.trace_id)}`,

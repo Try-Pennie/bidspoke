@@ -25,6 +25,7 @@ import {
   executeBuyerClickSendNode,
   type BuyerClickSendDeps,
   type ProfileCap,
+  type HeldClickRecord,
 } from '../buyer-click-send'
 import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
 
@@ -77,6 +78,7 @@ interface Harness {
   saleKeys: string[]
   counterNames: string[]
   resolved: string[]
+  holds: HeldClickRecord[]
 }
 
 function harness(opts: {
@@ -96,11 +98,13 @@ function harness(opts: {
   memberSet?: Set<string>
   /** The profile's daily cap: a number, null for a profile holding none, 'none' for no enabled profile, or a read that throws. */
   cap?: number | null | 'none' | (() => Promise<ProfileCap>)
+  /** The held click record write throws (#1552). */
+  holdFails?: boolean
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], deps: undefined as never,
   }
   h.deps = {
     profileCap: async (partnerId) => {
@@ -161,6 +165,10 @@ function harness(opts: {
     alert: async (a) => {
       h.alerts.push(a)
       return opts.alert ? opts.alert(a) : 'posted'
+    },
+    recordHold: async (hold) => {
+      if (opts.holdFails) throw new Error('record_held_click failed: relation does not exist')
+      h.holds.push(hold)
     },
     clock: () => NOW,
     timers: opts.timers,
@@ -369,6 +377,68 @@ describe('an unknown send keeps the claim held, pages and routes unknown', () =>
     expect(pending[0].ms).toBeLessThan(CLICK_CLAIM_DEADLINE_MS)
     pending.forEach((t) => t.fn())
     expect((await p).output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
+  })
+})
+
+describe('a held claim is recorded so a person can find it on the partner page (#1552)', () => {
+  const base = { partner_id: PARTNER_ID, prospect_id: 'a0B000000000001AAA', workflow_id: 'wf-1', execution_id: 'exec-1', trace_id: 'trace-1' }
+
+  it('an unknown answer records the hold with its reason and detail', async () => {
+    const h = harness({ post: answer(503, 'Service Unavailable') })
+    const r = await run(h)
+    expect(h.holds).toEqual([{ ...base, reason: 'outcome_unknown', detail: r.output.detail, partner_lead_id: null }])
+    expect(r.output.hold_recorded).toBe(true)
+  })
+
+  it('a post with no answer at all records the hold', async () => {
+    const h = harness({ post: () => Promise.reject(new Error('Network connection lost.')) })
+    await run(h)
+    expect(h.holds.map((x) => x.reason)).toEqual(['outcome_unknown'])
+  })
+
+  it('a claim found in doubt records the sighting', async () => {
+    const h = harness({ claim: { state: 'in_doubt', partner_id: PARTNER_ID, generation: 2 } })
+    const r = await run(h)
+    expect(h.holds).toEqual([expect.objectContaining({ ...base, reason: 'claim_in_doubt', partner_lead_id: null })])
+    expect(r.output.hold_recorded).toBe(true)
+  })
+
+  it('a sold mark that fails records the hold with the lead id the buyer gave, so the person need not look it up', async () => {
+    const h = harness({ soldFails: true })
+    await run(h)
+    expect(h.holds).toEqual([expect.objectContaining({ ...base, reason: 'sold_mark_failed', partner_lead_id: SF_ID })])
+  })
+
+  it('a refusal whose claim cannot be freed records the hold', async () => {
+    const h = harness({ post: answer(422, 'Missing field: Email'), freeFails: true })
+    await run(h)
+    expect(h.holds).toEqual([expect.objectContaining({ ...base, reason: 'free_failed', partner_lead_id: null })])
+  })
+
+  it('nothing is recorded when nothing is held: sent, refused and freed, already sent, in progress, report only', async () => {
+    const runs: Harness[] = [
+      harness(),
+      harness({ post: answer(400, 'Duplicate SSN') }),
+      harness({ claim: { state: 'sold', partner_id: PARTNER_ID, outcome: { buyer_reference: SF_ID, result_code: 'created', http_status: 200, payout_cents: 0 }, generation: 3 } }),
+      harness({ claim: { state: 'in_flight', holder_execution_id: 'exec-0', since: NOW - 3000, generation: 1 } }),
+    ]
+    for (const h of runs) {
+      const r = await run(h)
+      expect(h.holds, r.output._route).toEqual([])
+      expect(r.output.hold_recorded, r.output._route).toBeUndefined()
+    }
+    const test = harness({ post: answer(503, 'down') })
+    await run(test, node(), ctx({ isTest: true }))
+    expect(test.holds).toEqual([])
+  })
+
+  it('a record that fails is logged and reported on the step, never fails the node, and the page still goes out', async () => {
+    const h = harness({ post: answer(503, 'down'), holdFails: true })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'unknown', hold_recorded: false })
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown' })])
+    expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && /relation does not exist/.test(String(l.error_message)))).toBe(true)
   })
 })
 

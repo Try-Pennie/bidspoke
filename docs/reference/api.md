@@ -377,6 +377,19 @@ Response `201` (the only time the key is shown in full):
 | GET | `/api/buyer-sales?status=unresolved&page=&limit=&partner_id=` | The queue, paged, with the partner slug on each row and the total. `partner_id` narrows it to one buyer, and the total is then that buyer's; an empty value is refused (400 `partner_id_invalid`). |
 | POST | `/api/buyer-sales/:id/settle` | Body `{ outcome: 'accepted' \| 'released' }`. Accepted counts as sold to that buyer; released frees the slot. 409 `not_unresolved` names the state the sale is in; 503 when the ledger does not answer, with nothing changed. |
 
+## Held clicks
+
+`/api/held-clicks`. Clicks the buyer_click_send node left held because whether the buyer has the lead is not known, recorded in `held_click_claims` so they can be listed (a claim object cannot be). The claim in its LeadSaleObject is the authority: every entry carries the claim's live state, and every release is a compare and set on the generation the page read. Each release is audited as `held_click` with the claim's old and new state.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/held-clicks?partner_id=` | One buyer's held clicks, oldest first (at most 100, with the total). Each entry's `claim.status` is `held` (releasable, with its `generation`), `sending` (a send still inside its window, with `releasable_at`), `free` or `sold` (no longer held), or `unreadable`. A missing or malformed `partner_id` is refused (400 `partner_id_invalid`). |
+| POST | `/api/held-clicks/:id/mark-sent` | Body `{ generation, buyer_lead_id }`. The person found the lead in the buyer's system: the claim is healed to sold with that lead id, and the prospect is added to the buyer's click count for the Pacific day the click was held. A count that fails is reported (`count: null`, `count_error`) on a sale that stands. |
+| POST | `/api/held-clicks/:id/free` | Body `{ generation }`. The buyer does not have the lead: the claim is freed, so the next click sends it. Nothing is counted. |
+| POST | `/api/held-clicks/:id/clear` | Removes an entry whose claim is no longer held (409 `still_held` otherwise). |
+
+The releases refuse 409 `claim_changed` when the claim moved since the page read it, `still_sending` inside a send's window, and `not_held` (naming `free` or `sold`) when there is nothing to release; 503 `claim_unavailable` when the claim object does not answer, with nothing changed. `list_cleared` says whether the entry was removed: it stays when a newer hold on the prospect was recorded meanwhile.
+
 ## Partner bid configs
 
 `/api/partner-bid-configs`. First-class bid configurations and their matrix rows (`partner_bid_configs` + `bid_matrix_rows`). In v1 these are synced read-only from Salesforce on an hourly cron; the schema is editable-ready.

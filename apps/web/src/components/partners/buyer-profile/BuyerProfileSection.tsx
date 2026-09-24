@@ -7,7 +7,9 @@
  * one Save writes the partner record first (the rules live there) and the
  * profile second; this section renders the editors over that state and owns
  * the read surfaces beside them (usage, history, the unresolved queue) and the
- * one action that is its own: settling a sale.
+ * actions that are its own: settling a sale, and for a click buyer releasing a
+ * held click (#1552), which takes the unresolved queue's place because a click
+ * buyer never reserves in the ledger.
  *
  * Ordered for the reader (L609): enabled and ranking first, pricing and caps
  * next, outcome rules, blackout dates last. Every fact once (L605): the scope
@@ -18,7 +20,7 @@ import { useEffect, useState } from 'react'
 import { PRIORITY_DIRECTION, SOLD_ON, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-body'
-import { api } from '@/lib/api'
+import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
 import { ChoiceGroup, Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
@@ -28,6 +30,7 @@ import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
 import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
+import { HeldClicksPanel } from './HeldClicksPanel'
 import { PricingTiersEditor } from './PricingTiersEditor'
 import { ProfileConflictView } from './ProfileConflictView'
 import { StatePicker } from './StatePicker'
@@ -117,6 +120,24 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
   }
 }
 
+/** A Pacific date as the count names it, 2027-09-20, shown as Sep 20. */
+function countDay(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`)
+  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
+}
+
+const LIST_NOT_CLEARED = ' The entry was not removed from this list; reload to see it as it stands.'
+
+function markSentMessage(result: MarkSentResult, leadId: string, partnerName: string): string {
+  const base = `Marked sent as ${leadId}.`
+  const counted = result.count
+    ? result.count.added
+      ? ` Counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
+      : ` It was already counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
+    : ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}`
+  return `${base}${counted}${result.list_cleared ? '' : LIST_NOT_CLEARED}`
+}
+
 export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs, soldOnLock } = props
   const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
@@ -129,6 +150,9 @@ export function BuyerProfileSection(props: Props) {
   /** A failed Show more, kept apart from the first read's error so the rows already shown stay on screen with their controls. */
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const [settleOutcomes, setSettleOutcomes] = useState<Record<string, OutcomeState>>({})
+  const [held, setHeld] = useState<{ entries: HeldClick[]; total: number } | null>(null)
+  const [heldError, setHeldError] = useState<string | null>(null)
+  const [heldOutcomes, setHeldOutcomes] = useState<Record<string, OutcomeState>>({})
 
   useEffect(() => {
     if (!partnerId) return
@@ -163,6 +187,45 @@ export function BuyerProfileSection(props: Props) {
     api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(errorSentence(err, 'The usage counts could not be read.')) })
     return () => { cancelled = true }
   }, [partnerId, profileLoaded, savedVersion])
+
+  // A click buyer's held clicks (#1552), read once the profile says it is sold on the click.
+  const soldOnClick = profile !== null && profile.sold_on === 'click'
+  useEffect(() => {
+    if (!partnerId || !soldOnClick) return
+    let cancelled = false
+    api.heldClicks.list(partnerId)
+      .then((r) => { if (!cancelled) setHeld(r) })
+      .catch((err: unknown) => { if (!cancelled) setHeldError(errorSentence(err, 'the read failed')) })
+    return () => { cancelled = true }
+  }, [partnerId, soldOnClick])
+
+  /** Runs one release with the three visible states (working with a clock, done, failed) on its row. */
+  async function release(id: string, label: string, act: () => Promise<string>) {
+    const startedAt = Date.now()
+    setHeldOutcomes((o) => ({ ...o, [id]: { kind: 'working', label, startedAt, now: startedAt, stalledAfterMs: 30_000 } }))
+    const tick = setInterval(() => setHeldOutcomes((o) => (o[id]?.kind === 'working' ? { ...o, [id]: { ...o[id], now: Date.now() } as OutcomeState } : o)), 1000)
+    try {
+      const message = await act()
+      setHeldOutcomes((o) => ({ ...o, [id]: { kind: 'done', message } }))
+    } catch (err) {
+      setHeldOutcomes((o) => ({ ...o, [id]: { kind: 'failed', message: errorSentence(err, 'The release failed.') } }))
+    } finally {
+      clearInterval(tick)
+    }
+  }
+
+  const markSent = (row: HeldClick, generation: number, leadId: string) =>
+    release(row.id, 'Marking it sent', async () => markSentMessage(await api.heldClicks.markSent(row.id, generation, leadId), leadId, partnerName))
+  const free = (row: HeldClick, generation: number) =>
+    release(row.id, 'Freeing it', async () => {
+      const r = await api.heldClicks.free(row.id, generation)
+      return `Freed. The next click on this prospect sends it to ${partnerName}.${r.list_cleared ? '' : LIST_NOT_CLEARED}`
+    })
+  const clear = (row: HeldClick) =>
+    release(row.id, 'Removing it', async () => {
+      const r = await api.heldClicks.clear(row.id)
+      return r.list_cleared ? 'Removed from the list.' : LIST_NOT_CLEARED.trim()
+    })
 
   async function loadMoreUnresolved() {
     if (!partnerId || !unresolved || loadingMore) return
@@ -307,6 +370,14 @@ export function BuyerProfileSection(props: Props) {
             )}
           </div>
 
+          {/* Beside the caps, where a click buyer's count shows (#1552). */}
+          {click && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
+              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} />
+            </div>
+          )}
+
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
             {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
@@ -328,19 +399,22 @@ export function BuyerProfileSection(props: Props) {
             </Field>
           </div>
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">Unresolved sales</h4>
-            {unresolvedError ? (
-              <p role="alert" className="text-xs text-red-700">{unresolvedError}</p>
-            ) : unresolved === null ? (
-              <p role="status" className="text-xs text-gray-500">Reading the unresolved sales…</p>
-            ) : (
-              <>
-                <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
-                {loadMoreError && <p role="alert" className="text-xs text-red-700">{loadMoreError}</p>}
-              </>
-            )}
-          </div>
+          {/* A click buyer never reserves in the ledger, so its queue is the held clicks above. */}
+          {!click && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Unresolved sales</h4>
+              {unresolvedError ? (
+                <p role="alert" className="text-xs text-red-700">{unresolvedError}</p>
+              ) : unresolved === null ? (
+                <p role="status" className="text-xs text-gray-500">Reading the unresolved sales…</p>
+              ) : (
+                <>
+                  <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
+                  {loadMoreError && <p role="alert" className="text-xs text-red-700">{loadMoreError}</p>}
+                </>
+              )}
+            </div>
+          )}
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>

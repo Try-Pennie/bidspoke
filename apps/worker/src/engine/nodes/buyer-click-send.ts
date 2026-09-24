@@ -22,6 +22,12 @@
  *                   page, a 2xx that is not the success line. The claim is kept
  *                   held, the node pages, and only a person releases it.
  *
+ * A claim left held, or found held, is also RECORDED (#1552) through
+ * record_held_click, because a claim object cannot be listed and the step rows
+ * are purged after 7 days while the claim stays held. The partner page lists
+ * the held clicks from that record and a person releases each one there. A
+ * record that fails is logged and reported on the step; the page still goes out.
+ *
  * Every route carries a named reason (L11). Config problems and a claim that
  * cannot be read fail the step by name before anything is sent.
  *
@@ -48,7 +54,7 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, isCap, partnerIdOf, withDeadline, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, isCap, partnerIdOf, withDeadline, type HeldClickReason, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
@@ -94,6 +100,9 @@ export const CLICK_ALERT_DEADLINE_MS = 5_000
 
 /** How long the node waits on the profile's cap after the click is counted; past it the notice is cap_unreadable. */
 export const CLICK_CAP_READ_DEADLINE_MS = 5_000
+
+/** How long the node waits on the held click record before reporting it as not recorded. */
+export const CLICK_HOLD_RECORD_DEADLINE_MS = 5_000
 
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
@@ -176,6 +185,8 @@ export interface BuyerClickSendOutput {
   daily_lead_cap_ignored?: unknown
   claim_freed?: boolean
   pages: Array<{ reason: ClickPageReason; outcome: ClickAlertOutcome }>
+  /** Present only when the claim is held: whether the partner page's record of it was written (#1552). */
+  hold_recorded?: boolean
   would_send_body_sha256?: string
   retries_ignored?: number
   duration_ms: number
@@ -193,6 +204,19 @@ export interface BuyerClickSendResult {
 }
 
 // ── Injectable dependencies ───────────────────────────────────────────────────
+
+/** One held claim, as the partner page lists it (#1552). The org comes from the execution. */
+export interface HeldClickRecord {
+  partner_id: string
+  prospect_id: string
+  reason: HeldClickReason
+  detail: string
+  /** The buyer's lead id when the buyer confirmed the record; null when it is not known. */
+  partner_lead_id: string | null
+  workflow_id: string
+  execution_id: string
+  trace_id: string
+}
 
 export interface ClickSaleApi {
   claim(body: ClaimBody): Promise<ClaimResult>
@@ -217,6 +241,8 @@ export interface BuyerClickSendDeps {
   counter: (partnerId: string, nowMs: number) => ClickCounterApi
   post: (target: { slug: string; url: string }, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
   alert: (alert: ClickAlert) => Promise<ClickAlertOutcome>
+  /** Writes the held click record the partner page lists (#1552). Throws when it did not land. */
+  recordHold: (hold: HeldClickRecord) => Promise<void>
   clock: () => number
   timers?: Timers
   log: (fields: { event: string } & Record<string, unknown>) => void
@@ -247,6 +273,20 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
     // The one production alert, shared with buyer_click_check (#1557).
     alert: productionClickAlert(orgId, env, supabase),
+    recordHold: async (hold) => {
+      const { error } = await supabase.rpc('record_held_click', {
+        p_org: orgId,
+        p_partner: hold.partner_id,
+        p_prospect: hold.prospect_id,
+        p_reason: hold.reason,
+        p_detail: hold.detail,
+        p_partner_lead_id: hold.partner_lead_id,
+        p_workflow: hold.workflow_id,
+        p_execution: hold.execution_id,
+        p_trace: hold.trace_id,
+      })
+      if (error) throw new Error(`record_held_click: ${error.message}`)
+    },
     clock: () => Date.now(),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
     localDev: Boolean(env.LOCAL_DEV),
@@ -381,7 +421,7 @@ class Run {
 
     // 1. claim
     const sale = this.deps.saleClient({ kind: 'click', partner_id: v.partnerId, prospect_id: v.prospectId })
-    const executionId = this.ctx.trigger.execution_id ?? this.ctx.trigger.trace_id
+    const executionId = this.executionId()
     let claim: ClaimResult
     try {
       claim = await sale.claim({ partner_id: v.partnerId, execution_id: executionId, deadline_ms: CLICK_CLAIM_DEADLINE_MS })
@@ -397,6 +437,7 @@ class Run {
         return this.done('in_progress', 'claim_in_progress', `execution ${claim.holder_execution_id} has been sending it since ${new Date(claim.since).toISOString()}`)
       case 'in_doubt': {
         const detail = 'an earlier send never recorded its outcome, so this click was not sent'
+        await this.recordHold(v, 'claim_in_doubt', detail, null)
         await this.page(v, 'claim_in_doubt', detail)
         return this.done('needs_review', 'claim_in_doubt', detail)
       }
@@ -411,6 +452,7 @@ class Run {
       res = await withDeadline(this.deps.post({ slug: v.slug, url: v.url }, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', this.deps.timers)
     } catch (err) {
       const detail = `no answer from the buyer: ${messageOf(err)}`
+      await this.recordHold(v, 'outcome_unknown', detail, null)
       await this.page(v, 'outcome_unknown', detail)
       return this.done('unknown', 'outcome_unknown', detail)
     }
@@ -419,6 +461,7 @@ class Run {
     // 3. classify
     const verdict = classifyClickAnswer(res, v.pattern)
     if (verdict.kind === 'unknown') {
+      await this.recordHold(v, 'outcome_unknown', verdict.detail, null)
       await this.page(v, 'outcome_unknown', verdict.detail)
       return this.done('unknown', 'outcome_unknown', verdict.detail)
     }
@@ -428,7 +471,9 @@ class Run {
         this.out.claim_freed = true
       } catch (err) {
         this.out.claim_freed = false
-        await this.page(v, 'free_failed', `the buyer refused it (${verdict.detail}) and the claim could not be released: ${messageOf(err)}`)
+        const detail = `the buyer refused it (${verdict.detail}) and the claim could not be released: ${messageOf(err)}`
+        await this.recordHold(v, 'free_failed', detail, null)
+        await this.page(v, 'free_failed', detail)
       }
       return this.done('refused', 'refused_by_buyer', verdict.detail)
     }
@@ -437,7 +482,9 @@ class Run {
     try {
       await sale.sold(generation, { buyer_reference: verdict.partnerLeadId, result_code: 'created', http_status: res.status, payout_cents: 0 })
     } catch (err) {
-      await this.page(v, 'sold_mark_failed', `the buyer created ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`)
+      const detail = `the buyer created ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
+      await this.recordHold(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
+      await this.page(v, 'sold_mark_failed', detail)
     }
     await this.count(v)
     return this.done('sent', 'sent', `the buyer created ${verdict.partnerLeadId}`)
@@ -498,6 +545,27 @@ class Run {
       kind: 'over_cap', partner_id: v.partnerId, partner_slug: v.slug, date: counter.date, count: added.count, daily_lead_cap: cap,
       alert_over_percent: v.percent, threshold, workflow_id: this.ctx.trigger.workflow_id, at: now,
     })
+  }
+
+  /** Bounded and caught like an alert: the click it records already happened, so a failure is reported, never thrown. */
+  private async recordHold(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<void> {
+    try {
+      await withDeadline(
+        this.deps.recordHold({
+          partner_id: v.partnerId, prospect_id: v.prospectId, reason, detail, partner_lead_id: partnerLeadId,
+          workflow_id: this.ctx.trigger.workflow_id, execution_id: this.executionId(), trace_id: this.ctx.trigger.trace_id,
+        }),
+        CLICK_HOLD_RECORD_DEADLINE_MS, 'held click record', this.deps.timers,
+      )
+      this.out.hold_recorded = true
+    } catch (err) {
+      this.out.hold_recorded = false
+      this.deps.log({ event: 'buyer_click_hold_record_failed', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, reason, error_message: messageOf(err) })
+    }
+  }
+
+  private executionId(): string {
+    return this.ctx.trigger.execution_id ?? this.ctx.trigger.trace_id
   }
 
   private async page(v: Validated, reason: ClickPageReason, detail: string): Promise<void> {

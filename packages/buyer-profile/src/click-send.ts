@@ -78,3 +78,21 @@ export function partnerIdOf(value: unknown): PartnerIdRule {
   if (isPartnerId(trimmed)) return { ok: true, id: trimmed }
   return { ok: false, reason: `partner_id ${JSON.stringify(value ?? null)} is not a partner id; pick the buyer again on the node` }
 }
+
+/**
+ * Why a click claim is held for a person (#1552): the reasons buyer_click_send
+ * records a held claim under, in the order the partner page explains them. The
+ * held_click_claims CHECK constraint lists exactly these (a worker test reads the
+ * migration), and each is also a page reason, so the Slack page and the partner
+ * page speak of one set.
+ */
+export const HELD_CLICK_REASONS = ['outcome_unknown', 'sold_mark_failed', 'free_failed', 'claim_in_doubt'] as const
+export type HeldClickReason = (typeof HELD_CLICK_REASONS)[number]
+
+/** What each reason means for the person deciding, in the domain's words. */
+export const HELD_CLICK_REASON_LABELS: Record<HeldClickReason, string> = {
+  outcome_unknown: 'The buyer gave no readable answer, so whether it created the lead is not known.',
+  sold_mark_failed: 'The buyer created the lead, and recording that failed.',
+  free_failed: 'The buyer refused the lead, and releasing the claim failed.',
+  claim_in_doubt: 'An earlier send never recorded its outcome.',
+}

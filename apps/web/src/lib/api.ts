@@ -70,6 +70,32 @@ export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'crea
 
 // ── Partner Bid Configs (matrix definitions) ──────────────────────────────────
 
+/** A held click claim's live state, as the claim object reports it (#1552). */
+export type HeldClaim =
+  | { status: 'held'; generation: number }
+  | { status: 'sending'; generation: number; releasable_at: string }
+  | { status: 'free'; generation: number }
+  | { status: 'sold'; generation: number; partner_lead_id: string | null }
+  | { status: 'unreadable'; message: string }
+
+/** One click buyer_click_send left held for a person (#1552). */
+export interface HeldClick {
+  id: string
+  prospect_id: string
+  reason: string
+  detail: string
+  partner_lead_id: string | null
+  workflow_id: string | null
+  execution_id: string
+  held_at: string
+  last_seen_at: string
+  claim: HeldClaim
+}
+
+export type MarkSentResult =
+  | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; list_cleared: boolean }
+  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; list_cleared: boolean }
+
 export interface BidConfigDimension {
   name: string
   payload_field: string
@@ -825,6 +851,18 @@ export const api = {
     },
     settle: (id: string, outcome: 'accepted' | 'released') =>
       req<{ entry: Record<string, unknown>; mirrored: boolean; mirror_error?: string }>(`/api/buyer-sales/${id}/settle`, { method: 'POST', body: JSON.stringify({ outcome }) }),
+  },
+
+  /** Click claims buyer_click_send left held, and a person's release of each (#1552). */
+  heldClicks: {
+    list: (partnerId: string) =>
+      req<{ entries: HeldClick[]; total: number }>(`/api/held-clicks?partner_id=${encodeURIComponent(partnerId)}`),
+    markSent: (id: string, generation: number, buyerLeadId: string) =>
+      req<MarkSentResult>(`/api/held-clicks/${id}/mark-sent`, { method: 'POST', body: JSON.stringify({ generation, buyer_lead_id: buyerLeadId }) }),
+    free: (id: string, generation: number) =>
+      req<{ outcome: 'freed'; generation: number; list_cleared: boolean }>(`/api/held-clicks/${id}/free`, { method: 'POST', body: JSON.stringify({ generation }) }),
+    clear: (id: string) =>
+      req<{ outcome: 'cleared'; claim: 'free' | 'sold'; list_cleared: boolean }>(`/api/held-clicks/${id}/clear`, { method: 'POST', body: JSON.stringify({}) }),
   },
 
   partnerBidConfigs: {

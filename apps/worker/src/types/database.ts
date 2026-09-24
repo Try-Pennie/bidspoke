@@ -1211,6 +1211,69 @@ export type Database = {
           },
         ]
       }
+      held_click_claims: {
+        Row: {
+          detail: string
+          execution_id: string
+          held_at: string
+          id: string
+          last_execution_id: string
+          last_seen_at: string
+          organization_id: string
+          partner_id: string
+          partner_lead_id: string | null
+          prospect_id: string
+          reason: string
+          trace_id: string | null
+          workflow_id: string | null
+        }
+        Insert: {
+          detail: string
+          execution_id: string
+          held_at?: string
+          id?: string
+          last_execution_id: string
+          last_seen_at?: string
+          organization_id: string
+          partner_id: string
+          partner_lead_id?: string | null
+          prospect_id: string
+          reason: string
+          trace_id?: string | null
+          workflow_id?: string | null
+        }
+        Update: {
+          detail?: string
+          execution_id?: string
+          held_at?: string
+          id?: string
+          last_execution_id?: string
+          last_seen_at?: string
+          organization_id?: string
+          partner_id?: string
+          partner_lead_id?: string | null
+          prospect_id?: string
+          reason?: string
+          trace_id?: string | null
+          workflow_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "held_click_claims_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "held_click_claims_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "partner_configs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       job_runs: {
         Row: {
           detail: string | null
@@ -2675,6 +2738,20 @@ export type Database = {
         Returns: undefined
       }
       record_buyer_sale: { Args: { p_row: Json }; Returns: Json }
+      record_held_click: {
+        Args: {
+          p_detail: string
+          p_execution: string
+          p_org: string
+          p_partner: string
+          p_partner_lead_id: string
+          p_prospect: string
+          p_reason: string
+          p_trace: string
+          p_workflow: string
+        }
+        Returns: Json
+      }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number

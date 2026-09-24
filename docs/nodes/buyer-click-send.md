@@ -81,6 +81,15 @@ The node posts to the org's Slack connection for two things:
 
 Both are decided by the alert claim object, so two clicks that page together post once. A Slack failure is logged and recorded on the step (`pages[].outcome`, `over_cap`), and never fails the node, because the click it reports on has already happened.
 
+## Releasing a held click
+
+A claim the node leaves held (`outcome_unknown`, `sold_mark_failed`, `free_failed`) or finds held (`claim_in_doubt`) is also recorded in `held_click_claims`, because a claim object cannot be listed and the step rows are kept only 7 days while the claim stays held. The buyer's partner page lists them under **Held clicks**, and the page for each of those reasons links there. A person checks the buyer's system and then either:
+
+- **Mark sent**: the buyer has the lead. The claim is marked sent with the lead id the person enters, and the prospect is added to the click count of the Pacific day the click was held.
+- **Free**: the buyer does not have it. The claim is freed, so the next click on the prospect sends it.
+
+Each is a compare and set on the claim's generation, so a page read before the claim moved is refused, and each is audited. A record that cannot be written is logged and reported on the step as `hold_recorded: false`; the page still goes out. Routes: [Held clicks](../reference/api.md#held-clicks).
+
 ## Output
 
 ```json

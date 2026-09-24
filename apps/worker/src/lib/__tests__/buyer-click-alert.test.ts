@@ -9,7 +9,8 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AlertClaims } from '../alert-claim'
-import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, clickAlertKey, clickAlertMessage, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
+import { HELD_CLICK_REASONS } from '@bidspoke/buyer-profile'
+import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, CLICK_PAGE_REASONS, clickAlertKey, clickAlertMessage, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
 
 const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const SLACK = { bot_token: 'xoxb-test', default_channel: 'C1' }
@@ -149,5 +150,15 @@ describe('postClickAlert', () => {
     expect(capArgs[2].header).toMatch(/60/)
     expect(capArgs[2].body).toMatch(/50/)
     expect(capArgs[2].body).toMatch(/2027-09-20/)
+  })
+})
+
+describe('a page about a held claim says where a person releases it (#1552)', () => {
+  it('every held reason points at the held clicks on the partner page, and no other reason does', () => {
+    for (const reason of CLICK_PAGE_REASONS) {
+      const body = clickAlertMessage({ ...page, reason } as ClickAlert, 'https://app.example').body
+      const held = (HELD_CLICK_REASONS as readonly string[]).includes(reason)
+      expect(/Held clicks on the liberty1 partner page/.test(body), reason).toBe(held)
+    }
   })
 })

@@ -25,6 +25,7 @@ import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
 import buyerSales from './buyer-sales'
+import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
 
 type Variables = AuthVariables
@@ -59,6 +60,8 @@ api.route('/field-coverage', fieldCoverage)
 // do not collide.
 api.route('/partners', buyerProfiles)
 api.route('/buyer-sales', buyerSales)
+// Held click claims a person releases from the partner page (#1552).
+api.route('/held-clicks', heldClicks)
 // The Stage A parity record (#1413): read, refresh and sign off as three verbs
 // under the admin prefix. Mounted before /admin's own routes cannot matter: a
 // Hono sub app matches only its own paths.
