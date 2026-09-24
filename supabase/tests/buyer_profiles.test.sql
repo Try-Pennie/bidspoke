@@ -488,11 +488,21 @@ BEGIN
     "sell_off_agree": 10, "sell_off_disagree": 1, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 11, "classification_agree": 9, "classification_disagree": 0,
     "outcome_unknown_count": 0, "state_resolved": 11, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
     "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001"],
-    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": ["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"]}'::jsonb);
+    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": ["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"],
+    "refusal_counts": {"hourly_lead_cap": 3, "daily_lead_cap": 0, "hourly_spend_cap": 7, "daily_spend_cap": 0, "rehearsal_deadline": 1, "object_deadline": 0, "cap_check_error": 0, "breaker_unreadable": 0, "circuit_open": 0}}'::jsonb);
   IF (r->>'sell_off_agree')::int IS DISTINCT FROM 10 THEN RAISE EXCEPTION 'counts not written: %', r; END IF;
   IF r->>'counts_hash' IS DISTINCT FROM 'hash-one' THEN RAISE EXCEPTION 'hash not written: %', r; END IF;
   IF r->>'signed_off_at' IS NOT NULL THEN RAISE EXCEPTION 'a refresh set a sign off: %', r; END IF;
   IF (r->'unmeasured')::jsonb IS DISTINCT FROM '["rehearsal_in_doubt_heals", "rehearsal_expired_in_flight"]'::jsonb THEN RAISE EXCEPTION 'unmeasured not written: %', r; END IF;
+  IF (r->'refusal_counts'->>'hourly_spend_cap')::int IS DISTINCT FROM 7 THEN RAISE EXCEPTION 'refusal counts not written: %', r; END IF;
+  -- refusal_counts must be an object, refused by name (#1533).
+  BEGIN
+    PERFORM public.upsert_buyer_select_parity_day((r - 'id' - 'summarised_at' - 'signed_off_by' - 'signed_off_at' - 'sign_off_note' - 'sign_off_counts_hash' - 'sign_off_cleared_at') || '{"refusal_counts": 7}'::jsonb);
+    RAISE EXCEPTION 'a row with a non object refusal_counts was written';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'refusal_counts_not_object' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
   BEGIN
     PERFORM public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111"}'::jsonb);
     RAISE EXCEPTION 'a row missing its counts was written';
@@ -525,14 +535,16 @@ BEGIN
     "sell_off_agree": 10, "sell_off_disagree": 1, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 11, "classification_agree": 9, "classification_disagree": 0,
     "outcome_unknown_count": 0, "state_resolved": 11, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
     "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001"],
-    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": []}'::jsonb);
+    "window_complete": true, "counts_hash": "hash-one", "executions_unpaired": 0, "unmeasured": [],
+    "refusal_counts": {"hourly_lead_cap": 3, "daily_lead_cap": 0, "hourly_spend_cap": 7, "daily_spend_cap": 0, "rehearsal_deadline": 1, "object_deadline": 0, "cap_check_error": 0, "breaker_unreadable": 0, "circuit_open": 0}}'::jsonb);
   IF r->>'signed_off_at' IS NULL THEN RAISE EXCEPTION 'a refresh with the same numbers cleared the sign off: %', r; END IF;
   -- A refresh with DIFFERENT numbers clears it and says when.
   r := public.upsert_buyer_select_parity_day('{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-09-20", "organization_id": "11111111-1111-1111-1111-111111111111",
     "sell_off_agree": 10, "sell_off_disagree": 2, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 12, "classification_agree": 9, "classification_disagree": 0,
     "outcome_unknown_count": 0, "state_resolved": 12, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
     "decide_only_latency_p50_ms": 120, "decide_only_latency_p95_ms": 400, "disagreement_execution_ids": ["0192a4f0-0000-7000-8000-000000000001", "0192a4f0-0000-7000-8000-000000000002"],
-    "window_complete": true, "counts_hash": "hash-two", "executions_unpaired": 0, "unmeasured": []}'::jsonb);
+    "window_complete": true, "counts_hash": "hash-two", "executions_unpaired": 0, "unmeasured": [],
+    "refusal_counts": {"hourly_lead_cap": 3, "daily_lead_cap": 1, "hourly_spend_cap": 7, "daily_spend_cap": 0, "rehearsal_deadline": 1, "object_deadline": 0, "cap_check_error": 0, "breaker_unreadable": 0, "circuit_open": 0}}'::jsonb);
   IF r->>'signed_off_at' IS NOT NULL THEN RAISE EXCEPTION 'a refresh with new numbers left the sign off standing: %', r; END IF;
   IF r->>'sign_off_cleared_at' IS NULL THEN RAISE EXCEPTION 'the clearing was not recorded: %', r; END IF;
   IF r->>'sign_off_counts_hash' IS DISTINCT FROM 'hash-one' THEN RAISE EXCEPTION 'the approved hash was lost: %', r; END IF;
