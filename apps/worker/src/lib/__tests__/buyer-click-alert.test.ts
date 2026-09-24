@@ -9,14 +9,15 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AlertClaims } from '../alert-claim'
-import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, clickAlertKey, clickAlertMessage, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
+import { HELD_CLICK_REASONS } from '@bidspoke/buyer-profile'
+import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, CLICK_PAGE_REASONS, clickAlertKey, clickAlertMessage, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
 
 const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const SLACK = { bot_token: 'xoxb-test', default_channel: 'C1' }
 
 const page: ClickAlert = {
   kind: 'page', reason: 'outcome_unknown', partner_id: LIBERTY1, partner_slug: 'liberty1', prospect_id: 'a0B000000000001', detail: 'http 503',
-  workflow_id: 'wf-1', trace_id: 'trace-1', at: Date.UTC(2027, 8, 20, 18),
+  hold_recorded: true, workflow_id: 'wf-1', trace_id: 'trace-1', at: Date.UTC(2027, 8, 20, 18),
 }
 const overCap: ClickAlert = {
   kind: 'over_cap', partner_id: LIBERTY1, partner_slug: 'liberty1', date: '2027-09-20', count: 60, daily_lead_cap: 50, alert_over_percent: 120, threshold: 60,
@@ -149,5 +150,34 @@ describe('postClickAlert', () => {
     expect(capArgs[2].header).toMatch(/60/)
     expect(capArgs[2].body).toMatch(/50/)
     expect(capArgs[2].body).toMatch(/2027-09-20/)
+  })
+})
+
+describe('a page about a held claim says where a person releases it (#1552)', () => {
+  it('every held reason whose hold was recorded points at the held clicks on the partner page, and no other reason does', () => {
+    for (const reason of CLICK_PAGE_REASONS) {
+      const held = (HELD_CLICK_REASONS as readonly string[]).includes(reason)
+      const body = clickAlertMessage({ ...page, reason, hold_recorded: held ? true : null } as ClickAlert, 'https://app.example').body
+      expect(/Release it under Held clicks on the liberty1 partner page/.test(body), reason).toBe(held)
+      expect(/could not be added to the Held clicks list/.test(body), reason).toBe(false)
+    }
+  })
+
+  it('a held reason whose hold was NOT recorded never points at a list that lacks the click: it says so, names the prospect and the claim, and how it will appear', () => {
+    for (const reason of HELD_CLICK_REASONS) {
+      const body = clickAlertMessage({ ...page, reason, hold_recorded: false }, 'https://app.example').body
+      expect(body, reason).not.toMatch(/Release it under Held clicks/)
+      expect(body, reason).toMatch(/could not be added to the Held clicks list on the liberty1 partner page/)
+      expect(body, reason).toMatch(/claim on prospect `a0B000000000001` for liberty1/)
+      expect(body, reason).toMatch(/next click on this prospect/)
+      expect(body, reason).toMatch(/records it there/)
+      expect(body, reason).toMatch(/execution linked below/)
+    }
+  })
+
+  it('a held reason with no word on the record is treated as not recorded, never as listed', () => {
+    const body = clickAlertMessage({ ...page, reason: 'outcome_unknown', hold_recorded: null }, 'https://app.example').body
+    expect(body).not.toMatch(/Release it under Held clicks/)
+    expect(body).toMatch(/could not be added to the Held clicks list/)
   })
 })

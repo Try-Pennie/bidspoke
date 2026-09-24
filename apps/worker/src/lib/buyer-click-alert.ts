@@ -25,6 +25,7 @@
  * records the outcome on the step.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { HELD_CLICK_REASONS } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
 import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
@@ -57,6 +58,13 @@ export type ClickAlert =
       /** The click's prospect; null for a page from the offer side, which judges a lead before any prospect clicked. */
       prospect_id: string | null
       detail: string
+      /**
+       * Whether the held click record landed (#1552): true when the partner page's
+       * Held clicks list has it, false when the record failed, null for a page
+       * that holds no claim. The page points at that list only on true, because
+       * the reason alone cannot say whether the list has the click.
+       */
+      hold_recorded: boolean | null
       workflow_id: string
       trace_id: string
       at: number
@@ -125,14 +133,34 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
   },
 }
 
+/**
+ * Where the person releases a held claim (#1552), decided by whether the record
+ * the partner page lists actually landed, never by the reason alone. Only a
+ * recorded hold is on the Held clicks list; for one that is not, the page says
+ * so, and says it appears there when a later click on the prospect finds the
+ * claim, which records it again (buyer_click_send records claim_in_doubt).
+ */
+function releaseLine(alert: Extract<ClickAlert, { kind: 'page' }>, appUrl: string): string {
+  const partnerPage = `${appUrl}/partners?selected=${encodeURIComponent(alert.partner_slug)}`
+  if (alert.hold_recorded === true) return `Release it under Held clicks on the ${alert.partner_slug} partner page: ${partnerPage}`
+  const claim = alert.prospect_id === null ? `the claim for ${alert.partner_slug}` : `the claim on prospect \`${alert.prospect_id}\` for ${alert.partner_slug}`
+  return [
+    `This click could not be added to the Held clicks list on the ${alert.partner_slug} partner page, so ${claim} is held with nothing there to release it.`,
+    'The next click on this prospect after the claim\'s send window finds it and records it there, and it can be released then.',
+    'Why the record failed is on the execution linked below.',
+  ].join(' ')
+}
+
 export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClickAlertMessage {
   if (alert.kind === 'page') {
     const w = PAGE_WORDING[alert.reason]
+    const release = (HELD_CLICK_REASONS as readonly string[]).includes(alert.reason) ? [releaseLine(alert, appUrl)] : []
     return {
       header: `${alert.partner_slug} ${w.header}`,
       body: [
         alert.prospect_id === null ? `${alert.detail}.` : `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
         w.held,
+        ...release,
         `Further ${alert.reason} pages for ${alert.partner_slug} are held for ${CLICK_PAGE_COOLDOWN_SECONDS / 60} minutes; the executions list shows every occurrence. Seen at ${etTime(alert.at)}.`,
       ].join('\n\n'),
       link: `${appUrl}/workflows/${alert.workflow_id}/executions?trace=${encodeURIComponent(alert.trace_id)}`,

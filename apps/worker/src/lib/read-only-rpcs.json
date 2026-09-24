@@ -27,6 +27,7 @@
     "delete_partner_config",
     "rename_partner_step_namespace",
     "upsert_buyer_select_parity_day",
-    "sign_off_buyer_select_parity_day"
+    "sign_off_buyer_select_parity_day",
+    "record_held_click"
   ]
 }

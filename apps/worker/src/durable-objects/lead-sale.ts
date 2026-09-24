@@ -5,7 +5,7 @@
  *
  * It is the claim that stops one lead being sold twice (L157, L151). States:
  *   free                        nobody holds the lead
- *   in_flight (partner, execution, since)   an attempt is underway
+ *   in_flight (partner, execution, since, deadline)   an attempt is underway
  *   sold (partner, outcome)     the whole normalised outcome, so a replay hands
  *                               back the same result code it wrote the first time
  *   in_doubt (partner)          an attempt held the lead past its deadline and
@@ -25,7 +25,8 @@ import { asInteger, asIntegerOrNull, asText, asTextOrNull } from './sql-values'
 
 export type SaleState =
   | { state: 'free'; generation: number }
-  | { state: 'in_flight'; partner_id: string; execution_id: string; since: number; generation: number }
+  /** `deadline_ms` from `since` is when a rival claim finds it in doubt (#1552: a person's release reads it). */
+  | { state: 'in_flight'; partner_id: string; execution_id: string; since: number; deadline_ms: number; generation: number }
   | { state: 'sold'; partner_id: string; outcome: SaleOutcomeRecord; generation: number }
   | { state: 'in_doubt'; partner_id: string; generation: number }
 
@@ -126,7 +127,14 @@ export class LeadSaleObject implements DurableObject {
 
   /**
    * sold: in_flight to sold with the outcome.  free: in_flight or in_doubt to
-   * free.  heal: in_doubt to sold with the outcome the ledger recorded.
+   * free.  heal: in_doubt to sold with the outcome the ledger recorded, or with
+   * the buyer's lead id a person confirmed (#1552).
+   *
+   * heal also takes an in_flight claim whose deadline has passed (#1552). Such a
+   * claim is in doubt in all but name: only a rival claim renames it, and a
+   * click whose send had no readable answer may never see another click, so a
+   * person marking it sent would otherwise be refused by a label. One inside its
+   * deadline is still refused, because its send may yet answer.
    */
   private async handleMutation(request: Request, op: 'sold' | 'free' | 'heal'): Promise<Response> {
     const body = await readJsonObject(request)
@@ -145,7 +153,8 @@ export class LeadSaleObject implements DurableObject {
       free: ['in_flight', 'in_doubt'],
       heal: ['in_doubt'],
     }
-    if (!allowed[op].includes(current.state)) {
+    const lapsedInFlight = op === 'heal' && current.state === 'in_flight' && (current.since ?? 0) + (current.deadline_ms ?? 0) <= this.clock()
+    if (!allowed[op].includes(current.state) && !lapsedInFlight) {
       return jsonResponse({ error: 'wrong_state', current: publicState(current) }, 409)
     }
     const next: Stored = op === 'free'
@@ -188,7 +197,7 @@ export class LeadSaleObject implements DurableObject {
 function publicState(s: Stored): SaleState {
   switch (s.state) {
     case 'free': return { state: 'free', generation: s.generation }
-    case 'in_flight': return { state: 'in_flight', partner_id: String(s.partner_id), execution_id: String(s.execution_id), since: Number(s.since), generation: s.generation }
+    case 'in_flight': return { state: 'in_flight', partner_id: String(s.partner_id), execution_id: String(s.execution_id), since: Number(s.since), deadline_ms: Number(s.deadline_ms), generation: s.generation }
     case 'sold': return { state: 'sold', partner_id: String(s.partner_id), outcome: s.outcome as SaleOutcomeRecord, generation: s.generation }
     case 'in_doubt': return { state: 'in_doubt', partner_id: String(s.partner_id), generation: s.generation }
   }

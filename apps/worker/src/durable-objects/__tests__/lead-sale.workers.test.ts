@@ -62,7 +62,9 @@ describe('LeadSaleObject claim', () => {
     await setClock(stub, NOW)
     expect(await read(stub)).toEqual({ state: 'free', generation: 0 })
     expect(await claim(stub, 'exec-1')).toEqual({ state: 'claimed', generation: 1 })
-    expect(await read(stub)).toEqual({ state: 'in_flight', partner_id: 'partner-1', execution_id: 'exec-1', since: NOW, generation: 1 })
+    // The deadline is on the read (#1552), so a person's release can tell a send
+    // still inside its window from one that has run out.
+    expect(await read(stub)).toEqual({ state: 'in_flight', partner_id: 'partner-1', execution_id: 'exec-1', since: NOW, deadline_ms: DEADLINE_MS, generation: 1 })
   })
 
   it('a second execution inside the deadline is told who holds the lead and since when', async () => {
@@ -151,6 +153,31 @@ describe('LeadSaleObject in_doubt resolution', () => {
     const again = await post(stub, '/heal', { generation: 3, outcome: OUTCOME })
     expect(again.status).toBe(409)
     expect(await again.json()).toMatchObject({ error: 'wrong_state', current: { state: 'sold' } })
+  })
+
+  it('heal also takes an in_flight claim past its deadline, which is in doubt in all but name (#1552)', async () => {
+    // A click whose send had no readable answer is left in_flight; nothing turns
+    // it in_doubt until another click arrives, so a person marking it sent must
+    // be able to heal it as it stands.
+    const stub = sale()
+    await setClock(stub, NOW)
+    await claim(stub, 'exec-1')
+    await setClock(stub, NOW + DEADLINE_MS)
+    const healed = await post(stub, '/heal', { generation: 1, outcome: OUTCOME })
+    expect(healed.status).toBe(200)
+    expect(await healed.json()).toEqual({ ok: true, generation: 2 })
+    expect(await read(stub)).toEqual({ state: 'sold', partner_id: 'partner-1', outcome: OUTCOME, generation: 2 })
+  })
+
+  it('heal refuses an in_flight claim still inside its deadline: the send may yet answer', async () => {
+    const stub = sale()
+    await setClock(stub, NOW)
+    await claim(stub, 'exec-1')
+    await setClock(stub, NOW + DEADLINE_MS - 1)
+    const res = await post(stub, '/heal', { generation: 1, outcome: OUTCOME })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'wrong_state', current: { state: 'in_flight', generation: 1 } })
+    expect(await read(stub)).toMatchObject({ state: 'in_flight', generation: 1 })
   })
 
   it('a sold claim survives a later free attempt, so a live sale stays sold whatever happens to the share', async () => {

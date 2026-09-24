@@ -224,6 +224,7 @@ describe('status output key contract', () => {
         resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),
+        recordHold: async () => undefined,
         post: async () => ({ status: 201, text: 'created abc123', json: null, isHtml: false, headers: {} }),
         alert: async () => 'posted',
         clock: () => 0,

@@ -275,7 +275,7 @@ function page(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheck
   try {
     deps.alert({
       kind: 'page', reason: 'partner_not_click', partner_id: output.partner_id ?? '', partner_slug: output.partner_slug ?? output.partner_id ?? '',
-      prospect_id: null, detail: output.detail ?? 'the buyer is not sold on the click', workflow_id: ctx.trigger.workflow_id, trace_id: ctx.trigger.trace_id, at: deps.clock(),
+      prospect_id: null, detail: output.detail ?? 'the buyer is not sold on the click', hold_recorded: null, workflow_id: ctx.trigger.workflow_id, trace_id: ctx.trigger.trace_id, at: deps.clock(),
     })
   } catch (err) {
     deps.log({ event: 'buyer_click_check_alert_failed', step_namespace: node.namespace, partner_id: output.partner_id, error_message: messageOf(err) })

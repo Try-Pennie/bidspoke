@@ -18,6 +18,7 @@ vi.mock('@/lib/api', () => ({
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), save: vi.fn(), history: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
+    heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn() },
   },
 }))
 
@@ -62,6 +63,7 @@ beforeEach(() => {
   vi.mocked(api.buyerProfiles.history).mockResolvedValue({ entries: [] })
   vi.mocked(api.buyerProfiles.usage).mockResolvedValue(usage)
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
+  vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [], total: 0 })
   vi.mocked(api.buyerProfiles.save).mockResolvedValue({ profile: { ...doc, version: 4 } })
 })
 
@@ -343,6 +345,59 @@ describe('how the buyer is sold', () => {
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     expect(await screen.findByText(/The buyer profile was not saved: This buyer is sold on the click in live workflows: Engine Bidding/)).toBeInTheDocument()
     expect(screen.queryByText(/sold_on_in_use/)).toBeNull()
+  })
+
+  // #1552: the clicks a click buyer's send left held, released on this page.
+  const heldClick = {
+    id: 'held-1', prospect_id: 'a0B000000000001AAA', reason: 'outcome_unknown', detail: 'http 503: Service Unavailable', partner_lead_id: null,
+    workflow_id: 'wf-1', execution_id: 'exec-1', held_at: '2027-09-20T18:00:00.000Z', last_seen_at: '2027-09-20T18:00:00.000Z',
+    claim: { status: 'held' as const, generation: 2 },
+  }
+
+  it('a click buyer lists its held clicks in place of the ledger\'s unresolved sales', async () => {
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    await renderWith(clickDoc)
+    await waitFor(() => expect(api.heldClicks.list).toHaveBeenCalledWith('p1'))
+    expect(await screen.findByRole('link', { name: 'a0B000000000001AAA' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Held clicks' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Unresolved sales' })).toBeNull()
+  })
+
+  it('an offer buyer never reads held clicks', async () => {
+    await renderWith(doc)
+    await waitFor(() => expect(api.buyerSales.list).toHaveBeenCalled())
+    expect(api.heldClicks.list).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'Held clicks' })).toBeNull()
+  })
+
+  it('marking a held click sent goes through the API with the generation shown, and the outcome names the lead and the day counted', async () => {
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, list_cleared: true })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
+    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'a0B5f00000XyZ12AAB' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
+    await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, 'a0B5f00000XyZ12AAB'))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent as a0B5f00000XyZ12AAB. Counted in Liberty1's clicks for Sep 20 (Pacific)."))
+  })
+
+  it('a stale page is told in the route\'s own words, and the controls stay', async () => {
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    vi.mocked(api.heldClicks.free).mockRejectedValue(Object.assign(new Error('claim_changed'), { status: 409, body: { error: 'claim_changed', message: 'This click changed since the page was read, so nothing was done. Reload to see where it stands.' } }))
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Free' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Free it' }))
+    await waitFor(() => expect(api.heldClicks.free).toHaveBeenCalledWith('held-1', 2))
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('This click changed since the page was read'))
+    expect(within(row).getByRole('button', { name: 'Free' })).toBeInTheDocument()
+  })
+
+  it('a failed read of the held clicks is an alert, not an empty list', async () => {
+    vi.mocked(api.heldClicks.list).mockRejectedValue(new Error('API 503'))
+    await renderWith(clickDoc)
+    expect(await screen.findByText('The held clicks could not be read: API 503')).toBeInTheDocument()
   })
 
   it('an offer buyer with pricing stored cannot be switched, and says why beside the choice', async () => {

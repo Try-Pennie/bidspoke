@@ -42,15 +42,21 @@ interface TextInputProps {
   describedBy?: string
   'aria-label'?: string
   className?: string
+  /**
+   * Enter commits this field through its own action. The key is kept from the
+   * form around it, so committing a field never also submits the form (#1552, L596).
+   */
+  onEnter?: () => void
 }
 
-export function TextInput({ id, value, onChange, placeholder, type = 'text', mono, disabled, describedBy: db, className, ...aria }: TextInputProps) {
+export function TextInput({ id, value, onChange, placeholder, type = 'text', mono, disabled, describedBy: db, className, onEnter, ...aria }: TextInputProps) {
   return (
     <input
       id={id}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onEnter ? (e) => { if (e.key === 'Enter') { e.preventDefault(); onEnter() } } : undefined}
       placeholder={placeholder}
       disabled={disabled}
       aria-describedby={db}

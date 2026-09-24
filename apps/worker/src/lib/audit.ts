@@ -10,6 +10,9 @@ export type AuditEntityType =
   // has recorded it. One vocabulary either way.
   | 'buyer_profile'
   | 'buyer_sale'
+  // A click claim buyer_click_send left held, released by a person from the
+  // partner page (#1552): marked sent, freed, or cleared from the list.
+  | 'held_click'
   | 'environment_variable'
   | 'service_connection'
   | 'service_preset'

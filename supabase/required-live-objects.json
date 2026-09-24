@@ -261,5 +261,21 @@
     },
     "anon": "denied",
     "note": "Rewrites a partner's formula columns for a step id rename (#1409). A WRITE. Probed with the all zero partner and no columns, which matches no row."
+  },
+  {
+    "name": "record_held_click",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner": "00000000-0000-0000-0000-000000000000",
+      "p_prospect": "probe",
+      "p_reason": "outcome_unknown",
+      "p_detail": "probe",
+      "p_partner_lead_id": null,
+      "p_workflow": null,
+      "p_execution": "probe",
+      "p_trace": null
+    },
+    "anon": "denied",
+    "note": "Records a click claim buyer_click_send left held, so the partner page can list it (#1552). A WRITE, service_role only. Probed with every argument because PostgREST resolves a function by its argument names; as anon the call is refused before the body runs."
   }
 ]
