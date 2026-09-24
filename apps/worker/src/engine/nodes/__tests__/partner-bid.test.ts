@@ -322,22 +322,34 @@ describe('executePartnerBidNode', () => {
       expect(DAILY_CAP.get).not.toHaveBeenCalled()
     })
 
-    it('passes the correct DO key (cap-{slug}-{date})', async () => {
-      const idFromName = vi.fn().mockReturnValue('do-id')
-      const env = makeEnv({
-        DAILY_CAP: { idFromName, get: vi.fn().mockReturnValue(makeCapStub(true)) },
-      })
+    // The cap day is the EASTERN day (lib/daily-cap-name.ts, #1410). This test used
+    // to derive its expectation from the UTC date off the real clock, so it went red
+    // every night between 20:00 and 24:00 Eastern, when the two calendars disagree,
+    // and was red in CI at 01:38 UTC on 2026-09-24 (#1519). The clock is pinned to
+    // exactly such an instant and the key is written out, so the test asserts the
+    // calendar the cap actually follows rather than whichever one the runner is in.
+    it('passes the correct DO key (cap-{slug}-{date}), on the Eastern day', async () => {
+      vi.useFakeTimers()
+      // 01:35 UTC on the 24th is 21:35 Eastern on the 23rd.
+      vi.setSystemTime(new Date('2026-09-24T01:35:00.000Z'))
+      try {
+        const idFromName = vi.fn().mockReturnValue('do-id')
+        const env = makeEnv({
+          DAILY_CAP: { idFromName, get: vi.fn().mockReturnValue(makeCapStub(true)) },
+        })
 
-      await executePartnerBidNode(
-        makeNode({ partner_id: 'p1' }),
-        makeCtx({ debt_amount: 1000 }),
-        env,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        makeSupabase(makePartner({ daily_cap: 200 })) as any
-      )
+        await executePartnerBidNode(
+          makeNode({ partner_id: 'p1' }),
+          makeCtx({ debt_amount: 1000 }),
+          env,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          makeSupabase(makePartner({ daily_cap: 200 })) as any
+        )
 
-      const today = new Date().toISOString().slice(0, 10)
-      expect(idFromName).toHaveBeenCalledWith(`cap-tripoint-${today}`)
+        expect(idFromName).toHaveBeenCalledWith('cap-tripoint-2026-09-23')
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

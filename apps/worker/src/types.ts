@@ -150,6 +150,14 @@ export interface ExecutionContext {
    */
   bidGroupContext?: Record<string, unknown>
   /**
+   * Per-BidGroup outbound fields (#1518). Resolved from the group's `outbound_fields`
+   * templates at group entry, set and cleared by walkGraph exactly like bidGroupContext,
+   * and merged by the API bid resolver onto every partner request body in the group.
+   * This is how a figure a STEP computed (the verified debt) reaches a partner whose
+   * request is otherwise the trigger payload passed through.
+   */
+  bidGroupOutboundFields?: Record<string, unknown>
+  /**
    * Partner block sightings noted by readers during the current step (#1265), drained by
    * the walker after every step. A reader with no step result to ride on (the partner dedup
    * check, which answers a boolean and carries on) notes here.

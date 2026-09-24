@@ -20,7 +20,7 @@ import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { matchTier, type Ladder } from '@bidspoke/buyer-profile'
-import { applyOutboundMapping } from '../lib/field-mapper'
+import { applyOutboundMapping, mergeOutboundFields } from '../lib/field-mapper'
 import { partnerRequestHeaders } from '../lib/post-to-partner'
 import { containsHtmlDocument } from '../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from './block-sightings'
@@ -212,7 +212,13 @@ async function callBidApi(
   }
 
   // Apply per-partner outbound field mapping (TODO 4.9). Null mapping = identity.
-  const wireBody = applyOutboundMapping(ctx.trigger.payload, partner.outbound_field_mapping ?? null)
+  // Then merge the Bid Group's resolved outbound_fields on top (#1518): the mapping
+  // reads only the trigger payload, so a step-computed figure such as the verified
+  // debt can reach the partner only this way. Undefined outside a group.
+  const wireBody = mergeOutboundFields(
+    applyOutboundMapping(ctx.trigger.payload, partner.outbound_field_mapping ?? null),
+    ctx.bidGroupOutboundFields,
+  )
   const body = JSON.stringify(wireBody)
   const resolvedInputForCaller: Record<string, unknown> = {
     endpoint: partner.api_endpoint,

@@ -40,6 +40,41 @@ export function applyOutboundMapping(
   return out
 }
 
+/**
+ * Merge a Bid Group's resolved `outbound_fields` onto the outbound body, AFTER the
+ * partner mapping has run (#1518).
+ *
+ * The mapping above reads only the trigger payload, and a non-null mapping replaces
+ * the whole body, so neither could add a figure a STEP computed (the verified debt)
+ * to an otherwise pass-through request. That is how every Main Flow Tripoint request
+ * went out without `unsecuredDebt` / `maxUnsecuredDebt` for months while the two code
+ * node callers added them by hand.
+ *
+ * Rules:
+ *   - An explicit field wins over a same-named payload key: the author named it.
+ *   - `undefined` (a template that resolved to nothing) is sent as `null`, never
+ *     dropped. JSON.stringify drops undefined-valued keys, so the receiver would
+ *     otherwise see a MISSING key, exactly the silent shape this exists to end. The
+ *     walker also names the unresolved key on the step row.
+ *   - No fields, or a body that is not a plain object, returns the body as given.
+ */
+export function mergeOutboundFields(
+  body: unknown,
+  fields: Record<string, unknown> | null | undefined
+): unknown {
+  if (!fields || typeof fields !== 'object') return body
+  const names = Object.keys(fields)
+  if (names.length === 0) return body
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return body
+
+  const out: Record<string, unknown> = { ...(body as Record<string, unknown>) }
+  for (const name of names) {
+    const value = fields[name]
+    out[name] = value === undefined ? null : value
+  }
+  return out
+}
+
 function readPath(obj: unknown, path: string): unknown {
   if (typeof path !== 'string' || !path) return null
   const parts = path.split('.')

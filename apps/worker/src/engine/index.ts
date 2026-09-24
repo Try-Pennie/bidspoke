@@ -1277,6 +1277,36 @@ export async function walkGraph(
         ctx.bidGroupContext = resolvedContext
       }
 
+      // Resolve the BidGroup's `outbound_fields` map the same way (#1518). These are
+      // merged onto every partner attempt's REQUEST body by the API resolver, which
+      // is how a step-computed figure (the verified debt) reaches a partner whose
+      // request is otherwise the trigger payload passed through. A template that
+      // resolves to nothing is sent as null and named here, so a typo in a step
+      // path shows on the step row instead of reading as "the lead had no debt".
+      const outboundConfig = node.config.outbound_fields as Record<string, unknown> | undefined
+      let resolvedOutbound: Record<string, unknown> | undefined
+      let unresolvedOutbound: string[] | undefined
+      if (outboundConfig && typeof outboundConfig === 'object' && Object.keys(outboundConfig).length > 0) {
+        resolvedOutbound = {}
+        const unresolved: string[] = []
+        for (const [k, v] of Object.entries(outboundConfig)) {
+          const resolved = resolveValue(v, ctx)
+          if (resolved === undefined) unresolved.push(k)
+          resolvedOutbound[k] = resolved === undefined ? null : resolved
+        }
+        if (unresolved.length > 0) {
+          unresolvedOutbound = unresolved
+          console.warn(JSON.stringify({
+            event: 'bid_group_outbound_field_unresolved',
+            trace_id: ctx.trigger.trace_id,
+            workflow_id: ctx.trigger.workflow_id,
+            step_namespace: node.namespace,
+            fields: unresolved,
+          }))
+        }
+        ctx.bidGroupOutboundFields = resolvedOutbound
+      }
+
       let groupOutput: BidGroupOutput | null = null
       let groupStatus: StepStatus = 'completed'
       let groupErrorMessage: string | undefined
@@ -1294,6 +1324,7 @@ export async function walkGraph(
         // Clear bidGroupContext so subsequent steps (or nested groups, if ever)
         // don't see stale values. Idempotent — safe even when context wasn't set.
         ctx.bidGroupContext = undefined
+        ctx.bidGroupOutboundFields = undefined
       }
 
       const groupDurationMs = Date.now() - new Date(groupStartedAt).getTime()
@@ -1313,6 +1344,7 @@ export async function walkGraph(
           min_bid_threshold: config.min_bid_threshold,
           timeout_ms: config.timeout_ms,
           context: node.config.context,
+          outbound_fields: node.config.outbound_fields,
           no_winner_behavior: config.no_winner_behavior,
         },
         resolved: {
@@ -1321,6 +1353,8 @@ export async function walkGraph(
           fallback_partner_slug: fallbackId ? (slugByPartnerId.get(fallbackId) ?? fallbackId) : null,
           tiered_partner_slugs: tiers.map((t) => (t.partner_ids ?? []).map((id) => slugByPartnerId.get(id) ?? id)),
           context: resolvedContext,
+          outbound_fields: resolvedOutbound,
+          unresolved_outbound_fields: unresolvedOutbound,
         },
       }
       logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, groupResolvedInput, groupOutput, groupErrorMessage, groupErrorType, 0, groupStartedAt, groupStartOrder)

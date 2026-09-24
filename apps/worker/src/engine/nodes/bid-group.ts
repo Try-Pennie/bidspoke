@@ -71,6 +71,21 @@ export interface BidGroupConfig {
    * provides eligibility data.
    */
   context?: Record<string, unknown>
+  /**
+   * Map of wire field name → template string (#1518). Resolved once at BidGroup
+   * entry exactly like `context`, then merged onto the outbound request body of
+   * EVERY partner attempt in the group (after the partner's own outbound field
+   * mapping). `context` feeds the PRICE; this feeds the REQUEST.
+   *
+   * Exists because a partner call is otherwise the trigger payload passed through,
+   * and a figure a step computed (the verified debt) has no way into it: the Main
+   * Flow's Tripoint request carried no `unsecuredDebt` / `maxUnsecuredDebt` on
+   * 4,278 of 4,278 attempts in a week.
+   *
+   * Example: `{ unsecuredDebt: "{{steps.pennie_or_eligibility.output.final}}" }`.
+   * A template that resolves to nothing is sent as null and named on the step row.
+   */
+  outbound_fields?: Record<string, unknown>
   // tiered (4b):
   tiers?: BidGroupTier[]
 }

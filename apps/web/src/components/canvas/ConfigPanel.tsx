@@ -2405,25 +2405,81 @@ function BidGroupConfig({
         </Field>
       )}
 
-      <BidGroupContextEditor config={config} onChange={onChange} refs={refs} />
+      <BidGroupTemplateMapEditor
+        config={config}
+        configKey="context"
+        onChange={onChange}
+        refs={refs}
+        title="Context"
+        keyPlaceholder="finalDebt"
+        valuePlaceholder="{{steps.eligibility.output.final}}"
+        addLabel="Add context value"
+        description={
+          <>
+            Name → template pairs resolved once per BidGroup run, exposed to partner
+            formulas as <code className="rounded bg-gray-100 px-1 font-mono">context.&lt;name&gt;</code>.
+            Use these to keep partner configs workflow-agnostic: bind step outputs here,
+            partner formulas reference the name. Example:
+            <code className="rounded bg-gray-100 px-1 font-mono">finalDebt</code> →
+            <code className="rounded bg-gray-100 px-1 font-mono">{'{{steps.pennie_or_eligibility.output.final}}'}</code>.
+          </>
+        }
+      />
+      <BidGroupTemplateMapEditor
+        config={config}
+        configKey="outbound_fields"
+        onChange={onChange}
+        refs={refs}
+        title="Extra request fields"
+        keyPlaceholder="unsecuredDebt"
+        valuePlaceholder="{{steps.pennie_or_eligibility.output.final}}"
+        addLabel="Add request field"
+        description={
+          <>
+            Field name → template pairs resolved once per BidGroup run and added to the
+            request sent to every partner in the group, on top of the partner&apos;s own
+            outbound field mapping. This is how a figure a step computed, such as the
+            verified debt, reaches a partner whose request is otherwise the trigger payload.
+            A template that resolves to nothing is sent as null. Example:
+            <code className="rounded bg-gray-100 px-1 font-mono">unsecuredDebt</code> →
+            <code className="rounded bg-gray-100 px-1 font-mono">{'{{steps.pennie_or_eligibility.output.final}}'}</code>.
+          </>
+        }
+      />
     </section>
   )
 }
 
-function BidGroupContextEditor({
+// One editor for both of the Bid Group's name-to-template maps: `context` (feeds the
+// partner PRICE formula) and `outbound_fields` (feeds the partner REQUEST body, #1518).
+// The two are the same shape and are resolved by the same engine loop, so they share
+// one component rather than two copies that can drift.
+function BidGroupTemplateMapEditor({
   config,
+  configKey,
   onChange,
   refs,
+  title,
+  description,
+  keyPlaceholder,
+  valuePlaceholder,
+  addLabel,
 }: {
   config: Record<string, unknown>
+  configKey: 'context' | 'outbound_fields'
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
+  title: string
+  description: React.ReactNode
+  keyPlaceholder: string
+  valuePlaceholder: string
+  addLabel: string
 }) {
   // Local row state. The serialized form (Record<string, unknown>) can't
-  // express an empty-key row, so rendering directly off config.context would
+  // express an empty-key row, so rendering directly off the config map would
   // drop newly-added blank rows before the user could type a key. Same pattern
   // as ExtraExtractionEditor (see reference_row_editor_local_state_for_invalid_rows.md).
-  const ctxObj = (config.context as Record<string, unknown> | undefined) ?? {}
+  const ctxObj = (config[configKey] as Record<string, unknown> | undefined) ?? {}
   const [entries, setLocalEntries] = useState<[string, unknown][]>(Object.entries(ctxObj))
   const valueKey = JSON.stringify(ctxObj)
   useEffect(() => {
@@ -2438,7 +2494,7 @@ function BidGroupContextEditor({
       if (!k) continue
       out[k] = v
     }
-    onChange({ context: Object.keys(out).length > 0 ? out : undefined })
+    onChange({ [configKey]: Object.keys(out).length > 0 ? out : undefined })
   }
 
   function addRow() {
@@ -2456,15 +2512,8 @@ function BidGroupContextEditor({
 
   return (
     <div className="border-t border-gray-100 pt-4">
-      <h4 className="mb-1 text-xs font-medium text-gray-600">Context</h4>
-      <p className="mb-2 text-xs text-gray-500">
-        Name → template pairs resolved once per BidGroup run, exposed to partner
-        formulas as <code className="rounded bg-gray-100 px-1 font-mono">context.&lt;name&gt;</code>.
-        Use these to keep partner configs workflow-agnostic: bind step outputs here,
-        partner formulas reference the name. Example:
-        <code className="rounded bg-gray-100 px-1 font-mono">finalDebt</code> →
-        <code className="rounded bg-gray-100 px-1 font-mono">{'{{steps.pennie_or_eligibility.output.final}}'}</code>.
-      </p>
+      <h4 className="mb-1 text-xs font-medium text-gray-600">{title}</h4>
+      <p className="mb-2 text-xs text-gray-500">{description}</p>
       {entries.length > 0 && (
         <div className="mb-2 space-y-1.5">
           {entries.map(([k, v], i) => (
@@ -2472,14 +2521,16 @@ function BidGroupContextEditor({
               <input
                 value={k}
                 onChange={(e) => updateKey(i, e.target.value)}
-                placeholder="finalDebt"
+                placeholder={keyPlaceholder}
+                aria-label={`${title} field name`}
                 className="w-32 flex-shrink-0 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
               />
               <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" />
               <input
                 value={typeof v === 'string' ? v : String(v ?? '')}
                 onChange={(e) => updateVal(i, e.target.value)}
-                placeholder="{{steps.eligibility.output.final}}"
+                placeholder={valuePlaceholder}
+                aria-label={`${title} template`}
                 className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
               />
               <button
@@ -2501,7 +2552,7 @@ function BidGroupContextEditor({
         className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add context value
+        {addLabel}
       </button>
       {refs.length > 0 && entries.length === 0 && (
         <p className="mt-1 text-xs text-gray-500">

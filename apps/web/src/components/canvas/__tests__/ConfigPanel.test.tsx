@@ -367,6 +367,57 @@ describe('ConfigPanel: BidGroup offers buyer-eligible partners (#306)', () => {
   })
 })
 
+// #1518: the Bid Group's `outbound_fields` map (fields added to every partner's
+// request body) is edited beside `context` (values fed to the partner price). The
+// editor is the one component for both maps, so this covers that the second map
+// writes to ITS key and the first still writes to its own.
+describe('ConfigPanel: BidGroup extra request fields (#1518)', () => {
+  it('shows the stored outbound fields and writes an edit back under outbound_fields, not context', async () => {
+    const { onUpdate } = renderPanel(nodeOf('bid_group', {
+      outbound_fields: { unsecuredDebt: '{{steps.pennie_or_eligibility.output.final}}' },
+    }))
+
+    const template = await screen.findByLabelText('Extra request fields template') as HTMLInputElement
+    expect(template.value).toBe('{{steps.pennie_or_eligibility.output.final}}')
+
+    fireEvent.change(template, { target: { value: '{{steps.other.output.final}}' } })
+
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      'n1',
+      expect.objectContaining({ config: expect.objectContaining({ outbound_fields: { unsecuredDebt: '{{steps.other.output.final}}' } }) }),
+    )
+    const lastConfig = (onUpdate.mock.calls.at(-1)![1] as { config: Record<string, unknown> }).config
+    expect('context' in lastConfig).toBe(false)
+  })
+
+  it('adds a request field row and persists it once both halves are typed', async () => {
+    const { onUpdate } = renderPanel(nodeOf('bid_group'))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add request field/ }))
+    fireEvent.change(screen.getByLabelText('Extra request fields field name'), { target: { value: 'maxUnsecuredDebt' } })
+    fireEvent.change(screen.getByLabelText('Extra request fields template'), { target: { value: '{{steps.pennie_debt_calculation.output.maxUnsecuredDebt}}' } })
+
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      'n1',
+      expect.objectContaining({ config: expect.objectContaining({
+        outbound_fields: { maxUnsecuredDebt: '{{steps.pennie_debt_calculation.output.maxUnsecuredDebt}}' },
+      }) }),
+    )
+  })
+
+  it('the context editor still writes to context', async () => {
+    const { onUpdate } = renderPanel(nodeOf('bid_group'))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add context value/ }))
+    fireEvent.change(screen.getByLabelText('Context field name'), { target: { value: 'finalDebt' } })
+
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      'n1',
+      expect.objectContaining({ config: expect.objectContaining({ context: { finalDebt: '' } }) }),
+    )
+  })
+})
+
 // Build-time reference validation (#424). The panel is where an author is
 // looking when they write a reference, so it is where a provably broken one has
 // to be said. The judging itself lives in lib/reference-validation and is tested
