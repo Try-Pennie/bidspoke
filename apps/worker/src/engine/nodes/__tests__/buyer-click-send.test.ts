@@ -388,6 +388,7 @@ describe('a held claim is recorded so a person can find it on the partner page (
     const r = await run(h)
     expect(h.holds).toEqual([{ ...base, reason: 'outcome_unknown', detail: r.output.detail, partner_lead_id: null }])
     expect(r.output.hold_recorded).toBe(true)
+    expect(r.output.hold_record_error).toBeUndefined()
   })
 
   it('a post with no answer at all records the hold', async () => {
@@ -437,8 +438,33 @@ describe('a held claim is recorded so a person can find it on the partner page (
     const r = await run(h)
     expect(r.failure).toBeUndefined()
     expect(r.output).toMatchObject({ _route: 'unknown', hold_recorded: false })
-    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown' })])
+    // The page sends the person to the execution for why, so the step carries it.
+    expect(r.output.hold_record_error).toMatch(/relation does not exist/)
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown', hold_recorded: false })])
     expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && /relation does not exist/.test(String(l.error_message)))).toBe(true)
+  })
+
+  it('each held page says whether its hold was recorded, so the page never points at a list that lacks the click', async () => {
+    const cases: Array<[string, Parameters<typeof harness>[0]]> = [
+      ['outcome_unknown', { post: answer(503, 'down') }],
+      ['claim_in_doubt', { claim: { state: 'in_doubt', partner_id: PARTNER_ID, generation: 2 } }],
+      ['sold_mark_failed', { soldFails: true }],
+      ['free_failed', { post: answer(422, 'Missing field: Email'), freeFails: true }],
+    ]
+    for (const [reason, opts] of cases) {
+      for (const holdFails of [false, true]) {
+        const h = harness({ ...opts, holdFails })
+        await run(h)
+        const held = h.alerts.filter((a) => a.kind === 'page' && a.reason === reason)
+        expect(held, `${reason} holdFails=${holdFails}`).toEqual([expect.objectContaining({ hold_recorded: !holdFails })])
+      }
+    }
+  })
+
+  it('a page that holds nothing carries no word on a hold', async () => {
+    const h = harness({ addFails: true })
+    await run(h)
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'count_failed', hold_recorded: null })])
   })
 })
 

@@ -187,6 +187,8 @@ export interface BuyerClickSendOutput {
   pages: Array<{ reason: ClickPageReason; outcome: ClickAlertOutcome }>
   /** Present only when the claim is held: whether the partner page's record of it was written (#1552). */
   hold_recorded?: boolean
+  /** Why the record failed, when hold_recorded is false: the page sends the person here for it. */
+  hold_record_error?: string
   would_send_body_sha256?: string
   retries_ignored?: number
   duration_ms: number
@@ -437,8 +439,7 @@ class Run {
         return this.done('in_progress', 'claim_in_progress', `execution ${claim.holder_execution_id} has been sending it since ${new Date(claim.since).toISOString()}`)
       case 'in_doubt': {
         const detail = 'an earlier send never recorded its outcome, so this click was not sent'
-        await this.recordHold(v, 'claim_in_doubt', detail, null)
-        await this.page(v, 'claim_in_doubt', detail)
+        await this.holdAndPage(v, 'claim_in_doubt', detail, null)
         return this.done('needs_review', 'claim_in_doubt', detail)
       }
       case 'claimed':
@@ -452,8 +453,7 @@ class Run {
       res = await withDeadline(this.deps.post({ slug: v.slug, url: v.url }, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', this.deps.timers)
     } catch (err) {
       const detail = `no answer from the buyer: ${messageOf(err)}`
-      await this.recordHold(v, 'outcome_unknown', detail, null)
-      await this.page(v, 'outcome_unknown', detail)
+      await this.holdAndPage(v, 'outcome_unknown', detail, null)
       return this.done('unknown', 'outcome_unknown', detail)
     }
     this.out.status = res.status
@@ -461,8 +461,7 @@ class Run {
     // 3. classify
     const verdict = classifyClickAnswer(res, v.pattern)
     if (verdict.kind === 'unknown') {
-      await this.recordHold(v, 'outcome_unknown', verdict.detail, null)
-      await this.page(v, 'outcome_unknown', verdict.detail)
+      await this.holdAndPage(v, 'outcome_unknown', verdict.detail, null)
       return this.done('unknown', 'outcome_unknown', verdict.detail)
     }
     if (verdict.kind === 'refused') {
@@ -472,8 +471,7 @@ class Run {
       } catch (err) {
         this.out.claim_freed = false
         const detail = `the buyer refused it (${verdict.detail}) and the claim could not be released: ${messageOf(err)}`
-        await this.recordHold(v, 'free_failed', detail, null)
-        await this.page(v, 'free_failed', detail)
+        await this.holdAndPage(v, 'free_failed', detail, null)
       }
       return this.done('refused', 'refused_by_buyer', verdict.detail)
     }
@@ -483,8 +481,7 @@ class Run {
       await sale.sold(generation, { buyer_reference: verdict.partnerLeadId, result_code: 'created', http_status: res.status, payout_cents: 0 })
     } catch (err) {
       const detail = `the buyer created ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
-      await this.recordHold(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
-      await this.page(v, 'sold_mark_failed', detail)
+      await this.holdAndPage(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
     }
     await this.count(v)
     return this.done('sent', 'sent', `the buyer created ${verdict.partnerLeadId}`)
@@ -501,7 +498,7 @@ class Run {
       added = await counter.addMember(v.prospectId)
     } catch (err) {
       this.out.over_cap = 'not_counted'
-      await this.page(v, 'count_failed', `the buyer created ${this.out.partner_lead_id}, and adding it to the day's count failed: ${messageOf(err)}`)
+      await this.page(v, 'count_failed', `the buyer created ${this.out.partner_lead_id}, and adding it to the day's count failed: ${messageOf(err)}`, null)
       return
     }
     this.out.count = added.count
@@ -512,7 +509,7 @@ class Run {
       profile = await withDeadline(this.deps.profileCap(v.partnerId), CLICK_CAP_READ_DEADLINE_MS, 'buyer profile cap', this.deps.timers)
     } catch (err) {
       this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the buyer profile could not be read for its daily cap: ${messageOf(err)}`)
+      await this.page(v, 'cap_unreadable', `the buyer profile could not be read for its daily cap: ${messageOf(err)}`, null)
       return
     }
     if (!profile.found) {
@@ -525,14 +522,14 @@ class Run {
     // no cap on clicks: judging clicks against it would be a wrong notice (#1557).
     if (profile.soldOn !== 'click') {
       this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the enabled buyer profile is sold on the ${String(profile.soldOn)}, not the click, so its daily cap counts leads rather than clicks`)
+      await this.page(v, 'cap_unreadable', `the enabled buyer profile is sold on the ${String(profile.soldOn)}, not the click, so its daily cap counts leads rather than clicks`, null)
       return
     }
     const cap = profile.cap
     // The one cap rule (isCap), shared with save validation and buyer_click_check.
     if (!isCap(cap)) {
       this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the enabled buyer profile holds daily cap ${JSON.stringify(cap)}, not a whole number above zero`)
+      await this.page(v, 'cap_unreadable', `the enabled buyer profile holds daily cap ${JSON.stringify(cap)}, not a whole number above zero`, null)
       return
     }
     this.out.daily_lead_cap = cap
@@ -547,8 +544,19 @@ class Run {
     })
   }
 
-  /** Bounded and caught like an alert: the click it records already happened, so a failure is reported, never thrown. */
-  private async recordHold(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<void> {
+  /** A held claim: record it for the partner page, then page with whether that record landed. */
+  private async holdAndPage(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<void> {
+    const recorded = await this.recordHold(v, reason, detail, partnerLeadId)
+    await this.page(v, reason, detail, recorded)
+  }
+
+  /**
+   * Bounded and caught like an alert: the click it records already happened, so a
+   * failure is reported, never thrown. Answers whether the record landed, which the
+   * page for this hold carries, so it points at the Held clicks list only when the
+   * list has the click.
+   */
+  private async recordHold(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<boolean> {
     try {
       await withDeadline(
         this.deps.recordHold({
@@ -558,9 +566,12 @@ class Run {
         CLICK_HOLD_RECORD_DEADLINE_MS, 'held click record', this.deps.timers,
       )
       this.out.hold_recorded = true
+      return true
     } catch (err) {
       this.out.hold_recorded = false
+      this.out.hold_record_error = messageOf(err)
       this.deps.log({ event: 'buyer_click_hold_record_failed', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, reason, error_message: messageOf(err) })
+      return false
     }
   }
 
@@ -568,9 +579,10 @@ class Run {
     return this.ctx.trigger.execution_id ?? this.ctx.trigger.trace_id
   }
 
-  private async page(v: Validated, reason: ClickPageReason, detail: string): Promise<void> {
+  /** holdRecorded: what recordHold answered for this page's hold, null for a page that holds no claim. */
+  private async page(v: Validated, reason: ClickPageReason, detail: string, holdRecorded: boolean | null): Promise<void> {
     const outcome = await this.alert({
-      kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail,
+      kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail, hold_recorded: holdRecorded,
       workflow_id: this.ctx.trigger.workflow_id, trace_id: this.ctx.trigger.trace_id, at: this.deps.clock(),
     })
     this.out.pages.push({ reason, outcome })

@@ -83,12 +83,12 @@ Both are decided by the alert claim object, so two clicks that page together pos
 
 ## Releasing a held click
 
-A claim the node leaves held (`outcome_unknown`, `sold_mark_failed`, `free_failed`) or finds held (`claim_in_doubt`) is also recorded in `held_click_claims`, because a claim object cannot be listed and the step rows are kept only 7 days while the claim stays held. The buyer's partner page lists them under **Held clicks**, and the page for each of those reasons links there. A person checks the buyer's system and then either:
+A claim the node leaves held (`outcome_unknown`, `sold_mark_failed`, `free_failed`) or finds held (`claim_in_doubt`) is also recorded in `held_click_claims`, because a claim object cannot be listed and the step rows are kept only 7 days while the claim stays held. The buyer's partner page lists them under **Held clicks**, and the page for each of those reasons links there when the record landed. A person checks the buyer's system and then either:
 
 - **Mark sent**: the buyer has the lead. The claim is marked sent with the lead id the person enters, and the prospect is added to the click count of the Pacific day the click was held.
 - **Free**: the buyer does not have it. The claim is freed, so the next click on the prospect sends it.
 
-Each is a compare and set on the claim's generation, so a page read before the claim moved is refused, and each is audited. A record that cannot be written is logged and reported on the step as `hold_recorded: false`; the page still goes out. Routes: [Held clicks](../reference/api.md#held-clicks).
+Each is a compare and set on the claim's generation, so a page read before the claim moved is refused, and each is audited. A record that cannot be written is logged and reported on the step as `hold_recorded: false` with the error in `hold_record_error`, and the page still goes out, but it does not point at Held clicks, which lacks the click: it says the click could not be added to that list, names the prospect and the claim, and says the next click on the prospect after the claim's send window records it there. Routes: [Held clicks](../reference/api.md#held-clicks).
 
 ## Output
 
