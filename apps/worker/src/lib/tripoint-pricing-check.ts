@@ -31,9 +31,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { parseJson } from './json'
-import { getSalesforceToken } from '../engine/nodes/salesforce'
-import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
+import { salesforceGet } from './salesforce-read'
+import { resolveSalesforceCredentialOrg } from './salesforce-creds'
 import {
   describeEngineTiers,
   parseTripointRevenueFormula,
@@ -296,27 +295,15 @@ export function engineTiersReader(env: Env, supabase: SupabaseClient): () => Pro
  */
 export function salesforceFormulaReader(env: Env, supabase: SupabaseClient): () => Promise<string> {
   return async () => {
-    const { orgId, error } = await resolveSalesforceCredentialOrg(supabase)
-    if (!orgId) throw new Error(error ?? 'no_org_holds_salesforce_credentials')
-    const { instanceUrl, clientId, clientSecret } = await requireSalesforceCreds(
-      env,
-      supabase,
-      orgId,
-      'the Tripoint pricing check',
-    )
-    const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
-
     const soql =
       `SELECT Metadata FROM CustomField WHERE TableEnumOrId='${LEAD_REVENUE_FIELD.object}' ` +
       `AND DeveloperName='${LEAD_REVENUE_FIELD.developerName}'`
-    const res = await fetch(`${instanceUrl}/services/data/v60.0/tooling/query?q=${encodeURIComponent(soql)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Tooling query failed (${res.status}): ${text.slice(0, 500)}`)
-    }
-    const body = await parseJson<{ records?: Array<{ Metadata?: { formula?: unknown } }> }>(res)
+    const body = await salesforceGet<{ records?: Array<{ Metadata?: { formula?: unknown } }> }>(
+      env,
+      supabase,
+      `tooling/query?q=${encodeURIComponent(soql)}`,
+      'the Tripoint pricing check',
+    )
     const formula = body.records?.[0]?.Metadata?.formula
     if (typeof formula !== 'string' || !formula.trim()) {
       throw new Error(
