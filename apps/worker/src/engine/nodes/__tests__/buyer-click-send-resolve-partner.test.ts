@@ -64,3 +64,33 @@ describe('productionDeps.resolvePartner (#1553)', () => {
     await expect(deps.resolvePartner(LIBERTY1)).rejects.toThrow(/pool timeout/)
   })
 })
+
+/**
+ * The production cap read (#1543, L83): the over cap notice is judged against
+ * the buyer PROFILE's daily cap, read through the one profile reader, so the
+ * send and buyer_click_check can never disagree about the number.
+ */
+describe('productionDeps.profileCap (#1543)', () => {
+  const buyerSnapshot = (org: string, cap: number | null) => ({
+    org_id: org, loaded_at: new Date().toISOString(), updated_at_max: null, served_from: 'database',
+    buyers: [{ partner: { id: LIBERTY1, slug: 'liberty1' }, profile: { partnerId: LIBERTY1, soldOn: 'click', isEnabled: true, dailyLeadCap: cap }, version: 1, updated_at: '2027-09-20T10:00:00.000Z' }],
+  })
+
+  it('answers the enabled profile daily cap from the cached snapshot', async () => {
+    const org = 'org-cap-hit'
+    const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: buyerSnapshot(org, 50) })), failingSupabase())
+    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: true, cap: 50 })
+  })
+
+  it('answers found false when the org holds no enabled profile for the partner', async () => {
+    const org = 'org-cap-none'
+    const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [] } })), failingSupabase())
+    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: false })
+  })
+
+  it('throws when the profiles cannot be read and there is no copy, never answering no profile', async () => {
+    const org = 'org-cap-unreadable'
+    const deps = productionDeps(ctxFor(org), envWith(kvOf({})), failingSupabase())
+    await expect(deps.profileCap(LIBERTY1)).rejects.toThrow(/buyer profiles read failed/)
+  })
+})

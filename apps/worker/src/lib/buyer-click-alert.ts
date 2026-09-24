@@ -105,8 +105,8 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
     held: 'The buyer refused this prospect. The claim is still held, so a later click on it will not retry until a person releases it.',
   },
   cap_unreadable: {
-    header: "click node has no readable daily cap",
-    held: "The click was handled, but the over cap notice cannot be judged, so it will not post for this buyer until daily_lead_cap resolves to a whole number.",
+    header: "click buyer has no readable daily cap",
+    held: "The click was handled, but the over cap notice cannot be judged, so it will not post for this buyer until its buyer profile can be read and holds clicks per day.",
   },
 }
 

@@ -362,11 +362,11 @@ Response `201` (the only time the key is shown in full):
 | POST | `/api/partners` | Create a partner. |
 | PUT | `/api/partners/:id` | Update a partner. |
 | DELETE | `/api/partners/:id` | Delete a partner. |
-| GET | `/api/partners/:id/cap-count` | Current daily cap count (from the Daily Cap Durable Object). |
+| GET | `/api/partners/:id/cap-count` | Current daily cap count (from the Daily Cap Durable Object). For a buyer sold on the click, today's distinct clicks from its click counter instead, on the Pacific day: `{ sold_on: 'click', count, date, day_zone }`, 503 `click_count_unavailable` when the counter does not answer. |
 | GET | `/api/partners/:id/buyer-profile` | The buyer profile document, the partner's accept rules, and the live workflows selling to this partner outside buyer selection (`other_sellers`). `profile` is null until one is saved. |
 | PUT | `/api/partners/:id/buyer-profile` | Save the profile. Body `{ expected_version, profile }`. Validated with the shared package first (422 `profile_invalid` with the errors), then saved through `save_buyer_profile`. A stale `expected_version` is 409 `stale_version` carrying the current document, so the form can show both sides. |
 | GET | `/api/partners/:id/buyer-profile/history` | One audit entry per save, each changed path old to new. |
-| GET | `/api/partners/:id/buyer-usage` | The buyer ledger's counts for the current Eastern hour and day with the breakdown by status, plus today's wins recorded for this buyer outside buyer selection. 503 `usage_unavailable` when the ledger does not answer; a count that could not be read is named in `unmeasured` rather than shown as zero. |
+| GET | `/api/partners/:id/buyer-usage` | The buyer ledger's counts for the current Eastern hour and day with the breakdown by status, plus today's wins recorded for this buyer outside buyer selection. 503 `usage_unavailable` when the ledger does not answer; a count that could not be read is named in `unmeasured` rather than shown as zero. The body carries `sold_on: 'offer'`; a buyer sold on the click answers `{ sold_on: 'click', count, date, day_zone }` with today's distinct clicks on the Pacific day, the count buyer_click_check judges its cap against, or 503 `click_count_unavailable`. |
 
 ## Buyer sales
 

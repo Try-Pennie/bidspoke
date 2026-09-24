@@ -25,6 +25,7 @@ import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
 import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
+import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
 import { PricingTiersEditor } from './PricingTiersEditor'
 import { ProfileConflictView } from './ProfileConflictView'
@@ -117,7 +118,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 
 export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs, soldOnLock } = props
-  const [usage, setUsage] = useState<BuyerUsage | null>(null)
+  const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -144,16 +145,20 @@ export function BuyerProfileSection(props: Props) {
     return () => { cancelled = true }
   }, [partnerId, partnerName])
 
-  // The ledger counts are read once the profile is known to be sold on the
-  // offer: a click buyer (#1541) never reserves in the ledger, so its counts
-  // would read as zero sales against a cap that counts clicks.
-  const countsOnLedger = profile !== null && profile.sold_on !== 'click'
+  // Read once the profile is known. The route answers by the SAVED kind (#1543):
+  // an offer buyer's ledger counts, or a click buyer's clicks today from its
+  // click counter, since a click buyer never reserves in the ledger and its
+  // counts there would read as zero sales against a cap that counts clicks.
+  const profileLoaded = profile !== null
+  const soldOn = profile?.sold_on ?? null
   useEffect(() => {
-    if (!partnerId || !countsOnLedger) return
+    if (!partnerId || !profileLoaded) return
     let cancelled = false
+    setUsage(null)
+    setUsageError(null)
     api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(err instanceof Error ? err.message : 'The usage counts could not be read.') })
     return () => { cancelled = true }
-  }, [partnerId, countsOnLedger])
+  }, [partnerId, profileLoaded, soldOn])
 
   async function loadMoreUnresolved() {
     if (!partnerId || !unresolved || loadingMore) return
@@ -274,12 +279,20 @@ export function BuyerProfileSection(props: Props) {
               errors={capErrors}
               soldOn={profile.sold_on}
             />
-            {click ? null : usage === null && usageError === null ? (
+            {usage === null && usageError === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the usage counts…</p>
+            ) : click ? (
+              <ClickUsagePanel
+                usage={usage?.sold_on === 'click' ? usage : null}
+                error={usageError ?? (usage?.sold_on === 'click' ? null : 'The clicks today show once the change to the click is saved.')}
+                cap={profile.daily_lead_cap}
+                otherSellers={otherSellers}
+                partnerName={partnerName}
+              />
             ) : (
               <BuyerUsagePanel
-                usage={usage}
-                error={usageError}
+                usage={usage?.sold_on === 'offer' ? usage : null}
+                error={usageError ?? (usage?.sold_on === 'offer' ? null : 'The ledger counts show once the change to the offer is saved.')}
                 caps={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
                 otherSellers={otherSellers}
                 partnerName={partnerName}

@@ -4,7 +4,7 @@
  * must refuse the same value before it is saved), so the two cannot drift.
  */
 import { describe, expect, it } from 'vitest'
-import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf } from '../click-send'
+import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, isPartnerId, partnerIdOf } from '../click-send'
 
 describe('alertOverPercentOf', () => {
   it('an absent value takes the default of 120', () => {
@@ -38,4 +38,42 @@ describe('alertOverPercentOf', () => {
       if (!r.ok) expect(r.reason).toMatch(/whole number from 1 to 1000/)
     })
   }
+})
+
+/**
+ * The click nodes' partner id rule (#1543): the executor refuses a partner_id
+ * that is not a partner_configs uuid, and save validation must refuse the same
+ * value first, so both read this one function.
+ */
+describe('partnerIdOf', () => {
+  const ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
+
+  it('accepts a uuid, trimmed, in either case', () => {
+    expect(isPartnerId(ID)).toBe(true)
+    expect(partnerIdOf(ID)).toEqual({ ok: true, id: ID })
+    expect(partnerIdOf(`  ${ID}\n`)).toEqual({ ok: true, id: ID })
+    expect(partnerIdOf(ID.toUpperCase())).toEqual({ ok: true, id: ID.toUpperCase() })
+  })
+
+  const refused: Array<[string, unknown]> = [
+    ['a slug', 'liberty1'],
+    ['blank', '   '],
+    ['empty', ''],
+    ['absent', undefined],
+    ['null', null],
+    ['a number', 7],
+    ['a uuid with a trailing character', `${ID}x`],
+    ['a uuid missing its dashes', ID.replace(/-/g, '')],
+  ]
+  for (const [what, value] of refused) {
+    it(`refuses ${what} by name`, () => {
+      const r = partnerIdOf(value)
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toMatch(/is not a partner id/)
+    })
+  }
+
+  it('isPartnerId takes no trimming: a padded id is not itself an id', () => {
+    expect(isPartnerId(` ${ID}`)).toBe(false)
+  })
 })

@@ -286,6 +286,7 @@ describe('GET /partners/:id/buyer-usage', () => {
     const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
+      sold_on: 'offer',
       et_day: '2027-09-20',
       hour_bucket: 505_935,
       hour: { leads: 7, spend_cents: 15_330 },
@@ -313,19 +314,53 @@ describe('GET /partners/:id/buyer-usage', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ outside_wins_today: null, unmeasured: ['outside_wins_today'] })
   })
-  // #1541: a click sold buyer never reserves in the buyer ledger, so its ledger
-  // counts would read as zero sales against a cap that counts clicks. It is
-  // refused by name until the click counter (#1542) is wired here.
-  it('a click sold buyer is 409 sold_on_click with no ledger numbers, and the ledger is never asked', async () => {
-    vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
-    supabaseWith({ partner_configs: { single: partnerRow }, lead_sighting_bids: { count: 3 } })
-    const res = await request(app, 'GET', '/partners/p-1/buyer-usage')
-    expect(res.status).toBe(409)
-    const body = await res.json() as Record<string, unknown>
-    expect(body.error).toBe('sold_on_click')
-    expect(body).not.toHaveProperty('day')
-    expect(ledgerStub.summary).not.toHaveBeenCalled()
-    expect(ledgerStub.peek).not.toHaveBeenCalled()
+  // #1541, #1543: a click sold buyer never reserves in the buyer ledger, so its
+  // ledger counts would read as zero sales against a cap that counts clicks. The
+  // route answers with today's distinct clicks from the click counter instead,
+  // the same count buyer_click_check judges the cap against, on the Pacific day.
+  describe('a click sold buyer', () => {
+    const CLICK_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
+    const counterNames: string[] = []
+    const counterPaths: string[] = []
+    let answer: () => Response = () => new Response(JSON.stringify({ count: 17 }))
+    const clickEnv = {
+      ...testEnv,
+      DAILY_CAP: {
+        idFromName: (n: string) => { counterNames.push(n); return n },
+        get: () => ({ fetch: async (url: string) => { counterPaths.push(new URL(url).pathname); return answer() } }),
+      },
+    } as unknown as Env
+    const get = () => app.request(`/partners/${CLICK_ID}/buyer-usage`, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, clickEnv, mockCtx)
+
+    beforeEach(() => {
+      counterNames.length = 0
+      counterPaths.length = 0
+      answer = () => new Response(JSON.stringify({ count: 17 }))
+      vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+      supabaseWith({ partner_configs: { single: { ...partnerRow, id: CLICK_ID, slug: 'liberty1' } }, lead_sighting_bids: { count: 3 } })
+    })
+
+    it('answers today\'s clicks from the click counter, on the Pacific day, keyed on the partner id; the ledger is never asked', async () => {
+      const res = await get()
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(body).toMatchObject({ sold_on: 'click', count: 17, day_zone: 'America/Los_Angeles' })
+      expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(counterNames).toEqual([`clicks-${CLICK_ID}-${body.date as string}`])
+      // A plain read: the count route never adds a member.
+      expect(counterPaths).toEqual(['/member-count'])
+      expect(body).not.toHaveProperty('day')
+      expect(ledgerStub.summary).not.toHaveBeenCalled()
+      expect(ledgerStub.peek).not.toHaveBeenCalled()
+    })
+
+    it('a counter that fails is 503 click_count_unavailable, never a zero (L633)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      answer = () => new Response('boom', { status: 500 })
+      const res = await get()
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'click_count_unavailable' })
+    })
   })
 
   it('a kind that cannot be read is 503, never the ledger numbers of a buyer that may be sold on the click (L10)', async () => {

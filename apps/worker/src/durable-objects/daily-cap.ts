@@ -13,9 +13,10 @@
  *
  * Two independent counts live here and never touch each other:
  *   /check-and-increment, /decrement, /get-count, /reset   a plain counter
- *   /add-member, /members                                  a SET of member ids;
+ *   /add-member, /members, /member-count                   a SET of member ids;
  *       the count is the number of distinct members, so adding the same id
  *       twice (a retried click, a repeat send) never counts it twice.
+ *       /member-count is the plain read buyer_click_check asks (#1543).
  *
  * All writes are durable (ctx.storage). Two concurrent adds of one member
  * count it once: the Workers suite proves it. That holds today through
@@ -43,6 +44,10 @@ export interface CapMember {
 
 export interface AddMemberResult {
   added: boolean
+  count: number
+}
+
+export interface MemberCountResult {
   count: number
 }
 
@@ -81,6 +86,7 @@ export class DailyCapObject implements DurableObject {
       case '/reset':               return this.handleReset()
       case '/add-member':          return this.handleAddMember(request)
       case '/members':             return this.handleMembers()
+      case '/member-count':        return this.handleMemberCount()
       default:
         return new Response('Not found', { status: 404 })
     }
@@ -165,6 +171,15 @@ export class DailyCapObject implements DurableObject {
       .sort((a, b) => a[1].seq - b[1].seq)
       .map(([key, v]): CapMember => ({ member: key.slice(MEMBER_PREFIX.length), added_at: v.added_at }))
     return json<MembersResult>({ count: members.length, members })
+  }
+
+  /**
+   * The distinct count alone, a pure read (#1543): buyer_click_check asks it on
+   * every Engine offer, so it never adds a member and never lists them.
+   */
+  private async handleMemberCount(): Promise<Response> {
+    const count = (await this.state.storage.list({ prefix: MEMBER_PREFIX })).size
+    return json<MemberCountResult>({ count })
   }
 
   private async handleReset(): Promise<Response> {

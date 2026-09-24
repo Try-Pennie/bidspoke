@@ -31,8 +31,13 @@
  * entry and would post the click a second time. A Test Runner run, a shadow run
  * and local dev evaluate the config and touch nothing (report_only, L719).
  *
- * The partner is a SETTING (EvaFi follows Liberty1): the partner, the success
- * pattern and the cap are all config, and no buyer's literal lives in this file.
+ * The partner is a SETTING (EvaFi follows Liberty1): the partner and the success
+ * pattern are config, and no buyer's literal lives in this file. The daily cap
+ * the over cap notice is judged against is the buyer PROFILE's (#1543, L83),
+ * the same number buyer_click_check stops offering at, read through the one
+ * profile reader after the click is counted. A profile that cannot be read, or
+ * an enabled one holding no cap, pages cap_unreadable; no enabled profile at all
+ * (switched off while offers were still out) is recorded and pages nothing.
  *
  * The partner is stored by its partner_configs id (#1553, L15), and the claim,
  * the counter and the alert cooldowns are all keyed on that id, so renaming a
@@ -43,13 +48,14 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, withDeadline, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, partnerIdOf, withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { ClickCounterClient, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { makeAlertClaims } from '../../lib/alert-claim'
@@ -90,6 +96,9 @@ export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 /** How long the node waits on one Slack alert before recording it as failed. */
 export const CLICK_ALERT_DEADLINE_MS = 5_000
 
+/** How long the node waits on the profile's cap after the click is counted; past it the notice is cap_unreadable. */
+export const CLICK_CAP_READ_DEADLINE_MS = 5_000
+
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
 export const BUYER_CLICK_SEND_ROUTES = ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'] as const
@@ -118,7 +127,7 @@ export type BuyerClickSendFailureReason =
   | 'buyer_click_send_handle_unwired'
 
 /** Whether the over cap notice went out on this click. */
-export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'not_counted'
+export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'no_enabled_profile' | 'not_counted'
 
 // ── Config and output ─────────────────────────────────────────────────────────
 
@@ -136,8 +145,11 @@ export interface BuyerClickSendConfig {
    * matched against the WHOLE trimmed body. Per partner; no default (L72).
    */
   success_pattern: string
-  /** A whole number, or a template resolving to one. For the over cap notice only; offering is capped elsewhere. */
-  daily_lead_cap: number | string
+  /**
+   * Ignored and reported (#1543): the cap lives on the buyer profile, where
+   * buyer_click_check reads it too, so there is one home for it (L83).
+   */
+  daily_lead_cap?: unknown
   alert_over_percent?: number
   /** Ignored and reported: the node runs once whatever the definition says. */
   retries?: number
@@ -162,6 +174,10 @@ export interface BuyerClickSendOutput {
   counted: boolean
   count_date: string | null
   over_cap: OverCapState | null
+  /** The profile's daily cap the notice was judged against, null when it was not read or there was none. */
+  daily_lead_cap: number | null
+  /** A cap still stored on the node, shown because it is not the one in force. */
+  daily_lead_cap_ignored?: unknown
   claim_freed?: boolean
   pages: Array<{ reason: ClickPageReason; outcome: ClickAlertOutcome }>
   would_send_body_sha256?: string
@@ -193,7 +209,11 @@ export interface ClickCounterApi {
   addMember(member: string): Promise<AddMemberResult>
 }
 
+export type ProfileCap = { found: false } | { found: true; cap: number | null }
+
 export interface BuyerClickSendDeps {
+  /** The buyer's enabled profile's daily cap, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
+  profileCap: (partnerId: string) => Promise<ProfileCap>
   /** The org's partner by id, for its slug; null when the org holds no such partner. Throws when it cannot be read. */
   resolvePartner: (partnerId: string) => Promise<{ slug: string } | null>
   saleClient: (key: ClickClaimKey) => ClickSaleApi
@@ -208,7 +228,14 @@ export interface BuyerClickSendDeps {
 
 export function productionDeps(ctx: ExecutionContext, env: Env, supabase: SupabaseClient): BuyerClickSendDeps {
   const orgId = ctx.trigger.org_id
+  // Fire and forget, as buyer_select does: the walk is still inside the request, and the rebuild never rejects.
+  const background = (work: Promise<unknown>) => { void work }
   return {
+    profileCap: async (partnerId) => {
+      const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })
+      const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
+      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap } : { found: false }
+    },
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
     resolvePartner: async (partnerId) => {
@@ -320,10 +347,12 @@ class Run {
       counted: false,
       count_date: null,
       over_cap: null,
+      daily_lead_cap: null,
       pages: [],
       duration_ms: 0,
     }
     if (typeof this.config.retries === 'number') this.out.retries_ignored = this.config.retries
+    if (this.config.daily_lead_cap !== undefined) this.out.daily_lead_cap_ignored = this.config.daily_lead_cap
   }
 
   private done(route: BuyerClickSendRoute, reason: BuyerClickSendReason, detail?: string): BuyerClickSendResult {
@@ -447,12 +476,27 @@ class Run {
     this.out.count = added.count
     this.out.counted = added.added
 
-    const cap = this.dailyCap()
-    if (cap === null) {
+    let profile: ProfileCap
+    try {
+      profile = await withDeadline(this.deps.profileCap(v.partnerId), CLICK_CAP_READ_DEADLINE_MS, 'buyer profile cap', this.deps.timers)
+    } catch (err) {
       this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `daily_lead_cap ${JSON.stringify(this.config.daily_lead_cap ?? null)} did not resolve to a whole number above zero`)
+      await this.page(v, 'cap_unreadable', `the buyer profile could not be read for its daily cap: ${messageOf(err)}`)
       return
     }
+    if (!profile.found) {
+      // Switched off while offers were out: nothing more is offered, so there is no overshoot to warn about.
+      this.out.over_cap = 'no_enabled_profile'
+      this.deps.log({ event: 'buyer_click_send_no_enabled_profile', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug })
+      return
+    }
+    const cap = profile.cap
+    if (cap === null || !Number.isInteger(cap) || cap < 0) {
+      this.out.over_cap = 'cap_unreadable'
+      await this.page(v, 'cap_unreadable', `the enabled buyer profile holds daily cap ${JSON.stringify(cap)}, not a whole number`)
+      return
+    }
+    this.out.daily_lead_cap = cap
     const threshold = Math.ceil((cap * v.percent) / 100)
     if (added.count < threshold) {
       this.out.over_cap = 'not_due'
@@ -482,17 +526,12 @@ class Run {
     }
   }
 
-  private dailyCap(): number | null {
-    const raw = this.config.daily_lead_cap
-    const value = typeof raw === 'string' ? this.resolve(raw) : raw
-    const n = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value
-    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null
-  }
-
   private validate(): Omit<Validated, 'slug'> | BuyerClickSendResult {
     const c = this.config
-    const partnerId = typeof c.partner_id === 'string' ? c.partner_id.trim() : ''
-    if (!isPartnerId(partnerId)) return this.fail('partner_id_invalid', 'permanent', `partner_id ${JSON.stringify(c.partner_id ?? null)} is not a partner id; pick the buyer again on the node`)
+    // The one partner id rule, shared with save validation (#1543).
+    const partnerRule = partnerIdOf(c.partner_id)
+    if (!partnerRule.ok) return this.fail('partner_id_invalid', 'permanent', partnerRule.reason)
+    const partnerId = partnerRule.id
 
     let pattern: RegExp
     try {

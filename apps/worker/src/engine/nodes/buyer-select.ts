@@ -492,6 +492,11 @@ class Run {
     const now = this.deps.clock()
     const eligible: Candidate[] = []
     for (const buyer of snapshot.buyers) {
+      // A click sold buyer (#1541) is offered by buyer_click_check and sold by the
+      // click workflow, never here, so it is not one of this node's buyers at all
+      // and is left out of the considered list (#1543): listing it as "No pricing
+      // for this lead source" said something false about it on every lead.
+      if (buyer.profile.soldOn === 'click') continue
       const priority = buyer.profile.priority
       if (!buyer.partner.is_active) {
         this.out.considered.push({ partner: buyer.partner.slug, priority, payout_cents: null, outcome: 'ineligible', reason: 'inactive' })

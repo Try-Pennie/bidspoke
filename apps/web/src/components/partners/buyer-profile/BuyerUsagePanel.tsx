@@ -11,6 +11,7 @@ import type { CapsValue } from './CapsGrid'
 import { formatCents, formatWhole } from './labels'
 
 export interface BuyerUsage {
+  sold_on: 'offer'
   et_day: string
   hour_bucket: number
   hour: { leads: number; spend_cents: number }

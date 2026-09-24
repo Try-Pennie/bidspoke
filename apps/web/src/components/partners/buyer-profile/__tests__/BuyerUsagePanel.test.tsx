@@ -11,6 +11,7 @@ import { BuyerUsagePanel, type BuyerUsage } from '../BuyerUsagePanel'
 import type { CapsValue } from '../CapsGrid'
 
 const usage: BuyerUsage = {
+  sold_on: 'offer',
   et_day: '2027-09-20',
   hour_bucket: 505_935,
   hour: { leads: 7, spend_cents: 15_330 },

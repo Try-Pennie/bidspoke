@@ -79,6 +79,7 @@ const CASES: { type: string; marker: RegExp | null }[] = [
   { type: 'achieve_offers', marker: /Hold for inline offers/ },
   { type: 'parallel', marker: /First to succeed/ },
   { type: 'buyer_click_send', marker: /Success line/ },
+  { type: 'buyer_click_check', marker: /Loan amount/ },
   { type: 'parallel_end', marker: /join point for the parallel/ },
   { type: 'branch_end', marker: /Convergence point for the branch/ },
   { type: 'code', marker: null },
@@ -495,7 +496,8 @@ describe('ConfigPanel: buyer_select mode hint names where decide only sends lead
   })
 })
 
-describe('ConfigPanel: buyer_click_send picks its partner from the buyers and stores its id (#1542, #1553, L611)', () => {
+// The two click nodes share one picker (#1543, L613), so both are held to the same rule.
+describe.each(['buyer_click_send', 'buyer_click_check'])('ConfigPanel: %s picks its partner from the buyers and stores its id (#1542, #1553, L611)', (clickType) => {
   const LIBERTY1_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
   const EVAFI_ID = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a'
   const partnerOf = (id: string, slug: string, name: string, partner_type: 'source' | 'buyer' | 'both') =>
@@ -503,7 +505,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('offers buyer partners by name, never a source, and stores the partner id, not the slug', async () => {
     vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer'), partnerOf('id-engine', 'engine', 'Engine', 'source')])
-    const { onUpdate } = renderPanel(nodeOf('buyer_click_send', {}))
+    const { onUpdate } = renderPanel(nodeOf(clickType, {}))
     const picker = await screen.findByRole('combobox', { name: 'Partner' })
     expect(await screen.findByRole('option', { name: 'Liberty1' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Engine' })).not.toBeInTheDocument()
@@ -515,7 +517,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('selects a stored id the list holds under the partner name', async () => {
     vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer')])
-    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
+    renderPanel(nodeOf(clickType, { partner_id: LIBERTY1_ID }))
     await screen.findByRole('option', { name: 'Liberty1' })
     const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
     expect(picker.value).toBe(LIBERTY1_ID)
@@ -524,7 +526,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('keeps showing a stored id the list does not hold, rather than silently picking another', async () => {
     vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer'), partnerOf(EVAFI_ID, 'evafi', 'EvaFi', 'source')])
-    renderPanel(nodeOf('buyer_click_send', { partner_id: EVAFI_ID }))
+    renderPanel(nodeOf(clickType, { partner_id: EVAFI_ID }))
     await screen.findByRole('option', { name: 'Liberty1' })
     const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
     expect(picker.value).toBe(EVAFI_ID)
@@ -534,7 +536,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('keeps an id no partner in the list holds selected, by id', async () => {
     vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer')])
-    renderPanel(nodeOf('buyer_click_send', { partner_id: EVAFI_ID }))
+    renderPanel(nodeOf(clickType, { partner_id: EVAFI_ID }))
     await screen.findByRole('option', { name: 'Liberty1' })
     expect((screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement).value).toBe(EVAFI_ID)
     expect(screen.getByRole('option', { name: new RegExp(`${EVAFI_ID} \\(no such partner\\)`) })).toBeInTheDocument()
@@ -542,7 +544,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('keeps the stored id selected while the partners are still loading (L652)', () => {
     vi.mocked(api.partners.list).mockReturnValue(new Promise(() => undefined))
-    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
+    renderPanel(nodeOf(clickType, { partner_id: LIBERTY1_ID }))
     const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
     expect(picker.value).toBe(LIBERTY1_ID)
     expect(screen.getByRole('option', { name: new RegExp(`${LIBERTY1_ID} \\(partner list not loaded\\)`) })).toBeInTheDocument()
@@ -550,7 +552,7 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('keeps the stored id selected when the partners cannot be loaded, so a save cannot drop it (L652)', async () => {
     vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
-    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
+    renderPanel(nodeOf(clickType, { partner_id: LIBERTY1_ID }))
     await screen.findByText(/Partners could not be loaded/)
     const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
     expect(picker.value).toBe(LIBERTY1_ID)
@@ -559,7 +561,28 @@ describe('ConfigPanel: buyer_click_send picks its partner from the buyers and st
 
   it('says so when the partners cannot be loaded, instead of an empty picker', async () => {
     vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
-    renderPanel(nodeOf('buyer_click_send', {}))
+    renderPanel(nodeOf(clickType, {}))
     expect(await screen.findByText(/Partners could not be loaded/)).toBeInTheDocument()
+  })
+})
+
+describe('ConfigPanel: buyer_click_send holds no cap of its own (#1543, L83)', () => {
+  it('has no daily lead cap field: the cap is the buyer profile\'s', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_send', {}))
+    expect(screen.queryByText('Daily lead cap')).not.toBeInTheDocument()
+    expect(screen.getByText(/clicks per day on the buyer profile/)).toBeInTheDocument()
+  })
+})
+
+describe('ConfigPanel: buyer_click_check (#1543)', () => {
+  it('picks the population from the vocabulary and writes the lead templates', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    const { onUpdate } = renderPanel(nodeOf('buyer_click_check', { population: 'engine' }))
+    const population = screen.getByRole('combobox', { name: 'Population' }) as HTMLSelectElement
+    expect([...population.options].map((o) => o.value)).toEqual(['engine', 'main_flow', 'lead_economy'])
+    fireEvent.change(screen.getByRole('textbox', { name: 'Debt' }), { target: { value: '{{steps.trades.output.tradeCalculations.engineDebt}}' } })
+    const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(config.debt).toBe('{{steps.trades.output.tradeCalculations.engineDebt}}')
   })
 })

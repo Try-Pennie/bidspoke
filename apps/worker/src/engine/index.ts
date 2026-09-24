@@ -19,6 +19,7 @@ import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
+import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
@@ -1496,7 +1497,7 @@ export async function walkGraph(
       const clickConfig = node.config as Record<string, unknown>
       const clickInput: ResolvedStepInput = {
         // Never the body: it carries the prospect's identity (L222).
-        template: { partner_id: clickConfig.partner_id, prospect_id: clickConfig.prospect_id, request_url: clickConfig.request_url, daily_lead_cap: clickConfig.daily_lead_cap },
+        template: { partner_id: clickConfig.partner_id, prospect_id: clickConfig.prospect_id, request_url: clickConfig.request_url },
         resolved: { partner_id: clickOutput.partner_id, partner_slug: clickOutput.partner_slug, prospect_id: clickOutput.prospect_id, mode_effective: clickOutput.mode_effective },
       }
       logStep(stepLogQueue, executionId, executionStartedAt, node, clickStatus, clickInput, clickOutput, clickFailure?.message, clickErrorType, 0, clickStartedAt, stepOrder)
@@ -1510,6 +1511,51 @@ export async function walkGraph(
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: clickDurationMs })
 
       current = clickEdge ? findNode(clickEdge.target, definition.nodes) : undefined
+      stepOrder++
+      continue
+    }
+
+    // ── Buyer Click Check node (#1543): may a click sold buyer be offered this lead ──
+    // Walker only like buyer_click_send: it runs exactly once under its own 300 ms
+    // budget, never through executeNode's retry loop, so a slow read cannot be
+    // retried past the response Engine is waiting for. One step row under the
+    // node's id; the route is checked before the row is written, so an unwired
+    // handle is a failed row with its own name.
+    if (node.type === 'buyer_click_check') {
+      const checkStartedAt = new Date().toISOString()
+      const checkStartMs = Date.now()
+      log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
+
+      const checkResult = await executeBuyerClickCheckNode(node, ctx, buyerClickCheckProductionDeps(ctx, env, supabase))
+      const checkOutput = checkResult.output
+      const checkEdge = outgoingEdges(node.id, definition.edges).find((e) => e.source_handle === checkOutput._route)
+      let checkFailure = checkResult.failure
+      if (!checkFailure && !checkEdge) {
+        checkFailure = {
+          message: `buyer_click_check buyer_click_check_handle_unwired: the node routed ${checkOutput._route} and that handle is not wired`,
+          errorType: 'permanent',
+          reason: 'buyer_click_check_handle_unwired',
+        }
+      }
+      const checkStatus: StepStatus = checkFailure ? 'failed' : 'completed'
+      const checkErrorType: ErrorType = checkFailure?.errorType ?? null
+      recordStepOutput(ctx, node.namespace, { output: checkOutput, status: checkStatus, error: checkFailure?.message, error_type: checkErrorType }, { chainStep: true })
+      const checkConfig = node.config as Record<string, unknown>
+      const checkInput: ResolvedStepInput = {
+        template: { partner_id: checkConfig.partner_id, population: checkConfig.population, state: checkConfig.state, debt: checkConfig.debt, loan_amount: checkConfig.loan_amount },
+        resolved: { partner_id: checkOutput.partner_id, partner_slug: checkOutput.partner_slug, population: checkOutput.population },
+      }
+      logStep(stepLogQueue, executionId, executionStartedAt, node, checkStatus, checkInput, checkOutput, checkFailure?.message, checkErrorType, 0, checkStartedAt, stepOrder)
+      lastOutput = checkOutput
+
+      const checkDurationMs = Date.now() - checkStartMs
+      if (checkFailure) {
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: checkDurationMs, error_message: checkFailure.message, error_type: checkErrorType })
+        throw new StepFailureError(checkFailure.message, node.namespace, checkErrorType)
+      }
+      log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: checkDurationMs })
+
+      current = checkEdge ? findNode(checkEdge.target, definition.nodes) : undefined
       stepOrder++
       continue
     }

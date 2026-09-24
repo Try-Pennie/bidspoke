@@ -69,6 +69,17 @@ describe('DailyCapObject /add-member and /members', () => {
     expect(await (await stub.fetch('http://do/members')).json()).toEqual({ count: 0, members: [] })
   })
 
+  it('/member-count answers the distinct count and adds nothing, however often it is read (#1543)', async () => {
+    const stub = counter()
+    await setClock(stub, NOW)
+    expect(await (await stub.fetch('http://do/member-count')).json()).toEqual({ count: 0 })
+    await add(stub, 'p-1')
+    await add(stub, 'p-2')
+    await add(stub, 'p-1')
+    for (let i = 0; i < 3; i++) expect(await (await stub.fetch('http://do/member-count')).json()).toEqual({ count: 2 })
+    expect(await (await stub.fetch('http://do/members')).json()).toEqual({ count: 2, members: [{ member: 'p-1', added_at: NOW }, { member: 'p-2', added_at: NOW }] })
+  })
+
   it('leaves the existing counter untouched: members are not the check-and-increment count', async () => {
     const stub = counter()
     await setClock(stub, NOW)

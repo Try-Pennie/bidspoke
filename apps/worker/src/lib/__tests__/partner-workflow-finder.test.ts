@@ -20,22 +20,22 @@ const priced = new Map([['engine', new Set(['p-tripoint'])]])
 
 describe('workflowsUsingPartner', () => {
   it('names bid_group members, the fallback partner and partner_bid nodes', () => {
-    const find = workflowsUsingPartner([mainFlow, leadEconomy], priced, { includeBuyerSelect: true })
+    const find = workflowsUsingPartner([mainFlow, leadEconomy], priced, { includeBuyerSelect: true, includeClickNodes: true })
     expect(find('p-tripoint').map((w) => w.id)).toEqual(['main', 'le'])
     expect(find('p-engine').map((w) => w.id)).toEqual(['main'])
     expect(find('p-nobody')).toEqual([])
   })
 
   it('counts a buyer_select workflow only through the partners priced for its population, and only when asked', () => {
-    const withNode = workflowsUsingPartner([engine], priced, { includeBuyerSelect: true })
+    const withNode = workflowsUsingPartner([engine], priced, { includeBuyerSelect: true, includeClickNodes: true })
     expect(withNode('p-tripoint').map((w) => w.id)).toEqual(['engine'])
     expect(withNode('p-liberty')).toEqual([])
-    const without = workflowsUsingPartner([engine], priced, { includeBuyerSelect: false })
+    const without = workflowsUsingPartner([engine], priced, { includeBuyerSelect: false, includeClickNodes: true })
     expect(without('p-tripoint')).toEqual([])
   })
 
   it('a buyer_select population with no priced set is not a match, never an allow (L72)', () => {
-    const find = workflowsUsingPartner([engine], new Map(), { includeBuyerSelect: true })
+    const find = workflowsUsingPartner([engine], new Map(), { includeBuyerSelect: true, includeClickNodes: true })
     expect(find('p-tripoint')).toEqual([])
   })
 
@@ -44,13 +44,13 @@ describe('workflowsUsingPartner', () => {
       { id: 'x', name: 'X', is_active: true, definition: null },
       { id: 'y', name: 'Y', is_active: true, definition: { nodes: [{ type: 'bid_group' }, null as unknown as Record<string, unknown>] } },
     ]
-    expect(workflowsUsingPartner(odd, priced, { includeBuyerSelect: true })('p-tripoint')).toEqual([])
+    expect(workflowsUsingPartner(odd, priced, { includeBuyerSelect: true, includeClickNodes: true })('p-tripoint')).toEqual([])
   })
 
   it('an inactive workflow is reported only when the caller asks for drafts too', () => {
-    const live = workflowsUsingPartner([mainFlow, draft], priced, { includeBuyerSelect: true, liveOnly: true })
+    const live = workflowsUsingPartner([mainFlow, draft], priced, { includeBuyerSelect: true, includeClickNodes: true, liveOnly: true })
     expect(live('p-tripoint').map((w) => w.id)).toEqual(['main'])
-    const all = workflowsUsingPartner([mainFlow, draft], priced, { includeBuyerSelect: true })
+    const all = workflowsUsingPartner([mainFlow, draft], priced, { includeBuyerSelect: true, includeClickNodes: true })
     expect(all('p-tripoint').map((w) => w.id)).toEqual(['main', 'draft'])
   })
 })
@@ -60,15 +60,23 @@ describe('buyer_click_send names its partner by id (#1553)', () => {
 
   it('is found by its partner id, with or without buyer_select counted', () => {
     for (const includeBuyerSelect of [true, false]) {
-      const find = workflowsUsingPartner([clickFlow, leadEconomy], priced, { includeBuyerSelect })
+      const find = workflowsUsingPartner([clickFlow, leadEconomy], priced, { includeBuyerSelect, includeClickNodes: true })
       expect(find('p-liberty').map((w) => w.id)).toEqual(['click'])
       expect(find('p-tripoint').map((w) => w.id)).toEqual(['le'])
     }
   })
 
+  it('is left out when the caller asks for the sellers outside the click buyer\'s own cap (#1543)', () => {
+    // The profile page's other_sellers: a click buyer's clicks ARE its cap, so its
+    // own click workflow is not a seller whose wins the cap leaves out.
+    const find = workflowsUsingPartner([clickFlow, leadEconomy], priced, { includeBuyerSelect: false, includeClickNodes: false })
+    expect(find('p-liberty')).toEqual([])
+    expect(find('p-tripoint').map((w) => w.id)).toEqual(['le'])
+  })
+
   it('a node still carrying a slug is not taken for the partner of that name', () => {
     const legacy = wf('legacy', [{ type: 'buyer_click_send', config: { partner_slug: 'p-liberty' } }])
-    expect(workflowsUsingPartner([legacy], priced, { includeBuyerSelect: true })('p-liberty')).toEqual([])
+    expect(workflowsUsingPartner([legacy], priced, { includeBuyerSelect: true, includeClickNodes: true })('p-liberty')).toEqual([])
   })
 })
 
@@ -82,6 +90,7 @@ describe('the finder covers every node type that references partners', () => {
     partner_bid: { partner_id: 'p-x' },
     bid_group: { partner_ids: ['p-x'] },
     buyer_click_send: { partner_id: 'p-x' },
+    buyer_click_check: { partner_id: 'p-x', population: 'engine' },
   }
   const referencing = NODE_TYPES.filter((t) => NODE_TRAITS[t].referencesPartners)
 
@@ -91,11 +100,20 @@ describe('the finder covers every node type that references partners', () => {
 
   for (const type of referencing) {
     it(`finds a ${type} node by its partner id`, () => {
-      const find = workflowsUsingPartner([wf(type, [{ type, config: sample[type] }])], new Map(), { includeBuyerSelect: false })
+      const find = workflowsUsingPartner([wf(type, [{ type, config: sample[type] }])], new Map(), { includeBuyerSelect: false, includeClickNodes: true })
       expect(find('p-x').map((w) => w.id)).toEqual([type])
       expect(find('p-y')).toEqual([])
     })
   }
+})
+
+describe('buyer_click_check names its partner by id (#1543)', () => {
+  const offerFlow = wf('engine-offer', [{ type: 'buyer_click_check', config: { partner_id: 'p-liberty', population: 'engine' } }])
+
+  it('is found for the rename impact route, and left out of other_sellers: it offers, it never sells', () => {
+    expect(workflowsUsingPartner([offerFlow], priced, { includeBuyerSelect: true, includeClickNodes: true })('p-liberty').map((w) => w.id)).toEqual(['engine-offer'])
+    expect(workflowsUsingPartner([offerFlow], priced, { includeBuyerSelect: false, includeClickNodes: false })('p-liberty')).toEqual([])
+  })
 })
 
 describe('populationsInUse', () => {

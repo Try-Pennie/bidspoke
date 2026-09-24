@@ -38,6 +38,7 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
   buyer_click_send: 'emits-status', // the click buyer's answer
   code: 'no-http-status', // output is the script's return value, user-controlled
   bid_group: 'no-http-status', // composes partner_bid outputs, covered via partner_bid
+  buyer_click_check: 'no-http-status', // reads a profile and a counter; it calls no partner
   buyer_select: 'no-http-status', // the parent output carries the sale and the considered buyers; each attempt is a partner_bid row, covered via partner_bid
   parallel: 'no-http-status', // composes child outputs
   filter: 'no-http-status',
@@ -215,10 +216,11 @@ describe('status output key contract', () => {
     const result = await executeBuyerClickSendNode(
       makeNode('buyer_click_send', {
         partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', prospect_id: '{{trigger.payload.prospect}}', request_url: '{{trigger.payload.url}}', request_body: '{{trigger.payload.body}}',
-        success_pattern: 'created (?<id>\\w+)', daily_lead_cap: 50,
+        success_pattern: 'created (?<id>\\w+)',
       }),
       ctx,
       {
+        profileCap: async () => ({ found: true, cap: 50 }),
         resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),

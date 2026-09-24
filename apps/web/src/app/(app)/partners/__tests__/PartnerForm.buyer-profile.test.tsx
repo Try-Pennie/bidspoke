@@ -48,6 +48,7 @@ const doc: BuyerProfileDocument = {
 }
 
 const usage = {
+  sold_on: 'offer' as const,
   et_day: '2027-09-20', hour_bucket: 505_935, hour: { leads: 7, spend_cents: 15_330 },
   day: { leads: 42, spend_cents: 91_980, by_status: { reserved: 1, accepted: 40, declined: 5, released: 2, unresolved: 1 } },
   counted_populations: ['engine'], outside_wins_today: 3, unmeasured: [],
@@ -272,6 +273,7 @@ describe('how the buyer is sold', () => {
   })
 
   it('a click buyer shows no priority, pricing, accept rules or ledger counts, and its cap reads clicks per day', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
     expect(screen.getByRole('radio', { name: 'The click' })).toHaveAttribute('aria-checked', 'true')
     const region = screen.getByRole('region', { name: 'Buyer profile' })
@@ -280,8 +282,31 @@ describe('how the buyer is sold', () => {
     expect(within(region).queryByText('Accept when all of')).toBeNull()
     expect(screen.getByLabelText('Clicks per day')).toHaveValue(50)
     for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) expect(screen.queryByLabelText(label)).toBeNull()
-    expect(api.buyerProfiles.usage).not.toHaveBeenCalled()
-    expect(within(region).queryByText(/Counted for/)).toBeNull()
+    expect(within(region).queryByText(/as the buyer ledger holds it/)).toBeNull()
+  })
+
+  // #1543: the click counter replaces the ledger counts for a click buyer, the
+  // same count buyer_click_check stops offering at, on the Pacific day.
+  it('a click buyer shows today\'s clicks against its cap, on the Pacific day', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
+    await renderWith(clickDoc)
+    expect(await screen.findByText('17 of 50 clicks today')).toBeInTheDocument()
+    expect(screen.getByText(/Counted for 2027-09-21, a day that runs midnight to midnight Pacific time/)).toBeInTheDocument()
+    expect(screen.getByText('Room under the cap today.')).toBeInTheDocument()
+  })
+
+  it('a click buyer at its cap says it is no longer offered today', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 50, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
+    await renderWith(clickDoc)
+    expect(await screen.findByText('50 of 50 clicks today')).toBeInTheDocument()
+    expect(screen.getByText('The cap is reached. This buyer is not offered again until midnight Pacific.')).toBeInTheDocument()
+  })
+
+  it('a click count that cannot be read says so, with no number', async () => {
+    vi.mocked(api.buyerProfiles.usage).mockRejectedValue(new Error('The click counter did not answer, so the clicks today cannot be shown.'))
+    await renderWith(clickDoc)
+    expect(await screen.findByText('The click counter did not answer, so the clicks today cannot be shown.')).toBeInTheDocument()
+    expect(screen.queryByText(/clicks today$/)).toBeNull()
   })
 
   it('an offer buyer with pricing stored cannot be switched, and says why beside the choice', async () => {

@@ -3,13 +3,27 @@ import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
-import { alertOverPercentOf } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
 
 export interface ValidationError {
   nodeId: string
   namespace: string
   label?: string
   message: string
+}
+
+/** A template field is set when it is a string with something other than spaces in it. */
+const templateSet = (value: unknown): boolean => typeof value === 'string' && value.trim() !== ''
+
+/**
+ * The click nodes' buyer (#1543): blank is unconfigured, and anything else the
+ * executor's own rule refuses (a slug, a padded fragment) is refused here too,
+ * because the node would fail on every run with it.
+ */
+function clickPartnerProblem(value: unknown): string | null {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return 'No partner selected'
+  if (!partnerIdOf(value).ok) return 'The partner is not a partner id; pick the buyer again'
+  return null
 }
 
 function validateNodeConfig(type: string, config: Record<string, unknown>): string | null {
@@ -96,7 +110,8 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // Everything the node needs before it may claim a click (#1542). The success
       // line is the partner's own, with no default: without it no answer can be
       // confirmed, so every send would hold its claim and page (L72).
-      if (!(config.partner_id as string | undefined)?.trim()) return 'No partner selected'
+      const partnerProblem = clickPartnerProblem(config.partner_id)
+      if (partnerProblem) return partnerProblem
       if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
       if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
       if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'
@@ -108,11 +123,20 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
         return 'The success line is not a valid pattern'
       }
       if (!pattern.includes('(?<id>')) return 'The success line needs an (?<id>...) group'
-      const cap = config.daily_lead_cap
-      const capSet = (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) || (typeof cap === 'string' && cap.trim() !== '')
-      if (!capSet) return 'No daily lead cap set'
+      // No cap on the node (#1543, L83): the over cap notice reads the buyer profile's.
       // The executor's own rule (#1553): a value it refuses fails every run, so it is refused here first.
       if (!alertOverPercentOf(config.alert_over_percent).ok) return 'The notify percent must be a whole number from 1 to 1000'
+      return null
+    }
+    case 'buyer_click_check': {
+      // Everything the node needs to decide (#1543). A missing lead template would
+      // make every lead missing_lead_field, so it is refused rather than saved.
+      const partnerProblem = clickPartnerProblem(config.partner_id)
+      if (partnerProblem) return partnerProblem
+      if (!templateSet(config.state)) return 'No state template set'
+      if (!templateSet(config.debt)) return 'No debt template set'
+      if (!templateSet(config.loan_amount)) return 'No loan amount template set'
+      if (!(POPULATIONS as readonly unknown[]).includes(config.population)) return 'No population selected'
       return null
     }
     case 'response':
@@ -254,17 +278,19 @@ export function buyerSelectRequiredHandles(config: Record<string, unknown>): str
 
 /**
  * The handles a walker node that routes by name must have wired, or null for a
- * type with no such rule. buyer_click_send can take every one of its handles
- * at run time (#1542), so all of them are required; the list is the trait's.
+ * type with no such rule. buyer_click_send (#1542) and buyer_click_check
+ * (#1543) can take every one of their handles at run time, so all of them are
+ * required; the list is the trait's.
  */
 function requiredHandles(node: NodeDef): string[] | null {
   if (node.type === 'buyer_select') return buyerSelectRequiredHandles(node.config ?? {})
   if (node.type === 'buyer_click_send') return [...(NODE_TRAITS.buyer_click_send.staticHandles ?? [])]
+  if (node.type === 'buyer_click_check') return [...(NODE_TRAITS.buyer_click_check.staticHandles ?? [])]
   return null
 }
 
 /**
- * Attached buyer_select and buyer_click_send nodes with a required outgoing
+ * Attached buyer_select, buyer_click_send and buyer_click_check nodes with a required outgoing
  * handle no edge leaves from. At run time an unwired handle the node needs to
  * take is a named step failure in every mode, so a live workflow must not save
  * with one (L72).
