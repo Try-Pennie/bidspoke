@@ -1,0 +1,682 @@
+{
+  "name": "Liberty1 click",
+  "description": "Sends a clicked Liberty1 offer to Liberty1 and records the outcome in Salesforce (#1545). Replaces Pipedream flow eoltut7tgps3yat.",
+  "definition": {
+    "trigger": {
+      "type": "http_webhook",
+      "config": {
+        "method": "POST",
+        "auth_method": "api_key"
+      }
+    },
+    "nodes": [
+      {
+        "id": "f984463f-8821-57b0-ad5f-239d9b8cf0bc",
+        "namespace": "resolve_input",
+        "type": "code",
+        "label": "Resolve prospect id",
+        "position": {
+          "x": 0,
+          "y": 160
+        },
+        "config": {
+          "script": "// Which prospect a Liberty1 click is for (#1545). The portal posts {Prospect__c}\n// or {Submission__c}, whichever it has. A Prospect__c that is a Salesforce id is\n// used directly; otherwise a Submission__c that is one resolves the prospect\n// through the submission, inside the same query, so the submission patched later\n// is always one that belongs to the prospect that was sent. A Submission__c\n// posted beside a usable Prospect__c is ignored for the same reason.\n//\n// An id is interpolated into SOQL, so anything that is not exactly 15 or 18\n// letters and digits is refused here and never reaches a query. valid false\n// sends the run to the 400 response, with the reason named.\nconst SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;\n\n// Brian's PROSPECT_FIELDS, then the two fields the offer check reads.\nconst FIELDS = [\n  \"Id\", \"SubaccountName__c\", \"SubaccountUUID__c\", \"First_Name__c\", \"Last_Name__c\", \"Email__c\",\n  \"Phone__c\", \"Street__c\", \"AptSuite__c\", \"City__c\", \"State__c\", \"Zip__c\", \"BirthDate__c\",\n  \"SocialSecurityNumber__c\", \"LoanPurpose__c\", \"LoanAmount__c\", \"RentOrOwn__c\",\n  \"ApproximateCreditRating__c\", \"EmploymentStatus__c\", \"IncomePmtFrequency__c\",\n  \"AnnualIncomeBeforeTaxes__c\", \"EducationLevel__c\", \"FCRAConsentFlag__c\", \"TCPAConsentFlag__c\",\n  \"User_IP__c\", \"ExternalRoutingCode__c\", \"ExternalExchangeStatus__c\",\n];\n\nconst body = payload !== null && typeof payload === \"object\" && !Array.isArray(payload) ? payload : {};\n\nconst present = (v) => v !== undefined && v !== null && !(typeof v === \"string\" && v.trim() === \"\");\nconst asId = (v) => (typeof v === \"string\" && SF_ID.test(v.trim()) ? v.trim() : null);\n\nconst prospectId = asId(body.Prospect__c);\nconst submissionId = asId(body.Submission__c);\nconst select = `SELECT ${FIELDS.join(\", \")} FROM Prospect__c`;\n\nif (prospectId) {\n  return {\n    valid: true,\n    reason: null,\n    source: \"prospect\",\n    prospect_id: prospectId,\n    submission_id: null,\n    prospect_soql: `${select} WHERE Id = '${prospectId}'`,\n  };\n}\n\nif (submissionId) {\n  return {\n    valid: true,\n    reason: null,\n    source: \"submission\",\n    prospect_id: null,\n    submission_id: submissionId,\n    prospect_soql: `${select} WHERE Id IN (SELECT Prospect__c FROM Submission__c WHERE Id = '${submissionId}')`,\n  };\n}\n\nreturn {\n  valid: false,\n  reason: present(body.Prospect__c) || present(body.Submission__c) ? \"invalid_id\" : \"no_id\",\n  source: null,\n  prospect_id: null,\n  submission_id: null,\n  prospect_soql: null,\n};",
+          "retries": 0,
+          "timeout_ms": 1000
+        },
+        "variables": {}
+      },
+      {
+        "id": "ebb2a728-c47f-5444-82d3-ce81a478a36b",
+        "namespace": "check_input",
+        "type": "branch",
+        "label": "Usable id?",
+        "position": {
+          "x": 0,
+          "y": 320
+        },
+        "config": {
+          "branches": [
+            {
+              "label": "valid",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.resolve_input.output.valid",
+                        "operator": "is_true",
+                        "value": "true"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "else_behavior": "output",
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "c50b6e5d-eae9-5e33-b326-7f8ee06e778d",
+        "namespace": "respond_bad_input",
+        "type": "response",
+        "label": "Refuse: no usable id",
+        "position": {
+          "x": 420,
+          "y": 480
+        },
+        "config": {
+          "status_code": 400,
+          "body": {
+            "success": false,
+            "outcome": "invalid_request",
+            "reason": "{{steps.resolve_input.output.reason}}"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "5f2563a5-cae8-5f7d-8cfe-64a62aa2725c",
+        "namespace": "query_prospect",
+        "type": "salesforce",
+        "label": "Read prospect",
+        "position": {
+          "x": 0,
+          "y": 640
+        },
+        "config": {
+          "operation": "query",
+          "soql": "{{steps.resolve_input.output.prospect_soql}}",
+          "retries": 2,
+          "timeout_ms": 10000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "namespace": "check_offer",
+        "type": "branch",
+        "label": "Liberty1 offer on record?",
+        "position": {
+          "x": 0,
+          "y": 800
+        },
+        "config": {
+          "branches": [
+            {
+              "label": "not_found",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.query_prospect.output.body.records[0].Id",
+                        "operator": "not_exists"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "label": "completed",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.query_prospect.output.body.records[0].ExternalRoutingCode__c",
+                        "operator": "eq",
+                        "value": "4"
+                      },
+                      {
+                        "field": "steps.query_prospect.output.body.records[0].ExternalExchangeStatus__c",
+                        "operator": "eq",
+                        "value": "Completed"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "label": "open",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.query_prospect.output.body.records[0].ExternalRoutingCode__c",
+                        "operator": "eq",
+                        "value": "4"
+                      },
+                      {
+                        "field": "steps.query_prospect.output.body.records[0].ExternalExchangeStatus__c",
+                        "operator": "eq",
+                        "value": "Bid"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "else_behavior": "output",
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "6756fea1-aa74-53e1-a741-17eb973a66fc",
+        "namespace": "respond_not_found",
+        "type": "response",
+        "label": "Refuse: no such prospect",
+        "position": {
+          "x": -420,
+          "y": 960
+        },
+        "config": {
+          "status_code": 404,
+          "body": {
+            "success": false,
+            "outcome": "prospect_not_found"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "767a8b5c-524c-5656-9088-527e1039d2d9",
+        "namespace": "respond_no_offer",
+        "type": "response",
+        "label": "Refuse: no Liberty1 offer",
+        "position": {
+          "x": 420,
+          "y": 1120
+        },
+        "config": {
+          "status_code": 409,
+          "body": {
+            "success": false,
+            "outcome": "no_liberty1_offer"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "fc89d046-8a75-5f26-bb38-204a4a35b1e1",
+        "namespace": "respond_already_sent",
+        "type": "response",
+        "label": "Already sent",
+        "position": {
+          "x": 840,
+          "y": 1280
+        },
+        "config": {
+          "status_code": 200,
+          "body": {
+            "success": true,
+            "outcome": "already_sent"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "79fc5626-d648-52e0-baca-f4bdc7042444",
+        "namespace": "build_request",
+        "type": "code",
+        "label": "Build Liberty1 request",
+        "position": {
+          "x": 0,
+          "y": 1440
+        },
+        "config": {
+          "script": "// The Liberty1 request for one clicked prospect (#1545): Brian's buildPayload\n// and his DV1 or DI4 route, unchanged, over the record the query_prospect\n// Salesforce node read. Pure: buyer_click_send posts it, this only builds it.\nconst LIBERTY1_BASE =\n  \"https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks\";\n\nconst DV1_STATES = new Set([\"DE\", \"HI\", \"IA\", \"MN\", \"OR\", \"RI\", \"VT\", \"WA\", \"WI\", \"WY\"]);\n\nconst ROUTES = {\n  DV1: `${LIBERTY1_BASE}/DV1`,\n  DI4: `${LIBERTY1_BASE}/DI4`, // all other states\n};\n\nconst clean = (v) => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return s === \"\" ? null : s;\n};\nconst digits = (v) => { const s = clean(v); return s === null ? null : s.replace(/\\D/g, \"\"); };\nconst phone10 = (v) => { const d = digits(v); if (d === null) return null; return d.length === 11 && d.startsWith(\"1\") ? d.slice(1) : d; };\nconst zip5 = (v) => { const d = digits(v); return d === null ? null : d.slice(0, 5); };\nconst titleCase = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase().replace(/(^|[\\s\\-'])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); };\nconst upper = (v) => { const s = clean(v); return s === null ? null : s.toUpperCase(); };\nconst lower = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase(); };\n// Picklist value -> API enum: \"Poor (<600)\" -> \"poor\", \"Own with Mortgage\" -> \"own_with_mortgage\"\nconst toEnum = (v) => { const s = clean(v); if (s === null) return null; return s.replace(/\\s*\\(.*?\\)\\s*/g, \" \").trim().toLowerCase().replace(/\\s+/g, \"_\"); };\nconst num = (v) => { if (v === null || v === undefined || v === \"\") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };\nconst address1 = (street, apt) => {\n  const s = clean(street); const a = clean(apt);\n  if (s === null) return a; if (a === null) return s;\n  return /^(apt|unit|ste|suite|#)/i.test(a) ? `${s} ${a}` : `${s} Apt ${a}`;\n};\n\nfunction buildPayload(p) {\n  return {\n    leadId1: p.Id,\n    leadId2: clean(p.SubaccountName__c),\n    leadId3: clean(p.SubaccountUUID__c),\n    firstName: clean(p.First_Name__c),\n    lastName: clean(p.Last_Name__c),\n    email: lower(p.Email__c),\n    primaryPhone: phone10(p.Phone__c),\n    address1: address1(p.Street__c, p.AptSuite__c),\n    city: titleCase(p.City__c),\n    state: upper(p.State__c),\n    zipcode: zip5(p.Zip__c),\n    dateOfBirth: clean(p.BirthDate__c),\n    ssn: digits(p.SocialSecurityNumber__c),\n    purpose: toEnum(p.LoanPurpose__c),\n    loanAmount: num(p.LoanAmount__c),\n    propertyStatus: toEnum(p.RentOrOwn__c),\n    providedCreditRating: toEnum(p.ApproximateCreditRating__c),\n    employmentStatus: toEnum(p.EmploymentStatus__c),\n    employmentPayFrequency: toEnum(p.IncomePmtFrequency__c),\n    annualIncome: num(p.AnnualIncomeBeforeTaxes__c),\n    educationLevel: toEnum(p.EducationLevel__c),\n    consentsToFcra: p.FCRAConsentFlag__c === true,\n    consentsToTcpa: p.TCPAConsentFlag__c === true,\n    ipAddress: clean(p.User_IP__c),\n  };\n}\n\nconst pickRoute = (state) => (state && DV1_STATES.has(state) ? \"DV1\" : \"DI4\");\n\n// The offer check before this node routes only a found record here, so an\n// absent one is a wiring fault: refuse by name rather than post a body of nulls.\nconst record = steps.query_prospect?.output?.body?.records?.[0];\nif (!record || !record.Id) {\n  throw new Error(\"build_liberty1_request: no prospect record in steps.query_prospect, so nothing to send\");\n}\n\nconst body = buildPayload(record);\nconst route = pickRoute(body.state);\n\nreturn {\n  url: ROUTES[route],\n  body,\n  prospect_id: record.Id,\n  route,\n  state: body.state,\n};",
+          "retries": 0,
+          "timeout_ms": 1000
+        },
+        "variables": {}
+      },
+      {
+        "id": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "namespace": "click_send",
+        "type": "buyer_click_send",
+        "label": "Send click to Liberty1",
+        "position": {
+          "x": 0,
+          "y": 1600
+        },
+        "config": {
+          "partner_id": "",
+          "prospect_id": "{{steps.build_request.output.prospect_id}}",
+          "request_url": "{{steps.build_request.output.url}}",
+          "request_body": "{{steps.build_request.output.body}}",
+          "success_pattern": "Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)",
+          "daily_lead_cap": 50,
+          "alert_over_percent": 120,
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "2f9e8d8e-d2d7-5d74-8a5e-a0e5318629d0",
+        "namespace": "respond_unresolved",
+        "type": "response",
+        "label": "Not sent or not known",
+        "position": {
+          "x": 420,
+          "y": 1760
+        },
+        "config": {
+          "status_code": 200,
+          "body": {
+            "success": false,
+            "outcome": "{{steps.click_send.output._route}}"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "ce7927a2-86b8-5c44-a842-25c6c95b7c11",
+        "namespace": "click_patch",
+        "type": "code",
+        "label": "Build Salesforce updates",
+        "position": {
+          "x": 0,
+          "y": 1920
+        },
+        "config": {
+          "script": "// What the Liberty1 click writes to Salesforce, from buyer_click_send's route\n// (#1545): Brian's three update bodies (Submission, Prospect, Lead), unchanged\n// in fields and order.\n//\n// Completed only on `sent` (Liberty1 confirmed it created the record) and Fail\n// only on `refused` (Liberty1 turned it down with its own error). Every other\n// route writes NOTHING: `unknown` means nobody knows whether Liberty1 created\n// the record, and the rest never sent. write false is what the check_write\n// branch reads to skip every update node.\n//\n// Undefined values are dropped so nothing is blanked. PDFlow_3__c, where his\n// flow wrote the Pipedream inspect URL, carries this run's Bidspoke link.\nconst PARTNER_NAME = \"Liberty1\";\nconst ROUTING_CODE = 4; // Number on Prospect, Text on Submission/Lead\nconst LEAD_SALE_TYPE = \"Form\";\nconst LIBERTY1_TCPA = `By clicking \"Connect with Liberty1 Financial\": I expressly agree to Liberty1 Financial's TCPA consent below, Terms & Conditions, Privacy Policy, and Consent for Electronic Communications.\n\nI expressly provide my consent to receive marketing calls and texts/SMS regarding personal loan and debt consolidation products from Clear Vision Financial LLC, doing business as Liberty1 Financial, at the phone number I provided, including via an automatic telephone dialing system or an artificial, prerecorded, or AI-generated voice, even if my number is on a federal, state, or company Do-Not-Call list. I understand that my consent is not a condition of purchasing any goods or services and that my consent may be revoked at any time, such as by replying \"STOP\" to opt out of SMS or by telling Liberty1 Financial to stop on any call. I also acknowledge that Liberty1 Financial's Terms & Conditions include a Jury Trial Waiver, Class Action Waiver, and Arbitration Agreement, and, if I am a California resident, that the California Privacy Notice describes my privacy rights. Message and data rates may apply, and message frequency varies.\n\nText HELP for help or text STOP to cancel.`;\n\nconst EXCHANGE_STATUS_BY_ROUTE = { sent: \"Completed\", refused: \"Fail\" };\n\nconst click = steps.click_send?.output ?? {};\nconst route = typeof click._route === \"string\" ? click._route : \"not_run\";\nconst exchangeStatus = EXCHANGE_STATUS_BY_ROUTE[route] ?? null;\n\nif (exchangeStatus === null) {\n  return {\n    write: false,\n    exchange_status: null,\n    prospect: null,\n    submission: null,\n    lead: null,\n    response: { success: false, outcome: route },\n  };\n}\n\nconst dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));\nconst partnerLeadId = route === \"sent\" && click.partner_lead_id ? click.partner_lead_id : undefined;\nconst now = new Date().toISOString();\nconst link = execution?.bidspoke_link || undefined;\n\nreturn {\n  write: true,\n  exchange_status: exchangeStatus,\n  prospect: dropUndefined({\n    ExternalExchangeStatus__c: exchangeStatus,\n    ExternalPartnerLeadId__c: partnerLeadId,\n    ExternalPartnerName__c: PARTNER_NAME,\n    ExternalRoutingCode__c: ROUTING_CODE,\n    TCPA_Consent__c: LIBERTY1_TCPA,\n    ExternalTimestamp__c: now,\n    PDFlow_3__c: link,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  submission: dropUndefined({\n    External_Exchange_Status__c: exchangeStatus,\n    External_Partner_Lead_Id__c: partnerLeadId,\n    External_Partner_Name__c: PARTNER_NAME,\n    External_Routing_Code__c: String(ROUTING_CODE),\n    External_TCPA_Consent__c: LIBERTY1_TCPA,\n    External_Timestamp__c: now,\n    PDFlow_3__c: link,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  lead: dropUndefined({\n    External_Exchange_Status__c: exchangeStatus,\n    ExternalPartnerLeadId__c: partnerLeadId,\n    ExternalPartnerName__c: PARTNER_NAME,\n    External_Routing_Code__c: String(ROUTING_CODE),\n    TCPAConsent__c: LIBERTY1_TCPA,\n    External_Timestamp__c: now,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  response: { success: route === \"sent\", outcome: route },\n};",
+          "retries": 0,
+          "timeout_ms": 1000
+        },
+        "variables": {}
+      },
+      {
+        "id": "fed4c907-4751-5b7e-aa83-58826dd3aabc",
+        "namespace": "respond_decided",
+        "type": "response",
+        "label": "Respond with the outcome",
+        "position": {
+          "x": 0,
+          "y": 2080
+        },
+        "config": {
+          "status_code": 200,
+          "body": "{{steps.click_patch.output.response}}",
+          "continue_after_response": true
+        },
+        "variables": {}
+      },
+      {
+        "id": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
+        "namespace": "check_write",
+        "type": "branch",
+        "label": "Anything to write?",
+        "position": {
+          "x": 0,
+          "y": 2240
+        },
+        "config": {
+          "branches": [
+            {
+              "label": "write",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.click_patch.output.write",
+                        "operator": "is_true",
+                        "value": "true"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "else_behavior": "none",
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
+        "namespace": "update_prospect",
+        "type": "salesforce",
+        "label": "Update prospect",
+        "position": {
+          "x": 0,
+          "y": 2400
+        },
+        "config": {
+          "operation": "update",
+          "object": "Prospect__c",
+          "record_id": "{{steps.build_request.output.prospect_id}}",
+          "body": "{{steps.click_patch.output.prospect}}",
+          "retries": 2,
+          "timeout_ms": 10000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
+        "namespace": "check_submission",
+        "type": "branch",
+        "label": "Came from a submission?",
+        "position": {
+          "x": 0,
+          "y": 2560
+        },
+        "config": {
+          "branches": [
+            {
+              "label": "has_submission",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.resolve_input.output.submission_id",
+                        "operator": "exists"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "else_behavior": "none",
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "c35ef4be-cf58-5a52-b284-8cf8bb3757a8",
+        "namespace": "update_submission",
+        "type": "salesforce",
+        "label": "Update submission",
+        "position": {
+          "x": 0,
+          "y": 2720
+        },
+        "config": {
+          "operation": "update",
+          "object": "Submission__c",
+          "record_id": "{{steps.resolve_input.output.submission_id}}",
+          "body": "{{steps.click_patch.output.submission}}",
+          "retries": 2,
+          "timeout_ms": 10000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
+        "namespace": "find_lead",
+        "type": "salesforce",
+        "label": "Find the lead",
+        "position": {
+          "x": 0,
+          "y": 2880
+        },
+        "config": {
+          "operation": "query",
+          "soql": "SELECT Id, Lead__c FROM Submission__c WHERE Id = '{{steps.resolve_input.output.submission_id}}'",
+          "retries": 2,
+          "timeout_ms": 10000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "545ad3b0-ae65-54f3-9583-93b122c90595",
+        "namespace": "check_lead",
+        "type": "branch",
+        "label": "Has a lead?",
+        "position": {
+          "x": 0,
+          "y": 3040
+        },
+        "config": {
+          "branches": [
+            {
+              "label": "has_lead",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.find_lead.output.body.records[0].Lead__c",
+                        "operator": "exists"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "else_behavior": "none",
+          "retries": 0
+        },
+        "variables": {}
+      },
+      {
+        "id": "5a290a6f-036c-5126-895d-e03e9e32af04",
+        "namespace": "update_lead",
+        "type": "salesforce",
+        "label": "Update lead",
+        "position": {
+          "x": 0,
+          "y": 3200
+        },
+        "config": {
+          "operation": "update",
+          "object": "Lead",
+          "record_id": "{{steps.find_lead.output.body.records[0].Lead__c}}",
+          "body": "{{steps.click_patch.output.lead}}",
+          "retries": 2,
+          "timeout_ms": 10000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "efb42794-14f5-5296-b0dc-c1f0edcc430f",
+        "source": "trigger",
+        "target": "f984463f-8821-57b0-ad5f-239d9b8cf0bc",
+        "source_handle": "output"
+      },
+      {
+        "id": "c92e7ac9-4a7d-552d-a461-2150b4f8824b",
+        "source": "f984463f-8821-57b0-ad5f-239d9b8cf0bc",
+        "target": "ebb2a728-c47f-5444-82d3-ce81a478a36b",
+        "source_handle": "output"
+      },
+      {
+        "id": "fb13606f-c4b1-5c4d-bb79-94c893d8f27d",
+        "source": "ebb2a728-c47f-5444-82d3-ce81a478a36b",
+        "target": "5f2563a5-cae8-5f7d-8cfe-64a62aa2725c",
+        "source_handle": "valid"
+      },
+      {
+        "id": "ba8db0dc-c477-5702-b9a4-49a24653c4ec",
+        "source": "ebb2a728-c47f-5444-82d3-ce81a478a36b",
+        "target": "c50b6e5d-eae9-5e33-b326-7f8ee06e778d",
+        "source_handle": "else"
+      },
+      {
+        "id": "7d8b978e-a03d-56dc-aba1-0bac3c33b76e",
+        "source": "5f2563a5-cae8-5f7d-8cfe-64a62aa2725c",
+        "target": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "source_handle": "output"
+      },
+      {
+        "id": "39183408-506a-5abc-b7b1-cd7688d14853",
+        "source": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "target": "6756fea1-aa74-53e1-a741-17eb973a66fc",
+        "source_handle": "not_found"
+      },
+      {
+        "id": "66c11ea9-eea0-5612-a342-478e053de81b",
+        "source": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "target": "fc89d046-8a75-5f26-bb38-204a4a35b1e1",
+        "source_handle": "completed"
+      },
+      {
+        "id": "52c921fc-4f5a-50f9-9d2d-ba6f0fe5d8dc",
+        "source": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "target": "79fc5626-d648-52e0-baca-f4bdc7042444",
+        "source_handle": "open"
+      },
+      {
+        "id": "2de41e15-f46b-5e85-afee-e893c3c7b284",
+        "source": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
+        "target": "767a8b5c-524c-5656-9088-527e1039d2d9",
+        "source_handle": "else"
+      },
+      {
+        "id": "0ab79297-ab3b-526f-8ce9-dfb316604a04",
+        "source": "79fc5626-d648-52e0-baca-f4bdc7042444",
+        "target": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "source_handle": "output"
+      },
+      {
+        "id": "89cb82f9-5b83-561b-a400-43a6ed86cc0b",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "ce7927a2-86b8-5c44-a842-25c6c95b7c11",
+        "source_handle": "sent"
+      },
+      {
+        "id": "661feb57-fe82-52b5-8ecd-0d909da86029",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "ce7927a2-86b8-5c44-a842-25c6c95b7c11",
+        "source_handle": "refused"
+      },
+      {
+        "id": "bd364d54-6da2-5e20-aff9-4dd41cbcb9cf",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "fc89d046-8a75-5f26-bb38-204a4a35b1e1",
+        "source_handle": "already_sent"
+      },
+      {
+        "id": "dc711605-572c-5fd8-8f17-d7774e8f471f",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "2f9e8d8e-d2d7-5d74-8a5e-a0e5318629d0",
+        "source_handle": "unknown"
+      },
+      {
+        "id": "e4c325be-e308-5f1e-a35b-1be2d9fc3f40",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "2f9e8d8e-d2d7-5d74-8a5e-a0e5318629d0",
+        "source_handle": "needs_review"
+      },
+      {
+        "id": "53524bbf-50e5-5e66-988f-4db1ff1f8766",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "2f9e8d8e-d2d7-5d74-8a5e-a0e5318629d0",
+        "source_handle": "in_progress"
+      },
+      {
+        "id": "d5765072-c74f-534d-8bb7-92473f1231c9",
+        "source": "0570d68c-8814-5bb0-a0c3-7a870b08610a",
+        "target": "2f9e8d8e-d2d7-5d74-8a5e-a0e5318629d0",
+        "source_handle": "not_sent"
+      },
+      {
+        "id": "fdcee899-59ac-519e-a99b-4fa1e63c69fa",
+        "source": "ce7927a2-86b8-5c44-a842-25c6c95b7c11",
+        "target": "fed4c907-4751-5b7e-aa83-58826dd3aabc",
+        "source_handle": "output"
+      },
+      {
+        "id": "71d7f128-308f-5969-b380-b73318a4b094",
+        "source": "fed4c907-4751-5b7e-aa83-58826dd3aabc",
+        "target": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
+        "source_handle": "output"
+      },
+      {
+        "id": "d6bc6a70-6f4c-533f-96cc-17cceb1c5a33",
+        "source": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
+        "target": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
+        "source_handle": "write"
+      },
+      {
+        "id": "b170b01a-295d-5dd0-b946-6baf4d1942d5",
+        "source": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
+        "target": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
+        "source_handle": "output"
+      },
+      {
+        "id": "cd9449cc-8aca-5d11-9d08-5dc06d86029a",
+        "source": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
+        "target": "c35ef4be-cf58-5a52-b284-8cf8bb3757a8",
+        "source_handle": "has_submission"
+      },
+      {
+        "id": "397abc8e-1838-5876-b8d5-94c4df4907b6",
+        "source": "c35ef4be-cf58-5a52-b284-8cf8bb3757a8",
+        "target": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
+        "source_handle": "output"
+      },
+      {
+        "id": "f5150566-3320-5be0-ab5a-a144b57a2d49",
+        "source": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
+        "target": "545ad3b0-ae65-54f3-9583-93b122c90595",
+        "source_handle": "output"
+      },
+      {
+        "id": "b170a47c-bd01-5d11-81a6-7e78089cdb9d",
+        "source": "545ad3b0-ae65-54f3-9583-93b122c90595",
+        "target": "5a290a6f-036c-5126-895d-e03e9e32af04",
+        "source_handle": "has_lead"
+      }
+    ]
+  }
+}

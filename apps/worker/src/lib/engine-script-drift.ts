@@ -1,8 +1,10 @@
 /**
- * Pages when a kept Engine script and the canvas disagree (#1472).
+ * Pages when a kept canvas script and the canvas disagree (#1472).
  *
- * apps/worker/src/engine/scripts/engine-bidding/*.js are byte for byte what is
- * pasted into the Engine Bidding Workflow's code nodes, and the canvas is the
+ * apps/worker/src/engine/scripts/<folder>/*.js are byte for byte what is pasted
+ * into a workflow's code nodes: engine-bidding/ for the Engine Bidding Workflow,
+ * liberty1-click/ for the Liberty1 click workflow (#1545). KEPT_CANVAS_WORKFLOWS
+ * names each folder with the workflow it runs on. The canvas is the
  * source of truth: every save mirrors the definition to the backup repo
  * (GITHUB_REPO). A canvas edit that is not mirrored back into the repo leaves
  * the tests in engine/scripts/__tests__ proving a script that no longer runs
@@ -32,6 +34,9 @@ import type { Env } from '../index'
 import BUILD_RESPONSE_BODY from '../engine/scripts/engine-bidding/build_response_body.js'
 import PATCH_PROSPECT_BODY from '../engine/scripts/engine-bidding/patch_prospect_body.js'
 import TRIPOINT_PING from '../engine/scripts/engine-bidding/tripoint_ping.js'
+import RESOLVE_CLICK_INPUT from '../engine/scripts/liberty1-click/resolve_click_input.js'
+import BUILD_LIBERTY1_REQUEST from '../engine/scripts/liberty1-click/build_liberty1_request.js'
+import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_click_patch.js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { fetchGitHubFileText } from './github'
@@ -46,7 +51,7 @@ export const ENGINE_BIDDING_WORKFLOW_ID = 'da82a183-1a4a-417e-b0b8-5f3fe5e14840'
 export interface KeptScript {
   /** The code node's namespace on the canvas. */
   namespace: string
-  /** The file under engine/scripts/engine-bidding/. */
+  /** The file under engine/scripts/<folder>/. */
   file: string
   /** The file's text, exactly what is pasted. */
   script: string
@@ -54,10 +59,27 @@ export interface KeptScript {
    * sha256 of the canvas script this kept copy was derived from, read from the
    * mirror on `baselineReadOn`. While the canvas still holds that script the
    * kept copy is a paste not yet made, not a drift. Update both fields together
-   * whenever a kept file is re-derived from a newer canvas.
+   * whenever a kept file is re-derived from a newer canvas. Null for a script
+   * written here first, with no canvas script before it: any difference from
+   * the canvas is then a drift.
    */
-  canvasBaselineSha256: string
-  baselineReadOn: string
+  canvasBaselineSha256: string | null
+  baselineReadOn: string | null
+}
+
+/** One workflow whose code node scripts are kept in the repo. */
+export interface KeptWorkflow {
+  /** Names the workflow in a page and in job_runs. */
+  name: string
+  /**
+   * The workflow the scripts run on. Null while it has not been built on the
+   * canvas, so there is no mirror to read: its scripts are recorded as
+   * not_built and never paged. Set it in the change after the first save.
+   */
+  workflowId: string | null
+  /** The folder under engine/scripts/. */
+  folder: string
+  scripts: readonly KeptScript[]
 }
 
 /**
@@ -97,11 +119,34 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   },
 ]
 
+/**
+ * The Liberty1 click workflow (#1545), which replaces Brian's Pipedream flow.
+ * Null until Dan builds it on the canvas and saves: the scripts were written
+ * here first, so there is no canvas baseline and no mirror file yet. Once it is
+ * saved, put the workflow's id here in a PR; from then on the check judges
+ * these three like the Engine scripts, and any difference is a drift.
+ */
+export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = null
+
+export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
+  { namespace: 'resolve_input', file: 'resolve_click_input.js', script: RESOLVE_CLICK_INPUT, canvasBaselineSha256: null, baselineReadOn: null },
+  { namespace: 'build_request', file: 'build_liberty1_request.js', script: BUILD_LIBERTY1_REQUEST, canvasBaselineSha256: null, baselineReadOn: null },
+  { namespace: 'click_patch', file: 'liberty1_click_patch.js', script: LIBERTY1_CLICK_PATCH, canvasBaselineSha256: null, baselineReadOn: null },
+]
+
+/** Every workflow the check watches, each with its folder of kept scripts. */
+export const KEPT_CANVAS_WORKFLOWS: readonly KeptWorkflow[] = [
+  { name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: KEPT_ENGINE_SCRIPTS },
+  { name: 'Liberty1 click workflow', workflowId: LIBERTY1_CLICK_WORKFLOW_ID, folder: 'liberty1-click', scripts: KEPT_LIBERTY1_CLICK_SCRIPTS },
+]
+
+type VerdictBase = { workflow: string; namespace: string; file: string }
 export type ScriptVerdict =
-  | { namespace: string; file: string; state: 'agree' }
-  | { namespace: string; file: string; state: 'awaiting_paste'; baselineReadOn: string }
-  | { namespace: string; file: string; state: 'drift'; line: number; kept: string | null; canvas: string | null }
-  | { namespace: string; file: string; state: 'missing_node' }
+  | (VerdictBase & { state: 'agree' })
+  | (VerdictBase & { state: 'awaiting_paste'; baselineReadOn: string })
+  | (VerdictBase & { state: 'drift'; line: number; kept: string | null; canvas: string | null })
+  | (VerdictBase & { state: 'missing_node' })
+  | (VerdictBase & { state: 'not_built' })
 
 export async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
@@ -142,25 +187,26 @@ function firstDifference(kept: string, canvas: string): { line: number; kept: st
   return { line: n, kept: null, canvas: null }
 }
 
-export async function judgeKeptScripts(kept: readonly KeptScript[], definition: { nodes?: unknown }): Promise<ScriptVerdict[]> {
+export async function judgeKeptScripts(kept: readonly KeptScript[], definition: { nodes?: unknown }, workflow: string): Promise<ScriptVerdict[]> {
   const out: ScriptVerdict[] = []
   for (const k of kept) {
+    const base = { workflow, namespace: k.namespace, file: k.file }
     const canvas = canvasScriptFor(definition, k.namespace)
     if (canvas === null) {
-      out.push({ namespace: k.namespace, file: k.file, state: 'missing_node' })
+      out.push({ ...base, state: 'missing_node' })
       continue
     }
     const keptText = withoutFinalNewline(k.script)
     const canvasText = withoutFinalNewline(canvas)
     if (keptText === canvasText) {
-      out.push({ namespace: k.namespace, file: k.file, state: 'agree' })
+      out.push({ ...base, state: 'agree' })
       continue
     }
-    if ((await sha256Hex(canvas)) === k.canvasBaselineSha256) {
-      out.push({ namespace: k.namespace, file: k.file, state: 'awaiting_paste', baselineReadOn: k.baselineReadOn })
+    if (k.canvasBaselineSha256 !== null && (await sha256Hex(canvas)) === k.canvasBaselineSha256) {
+      out.push({ ...base, state: 'awaiting_paste', baselineReadOn: k.baselineReadOn ?? 'an unrecorded day' })
       continue
     }
-    out.push({ namespace: k.namespace, file: k.file, state: 'drift', ...firstDifference(keptText, canvasText) })
+    out.push({ ...base, state: 'drift', ...firstDifference(keptText, canvasText) })
   }
   return out
 }
@@ -171,13 +217,15 @@ const quote = (line: string | null): string => (line === null ? '(no such line)'
 export function describeVerdict(v: ScriptVerdict): string {
   switch (v.state) {
     case 'drift':
-      return `${v.namespace}: the canvas script differs from ${v.file} from line ${v.line}, and matches neither the kept file nor the canvas it was derived from. Kept: ${quote(v.kept)}. Canvas: ${quote(v.canvas)}.`
+      return `${v.workflow}, ${v.namespace}: the canvas script differs from ${v.file} from line ${v.line}, and matches neither the kept file nor the canvas it was derived from. Kept: ${quote(v.kept)}. Canvas: ${quote(v.canvas)}.`
     case 'missing_node':
-      return `${v.namespace}: the Engine Bidding Workflow has no code node with this namespace, so ${v.file} has nothing to run as.`
+      return `${v.workflow}, ${v.namespace}: the workflow has no code node with this namespace, so ${v.file} has nothing to run as.`
     case 'awaiting_paste':
-      return `${v.namespace}: the canvas still holds the script ${v.file} was derived from on ${v.baselineReadOn}; the paste has not happened yet.`
+      return `${v.workflow}, ${v.namespace}: the canvas still holds the script ${v.file} was derived from on ${v.baselineReadOn}; the paste has not happened yet.`
     case 'agree':
-      return `${v.namespace}: the canvas holds ${v.file}.`
+      return `${v.workflow}, ${v.namespace}: the canvas holds ${v.file}.`
+    case 'not_built':
+      return `${v.workflow}, ${v.namespace}: no workflow id is recorded yet, so ${v.file} is compared with no canvas.`
   }
 }
 
@@ -200,8 +248,7 @@ export async function readMirrorDefinition(deps: { repo: string; token: string; 
 export interface DriftDeps {
   repo: string | undefined
   token: string | undefined
-  workflowId: string
-  kept: readonly KeptScript[]
+  workflows: readonly KeptWorkflow[]
   fetch: typeof fetch
   localDev: boolean
   log(line: string): void
@@ -229,21 +276,39 @@ export async function runEngineScriptDrift(deps: DriftDeps): Promise<DriftSummar
     const reason = 'GITHUB_TOKEN is not set while GITHUB_REPO is configured, so the mirror cannot be read'
     return { verdicts: [], findings: [`could not read the canvas mirror: ${reason}`], unreadable: reason }
   }
-  const mirror = await readMirrorDefinition({ repo: deps.repo, token: deps.token, workflowId: deps.workflowId, fetch: deps.fetch })
-  if (!mirror.ok) return { verdicts: [], findings: [`could not read the canvas mirror: ${mirror.reason}`], unreadable: mirror.reason }
-  const verdicts = await judgeKeptScripts(deps.kept, mirror.definition)
+  const verdicts: ScriptVerdict[] = []
+  const unreadableFindings: string[] = []
+  const unreadable: string[] = []
+  for (const w of deps.workflows) {
+    if (w.workflowId === null) {
+      for (const k of w.scripts) verdicts.push({ workflow: w.name, namespace: k.namespace, file: k.file, state: 'not_built' })
+      continue
+    }
+    // One workflow's unreadable mirror judges nothing for THAT workflow and is
+    // its own finding; the others are still judged (L11, L215).
+    const mirror = await readMirrorDefinition({ repo: deps.repo, token: deps.token, workflowId: w.workflowId, fetch: deps.fetch })
+    if (!mirror.ok) {
+      unreadable.push(`${w.name}: ${mirror.reason}`)
+      unreadableFindings.push(`could not read the canvas mirror of the ${w.name}: ${mirror.reason}`)
+      continue
+    }
+    verdicts.push(...(await judgeKeptScripts(w.scripts, mirror.definition, w.name)))
+  }
   for (const v of verdicts) deps.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] ${describeVerdict(v)}`)
-  const findings = verdicts.filter((v) => v.state === 'drift' || v.state === 'missing_node').map(describeVerdict)
-  return { verdicts, findings }
+  const findings = [...unreadableFindings, ...verdicts.filter((v) => v.state === 'drift' || v.state === 'missing_node').map(describeVerdict)]
+  return { verdicts, findings, ...(unreadable.length > 0 ? { unreadable: unreadable.join('; ') } : {}) }
 }
 
 export function endingOf(summary: DriftSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped }
-  if (summary.unreadable) return { outcome: 'unmeasured', detail: summary.unreadable }
-  const scripts = Object.fromEntries(summary.verdicts.map((v) => [v.namespace, v.state]))
-  const awaiting = summary.verdicts.filter((v) => v.state === 'awaiting_paste').map((v) => v.namespace)
+  const judged = summary.verdicts.filter((v) => v.state !== 'not_built')
+  if (summary.unreadable && judged.length === 0) return { outcome: 'unmeasured', detail: summary.unreadable }
+  const key = (v: ScriptVerdict) => `${v.workflow}/${v.namespace}`
+  const scripts = Object.fromEntries(summary.verdicts.map((v) => [key(v), v.state]))
+  const awaiting = summary.verdicts.filter((v) => v.state === 'awaiting_paste').map(key)
+  const notBuilt = summary.verdicts.filter((v) => v.state === 'not_built').map(key)
   const outcome = summary.findings.length > 0 ? 'findings' : awaiting.length > 0 ? 'awaiting_paste' : 'ok'
-  return { outcome, summary: { scripts, awaiting, findings: summary.findings.length } }
+  return { outcome, summary: { scripts, awaiting, not_built: notBuilt, findings: summary.findings.length } }
 }
 
 /**
@@ -258,11 +323,11 @@ export async function runEngineScriptDriftAndPage(run: () => Promise<DriftSummar
 
 export const ENGINE_SCRIPT_DRIFT_REMEDY: AlertRemedy = {
   consequence:
-    'A code node on the Engine Bidding Workflow holds a script that is neither the kept copy in apps/worker/src/engine/scripts/engine-bidding ' +
+    'A code node on a kept workflow holds a script that is neither the kept copy in apps/worker/src/engine/scripts/<folder> ' +
     'nor the canvas script that copy was derived from, so the repo has no copy of what is running and the tests are proving a ' +
-    'script the canvas no longer runs. Bidding itself is unaffected. Each line names the node and the first line that differs:',
+    'script the canvas no longer runs. The workflow itself is unaffected. Each line names the workflow, the node and the first line that differs:',
   fixHint:
-    'Open the node named on the Engine Bidding Workflow and compare its script with the kept file. If the canvas edit is the one ' +
+    'Open the node named on the workflow named and compare its script with the kept file. If the canvas edit is the one ' +
     'that should stand, copy the canvas script into the kept file in a PR, update its canvasBaselineSha256 in ' +
     'apps/worker/src/lib/engine-script-drift.ts, and rerun the script tests. If the kept file is right, paste it into the node and ' +
     'save. The check runs hourly and goes quiet once the two agree; a mirror it could not read is reported in its own words.',
@@ -274,8 +339,7 @@ export function productionDriftDeps(env: Env): DriftDeps {
   return {
     repo: env.GITHUB_REPO,
     token: env.GITHUB_TOKEN,
-    workflowId: ENGINE_BIDDING_WORKFLOW_ID,
-    kept: KEPT_ENGINE_SCRIPTS,
+    workflows: KEPT_CANVAS_WORKFLOWS,
     fetch: (input, init) => fetch(input, init),
     localDev: Boolean(env.LOCAL_DEV),
     log: (line) => console.log(line),

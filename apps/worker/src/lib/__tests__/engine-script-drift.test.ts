@@ -13,7 +13,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { stripTrailingWhitespace } from '@bidspoke/script-hygiene'
 import {
+  KEPT_CANVAS_WORKFLOWS,
   KEPT_ENGINE_SCRIPTS,
+  LIBERTY1_CLICK_WORKFLOW_ID,
   ENGINE_BIDDING_WORKFLOW_ID,
   ENGINE_SCRIPT_DRIFT_JOB,
   describeVerdict,
@@ -36,6 +38,17 @@ import TRIPOINT_PING_RAW from '../../engine/scripts/engine-bidding/tripoint_ping
 import BUILD_RESPONSE_BODY_RAW from '../../engine/scripts/engine-bidding/build_response_body.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import PATCH_PROSPECT_BODY_RAW from '../../engine/scripts/engine-bidding/patch_prospect_body.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import RESOLVE_CLICK_INPUT_RAW from '../../engine/scripts/liberty1-click/resolve_click_input.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_LIBERTY1_REQUEST_RAW from '../../engine/scripts/liberty1-click/build_liberty1_request.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import LIBERTY1_CLICK_PATCH_RAW from '../../engine/scripts/liberty1-click/liberty1_click_patch.js?raw'
+const LIBERTY1_ON_DISK: Record<string, string> = {
+  'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
+  'build_liberty1_request.js': BUILD_LIBERTY1_REQUEST_RAW as string,
+  'liberty1_click_patch.js': LIBERTY1_CLICK_PATCH_RAW as string,
+}
 const ON_DISK: Record<string, string> = {
   'tripoint_ping.js': TRIPOINT_PING_RAW as string,
   'build_response_body.js': BUILD_RESPONSE_BODY_RAW as string,
@@ -84,26 +97,27 @@ describe('judgeKeptScripts', () => {
 
   it('agree when the canvas holds the kept script', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT)))
-    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'agree' })
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT)), 'W')
+    expect(v).toEqual({ workflow: 'W', namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'agree' })
   })
 
   it('agree when only the final newline differs, because a file in git ends with one and a script box need not', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT.replace(/\n$/, ''))))
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT.replace(/\n$/, ''))), 'W')
     expect(v.state).toBe('agree')
   })
 
   it('awaiting_paste when the canvas still holds exactly the script the kept copy was derived from', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', BASELINE)))
-    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'awaiting_paste', baselineReadOn: '2026-09-22' })
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', BASELINE)), 'W')
+    expect(v).toEqual({ workflow: 'W', namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'awaiting_paste', baselineReadOn: '2026-09-22' })
   })
 
   it('drift when the canvas matches neither, naming the first differing line and both versions of it', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\nsomebody edited this\n')))
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\nsomebody edited this\n')), 'W')
     expect(v).toEqual({
+      workflow: 'W',
       namespace: 'tripoint_ping',
       file: 'tripoint_ping.js',
       state: 'drift',
@@ -115,27 +129,28 @@ describe('judgeKeptScripts', () => {
 
   it('drift when the canvas is a prefix of the kept script, naming the line the canvas lacks', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\n')))
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', 'line one\nline two\n')), 'W')
     expect(v).toMatchObject({ state: 'drift', line: 3, kept: 'line three', canvas: null })
   })
 
   it('missing_node when no code node on the canvas carries the namespace, and a non code node of that name does not count', async () => {
     const kept = await keptFor(KEPT, BASELINE)
-    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT, 'buyer_select'), codeNode('other', KEPT)))
-    expect(v).toEqual({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'missing_node' })
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('tripoint_ping', KEPT, 'buyer_select'), codeNode('other', KEPT)), 'W')
+    expect(v).toEqual({ workflow: 'W', namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'missing_node' })
   })
 
   it('judges every kept script, in order', async () => {
     const a = { ...(await keptFor(KEPT, BASELINE)), namespace: 'a', file: 'a.js' }
     const b = { ...(await keptFor(KEPT, BASELINE)), namespace: 'b', file: 'b.js' }
-    const verdicts = await judgeKeptScripts([a, b], definitionWith(codeNode('a', KEPT), codeNode('b', BASELINE)))
+    const verdicts = await judgeKeptScripts([a, b], definitionWith(codeNode('a', KEPT), codeNode('b', BASELINE)), 'W')
     expect(verdicts.map((v) => [v.namespace, v.state])).toEqual([['a', 'agree'], ['b', 'awaiting_paste']])
   })
 })
 
 describe('describeVerdict', () => {
   it('names the node, the file and the line for a drift, and quotes both lines', () => {
-    const line = describeVerdict({ namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'drift', line: 4, kept: 'const a = 1', canvas: 'const a = 2' })
+    const line = describeVerdict({ workflow: 'Engine Bidding Workflow', namespace: 'tripoint_ping', file: 'tripoint_ping.js', state: 'drift', line: 4, kept: 'const a = 1', canvas: 'const a = 2' })
+    expect(line).toContain('Engine Bidding Workflow')
     expect(line).toContain('tripoint_ping')
     expect(line).toContain('tripoint_ping.js')
     expect(line).toContain('line 4')
@@ -144,14 +159,14 @@ describe('describeVerdict', () => {
   })
 
   it('says the canvas has no such node for a missing node', () => {
-    const line = describeVerdict({ namespace: 'patch_prospect_body', file: 'patch_prospect_body.js', state: 'missing_node' })
+    const line = describeVerdict({ workflow: 'Engine Bidding Workflow', namespace: 'patch_prospect_body', file: 'patch_prospect_body.js', state: 'missing_node' })
     expect(line).toContain('patch_prospect_body')
     expect(line.toLowerCase()).toContain('no code node')
   })
 
   it('truncates a long differing line rather than posting a script to Slack', () => {
     const long = 'x'.repeat(500)
-    const line = describeVerdict({ namespace: 'n', file: 'n.js', state: 'drift', line: 1, kept: long, canvas: long })
+    const line = describeVerdict({ workflow: 'W', namespace: 'n', file: 'n.js', state: 'drift', line: 1, kept: long, canvas: long })
     expect(line.length).toBeLessThan(500)
   })
 })
@@ -205,8 +220,7 @@ describe('runEngineScriptDrift', () => {
     return {
       repo: 'Try-Pennie/bidspoke-workflows',
       token: 'tok',
-      workflowId: ENGINE_BIDDING_WORKFLOW_ID,
-      kept: [await keptFor(KEPT, BASELINE)],
+      workflows: [{ name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: [await keptFor(KEPT, BASELINE)] }],
       fetch: (async () => new Response(mirror(canvas), { status: 200 })) as unknown as typeof fetch,
       localDev: false,
       log: () => {},
@@ -278,20 +292,82 @@ describe('runEngineScriptDriftAndPage', () => {
 })
 
 describe('endingOf', () => {
-  const agree = { namespace: 'a', file: 'a.js', state: 'agree' as const }
-  const awaiting = { namespace: 'b', file: 'b.js', state: 'awaiting_paste' as const, baselineReadOn: '2026-09-22' }
-  const drift = { namespace: 'c', file: 'c.js', state: 'drift' as const, line: 1, kept: 'k', canvas: 'v' }
+  const agree = { workflow: 'W', namespace: 'a', file: 'a.js', state: 'agree' as const }
+  const awaiting = { workflow: 'W', namespace: 'b', file: 'b.js', state: 'awaiting_paste' as const, baselineReadOn: '2026-09-22' }
+  const drift = { workflow: 'W', namespace: 'c', file: 'c.js', state: 'drift' as const, line: 1, kept: 'k', canvas: 'v' }
+  const notBuilt = { workflow: 'L', namespace: 'd', file: 'd.js', state: 'not_built' as const }
 
   it('records skipped, unmeasured, findings, awaiting_paste and ok as distinct outcomes', () => {
     expect(endingOf({ skipped: 'no_repo', verdicts: [], findings: [] }).outcome).toBe('skipped')
     expect(endingOf({ verdicts: [], findings: ['could not read'], unreadable: '500' }).outcome).toBe('unmeasured')
     expect(endingOf({ verdicts: [agree, drift], findings: ['c drifted'] }).outcome).toBe('findings')
-    expect(endingOf({ verdicts: [agree, awaiting], findings: [] })).toMatchObject({ outcome: 'awaiting_paste', summary: { awaiting: ['b'] } })
+    expect(endingOf({ verdicts: [agree, awaiting], findings: [] })).toMatchObject({ outcome: 'awaiting_paste', summary: { awaiting: ['W/b'] } })
     expect(endingOf({ verdicts: [agree, agree], findings: [] }).outcome).toBe('ok')
+  })
+
+  it('a workflow not built yet is listed as not_built and does not stop the run reading ok', () => {
+    expect(endingOf({ verdicts: [agree, notBuilt], findings: [] })).toMatchObject({ outcome: 'ok', summary: { not_built: ['L/d'] } })
+  })
+
+  it('one unreadable mirror beside a judged workflow still records what was judged, as findings', () => {
+    expect(endingOf({ verdicts: [agree], findings: ['could not read'], unreadable: 'L: 500' }).outcome).toBe('findings')
+    expect(endingOf({ verdicts: [notBuilt], findings: ['could not read'], unreadable: 'W: 500' }).outcome).toBe('unmeasured')
   })
 
   it('lists every script and its state in the summary, so job_runs shows which paste landed', () => {
     const ending = endingOf({ verdicts: [agree, awaiting], findings: [] })
-    expect(ending.summary).toMatchObject({ scripts: { a: 'agree', b: 'awaiting_paste' } })
+    expect(ending.summary).toMatchObject({ scripts: { 'W/a': 'agree', 'W/b': 'awaiting_paste' } })
+  })
+})
+
+describe('the Liberty1 click workflow (#1545)', () => {
+  const liberty1 = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'liberty1-click')
+
+  it('is watched with its three kept scripts, each the file on disk, with no canvas baseline because they were written here first', () => {
+    expect(liberty1?.scripts.map((k) => k.namespace)).toEqual(['resolve_input', 'build_request', 'click_patch'])
+    for (const kept of liberty1?.scripts ?? []) {
+      expect(kept.script, kept.file).toBe(LIBERTY1_ON_DISK[kept.file])
+      expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
+      expect(kept.canvasBaselineSha256).toBeNull()
+    }
+  })
+
+  it('has no workflow id until it is built, and is then recorded as not_built without reading any mirror or paging', async () => {
+    expect(LIBERTY1_CLICK_WORKFLOW_ID).toBeNull()
+    const fetchImpl = vi.fn()
+    const s = await runEngineScriptDrift({
+      repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', workflows: [liberty1!], fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(s.findings).toEqual([])
+    expect(s.verdicts.map((v) => v.state)).toEqual(['not_built', 'not_built', 'not_built'])
+  })
+
+  it('once built, a script with no baseline that differs from the canvas is a drift, never an awaited paste', async () => {
+    const kept: KeptScript = { namespace: 'click_patch', file: 'liberty1_click_patch.js', script: 'kept\n', canvasBaselineSha256: null, baselineReadOn: null }
+    const [v] = await judgeKeptScripts([kept], definitionWith(codeNode('click_patch', 'edited')), 'Liberty1 click workflow')
+    expect(v.state).toBe('drift')
+  })
+
+  it('reads each workflow from its own mirror file, and one unreadable mirror does not stop the other being judged', async () => {
+    const urls: string[] = []
+    const fetchImpl = vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('wf-b')) return new Response('nope', { status: 500 })
+      return new Response(JSON.stringify({ definition: { nodes: [codeNode('a', 'kept\n')] } }), { status: 200 })
+    })
+    const script = (namespace: string): KeptScript => ({ namespace, file: `${namespace}.js`, script: 'kept\n', canvasBaselineSha256: null, baselineReadOn: null })
+    const s = await runEngineScriptDrift({
+      repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
+      workflows: [
+        { name: 'A flow', workflowId: 'wf-a', folder: 'a', scripts: [script('a')] },
+        { name: 'B flow', workflowId: 'wf-b', folder: 'b', scripts: [script('b')] },
+      ],
+    })
+    expect(urls.map((u) => u.split('/').pop())).toEqual(['wf-a.json', 'wf-b.json'])
+    expect(s.verdicts).toEqual([{ workflow: 'A flow', namespace: 'a', file: 'a.js', state: 'agree' }])
+    expect(s.findings).toHaveLength(1)
+    expect(s.findings[0]).toContain('B flow')
+    expect(s.unreadable).toContain('500')
   })
 })

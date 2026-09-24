@@ -4,8 +4,8 @@ import { defineConfig, type Plugin } from 'vitest/config'
 /**
  * Serves the kept Engine canvas scripts as text (#1472).
  *
- * apps/worker/src/engine/scripts/engine-bidding/*.js are pasted into code
- * nodes byte for byte, so they are script BODIES (top level returns) and not
+ * apps/worker/src/engine/scripts/engine-bidding/*.js and liberty1-click/*.js
+ * (#1545) are pasted into code nodes byte for byte, so they are script BODIES (top level returns) and not
  * modules; imported as modules they fail to parse. In the deployed worker a
  * wrangler Text rule (wrangler.toml [[rules]]) gives the same import a string,
  * and the sibling .d.ts files type it. This is the Node side of that one import.
@@ -15,7 +15,7 @@ function keptCanvasScriptsAsText(): Plugin {
     name: 'kept-canvas-scripts-as-text',
     enforce: 'pre',
     load(id) {
-      if (!/\/engine\/scripts\/engine-bidding\/[^/?]+\.js$/.test(id)) return null
+      if (!/\/engine\/scripts\/(?:engine-bidding|liberty1-click)\/[^/?]+\.js$/.test(id)) return null
       return { code: `export default ${JSON.stringify(readFileSync(id, 'utf8'))}`, map: null }
     },
   }

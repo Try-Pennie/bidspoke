@@ -657,7 +657,7 @@ export default {
             .then(() => runEngineScriptDriftForEnv(supabase, env))
             .then((s) => {
               if (s.skipped) return
-              const states = s.verdicts.map((v) => `${v.namespace}=${v.state}`).join(' ')
+              const states = s.verdicts.map((v) => `${v.workflow}/${v.namespace}=${v.state}`).join(' ')
               console.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] findings=${s.findings.length}${s.unreadable ? ` unreadable=${s.unreadable}` : ''} ${states}`)
             })
             .catch((e) => console.error(`[${ENGINE_SCRIPT_DRIFT_JOB}] check failed:`, e)),
