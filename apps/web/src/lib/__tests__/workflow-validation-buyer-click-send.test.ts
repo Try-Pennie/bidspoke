@@ -13,7 +13,7 @@ import { findUnwiredRequiredHandles, validateWorkflowDef } from '../workflow-val
 import type { EdgeDef, NodeDef, NodeType } from '@/types/workflow'
 
 const COMPLETE = {
-  partner_slug: 'liberty1',
+  partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70',
   prospect_id: '{{steps.resolve.output.prospect_id}}',
   request_url: '{{steps.build.output.url}}',
   request_body: '{{steps.build.output.body}}',
@@ -34,7 +34,8 @@ describe('buyer_click_send config validation', () => {
   })
 
   const missing: Array<[string, Record<string, unknown>, string]> = [
-    ['partner', { partner_slug: undefined }, 'No partner selected'],
+    ['partner', { partner_id: undefined }, 'No partner selected'],
+    ['partner named by slug only, from before #1553', { partner_id: undefined, partner_slug: 'liberty1' }, 'No partner selected'],
     ['prospect id', { prospect_id: '  ' }, 'No prospect id template set'],
     ['request url', { request_url: undefined }, 'No request URL template set'],
     ['request body', { request_body: '' }, 'No request body template set'],
@@ -47,6 +48,31 @@ describe('buyer_click_send config validation', () => {
   for (const [name, patch, message] of missing) {
     it(`a missing or bad ${name} is unconfigured`, () => {
       expect(messages(click({ ...COMPLETE, ...patch }))).toContain(message)
+    })
+  }
+})
+
+describe('buyer_click_send notify percent (#1553): refused at save exactly where the executor refuses it', () => {
+  const PERCENT_MESSAGE = 'The notify percent must be a whole number from 1 to 1000'
+
+  it('absent is allowed, because the node then uses 120', () => {
+    expect(messages(click({ ...COMPLETE, alert_over_percent: undefined }))).toEqual([])
+  })
+
+  it('a whole number at either end of the range is allowed', () => {
+    for (const n of [1, 1000]) expect(messages(click({ ...COMPLETE, alert_over_percent: n }))).toEqual([])
+  })
+
+  const refused: Array<[string, unknown]> = [
+    ['zero', 0],
+    ['one past the top', 1001],
+    ['a fraction', 1.5],
+    ['NaN', Number.NaN],
+    ['a numeric string', '120'],
+  ]
+  for (const [name, value] of refused) {
+    it(`refuses ${name}`, () => {
+      expect(messages(click({ ...COMPLETE, alert_over_percent: value }))).toContain(PERCENT_MESSAGE)
     })
   }
 })

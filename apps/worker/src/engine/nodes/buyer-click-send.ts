@@ -4,7 +4,7 @@
  *
  * One node does the three things that must not come apart:
  *   1. CLAIM the prospect for this buyer in a LeadSaleObject under the `click`
- *      kind (`sale:click:{slug}:{prospect_id}`), with a deadline that outlives
+ *      kind (`sale:click:{partner_id}:{prospect_id}`), with a deadline that outlives
  *      the post (CLICK_CLAIM_DEADLINE_MS).
  *        sold       already_sent   an earlier click was confirmed; nothing sent
  *        in_flight  in_progress    another execution is sending it right now
@@ -31,17 +31,26 @@
  * entry and would post the click a second time. A Test Runner run, a shadow run
  * and local dev evaluate the config and touch nothing (report_only, L719).
  *
- * The partner is a SETTING (EvaFi follows Liberty1): the slug, the success
+ * The partner is a SETTING (EvaFi follows Liberty1): the partner, the success
  * pattern and the cap are all config, and no buyer's literal lives in this file.
+ *
+ * The partner is stored by its partner_configs id (#1553, L15), and the claim,
+ * the counter and the alert cooldowns are all keyed on that id, so renaming a
+ * buyer's slug keeps its held claims and the day's count. The slug is resolved
+ * from the id on every run, through the org's cached partner constants, and is
+ * used only for words: logs, alerts, the post's error messages and the output.
+ * A partner the org does not hold, or a read that fails, fails the step by name
+ * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { canonicalBodySha256, withDeadline, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { ClickCounterClient, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { makeAlertClaims } from '../../lib/alert-claim'
 import { postClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
@@ -81,7 +90,6 @@ export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 /** How long the node waits on one Slack alert before recording it as failed. */
 export const CLICK_ALERT_DEADLINE_MS = 5_000
 
-export const DEFAULT_ALERT_OVER_PERCENT = 120
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
 export const BUYER_CLICK_SEND_ROUTES = ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'] as const
@@ -98,7 +106,9 @@ export type BuyerClickSendReason =
 
 export type BuyerClickSendFailureReason =
   | 'recovery_run_refused'
-  | 'partner_slug_invalid'
+  | 'partner_id_invalid'
+  | 'partner_not_found'
+  | 'partner_unreadable'
   | 'success_pattern_invalid'
   | 'alert_over_percent_invalid'
   | 'prospect_id_empty'
@@ -113,7 +123,8 @@ export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'n
 // ── Config and output ─────────────────────────────────────────────────────────
 
 export interface BuyerClickSendConfig {
-  partner_slug: string
+  /** The buyer's partner_configs id (#1553). Names the claim and the counter; the slug is looked up from it. */
+  partner_id: string
   /** Template resolving to the prospect id, the claim and count key. */
   prospect_id: string
   /** Template resolving to the https URL the preceding code node picked. */
@@ -137,7 +148,10 @@ export interface BuyerClickSendOutput {
   reason: BuyerClickSendReason
   detail?: string
   mode_effective: 'live' | 'report_only'
-  partner_slug: string
+  /** The configured partner id, as stored (null when the config holds none). */
+  partner_id: string | null
+  /** The partner's current slug, resolved from the id; null until resolved or when it could not be. */
+  partner_slug: string | null
   prospect_id: string | null
   /** The buyer's HTTP status under the canonical key (status-key-contract), null when no answer arrived. */
   status: number | null
@@ -180,8 +194,10 @@ export interface ClickCounterApi {
 }
 
 export interface BuyerClickSendDeps {
+  /** The org's partner by id, for its slug; null when the org holds no such partner. Throws when it cannot be read. */
+  resolvePartner: (partnerId: string) => Promise<{ slug: string } | null>
   saleClient: (key: ClickClaimKey) => ClickSaleApi
-  counter: (slug: string, nowMs: number) => ClickCounterApi
+  counter: (partnerId: string, nowMs: number) => ClickCounterApi
   post: (target: { slug: string; url: string }, body: unknown, opts: { traceId: string; timeoutMs: number }) => Promise<PartnerCallResult>
   alert: (alert: ClickAlert) => Promise<ClickAlertOutcome>
   clock: () => number
@@ -193,8 +209,16 @@ export interface BuyerClickSendDeps {
 export function productionDeps(ctx: ExecutionContext, env: Env, supabase: SupabaseClient): BuyerClickSendDeps {
   const orgId = ctx.trigger.org_id
   return {
+    // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
+    // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
+    resolvePartner: async (partnerId) => {
+      const constants = await loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase)
+      if (!constants.slugsById) throw new Error('the partner list was served from a last good copy written before partner ids were recorded, because the database read failed')
+      const slug = constants.slugsById[partnerId]
+      return slug ? { slug } : null
+    },
     saleClient: (key) => new LeadSaleClient(env.LEAD_SALE, key),
-    counter: (slug, nowMs) => new ClickCounterClient(env.DAILY_CAP, slug, nowMs),
+    counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, partnerId, nowMs),
     // The one outbound POST (L613): the URL is the node's, and a click buyer carries no stored credential.
     post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
     alert: (alert) =>
@@ -265,6 +289,7 @@ export async function executeBuyerClickSendNode(node: NodeDefinition, ctx: Execu
 }
 
 interface Validated {
+  partnerId: string
   slug: string
   pattern: RegExp
   percent: number
@@ -286,7 +311,8 @@ class Run {
       _route: 'not_sent',
       reason: 'report_only',
       mode_effective: reportOnly ? 'report_only' : 'live',
-      partner_slug: typeof this.config.partner_slug === 'string' ? this.config.partner_slug : '',
+      partner_id: typeof this.config.partner_id === 'string' ? this.config.partner_id : null,
+      partner_slug: null,
       prospect_id: null,
       status: null,
       partner_lead_id: null,
@@ -304,13 +330,13 @@ class Run {
     this.out._route = route
     this.out.reason = reason
     if (detail !== undefined) this.out.detail = detail
-    this.deps.log({ event: 'buyer_click_send_reason', step_namespace: this.node.namespace, partner_slug: this.out.partner_slug, route, reason, detail })
+    this.deps.log({ event: 'buyer_click_send_reason', step_namespace: this.node.namespace, partner_id: this.out.partner_id, partner_slug: this.out.partner_slug, route, reason, detail })
     return { output: this.out }
   }
 
   private fail(reason: BuyerClickSendFailureReason, errorType: 'transient' | 'permanent', detail: string): BuyerClickSendResult {
     this.out.detail = detail
-    this.deps.log({ event: 'buyer_click_send_failed', step_namespace: this.node.namespace, partner_slug: this.out.partner_slug, reason, detail })
+    this.deps.log({ event: 'buyer_click_send_failed', step_namespace: this.node.namespace, partner_id: this.out.partner_id, partner_slug: this.out.partner_slug, reason, detail })
     return { output: this.out, failure: { message: `buyer_click_send ${reason}: ${detail}`, errorType, reason } }
   }
 
@@ -319,9 +345,21 @@ class Run {
     if (this.ctx.recovery) {
       return this.fail('recovery_run_refused', 'permanent', `this is a ${this.ctx.recovery} of an earlier execution, and a click is never re-sent by one; a new click starts a new execution`)
     }
-    const v = this.validate()
-    if (!('pattern' in v)) return v
-    this.out.prospect_id = v.prospectId
+    const checked = this.validate()
+    if (!('pattern' in checked)) return checked
+    this.out.prospect_id = checked.prospectId
+
+    // The slug, for words only. Resolved before a report only run returns, so a
+    // Test Runner run shows a partner the org does not hold before launch.
+    let partner: { slug: string } | null
+    try {
+      partner = await this.deps.resolvePartner(checked.partnerId)
+    } catch (err) {
+      return this.fail('partner_unreadable', 'transient', `partner ${checked.partnerId} could not be read, so nothing was sent: ${messageOf(err)}`)
+    }
+    if (!partner) return this.fail('partner_not_found', 'permanent', `no partner with id ${checked.partnerId} in this organization, so nothing was sent; pick the buyer again on the node`)
+    this.out.partner_slug = partner.slug
+    const v: Validated = { ...checked, slug: partner.slug }
 
     if (this.out.mode_effective === 'report_only') {
       this.out.would_send_body_sha256 = await canonicalBodySha256(v.body)
@@ -329,11 +367,11 @@ class Run {
     }
 
     // 1. claim
-    const sale = this.deps.saleClient({ kind: 'click', partner_slug: v.slug, prospect_id: v.prospectId })
+    const sale = this.deps.saleClient({ kind: 'click', partner_id: v.partnerId, prospect_id: v.prospectId })
     const executionId = this.ctx.trigger.execution_id ?? this.ctx.trigger.trace_id
     let claim: ClaimResult
     try {
-      claim = await sale.claim({ partner_id: v.slug, execution_id: executionId, deadline_ms: CLICK_CLAIM_DEADLINE_MS })
+      claim = await sale.claim({ partner_id: v.partnerId, execution_id: executionId, deadline_ms: CLICK_CLAIM_DEADLINE_MS })
     } catch (err) {
       return this.fail('claim_unavailable', 'transient', `nothing was sent: ${messageOf(err)}`)
     }
@@ -398,7 +436,7 @@ class Run {
     let counter: ClickCounterApi
     let added: AddMemberResult
     try {
-      counter = this.deps.counter(v.slug, now)
+      counter = this.deps.counter(v.partnerId, now)
       this.out.count_date = counter.date
       added = await counter.addMember(v.prospectId)
     } catch (err) {
@@ -421,14 +459,14 @@ class Run {
       return
     }
     this.out.over_cap = await this.alert({
-      kind: 'over_cap', partner_slug: v.slug, date: counter.date, count: added.count, daily_lead_cap: cap,
+      kind: 'over_cap', partner_id: v.partnerId, partner_slug: v.slug, date: counter.date, count: added.count, daily_lead_cap: cap,
       alert_over_percent: v.percent, threshold, workflow_id: this.ctx.trigger.workflow_id, at: now,
     })
   }
 
   private async page(v: Validated, reason: ClickPageReason, detail: string): Promise<void> {
     const outcome = await this.alert({
-      kind: 'page', reason, partner_slug: v.slug, prospect_id: v.prospectId, detail,
+      kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail,
       workflow_id: this.ctx.trigger.workflow_id, trace_id: this.ctx.trigger.trace_id, at: this.deps.clock(),
     })
     this.out.pages.push({ reason, outcome })
@@ -439,7 +477,7 @@ class Run {
     try {
       return await withDeadline(this.deps.alert(alert), CLICK_ALERT_DEADLINE_MS, 'buyer click alert', this.deps.timers)
     } catch (err) {
-      this.deps.log({ event: 'buyer_click_alert_failed', step_namespace: this.node.namespace, partner_slug: alert.partner_slug, alert_kind: alert.kind, error_message: messageOf(err) })
+      this.deps.log({ event: 'buyer_click_alert_failed', step_namespace: this.node.namespace, partner_id: alert.partner_id, partner_slug: alert.partner_slug, alert_kind: alert.kind, error_message: messageOf(err) })
       return 'post_failed'
     }
   }
@@ -451,10 +489,10 @@ class Run {
     return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null
   }
 
-  private validate(): Validated | BuyerClickSendResult {
+  private validate(): Omit<Validated, 'slug'> | BuyerClickSendResult {
     const c = this.config
-    const slug = typeof c.partner_slug === 'string' ? c.partner_slug.trim() : ''
-    if (!/^[a-z0-9][a-z0-9_-]*$/i.test(slug)) return this.fail('partner_slug_invalid', 'permanent', `partner_slug ${JSON.stringify(c.partner_slug ?? null)} is not a partner slug`)
+    const partnerId = typeof c.partner_id === 'string' ? c.partner_id.trim() : ''
+    if (!isPartnerId(partnerId)) return this.fail('partner_id_invalid', 'permanent', `partner_id ${JSON.stringify(c.partner_id ?? null)} is not a partner id; pick the buyer again on the node`)
 
     let pattern: RegExp
     try {
@@ -465,10 +503,9 @@ class Run {
       return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${messageOf(err)}`)
     }
 
-    const percent = c.alert_over_percent ?? DEFAULT_ALERT_OVER_PERCENT
-    if (typeof percent !== 'number' || !Number.isInteger(percent) || percent < 1 || percent > 1000) {
-      return this.fail('alert_over_percent_invalid', 'permanent', `alert_over_percent ${JSON.stringify(percent)} is not a whole number from 1 to 1000`)
-    }
+    const percentRule = alertOverPercentOf(c.alert_over_percent)
+    if (!percentRule.ok) return this.fail('alert_over_percent_invalid', 'permanent', percentRule.reason)
+    const percent = percentRule.percent
 
     const prospect = this.resolve(c.prospect_id)
     const prospectId = typeof prospect === 'string' ? prospect.trim() : typeof prospect === 'number' ? String(prospect) : ''
@@ -487,7 +524,7 @@ class Run {
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
       return this.fail('request_body_invalid', 'permanent', `request_body ${JSON.stringify(c.request_body ?? null)} resolved to ${body === null ? 'null' : Array.isArray(body) ? 'an array' : typeof body}, not an object`)
     }
-    return { slug, pattern, percent, prospectId, url: parsed.toString(), body: body as Record<string, unknown> }
+    return { partnerId, pattern, percent, prospectId, url: parsed.toString(), body: body as Record<string, unknown> }
   }
 
   private resolve(template: unknown): unknown {

@@ -107,11 +107,12 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   }),
   // Claims, posts and counts one click for a click sold buyer (#1542). Walker
   // only, because a retried send is a duplicate: it runs exactly once and
-  // refuses a resumed or replayed execution. It names its partner by SLUG, not
-  // id, so it is not among the id referencing types the partner finder reads.
+  // refuses a resumed or replayed execution. It names its partner by id in
+  // `partner_id` (#1553), so the partner finder reads it like partner_bid.
   buyer_click_send: inMemory({
     network: true,
     walkGraphOnly: true,
+    referencesPartners: true,
     staticHandles: ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'],
     executorFile: 'buyer-click-send',
   }),

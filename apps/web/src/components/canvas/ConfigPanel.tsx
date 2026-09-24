@@ -19,7 +19,7 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
-import { PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -1744,9 +1744,10 @@ function BuyerSelectConfig({
 
 /**
  * The Buyer Click Send form (#1542). The partner is picked from the buyer
- * partners by name and stored by slug (L611); a stored slug the list does not
- * hold stays shown and selected rather than being replaced by the first option
- * (L652), and a list that cannot load says so (L10).
+ * partners by name and stored by its id (L611, #1553), because the node keys its
+ * claims and its click count on the id and a slug can be renamed. A stored id
+ * the list does not hold stays shown and selected rather than being replaced by
+ * the first option (L652), and a list that cannot load says so (L10).
  */
 function BuyerClickSendConfig({
   config,
@@ -1760,26 +1761,32 @@ function BuyerClickSendConfig({
   useEffect(() => {
     api.partners.list().then(setPartners).catch(() => setLoadFailed(true))
   }, [])
-  const slug = typeof config.partner_slug === 'string' ? config.partner_slug : ''
+  const partnerId = typeof config.partner_id === 'string' ? config.partner_id : ''
   const buyers = (partners ?? []).filter((p) => isBuyerPartner(p.partner_type))
-  // A stored slug stays an option until the list proves it is not a buyer, and while the
-  // list is loading or failed to load, so the picker never shows "Choose" over a real value
-  // and the next save cannot drop it (L652).
-  const storedUnlisted = slug !== '' && !buyers.some((p) => p.slug === slug)
-  const storedLabel = partners === null ? `${slug} (partner list not loaded)` : `${slug} (not a buyer partner)`
+  // A stored id stays an option until the list proves it is a buyer, and while the list is
+  // loading or failed to load, so the picker never shows "Choose" over a real value and the
+  // next save cannot drop it (L652). It is named where the list knows the partner.
+  const storedUnlisted = partnerId !== '' && !buyers.some((p) => p.id === partnerId)
+  const storedPartner = (partners ?? []).find((p) => p.id === partnerId)
+  const storedLabel =
+    partners === null
+      ? `${partnerId} (partner list not loaded)`
+      : storedPartner
+        ? `${storedPartner.name} (not a buyer partner)`
+        : `${partnerId} (no such partner)`
   const text = (key: string) => (config[key] as string | undefined) ?? ''
   const cap = config.daily_lead_cap
   const capText = typeof cap === 'number' ? String(cap) : typeof cap === 'string' ? cap : ''
-  const percent = (config.alert_over_percent as number | undefined) ?? 120
+  const percent = (config.alert_over_percent as number | undefined) ?? DEFAULT_ALERT_OVER_PERCENT
 
   return (
     <section className="space-y-4">
       <Field label="Partner">
-        <select className="select" aria-label="Partner" value={slug} onChange={(e) => onChange({ partner_slug: e.target.value || undefined })}>
+        <select className="select" aria-label="Partner" value={partnerId} onChange={(e) => onChange({ partner_id: e.target.value || undefined })}>
           <option value="">Choose a buyer partner</option>
-          {storedUnlisted && <option value={slug}>{storedLabel}</option>}
+          {storedUnlisted && <option value={partnerId}>{storedLabel}</option>}
           {buyers.map((p) => (
-            <option key={p.id} value={p.slug}>{p.name}</option>
+            <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
         {loadFailed && <p className="mt-1 text-xs text-red-700">Partners could not be loaded. Reopen this step to try again.</p>}

@@ -495,35 +495,66 @@ describe('ConfigPanel: buyer_select mode hint names where decide only sends lead
   })
 })
 
-describe('ConfigPanel: buyer_click_send picks its partner from the buyers (#1542, L611)', () => {
-  const partnerOf = (slug: string, name: string, partner_type: 'source' | 'buyer' | 'both') =>
-    ({ id: `id-${slug}`, name, slug, partner_type, is_active: true, priority: 0 }) as unknown as Awaited<ReturnType<typeof api.partners.list>>[number]
+describe('ConfigPanel: buyer_click_send picks its partner from the buyers and stores its id (#1542, #1553, L611)', () => {
+  const LIBERTY1_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
+  const EVAFI_ID = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a'
+  const partnerOf = (id: string, slug: string, name: string, partner_type: 'source' | 'buyer' | 'both') =>
+    ({ id, name, slug, partner_type, is_active: true, priority: 0 }) as unknown as Awaited<ReturnType<typeof api.partners.list>>[number]
 
-  it('offers buyer partners by name, never a source, and stores the slug', async () => {
-    vi.mocked(api.partners.list).mockResolvedValue([partnerOf('liberty1', 'Liberty1', 'buyer'), partnerOf('engine', 'Engine', 'source')])
+  it('offers buyer partners by name, never a source, and stores the partner id, not the slug', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer'), partnerOf('id-engine', 'engine', 'Engine', 'source')])
     const { onUpdate } = renderPanel(nodeOf('buyer_click_send', {}))
     const picker = await screen.findByRole('combobox', { name: 'Partner' })
     expect(await screen.findByRole('option', { name: 'Liberty1' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Engine' })).not.toBeInTheDocument()
-    fireEvent.change(picker, { target: { value: 'liberty1' } })
-    expect(onUpdate).toHaveBeenCalledWith('n1', expect.objectContaining({ config: expect.objectContaining({ partner_slug: 'liberty1' }) }))
+    fireEvent.change(picker, { target: { value: LIBERTY1_ID } })
+    const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(config.partner_id).toBe(LIBERTY1_ID)
+    expect(config).not.toHaveProperty('partner_slug')
   })
 
-  it('keeps showing a stored slug the list does not hold, rather than silently picking another', async () => {
-    vi.mocked(api.partners.list).mockResolvedValue([partnerOf('liberty1', 'Liberty1', 'buyer')])
-    renderPanel(nodeOf('buyer_click_send', { partner_slug: 'evafi' }))
-    const picker = (await screen.findByRole('combobox', { name: 'Partner' })) as HTMLSelectElement
-    expect(picker.value).toBe('evafi')
-    expect(screen.getByRole('option', { name: /evafi \(not a buyer partner\)/ })).toBeInTheDocument()
+  it('selects a stored id the list holds under the partner name', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer')])
+    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
+    await screen.findByRole('option', { name: 'Liberty1' })
+    const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
+    expect(picker.value).toBe(LIBERTY1_ID)
+    expect(picker.selectedOptions[0].textContent).toBe('Liberty1')
   })
 
-  it('keeps the stored slug selected when the partners cannot be loaded, so a save cannot drop it (L652)', async () => {
+  it('keeps showing a stored id the list does not hold, rather than silently picking another', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer'), partnerOf(EVAFI_ID, 'evafi', 'EvaFi', 'source')])
+    renderPanel(nodeOf('buyer_click_send', { partner_id: EVAFI_ID }))
+    await screen.findByRole('option', { name: 'Liberty1' })
+    const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
+    expect(picker.value).toBe(EVAFI_ID)
+    // Named where the list knows the partner, by id where it does not.
+    expect(screen.getByRole('option', { name: /EvaFi \(not a buyer partner\)/ })).toBeInTheDocument()
+  })
+
+  it('keeps an id no partner in the list holds selected, by id', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf(LIBERTY1_ID, 'liberty1', 'Liberty1', 'buyer')])
+    renderPanel(nodeOf('buyer_click_send', { partner_id: EVAFI_ID }))
+    await screen.findByRole('option', { name: 'Liberty1' })
+    expect((screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement).value).toBe(EVAFI_ID)
+    expect(screen.getByRole('option', { name: new RegExp(`${EVAFI_ID} \\(no such partner\\)`) })).toBeInTheDocument()
+  })
+
+  it('keeps the stored id selected while the partners are still loading (L652)', () => {
+    vi.mocked(api.partners.list).mockReturnValue(new Promise(() => undefined))
+    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
+    const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
+    expect(picker.value).toBe(LIBERTY1_ID)
+    expect(screen.getByRole('option', { name: new RegExp(`${LIBERTY1_ID} \\(partner list not loaded\\)`) })).toBeInTheDocument()
+  })
+
+  it('keeps the stored id selected when the partners cannot be loaded, so a save cannot drop it (L652)', async () => {
     vi.mocked(api.partners.list).mockRejectedValue(new Error('network'))
-    renderPanel(nodeOf('buyer_click_send', { partner_slug: 'liberty1' }))
+    renderPanel(nodeOf('buyer_click_send', { partner_id: LIBERTY1_ID }))
     await screen.findByText(/Partners could not be loaded/)
     const picker = screen.getByRole('combobox', { name: 'Partner' }) as HTMLSelectElement
-    expect(picker.value).toBe('liberty1')
-    expect(screen.getByRole('option', { name: /liberty1 \(partner list not loaded\)/ })).toBeInTheDocument()
+    expect(picker.value).toBe(LIBERTY1_ID)
+    expect(screen.getByRole('option', { name: new RegExp(`${LIBERTY1_ID} \\(partner list not loaded\\)`) })).toBeInTheDocument()
   })
 
   it('says so when the partners cannot be loaded, instead of an empty picker', async () => {

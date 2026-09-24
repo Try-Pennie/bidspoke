@@ -55,6 +55,7 @@ describe('loadPartnerConstants', () => {
       subAccountIdsMap: { 'uuid-1': 'sofi' },
       sellOff: {},
       clickUrls: {},
+      slugsById: { 'p-sofi': 'sofi' },
     }
     const kv = makeKv(cached)
     const sb = makeSupabase()
@@ -137,7 +138,7 @@ describe('loadPartnerConstants', () => {
 
     const result = await loadPartnerConstants(ORG, kv, sb as never)
 
-    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {} })
+    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {}, slugsById: {} })
   })
 
   it('builds activeBidding from partner_configs.is_active', async () => {
@@ -317,6 +318,25 @@ describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () 
 
     expect(kv.put).toHaveBeenCalledWith(CACHE_KEY, expect.any(String), { expirationTtl: 60 * 60 * 24 * 30 })
     expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.any(String))
+  })
+})
+
+describe('loadPartnerConstants: the slug for each partner id (#1553)', () => {
+  it('maps every partner id in the org to its current slug', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [{ id: 'p-liberty', slug: 'liberty1', is_active: false }, { id: 'p-sofi', slug: 'sofi', is_active: true }])
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+    // Inactive partners too: a click on an earlier offer is sent after its partner stops bidding.
+    expect(result.slugsById).toEqual({ 'p-liberty': 'liberty1', 'p-sofi': 'sofi' })
+  })
+
+  it('a cached copy written before the map existed is read again rather than served without it', async () => {
+    const stale = { subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {} }
+    const kv = makeKv(stale)
+    const sb = makeSupabase([], [{ id: 'p-liberty', slug: 'liberty1', is_active: true }])
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+    expect(sb.from).toHaveBeenCalled()
+    expect(result.slugsById).toEqual({ 'p-liberty': 'liberty1' })
   })
 })
 

@@ -125,15 +125,37 @@ export interface LeadSaleKey {
  */
 export const CLICK_CLAIM_KIND = 'click'
 
-/** One claim per buyer per prospect: a second click on the same prospect for the same buyer finds it. */
+/**
+ * One claim per buyer per prospect: a second click on the same prospect for the
+ * same buyer finds it. Keyed on the partner_configs id, never the slug (#1553,
+ * L15), so renaming a buyer's slug keeps every claim it holds.
+ */
 export interface ClickClaimKey {
   kind: typeof CLICK_CLAIM_KIND
-  partner_slug: string
+  partner_id: string
   prospect_id: string
 }
 
+const PARTNER_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** True when the value has the shape of a partner_configs id (a uuid), which a slug never does. */
+export function isPartnerId(value: unknown): value is string {
+  return typeof value === 'string' && PARTNER_ID_SHAPE.test(value)
+}
+
+/**
+ * Refuses to name a click object by anything but a partner id (#1553): a slug
+ * passed where the id belongs would silently open a different, empty object.
+ */
+function assertPartnerId(value: string, what: string): void {
+  if (!isPartnerId(value)) throw new Error(`${what}: ${JSON.stringify(value)} is not a partner id`)
+}
+
 export function leadSaleObjectName(key: LeadSaleKey | ClickClaimKey): string {
-  if (key.kind === CLICK_CLAIM_KIND) return `sale:${CLICK_CLAIM_KIND}:${key.partner_slug}:${key.prospect_id}`
+  if (key.kind === CLICK_CLAIM_KIND) {
+    assertPartnerId(key.partner_id, 'click claim name')
+    return `sale:${CLICK_CLAIM_KIND}:${key.partner_id}:${key.prospect_id}`
+  }
   return `sale:${key.kind}:${key.population}:${key.lead_key}`
 }
 
@@ -178,14 +200,16 @@ export class LeadSaleClient implements SaleApi {
 
 /**
  * The one derivation of a click sold buyer's counter name (#1542):
- * `clicks-{slug}-{YYYY-MM-DD}` on the PACIFIC date, so the count resets at
+ * `clicks-{partner_id}-{YYYY-MM-DD}` on the PACIFIC date, keyed on the
+ * partner_configs id so a slug rename keeps the day's count (#1553, L15), so the count resets at
  * midnight Pacific (Dan). Clicks arrive after offers, so an Eastern day would
  * move a late evening click into the next day's count. The date comes back with
  * the name so a caller can say which day it counted (L589).
  */
-export function clickCounterObjectName(slug: string, nowMs: number): { name: string; date: string } {
+export function clickCounterObjectName(partnerId: string, nowMs: number): { name: string; date: string } {
+  assertPartnerId(partnerId, 'click counter name')
   const { date } = zonedParts(nowMs, PACIFIC)
-  return { name: `clicks-${slug}-${date}`, date }
+  return { name: `clicks-${partnerId}-${date}`, date }
 }
 
 function isAddMemberResult(v: unknown): v is AddMemberResult {
@@ -198,8 +222,8 @@ export class ClickCounterClient {
   private readonly stub: DurableObjectStub
   readonly name: string
   readonly date: string
-  constructor(ns: DurableObjectNamespace, slug: string, nowMs: number, private readonly opts: ClientOptions = {}) {
-    const n = clickCounterObjectName(slug, nowMs)
+  constructor(ns: DurableObjectNamespace, partnerId: string, nowMs: number, private readonly opts: ClientOptions = {}) {
+    const n = clickCounterObjectName(partnerId, nowMs)
     this.name = n.name
     this.date = n.date
     this.stub = ns.get(ns.idFromName(n.name))

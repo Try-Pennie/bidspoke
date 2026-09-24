@@ -36,7 +36,7 @@ const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
 const supabase = {} as SupabaseClient
 const NODE_ID = '0192a4f0-0000-7000-8000-00000000c11c'
 
-const send: NodeDefinition = { id: NODE_ID, namespace: 'send_click', type: 'buyer_click_send', config: { partner_slug: 'liberty1' } }
+const send: NodeDefinition = { id: NODE_ID, namespace: 'send_click', type: 'buyer_click_send', config: { partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70' } }
 const after = (route: string): NodeDefinition => ({ id: `n-${route}`, namespace: `after_${route}`, type: 'code', config: {} })
 
 function definition(wired: readonly BuyerClickSendRoute[]) {
@@ -46,7 +46,7 @@ function definition(wired: readonly BuyerClickSendRoute[]) {
 
 function output(route: BuyerClickSendRoute): BuyerClickSendOutput {
   return {
-    _route: route, reason: route === 'sent' ? 'sent' : 'outcome_unknown', mode_effective: 'live', partner_slug: 'liberty1', prospect_id: 'p-1',
+    _route: route, reason: route === 'sent' ? 'sent' : 'outcome_unknown', mode_effective: 'live', partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', partner_slug: 'liberty1', prospect_id: 'p-1',
     status: 200, partner_lead_id: null, count: null, counted: false, count_date: null, over_cap: null, pages: [], duration_ms: 5,
   }
 }

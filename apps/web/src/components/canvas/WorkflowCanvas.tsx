@@ -78,6 +78,7 @@ import {
 } from '@/lib/rename-step-references'
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 import { edgeRunStates } from './edges/edge-run-state'
+import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 
 
 const edgeTypes = {
@@ -597,7 +598,7 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
   if (type === 'buyer_click_send') {
     // No retries, ever: a retried click is a second send (#1542). No success line
     // either: it is the partner's own, and a default would confirm the wrong buyer.
-    return { ...base, retries: 0, alert_over_percent: 120 }
+    return { ...base, retries: 0, alert_over_percent: DEFAULT_ALERT_OVER_PERCENT }
   }
   return base
 }

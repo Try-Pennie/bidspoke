@@ -3,6 +3,7 @@ import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
+import { alertOverPercentOf } from '@bidspoke/buyer-profile'
 
 export interface ValidationError {
   nodeId: string
@@ -95,7 +96,7 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // Everything the node needs before it may claim a click (#1542). The success
       // line is the partner's own, with no default: without it no answer can be
       // confirmed, so every send would hold its claim and page (L72).
-      if (!(config.partner_slug as string | undefined)?.trim()) return 'No partner selected'
+      if (!(config.partner_id as string | undefined)?.trim()) return 'No partner selected'
       if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
       if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
       if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'
@@ -110,6 +111,8 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       const cap = config.daily_lead_cap
       const capSet = (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) || (typeof cap === 'string' && cap.trim() !== '')
       if (!capSet) return 'No daily lead cap set'
+      // The executor's own rule (#1553): a value it refuses fails every run, so it is refused here first.
+      if (!alertOverPercentOf(config.alert_over_percent).ok) return 'The notify percent must be a whole number from 1 to 1000'
       return null
     }
     case 'response':

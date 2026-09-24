@@ -11,14 +11,15 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AlertClaims } from '../alert-claim'
 import { CLICK_OVER_CAP_TTL_SECONDS, CLICK_PAGE_COOLDOWN_SECONDS, clickAlertKey, postClickAlert, type ClickAlert, type ClickAlertDeps } from '../buyer-click-alert'
 
+const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const SLACK = { bot_token: 'xoxb-test', default_channel: 'C1' }
 
 const page: ClickAlert = {
-  kind: 'page', reason: 'outcome_unknown', partner_slug: 'liberty1', prospect_id: 'a0B000000000001', detail: 'http 503',
+  kind: 'page', reason: 'outcome_unknown', partner_id: LIBERTY1, partner_slug: 'liberty1', prospect_id: 'a0B000000000001', detail: 'http 503',
   workflow_id: 'wf-1', trace_id: 'trace-1', at: Date.UTC(2027, 8, 20, 18),
 }
 const overCap: ClickAlert = {
-  kind: 'over_cap', partner_slug: 'liberty1', date: '2027-09-20', count: 60, daily_lead_cap: 50, alert_over_percent: 120, threshold: 60,
+  kind: 'over_cap', partner_id: LIBERTY1, partner_slug: 'liberty1', date: '2027-09-20', count: 60, daily_lead_cap: 50, alert_over_percent: 120, threshold: 60,
   workflow_id: 'wf-1', at: Date.UTC(2027, 8, 20, 18),
 }
 
@@ -57,8 +58,13 @@ function deps(over: Partial<ClickAlertDeps> = {}): ClickAlertDeps & { lines: str
 
 describe('clickAlertKey', () => {
   it('keys a page by buyer and reason, and the over cap notice by buyer and Pacific date', () => {
-    expect(clickAlertKey(page)).toEqual({ key: 'buyer-click-page:liberty1:outcome_unknown', ttlSeconds: CLICK_PAGE_COOLDOWN_SECONDS })
-    expect(clickAlertKey(overCap)).toEqual({ key: 'buyer-click-over-cap:liberty1:2027-09-20', ttlSeconds: CLICK_OVER_CAP_TTL_SECONDS })
+    expect(clickAlertKey(page)).toEqual({ key: `buyer-click-page:${LIBERTY1}:outcome_unknown`, ttlSeconds: CLICK_PAGE_COOLDOWN_SECONDS })
+    expect(clickAlertKey(overCap)).toEqual({ key: `buyer-click-over-cap:${LIBERTY1}:2027-09-20`, ttlSeconds: CLICK_OVER_CAP_TTL_SECONDS })
+  })
+
+  it('keys on the partner id, so a slug renamed mid day neither repeats the notice nor lifts a cooldown (#1553)', () => {
+    expect(clickAlertKey({ ...overCap, partner_slug: 'liberty-one' })).toEqual(clickAlertKey(overCap))
+    expect(clickAlertKey({ ...page, partner_slug: 'liberty-one' })).toEqual(clickAlertKey(page))
   })
 
   it('the over cap window outlives a whole day, so the notice cannot repeat inside one', () => {
@@ -93,7 +99,7 @@ describe('postClickAlert', () => {
     const c = claimsDouble()
     const d = deps({ claims: c.claims, send: vi.fn(async () => null) })
     expect(await postClickAlert(d, overCap)).toBe('post_failed')
-    expect(c.released).toEqual(['buyer-click-over-cap:liberty1:2027-09-20'])
+    expect(c.released).toEqual([`buyer-click-over-cap:${LIBERTY1}:2027-09-20`])
     expect(d.lines.join('\n')).toMatch(/post failed/)
   })
 
