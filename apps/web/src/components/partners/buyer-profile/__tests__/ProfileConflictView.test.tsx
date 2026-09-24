@@ -10,7 +10,7 @@ import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import { ProfileConflictView } from '../ProfileConflictView'
 
 const mine: BuyerProfileDocument = {
-  partner_id: 'p', version: 3, is_enabled: true, priority: 1, allowed_states: ['TX'],
+  partner_id: 'p', version: 3, sold_on: 'offer', is_enabled: true, priority: 1, allowed_states: ['TX'],
   debt_min: 15000, debt_max: null, loan_amount_min: null,
   hourly_lead_cap: null, daily_lead_cap: 500, hourly_spend_cap_cents: null, daily_spend_cap_cents: null,
   windows: [], blackout_dates: [], tiers: [],

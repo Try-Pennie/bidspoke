@@ -2,11 +2,13 @@ import { easternParts, isOpen, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
 import { parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
-import type { OutReason } from './vocab'
+import type { OutReason, SoldOn } from './vocab'
 
 /** The buyer profile as the node reads it: the partner's row plus its child rows, in one object. */
 export interface BuyerProfile {
   partnerId: string
+  /** How the buyer is sold (#1541). Null only on a draft whose kind was never chosen, which validateProfile refuses. */
+  soldOn: SoldOn | null
   isEnabled: boolean
   /** 1 is offered the lead first. Null means never chosen, which validateProfile refuses to enable. */
   priority: number | null
@@ -39,23 +41,22 @@ export type Eligibility =
   | { eligible: true; debtCents: number; price: Price }
   | { eligible: false; reason: OutReason }
 
-const out = (reason: OutReason): Eligibility => ({ eligible: false, reason })
+/** A click sold buyer's answer (#1541): the box without a price, because the offer quotes the Engine bid. */
+export type ClickEligibility =
+  | { eligible: true; debtCents: number }
+  | { eligible: false; reason: OutReason }
+
+type Out = { eligible: false; reason: OutReason }
+const out = (reason: OutReason): Out => ({ eligible: false, reason })
 
 /**
- * Exactly one answer per buyer (L517): eligible with its price, or the first
- * reason it is out, in the order a person would check the box themselves.
- * Caps, the circuit breaker and the partner's own active flag are runtime state
- * the node checks after this, so they are not here.
+ * The buy box both evaluators share (#1541): the lead's fields, then state,
+ * blackout, hours, debt and loan amount, each refusal in the order a person
+ * would check the box themselves. One implementation, so an offer buyer and a
+ * click buyer can never be judged by two drifting copies of the same rule
+ * (L613, L370); the source guard in eligibility.test.ts counts the checks.
  */
-export function evaluateEligibility(
-  profile: BuyerProfile,
-  lead: LeadInput,
-  population: string,
-  instantMs: number
-): Eligibility {
-  if (!profile.isEnabled) return out('profile_disabled')
-  if (!profile.tiers.some((t) => t.population === population)) return out('no_pricing_for_population')
-
+function evaluateBox(profile: BuyerProfile, lead: LeadInput, instantMs: number): { inside: true; debtCents: number } | Out {
   const state = parseUsState(lead.state)
   if (state === null) return out('missing_lead_field')
   const debt = parsePositiveAmount(lead.debt)
@@ -72,11 +73,45 @@ export function evaluateEligibility(
   if (profile.loanAmountMin !== null && loanAmount !== null && loanAmount < profile.loanAmountMin) {
     return out('loan_amount_below_min')
   }
+  return { inside: true, debtCents: Math.round(debt * 100) }
+}
 
-  const debtCents = Math.round(debt * 100)
-  const price = priceForDebt(profile.tiers, population, debtCents)
+/**
+ * Exactly one answer per buyer (L517): eligible with its price, or the first
+ * reason it is out, in the order a person would check the box themselves.
+ * Caps, the circuit breaker and the partner's own active flag are runtime state
+ * the node checks after this, so they are not here. A click sold buyer has no
+ * tiers, so it is out here as no_pricing_for_population and buyer_select can
+ * never sell it (#1541).
+ */
+export function evaluateEligibility(
+  profile: BuyerProfile,
+  lead: LeadInput,
+  population: string,
+  instantMs: number
+): Eligibility {
+  if (!profile.isEnabled) return out('profile_disabled')
+  if (!profile.tiers.some((t) => t.population === population)) return out('no_pricing_for_population')
+
+  const box = evaluateBox(profile, lead, instantMs)
+  if (!('inside' in box)) return box
+
+  const price = priceForDebt(profile.tiers, population, box.debtCents)
   if (price === null) return out('no_price_for_debt')
-  return { eligible: true, debtCents, price }
+  return { eligible: true, debtCents: box.debtCents, price }
+}
+
+/**
+ * The click sold buyer's answer (#1541): enabled and inside the box, with no
+ * pricing step, because the offer quotes the Engine bid. Which kind a profile
+ * is sold on is the caller's choice of evaluator; the daily click cap is
+ * runtime state the caller checks after this, like the offer caps.
+ */
+export function evaluateClickEligibility(profile: BuyerProfile, lead: LeadInput, instantMs: number): ClickEligibility {
+  if (!profile.isEnabled) return out('profile_disabled')
+  const box = evaluateBox(profile, lead, instantMs)
+  if (!('inside' in box)) return box
+  return { eligible: true, debtCents: box.debtCents }
 }
 
 export interface RankedBuyer {

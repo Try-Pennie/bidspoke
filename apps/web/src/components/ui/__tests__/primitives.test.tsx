@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { Field, TextInput, NumberInput, Select, Toggle, Checkbox, Button, Outcome, type OutcomeState } from '../form'
+import { Field, TextInput, NumberInput, Select, Toggle, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
 
 describe('Field', () => {
   it('labels the control by id and attaches the hint and the error as descriptions', () => {
@@ -144,5 +144,59 @@ describe('Outcome: working, still alive and failed are distinct (Dan, 2026-06-28
   it('idle renders nothing', () => {
     const { container } = at({ kind: 'idle' })
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+// #1541: a choice between a few named answers, where no answer may be
+// preselected: a radio group, one tab stop, arrows move and choose (L560).
+describe('ChoiceGroup', () => {
+  const options = [{ value: 'offer', label: 'The offer' }, { value: 'click', label: 'The click' }] as const
+
+  function Controlled({ initial, onChange, disabled }: { initial: 'offer' | 'click' | null; onChange?: (v: string) => void; disabled?: boolean }) {
+    const [value, setValue] = useState<'offer' | 'click' | null>(initial)
+    return <ChoiceGroup id="kind" label="Sold on" value={value} options={options} onChange={(v) => { setValue(v); onChange?.(v) }} disabled={disabled} describedBy="kind-hint" />
+  }
+
+  it('is a labelled radio group whose children are radios, none checked when nothing was chosen', () => {
+    render(<Controlled initial={null} />)
+    const group = screen.getByRole('radiogroup', { name: 'Sold on' })
+    expect(group).toHaveClass('choice-group')
+    expect(group).toHaveAttribute('aria-describedby', 'kind-hint')
+    const radios = screen.getAllByRole('radio')
+    expect(radios.map((r) => r.textContent)).toEqual(['The offer', 'The click'])
+    expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+    // One tab stop even with no answer: the first option.
+    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1])
+  })
+
+  it('a click chooses, marks the choice checked and makes it the tab stop', () => {
+    const onChange = vi.fn()
+    render(<Controlled initial={null} onChange={onChange} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    expect(onChange).toHaveBeenCalledWith('click')
+    expect(screen.getByRole('radio', { name: 'The click' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'The click' })).toHaveClass('choice-on')
+    expect(screen.getAllByRole('radio').map((r) => r.tabIndex)).toEqual([-1, 0])
+  })
+
+  it('arrow keys move to the next option and choose it, wrapping at the ends', () => {
+    const onChange = vi.fn()
+    render(<Controlled initial="offer" onChange={onChange} />)
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'The offer' }), { key: 'ArrowRight' })
+    expect(onChange).toHaveBeenLastCalledWith('click')
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'The click' }), { key: 'ArrowRight' })
+    expect(onChange).toHaveBeenLastCalledWith('offer')
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'The offer' }), { key: 'ArrowLeft' })
+    expect(onChange).toHaveBeenLastCalledWith('click')
+  })
+
+  it('a disabled group changes nothing on a click or a key', () => {
+    const onChange = vi.fn()
+    render(<Controlled initial="offer" onChange={onChange} disabled />)
+    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'The offer' }), { key: 'ArrowRight' })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('radio', { name: 'The offer' })).toHaveAttribute('aria-checked', 'true')
   })
 })

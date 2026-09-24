@@ -7,9 +7,9 @@
  * in cents. The scope is stated once from the wired populations (L582, L287).
  */
 import { useId } from 'react'
-import { WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
+import { WIRED_POPULATIONS, type SoldOn } from '@bidspoke/buyer-profile'
 import { Field, NumberInput, describedBy } from '@/components/ui/form'
-import { POPULATION_LABELS } from './labels'
+import { CLICK_FIELD_LABELS, POPULATION_LABELS } from './labels'
 
 export interface CapsValue {
   hourly_lead_cap: number | null
@@ -28,7 +28,7 @@ export interface CapsErrors {
 const centsToDollars = (cents: number | null): number | null => (cents === null ? null : Math.round(cents) / 100)
 const dollarsToCents = (dollars: number | null): number | null => (dollars === null ? null : Math.round(dollars * 100))
 
-export function CapsGrid({ value, onChange, errors = {} }: { value: CapsValue; onChange: (next: CapsValue) => void; errors?: CapsErrors }) {
+export function CapsGrid({ value, onChange, errors = {}, soldOn = null }: { value: CapsValue; onChange: (next: CapsValue) => void; errors?: CapsErrors; soldOn?: SoldOn | null }) {
   const base = useId()
   const patch = (next: Partial<CapsValue>) => onChange({ ...value, ...next })
   const scope = WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]).join(', ')
@@ -41,6 +41,21 @@ export function CapsGrid({ value, onChange, errors = {} }: { value: CapsValue; o
       {input([noteId, describedBy(id, false, Boolean(error))].filter(Boolean).join(' '))}
     </Field>
   )
+
+  // A click buyer (#1541) is capped by clicks per day and nothing else: the
+  // validator refuses the other three, so they are not offered.
+  if (soldOn === 'click') {
+    return (
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {cell(`${base}-dl`, CLICK_FIELD_LABELS.daily_lead_cap, errors.dailyLeadCap, (db) => (
+            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
+          ))}
+        </div>
+        <p id={noteId} className="text-xs text-gray-500">An empty box is no cap. Once the clicks in a day reach it, the buyer is no longer offered that day. A day runs midnight to midnight Pacific time.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-3">

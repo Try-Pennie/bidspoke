@@ -9,7 +9,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
-import { BUYER_SALE_DRAIN_JOB, EXISTING_ROWS_PER_READ, OUTBOX_BACKLOG_MS, numericOrNull, readExistingBuyerSaleRows, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import { BUYER_SALE_DRAIN_JOB, EXISTING_ROWS_PER_READ, OUTBOX_BACKLOG_MS, numericOrNull, productionDrainDeps, readExistingBuyerSaleRows, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import type { Env } from '../../index'
+import { profilesTableDouble } from './_profiles-table-double'
 
 const NOW = Date.UTC(2027, 8, 20, 15, 40)
 const PARTNER = '11111111-1111-4111-8111-111111111111'
@@ -235,5 +237,18 @@ describe('runBuyerSaleDrain', () => {
       expect(EXISTING_ROWS_PER_READ).toBeGreaterThan(0)
       expect(EXISTING_ROWS_PER_READ).toBeLessThanOrEqual(Math.min(URL_ID_LIMIT, 1_000))
     })
+  })
+})
+
+// #1541: a click sold buyer never reserves in the buyer ledger, so the drain
+// has no outbox of its to deliver; only offer buyers are listed.
+describe('productionDrainDeps lists offer buyers only', () => {
+  it('leaves a click sold buyer out of the drain, enabled or not', async () => {
+    const supabase = profilesTableDouble([
+      { partner_id: 'p-offer', sold_on: 'offer', is_enabled: false, partner_configs: { organization_id: ORG, slug: 'tripoint' } },
+      { partner_id: 'p-click', sold_on: 'click', is_enabled: true, partner_configs: { organization_id: ORG, slug: 'liberty1' } },
+    ])
+    const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
+    expect(buyers).toEqual([{ partner_id: 'p-offer', organization_id: ORG, slug: 'tripoint' }])
   })
 })

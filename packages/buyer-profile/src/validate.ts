@@ -1,7 +1,7 @@
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
 import type { PricingTier } from './tiers'
-import { MULTIPLIER_CEILING, US_STATES, WIRED_POPULATIONS } from './vocab'
+import { MULTIPLIER_CEILING, US_STATES, WIRED_POPULATIONS, type SoldOn } from './vocab'
 
 export type ProfileErrorCode =
   | 'tiers_overlap'
@@ -25,6 +25,11 @@ export type ProfileErrorCode =
   | 'enabled_without_accept_rules'
   | 'enabled_without_click_url'
   | 'enabled_without_routing_code'
+  | 'enabled_without_daily_cap'
+  | 'sold_on_unset'
+  | 'sold_on_locked'
+  | 'click_buyer_priced'
+  | 'click_buyer_cap_unsupported'
 
 export interface ProfileError {
   code: ProfileErrorCode
@@ -43,6 +48,24 @@ export interface PartnerRulesForValidation {
   externalRoutingCode: number | null
 }
 
+/**
+ * What is stored for a profile that already exists, for the one rule that needs
+ * it (#1541): the kind cannot be switched while tiers or accept rules are
+ * stored, because an offer buyer's sales were priced and judged by them and a
+ * click buyer must never carry them. save_buyer_profile enforces the same rule
+ * under its row lock; this copy lets the form say so beside the control.
+ */
+export interface StoredKind {
+  soldOn: SoldOn
+  tierCount: number
+  acceptRuleCount: number
+}
+
+/** True when a stored profile's kind cannot be switched now: the one predicate the validator and the form's disabled choice share. */
+export function soldOnSwitchBlocked(stored: StoredKind): boolean {
+  return stored.tierCount > 0 || stored.acceptRuleCount > 0
+}
+
 const STATE_SET: ReadonlySet<string> = new Set(US_STATES)
 const WIRED: ReadonlySet<string> = new Set(WIRED_POPULATIONS)
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
@@ -53,9 +76,19 @@ const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
  * and the save function re-checks the tier rules in SQL (Phase 2). A disabled
  * draft may be incomplete; enabling is what is gated (L72).
  */
-export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForValidation): ProfileValidation {
+export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForValidation, stored?: StoredKind | null): ProfileValidation {
   const errors: ProfileError[] = []
   const err = (code: ProfileErrorCode, path: string, message: string) => errors.push({ code, path, message })
+
+  // The kind is chosen, never defaulted (#1541): a new profile has no answer
+  // until the person picks one, even as a disabled draft.
+  if (profile.soldOn === null) {
+    err('sold_on_unset', 'soldOn', 'Choose whether this buyer is sold on the offer or on the click.')
+  }
+  if (stored && profile.soldOn !== null && profile.soldOn !== stored.soldOn && soldOnSwitchBlocked(stored)) {
+    err('sold_on_locked', 'soldOn', 'Remove the stored pricing and accept rules and save before changing how this buyer is sold.')
+  }
+  const click = profile.soldOn === 'click'
 
   if (profile.priority !== null && (!Number.isInteger(profile.priority) || profile.priority < 1)) {
     err('priority_invalid', 'priority', 'Priority is a whole number, 1 or more.')
@@ -87,6 +120,21 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     err('hourly_cap_above_daily', 'hourlySpendCapCents', 'The hourly spend cap is above the daily spend cap.')
   }
 
+  if (click) {
+    // The click counter counts clicks per day and nothing else, so any other cap
+    // would be stored and never honoured.
+    const unsupported: Array<[number | null, string, string]> = [
+      [profile.hourlyLeadCap, 'hourlyLeadCap', 'An hourly cap'],
+      [profile.hourlySpendCapCents, 'hourlySpendCapCents', 'An hourly spend cap'],
+      [profile.dailySpendCapCents, 'dailySpendCapCents', 'A daily spend cap'],
+    ]
+    for (const [value, path, label] of unsupported) {
+      if (value !== null) err('click_buyer_cap_unsupported', path, `${label} is not counted for a buyer sold on the click. Only clicks per day are.`)
+    }
+    // Tiers on a click buyer would let buyer selection price and sell it.
+    if (profile.tiers.length > 0) err('click_buyer_priced', 'tiers', 'A buyer sold on the click is quoted at the Engine bid, so it has no pricing.')
+  }
+
   checkWindows(profile, err)
 
   for (const date of profile.blackoutDates) {
@@ -96,12 +144,17 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
   checkTiers(profile, err)
 
   if (profile.isEnabled) {
-    if (profile.priority === null) err('enabled_without_priority', 'priority', 'Choose a priority before enabling. 1 is offered the lead first.')
+    // A click buyer is never ranked, priced or judged by accept rules (#1541).
+    if (!click && profile.priority === null) err('enabled_without_priority', 'priority', 'Choose a priority before enabling. 1 is offered the lead first.')
     if (profile.allowedStates.length === 0) err('enabled_without_states', 'allowedStates', 'Choose at least one state before enabling. An empty list accepts no leads.')
     if (profile.windows.length === 0) err('enabled_without_windows', 'windows', 'Add operating hours before enabling. No hours means never open.')
-    if (profile.tiers.length === 0) err('enabled_without_tiers', 'tiers', 'Add pricing before enabling. With no tiers no lead can be priced.')
-    if (partner.acceptSignals.length === 0) {
+    if (!click && profile.tiers.length === 0) err('enabled_without_tiers', 'tiers', 'Add pricing before enabling. With no tiers no lead can be priced.')
+    if (!click && partner.acceptSignals.length === 0) {
       err('enabled_without_accept_rules', 'acceptSignals', 'Add at least one accept rule on the partner before enabling. Without one no sale can be recorded as accepted.')
+    }
+    // The click cap is the only thing that stops the buyer being offered all day.
+    if (click && profile.dailyLeadCap === null) {
+      err('enabled_without_daily_cap', 'dailyLeadCap', 'Set the clicks per day before enabling. Without it the buyer is offered every eligible lead.')
     }
     // The scripts that answer Engine and patch the prospect read both from the
     // winner (#1416); a buyer enabled without them sells leads that land nowhere.

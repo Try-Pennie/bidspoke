@@ -15,10 +15,11 @@
  * priority direction on the priority field.
  */
 import { useEffect, useState } from 'react'
-import { PRIORITY_DIRECTION, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
+import { PRIORITY_DIRECTION, SOLD_ON, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
+import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-body'
 import { api } from '@/lib/api'
-import { Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'
+import { ChoiceGroup, Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
@@ -30,9 +31,11 @@ import { ProfileConflictView } from './ProfileConflictView'
 import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
-import { SECTION_LABELS } from './labels'
+import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS } from './labels'
 
 export const EMPTY_PROFILE: BuyerProfileDocument = {
+  // No preselected answer (#1541): the person chooses, and the save refuses until they do.
+  sold_on: null,
   is_enabled: false,
   priority: null,
   allowed_states: [],
@@ -75,7 +78,15 @@ interface Props {
   conflict: ProfileConflict | null
   onSaveOverTheirs: (theirVersion: number) => void
   onTakeTheirs: (theirs: BuyerProfileDocument) => void
+  /**
+   * Why the kind cannot be switched now, or null when it can (#1541): a stored
+   * profile with pricing or accept rules stored keeps its kind until they are
+   * removed and saved. save_buyer_profile refuses the same switch.
+   */
+  soldOnLock: string | null
 }
+
+const SOLD_ON_OPTIONS = SOLD_ON.map((value) => ({ value, label: SOLD_ON_LABELS[value] }))
 
 const DECLINE_SECTION = SIGNAL_SECTIONS.filter((s) => s.cat === 'rejection').map((s) => ({
   ...s,
@@ -105,7 +116,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 }
 
 export function BuyerProfileSection(props: Props) {
-  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs } = props
+  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs, soldOnLock } = props
   const [usage, setUsage] = useState<BuyerUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
@@ -120,7 +131,6 @@ export function BuyerProfileSection(props: Props) {
   useEffect(() => {
     if (!partnerId) return
     let cancelled = false
-    api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(err instanceof Error ? err.message : 'The usage counts could not be read.') })
     api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(err instanceof Error ? err.message : 'The history could not be read.') })
     // This buyer's queue only, with the API's own total for it (#1457, L16): the
     // filter and the count come from one query, so "Showing N of M" is about the
@@ -133,6 +143,17 @@ export function BuyerProfileSection(props: Props) {
       .catch((err: unknown) => { if (!cancelled) setUnresolvedError(err instanceof Error ? err.message : 'The unresolved sales could not be read.') })
     return () => { cancelled = true }
   }, [partnerId, partnerName])
+
+  // The ledger counts are read once the profile is known to be sold on the
+  // offer: a click buyer (#1541) never reserves in the ledger, so its counts
+  // would read as zero sales against a cap that counts clicks.
+  const countsOnLedger = profile !== null && profile.sold_on !== 'click'
+  useEffect(() => {
+    if (!partnerId || !countsOnLedger) return
+    let cancelled = false
+    api.buyerProfiles.usage(partnerId).then((u) => { if (!cancelled) setUsage(u) }).catch((err: unknown) => { if (!cancelled) setUsageError(err instanceof Error ? err.message : 'The usage counts could not be read.') })
+    return () => { cancelled = true }
+  }, [partnerId, countsOnLedger])
 
   async function loadMoreUnresolved() {
     if (!partnerId || !unresolved || loadingMore) return
@@ -170,6 +191,8 @@ export function BuyerProfileSection(props: Props) {
     hourlySpendCapCents: byPath.hourlySpendCapCents, dailySpendCapCents: byPath.dailySpendCapCents,
   }
   const acceptRefusal = errorFor(errors, 'acceptSignals') ?? errorFor(errors, 'accept_signals') ?? null
+  const click = profile?.sold_on === 'click'
+  const soldOnError = errorFor(errors, 'soldOn')
   const routingCodeRefusal = errorFor(errors, 'externalRoutingCode') ?? null
 
   return (
@@ -185,16 +208,35 @@ export function BuyerProfileSection(props: Props) {
         <>
           {conflict && <ProfileConflictView mine={profile} theirs={conflict.theirs} changedBy={conflict.changedBy} onSaveOverTheirs={onSaveOverTheirs} onTakeTheirs={onTakeTheirs} />}
 
+          {/* First, because the answer decides which of the rules below apply (#1541, L609). */}
+          <div className="space-y-1">
+            <ChoiceGroup
+              id="bp-sold-on"
+              label={FIELD_LABELS.sold_on}
+              value={profile.sold_on}
+              options={SOLD_ON_OPTIONS}
+              onChange={(sold_on) => patch(soldOnPatch(sold_on))}
+              disabled={soldOnLock !== null}
+              describedBy={['bp-sold-on-hint', soldOnLock ? 'bp-sold-on-lock' : null, soldOnError ? 'bp-sold-on-error' : null].filter(Boolean).join(' ')}
+            />
+            <p id="bp-sold-on-hint" className="text-xs text-gray-500">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
+            {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
+            {soldOnError && <p id="bp-sold-on-error" role="alert" className="text-xs text-red-700">{soldOnError}</p>}
+          </div>
+
           <div className="space-y-4">
-            <h4 className="text-sm font-medium text-gray-700">Enabled and ranking</h4>
+            <h4 className="text-sm font-medium text-gray-700">{click ? 'Enabled and eligibility' : 'Enabled and ranking'}</h4>
             <div className="flex items-center gap-3">
               <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
               <label htmlFor="bp-enabled" className="text-sm text-graphite">Enabled</label>
               {errorFor(errors, 'isEnabled') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'isEnabled')}</p>}
             </div>
-            <Field id="bp-priority" label="Priority" hint={PRIORITY_DIRECTION} error={errorFor(errors, 'priority')}>
-              <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} step={1} describedBy={describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority')))} className="w-32" />
-            </Field>
+            {/* A click buyer is never ranked: buyer selection does not offer it a lead (#1541). */}
+            {!click && (
+              <Field id="bp-priority" label="Priority" hint={PRIORITY_DIRECTION} error={errorFor(errors, 'priority')}>
+                <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} step={1} describedBy={describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority')))} className="w-32" />
+              </Field>
+            )}
             <StatePicker value={profile.allowed_states} onChange={(states) => patch({ allowed_states: states })} />
             {errorFor(errors, 'allowedStates') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'allowedStates')}</p>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -215,11 +257,14 @@ export function BuyerProfileSection(props: Props) {
             </div>
           </div>
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
-            <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
-            {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
-          </div>
+          {/* A click buyer is quoted at the Engine bid, so it has no pricing (#1541). */}
+          {!click && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
+              <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
+              {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
+            </div>
+          )}
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Caps</h4>
@@ -227,8 +272,9 @@ export function BuyerProfileSection(props: Props) {
               value={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
               onChange={(caps) => patch(caps)}
               errors={capErrors}
+              soldOn={profile.sold_on}
             />
-            {usage === null && usageError === null ? (
+            {click ? null : usage === null && usageError === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the usage counts…</p>
             ) : (
               <BuyerUsagePanel
@@ -243,11 +289,14 @@ export function BuyerProfileSection(props: Props) {
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
-            <div>
-              <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.accept_signals}</p>
-              <p className="mb-2 text-xs text-gray-500">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
-              <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
-            </div>
+            {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
+            {!click && (
+              <div>
+                <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.accept_signals}</p>
+                <p className="mb-2 text-xs text-gray-500">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
+                <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
+              </div>
+            )}
             <SignalRuleBuilder value={signalRules} onChange={onSignalRulesChange} sections={DECLINE_SECTION} />
             <div>
               <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.duplicate_signals}</p>

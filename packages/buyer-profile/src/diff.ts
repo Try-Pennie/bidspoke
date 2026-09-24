@@ -14,7 +14,7 @@ export interface ProfileFieldDiff {
 }
 
 const SCALARS = [
-  'is_enabled', 'priority', 'debt_min', 'debt_max', 'loan_amount_min',
+  'sold_on', 'is_enabled', 'priority', 'debt_min', 'debt_max', 'loan_amount_min',
   'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents',
 ] as const
 

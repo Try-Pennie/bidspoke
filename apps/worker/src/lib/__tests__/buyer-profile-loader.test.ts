@@ -11,11 +11,12 @@
  * hot path that reads the same rows over and over.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
   version: 3,
+  sold_on: 'offer',
   is_enabled: true,
   priority: 1,
   allowed_states: ['TX', 'FL'],
@@ -87,9 +88,11 @@ describe('loadBuyerProfiles', () => {
     expect(b.partner.accept_signals).toEqual([{ field: 'ok', operator: 'equals', value: true }])
     // #1416: the winner's own facts the sale carries, read here so the scripts never hold a Tripoint literal.
     for (const col of ['name', 'click_url', 'external_routing_code', 'duplicate_signals']) expect(calls[0].select, col).toContain(col)
+    // #1541: the kind rides along, so a reader can tell a click buyer from an offer one.
+    expect(calls[0].select).toMatch(/(^|, )sold_on,/)
     expect(b.partner).toMatchObject({ name: 'Tripoint', click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] })
     expect(b.profile).toEqual({
-      partnerId: 'p-1', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null,
+      partnerId: 'p-1', soldOn: 'offer', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null,
       hourlyLeadCap: 50, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: 500000,
       windows: [{ dayOfWeek: 1, opensMinute: 540, closesMinute: 1080 }],
       blackoutDates: ['2026-11-26'],
@@ -248,5 +251,41 @@ describe('partnersPricedFor', () => {
     expect(partnersPricedFor(snapshot, 'engine')).toEqual(['p-1'])
     expect(partnersPricedFor(snapshot, 'main_flow')).toEqual(['p-2'])
     expect(partnersPricedFor(snapshot, 'lead_economy')).toEqual([])
+  })
+})
+
+// #1541: the routes that show ledger counts ask one question of a buyer before
+// they read the ledger: is it sold on the offer or on the click.
+describe('readBuyerSoldOn', () => {
+  function maybeSingleSupabase(result: { data: unknown; error: { message: string } | null }) {
+    const filters: Array<[string, unknown]> = []
+    const supabase = {
+      from(table: string) {
+        if (table !== 'buyer_profiles') throw new Error(`unexpected table ${table}`)
+        const builder = {
+          select: () => builder,
+          eq(col: string, val: unknown) { filters.push([col, val]); return builder },
+          maybeSingle: async () => result,
+        }
+        return builder
+      },
+    }
+    return { supabase: supabase as never, filters }
+  }
+
+  it('answers the stored kind for the partner in this org', async () => {
+    const { supabase, filters } = maybeSingleSupabase({ data: { sold_on: 'click' }, error: null })
+    expect(await readBuyerSoldOn(supabase, 'org-1', 'p-1')).toBe('click')
+    expect(filters).toEqual(expect.arrayContaining([['partner_id', 'p-1'], ['organization_id', 'org-1']]))
+  })
+
+  it('answers null for a partner with no profile', async () => {
+    const { supabase } = maybeSingleSupabase({ data: null, error: null })
+    expect(await readBuyerSoldOn(supabase, 'org-1', 'p-1')).toBeNull()
+  })
+
+  it('throws on a failed read and on a kind outside the vocabulary, never guessing offer (L10)', async () => {
+    await expect(readBuyerSoldOn(maybeSingleSupabase({ data: null, error: { message: 'timeout' } }).supabase, 'org-1', 'p-1')).rejects.toThrow(/timeout/)
+    await expect(readBuyerSoldOn(maybeSingleSupabase({ data: { sold_on: 'phone' }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/phone/)
   })
 })

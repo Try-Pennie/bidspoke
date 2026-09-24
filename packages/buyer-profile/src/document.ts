@@ -11,6 +11,7 @@
  * from JSON without this would fail far away from the cause.
  */
 import type { BuyerProfile } from './eligibility'
+import { SOLD_ON, type SoldOn } from './vocab'
 
 export interface ProfileWindowDocument {
   day_of_week: number
@@ -35,6 +36,12 @@ export interface BuyerProfileDocument {
   partner_id?: string
   /** Set by the database; 0 or absent on a document that has never been saved. */
   version?: number
+  /**
+   * How the buyer is sold (#1541). Null on a new profile until the person
+   * chooses: there is no preselected answer, and validateProfile refuses the
+   * save without one. An absent key parses as null too.
+   */
+  sold_on: SoldOn | null
   is_enabled: boolean
   priority: number | null
   allowed_states: string[]
@@ -87,6 +94,12 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     const v = integer(raw[path])
     if (v === undefined) { err(path, `${path} must be a whole number or null.`); return null }
     return v
+  }
+
+  let sold_on: SoldOn | null = null
+  if (raw.sold_on !== undefined && raw.sold_on !== null) {
+    if (typeof raw.sold_on === 'string' && (SOLD_ON as readonly string[]).includes(raw.sold_on)) sold_on = raw.sold_on as SoldOn
+    else err('sold_on', `sold_on must be one of ${SOLD_ON.join(', ')}.`)
   }
 
   const is_enabled = raw.is_enabled
@@ -162,6 +175,7 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
 
   if (errors.length > 0) return { ok: false, errors }
   const document: BuyerProfileDocument = {
+    sold_on,
     is_enabled: is_enabled as boolean,
     priority,
     allowed_states,
@@ -189,6 +203,7 @@ export function documentToProfile(doc: BuyerProfileDocument): BuyerProfile {
   }
   return {
     partnerId: doc.partner_id ?? '',
+    soldOn: doc.sold_on ?? null,
     isEnabled: doc.is_enabled,
     priority: n(doc.priority),
     allowedStates: [...doc.allowed_states],

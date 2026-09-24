@@ -830,7 +830,7 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
     // names the Engine workflow and is refused by default.
     const profile = (partnerId: string, population: string): LoadedBuyer => ({
       partner: { id: partnerId, slug: partnerId, name: partnerId, is_active: true, api_endpoint: null, cf_secret_key: null, outbound_field_mapping: null, extra_extraction: null, accept_signals: [], response_classification: null, click_url: null, external_routing_code: null, duplicate_signals: [], circuit_enabled: false, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30 },
-      profile: { partnerId, isEnabled: true, priority: 1, allowedStates: ['TX'], debtMin: null, debtMax: null, loanAmountMin: null, hourlyLeadCap: null, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: null, windows: [], blackoutDates: [], tiers: [{ population, debtFrom: 0, debtTo: null, multiplier: 0.001 }] },
+      profile: { partnerId, soldOn: 'offer', isEnabled: true, priority: 1, allowedStates: ['TX'], debtMin: null, debtMax: null, loanAmountMin: null, hourlyLeadCap: null, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: null, windows: [], blackoutDates: [], tiers: [{ population, debtFrom: 0, debtTo: null, multiplier: 0.001 }] },
       version: 1,
       updated_at: '2027-01-01T00:00:00.000Z',
     })

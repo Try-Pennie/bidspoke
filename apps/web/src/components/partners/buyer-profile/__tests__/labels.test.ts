@@ -7,7 +7,8 @@
  * the control and the history list all use one word for one field (L118).
  */
 import { describe, expect, it } from 'vitest'
-import { describeProfileErrors, profileErrorLabel, SECTION_LABELS, FIELD_LABELS } from '../labels'
+import { SOLD_ON } from '@bidspoke/buyer-profile'
+import { describeProfileErrors, formatProfileValue, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS } from '../labels'
 
 describe('profileErrorLabel', () => {
   it('maps every path the shared validator can emit to the words on the form', () => {
@@ -39,6 +40,24 @@ describe('profileErrorLabel', () => {
 
   it('falls back to the path itself rather than to nothing, so a new validator path is visibly unlabelled', () => {
     expect(profileErrorLabel('somethingNew')).toBe('somethingNew')
+  })
+
+  // #1541: the kind, and the one cap a click buyer has, named as its form names them.
+  it('names the kind Sold on, and the daily cap Clicks per day for a click buyer only', () => {
+    expect(profileErrorLabel('soldOn')).toBe('Sold on')
+    expect(profileErrorLabel('dailyLeadCap', 'click')).toBe('Clicks per day')
+    expect(profileErrorLabel('dailyLeadCap', 'offer')).toBe('Leads per day')
+    expect(describeProfileErrors([{ code: 'enabled_without_daily_cap', path: 'dailyLeadCap', message: 'Set the clicks per day before enabling.' }], 'click'))
+      .toBe('Clicks per day: Set the clicks per day before enabling.')
+  })
+})
+
+describe('the sold_on vocabulary on screen (#1541)', () => {
+  it('labels every kind the package defines, and the history shows the label, not the stored word', () => {
+    for (const kind of SOLD_ON) expect(SOLD_ON_LABELS[kind].length).toBeGreaterThan(0)
+    expect(profileFieldLabel('sold_on')).toBe('Sold on')
+    expect(formatProfileValue('sold_on', 'click')).toBe(SOLD_ON_LABELS.click)
+    expect(formatProfileValue('sold_on', 'offer')).toBe(SOLD_ON_LABELS.offer)
   })
 })
 

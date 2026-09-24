@@ -17,6 +17,16 @@ export type Population = (typeof POPULATIONS)[number]
 export const WIRED_POPULATIONS = ['engine'] as const satisfies readonly Population[]
 export type WiredPopulation = (typeof WIRED_POPULATIONS)[number]
 
+/**
+ * How a buyer is sold (#1541). `offer`: through buyer_select, ranked by
+ * priority, priced by tiers, judged by accept rules. `click`: quoted at the
+ * Engine bid when the offer is made and posted to only when the person clicks,
+ * so it has no priority, tiers or accept rules, and its one cap is clicks per
+ * day. The database column carries the same two values.
+ */
+export const SOLD_ON = ['offer', 'click'] as const
+export type SoldOn = (typeof SOLD_ON)[number]
+
 export const US_STATES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL',
   'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME',

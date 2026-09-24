@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { evaluateEligibility, rankBuyers, type BuyerProfile, type LeadInput } from '../eligibility'
+import { evaluateClickEligibility, evaluateEligibility, rankBuyers, type BuyerProfile, type LeadInput } from '../eligibility'
 import { OUT_REASONS } from '../vocab'
 
 // Sam's Liberty One buy box (Slack, 2026-09-20): daily cap 50, 10 an hour 8am to 6pm Pacific
@@ -7,6 +9,7 @@ import { OUT_REASONS } from '../vocab'
 // the states Pennie is not in. The rate is a test value; Liberty One's real rate is not known yet.
 const libertyOne: BuyerProfile = {
   partnerId: 'liberty-one',
+  soldOn: 'offer',
   isEnabled: true,
   priority: 2,
   allowedStates: ['ND', 'SD', 'WY'],
@@ -176,5 +179,69 @@ describe('rankBuyers: priority first, payout second, stable hash last', () => {
     for (let i = 0; i < 400; i++) if (rankBuyers(tied, `lead-${i}`).order[0].partnerId === 'x') xFirst += 1
     expect(xFirst).toBeGreaterThan(120)
     expect(xFirst).toBeLessThan(280)
+  })
+})
+
+// #1541: Liberty1 is sold on the click. Its box is the same box, judged the same
+// way, but it is never priced, so the click evaluator stops before the tiers.
+describe('evaluateClickEligibility', () => {
+  const libertyClick: BuyerProfile = { ...libertyOne, soldOn: 'click', priority: null, hourlyLeadCap: null, tiers: [] }
+  const clickReason = (profile: BuyerProfile, lead: LeadInput, instant = noon) => {
+    const r = evaluateClickEligibility(profile, lead, instant)
+    return r.eligible ? 'eligible' : r.reason
+  }
+
+  it('accepts a lead inside every bound with no pricing step, carrying the debt it judged', () => {
+    expect(evaluateClickEligibility(libertyClick, goodLead, noon)).toEqual({ eligible: true, debtCents: 2500000 })
+  })
+
+  it('refuses for the same reasons, in the same order, as the offer evaluator up to pricing', () => {
+    const cases: Array<[string, BuyerProfile, LeadInput, number]> = [
+      ['disabled', { ...libertyClick, isEnabled: false }, goodLead, noon],
+      ['state missing', libertyClick, { ...goodLead, state: '' }, noon],
+      ['debt missing', libertyClick, { ...goodLead, debt: 'n/a' }, noon],
+      ['loan missing', libertyClick, { ...goodLead, loanAmount: null }, noon],
+      ['state', libertyClick, { ...goodLead, state: 'CA' }, noon],
+      ['blackout', libertyClick, goodLead, Date.parse('2026-11-26T16:00:00Z')],
+      ['closed', libertyClick, goodLead, Date.parse('2026-09-21T03:00:00Z')],
+      ['debt low', libertyClick, { ...goodLead, debt: libertyClick.debtMin! - 1 }, noon],
+      ['debt high', libertyClick, { ...goodLead, debt: libertyClick.debtMax! + 1 }, noon],
+      ['loan low', libertyClick, { ...goodLead, loanAmount: libertyClick.loanAmountMin! - 1 }, noon],
+    ]
+    for (const [name, profile, lead, instant] of cases) {
+      // The offer evaluator on the same box priced for the population, so the only
+      // difference between the two is the pricing step the click one does not have.
+      const offerTwin: BuyerProfile = { ...profile, soldOn: 'offer', tiers: libertyOne.tiers }
+      expect(clickReason(profile, lead, instant), name).toBe(reasonOf(offerTwin, lead, instant))
+      expect(clickReason(profile, lead, instant), name).not.toBe('eligible')
+    }
+  })
+
+  it('a click buyer falls out of the offer evaluator as no_pricing_for_population, so buyer selection can never sell it', () => {
+    expect(evaluateEligibility(libertyClick, goodLead, 'engine', noon)).toEqual({ eligible: false, reason: 'no_pricing_for_population' })
+    expect(evaluateClickEligibility(libertyClick, goodLead, noon).eligible).toBe(true)
+  })
+})
+
+// One implementation of the box (L613, L370): the two evaluators share a prefix
+// function rather than each carrying a copy of the state, blackout, hours, debt
+// and loan checks. Counted on the source, so a second copy fails here.
+describe('the box checks live once in eligibility.ts', () => {
+  const src = readFileSync(fileURLToPath(new URL('../eligibility.ts', import.meta.url)), 'utf8')
+  const count = (needle: string) => src.split(needle).length - 1
+  it.each([
+    ["out('state_not_allowed')"],
+    ["out('blackout')"],
+    ["out('closed')"],
+    ["out('debt_below_min')"],
+    ["out('debt_above_max')"],
+    ["out('loan_amount_below_min')"],
+    ['parseUsState('],
+    ['isOpen('],
+  ])('%s appears exactly once', (needle) => {
+    expect(count(needle)).toBe(1)
+  })
+  it('both evaluators call the shared prefix', () => {
+    expect(count('evaluateBox(')).toBe(3)
   })
 })

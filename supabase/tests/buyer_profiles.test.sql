@@ -49,6 +49,9 @@ INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_typ
 VALUES ('33333333-3333-3333-3333-333333330001', '11111111-1111-1111-1111-111111111111', 'Suite Buyer One', 'suite-buyer-one', 'buyer', true, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
 INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, updated_by, updated_by_email)
 VALUES ('33333333-3333-3333-3333-333333330002', '11111111-1111-1111-1111-111111111111', 'Suite Buyer Two', 'suite-buyer-two', 'buyer', true, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+-- A third partner for the click sold cases (#1541), so they touch no row the earlier cases assert on.
+INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, updated_by, updated_by_email)
+VALUES ('33333333-3333-3333-3333-333333330003', '11111111-1111-1111-1111-111111111111', 'Suite Click Buyer', 'suite-click-buyer', 'buyer', true, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
 -- The fixture inserts above are audited by the trigger; clear them so the counts below start from zero.
 DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111111111';
 
@@ -580,13 +583,151 @@ BEGIN
 END
 $do$;
 
+-- ── 22. sold_on: a click buyer saves enabled with no priority and no tiers, and the document and the audit row carry the kind (#1541) ──
+DO $do$
+DECLARE
+  doc jsonb;
+  changes jsonb;
+BEGIN
+  doc := public.save_buyer_profile(
+    '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', 0,
+    '{"sold_on": "click", "is_enabled": true, "priority": null, "allowed_states": ["DE","HI"], "debt_min": 20000, "debt_max": null, "loan_amount_min": 2500,
+      "hourly_lead_cap": null, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+      "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}], "blackout_dates": [], "tiers": []}'::jsonb,
+    '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->>'sold_on' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'document sold_on: %', doc->>'sold_on'; END IF;
+  IF (doc->>'is_enabled')::boolean IS DISTINCT FROM true THEN RAISE EXCEPTION 'click buyer not enabled: %', doc; END IF;
+  SELECT a.changes INTO changes FROM public.audit_log a WHERE a.entity_type = 'buyer_profile' AND a.entity_id = '33333333-3333-3333-3333-333333330003' ORDER BY a.changed_at DESC LIMIT 1;
+  IF changes->'sold_on'->>'new' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'audit row does not carry sold_on: %', changes; END IF;
+  INSERT INTO suite_cases(name) VALUES ('click buyer saves without priority or tiers');
+END
+$do$;
+
+-- ── 23. sold_on: a click buyer refuses tiers, an hourly cap and spend caps by name, and the table refuses the caps itself ──
+DO $do$
+DECLARE
+  msg text;
+  body jsonb := '{"sold_on": "click", "is_enabled": true, "priority": null, "allowed_states": ["DE"], "debt_min": null, "debt_max": null, "loan_amount_min": null,
+      "hourly_lead_cap": null, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
+      "windows": [{"day_of_week": 1, "opens_minute": 660, "closes_minute": 1260}], "blackout_dates": [], "tiers": []}'::jsonb;
+  v int;
+BEGIN
+  SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+      body || '{"tiers": [{"population": "engine", "debt_from": 0, "debt_to": null, "multiplier": 0.001}]}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'a click buyer was saved with pricing';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'click_buyer_priced' THEN RAISE EXCEPTION 'wrong refusal for tiers: %', msg; END IF;
+  END;
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+      body || '{"hourly_lead_cap": 10}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'a click buyer was saved with an hourly cap';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'click_buyer_cap_unsupported' THEN RAISE EXCEPTION 'wrong refusal for an hourly cap: %', msg; END IF;
+  END;
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+      body || '{"daily_spend_cap_cents": 100000}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'a click buyer was saved with a spend cap';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'click_buyer_cap_unsupported' THEN RAISE EXCEPTION 'wrong refusal for a spend cap: %', msg; END IF;
+  END;
+  BEGIN
+    UPDATE public.buyer_profiles SET hourly_spend_cap_cents = 500 WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+    RAISE EXCEPTION 'the table accepted a spend cap on a click buyer';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE public.buyer_profiles SET sold_on = 'phone' WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+    RAISE EXCEPTION 'the table accepted an unknown sold_on';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  IF EXISTS (SELECT 1 FROM public.buyer_pricing_tiers WHERE partner_id = '33333333-3333-3333-3333-333333330003') THEN RAISE EXCEPTION 'a refused save left tiers behind'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('click buyer refuses pricing and unsupported caps');
+END
+$do$;
+
+-- ── 24. sold_on: the kind cannot be switched while tiers or accept rules are stored, and can once neither is ──
+DO $do$
+DECLARE
+  msg text;
+  v int;
+  doc jsonb;
+BEGIN
+  -- Partner one is an offer buyer with stored tiers (case 4).
+  SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330001';
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330001');
+  IF doc->>'sold_on' IS DISTINCT FROM 'offer' THEN RAISE EXCEPTION 'an existing profile did not default to offer: %', doc->>'sold_on'; END IF;
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', v,
+      (doc - 'partner_id' - 'version') || '{"sold_on": "click", "tiers": [], "hourly_lead_cap": null}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'an offer buyer with stored tiers was switched to click';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'sold_on_locked' THEN RAISE EXCEPTION 'wrong refusal with tiers stored: %', msg; END IF;
+  END;
+  -- The click buyer from case 22, with accept rules put on its partner record: switching to offer is refused.
+  UPDATE public.partner_configs SET accept_signals = '[{"field": "ok", "equals": true}]'::jsonb, updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330003';
+  SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+      (doc - 'partner_id' - 'version') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'a buyer with stored accept rules was switched';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'sold_on_locked' THEN RAISE EXCEPTION 'wrong refusal with accept rules stored: %', msg; END IF;
+  END;
+  -- With neither stored, the switch goes through.
+  UPDATE public.partner_configs SET accept_signals = '[]'::jsonb, updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330003';
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    (doc - 'partner_id' - 'version') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->>'sold_on' IS DISTINCT FROM 'offer' THEN RAISE EXCEPTION 'the switch did not land: %', doc->>'sold_on'; END IF;
+  -- And back again, so the later cases see a click buyer.
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    (doc - 'partner_id' - 'version') || '{"sold_on": "click"}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->>'sold_on' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'the switch back did not land: %', doc->>'sold_on'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('sold_on locked while tiers or accept rules are stored');
+END
+$do$;
+
+-- ── 25. sold_on: a document without the key keeps the stored kind, and an unknown kind is refused by name ──
+DO $do$
+DECLARE
+  msg text;
+  v int;
+  doc jsonb;
+BEGIN
+  SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
+  -- A Worker deployed before this migration sends no sold_on; the click buyer must stay a click buyer.
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    (doc - 'partner_id' - 'version' - 'sold_on') || '{"daily_lead_cap": 60}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->>'sold_on' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'a save without sold_on changed the kind: %', doc->>'sold_on'; END IF;
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+      (doc - 'partner_id' - 'version') || '{"sold_on": "phone"}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'an unknown sold_on was saved';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'sold_on_invalid' THEN RAISE EXCEPTION 'wrong refusal for an unknown kind: %', msg; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('sold_on absent keeps the kind, unknown refused');
+END
+$do$;
+
 -- ── The count. Every case above inserts its name; this is the number of blocks. ──
 DO $do$
 DECLARE
   n int;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 21 THEN RAISE EXCEPTION 'ran % of 21 cases', n; END IF;
-  RAISE NOTICE 'buyer_profiles.test.sql: % of 21 cases passed', n;
+  IF n IS DISTINCT FROM 25 THEN RAISE EXCEPTION 'ran % of 25 cases', n; END IF;
+  RAISE NOTICE 'buyer_profiles.test.sql: % of 25 cases passed', n;
 END
 $do$;

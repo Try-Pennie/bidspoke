@@ -16,7 +16,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
-import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -66,6 +66,50 @@ describe('Partner routes — DB error => 5xx, not 404 (#320)', () => {
     )
     const res = await request(app, 'GET', '/partners/p-1/cap-count')
     expect(res.status).toBe(500)
+  })})
+
+// #1541: the cap-count route reads the Partner Bid node's daily cap object. A
+// click sold buyer is never counted there, so its zero would read as no clicks
+// today; it is refused by name until the click counter (#1542) is wired here.
+describe('GET /partners/:id/cap-count for a click sold buyer', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const stubFetch = vi.fn(async () => new Response(JSON.stringify({ count: 7 })))
+  const capEnv = { ...testEnv, DAILY_CAP: { idFromName: (n: string) => n, get: () => ({ fetch: stubFetch }) } } as unknown as Env
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, partner_configs: { single: { slug: 'liberty1' } } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    app = await makeApp()
+  })
+
+  const get = () => app.request('/partners/p-1/cap-count', { method: 'GET', headers: { Authorization: 'Bearer tok' } }, capEnv, mockCtx)
+
+  it('is 409 sold_on_click and never reads the daily cap object', async () => {
+    vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
+    const res = await get()
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'sold_on_click' })
+    expect(stubFetch).not.toHaveBeenCalled()
+  })
+
+  it('an offer buyer, or a partner with no profile, still gets the daily cap count', async () => {
+    for (const kind of ['offer', null] as const) {
+      vi.mocked(readBuyerSoldOn).mockResolvedValue(kind)
+      const res = await get()
+      expect(res.status, String(kind)).toBe(200)
+      expect(await res.json()).toMatchObject({ count: 7 })
+    }
+  })
+
+  it('a kind that cannot be read is 503, never a count', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(readBuyerSoldOn).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    const res = await get()
+    expect(res.status).toBe(503)
+    expect(stubFetch).not.toHaveBeenCalled()
   })
 })
 

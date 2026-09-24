@@ -39,6 +39,18 @@ describe('CapsGrid', () => {
     expect(screen.getAllByText(/dollars/i)).toHaveLength(1)
   })
 
+  // #1541: a click buyer is capped by clicks per day and by nothing else.
+  it('for a click buyer renders only the daily cap, labelled clicks per day, with no buyer selection scope or dollars', () => {
+    const onChange = vi.fn()
+    render(<CapsGrid value={{ ...none, daily_lead_cap: 50 }} onChange={onChange} soldOn="click" />)
+    expect(screen.getByLabelText('Clicks per day')).toHaveValue(50)
+    for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) expect(screen.queryByLabelText(label)).toBeNull()
+    expect(screen.queryByText(/buyer selection/i)).toBeNull()
+    expect(screen.queryByText(/dollars/i)).toBeNull()
+    fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '60' } })
+    expect(onChange).toHaveBeenLastCalledWith({ ...none, daily_lead_cap: 60 })
+  })
+
   it('renders a field error beside the control it names', () => {
     render(<CapsGrid value={{ ...none, hourly_lead_cap: 600, daily_lead_cap: 500 }} onChange={() => {}} errors={{ hourlyLeadCap: 'Hourly cap is above the daily cap.' }} />)
     expect(screen.getByRole('alert')).toHaveTextContent('Hourly cap is above the daily cap.')

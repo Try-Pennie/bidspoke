@@ -19,7 +19,7 @@ import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/Signal
 import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
-import { documentToProfile, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
+import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
 // Re-exported for the parent page's partner-switch / New guards, and the
@@ -108,6 +108,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 // ── Main form ─────────────────────────────────────────────────────────────────
 
 type SaveState = 'idle' | 'saving' | 'saved'
+
+/** The sentence beside a Sold on choice that cannot change yet (#1541), naming exactly what is stored. */
+function soldOnLockReason(stored: StoredKind): string {
+  const parts = [stored.tierCount > 0 ? 'pricing' : null, stored.acceptRuleCount > 0 ? 'accept rules' : null].filter((p): p is string => p !== null)
+  const many = parts.length > 1
+  return `This cannot change while ${parts.join(' and ')} ${many ? 'are' : 'is'} stored. Remove ${many ? 'them' : 'it'} and save first.`
+}
 
 export default function PartnerForm({
   partner,
@@ -253,6 +260,16 @@ export default function PartnerForm({
   // re-saves THIS, not the values that were just saved (#98).
   const baselineSnapshot = useRef<FormSnapshot | null>(null)
   if (baselineSnapshot.current === null) baselineSnapshot.current = captureSnapshot()
+  // What is STORED for the profile and the partner record, for the one rule that
+  // reads it (#1541): the kind cannot be switched while pricing or accept rules
+  // are stored. A profile never saved has nothing stored.
+  const storedKind: StoredKind | null = (() => {
+    if (profileBaseline.current === null) return null
+    const stored = JSON.parse(profileBaseline.current) as BuyerProfileDocument
+    if ((stored.version ?? 0) === 0 || stored.sold_on === null) return null
+    return { soldOn: stored.sold_on, tierCount: stored.tiers.length, acceptRuleCount: baselineSnapshot.current?.acceptSignals.length ?? 0 }
+  })()
+  const soldOnLock = storedKind && soldOnSwitchBlocked(storedKind) ? soldOnLockReason(storedKind) : null
 
   // Tell the parent so it can guard partner-switch / New (those are <button>s the
   // link interceptor below can't see).
@@ -365,14 +382,17 @@ export default function PartnerForm({
     // a refused profile leaves the partner record untouched too, and the errors
     // land beside the controls they name (L608).
     const buyer = isBuyerPartner(partnerType)
-    if (buyer && profile) {
-      const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals, clickUrl: clickUrl || null, externalRoutingCode: parseRoutingCode(externalRoutingCode) })
+    // A profile that was never saved and was not touched is not being saved, so
+    // it is not judged: a buyer partner with no profile saves its record alone
+    // without being asked how a profile it does not have is sold (#1541).
+    if (buyer && profile && (profileDirty || (profile.version ?? 0) > 0)) {
+      const validation = validateProfile(documentToProfile({ ...profile, partner_id: partner?.id ?? '' }), { acceptSignals, clickUrl: clickUrl || null, externalRoutingCode: parseRoutingCode(externalRoutingCode) }, storedKind)
       if (!validation.ok) {
         setProfileErrors(validation.errors)
         // Names each refused field by its label with the validator's reason (#1464):
         // the Save button sits under the section, so a direction word pointed the
         // wrong way and said nothing about which field (L111, L399).
-        setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${describeProfileErrors(validation.errors)}` })
+        setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${describeProfileErrors(validation.errors, profile.sold_on)}` })
         return
       }
     }
@@ -554,6 +574,7 @@ export default function PartnerForm({
             otherSellers={otherSellers}
             conflict={conflict}
             onSaveOverTheirs={(theirVersion) => { void saveProfile(theirVersion) }}
+            soldOnLock={soldOnLock}
             onTakeTheirs={(theirs) => { profileBaseline.current = JSON.stringify(theirs); setProfile(theirs); setConflict(null); setSaveOutcome({ kind: 'done', message: 'Took the saved profile. Your edits to it were replaced.' }) }}
           />
         )}

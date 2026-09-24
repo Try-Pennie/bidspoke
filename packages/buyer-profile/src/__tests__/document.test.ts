@@ -11,6 +11,7 @@ import { documentToProfile, parseProfileDocument, type BuyerProfileDocument } fr
 const doc: BuyerProfileDocument = {
   partner_id: '33333333-3333-4333-8333-333333333331',
   version: 3,
+  sold_on: 'offer',
   is_enabled: true,
   priority: 1,
   allowed_states: ['TX', 'FL'],
@@ -30,6 +31,7 @@ describe('documentToProfile', () => {
   it('maps every field the evaluator reads, keeping numbers numeric', () => {
     expect(documentToProfile(doc)).toEqual({
       partnerId: doc.partner_id,
+      soldOn: 'offer',
       isEnabled: true,
       priority: 1,
       allowedStates: ['TX', 'FL'],
@@ -80,5 +82,31 @@ describe('parseProfileDocument', () => {
     const { partner_id: _p, version: _v, ...fresh } = doc
     const r = parseProfileDocument(fresh)
     expect(r.ok).toBe(true)
+  })
+})
+
+describe('sold_on on the document (#1541)', () => {
+  it('carries a click kind through the parse and into the evaluator shape', () => {
+    const r = parseProfileDocument({ ...doc, sold_on: 'click' })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.document.sold_on).toBe('click')
+      expect(documentToProfile(r.document).soldOn).toBe('click')
+    }
+  })
+
+  it('reads an absent or null kind as not chosen yet, which the validator refuses, never as offer', () => {
+    const { sold_on: _s, ...absent } = doc
+    for (const input of [absent, { ...doc, sold_on: null }]) {
+      const r = parseProfileDocument(input)
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.document.sold_on).toBeNull()
+    }
+  })
+
+  it('refuses a kind outside the vocabulary by name', () => {
+    const r = parseProfileDocument({ ...doc, sold_on: 'phone' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.errors.map((e) => e.path)).toEqual(['sold_on'])
   })
 })

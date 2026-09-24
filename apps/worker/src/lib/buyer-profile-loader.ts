@@ -22,7 +22,7 @@
  * (L692).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { BuyerProfile, Signal } from '@bidspoke/buyer-profile'
+import { SOLD_ON, type BuyerProfile, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
@@ -82,7 +82,7 @@ export interface BuyerProfilesSnapshot {
 }
 
 const SELECT =
-  'partner_id, version, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, ' +
+  'partner_id, version, sold_on, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, ' +
   'hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, updated_at, ' +
   'partner_configs!inner(id, slug, name, is_active, api_endpoint, cf_secret_key, outbound_field_mapping, extra_extraction, ' +
   'accept_signals, response_classification, click_url, external_routing_code, duplicate_signals, ' +
@@ -94,6 +94,7 @@ const SELECT =
 interface ProfileRow {
   partner_id: string
   version: number
+  sold_on: SoldOn
   is_enabled: boolean
   priority: number | null
   allowed_states: string[] | null
@@ -137,6 +138,7 @@ function shape(row: ProfileRow): LoadedBuyer {
     },
     profile: {
       partnerId: row.partner_id,
+      soldOn: row.sold_on,
       isEnabled: row.is_enabled,
       priority: row.priority,
       allowedStates: row.allowed_states ?? [],
@@ -232,4 +234,25 @@ export function partnersPricedFor(snapshot: BuyerProfilesSnapshot, population: s
   return snapshot.buyers
     .filter((b) => b.profile.isEnabled && b.profile.tiers.some((t) => t.population === population))
     .map((b) => b.partner.id)
+}
+
+/**
+ * How one buyer is sold (#1541), for the routes that show ledger counts: a
+ * click sold buyer never reserves in the buyer ledger or the Partner Bid daily
+ * cap object, so their numbers for it would read as zero sales against a cap
+ * that counts clicks. Null means the partner has no profile. A failed read or a
+ * value outside the vocabulary throws, never guessing offer (L10).
+ */
+export async function readBuyerSoldOn(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<SoldOn | null> {
+  const { data, error } = await supabase
+    .from('buyer_profiles')
+    .select('sold_on')
+    .eq('partner_id', partnerId)
+    .eq('organization_id', orgId)
+    .maybeSingle()
+  if (error) throw new Error(`buyer_profiles: ${error.message}`)
+  if (!data) return null
+  const soldOn = (data as { sold_on: unknown }).sold_on
+  if (typeof soldOn === 'string' && (SOLD_ON as readonly string[]).includes(soldOn)) return soldOn as SoldOn
+  throw new Error(`buyer_profiles: sold_on ${String(soldOn)} is not one of ${SOLD_ON.join(', ')}`)
 }
