@@ -80,6 +80,17 @@ describe('findEquifaxReport', () => {
   })
 })
 
+describe('the score on a file Equifax did not deliver (#1381)', () => {
+  it('is null on a no-hit, whose model value 4 is a reject code and not a score', () => {
+    const rep = { hitCode: { code: '2' }, models: [{ type: 'MODEL', score: '4', modelNumber: '05402' }] }
+    expect(findEquifaxReport(ctxWithStep(mainFlowShape([rep])))?.score).toBeNull()
+  })
+
+  it('is kept on a delivered file', () => {
+    expect(findEquifaxReport(ctxWithStep(mainFlowShape([report({ hitCode: { code: '6' } })])))?.score).toBe(612)
+  })
+})
+
 describe('parseEquifaxDate', () => {
   it('parses eight digits as month, day, year', () => {
     const d = parseEquifaxDate('07092026')

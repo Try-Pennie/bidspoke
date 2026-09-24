@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS lead_sightings (
   reject_reason               VARCHAR,
 
   prospect_id                 VARCHAR(18),
-  equifax_status              VARCHAR,
+  equifax_status              VARCHAR,                       -- what the pull FOUND (#1381): completed (scored file) | unscored | no_hit | frozen | fraud | referred | error | skipped; 'completed' before 2026-09-24 was the call status and covered all of these
   equifax_error_type          VARCHAR,
   equifax_score               NUMBER,
   outcome                     VARCHAR,                 -- 'successful' | 'completed' | 'failed'

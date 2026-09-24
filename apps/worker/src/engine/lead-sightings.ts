@@ -8,7 +8,7 @@ import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, type ProjectedBidAttempt } from './bid-log'
 import { resolveValue } from './context'
-import { readEquifaxOutputStatus, readEquifaxReportOutput } from './nodes/achieve-credit-report'
+import { readEquifaxOutcome, readEquifaxReportOutput } from './nodes/achieve-credit-report'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -580,9 +580,10 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
   // Equifax code node namespace 'equifax_credit_report' in the live workflow. The score is
   // models[0].score inside the report, and the report sits at a different depth in Main Flow
   // than in the Engine workflow, so the shape is resolved by the one locator every reader of
-  // that step shares (#1379). The status is whatever string the output carries; when it
-  // carries none, the step's own status is recorded rather than an invented word, because
-  // 'success' was written for a month on rows whose score had not been found.
+  // that step shares (#1379). The status is what the pull FOUND (#1381): 'completed' only for
+  // a delivered and scored file, otherwise frozen, fraud, no_hit, referred, unscored or
+  // error, read from the report's hit code. It used to be the string the output carried
+  // about the CALL, which read 'completed' on a frozen file, so no freeze was countable.
   const eqxStep = steps.equifax_credit_report
   let equifax_status: string | null = null
   let equifax_error_type: string | null = null
@@ -590,7 +591,10 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
 
   if (eqxStep) {
     if (eqxStep.status === 'completed') {
-      equifax_status = readEquifaxOutputStatus(eqxStep.output) ?? eqxStep.status
+      const outcome = readEquifaxOutcome(eqxStep.output)
+      equifax_status = outcome
+      // An Equifax error answer is final for this lead: the same input gets the same refusal.
+      if (outcome === 'error') equifax_error_type = 'permanent'
       equifax_score = readEquifaxReportOutput(eqxStep.output)?.score ?? null
     } else if (eqxStep.status === 'failed') {
       equifax_status = 'error'

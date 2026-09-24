@@ -57,10 +57,13 @@ describe('extractEnrichment: Equifax score and status', () => {
     expect(got.equifax_status).not.toBe('success')
   })
 
-  it('leaves the score null when the completed output holds no report at all', () => {
+  it('records a completed step that holds no report at all as an error, never as completed (#1381)', () => {
+    // Before #1381 this read 'completed', the word the output carried about the
+    // CALL. A pull that produced no report found nothing, so it is not a
+    // completed pull in the sense a reader of the sighting means.
     const got = extractEnrichment(completed({ data: { consumers: null, status: 'completed' }, error: null, statusCode: 200 }))
     expect(got.equifax_score).toBeNull()
-    expect(got.equifax_status).toBe('completed')
+    expect(got.equifax_status).toBe('error')
   })
 
   it('records a failed pull as error with its type', () => {
@@ -71,5 +74,87 @@ describe('extractEnrichment: Equifax score and status', () => {
     expect(got.equifax_status).toBe('error')
     expect(got.equifax_error_type).toBe('transient')
     expect(got.equifax_score).toBeNull()
+  })
+})
+
+/**
+ * What the pull FOUND, not what the call did (#1381).
+ *
+ * The shells below carry exactly the sections measured on live pulls on
+ * 2026-09-24 (12 hours, 15,773 completed steps), with every value replaced:
+ * a file that was not delivered comes back with only the envelope sections,
+ * and Equifax's own wording for each hit code was read from the Eligibility
+ * Scout errors that quote it ('[A - Consumer Requested Security Freeze on
+ * His/Her Credit File Report Unavailable]', '[I - Information from your
+ * inquiry has been identified as potentially fraudulent or misused ...]',
+ * '[2 - No-Hit]', '[4 - MANUAL FILE REVIEW REQUIRED]', '[5 - REFERRED FILE]').
+ */
+function envelope(hit: string, extra: Record<string, unknown> = {}) {
+  return {
+    consumerReferralCode: '000',
+    customerNumber: 'X',
+    customerReferenceNumber: 'X',
+    ECOAInquiryType: 'I',
+    fraudIDScanAlertCodes: [],
+    hitCode: { code: hit },
+    identifier: 'X',
+    multipleReportIndicator: 'N',
+    reportDate: '09242026',
+    ...extra,
+  }
+}
+
+describe('extractEnrichment: the Equifax hit outcome (#1381)', () => {
+  it.each([
+    ['A', 'frozen'],
+    ['I', 'fraud'],
+    ['2', 'no_hit'],
+    ['4', 'referred'],
+    ['5', 'referred'],
+  ])('records hit code %s as %s, with no score', (hit, outcome) => {
+    const got = extractEnrichment(completed(mainFlowShape(envelope(hit))))
+    expect(got.equifax_status).toBe(outcome)
+    expect(got.equifax_score).toBeNull()
+  })
+
+  it('does not record the no-hit model value 4 as a credit score', () => {
+    // 20 of 66 no-hit pulls measured carry models[0].score '4', a reject code
+    // on a 300 to 850 scale. It was being recorded as the lead's score.
+    const rep = envelope('2', { models: [{ type: 'MODEL', score: '4', modelNumber: '05402' }] })
+    const got = extractEnrichment(completed(mainFlowShape(rep)))
+    expect(got.equifax_status).toBe('no_hit')
+    expect(got.equifax_score).toBeNull()
+  })
+
+  it('keeps completed for a delivered and scored file, under either hit code', () => {
+    for (const hit of ['1', '6']) {
+      const got = extractEnrichment(completed(mainFlowShape({ ...report('655'), hitCode: { code: hit } })))
+      expect(got.equifax_status).toBe('completed')
+      expect(got.equifax_score).toBe(655)
+    }
+  })
+
+  it('records a delivered file whose score was rejected as unscored', () => {
+    const rep = { trades: [], hitCode: { code: '1' }, models: [{ type: 'MODEL', rejects: [{ code: 'X' }], modelNumber: '05402' }] }
+    const got = extractEnrichment(completed(mainFlowShape(rep)))
+    expect(got.equifax_status).toBe('unscored')
+    expect(got.equifax_score).toBeNull()
+  })
+
+  it('records an Equifax refusal to search as an error of the permanent kind', () => {
+    const rep = {
+      errors: [{ code: '07C', message: 'INSUFFICIENT INFORMATION FOR FILE SEARCH - ADDITIONAL DATA IS NEEDED', errorType: 'X' }],
+      status: '200',
+      timeStamp: 'X',
+    }
+    const got = extractEnrichment(completed(mainFlowShape(rep)))
+    expect(got.equifax_status).toBe('error')
+    expect(got.equifax_error_type).toBe('permanent')
+    expect(got.equifax_score).toBeNull()
+  })
+
+  it('reads the outcome from the Engine flat shape too', () => {
+    const got = extractEnrichment(completed(engineShape(envelope('A'))))
+    expect(got.equifax_status).toBe('frozen')
   })
 })
