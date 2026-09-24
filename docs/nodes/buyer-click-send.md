@@ -10,14 +10,15 @@ In a click workflow, after a code node has built the request for the buyer (whic
 
 1. **Refuses a recovery run.** A resume or a replay of an earlier execution fails the step as `recovery_run_refused`, before anything else. Resume re-runs every node from the entry, so a resumed click would post to the buyer a second time. A new click starts a new execution.
 2. **Checks its config** (see below). A problem fails the step by name before any claim.
-3. **Claims the prospect** for this buyer, in a claim object named `sale:click:{partner_slug}:{prospect_id}`. The claim answers one of:
+3. **Looks up the partner** by its id, for its current slug. The slug names the buyer in the output, the logs, the pages and the post's error messages, and nothing else. The lookup is the organization's cached partner list, the same one the Constants node reads. A partner id this organization does not hold fails the step as `partner_not_found` (permanent); a lookup that cannot be read fails it as `partner_unreadable` (transient). Either way nothing is claimed or sent. A Test Runner run looks the partner up too, so a missing partner shows before launch.
+4. **Claims the prospect** for this buyer, in a claim object named `sale:click:{partner_id}:{prospect_id}`. The claim answers one of:
    - taken: the node carries on.
    - `sold`: an earlier click sent this prospect. Routes `already_sent` with the earlier partner lead id. Nothing is posted.
    - `in_flight`: another execution is sending it right now. Routes `in_progress`. Nothing is posted.
    - `in_doubt`: an earlier send held the claim past its deadline and never recorded what happened. Routes `needs_review` and pages. Nothing is posted.
    - unreadable: the claim object did not answer. The step fails as `claim_unavailable` (transient). Nothing is posted.
-4. **Posts** the body to the URL, with a 20 second timeout.
-5. **Reads the answer** three ways:
+5. **Posts** the body to the URL, with a 20 second timeout.
+6. **Reads the answer** three ways:
    - **Confirmed**: a 2xx whose whole body (trimmed, and unquoted when the buyer returns it as a JSON string) matches the partner's success line. The claim is marked sold with the partner lead id and a payout of 0, then the prospect is added to today's count. Routes `sent`.
    - **Refused**: a 4xx carrying the buyer's own error, meaning not an HTML page, not empty, and not 408 or 429. The claim is freed, so a later click on the same prospect can try again. Routes `refused`.
    - **Unknown**: everything else. A timeout, a network error, a 5xx, an HTML page (something in front of the buyer answered), a 2xx that is not the success line, an empty 4xx, a 408 or 429. The claim is kept held, the node pages, and it routes `unknown`. Whether the buyer created the record is not known, so no later click on this prospect sends until a person has checked with the buyer and released the claim.
@@ -42,7 +43,7 @@ All seven handles must be wired before a live workflow saves, because the node c
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `partner_slug` | string | Yes | none | The buyer, picked from the buyer partners. Names the claim and the counter. |
+| `partner_id` | string | Yes | none | The buyer's partner id, picked from the buyer partners by name. Names the claim, the counter and the page cooldowns. A value that is not a partner id (a slug, for instance) fails the step as `partner_id_invalid`. |
 | `prospect_id` | template | Yes | none | Resolves to the prospect id: the key that stops one prospect being sent twice and counted twice. |
 | `request_url` | template | Yes | none | Resolves to the https URL the preceding code node picked. |
 | `request_body` | template | Yes | none | Resolves to the body object the preceding code node built. Sent as JSON. |
@@ -60,9 +61,13 @@ Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)
 
 The id group captures the 15 or 18 character Salesforce id Liberty1 returns.
 
+### Why the partner is stored by id
+
+The claims a buyer holds and the day's click count are named by the partner id, never the slug. The Partners page does not edit a slug today, but the database does not forbid changing one; if the names carried the slug, a change would orphan every claim the buyer holds (a prospect clicked before it could be sent again after it) and restart the day's count at zero. With the id, a slug change alters only the words in the output and the pages, and those follow once the cached partner list is next rebuilt (at the latest 30 days, sooner on any partner edit through the app).
+
 ## The click count
 
-One counter per buyer per **Pacific** day, named `clicks-{partner_slug}-{YYYY-MM-DD}`, resetting at midnight Pacific. Clicks arrive after offers, so an Eastern day would push a late evening click into the next day's count. The counter holds the set of prospect ids sent that day, and the count is the number of distinct ids: adding the same prospect twice never counts it twice.
+One counter per buyer per **Pacific** day, named `clicks-{partner_id}-{YYYY-MM-DD}`, resetting at midnight Pacific. Clicks arrive after offers, so an Eastern day would push a late evening click into the next day's count. The counter holds the set of prospect ids sent that day, and the count is the number of distinct ids: adding the same prospect twice never counts it twice.
 
 A count that fails after a confirmed send pages `count_failed`; the route is still `sent`.
 
@@ -70,7 +75,7 @@ A count that fails after a confirmed send pages `count_failed`; the route is sti
 
 The node posts to the org's Slack connection for two things:
 
-- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. One page per buyer per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
+- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
 - **The over cap notice** when the count after an add reaches `daily_lead_cap * alert_over_percent / 100`, once per buyer per Pacific day.
 
 Both are decided by the alert claim object, so two clicks that page together post once. A Slack failure is logged and recorded on the step (`pages[].outcome`, `over_cap`), and never fails the node, because the click it reports on has already happened.
@@ -83,6 +88,7 @@ Both are decided by the alert claim object, so two clicks that page together pos
   "reason": "sent",
   "detail": "the buyer created a0B5f00000XyZ12AAB",
   "mode_effective": "live",
+  "partner_id": "3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70",
   "partner_slug": "liberty1",
   "prospect_id": "a0B000000000001AAA",
   "status": 200,
@@ -96,7 +102,7 @@ Both are decided by the alert claim object, so two clicks that page together pos
 }
 ```
 
-`status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable` or `not_counted`. The request body is never written to the step row.
+`partner_slug` is the slug the partner had when the node ran (null when the partner could not be looked up). `status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable` or `not_counted`. The request body is never written to the step row.
 
 ## Timing
 

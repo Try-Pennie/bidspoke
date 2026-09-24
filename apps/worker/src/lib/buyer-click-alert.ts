@@ -11,6 +11,9 @@
  *              cap of 50). Keyed by buyer and PACIFIC date, so it posts once a
  *              day per buyer.
  *
+ * The buyer in both keys is its partner id, never its slug (#1553), so a slug
+ * renamed mid day neither repeats the over cap notice nor lifts a cooldown.
+ *
  * Both are decided by the alert claim object (AlertClaimObject, #1298), whose
  * TTL IS the cooldown: strongly consistent, so two clicks that page together
  * post once. The claim fails open when the object cannot be asked, so the
@@ -37,6 +40,9 @@ export type ClickAlert =
   | {
       kind: 'page'
       reason: ClickPageReason
+      /** The partner_configs id: the cooldown key, so a slug rename neither repeats nor lifts it (#1553). */
+      partner_id: string
+      /** For the words only. */
       partner_slug: string
       prospect_id: string
       detail: string
@@ -46,6 +52,7 @@ export type ClickAlert =
     }
   | {
       kind: 'over_cap'
+      partner_id: string
       partner_slug: string
       /** The Pacific date the counter counts. */
       date: string
@@ -71,8 +78,8 @@ export interface ClickAlertDeps {
 
 export function clickAlertKey(alert: ClickAlert): { key: string; ttlSeconds: number } {
   return alert.kind === 'page'
-    ? { key: `buyer-click-page:${alert.partner_slug}:${alert.reason}`, ttlSeconds: CLICK_PAGE_COOLDOWN_SECONDS }
-    : { key: `buyer-click-over-cap:${alert.partner_slug}:${alert.date}`, ttlSeconds: CLICK_OVER_CAP_TTL_SECONDS }
+    ? { key: `buyer-click-page:${alert.partner_id}:${alert.reason}`, ttlSeconds: CLICK_PAGE_COOLDOWN_SECONDS }
+    : { key: `buyer-click-over-cap:${alert.partner_id}:${alert.date}`, ttlSeconds: CLICK_OVER_CAP_TTL_SECONDS }
 }
 
 /** What each page says happened and what it left behind. Complete over the reasons at compile time (L113). */

@@ -25,11 +25,13 @@ import {
   executeBuyerClickSendNode,
   type BuyerClickSendDeps,
 } from '../buyer-click-send'
-import { OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
+import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
 
 // The Liberty1 matcher lives in the node's CONFIG, never in the node's code.
 const LIBERTY1_PATTERN = 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)'
 const SF_ID = 'a0B5f00000XyZ12AAB'
+/** Liberty1's partner_configs id: the claim and the count are keyed on this, never the slug (#1553). */
+const PARTNER_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const NOW = Date.UTC(2027, 8, 20, 18, 0) // 11:00 Pacific
 
 const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
@@ -37,7 +39,7 @@ const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
   namespace: 'send_click',
   type: 'buyer_click_send',
   config: {
-    partner_slug: 'liberty1',
+    partner_id: PARTNER_ID,
     prospect_id: '{{trigger.payload.prospect}}',
     request_url: '{{steps.build.output.url}}',
     request_body: '{{steps.build.output.body}}',
@@ -72,6 +74,9 @@ interface Harness {
   alerts: ClickAlert[]
   claims: Array<Record<string, unknown>>
   logs: Array<Record<string, unknown>>
+  saleKeys: string[]
+  counterNames: string[]
+  resolved: string[]
 }
 
 function harness(opts: {
@@ -83,11 +88,29 @@ function harness(opts: {
   alert?: (a: ClickAlert) => Promise<ClickAlertOutcome>
   members?: string[]
   timers?: Timers
+  /** What the partner id resolves to: a slug, null for no such partner in the org, or a read that throws. */
+  partner?: string | null | (() => Promise<{ slug: string } | null>)
+  /** The expected slug on the post, when the resolver renames the partner. */
+  slug?: string
+  /** Shared across runs, so a second run sees the first run's count. */
+  memberSet?: Set<string>
 } = {}): Harness {
-  const h: Harness = { sold: [], freed: [], posts: [], members: new Set(opts.members ?? []), alerts: [], claims: [], logs: [], deps: undefined as never }
+  const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
+  const h: Harness = {
+    sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
+    saleKeys: [], counterNames: [], resolved: [], deps: undefined as never,
+  }
   h.deps = {
+    resolvePartner: async (partnerId) => {
+      h.resolved.push(partnerId)
+      const p = opts.partner === undefined ? 'liberty1' : opts.partner
+      if (typeof p === 'function') return p()
+      return p === null ? null : { slug: p }
+    },
     saleClient: (key) => {
-      expect(key).toEqual({ kind: 'click', partner_slug: 'liberty1', prospect_id: 'a0B000000000001AAA' })
+      // The real naming, so a key built from the slug would fail here (L15).
+      h.saleKeys.push(leadSaleObjectName(key))
+      expect(key).toEqual({ kind: 'click', partner_id: PARTNER_ID, prospect_id: 'a0B000000000001AAA' })
       return {
         claim: async (body) => {
           h.claims.push(body as unknown as Record<string, unknown>)
@@ -106,8 +129,9 @@ function harness(opts: {
         },
       }
     },
-    counter: (slug, nowMs) => {
-      expect(slug).toBe('liberty1')
+    counter: (partnerId, nowMs) => {
+      h.counterNames.push(clickCounterObjectName(partnerId, nowMs).name)
+      expect(partnerId).toBe(PARTNER_ID)
       expect(nowMs).toBe(NOW)
       return {
         date: '2027-09-20',
@@ -121,7 +145,7 @@ function harness(opts: {
     },
     post: async (target, body, o) => {
       // The buyer's own slug, so an error or a log names the buyer that answered.
-      expect(target.slug).toBe('liberty1')
+      expect(target.slug).toBe(slug)
       h.posts.push({ url: target.url, body, timeoutMs: o.timeoutMs })
       const p = opts.post ?? answer(200, `Records created successfully : ${SF_ID}`)
       return typeof p === 'function' ? p() : p
@@ -156,7 +180,7 @@ describe('a confirmed send', () => {
     const h = harness()
     const r = await run(h)
     expect(r.failure).toBeUndefined()
-    expect(h.claims).toEqual([{ partner_id: 'liberty1', execution_id: 'exec-1', deadline_ms: CLICK_CLAIM_DEADLINE_MS }])
+    expect(h.claims).toEqual([{ partner_id: PARTNER_ID, execution_id: 'exec-1', deadline_ms: CLICK_CLAIM_DEADLINE_MS }])
     expect(h.posts).toEqual([{ url: 'https://example.my.salesforce-sites.com/services/apexrest/lead', body: { FirstName: 'Test' }, timeoutMs: CLICK_POST_TIMEOUT_MS }])
     expect(h.sold).toEqual([{ generation: 1, outcome: { buyer_reference: SF_ID, result_code: 'created', http_status: 200, payout_cents: 0 } }])
     expect([...h.members]).toEqual(['a0B000000000001AAA'])
@@ -202,7 +226,7 @@ describe('the over cap notice', () => {
     const at60 = harness({ members: upTo(59) })
     const r = await run(at60)
     expect(r.output).toMatchObject({ count: 60, over_cap: 'posted' })
-    expect(at60.alerts).toEqual([expect.objectContaining({ kind: 'over_cap', partner_slug: 'liberty1', date: '2027-09-20', count: 60, daily_lead_cap: 50, threshold: 60, alert_over_percent: 120 })])
+    expect(at60.alerts).toEqual([expect.objectContaining({ kind: 'over_cap', partner_id: PARTNER_ID, partner_slug: 'liberty1', date: '2027-09-20', count: 60, daily_lead_cap: 50, threshold: 60, alert_over_percent: 120 })])
   })
 
   it('once a day: a later click the same day is told the notice is already out', async () => {
@@ -306,7 +330,7 @@ describe('an unknown send keeps the claim held, pages and routes unknown', () =>
 
 describe('the claim states', () => {
   it('sold: already sent, nothing posted, the earlier partner lead id reported', async () => {
-    const h = harness({ claim: { state: 'sold', partner_id: 'liberty1', outcome: { buyer_reference: SF_ID, result_code: 'created', http_status: 200, payout_cents: 0 }, generation: 3 } })
+    const h = harness({ claim: { state: 'sold', partner_id: PARTNER_ID, outcome: { buyer_reference: SF_ID, result_code: 'created', http_status: 200, payout_cents: 0 }, generation: 3 } })
     const r = await run(h)
     expect(h.posts).toEqual([])
     expect(r.output).toMatchObject({ _route: 'already_sent', reason: 'already_sent', partner_lead_id: SF_ID })
@@ -322,7 +346,7 @@ describe('the claim states', () => {
   })
 
   it('in_doubt: needs review, nothing posted, and it pages', async () => {
-    const h = harness({ claim: { state: 'in_doubt', partner_id: 'liberty1', generation: 2 } })
+    const h = harness({ claim: { state: 'in_doubt', partner_id: PARTNER_ID, generation: 2 } })
     const r = await run(h)
     expect(h.posts).toEqual([])
     expect(r.output).toMatchObject({ _route: 'needs_review', reason: 'claim_in_doubt' })
@@ -356,7 +380,9 @@ describe('refusals before any claim', () => {
   })
 
   const bad: Array<[string, Record<string, unknown>, ExecutionContext | undefined, string]> = [
-    ['no partner slug', { partner_slug: '' }, undefined, 'partner_slug_invalid'],
+    ['no partner id', { partner_id: '' }, undefined, 'partner_id_invalid'],
+    ['a slug where the partner id belongs', { partner_id: 'liberty1' }, undefined, 'partner_id_invalid'],
+    ['a config from before #1553 that names the partner by slug only', { partner_id: undefined, partner_slug: 'liberty1' }, undefined, 'partner_id_invalid'],
     ['no success pattern', { success_pattern: '' }, undefined, 'success_pattern_invalid'],
     ['a success pattern that does not compile', { success_pattern: '(' }, undefined, 'success_pattern_invalid'],
     ['a success pattern with no id group', { success_pattern: 'Records created' }, undefined, 'success_pattern_invalid'],
@@ -374,6 +400,60 @@ describe('refusals before any claim', () => {
       expect(h.posts).toEqual([])
     })
   }
+})
+
+describe('the partner is named by id and resolved for its slug (#1553)', () => {
+  it('a slug rename keeps the claim and the count: the same id finds the same claim object and the same counter', async () => {
+    const members = new Set<string>()
+    const before = harness({ partner: 'liberty1', memberSet: members })
+    const first = await run(before)
+    expect(first.output).toMatchObject({ _route: 'sent', partner_id: PARTNER_ID, partner_slug: 'liberty1', count: 1, counted: true })
+
+    // The partner is renamed between two clicks on the same prospect.
+    const after = harness({ partner: 'liberty-one', memberSet: members })
+    const second = await run(after)
+    expect(after.saleKeys).toEqual(before.saleKeys)
+    expect(after.counterNames).toEqual(before.counterNames)
+    expect(before.saleKeys[0]).toBe(`sale:click:${PARTNER_ID}:a0B000000000001AAA`)
+    expect(before.counterNames[0]).toBe(`clicks-${PARTNER_ID}-2027-09-20`)
+    // The prospect is already in the day's set under the id, so the rename neither resets nor double counts it.
+    expect(second.output).toMatchObject({ partner_slug: 'liberty-one', count: 1, counted: false })
+  })
+
+  it('the resolved slug names the buyer in the post, the alerts and the output', async () => {
+    const h = harness({ partner: 'liberty-one', post: answer(503, 'down') })
+    const r = await run(h)
+    expect(h.resolved).toEqual([PARTNER_ID])
+    expect(r.output).toMatchObject({ partner_id: PARTNER_ID, partner_slug: 'liberty-one' })
+    expect(h.alerts).toEqual([expect.objectContaining({ partner_id: PARTNER_ID, partner_slug: 'liberty-one' })])
+  })
+
+  it('a partner id the org does not hold fails permanently by name, and claims, posts, counts and pages nothing', async () => {
+    const h = harness({ partner: null })
+    const r = await run(h)
+    expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'partner_not_found' })
+    expect(r.failure?.message).toContain(PARTNER_ID)
+    expect(r.output).toMatchObject({ partner_id: PARTNER_ID, partner_slug: null })
+    expect(h.claims).toEqual([])
+    expect(h.posts).toEqual([])
+    expect(h.members.size).toBe(0)
+    expect(h.alerts).toEqual([])
+  })
+
+  it('a partner read that fails is its own transient reason, not a missing partner (L11), and sends nothing', async () => {
+    const h = harness({ partner: () => Promise.reject(new Error('partner_constants load failed for org org-1: timeout')) })
+    const r = await run(h)
+    expect(r.failure).toMatchObject({ errorType: 'transient', reason: 'partner_unreadable' })
+    expect(r.failure?.message).toMatch(/timeout/)
+    expect(h.claims).toEqual([])
+    expect(h.posts).toEqual([])
+  })
+
+  it('a test run resolves the partner too, so an unresolvable one shows before launch', async () => {
+    const h = harness({ partner: null })
+    const r = await run(h, node(), ctx({ isTest: true }))
+    expect(r.failure).toMatchObject({ reason: 'partner_not_found' })
+  })
 })
 
 describe('report only: a test run, shadow or local dev touches nothing', () => {

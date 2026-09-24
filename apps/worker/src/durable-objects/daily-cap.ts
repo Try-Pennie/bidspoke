@@ -6,9 +6,10 @@
  *
  *   `cap-{partner_slug}-{YYYY-MM-DD}`     the partner bid daily cap, on the
  *                                         EASTERN date (lib/daily-cap-name.ts, #1410)
- *   `clicks-{partner_slug}-{YYYY-MM-DD}`  a click sold buyer's count of clicks
- *                                         sent, on the PACIFIC date
- *                                         (lib/buyer-object-clients.ts, #1542)
+ *   `clicks-{partner_id}-{YYYY-MM-DD}`    a click sold buyer's count of clicks
+ *                                         sent, on the PACIFIC date, keyed on the
+ *                                         partner id so a slug rename keeps it
+ *                                         (lib/buyer-object-clients.ts, #1542, #1553)
  *
  * Two independent counts live here and never touch each other:
  *   /check-and-increment, /decrement, /get-count, /reset   a plain counter

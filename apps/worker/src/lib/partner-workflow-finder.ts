@@ -4,7 +4,9 @@
  * buyer profile route (`other_sellers`, the sellers OUTSIDE buyer selection
  * whose wins the buyer's caps do not count, L582).
  *
- * A bid_group or partner_bid node names its partner in its config. A
+ * A bid_group, partner_bid or buyer_click_send node names its partner by id in
+ * its config; the node types whose trait says so (NODE_TRAITS.referencesPartners)
+ * are each matched below, which a test enforces. A
  * buyer_select node names none: the decision recorded on #1411 is that a
  * workflow carrying one uses every partner holding an enabled profile priced for
  * that node's population, which the caller supplies as `pricedPartnersByPopulation`
@@ -56,6 +58,8 @@ export function workflowsUsingPartner(
       const used = nodesOf(w).some((n) => {
         if (!n || !n.config) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
+        // A click sold buyer's send (#1553): a seller in its own right, so counted whatever the caller says about buyer_select.
+        if (n.type === 'buyer_click_send' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group') {
           const ids = n.config.partner_ids
           if (Array.isArray(ids) && ids.includes(partnerId)) return true

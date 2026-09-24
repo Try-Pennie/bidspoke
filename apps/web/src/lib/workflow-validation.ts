@@ -95,7 +95,7 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // Everything the node needs before it may claim a click (#1542). The success
       // line is the partner's own, with no default: without it no answer can be
       // confirmed, so every send would hold its claim and page (L72).
-      if (!(config.partner_slug as string | undefined)?.trim()) return 'No partner selected'
+      if (!(config.partner_id as string | undefined)?.trim()) return 'No partner selected'
       if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
       if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
       if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'

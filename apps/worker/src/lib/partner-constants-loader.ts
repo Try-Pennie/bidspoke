@@ -31,6 +31,13 @@ export interface PartnerConstants {
   activeBidding: Record<string, boolean>
   /** Per-partner per-sub-account minimum bid floors. Partner slug → uuid → floor. */
   subAccountMinBids: Record<string, Record<string, number>>
+  /**
+   * Every partner in the org, active or not, by id to its current slug (#1553):
+   * how a node that stores a partner id names the partner in its logs and alerts.
+   * Absent only on a last good copy written before this field existed, which a
+   * reader must treat as could not read, never as no such partner (L11).
+   */
+  slugsById?: Record<string, string>
 }
 
 export async function loadPartnerConstants(
@@ -63,7 +70,9 @@ async function loadFromKvOrDb(
   supabase: SupabaseClient
 ): Promise<PartnerConstants> {
   const cached = await kv.get<PartnerConstants>(cacheKey(orgId), 'json')
-  if (cached) return cached
+  // A copy cached before slugsById existed is read again rather than served
+  // without it; the 30 day TTL would otherwise keep it for a month (#1553).
+  if (cached && cached.slugsById) return cached
 
   const [uuidRes, partnerRes] = await Promise.all([
     supabase
@@ -72,7 +81,7 @@ async function loadFromKvOrDb(
       .eq('org_id', orgId),
     supabase
       .from('partner_configs')
-      .select('slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
+      .select('id, slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
       .eq('organization_id', orgId),
   ])
 
@@ -104,7 +113,9 @@ async function loadFromKvOrDb(
   const clickUrls: Record<string, string> = {}
   const activeBidding: Record<string, boolean> = {}
   const subAccountMinBids: Record<string, Record<string, number>> = {}
+  const slugsById: Record<string, string> = {}
   for (const row of partnerRows ?? []) {
+    slugsById[row.id] = row.slug
     if (row.sell_off_offer_title || row.sell_off_offer_details) {
       sellOff[row.slug] = {
         title: row.sell_off_offer_title ?? '',
@@ -128,7 +139,7 @@ async function loadFromKvOrDb(
     }
   }
 
-  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids }
+  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids, slugsById }
   const serialized = JSON.stringify(result)
   // Short cache for the hot path; no-TTL last-good for blip resilience (overwritten
   // by the next successful load, so it can't go stale while edits keep flowing).

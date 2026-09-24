@@ -17,21 +17,26 @@ interface ClickSendOutputPreview {
   reason?: string | null
   partner_lead_id?: string | null
   count?: number | null
+  partner_slug?: string | null
 }
 
 /**
- * The Buyer Click Send card (#1542). Names the buyer it sends to, and after a
- * run the route it took: the partner lead id on a send, the reason otherwise.
+ * The Buyer Click Send card (#1542). Says whether a buyer is picked, names it
+ * by the slug the last run resolved (the config holds only its id, #1553, which
+ * is never shown as a name), and after a run the route it took: the partner lead
+ * id on a send, the reason otherwise.
  */
 export function BuyerClickSendNode({ data, selected }: NodeProps) {
   const { namespace, label: title, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
-  const partnerSlug = typeof config.partner_slug === 'string' ? config.partner_slug : ''
+  const hasPartner = typeof config.partner_id === 'string' && config.partner_id.trim() !== ''
+  let partnerSlug = ''
 
   let preview: string | null = null
   let route: string | null = null
   if (executionStep?.output && typeof executionStep.output === 'object') {
     const out = executionStep.output as ClickSendOutputPreview
     route = out._route ?? null
+    if (typeof out.partner_slug === 'string') partnerSlug = out.partner_slug
     if (out._route === 'sent') {
       preview = `sent${out.partner_lead_id ? ` (${out.partner_lead_id})` : ''}${typeof out.count === 'number' ? `, ${out.count} today` : ''}`
     } else if (out._route) {
@@ -58,8 +63,8 @@ export function BuyerClickSendNode({ data, selected }: NodeProps) {
       <div className="flex items-center gap-2 rounded-t-lg border-b border-lime-100 bg-lime-50 px-3 py-2">
         <MousePointerClick className={`h-4 w-4 ${NODE_TYPE_COLOR.buyer_click_send.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-lime-800">Buyer Click Send</span>
-        <span className={`ml-auto rounded px-1.5 py-0.5 text-xs ${partnerSlug ? 'bg-lime-100 text-lime-800' : 'bg-amber-100 text-amber-800'}`}>
-          {partnerSlug || 'no partner'}
+        <span className={`ml-auto rounded px-1.5 py-0.5 text-xs ${hasPartner ? 'bg-lime-100 text-lime-800' : 'bg-amber-100 text-amber-800'}`}>
+          {!hasPartner ? 'no partner' : partnerSlug || 'partner set'}
         </span>
       </div>
 

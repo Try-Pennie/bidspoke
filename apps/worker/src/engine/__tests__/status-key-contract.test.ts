@@ -214,11 +214,12 @@ describe('status output key contract', () => {
     const ctx = makeCtx({ prospect: 'p-1', url: 'https://buyer.example/lead', body: { a: 1 } })
     const result = await executeBuyerClickSendNode(
       makeNode('buyer_click_send', {
-        partner_slug: 'buyer', prospect_id: '{{trigger.payload.prospect}}', request_url: '{{trigger.payload.url}}', request_body: '{{trigger.payload.body}}',
+        partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', prospect_id: '{{trigger.payload.prospect}}', request_url: '{{trigger.payload.url}}', request_body: '{{trigger.payload.body}}',
         success_pattern: 'created (?<id>\\w+)', daily_lead_cap: 50,
       }),
       ctx,
       {
+        resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),
         post: async () => ({ status: 201, text: 'created abc123', json: null, isHtml: false, headers: {} }),

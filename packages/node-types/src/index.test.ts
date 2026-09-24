@@ -59,7 +59,7 @@ describe('NODE_TRAITS', () => {
     // profile priced for its population, which the partner routes resolve at
     // read time rather than from the node's config.
     expect(withTrait((t) => t.synthesizesAttempts)).toEqual(['bid_group', 'buyer_select'])
-    expect(withTrait((t) => t.referencesPartners)).toEqual(['bid_group', 'partner_bid'])
+    expect(withTrait((t) => t.referencesPartners)).toEqual(['bid_group', 'buyer_click_send', 'partner_bid'])
   })
 
   it('static handles: the gate, the group and the buyer selection have fixed outgoing handles, everything else has none or derives them from config', () => {

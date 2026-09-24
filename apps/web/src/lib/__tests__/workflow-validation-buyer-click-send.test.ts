@@ -13,7 +13,7 @@ import { findUnwiredRequiredHandles, validateWorkflowDef } from '../workflow-val
 import type { EdgeDef, NodeDef, NodeType } from '@/types/workflow'
 
 const COMPLETE = {
-  partner_slug: 'liberty1',
+  partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70',
   prospect_id: '{{steps.resolve.output.prospect_id}}',
   request_url: '{{steps.build.output.url}}',
   request_body: '{{steps.build.output.body}}',
@@ -34,7 +34,8 @@ describe('buyer_click_send config validation', () => {
   })
 
   const missing: Array<[string, Record<string, unknown>, string]> = [
-    ['partner', { partner_slug: undefined }, 'No partner selected'],
+    ['partner', { partner_id: undefined }, 'No partner selected'],
+    ['partner named by slug only, from before #1553', { partner_id: undefined, partner_slug: 'liberty1' }, 'No partner selected'],
     ['prospect id', { prospect_id: '  ' }, 'No prospect id template set'],
     ['request url', { request_url: undefined }, 'No request URL template set'],
     ['request body', { request_body: '' }, 'No request body template set'],
