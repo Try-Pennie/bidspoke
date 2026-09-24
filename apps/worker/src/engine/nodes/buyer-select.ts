@@ -56,7 +56,7 @@ import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../durable-objects/buyer-ledger'
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
-import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
+import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
@@ -86,6 +86,27 @@ import { resolveSalePayload } from './buyer-select-payload'
  * #1491 and #1414 from the first full day with this in force.
  */
 export const BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS = 800
+/**
+ * Live has a ceiling of its own BEFORE the buyer call (#1508): the profile read,
+ * the breaker check, the claim, the reservation and any wait on another holder
+ * share this budget from the node's start, read between steps and given to each
+ * object call as what is left of it. The buyer call is not under it (it keeps
+ * BUYER_CALL_TIMEOUT_MS), and neither is anything after it: commit and mark
+ * sold keep OBJECT_CALL_DEADLINE_MS and the outcome_unknown page, because an
+ * accepted answer must be recorded whatever the clock says. A spent budget
+ * routes no_sale with object_deadline, holding nothing.
+ *
+ * The value is proposed from Stage A day 2 (2026-09-24, on #1508) and is Dan's
+ * to confirm before the 1 percent step: the rehearsal, which runs the same steps
+ * without the buyer call, sat at p50 635 / p95 913 ms over 691 rows under an 800
+ * ms budget that refused 4.1 percent of leads; the worst object call p99 across
+ * the Phase 3 drills is MEASURED_OBJECT_CALL_P99_MS; Engine allows 20 s for the
+ * whole response and the buyer call alone reached 10.5 s that day. Two seconds
+ * clears both measured figures with room and leaves the rest of the window to
+ * the buyer.
+ */
+export const BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS = 2_000
+export { MEASURED_OBJECT_CALL_P99_MS }
 /** The whole buyer call, the same budget tripoint_ping's fetch carried. */
 export const BUYER_CALL_TIMEOUT_MS = 20_000
 /** How often a live attempt re-reads a claim another execution holds. */
@@ -187,7 +208,7 @@ export interface BreakerApi {
 
 export interface BuyerSelectDeps {
   loadProfiles: () => Promise<BuyerProfilesSnapshot>
-  /** In decide_only the node passes a deadline function reading what is left of its budget (#1491); in live, nothing, so the client keeps its own. */
+  /** The node passes a deadline function reading what is left of its budget: the whole run in decide_only (#1491), the steps before the buyer call in live (#1508); cleanup and everything after the call get the client's standard deadline. */
   saleClient: (key: EntryKey, opts?: ClientOptions) => SaleApi
   ledgerClient: (partnerId: string, opts?: ClientOptions) => LedgerApi
   /** Where cleanup after a rehearsal budget ending runs, off the response path (#1512). The work never rejects. */
@@ -255,6 +276,8 @@ class Run {
   private readonly out: BuyerSelectOutput
   private readonly attempts: BuyerAttemptRow[] = []
   private leadKey: string | null = null
+  /** Set the moment a live buyer call starts: from then on the pre-call budget no longer applies (#1508). */
+  private buyerCallStarted = false
 
   constructor(private readonly node: NodeDefinition, private readonly ctx: ExecutionContext, private readonly deps: BuyerSelectDeps) {
     this.config = node.config as unknown as BuyerSelectConfig
@@ -349,7 +372,7 @@ class Run {
       return this.refuse('profiles_unavailable', messageOf(err), 'transient')
     }
     this.out.profiles_served_from = snapshot.served_from
-    if (this.pastDeadline()) return this.done('deferred', 'rehearsal_deadline', `profiles took the whole ${BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS} ms budget`)
+    if (this.pastDeadline()) return this.budgetEnded(`profiles took the whole ${this.budgetMs()} ms budget`)
 
     // 7. eligibility and ranking.
     const candidates = this.rank(snapshot, leadKey)
@@ -467,8 +490,10 @@ class Run {
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i]
       if (this.pastDeadline()) {
-        for (const rest of candidates.slice(i)) this.consider(rest, 'not_reached', 'rehearsal_deadline')
-        return this.done('deferred', 'rehearsal_deadline', `${i} of ${candidates.length} buyers attempted`)
+        // A rehearsal ran out of time before this buyer (not_reached); a live node did too, and the
+        // buyer is skipped by name rather than told an earlier buyer took the lead.
+        for (const rest of candidates.slice(i)) this.consider(rest, live ? 'skipped' : 'not_reached', this.deadlineReason())
+        return this.budgetEnded(`${i} of ${candidates.length} buyers attempted`)
       }
       const limits: CapLimits = live ? profileCaps(c.buyer.profile) : rehearsalCaps
       this.out.caps_in_force.push({ partner: c.buyer.partner.slug, ...limits })
@@ -481,9 +506,9 @@ class Run {
         try {
           check = await this.bounded(breaker.check(), `circuit check ${c.buyer.partner.slug}`)
         } catch (err) {
-          // An unreadable breaker is not an allow: skip this buyer by name.
-          this.consider(c, 'skipped', 'circuit_open', `breaker unreadable: ${messageOf(err)}`)
-          lastReason = 'circuit_open'
+          // An unreadable breaker is not an allow, and not an open breaker either (#1530): skip this buyer by name.
+          this.consider(c, 'skipped', 'breaker_unreadable', messageOf(err))
+          lastReason = 'breaker_unreadable'
           continue
         }
         if (!check.allowed) {
@@ -532,6 +557,7 @@ class Run {
         return { outcome: 'accepted', record: { buyer_reference: null, result_code: REHEARSAL_RESULT_CODE, http_status: null, payout_cents: c.payoutCents } }
       }
       buyerCalled = true
+      this.buyerCallStarted = true
       const target: PartnerCallTarget = { slug: partner.slug, api_endpoint: partner.api_endpoint, cf_secret_key: partner.cf_secret_key }
       let res: PartnerCallResult
       try {
@@ -576,13 +602,16 @@ class Run {
 
     // In decide_only the WHOLE attempt shares the node's budget (#1491): every object call is
     // bounded by what is left of it, read at the call, and the attempt stops between steps
-    // once it is spent. In live each call keeps the client's own deadline and the attempt is unbudgeted.
-    // Cleanup after the budget has ended (releasing a reservation that may have landed, freeing the
-    // claim) keeps the standard deadline: bounded by a spent budget it would be a 1 ms attempt, and
-    // the ledger would hold a reservation nobody settles (#1512).
-    const budget: ClientOptions | undefined = live
-      ? undefined
-      : { deadlineMs: (op) => (op === LEDGER_RELEASE_OP || op === SALE_FREE_OP ? OBJECT_CALL_DEADLINE_MS : Math.max(1, this.remaining())), timers: this.deps.timers }
+    // once it is spent. In live the steps BEFORE the buyer call share the pre-call budget the
+    // same way (#1508); once the call has started, every object call keeps the client's own
+    // deadline, because commit and mark sold record an answer the buyer already gave.
+    // Cleanup after a budget has ended (releasing a reservation that may have landed, freeing the
+    // claim) keeps the standard deadline in both modes: bounded by a spent budget it would be a
+    // 1 ms attempt, and the ledger would hold a reservation nobody settles (#1512).
+    const budget: ClientOptions = {
+      deadlineMs: (op) => (op === LEDGER_RELEASE_OP || op === SALE_FREE_OP || this.buyerCallStarted ? OBJECT_CALL_DEADLINE_MS : Math.max(1, this.remaining())),
+      timers: this.deps.timers,
+    }
     let result: AttemptResult
     try {
       result = await runBuyerSaleAttempt(
@@ -597,6 +626,7 @@ class Run {
           buyerTimeoutMs: live ? BUYER_CALL_TIMEOUT_MS : Math.max(1, this.remaining()),
           waitIntervalMs: live ? CLAIM_WAIT_INTERVAL_MS : 50,
           budgetLeftMs: live ? undefined : () => this.remaining(),
+          preCallBudgetLeftMs: live ? () => this.remaining() : undefined,
           background: live ? undefined : this.deps.background,
         }
       )
@@ -650,6 +680,14 @@ class Run {
         this.consider(c, 'not_reached', reason, detail)
         this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'not_reached', detail }, null, null))
         return { kind: 'stop', result: this.done('deferred', reason, detail) }
+      }
+      case 'object_deadline': {
+        // An object did not answer before the buyer was called, or the live pre-call budget ran out
+        // (#1508): the attempt released and freed what it held, the buyer was never contacted, and the
+        // cascade stops because the time is gone for every buyer after this one too.
+        this.consider(c, 'skipped', reason, detail)
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'skipped', detail }, null, null))
+        return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', reason, detail) }
       }
       default: {
         // A cap, cap_check_error, or anything else the ledger said: this buyer was never contacted.
@@ -721,16 +759,36 @@ class Run {
     return s.trim() === '' ? null : s
   }
 
+  /** The budget the node is currently under, or null: decide_only for its whole run, live until the buyer call starts (#1508). */
+  private budgetMs(): number | null {
+    if (this.modeEffective === 'decide_only') return BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS
+    if (this.modeEffective === 'live' && !this.buyerCallStarted) return BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS
+    return null
+  }
+
+  /** What an object call may be given now: what is left of the budget when under one, never more than the standard deadline. */
   private remaining(): number {
-    if (this.modeEffective !== 'decide_only') return OBJECT_CALL_DEADLINE_MS
-    return BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS - (this.deps.clock() - this.startedAt)
+    const budget = this.budgetMs()
+    if (budget === null) return OBJECT_CALL_DEADLINE_MS
+    return Math.min(OBJECT_CALL_DEADLINE_MS, budget - (this.deps.clock() - this.startedAt))
   }
 
   private pastDeadline(): boolean {
-    return this.modeEffective === 'decide_only' && this.remaining() <= 0
+    return this.budgetMs() !== null && this.remaining() <= 0
   }
 
-  /** Every await on the path is bounded (L110); in decide_only by what is left of the budget. */
+  private deadlineReason(): BuyerSelectReason {
+    return this.modeEffective === 'live' ? 'object_deadline' : 'rehearsal_deadline'
+  }
+
+  /** The budget ran out between steps: a rehearsal hands the lead to the workflow, a live node sells nothing. */
+  private budgetEnded(detail: string): BuyerSelectResult {
+    return this.modeEffective === 'live'
+      ? this.done('no_sale', 'object_deadline', detail)
+      : this.done('deferred', 'rehearsal_deadline', detail)
+  }
+
+  /** Every await on the path is bounded (L110); under a budget by what is left of it. */
   private bounded<T>(promise: Promise<T>, operation: string): Promise<T> {
     return withDeadline(promise, Math.max(1, this.remaining()), operation, this.deps.timers)
   }

@@ -100,6 +100,12 @@ export const OUT_REASONS = [
   'buyer_error',
   'outcome_unknown',
   'not_reached',
+  // #1530, #1508: an object call (claim, reserve, breaker) that ran out of time
+  // BEFORE the buyer was called, and a breaker that could not be read. Each is
+  // named for what happened, never folded into cap_check_error or circuit_open,
+  // because the reason field is what every count is grouped on (L11).
+  'object_deadline',
+  'breaker_unreadable',
 ] as const
 export type OutReason = (typeof OUT_REASONS)[number]
 
@@ -129,6 +135,8 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   buyer_error: 'Buyer call failed before the lead was processed',
   outcome_unknown: 'Buyer response could not be classified',
   not_reached: 'An earlier buyer took the lead',
+  object_deadline: 'An internal call did not answer in time, so the buyer was not called',
+  breaker_unreadable: 'Circuit breaker could not be read, so the buyer was skipped',
 }
 
 /**

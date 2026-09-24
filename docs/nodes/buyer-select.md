@@ -18,7 +18,7 @@ A lead that fails either routes `not_applicable`. A `sell_off_when` that cannot 
 | Mode | What happens |
 |------|--------------|
 | `decide_only` | Everything except the buyer call: eligibility, ranking, the claim, the reservation and the commit, all under the `rehearsal` ledger kind, with caps from the `BUYER_SELECT_REHEARSAL_CAPS` environment variable. The lead routes `deferred` and the output records what would have been sent. This mode never fails the step and gives up after 800 ms with `rehearsal_deadline`; the 800 ms bounds the whole node, so a slow object call ends the rehearsal at the deadline rather than running its own full time (#1491). |
-| `live` | Sells. Only this mode calls a buyer and only this mode can fail the step. |
+| `live` | Sells. Only this mode calls a buyer and only this mode can fail the step. The steps before the buyer call (the profile read, the breaker check, the claim, the reservation, any wait on another execution holding the lead) share a 2 second budget from the node's start; when it runs out the lead routes `no_sale` with `object_deadline`, holding nothing. The buyer call keeps its own 20 second budget, and the calls after it (commit, mark sold) keep their own deadlines, because an accepted answer must be recorded whatever the clock says (#1508). |
 
 There is no default: a missing or unknown mode fails the step as `mode_invalid`.
 
@@ -56,7 +56,7 @@ For each eligible buyer in rank order (priority 1 first, then the higher payout,
 
 A definite decline releases the reservation and moves on to the next buyer. An answer nobody can classify (a timeout, a bare 504, a 200 matching no rule) stops the cascade and **holds** the reservation and the claim, because the buyer may have taken the lead; a person settles it from the unresolved queue. A rehearsal reservation nothing settles inside the ledger's grace period is released by the ledger itself (resolution source `expired`), since no buyer was called, and never waits on a person; the buyer sales checks count those releases per buyer as a leak measure. A timeout or a 5xx of that kind fails the step; an unmatched 200 routes `no_sale` without failing it.
 
-A cap refusal, an open breaker or a ledger that cannot be read skips the buyer by name and is never an allow.
+A cap refusal, an open breaker or a ledger that cannot be read skips the buyer by name and is never an allow. Each cause has its own reason: a cap names the cap, an open breaker is `circuit_open`, a breaker that did not answer is `breaker_unreadable`, an object call (claim, reserve) that ran out of time before the buyer was called is `object_deadline`, and an object that answered with an error is `cap_check_error`.
 
 ## Output
 
