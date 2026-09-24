@@ -134,27 +134,81 @@ function equifaxOutputLevels(output: unknown): Record<string, unknown>[] {
   return nested && typeof nested === 'object' ? [nested as Record<string, unknown>, top] : [top]
 }
 
-/** The status string the step's output carries at either level, or null when it has none. */
-export function readEquifaxOutputStatus(output: unknown): string | null {
-  for (const level of equifaxOutputLevels(output)) {
-    if (typeof level.status === 'string') return level.status
-  }
-  return null
+/**
+ * What an Equifax pull FOUND, the vocabulary `lead_sightings.equifax_status` records (#1381).
+ * 'completed' means a delivered file with a readable score, and nothing else; 'unscored'
+ * is a delivered file whose score was rejected; 'error' is Equifax answering with an error
+ * (such as 07C, insufficient information to search) or no report at all.
+ */
+export type EquifaxOutcome = 'completed' | 'unscored' | 'no_hit' | 'frozen' | 'fraud' | 'referred' | 'error'
+
+/**
+ * Equifax hit codes for a file it did NOT deliver, and what each means for a sighting.
+ * The meanings are Equifax's own words, read from the Eligibility Scout errors that quote
+ * them on 2026-09-24:
+ *
+ *   A  'Consumer Requested Security Freeze on His/Her Credit File Report Unavailable'
+ *   I  'Information from your inquiry has been identified as potentially fraudulent or
+ *      misused, therefore the credit report is not available for delivery'
+ *   2  'No-Hit'
+ *   4  'MANUAL FILE REVIEW REQUIRED'
+ *   5  'REFERRED FILE'
+ *
+ * Measured over 12 hours of live pulls the same day: 14,780 hit code 1 and 182 hit code 6,
+ * both delivered files; 589 A, 144 I, 66 of code 2 and 1 of code 4, each an envelope with
+ * no file inside. A no-hit can still carry `models[0].score` '4' (20 of the 66), a reject
+ * code on a 300 to 850 scale, so a report under one of these codes has NO score whatever
+ * its models say.
+ */
+const UNDELIVERED_HIT_CODES: Readonly<Record<string, EquifaxOutcome>> = {
+  A: 'frozen',
+  I: 'fraud',
+  '2': 'no_hit',
+  '4': 'referred',
+  '5': 'referred',
 }
 
-/** The report inside a step output of either shape, or null when there is none. */
-export function readEquifaxReportOutput(output: unknown): EquifaxReport | null {
+/** The single report object inside a step output of either shape, or null when there is none. */
+function rawReport(output: unknown): Record<string, unknown> | null {
   const consumers = equifaxOutputLevels(output)
     .map((level) => level.consumers)
     .find((c) => c && typeof c === 'object')
   if (!consumers) return null
-
   const raw = (consumers as Record<string, unknown>).equifaxUSConsumerCreditReport
   const report = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | undefined
-  if (!report || typeof report !== 'object') return null
+  return report && typeof report === 'object' ? report : null
+}
 
+function hitCodeOf(report: Record<string, unknown>): string | null {
+  const code = (report.hitCode as { code?: unknown } | undefined)?.code
+  return typeof code === 'string' ? code : null
+}
+
+/**
+ * What the pull found, for a completed equifax_credit_report step of either shape.
+ * Equifax's error answer ({errors, status, timeStamp}) carries neither a hit code nor a
+ * score, so a report with no hit code is an error unless it still has a readable score.
+ */
+export function readEquifaxOutcome(output: unknown): EquifaxOutcome {
+  const report = rawReport(output)
+  if (!report) return 'error'
+  const hit = hitCodeOf(report)
+  const undelivered = hit === null ? undefined : UNDELIVERED_HIT_CODES[hit]
+  if (undelivered) return undelivered
+  const scored = readEquifaxReportOutput(output)?.score != null
+  if (scored) return 'completed'
+  return hit === null ? 'error' : 'unscored'
+}
+
+/** The report inside a step output of either shape, or null when there is none. */
+export function readEquifaxReportOutput(output: unknown): EquifaxReport | null {
+  const report = rawReport(output)
+  if (!report) return null
+
+  const hit = hitCodeOf(report)
+  const delivered = hit === null || !UNDELIVERED_HIT_CODES[hit]
   const models = asArray<{ score?: unknown }>(report.models)
-  const rawScore = models[0]?.score
+  const rawScore = delivered ? models[0]?.score : undefined
   const score = Number(rawScore)
 
   return {
