@@ -134,10 +134,15 @@ describe('the Worker no longer runs the sightings purge (#541)', () => {
     })
   }
 
-  it('the export invocation still does not purge', () => {
-    fire('37 */2 * * *')
+  // Flushed, because the alerts are sent in the export's continuation: asserting
+  // straight after fire() would read the mock before anything ran and pass however
+  // the export behaved.
+  it('the export invocation still does not purge', async () => {
+    await fireAndFlush('37 */2 * * *')
     expect(runSightingsExport).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(notifyExportFailure).mock.calls.some((c) => /purge/i.test(String(c[1])))).toBe(false)
+    const jobs = vi.mocked(notifyExportFailure).mock.calls.map((c) => String(c[1]))
+    expect(jobs).toContain('Lead sightings export')
+    expect(jobs.some((j) => /purge/i.test(j))).toBe(false)
   })
 })
 
