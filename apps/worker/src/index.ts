@@ -509,15 +509,16 @@ export default {
           if (r.alerted) console.error(`[tripoint-pricing] ${r.differences.length} differences`)
         })().catch((e) => console.error('[tripoint-pricing] failed:', e)),
       )
-      // Does a Tripoint sale's Salesforce Lead carry the Completed its
-      // Submission carries (#1524)? The copy stopped on 2026-07-08 and nothing
-      // noticed for eleven weeks. Its own failure boundary (L71).
+      // Does each sale's Salesforce Lead carry the Completed its Submission
+      // carries, per partner (#1524, #1525)? The copy stopped on 2026-07-08 for
+      // every partner and nothing noticed for eleven weeks. Its own failure
+      // boundary (L71).
       track(
         (async () => {
-          const { checkTripointLeadStatus } = await import('./lib/tripoint-lead-status-check')
-          const r = await checkTripointLeadStatus(env, supabase)
-          if (r.alerted) console.error(`[tripoint-lead-status] ${r.findings.length} findings`)
-        })().catch((e) => console.error('[tripoint-lead-status] failed:', e)),
+          const { checkLeadStatus } = await import('./lib/lead-status-check')
+          const r = await checkLeadStatus(env, supabase)
+          if (r.alerted) console.error(`[lead-status] ${r.findings.length} findings`)
+        })().catch((e) => console.error('[lead-status] failed:', e)),
       )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
