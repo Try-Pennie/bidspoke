@@ -216,8 +216,10 @@ export async function executeStatement(
   bindings?: unknown[],
   opts: StatementOptions = {},
 ): Promise<SnowflakeStatementResponse> {
-  const privateKey = await importPrivateKey(config.privateKeyPem)
-  const jwt = await signSnowflakeJwt(config, privateKey)
+  // One token per identity, reused across statements until it nears expiry
+  // (#609). Signing per statement re-imported the key and re-signed hundreds of
+  // times in one export run for a token valid for an hour.
+  const jwt = await sharedTokenCache.token(config)
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements`
   const body = statementRequestBody(config, statement, bindings)
 
@@ -579,15 +581,74 @@ function accountForJwt(account: string): string {
 // JWT signer
 // ============================================================
 
-async function signSnowflakeJwt(config: SnowflakeConfig, privateKey: CryptoKey): Promise<string> {
+/** How long a signed token is valid for, which Snowflake caps at one hour. */
+export const JWT_LIFETIME_SECONDS = 3600
+
+/**
+ * How much life a cached token must still have to be handed out (#609).
+ *
+ * A token is checked when each request ARRIVES, and one statement can hold its
+ * headers for a long time: resubmits, a poll after a 202, partition fetches.
+ * The platform ends a cron invocation at 15 minutes, so a margin of 20 means a
+ * token handed out at any moment of a run is still valid when that run is
+ * killed, whatever the statement does in between. The cost is re-signing every
+ * 40 minutes instead of every 60, which is nothing next to once per statement.
+ */
+export const TOKEN_REUSE_MARGIN_MS = 20 * 60 * 1000
+
+interface CachedToken {
+  jwt: Promise<string>
+  expiresAtMs: number
+}
+
+/**
+ * Signed tokens, one per Snowflake identity (#609).
+ *
+ * Keyed on account, user AND the key itself: the archive signs as several
+ * identities (reader, writer, eraser), and a rotated key must never be answered
+ * with a token signed by the old one. It lives at module scope, so it outlives
+ * one invocation inside a reused isolate, which is safe only because reuse is
+ * decided by the token's own expiry rather than by the invocation: nothing is
+ * handed out with less than TOKEN_REUSE_MARGIN_MS left.
+ *
+ * The promise is stored rather than the string, so a burst of statements that
+ * arrive together share one signing, and a signing that fails is evicted so the
+ * next statement tries again instead of inheriting the rejection.
+ */
+export class SnowflakeTokenCache {
+  private readonly entries = new Map<string, CachedToken>()
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  token(config: SnowflakeConfig): Promise<string> {
+    const key = `${config.account}\u0000${config.user}\u0000${config.privateKeyPem}`
+    const at = this.now()
+    const cached = this.entries.get(key)
+    if (cached && cached.expiresAtMs - at > TOKEN_REUSE_MARGIN_MS) return cached.jwt
+
+    const iat = Math.floor(at / 1000)
+    const entry: CachedToken = {
+      jwt: importPrivateKey(config.privateKeyPem).then((privateKey) => signSnowflakeJwt(config, privateKey, iat)),
+      expiresAtMs: (iat + JWT_LIFETIME_SECONDS) * 1000,
+    }
+    this.entries.set(key, entry)
+    entry.jwt.catch(() => {
+      if (this.entries.get(key) === entry) this.entries.delete(key)
+    })
+    return entry.jwt
+  }
+}
+
+const sharedTokenCache = new SnowflakeTokenCache()
+
+async function signSnowflakeJwt(config: SnowflakeConfig, privateKey: CryptoKey, iat: number): Promise<string> {
   const fingerprint = await publicKeyFingerprint(privateKey)
   const account = accountForJwt(config.account)
   const user = config.user.toUpperCase()
   const iss = `${account}.${user}.SHA256:${fingerprint}`
   const sub = `${account}.${user}`
-  const now = Math.floor(Date.now() / 1000)
   const header = { alg: 'RS256', typ: 'JWT' }
-  const payload = { iss, sub, iat: now, exp: now + 3600 }
+  const payload = { iss, sub, iat, exp: iat + JWT_LIFETIME_SECONDS }
 
   const headerB64 = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)))
   const payloadB64 = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)))
