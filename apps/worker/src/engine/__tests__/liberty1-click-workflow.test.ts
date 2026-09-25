@@ -24,7 +24,8 @@ import type { BuyerClickSendOutput, BuyerClickSendReason, BuyerClickSendRoute } 
 import workflowFile from '../../../../../docs/workflows/liberty1-click/definition.json'
 import fixtures from '../scripts/__tests__/fixtures/liberty1-prospects.json'
 import { runCanvasScript } from '../scripts/__tests__/canvas-script'
-import { ROUTES, buildPayload, pickRoute, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
+import { buildPayload, pickRoute, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
+import { CANVAS_ROUTES as ROUTES } from '../scripts/__tests__/liberty1-canvas-routes'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../lib/engine-script-drift'
 
 vi.mock('../step-logger', () => ({
@@ -223,7 +224,7 @@ describe('the offer check', () => {
 })
 
 describe('a Liberty1 offer that is still open', () => {
-  it("posts Brian's body to his route, keyed by the prospect, with the partner left for Dan to pick", async () => {
+  it("posts Brian's body to the route the canvas names, keyed by the prospect, with the partner left for Dan to pick", async () => {
     await click({ Prospect__c: PROSPECT_ID })
     const body = buildPayload(RECORD)
     expect(clickInputs).toHaveLength(1)
