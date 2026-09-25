@@ -199,6 +199,129 @@ export function statementRequestBody(
   return body
 }
 
+/**
+ * The edges, in seconds, of the buckets attempt durations are counted in
+ * (#1443). Chosen around the numbers the timeout decision turns on: Snowflake's
+ * 45 second switch to async, the statement timeout this client sends (60 until
+ * #1447, STATEMENT_TIMEOUT_SECONDS since), and the edge ceiling past it.
+ */
+export const SEND_DURATION_BUCKETS_SECONDS = [5, 15, 30, 45, 60, 90, 120] as const
+
+/** What one run's Snowflake sends cost, as written into its run record. */
+export interface SnowflakeSendStats {
+  /** Statements that reached Snowflake at least once. */
+  statements: number
+  /** Every POST, first attempts and resubmits alike. */
+  attempts: number
+  resubmits: number
+  /** Statements refused before their first attempt, because it could outrun the caller's deadline. */
+  notSent: number
+  /** Statements Snowflake answered with 202 and that had to be polled. */
+  asyncStatements: number
+  /** Failed attempts by HTTP status, or `no_response` when none arrived. */
+  failedAttempts: Record<string, number>
+  /** The highest HTTP status among the failed attempts, or null when none failed with one. */
+  worstStatus: number | null
+  slowestAttemptMs: number
+  totalAttemptMs: number
+  /** One statement from send to result, resubmits and polling included. */
+  slowestStatementMs: number
+  totalStatementMs: number
+  /** Attempts counted by duration, keyed `<5`, `<15`, ... and `>=120`. */
+  attemptSeconds: Record<string, number>
+}
+
+function bucketLabel(ms: number): string {
+  for (const edge of SEND_DURATION_BUCKETS_SECONDS) if (ms < edge * 1000) return `<${edge}`
+  return `>=${SEND_DURATION_BUCKETS_SECONDS[SEND_DURATION_BUCKETS_SECONDS.length - 1]}`
+}
+
+/**
+ * Counts what a run's Snowflake sends cost and how often they were retried
+ * (#1443).
+ *
+ * Owned by the CALLER, one per run, and passed down with each statement, so the
+ * figures land in that run's own record. Nothing here is module state: a count
+ * kept at module scope would mix every invocation an isolate happens to serve.
+ *
+ * Before this the only trace of a resubmit was a console line in Workers Logs,
+ * which nobody can read at a glance and few people may read at all (#958), and
+ * no duration below a whole run was recorded anywhere. So a slowly degrading
+ * Snowflake, where every write starts needing a second attempt, looked exactly
+ * like a healthy one until a budget ran out, and the statement timeout had to be
+ * chosen without the distribution it should be chosen from.
+ *
+ * The clock is the meter's own, so the durations it records are measured on the
+ * same clock a test controls.
+ */
+export class SnowflakeSendMeter {
+  private statements = 0
+  private attempts = 0
+  private resubmits = 0
+  private notSent = 0
+  private asyncStatements = 0
+  private readonly failedAttempts: Record<string, number> = {}
+  private worstStatus: number | null = null
+  private slowestAttemptMs = 0
+  private totalAttemptMs = 0
+  private slowestStatementMs = 0
+  private totalStatementMs = 0
+  private readonly attemptSeconds: Record<string, number> = Object.fromEntries(
+    [...SEND_DURATION_BUCKETS_SECONDS.map((edge) => `<${edge}`), `>=${SEND_DURATION_BUCKETS_SECONDS[SEND_DURATION_BUCKETS_SECONDS.length - 1]}`].map(
+      (label) => [label, 0],
+    ),
+  )
+
+  constructor(readonly now: () => number = Date.now) {}
+
+  /** One POST. `status` is null when no response arrived at all. */
+  recordAttempt(ms: number, status: number | null): void {
+    this.attempts++
+    this.totalAttemptMs += ms
+    this.slowestAttemptMs = Math.max(this.slowestAttemptMs, ms)
+    this.attemptSeconds[bucketLabel(ms)]++
+    if (status !== null && status >= 200 && status < 300) return
+    const key = status === null ? 'no_response' : String(status)
+    this.failedAttempts[key] = (this.failedAttempts[key] ?? 0) + 1
+    if (status !== null) this.worstStatus = Math.max(this.worstStatus ?? 0, status)
+  }
+
+  recordResubmit(): void {
+    this.resubmits++
+  }
+
+  recordNotSent(): void {
+    this.notSent++
+  }
+
+  recordAsync(): void {
+    this.asyncStatements++
+  }
+
+  recordStatement(ms: number): void {
+    this.statements++
+    this.totalStatementMs += ms
+    this.slowestStatementMs = Math.max(this.slowestStatementMs, ms)
+  }
+
+  snapshot(): SnowflakeSendStats {
+    return {
+      statements: this.statements,
+      attempts: this.attempts,
+      resubmits: this.resubmits,
+      notSent: this.notSent,
+      asyncStatements: this.asyncStatements,
+      failedAttempts: { ...this.failedAttempts },
+      worstStatus: this.worstStatus,
+      slowestAttemptMs: this.slowestAttemptMs,
+      totalAttemptMs: this.totalAttemptMs,
+      slowestStatementMs: this.slowestStatementMs,
+      totalStatementMs: this.totalStatementMs,
+      attemptSeconds: { ...this.attemptSeconds },
+    }
+  }
+}
+
 /** What a caller may tell one statement about the run it belongs to. */
 export interface StatementOptions {
   /**
@@ -208,6 +331,10 @@ export interface StatementOptions {
    * budget of its own has always had.
    */
   giveUpAt?: number
+  /** Where this statement's attempts, retries and duration are counted (#1443). */
+  meter?: SnowflakeSendMeter
+  /** Injected so a test crossing a resubmit delay or a poll does not wait. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export async function executeStatement(
@@ -231,6 +358,8 @@ export async function executeStatement(
     'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
   }
 
+  const meter = opts.meter
+  const startedAt = meter?.now()
   // A fresh requestId per statement. Resubmitting the SAME requestId with
   // retry=true is Snowflake's idempotency contract: it will not execute a
   // statement that already succeeded, which is what makes retrying a request
@@ -238,10 +367,24 @@ export async function executeStatement(
   // Stamped before the send, so a statement that goes async can say how long it
   // had already run when polling began (#608).
   const sentAt = Date.now()
-  const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID(), {
-    giveUpAt: opts.giveUpAt,
-  })
-  return resolveStatementResult(config, headers, status, text, { sentAt })
+  let sent = false
+  try {
+    const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID(), {
+      giveUpAt: opts.giveUpAt,
+      meter,
+      now: meter?.now,
+      sleep: opts.sleep,
+    })
+    sent = true
+    if (status === 202) meter?.recordAsync()
+    return await resolveStatementResult(config, headers, status, text, { sentAt, sleep: opts.sleep })
+  } catch (e) {
+    // A statement never sent is counted as not sent, not as a statement.
+    if (!(e instanceof SnowflakeNotSentError)) sent = true
+    throw e
+  } finally {
+    if (meter && startedAt !== undefined && sent) meter.recordStatement(meter.now() - startedAt)
+  }
 }
 
 // Statuses worth resubmitting. 429/503/504 are Snowflake's own documented
@@ -296,6 +439,8 @@ export interface RetryOptions {
   giveUpAt?: number
   /** Epoch ms. Injected so the give-up arithmetic is testable without waiting. */
   now?: () => number
+  /** Where attempts, resubmits and refusals are counted (#1443). */
+  meter?: SnowflakeSendMeter
 }
 
 /**
@@ -347,6 +492,7 @@ export async function postStatementWithRetry(
   // can start seconds before the run's deadline and then take a whole request
   // deadline, which is long enough to reach the platform's cron kill.
   if (opts.giveUpAt !== undefined && now() + deadlineMs > opts.giveUpAt) {
+    opts.meter?.recordNotSent()
     throw new SnowflakeNotSentError(
       `not sent: ${Math.max(0, Math.round((opts.giveUpAt - now()) / 1000))}s left before the caller's deadline, ` +
         `and one attempt can take ${Math.round(deadlineMs / 1000)}s`,
@@ -358,8 +504,10 @@ export async function postStatementWithRetry(
     let retryable: boolean
     let error: Error
 
+    const attemptStartedAt = now()
     try {
       const { res, text } = await fetchTextWithDeadline(target, { method: 'POST', headers, body }, deadlineMs)
+      opts.meter?.recordAttempt(now() - attemptStartedAt, res.status)
       if (res.ok) return { status: res.status, text }
       if (res.status === 408) statementTimeouts++
       retryable = isTransientSnowflakeError(res.status, text)
@@ -370,6 +518,7 @@ export async function postStatementWithRetry(
       // whether it executed.
       retryable = true
       error = e instanceof Error ? e : new Error(formatErr(e))
+      opts.meter?.recordAttempt(now() - attemptStartedAt, null)
     }
 
     if (!retryable || attempt >= maxAttempts) throw error
@@ -399,6 +548,7 @@ export async function postStatementWithRetry(
     console.warn(
       `[snowflake] retrying statement ${requestId} (attempt ${attempt} of ${maxAttempts}): ${error.message}`,
     )
+    opts.meter?.recordResubmit()
     await doSleep(delayMs)
   }
 }

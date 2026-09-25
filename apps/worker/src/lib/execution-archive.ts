@@ -48,6 +48,7 @@ import {
   countRecentKills,
   type LastUnfinishedRun,
 } from './job-run-record'
+import { SnowflakeSendMeter, type SnowflakeSendStats } from './snowflake'
 import type { Env } from '../index'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -140,8 +141,11 @@ export interface ArchiveRow {
 }
 
 export interface ArchiveDeps {
-  /** `giveUpAt` is when this run's wall budget runs out, in epoch ms (#1451). */
-  sendBatch: (rows: ArchiveRow[], giveUpAt: number) => Promise<void>
+  /**
+   * `giveUpAt` is when this run's wall budget runs out, in epoch ms (#1451).
+   * `meter` is this run's, and counts what each send cost (#1443).
+   */
+  sendBatch: (rows: ArchiveRow[], giveUpAt: number, meter: SnowflakeSendMeter) => Promise<void>
   now?: () => Date
   /**
    * How long this run may take and how many hours it may commit to (#1048).
@@ -217,6 +221,12 @@ export interface SubrequestsUsed {
 export interface ArchiveRunSummary extends RunResult {
   skipped?: 'locked'
   subrequestsUsed: SubrequestsUsed
+  /**
+   * What this run's Snowflake sends cost and how often they were resubmitted
+   * (#1443): the only per send durations recorded anywhere, and the only count
+   * of resubmits outside Workers Logs.
+   */
+  snowflakeSend: SnowflakeSendStats
 }
 
 /**
@@ -271,6 +281,7 @@ const EMPTY_RUN: ArchiveRunSummary = {
   hoursBehind: 0,
   detail: '',
   subrequestsUsed: { read: 0, send: 0, record: 0, refusal: 0, total: 0 },
+  snowflakeSend: new SnowflakeSendMeter().snapshot(),
 }
 
 /**
@@ -470,6 +481,10 @@ export async function runExecutionArchive(
   const used = { read: 0, send: 0, record: 0, refusal: 0 }
   const totalUsed = (): number => used.read + used.send + used.record + used.refusal
 
+  // One per run, handed to every send, so what Snowflake cost this run lands in
+  // this run's own record (#1443).
+  const sendMeter = new SnowflakeSendMeter(() => now().getTime())
+
   /**
    * Buffered so a mass refusal is a handful of requests rather than one per
    * execution, and flushed at the end of every slice so the buffer never
@@ -638,7 +653,7 @@ export async function runExecutionArchive(
       },
       send: async (batch: EncodedForSend[]) => {
         used.send++
-        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)), deadline)
+        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)), deadline, sendMeter)
       },
       recordArchived: async (executionIds) => {
         used.record++
@@ -665,6 +680,7 @@ export async function runExecutionArchive(
           ...progress,
           elapsedMs: now().getTime() - startedAt.getTime(),
           subrequestsUsed: { ...used, total: totalUsed() },
+          snowflakeSend: sendMeter.snapshot(),
         })
       },
       budget: {
@@ -712,7 +728,13 @@ export async function runExecutionArchive(
         `subrequests=${totalUsed()}/${SUBREQUEST_BUDGET} ` +
         `(read=${used.read} send=${used.send} record=${used.record} refusal=${used.refusal})`,
     )
-    return { ...result, subrequestsUsed: { ...used, total: totalUsed() } }
+    const send = sendMeter.snapshot()
+    console.log(
+      `[execution-archive] snowflake statements=${send.statements} attempts=${send.attempts} ` +
+        `resubmits=${send.resubmits} not_sent=${send.notSent} async=${send.asyncStatements} ` +
+        `worst_status=${send.worstStatus ?? 'none'} slowest_ms=${send.slowestStatementMs} total_ms=${send.totalStatementMs}`,
+    )
+    return { ...result, subrequestsUsed: { ...used, total: totalUsed() }, snowflakeSend: send }
   }
 
   // THE NESTING IS THE ORDERING (#1277). `withJobRun`'s own `finally` closes the
@@ -742,6 +764,7 @@ export async function runExecutionArchive(
           executionsRefused: summary.executionsRefused,
           hoursBehind: summary.hoursBehind,
           subrequestsUsed: summary.subrequestsUsed,
+          snowflakeSend: summary.snowflakeSend,
         },
       }),
     )

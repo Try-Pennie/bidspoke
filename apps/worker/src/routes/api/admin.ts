@@ -25,7 +25,7 @@ import { checkArchiveSettings } from '../../lib/archive-settings-check'
 import { runArchiveGate } from '../../lib/archive-gate'
 import { checkTripointPricing } from '../../lib/tripoint-pricing-check'
 import { checkLeadStatus } from '../../lib/lead-status-check'
-import { sendArchiveBatch } from '../../lib/execution-archive-send'
+import { archiveSender } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
 import { mayRepairRun } from '../../archive/repair-priority'
@@ -453,7 +453,7 @@ admin.post('/re-archive', async (c) => {
     request.form === 'day' ? await recordedHoursAmong(supabase, request.hours) : undefined
 
   const summary = await runExecutionArchive(c.env, supabase, {
-    sendBatch: (rows, giveUpAt) => sendArchiveBatch(c.env, rows, giveUpAt),
+    sendBatch: archiveSender(c.env),
     hours: request.hours,
     alreadyRecorded,
     // THIS IS A FETCH HANDLER, not the cron (#1048). The run's default budget

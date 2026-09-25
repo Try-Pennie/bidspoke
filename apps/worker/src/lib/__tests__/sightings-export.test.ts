@@ -16,7 +16,7 @@ import {
   notifySetAsideRows,
   type SetAsideRow,
 } from '../sightings-export'
-import { executeStatement, SnowflakeStatementError, SnowflakeNotSentError } from '../snowflake'
+import { executeStatement, SnowflakeStatementError, SnowflakeNotSentError, SnowflakeSendMeter } from '../snowflake'
 import { notifyExportFailure } from '../export-alerts'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
@@ -486,6 +486,7 @@ describe('runSightingsExport wall-time budget (#exceededWallTime, 2026-07-03)', 
       bids_exported: 0,
       errors: [],
       set_aside: [],
+      snowflake_send: new SnowflakeSendMeter().snapshot(),
     })
   })
 })
@@ -1389,5 +1390,51 @@ describe('notifySetAsideRows (#427)', () => {
     await notifySetAsideRows({} as SupabaseClient, [], undefined)
 
     expect(vi.mocked(notifyExportFailure).mock.calls[0][2]).toEqual([])
+  })
+})
+
+/**
+ * The export's Snowflake send figures (#1443). The run creates one meter, hands
+ * it to every MERGE, and reports what it counted in the summary it logs, so a
+ * run where every batch needed a second attempt no longer reads like a clean one.
+ */
+describe('runSightingsExport records what its Snowflake sends cost (#1443)', () => {
+  it('hands every MERGE the same meter and reports its figures', async () => {
+    const supabase = fakeSupabase((c) => (c === 0 ? 200 : 0))
+    const meters = new Set<unknown>()
+    vi.mocked(executeStatement).mockImplementation(async (_c, _s, _b, opts) => {
+      const meter = opts?.meter
+      meters.add(meter)
+      meter?.recordAttempt(20_000, 503)
+      meter?.recordResubmit()
+      meter?.recordAttempt(6_000, 200)
+      meter?.recordStatement(26_000)
+      return undefined as never
+    })
+
+    const summary = await runSightingsExport(supabase, {} as Env)
+
+    expect(meters.size).toBe(1)
+    expect([...meters][0]).toBeInstanceOf(SnowflakeSendMeter)
+    expect(summary.snowflake_send).toMatchObject({
+      statements: 1,
+      attempts: 2,
+      resubmits: 1,
+      worstStatus: 503,
+      slowestStatementMs: 26_000,
+    })
+  })
+
+  it('passes a meter given to exportTable through to the client', async () => {
+    const supabase = fakeSupabase((c) => (c === 0 ? 200 : 0))
+    vi.mocked(executeStatement).mockResolvedValue(undefined as never)
+    const meter = new SnowflakeSendMeter(() => 0)
+
+    await exportTable(
+      supabase, CONFIG, 'lead_sighting_bids', COLS, FILTER,
+      undefined, undefined, undefined, undefined, undefined, undefined, meter,
+    )
+
+    expect(vi.mocked(executeStatement).mock.calls[0][3]).toEqual({ meter })
   })
 })
