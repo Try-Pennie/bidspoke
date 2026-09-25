@@ -13,6 +13,11 @@
 -- exporting while this file did not name it, found on 2026-09-04. Check the live
 -- table before trusting the list below, and add the column here in the same
 -- change that adds it to the export list in apps/worker/src/lib/sightings-export.ts.
+--
+-- The live tables are compared against the export column lists every day at
+-- 13:00 UTC (apps/worker/src/lib/export-schema-check.ts, #428): a missing column,
+-- a different type, or a NOT NULL on a column the source can leave empty is
+-- reported to Slack before an export meets it.
 
 USE DATABASE BIDSPOKE;
 USE SCHEMA PUBLIC;
@@ -34,9 +39,11 @@ CREATE TABLE IF NOT EXISTS lead_sightings (
   workflow_version_sha        VARCHAR(40),
 
   execution_started_at_et     TIMESTAMP_TZ NOT NULL,
-  execution_finished_at_et    TIMESTAMP_TZ NOT NULL,
+  -- The two finish columns are nullable: a strand finalized with no surviving
+  -- execution has no finish time, and NOT NULL here failed the 2026-06-27 export.
+  execution_finished_at_et    TIMESTAMP_TZ,
   execution_started_at_utc    TIMESTAMP_NTZ NOT NULL,
-  execution_ended_at_utc      TIMESTAMP_NTZ NOT NULL,
+  execution_ended_at_utc      TIMESTAMP_NTZ,
   duration_ms                 NUMBER,
 
   source_name                 VARCHAR,
