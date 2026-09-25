@@ -30,6 +30,7 @@ import { parseJson } from './json'
 import { resolveSalesforceCredentialOrg, requireSalesforceCreds } from './salesforce-creds'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { readSubmissionView, type SubmissionRecord } from './achieve-enrollment-view'
+import { notifyExportFailure } from './export-alerts'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
 // output = { status, body } with the trades response in body).
@@ -103,8 +104,9 @@ export interface AchieveExportSummary {
   trades_backfilled: number
   enrollment_view_filled: number
   /** Rows left unfilled because the enrichment ran out of time. They export and purge without
-   *  it, so a persistently non-zero number means the budget no longer covers the volume. */
-  enrollment_view_skipped: number
+   *  it, so a persistently non-zero number means the budget no longer covers the volume. Null
+   *  when the enrichment failed before it could count, which is not the same as none (#1363). */
+  enrollment_view_skipped: number | null
   evaluations_exported: number
   evaluations_purged: number
   sandbox_purged: number
@@ -339,6 +341,44 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
   return total
 }
 
+/** The alert's own job name, so its reminder schedule is separate from the export's. */
+export const ENROLLMENT_SKIPPED_JOB = 'Achieve enrollment view'
+
+/**
+ * Pages when the enrollment view ran out of time with rows still unfilled (#1363).
+ *
+ * Its own alert rather than an entry in the export's errors, because the export did NOT fail:
+ * every row still went to Snowflake, only without this column. It matters anyway because the
+ * loss is permanent. The enrichment selects rows not yet exported, so once a row is exported it
+ * is never filled, and Supabase purges it 24 hours later.
+ *
+ * Called after every run that measured the shortfall, including a run with none, because the
+ * empty report is what clears the standing condition. A run that did NOT measure it (the
+ * enrichment threw, which pages through the export alert already) reports nothing, so an
+ * unmeasured run cannot read as a healed one.
+ */
+export async function notifyEnrollmentViewSkipped(
+  supabase: SupabaseClient,
+  skipped: number | null,
+  kv: Parameters<typeof notifyExportFailure>[3],
+): Promise<void> {
+  if (skipped === null) return
+  const items =
+    skipped > 0
+      ? [`${skipped} ${skipped === 1 ? 'row' : 'rows'} still had no enrollment view when the 90 second budget ran out`]
+      : []
+  await notifyExportFailure(supabase, ENROLLMENT_SKIPPED_JOB, items, kv, {
+    consequence:
+      'The export does not wait for this enrichment, so these rows went to Snowflake with enrollment_view empty. ' +
+      'An exported row is never selected for it again, and Supabase purges it 24 hours later, so the view is lost for them.',
+    fixHint:
+      'Once is a slow Salesforce day. If it repeats, check Salesforce API latency, then raise ENROLLMENT_BUDGET_MS ' +
+      'in apps/worker/src/lib/achieve-export.ts, which is shared with the export and purge in the same run.',
+    headlineVerb: 'ran out of time',
+    itemNoun: { one: 'shortfall', many: 'shortfalls' },
+  })
+}
+
 export async function runAchieveExport(supabase: SupabaseClient, env: Env): Promise<AchieveExportSummary> {
   const config: SnowflakeConfig = readSnowflakeConfig(env)
   const summary: AchieveExportSummary = {
@@ -371,6 +411,7 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     summary.enrollment_view_filled = enrollment.filled
     summary.enrollment_view_skipped = enrollment.skipped
   } catch (e) {
+    summary.enrollment_view_skipped = null
     summary.errors.push(`enrollment view backfill: ${formatErr(e)}`)
   }
 

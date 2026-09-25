@@ -321,6 +321,8 @@ describe('runAchieveExport trades-backfill failure', () => {
 
     expect(mocks.exportTable).toHaveBeenCalled()
     expect(summary.enrollment_view_filled).toBe(0)
+    // Not measured, so not zero: a zero would clear a standing shortfall alert (#1363).
+    expect(summary.enrollment_view_skipped).toBeNull()
     expect(summary.errors.some((e) => e.includes('enrollment view backfill'))).toBe(true)
   })
 
