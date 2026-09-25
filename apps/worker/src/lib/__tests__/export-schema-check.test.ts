@@ -24,6 +24,7 @@ import {
   EXPORT_SCHEMA_JOB,
   EXPORT_SCHEMA_REMEDY,
   EXPORT_SCHEMA_UNREADABLE_REMEDY,
+  exportSchemaEnding,
   type ExportedTable,
 } from '../export-schema-check'
 import { SIGHTING_COLS, BID_COLS, type ColType } from '../sightings-export'
@@ -340,5 +341,29 @@ describe('when Snowflake cannot be asked, it says so and never reports no drift'
       query: async () => answer(allHealthy()),
     })
     expectCouldNotCheck(result)
+  })
+})
+
+describe('the job_runs record', () => {
+  const drift = ['lead_sightings.zip: Snowflake declares it NOT NULL but the Supabase column is nullable']
+  const unreadable = ['lead_sighting_bids: Snowflake returned no columns for this table']
+
+  it('keeps the drift findings when another table was unreadable in the same run', () => {
+    const ending = exportSchemaEnding({ findings: drift, unreadable, alerted: true })
+    expect(ending.outcome).toBe('drift_and_unreadable')
+    expect(ending.detail).toContain('1 column disagrees')
+    expect(ending.detail).toContain(unreadable[0])
+  })
+
+  it('records drift alone, unreadable alone, and a clean run as three different outcomes', () => {
+    expect(exportSchemaEnding({ findings: drift, unreadable: [], alerted: true }).outcome).toBe('drift')
+    expect(exportSchemaEnding({ findings: [], unreadable, alerted: true })).toMatchObject({
+      outcome: 'unreadable',
+      detail: unreadable[0],
+    })
+    expect(exportSchemaEnding({ findings: [], unreadable: [], alerted: false })).toMatchObject({
+      outcome: 'ok',
+      detail: undefined,
+    })
   })
 })

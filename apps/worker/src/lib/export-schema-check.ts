@@ -37,7 +37,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { withJobRun } from './job-run-record'
+import { withJobRun, type JobRunEnding } from './job-run-record'
 import { withDeadline } from '../archive/deadline'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { escapeSqlLiteral, executeStatement, type SnowflakeStatementResponse } from './snowflake'
@@ -224,17 +224,29 @@ export async function checkExportSchema(
     supabase,
     EXPORT_SCHEMA_JOB,
     () => schemaPass(env, supabase, deps),
-    (result) => ({
-      outcome: result.unreadable.length > 0 ? 'unreadable' : result.findings.length > 0 ? 'drift' : 'ok',
-      detail:
-        result.unreadable.length > 0
-          ? result.unreadable.join('; ')
-          : result.findings.length > 0
-            ? `${result.findings.length} column${result.findings.length === 1 ? '' : 's'} disagree with the export`
-            : undefined,
-      summary: { findings: result.findings.length, unreadable: result.unreadable.length, alerted: result.alerted },
-    }),
+    exportSchemaEnding,
   )
+}
+
+/**
+ * What the run's job_runs row says. Drift and an unreadable table can happen in
+ * the same run, and the record carries both: letting the unreadable half decide
+ * the outcome dropped the measured drift from the record while Slack still
+ * carried it, so the two disagreed about what the run found.
+ */
+export function exportSchemaEnding(result: ExportSchemaResult): JobRunEnding {
+  const drift = result.findings.length > 0
+  const unreadable = result.unreadable.length > 0
+  const parts: string[] = []
+  if (drift) {
+    parts.push(`${result.findings.length} column${result.findings.length === 1 ? ' disagrees' : 's disagree'} with the export`)
+  }
+  parts.push(...result.unreadable)
+  return {
+    outcome: drift && unreadable ? 'drift_and_unreadable' : drift ? 'drift' : unreadable ? 'unreadable' : 'ok',
+    detail: parts.length > 0 ? parts.join('; ') : undefined,
+    summary: { findings: result.findings.length, unreadable: result.unreadable.length, alerted: result.alerted },
+  }
 }
 
 /** Index of a result column by NAME, since the position is not a stable contract (L156). */
