@@ -25,13 +25,16 @@ import {
   WIRED_POPULATIONS,
   easternDayStartUtc,
   PACIFIC,
+  CLICK_URL_NO_PROSPECT_ID_MESSAGE,
+  clickUrlCarriesProspectId,
+  type ProfileErrorCode,
   type Signal,
 } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
-import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
+import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import type { Json } from '../../types/database'
@@ -336,6 +339,40 @@ export async function clickCountIfClickSold(
     console.error(`[click-count] could not read today's clicks for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     return c.json({ error: 'click_count_unavailable', message: 'The click counter did not answer, so the clicks today cannot be shown.' }, 503)
   }
+}
+
+/**
+ * The partner save's refusal of a click URL an enabled click buyer cannot be
+ * offered on (#1561), or null to let the save through. The URL lives on the
+ * partner record, so validateProfile refusing to ENABLE such a buyer (#1546)
+ * never saw a later edit that broke it; this is the same rule at that edit, with
+ * the same code, sentence and field path, so the partner form puts it on its
+ * Click URL field. Only a change to the URL is judged, and the profile is read
+ * only when the new value lacks the placeholder, so an ordinary save pays
+ * nothing. An unreadable profile refuses that one change with a 503 rather than
+ * letting it through (L42); a save that leaves the URL alone never reads it.
+ */
+export async function refuseClickUrlWithoutProspectId(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  partnerId: string,
+  storedClickUrl: string | null,
+  nextClickUrl: string | null | undefined
+): Promise<Response | null> {
+  if (nextClickUrl === undefined || nextClickUrl === storedClickUrl) return null
+  if (clickUrlCarriesProspectId(nextClickUrl)) return null
+  let sale
+  try {
+    sale = await readBuyerSale(supabase, orgId, partnerId)
+  } catch (err) {
+    console.error(`[partner-save] buyer profile unreadable for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    const message = 'Whether this buyer is sold on the click could not be read, so the new click URL was not saved and nothing else was either. Try again.'
+    return c.json({ error: 'click_url_unverifiable', message, errors: [{ code: 'click_url_unverifiable', path: 'clickUrl', message }] }, 503)
+  }
+  if (sale?.soldOn !== 'click' || !sale.isEnabled) return null
+  const code = 'click_url_has_no_prospect_id' satisfies ProfileErrorCode
+  return c.json({ error: code, message: CLICK_URL_NO_PROSPECT_ID_MESSAGE, errors: [{ code, path: 'clickUrl', message: CLICK_URL_NO_PROSPECT_ID_MESSAGE }] }, 422)
 }
 
 function nextIsoDate(day: string): string {

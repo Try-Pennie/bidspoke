@@ -51,6 +51,22 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
+/**
+ * The field errors a refused partner save carried in its body, in the validator's
+ * shape, so each lands beside the control it names (#1561). Anything else in the
+ * body is ignored: a malformed entry is not a field error.
+ */
+function fieldErrorsOf(err: unknown): ProfileError[] {
+  const errors = (err as { body?: { errors?: unknown } } | null)?.body?.errors
+  if (!Array.isArray(errors)) return []
+  return errors.filter((e): e is ProfileError =>
+    typeof e === 'object' && e !== null &&
+    typeof (e as ProfileError).code === 'string' &&
+    typeof (e as ProfileError).path === 'string' &&
+    typeof (e as ProfileError).message === 'string'
+  )
+}
+
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
@@ -346,7 +362,8 @@ export default function PartnerForm({
       setSaveState('saved')
       setTimeout(() => setSaveState('idle'), 1500)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to undo')
+      setProfileErrors(fieldErrorsOf(err))
+      setError(errorSentence(err, 'Failed to undo'))
       setSaveState('idle')
     }
   }
@@ -421,8 +438,12 @@ export default function PartnerForm({
       }
       setTimeout(() => setSaveState('idle'), 1500)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save partner')
-      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${err instanceof Error ? err.message : 'the partner save failed'}` })
+      // The route's sentence, never its code, and a refusal naming a field lands
+      // on that field: the click URL an enabled click buyer is offered on (#1561).
+      const sentence = errorSentence(err, 'the partner save failed')
+      setProfileErrors(fieldErrorsOf(err))
+      setError(sentence)
+      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
       setSaveState('idle')
       return
     }

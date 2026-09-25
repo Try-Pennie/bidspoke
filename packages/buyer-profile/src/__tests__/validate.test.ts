@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
-import { isCap } from '../click-send'
+import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, isCap } from '../click-send'
 import { validateProfile, type PartnerRulesForValidation, type ProfileError, type StoredKind } from '../validate'
 
 const base: BuyerProfile = {
@@ -231,6 +231,8 @@ describe('the sold_on kind', () => {
     if (!r.ok) {
       expect(r.errors.map((e) => [e.code, e.path])).toEqual([['click_url_has_no_prospect_id', 'clickUrl']])
       expect(r.errors[0].message).toContain('{prospect_id}')
+      // #1561: the partner save refuses breaking the URL with this same sentence, so the Click URL field reads one refusal whichever save raised it.
+      expect(r.errors[0].message).toBe(CLICK_URL_NO_PROSPECT_ID_MESSAGE)
     }
   })
 

@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -332,7 +332,7 @@ describe('readBuyerSoldOn', () => {
   }
 
   it('answers the stored kind for the partner in this org', async () => {
-    const { supabase, filters } = maybeSingleSupabase({ data: { sold_on: 'click' }, error: null })
+    const { supabase, filters } = maybeSingleSupabase({ data: { sold_on: 'click', is_enabled: true }, error: null })
     expect(await readBuyerSoldOn(supabase, 'org-1', 'p-1')).toBe('click')
     expect(filters).toEqual(expect.arrayContaining([['partner_id', 'p-1'], ['organization_id', 'org-1']]))
   })
@@ -345,5 +345,25 @@ describe('readBuyerSoldOn', () => {
   it('throws on a failed read and on a kind outside the vocabulary, never guessing offer (L10)', async () => {
     await expect(readBuyerSoldOn(maybeSingleSupabase({ data: null, error: { message: 'timeout' } }).supabase, 'org-1', 'p-1')).rejects.toThrow(/timeout/)
     await expect(readBuyerSoldOn(maybeSingleSupabase({ data: { sold_on: 'phone' }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/phone/)
+  })
+
+  // #1561: the partner save refuses breaking the click URL of an ENABLED click
+  // buyer, so it needs the enabled flag beside the kind, from the same one row.
+  describe('readBuyerSale', () => {
+    it('answers the kind and the enabled flag for the partner in this org', async () => {
+      const { supabase, filters } = maybeSingleSupabase({ data: { sold_on: 'click', is_enabled: false }, error: null })
+      expect(await readBuyerSale(supabase, 'org-1', 'p-1')).toEqual({ soldOn: 'click', isEnabled: false })
+      expect(filters).toEqual(expect.arrayContaining([['partner_id', 'p-1'], ['organization_id', 'org-1']]))
+    })
+
+    it('answers null for a partner with no profile', async () => {
+      expect(await readBuyerSale(maybeSingleSupabase({ data: null, error: null }).supabase, 'org-1', 'p-1')).toBeNull()
+    })
+
+    it('throws on a failed read, a kind outside the vocabulary, or an enabled flag that is not a boolean', async () => {
+      await expect(readBuyerSale(maybeSingleSupabase({ data: null, error: { message: 'timeout' } }).supabase, 'org-1', 'p-1')).rejects.toThrow(/timeout/)
+      await expect(readBuyerSale(maybeSingleSupabase({ data: { sold_on: 'phone', is_enabled: true }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/phone/)
+      await expect(readBuyerSale(maybeSingleSupabase({ data: { sold_on: 'click' }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/is_enabled/)
+    })
   })
 })
