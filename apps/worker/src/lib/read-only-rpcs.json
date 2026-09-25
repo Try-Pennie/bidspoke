@@ -18,7 +18,8 @@
     "stranded_step_partitions",
     "unpaginated_big_tables",
     "workflow_stats_rollup",
-    "buyer_profile_document"
+    "buyer_profile_document",
+    "sightings_buffer_lag"
   ],
   "mutating": [
     "record_archive_day_measurement",

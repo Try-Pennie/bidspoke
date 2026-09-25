@@ -19,6 +19,7 @@ import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
+import { runSightingsBufferCheck } from './lib/sightings-buffer-lag'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runRequiredSecretsCheck } from './lib/required-secrets'
 import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
@@ -362,6 +363,13 @@ export default {
         runBigTableGuard(supabase, env.IDEMPOTENCY)
           .then((r) => { if (r.offenders.length) console.log(`[big-table-guard] offenders=${r.offenders.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[big-table-guard] check failed:', e))
+      )
+      // #463: the sightings buffer drifting behind while every export and purge
+      // run reports success. On 2026-07-01 the purge had been behind for a month.
+      track(
+        runSightingsBufferCheck(supabase, env.IDEMPOTENCY)
+          .then((r) => { if (r.findings.length || r.unmeasured.length) console.log(`[sightings-buffer] ${[...r.findings, ...r.unmeasured].join(' | ')}`) })
+          .catch((e) => console.error('[sightings-buffer] check failed:', e))
       )
       track(
         runDrainStallCheck(supabase, env.IDEMPOTENCY)
