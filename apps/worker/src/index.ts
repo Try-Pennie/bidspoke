@@ -11,6 +11,7 @@ import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
+import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { getSlackConnection } from './lib/slack'
@@ -853,6 +854,24 @@ export default {
             })
             .catch((e) => console.error(`[${BUYER_SALES_CHECKS_JOB}] checks failed:`, e)),
           BUYER_SALES_CHECKS_JOB,
+        ),
+      )
+      // The click buyer path checks (#1546): the share of buyer_click_check runs
+      // that could not answer, the path gone quiet in the buyer's selling hours,
+      // a burst of refused clicks, and once a Pacific day the counted clicks
+      // against Salesforce. Under a job run record (L557); both heartbeat stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, CLICK_PATH_CHECKS_JOB)
+            .catch((e) => console.error(`[${CLICK_PATH_CHECKS_JOB}] heartbeat write failed:`, e))
+            .then(() => runClickPathChecksForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              const verdicts = s.subjects.map((b) => `${b.slug ?? b.partner_id}:${b.check_errors.verdict}/${b.quiet.verdict}/${b.refusals.verdict}/${b.reconcile.verdict}`).join(' ')
+              console.log(`[${CLICK_PATH_CHECKS_JOB}] subjects=${s.subjects.length} paged=${JSON.stringify(s.paged)}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''} ${verdicts}`)
+            })
+            .catch((e) => console.error(`[${CLICK_PATH_CHECKS_JOB}] checks failed:`, e)),
+          CLICK_PATH_CHECKS_JOB,
         ),
       )
     } else if (event.cron === '* * * * *') {

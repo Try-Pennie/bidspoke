@@ -187,6 +187,18 @@ export const CRON_JOBS: CronJob[] = [
       'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, nobody is paged for sales waiting on a person, and a buyer failing or declining every lead goes unnoticed (#1413)',
   },
   {
+    id: 'click-path-checks',
+    label: 'Click buyer path checks',
+    triggerCron: '*/15 * * * *',
+    // 15 minute cadence, half an hour slack: two missed runs before it is dark.
+    staleMs: 45 * MIN,
+    // A few step reads per click buyer, one counter read of three days and, once
+    // a day, one bounded Salesforce query; minutes at most.
+    maxRunMs: 10 * MIN,
+    dependents:
+      'nothing notices a click buyer check that cannot answer, a click buyer path gone quiet in its selling hours, a burst of refused clicks, or a day whose click count disagrees with Salesforce (#1546)',
+  },
+  {
     id: 'buyer-select-parity',
     label: 'Buyer select parity refresh',
     triggerCron: '0 * * * *',

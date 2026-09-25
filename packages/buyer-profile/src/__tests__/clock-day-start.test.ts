@@ -4,7 +4,30 @@
  * Eastern day the ledger counts (L39: one timezone, one date helper).
  */
 import { describe, expect, it } from 'vitest'
-import { easternDayStartUtc, easternParts } from '../clock'
+import { EASTERN, PACIFIC, easternDayStartUtc, easternParts, zonedDayStartUtc, zonedParts } from '../clock'
+
+describe('zonedDayStartUtc (#1546)', () => {
+  it('is 07:00 UTC in summer (PDT) and 08:00 UTC in winter (PST) for the Pacific day', () => {
+    expect(new Date(zonedDayStartUtc('2027-09-20', PACIFIC)).toISOString()).toBe('2027-09-20T07:00:00.000Z')
+    expect(new Date(zonedDayStartUtc('2027-01-15', PACIFIC)).toISOString()).toBe('2027-01-15T08:00:00.000Z')
+  })
+
+  it('agrees with easternDayStartUtc for the Eastern day', () => {
+    for (const day of ['2027-03-14', '2027-11-07', '2027-09-20']) expect(zonedDayStartUtc(day, EASTERN)).toBe(easternDayStartUtc(day))
+  })
+
+  it('lands on minute 0 of the asked for Pacific date across both clock changes', () => {
+    for (const day of ['2027-03-14', '2027-03-15', '2027-11-07', '2027-11-08', '2028-02-29']) {
+      const start = zonedDayStartUtc(day, PACIFIC)
+      expect(zonedParts(start, PACIFIC), day).toMatchObject({ date: day, minuteOfDay: 0 })
+      expect(zonedParts(start - 1, PACIFIC).date, day).not.toBe(day)
+    }
+  })
+
+  it('refuses a value that is not a calendar date', () => {
+    expect(() => zonedDayStartUtc('2027-02-30', PACIFIC)).toThrow(/not a calendar date/)
+  })
+})
 
 describe('easternDayStartUtc', () => {
   it('is 04:00 UTC in summer (EDT) and 05:00 UTC in winter (EST)', () => {

@@ -39,6 +39,22 @@ export const CLICK_CHECK_BUDGET_MS = 300
  */
 export const CLICK_CHECK_LAST_GOOD_MAX_AGE_MS = 15 * 60 * 1000
 
+/**
+ * The placeholder a click buyer's click URL must carry (#1546). The Engine offer
+ * script (build_response_body) replaces it with the created prospect's id, and
+ * refuses a URL without it as click_url_has_no_prospect_id, so a buyer enabled
+ * with such a URL would be switched on and never offered. validateProfile refuses
+ * enabling one and buyer_click_check routes it not eligible and pages; both read
+ * this one rule. The canvas script is a pasted literal and cannot import it, so
+ * it spells the same string, which its own tests pin.
+ */
+export const CLICK_URL_PROSPECT_PLACEHOLDER = '{prospect_id}'
+
+/** True when the value is a click URL carrying the prospect id placeholder. */
+export function clickUrlCarriesProspectId(value: unknown): boolean {
+  return typeof value === 'string' && value.includes(CLICK_URL_PROSPECT_PLACEHOLDER)
+}
+
 export const DEFAULT_ALERT_OVER_PERCENT = 120
 export const ALERT_OVER_PERCENT_MIN = 1
 export const ALERT_OVER_PERCENT_MAX = 1000

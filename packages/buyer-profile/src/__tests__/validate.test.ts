@@ -198,7 +198,7 @@ describe('the sold_on kind', () => {
     dailySpendCapCents: null,
     tiers: [],
   }
-  const clickPartner: PartnerRulesForValidation = { ...partnerWithRules, acceptSignals: [] }
+  const clickPartner: PartnerRulesForValidation = { ...partnerWithRules, acceptSignals: [], clickUrl: 'https://liberty.example/apply/{prospect_id}' }
 
   it('refuses a profile whose kind was never chosen, even a disabled draft, so the save cannot default it', () => {
     const r = validateProfile({ ...base, soldOn: null, isEnabled: false }, partnerWithRules)
@@ -219,6 +219,28 @@ describe('the sold_on kind', () => {
       'enabled_without_states',
       'enabled_without_windows',
     ])
+  })
+
+  // #1546: the offer lands on the click URL with {prospect_id} replaced by the
+  // created prospect, and build_response_body refuses a URL without it
+  // (click_url_has_no_prospect_id), so an enabled click buyer without the
+  // placeholder would be switched on and never offered, silently.
+  it('refuses to enable a click buyer whose click URL has no {prospect_id} placeholder, on the click URL field', () => {
+    const r = validateProfile(click, { ...clickPartner, clickUrl: 'https://liberty.example/apply' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.errors.map((e) => [e.code, e.path])).toEqual([['click_url_has_no_prospect_id', 'clickUrl']])
+      expect(r.errors[0].message).toContain('{prospect_id}')
+    }
+  })
+
+  it('does not ask for the placeholder on a disabled click draft or on an offer buyer', () => {
+    expect(codes({ ...click, isEnabled: false }, { ...clickPartner, clickUrl: 'https://liberty.example/apply' })).toEqual([])
+    expect(codes(base, { ...partnerWithRules, clickUrl: 'https://liberty.example/apply' })).toEqual([])
+  })
+
+  it('an empty click URL is refused once, as missing, not also as lacking the placeholder', () => {
+    expect(codes(click, { ...clickPartner, clickUrl: null })).toEqual(['enabled_without_click_url'])
   })
 
   it('says a click buyer with no clicks per day is never offered, which is what buyer_click_check does (#1557)', () => {

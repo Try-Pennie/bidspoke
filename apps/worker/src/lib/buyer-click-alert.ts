@@ -44,7 +44,7 @@ export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
  * check routes not eligible rather than failing Engine's execution, so this page
  * is how a person hears about it.
  */
-export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'free_failed', 'cap_unreadable', 'partner_not_click'] as const
+export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id'] as const
 export type ClickPageReason = (typeof CLICK_PAGE_REASONS)[number]
 
 export type ClickAlert =
@@ -130,6 +130,10 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
   partner_not_click: {
     header: 'is named on a Buyer Click Check but is not sold on the click',
     held: 'No lead is offered to it through this check. Either set its buyer profile to be sold on the click, or pick a buyer sold on the click on the node.',
+  },
+  click_url_has_no_prospect_id: {
+    header: 'click URL has no place for the prospect id',
+    held: 'No lead is offered to this buyer until the click URL on its partner page carries {prospect_id} where the prospect\'s id goes, because the offer replaces that placeholder and refuses a URL without it.',
   },
 }
 

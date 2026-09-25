@@ -38,12 +38,12 @@
  * executeNode's retry loop, so the budget is the only bound on it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, evaluateClickEligibility, isCap, partnerIdOf, POPULATIONS, withDeadline, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, partnerIdOf, POPULATIONS, withDeadline, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { ClickCounterClient } from '../../lib/buyer-object-clients'
-import { productionClickAlert, type ClickAlert } from '../../lib/buyer-click-alert'
+import { productionClickAlert, type ClickAlert, type ClickPageReason } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
 import { resolveValue } from '../context'
 
@@ -151,7 +151,7 @@ type PartnerFacts = Pick<BuyerClickCheckOutput, 'partner_slug' | 'partner_name' 
 
 /** What the budgeted part decided, as a value, so nothing it does after the budget ends can reach the output. */
 type Decision =
-  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: boolean }
+  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: ClickPageReason }
 
 export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps): Promise<BuyerClickCheckResult> {
   const startedAt = deps.clock()
@@ -203,7 +203,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
   if (decision.countDate !== undefined) output.count_date = decision.countDate
   if (decision.servedFrom !== undefined) output.profile_served_from = decision.servedFrom
   finish()
-  if (decision.page) page(node, ctx, deps, output)
+  if (decision.page) page(node, ctx, deps, output, decision.page)
   deps.log({ event: 'buyer_click_check_reason', step_namespace: node.namespace, partner_id: output.partner_id, partner_slug: output.partner_slug, route: output._route, reason: output.reason, count: output.count, daily_lead_cap: output.daily_lead_cap, detail: output.detail })
   return { output }
 }
@@ -235,11 +235,21 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
   }
   const facts = factsOf(buyer)
   if (buyer.profile.soldOn !== 'click') {
-    return { kind: 'route', route: 'not_eligible', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this check never offers it`, facts, servedFrom, page: true }
+    return { kind: 'route', route: 'not_eligible', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this check never offers it`, facts, servedFrom, page: 'partner_not_click' }
   }
   const cap = buyer.profile.dailyLeadCap
   const base = { kind: 'route' as const, facts, servedFrom, cap }
   if (!buyer.partner.is_active) return { ...base, route: 'not_eligible', reason: 'inactive' }
+  // #1546: the offer lands on the click URL with the placeholder replaced by the
+  // created prospect's id, and build_response_body refuses a URL without it. A
+  // buyer switched on with such a URL (saved before validateProfile refused it,
+  // or edited on the partner since) would pass here on every lead and then fail
+  // to be offered one step later with nothing paging, so it is refused by name,
+  // before the box and the count, and a person is paged.
+  if (!clickUrlCarriesProspectId(buyer.partner.click_url)) {
+    const shown = buyer.partner.click_url === null || buyer.partner.click_url.trim() === '' ? 'no click URL' : `the click URL ${JSON.stringify(buyer.partner.click_url)}`
+    return { ...base, route: 'not_eligible', reason: 'click_url_has_no_prospect_id', detail: `${buyer.partner.slug} has ${shown}, which carries no ${CLICK_URL_PROSPECT_PLACEHOLDER} placeholder, so no offer can be made to it`, page: 'click_url_has_no_prospect_id' }
+  }
 
   const verdict = evaluateClickEligibility(buyer.profile, lead, instantMs)
   if (!verdict.eligible) return { ...base, route: 'not_eligible', reason: verdict.reason }
@@ -265,17 +275,18 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
 }
 
 /**
- * A buyer picked on the node but sold on the offer is a configuration fault a
- * person must fix. It routes not eligible rather than failing the step, because
+ * A buyer picked on the node but sold on the offer, and a click buyer whose
+ * click URL has no {prospect_id} placeholder (#1546), are configuration faults a
+ * person must fix. Each routes not eligible rather than failing the step, because
  * a failed walker step fails Engine's whole execution, its reject response
  * included; the page is how somebody hears. Caught, because the answer has
  * already been decided.
  */
-function page(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps, output: BuyerClickCheckOutput): void {
+function page(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps, output: BuyerClickCheckOutput, reason: ClickPageReason): void {
   try {
     deps.alert({
-      kind: 'page', reason: 'partner_not_click', partner_id: output.partner_id ?? '', partner_slug: output.partner_slug ?? output.partner_id ?? '',
-      prospect_id: null, detail: output.detail ?? 'the buyer is not sold on the click', hold_recorded: null, workflow_id: ctx.trigger.workflow_id, trace_id: ctx.trigger.trace_id, at: deps.clock(),
+      kind: 'page', reason, partner_id: output.partner_id ?? '', partner_slug: output.partner_slug ?? output.partner_id ?? '',
+      prospect_id: null, detail: output.detail ?? output.reason, hold_recorded: null, workflow_id: ctx.trigger.workflow_id, trace_id: ctx.trigger.trace_id, at: deps.clock(),
     })
   } catch (err) {
     deps.log({ event: 'buyer_click_check_alert_failed', step_namespace: node.namespace, partner_id: output.partner_id, error_message: messageOf(err) })
