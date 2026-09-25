@@ -25,6 +25,13 @@
  *
  * That also makes a total engine outage report as itself rather than as five
  * simultaneous accusations.
+ *
+ * SINCE #1167 the purge holds a bid row until its sighting is purged, so once that
+ * is deployed the drained-window case above no longer arises: a sighting present
+ * in Supabase has its bids present. The peer proof is kept on purpose. It is also
+ * what makes an outage report once and an empty window read as unmeasured, and the
+ * 6 hour window should be widened only after the aligned purge has run in
+ * production for a few days and the pair has been measured to line up.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
