@@ -58,7 +58,40 @@ const MAX_ROWS_PER_RUN = 400_000
 // every phase stops itself cleanly -- same as the existing subrequest-limit /
 // permanent-statement-timeout clean-stops -- leaving room for the last
 // in-flight batch plus the completion log/alert to actually run.
+//
+// HEADROOM, MEASURED 2026-09-25 (#749) from the per-batch exported_at stamps of
+// the last day's runs: about 3.1s per 200-row sightings batch (p95 4.7s) and
+// 2.3s per bids batch. The busiest two hour run carried 11.6K sightings and 7K
+// bids, about 270s of this 720s budget. So a run can drain its own inflow plus
+// ONE failed run's backlog at peak (about 540s), but not two (about 815s), and
+// two is exactly what the export alert waits for before paging. The hard kill is
+// at 15 minutes, so the budget cannot grow enough to change that. Instead a run
+// that stops at a limit with rows still waiting says so (ExportStop): the first
+// such run is held as transient, and a second in a row pages as the runaway.
+// Re-measure with the stamp query in the #749 PR if the per-batch cost moves.
 export const WALL_TIME_BUDGET_MS = 12 * 60 * 1000
+
+/**
+ * Why an export stopped before it ran out of rows (#749). Null means it drained,
+ * or never saw evidence of more: a run whose budget was gone before its first
+ * look has nothing to say about the backlog.
+ */
+export type ExportStopReason = 'wall_time' | 'subrequest_limit' | 'row_cap' | 'statement_timeout'
+export interface ExportStop {
+  reason: ExportStopReason | null
+}
+
+const STOP_WORDS: Record<ExportStopReason, string> = {
+  wall_time: 'the wall-time budget',
+  subrequest_limit: 'the platform subrequest ceiling',
+  row_cap: 'the per-run row cap',
+  statement_timeout: 'a batch that kept timing out',
+}
+
+/** The summary line for a table that stopped with rows still waiting. */
+export function stoppedBehindMessage(label: string, reason: ExportStopReason, exported: number): string {
+  return `${label} export: stopped at ${STOP_WORDS[reason]} after ${exported} rows with rows still waiting to export; the rest continues next run`
+}
 
 // Column names + Snowflake types for value formatting. 'variant' carries JSON:
 // the value travels as an escaped string in the VALUES list (Snowflake VALUES
@@ -531,6 +564,8 @@ export async function runSightingsExport(
   const deadline = now() + WALL_TIME_BUDGET_MS
   // One set aside allowance for the whole run, shared by both tables (#427).
   const refusalBudget = { refusedLeft: SET_ASIDE_MAX_PER_RUN }
+  const sightingsStop: ExportStop = { reason: null }
+  const bidsStop: ExportStop = { reason: null }
 
   try {
     summary.sightings_exported = await exportTable(
@@ -547,7 +582,11 @@ export async function runSightingsExport(
       summary.set_aside,
       refusalBudget,
       sendMeter,
+      sightingsStop,
     )
+    if (sightingsStop.reason) {
+      summary.errors.push(stoppedBehindMessage('sightings', sightingsStop.reason, summary.sightings_exported))
+    }
   } catch (e) {
     if (e instanceof PartialExportError) summary.sightings_exported = e.exported
     summary.errors.push(`sightings export: ${formatErr(e)}`)
@@ -567,7 +606,11 @@ export async function runSightingsExport(
       summary.set_aside,
       refusalBudget,
       sendMeter,
+      bidsStop,
     )
+    if (bidsStop.reason) {
+      summary.errors.push(stoppedBehindMessage('bids', bidsStop.reason, summary.bids_exported))
+    }
   } catch (e) {
     if (e instanceof PartialExportError) summary.bids_exported = e.exported
     summary.errors.push(`bids export: ${formatErr(e)}`)
@@ -706,16 +749,25 @@ export async function exportTable(
   refusalBudget: { refusedLeft: number } = { refusedLeft: SET_ASIDE_MAX_PER_RUN },
   // The run's send meter (#1443). Omitted by direct callers, which then count nothing.
   meter?: SnowflakeSendMeter,
+  // Set when the run stops at a limit with rows still waiting (#749).
+  stop: ExportStop = { reason: null },
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   const partitionKey = partitionKeyFor(tableName)
   let totalExported = 0
+  // The only evidence of rows still waiting at the top of the loop: the batch
+  // before came back full. A run stopped before its first look saw nothing.
+  let lastBatchFull = false
 
   // Loop until no more un-exported rows (or we hit the per-run cap / platform limit).
   while (true) {
     const remaining = maxRows - totalExported
-    if (remaining <= 0) break
+    if (remaining <= 0) {
+      if (lastBatchFull) stop.reason = 'row_cap'
+      break
+    }
     if (deadline !== undefined && now() >= deadline) {
+      if (lastBatchFull) stop.reason = 'wall_time'
       console.warn(
         `[sightings-export] ${tableName}: hit wall-time budget after ${totalExported} rows; remaining backlog continues next run`
       )
@@ -825,7 +877,8 @@ export async function exportTable(
 
       if (exportedCount.selected === 0) break
       totalExported += exportedCount.shipped
-      if (exportedCount.selected < batchLimit) break
+      lastBatchFull = exportedCount.selected >= batchLimit
+      if (!lastBatchFull) break
     } catch (e) {
       // Cloudflare caps subrequests per invocation. When draining a large backlog
       // we may hit it mid-run; that is NOT a failure -- stop cleanly, keep the rows
@@ -836,6 +889,8 @@ export async function exportTable(
         console.warn(
           `[sightings-export] ${tableName}: hit platform subrequest limit after ${totalExported} rows; remaining backlog continues next run`
         )
+        // A batch was in hand and never stamped, so rows are still waiting.
+        stop.reason = 'subrequest_limit'
         break
       }
       // A batch that permanently times out after exhausting retries is sustained
@@ -847,6 +902,7 @@ export async function exportTable(
         console.warn(
           `[sightings-export] ${tableName}: batch permanently hit statement timeout after ${totalExported} rows exported this run; remaining backlog continues next run`
         )
+        stop.reason = 'statement_timeout'
         break
       }
       // A real failure, but earlier batches already exported and stamped their

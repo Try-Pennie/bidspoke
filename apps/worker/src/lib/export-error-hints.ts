@@ -23,6 +23,7 @@ export type ExportErrorClass =
   | 'supabase_permission'
   | 'platform_limit'
   | 'archive_run_killed'
+  | 'export_behind'
   | 'unknown'
 
 export const GENERIC_FIX_HINT =
@@ -47,6 +48,8 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
     'Supabase denied the export role. Check the RLS policy and the table grants for the service role.',
   platform_limit:
     "The Worker hit Cloudflare's per invocation subrequest ceiling while draining a backlog. There is no action to take: the run stopped cleanly and the next run continues from where it left off.",
+  export_behind:
+    'The export stopped at its own limit with rows still waiting, so it did not catch up this run. One such run straight after a failed run is normal catch-up, and is held back rather than paged. Two in a row means one run can no longer drain what arrives between runs: read the last runs in job_runs (job sightings-export) for rows per run against the measured rate in WALL_TIME_BUDGET_MS, and raise the export rate or the frequency rather than waiting.',
   archive_run_killed:
     'The previous archive invocation was terminated by the platform before it could release its lock; its job_runs row has no ending. Nothing is lost: the run that posted this took over and is archiving the hours it left, so the archive is at most one hour later than usual. No action for a single occurrence. If it repeats several times a day, read the Cloudflare cron events for bidspoke-worker (Workers and Pages, bidspoke-worker, Settings, Trigger Events) and the invocation statuses under Metrics, which name the termination.',
 }
@@ -90,6 +93,10 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
   // Snowflake or Postgres message that happens to say a statement was killed
   // does not claim this class.
   { cls: 'archive_run_killed', test: /killed rather than still working|left behind by a killed run/ },
+  // Before db_congestion and platform_limit, because the export's own stop
+  // wording names the limit it stopped at, and that stop is not the limit's
+  // fault: the run stopped cleanly and is behind (#749).
+  { cls: 'export_behind', test: /stopped at .+ with rows still waiting to export/ },
   { cls: 'db_congestion', test: /\b57014\b|statement timeout/i },
   { cls: 'platform_limit', test: /too many subrequests|subrequest limit/i },
   {
@@ -125,6 +132,9 @@ const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
   'transient_snowflake',
   'transient_connectivity',
   'platform_limit',
+  // Held once and paged on the second consecutive run, which is the runaway:
+  // one catch-up run that does not finish is normal after a failure (#749).
+  'export_behind',
 ])
 
 export function isTransientExportError(message: string): boolean {
