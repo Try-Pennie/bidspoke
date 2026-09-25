@@ -2665,6 +2665,15 @@ export type Database = {
         Returns: undefined
       }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
+      drop_exported_sighting_partitions: {
+        Args: { p_grace?: string }
+        Returns: {
+          outcome: string
+          parent: string
+          partition_name: string
+          reason: string
+        }[]
+      }
       email_drop_counts_by_source: {
         Args: { p_org_id: string; p_since: string }
         Returns: {
