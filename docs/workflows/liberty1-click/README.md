@@ -11,6 +11,8 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 3. **Reads the prospect** from Salesforce (`query_prospect`): every field Brian's flow read, plus `ExternalRoutingCode__c` and `ExternalExchangeStatus__c`.
 4. **Checks the Liberty1 offer is on record** (`check_offer`). Only a prospect with routing code 4 and exchange status Bid is sent. This is what stops an arbitrary id posted to the public URL being sold or counted.
 5. **Builds the request** (`build_request`): Brian's body, byte for byte, to the DV1 URL for DE, HI, IA, MN, OR, RI, VT, WA, WI and WY, and to DI4 for every other state.
+
+   **Since Brian's version 4 (2026-09-25) the two routes are LeadConnector webhook triggers**, not the Liberty1 Salesforce site his Pipedream flow posts to (`https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger//<route id>`, the doubled slash as saved). Two things are unconfirmed and must be settled before the workflow is switched on: whether the doubled slash is intended, and what LeadConnector answers on success. `click_send` still counts a click only on "Records created successfully", so until its success pattern matches LeadConnector's answer every click routes `unknown`: nothing is written, nothing is counted, and it pages.
 6. **Sends it** (`click_send`, a Buyer Click Send node). The node claims the prospect so two clicks cannot both send it, posts, and counts it only when Liberty1 answers "Records created successfully". See [the node's page](../../nodes/buyer-click-send.md).
 7. **Answers the portal**, then **writes Salesforce** (sent and refused only): the Prospect, then the Submission and its Lead when the click came with a Submission id.
 

@@ -18,7 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtures from './fixtures/liberty1-prospects.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
-import { ROUTES, buildPayload, pickRoute, updateBodies } from './liberty1-pipedream-oracle'
+import { buildPayload, pickRoute, updateBodies } from './liberty1-pipedream-oracle'
+import { CANVAS_ROUTES as ROUTES } from './liberty1-canvas-routes'
 
 type Rec = Record<string, unknown>
 const RECORDS = fixtures.records as Record<string, Rec>
@@ -41,7 +42,7 @@ async function build(record: Rec) {
 
 describe("build_liberty1_request against Brian's buildPayload", () => {
   for (const [name, record] of Object.entries(RECORDS)) {
-    it(`${name}: the body and the URL are exactly what his flow sent`, async () => {
+    it(`${name}: the body is exactly what his flow sent, to the route the canvas now names`, async () => {
       const out = await build(record)
       const theirs = buildPayload(record)
       // Byte for byte: key order and every null included, as JSON on the wire.
@@ -61,8 +62,8 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     expect((await build(RECORDS.apt_with_hash)).body.address1).toBe('77 Fake Way #12')
     expect((await build(RECORDS.missing_optionals)).body.address1).toBe('Apt 3')
     expect((await build(RECORDS.apt_with_suite_prefix)).body.providedCreditRating).toBe('excellent')
-    expect((await build(RECORDS.lowercase_dv1_state)).url).toMatch(/\/DV1$/)
-    expect((await build(RECORDS.missing_optionals)).url).toMatch(/\/DI4$/)
+    expect((await build(RECORDS.lowercase_dv1_state)).url).toBe(ROUTES.DV1)
+    expect((await build(RECORDS.missing_optionals)).url).toBe(ROUTES.DI4)
   })
 
   it('refuses by name when the query found no prospect, rather than posting a body of nulls', async () => {

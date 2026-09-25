@@ -2,13 +2,13 @@
 // and his DV1 or DI4 route, unchanged, over the record the query_prospect
 // Salesforce node read. Pure: buyer_click_send posts it, this only builds it.
 const LIBERTY1_BASE =
-  "https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks";
+  "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/";
 
 const DV1_STATES = new Set(["DE", "HI", "IA", "MN", "OR", "RI", "VT", "WA", "WI", "WY"]);
 
 const ROUTES = {
-  DV1: `${LIBERTY1_BASE}/DV1`,
-  DI4: `${LIBERTY1_BASE}/DI4`, // all other states
+  DV1: `${LIBERTY1_BASE}/CTTs3WKFFvjTUTQOlrHF`,
+  DI4: `${LIBERTY1_BASE}/AYAF77n9lUw8WbZ4kaRM`, // all other states
 };
 
 const clean = (v) => {
