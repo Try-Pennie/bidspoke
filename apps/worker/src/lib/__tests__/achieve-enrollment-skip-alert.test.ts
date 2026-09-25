@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
 
-import { notifyEnrollmentViewSkipped, ENROLLMENT_SKIPPED_JOB } from '../achieve-export'
+import { notifyEnrollmentViewSkipped, ENROLLMENT_SKIPPED_JOB, ENROLLMENT_BUDGET_MS } from '../achieve-export'
 import { notifyExportFailure, type AlertRemedy } from '../export-alerts'
 
-// #1363: when the enrollment view's 90 second budget runs out, the rows it did not fill are
+// #1363: when the enrollment view's time budget (ENROLLMENT_BUDGET_MS) runs out, the rows it did not fill are
 // exported with enrollment_view null, never selected again, and purged 24 hours later. The
 // count used to reach only a console.log, so a slow Salesforce day looked exactly like a clean
 // one from Slack.
@@ -29,6 +29,15 @@ describe('the enrollment view shortfall alert', () => {
     const own = remedy as AlertRemedy
     expect(own.consequence).toMatch(/purges it 24 hours later/)
     expect(own.fixHint).toMatch(/ENROLLMENT_BUDGET_MS/)
+  })
+
+  // The fix hint tells the reader to raise ENROLLMENT_BUDGET_MS, so the message must name the
+  // budget the constant actually holds. A literal here would go on saying the old figure the
+  // first time somebody followed that advice.
+  it('names the budget the constant holds, not a figure written beside it', async () => {
+    await notifyEnrollmentViewSkipped({} as never, 3, kv)
+    const item = vi.mocked(notifyExportFailure).mock.calls[0][2][0]
+    expect(item).toContain(`the ${ENROLLMENT_BUDGET_MS / 1000} second budget`)
   })
 
   it('says one row, not one rows', async () => {

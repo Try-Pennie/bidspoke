@@ -144,7 +144,7 @@ function snowflakeAnswersFullListing() {
 // asserting a clean `errors: []` would fail for a reason that has nothing to do with it.
 function makeThenableBuilder(result: { data: unknown; error: unknown; count?: number }) {
   const b: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'update', 'not', 'lt', 'lte', 'delete']) {
+  for (const m of ['select', 'eq', 'is', 'limit', 'order', 'gt', 'in', 'gte', 'update', 'not', 'lt', 'lte', 'delete']) {
     b[m] = vi.fn(() => b)
   }
   b.then = (resolve: (r: unknown) => unknown) => resolve(result)
@@ -268,7 +268,7 @@ describe('runAchieveExport trades-backfill failure', () => {
     const supabase = {
       from: vi.fn(() => {
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'is', 'limit']) b[m] = vi.fn(() => b)
+        for (const m of ['select', 'eq', 'is', 'limit', 'order', 'gt']) b[m] = vi.fn(() => b)
         b.update = vi.fn((values: { enrollment_view: unknown }) => {
           stored.push(values.enrollment_view)
           const u: Record<string, unknown> = {
@@ -413,7 +413,7 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
     return {
       from: vi.fn((table: string) => {
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
+        for (const m of ['select', 'eq', 'is', 'limit', 'order', 'gt', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
         if (table === 'achieve_evaluations') {
           b.update = vi.fn(() => {
             const u: Record<string, unknown> = {
@@ -463,7 +463,7 @@ describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
     const supabase = {
       from: vi.fn((table: string) => {
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
+        for (const m of ['select', 'eq', 'is', 'limit', 'order', 'gt', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
         if (table === 'achieve_evaluations') {
           b.update = vi.fn(() => {
             const u: Record<string, unknown> = {
