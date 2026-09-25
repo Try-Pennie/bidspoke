@@ -160,6 +160,12 @@ Execution and step data is kept hot, then dropped. The `workflow_executions` and
 
 In practice this means the dashboard, execution history, and execution detail views cover roughly the last 7 days. Use the structured logs (and any Logpush archive) to investigate anything older.
 
+### Lead sightings buffer (export and purge)
+
+`lead_sightings`, `lead_sighting_bids` and `achieve_evaluations` are a write buffer: rows are exported to Snowflake, which is canonical for analytics, and purged from Supabase 24 hours after export.
+
+- **Every run is recorded.** Each export and purge run writes one row to `job_runs` (`sightings-export`, `sightings-purge`, `sighting-bids-purge`, `achieve-export`) with its counts, its errors and their classes (#745). A row with `finished_at` null is a run that was killed. The last day of one job: `select started_at, finished_at, outcome, detail, summary from job_runs where job = 'sightings-export' order by started_at desc limit 12;`
+
 ## See also
 
 - [Error handling](./error-handling.md) - error classification, retries, fallbacks, and alert configuration
