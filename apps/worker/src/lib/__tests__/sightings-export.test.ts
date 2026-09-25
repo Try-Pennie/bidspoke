@@ -15,7 +15,9 @@ import {
   SET_ASIDE_MAX_PER_RUN,
   notifySetAsideRows,
   type SetAsideRow,
+  type ExportStop,
 } from '../sightings-export'
+import { classifyExportError, isTransientExportError } from '../export-error-hints'
 import { executeStatement, SnowflakeStatementError, SnowflakeNotSentError, SnowflakeSendMeter } from '../snowflake'
 import { notifyExportFailure } from '../export-alerts'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -1436,5 +1438,71 @@ describe('runSightingsExport records what its Snowflake sends cost (#1443)', () 
     )
 
     expect(vi.mocked(executeStatement).mock.calls[0][3]).toEqual({ meter })
+  })
+})
+
+/**
+ * #749: a run that stops at the budget (or the subrequest ceiling, or the row
+ * cap) with rows still waiting used to stop cleanly and look like a healthy run.
+ * Measured 2026-09-25, a peak two hour run takes about 270s of the 720s budget,
+ * so the budget covers one failed run's backlog at peak but not two, which is
+ * exactly the case the two failure paging policy creates. A run that ends behind
+ * now says so, as a transient error: one catch-up run that does not finish is
+ * held, and a second in a row (the runaway) pages.
+ */
+describe('a run that stops with rows still waiting says so (#749)', () => {
+  it('reports the wall-time budget when it stopped after a full batch', async () => {
+    const supabase = fakeSupabase(() => 200)
+    const stop: ExportStop = { reason: null }
+    let t = 0
+    const exported = await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, 1000, () => (t++ === 0 ? 0 : 2000), [], undefined, undefined, stop)
+    expect(exported).toBe(200)
+    expect(stop.reason).toBe('wall_time')
+  })
+
+  it('reports nothing when the backlog drained', async () => {
+    const supabase = fakeSupabase((c) => (c === 0 ? 200 : 50))
+    const stop: ExportStop = { reason: null }
+    await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, [], undefined, undefined, stop)
+    expect(stop.reason).toBeNull()
+  })
+
+  it('reports nothing when the budget was gone before it looked, since it saw no rows waiting', async () => {
+    const supabase = fakeSupabase(() => 200)
+    const stop: ExportStop = { reason: null }
+    await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, 1000, () => 2000, [], undefined, undefined, stop)
+    expect(stop.reason).toBeNull()
+  })
+
+  it('reports the row cap', async () => {
+    const stop: ExportStop = { reason: null }
+    await exportTable(fakeSupabase(() => 200), CONFIG, 'lead_sightings', COLS, FILTER, 400, NO_SLEEP, undefined, Date.now, [], undefined, undefined, stop)
+    expect(stop.reason).toBe('row_cap')
+  })
+
+  it('reports the platform subrequest ceiling', async () => {
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce(undefined as never)
+      .mockRejectedValueOnce(new Error('Too many subrequests.'))
+    const stop: ExportStop = { reason: null }
+    await exportTable(fakeSupabase(() => 200), CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, [], undefined, undefined, stop)
+    expect(stop.reason).toBe('subrequest_limit')
+  })
+
+  it('turns an early stop into a transient error naming the table, so one is held and two in a row page', async () => {
+    const env = {} as Env
+    let t = 0
+    // Call 0 sets the deadline; the sightings loop's first look is inside it and
+    // every later look is past it, so sightings stops after one full batch and
+    // bids never starts (and, having seen nothing, reports nothing).
+    const now = () => (t++ <= 1 ? 0 : WALL_TIME_BUDGET_MS + 1)
+
+    const summary = await runSightingsExport(fakeSupabase(() => 200) as unknown as SupabaseClient, env, now)
+
+    expect(summary.sightings_exported).toBe(200)
+    expect(summary.errors).toHaveLength(1)
+    expect(summary.errors[0]).toMatch(/^sightings export: stopped at the wall-time budget after 200 rows with rows still waiting/)
+    expect(classifyExportError(summary.errors[0])).toBe('export_behind')
+    expect(isTransientExportError(summary.errors[0])).toBe(true)
   })
 })
