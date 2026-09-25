@@ -31,6 +31,14 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 type KvLike = Parameters<typeof notifyExportFailure>[3]
 
 export const SIGHTINGS_BUFFER_JOB = 'Lead sightings buffer'
+/**
+ * A table the check could not read goes to its OWN job, never the lag one.
+ * notifyExportFailure holds a first failure silently when every line looks
+ * transient (a statement timeout does), so on the lag job a failed read would be
+ * held for a whole day, and mixed with a real finding it would change how that
+ * finding is judged. Measuring and finding are different facts (L11).
+ */
+export const SIGHTINGS_BUFFER_UNMEASURED_JOB = 'Lead sightings buffer unmeasured'
 
 export interface BufferRule {
   table: 'lead_sightings' | 'lead_sighting_bids' | 'achieve_evaluations'
@@ -79,13 +87,20 @@ interface LagRow {
 
 const count = (n: number) => (n >= BUFFER_LAG_CAP ? `at least ${BUFFER_LAG_CAP}` : `${n}`)
 
+/** What one run found, and which tables it could not read. */
+export interface BufferMeasurement {
+  findings: string[]
+  unmeasured: string[]
+}
+
 /**
- * One line per finding, and one per table it could not read. An unreadable table
- * is a line, never an empty answer: an empty list is what clears the alert, and a
- * read that failed has measured nothing (L215).
+ * One line per finding, and a separate line per table it could not read. An
+ * unreadable table is never an empty answer: an empty list is what clears the
+ * alert, and a read that failed has measured nothing (L215).
  */
-export async function measureSightingsBuffer(supabase: SupabaseClient, nowMs: number): Promise<string[]> {
-  const lines: string[] = []
+export async function measureSightingsBuffer(supabase: SupabaseClient, nowMs: number): Promise<BufferMeasurement> {
+  const findings: string[] = []
+  const unmeasured: string[] = []
   for (const rule of BUFFER_RULES) {
     try {
       const { data, error } = await supabase.rpc('sightings_buffer_lag', {
@@ -100,22 +115,22 @@ export async function measureSightingsBuffer(supabase: SupabaseClient, nowMs: nu
       if (!row) throw new Error('the read returned no row')
 
       if (row.waiting_rows > rule.tolerance) {
-        lines.push(
+        findings.push(
           `${rule.table}: ${count(row.waiting_rows)} rows have waited more than ${rule.exportWithinHours} hours to export` +
             ` (oldest from ${row.oldest_waiting} UTC)`,
         )
       }
       if (row.overdue_rows > rule.tolerance) {
-        lines.push(
+        findings.push(
           `${rule.table}: ${count(row.overdue_rows)} rows were exported more than ${rule.purgeWithinHours} hours ago and are still in Supabase` +
             ` (oldest exported ${row.oldest_exported_at})`,
         )
       }
     } catch (e) {
-      lines.push(`${rule.table}: could not measure the buffer: ${formatErr(e)}`)
+      unmeasured.push(`${rule.table}: could not measure the buffer: ${formatErr(e)}`)
     }
   }
-  return lines
+  return { findings, unmeasured }
 }
 
 const REMEDY: AlertRemedy = {
@@ -125,19 +140,43 @@ const REMEDY: AlertRemedy = {
   fixHint:
     'Waiting rows: read the last export runs (select started_at, outcome, detail, summary from job_runs where job = \'sightings-export\' ' +
     'order by started_at desc limit 12) and the export alerts; a run that failed or stopped behind says why. Rows past the purge: read the ' +
-    'purge runs the same way (job sightings-purge or sighting-bids-purge) and check the purge index still exists. Achieve runs once a day ' +
-    'at 09:00 UTC (job achieve-export).',
+    'purge runs the same way (job sightings-buffer-purge, the pg_cron purge from #541; before it, sightings-purge and sighting-bids-purge) ' +
+    'and cron.job_run_details for purge-exported-sightings. Achieve exports once a day at 09:00 UTC (job achieve-export).',
   headlineVerb: 'fell behind',
   itemNoun: { one: 'finding', many: 'findings' },
 }
 
-/** Measures the buffer and pages on what it found; a healthy read clears the page. */
+const UNMEASURED_REMEDY: AlertRemedy = {
+  consequence:
+    'The daily check could not read these tables, so it cannot say whether their export or purge is behind. It says nothing about the buffer itself:',
+  fixHint:
+    'Read the error on each line. A statement timeout usually clears by the next day; anything else (a missing function, a permission) means ' +
+    'the check stays blind until it is fixed. The measuring function is sightings_buffer_lag.',
+  headlineVerb: 'could not be measured',
+  itemNoun: { one: 'table', many: 'tables' },
+}
+
+/**
+ * Measures the buffer and pages on what it found.
+ *
+ * Findings page on the lag job, which a healthy read clears, but ONLY when every
+ * table was read: clearing while one went unmeasured would clear a standing alert
+ * nothing re-checked. Unreadable tables page on their own job with no alert
+ * store, so the transient grace (which keys on the store) cannot hold them for a
+ * day; this runs once a day, so that is at most one page a day while it stays
+ * blind, and there is nothing stored to clear.
+ */
 export async function runSightingsBufferCheck(
   supabase: SupabaseClient,
   kv: KvLike,
   nowMs: number = Date.now(),
-): Promise<{ lines: string[] }> {
-  const lines = await measureSightingsBuffer(supabase, nowMs)
-  await notifyExportFailure(supabase, SIGHTINGS_BUFFER_JOB, lines, kv, REMEDY, nowMs)
-  return { lines }
+): Promise<BufferMeasurement> {
+  const measured = await measureSightingsBuffer(supabase, nowMs)
+  if (measured.findings.length > 0 || measured.unmeasured.length === 0) {
+    await notifyExportFailure(supabase, SIGHTINGS_BUFFER_JOB, measured.findings, kv, REMEDY, nowMs)
+  }
+  if (measured.unmeasured.length > 0) {
+    await notifyExportFailure(supabase, SIGHTINGS_BUFFER_UNMEASURED_JOB, measured.unmeasured, undefined, UNMEASURED_REMEDY, nowMs)
+  }
+  return measured
 }

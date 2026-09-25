@@ -367,7 +367,7 @@ export default {
       // run reports success. On 2026-07-01 the purge had been behind for a month.
       track(
         runSightingsBufferCheck(supabase, env.IDEMPOTENCY)
-          .then((r) => { if (r.lines.length) console.log(`[sightings-buffer] ${r.lines.join(' | ')}`) })
+          .then((r) => { if (r.findings.length || r.unmeasured.length) console.log(`[sightings-buffer] ${[...r.findings, ...r.unmeasured].join(' | ')}`) })
           .catch((e) => console.error('[sightings-buffer] check failed:', e))
       )
       track(

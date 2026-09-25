@@ -6,7 +6,7 @@ import type { Env } from '../index'
  * else. Invokes the real scheduled handler rather than reading the source, so
  * the cron is proven to reach the check rather than to be mentioned near it.
  */
-const runSightingsBufferCheck = vi.fn().mockResolvedValue({ lines: [] })
+const runSightingsBufferCheck = vi.fn().mockResolvedValue({ findings: [], unmeasured: [] })
 
 vi.mock('../lib/sightings-buffer-lag', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/sightings-buffer-lag')>()),
