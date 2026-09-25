@@ -453,7 +453,7 @@ admin.post('/re-archive', async (c) => {
     request.form === 'day' ? await recordedHoursAmong(supabase, request.hours) : undefined
 
   const summary = await runExecutionArchive(c.env, supabase, {
-    sendBatch: (rows) => sendArchiveBatch(c.env, rows),
+    sendBatch: (rows, giveUpAt) => sendArchiveBatch(c.env, rows, giveUpAt),
     hours: request.hours,
     alreadyRecorded,
     // THIS IS A FETCH HANDLER, not the cron (#1048). The run's default budget

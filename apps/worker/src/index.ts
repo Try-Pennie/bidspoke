@@ -616,7 +616,7 @@ export default {
           const { runExecutionArchive } = await import('./lib/execution-archive')
           const { sendArchiveBatch } = await import('./lib/execution-archive-send')
           return runExecutionArchive(env, supabase, {
-            sendBatch: (rows) => sendArchiveBatch(env, rows),
+            sendBatch: (rows, giveUpAt) => sendArchiveBatch(env, rows, giveUpAt),
             // The event identity, so a platform retry of this cron can take over
             // the lock its terminated predecessor left (#1181).
             scheduledFor: new Date(event.scheduledTime),
@@ -697,7 +697,7 @@ export default {
           const { CRON_RUN_BUDGET } = await import('./archive/deadline')
           const deps = backlogDeps(env, supabase, async (day, alreadyRecorded, wallMs) => {
             const summary = await runExecutionArchive(env, supabase, {
-              sendBatch: (rows) => sendArchiveBatch(env, rows),
+              sendBatch: (rows, giveUpAt) => sendArchiveBatch(env, rows, giveUpAt),
               hours: hoursOfDay(day),
               alreadyRecorded,
               // What the WALK says is left of this invocation, never more than a

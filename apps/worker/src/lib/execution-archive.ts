@@ -140,7 +140,8 @@ export interface ArchiveRow {
 }
 
 export interface ArchiveDeps {
-  sendBatch: (rows: ArchiveRow[]) => Promise<void>
+  /** `giveUpAt` is when this run's wall budget runs out, in epoch ms (#1451). */
+  sendBatch: (rows: ArchiveRow[], giveUpAt: number) => Promise<void>
   now?: () => Date
   /**
    * How long this run may take and how many hours it may commit to (#1048).
@@ -637,7 +638,7 @@ export async function runExecutionArchive(
       },
       send: async (batch: EncodedForSend[]) => {
         used.send++
-        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)))
+        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)), deadline)
       },
       recordArchived: async (executionIds) => {
         used.record++
