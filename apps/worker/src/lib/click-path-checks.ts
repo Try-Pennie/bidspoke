@@ -381,7 +381,10 @@ export async function runClickPathChecks(deps: ClickPathDeps): Promise<ClickPath
     if (s.check_errors.verdict === 'elevated') { lines[CLICK_CHECK_ERRORS_JOB].push(`${name}: ${s.check_errors.detail}. Partner page: ${page}`); flagged[CLICK_CHECK_ERRORS_JOB].add(subject.partner_id) }
     if (s.check_errors.verdict === 'unmeasured') lines[CLICK_CHECK_ERRORS_JOB].push(`${name}: the check runs could not be read, so whether the check is answering is not known: ${s.check_errors.reason}`)
     if (s.quiet.verdict === 'quiet') { lines[CLICK_PATH_QUIET_JOB].push(...s.quiet.lines.map((l) => `${name}: ${l}`)); flagged[CLICK_PATH_QUIET_JOB].add(subject.partner_id) }
+    // An unread check says so rather than passing as a clean run (L98), like check_errors and reconcile below.
+    if (s.quiet.verdict === 'unmeasured') lines[CLICK_PATH_QUIET_JOB].push(`${name}: whether the path is quiet is not known, because what it reads could not be read: ${s.quiet.reason}`)
     if (s.refusals.verdict === 'elevated') { lines[CLICK_SEND_REFUSALS_JOB].push(`${name}: ${s.refusals.detail}. Partner page: ${page}`); flagged[CLICK_SEND_REFUSALS_JOB].add(subject.partner_id) }
+    if (s.refusals.verdict === 'unmeasured') lines[CLICK_SEND_REFUSALS_JOB].push(`${name}: the sends could not be read, so whether the buyer is refusing is not known: ${s.refusals.reason}`)
     if (s.reconcile.verdict === 'mismatch' || s.reconcile.verdict === 'unmeasured' || s.reconcile.verdict === 'match') reconcileRan = true
     if (s.reconcile.verdict === 'mismatch') { lines[CLICK_RECONCILE_JOB].push(`${name} on ${s.reconcile.date} (Pacific day): ${s.reconcile.detail}`); flagged[CLICK_RECONCILE_JOB].add(subject.partner_id) }
     if (s.reconcile.verdict === 'unmeasured') lines[CLICK_RECONCILE_JOB].push(`${name} on ${s.reconcile.date} (Pacific day) could not be reconciled, and is tried again on the next run: ${s.reconcile.reason}`)

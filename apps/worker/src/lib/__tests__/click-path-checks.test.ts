@@ -247,10 +247,20 @@ describe('quiet: zero eligible for three hours inside the selling hours', () => 
   })
 
   it('a profile that cannot be read leaves the quiet check unmeasured, never clean', async () => {
-    const { d } = deps({ checks: noneEligible(), buyer: new Error('db down') })
+    const { d, pages } = deps({ checks: noneEligible(), buyer: new Error('db down') })
     const s = await runClickPathChecks(d)
     expect(s.subjects[0].quiet).toMatchObject({ verdict: 'unmeasured' })
     expect(endingOf(s).outcome).toBe('unmeasured')
+     // Unmeasured must page, never pass silently for a clean run (L98).
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([expect.stringMatching(/liberty1: .*could not be read.*db down/)])
+  })
+
+  it('refusals that cannot be read page as unknown, never as a quiet hour', async () => {
+    const { d, pages } = deps()
+    d.readSendRuns = async () => { throw new Error('steps timed out') }
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].refusals).toMatchObject({ verdict: 'unmeasured' })
+    expect(last(pages, CLICK_SEND_REFUSALS_JOB)).toEqual([expect.stringMatching(/liberty1: .*could not be read.*steps timed out/)])
   })
 })
 
