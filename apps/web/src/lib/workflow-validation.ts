@@ -272,10 +272,11 @@ export function findDuplicateOutEdges(nodes: Node[], edges: Edge[]): Map<string,
  * can defer, which is decide only mode and any live share variable.
  */
 export function buyerSelectRequiredHandles(config: Record<string, unknown>): string[] {
-  const handles = ['sold', 'no_sale', 'not_applicable']
+  // Every exit in the node's own list (#1582), so a new outcome is required
+  // until someone decides otherwise; only deferred depends on the config.
   const livePercentEnv = config.live_percent_env
-  if (config.mode === 'decide_only' || (typeof livePercentEnv === 'string' && livePercentEnv.trim() !== '')) handles.push('deferred')
-  return handles
+  const canDefer = config.mode === 'decide_only' || (typeof livePercentEnv === 'string' && livePercentEnv.trim() !== '')
+  return (NODE_TRAITS.buyer_select.staticHandles ?? []).filter((h) => h !== 'deferred' || canDefer)
 }
 
 /**

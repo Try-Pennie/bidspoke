@@ -44,7 +44,8 @@ import { EdgeHopsProvider } from './edges/edge-hops'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import { api } from '@/lib/api'
-import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
+import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, DISCONNECTED_GAP } from '@/lib/layout'
+import { handleLeftFractions, outputHandles } from '@/lib/handle-geometry'
 import { flowToDef } from '@/lib/flow-to-def'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import { NODE_TRAITS, isNodeType } from '@/types/workflow'
@@ -204,8 +205,8 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
         : null
       if (explicitEnd) pairId = explicitEnd.id
 
-      const handles = configuredHandleIds(mo)
-      if (handles && handles.length >= 2) {
+      const handles = outputHandles(mo)
+      if (handles.length >= 2) {
         const perHandle = handles.map((h) => {
           const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
           if (!slotEdge) return new Set<string>()
@@ -296,8 +297,8 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
     // appears to occupy the whole branch's territory. With the extension,
     // the region's right (or left) edge stretches into the empty column,
     // making it clear at a glance that one side has nothing on it.
-    const handles = configuredHandleIds(mo)
-    if (handles && handles.length >= 2) {
+    const handles = outputHandles(mo)
+    if (handles.length >= 2) {
       const moW = nodeWidth(mo.type, mo.data)
       const moCenterX = mo.position.x + moW / 2
       const SIBLING_SPACING_PX = NODE_W + 48
@@ -753,11 +754,13 @@ function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: n
   // drop past an interposing node (e.g. a parallel_end sitting between the
   // parallel start and the drop point) and still attach to the slot.
   for (const candidate of candidates) {
-    const handles = configuredHandleIds(candidate)
-    if (!handles || handles.length === 0) continue
+    const handles = outputHandles(candidate)
+    if (handles.length === 0) continue
     const w = nodeWidth(candidate.type, candidate.data)
+    // Where the card actually draws each handle, from the layout's published positions.
+    const fractions = handleLeftFractions(candidate.type, handles, (candidate.data as { _handleOffsets?: number[] })._handleOffsets, w)
     for (let i = 0; i < handles.length; i++) {
-      const handleX = candidate.position.x + (w * (i + 0.5)) / handles.length
+      const handleX = candidate.position.x + w * fractions[i]
       if (Math.abs(dropPos.x - handleX) > SLOT_TOLERANCE) continue
       const occupied = edges.some((e) => e.source === candidate.id && e.sourceHandle === handles[i])
       if (!occupied) return candidate
@@ -1164,8 +1167,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         if (!e.sourceHandle) return true
         const src = nodeMap.get(e.source)
         if (!src) return true
-        const handles = configuredHandleIds(src)
-        if (!handles) return e.sourceHandle === null || e.sourceHandle === 'output'
+        const handles = outputHandles(src)
+        if (handles.length === 0) return e.sourceHandle === null || e.sourceHandle === 'output'
         return handles.includes(e.sourceHandle)
       })
       return [...validEdges, ...computeConvergenceEdges(nodes, validEdges)]
@@ -2223,7 +2226,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   const handleNodeUpdate = useCallback(
     (id: string, patch: Partial<CanvasNodeData>) => {
-      // A branch arm's handle id IS its label (configuredHandleIds), so
+      // A branch arm's handle id IS its label (outputHandles), so
       // renaming an arm changes the handle and would orphan any edge wired to
       // it. Detect same-position label renames and carry the connected edges
       // over to the new handle so wires stay attached.
@@ -2277,11 +2280,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         // a rename needlessly re-flows the whole graph (longer label → wider
         // node → everything shifts). The width-recenter above already keeps the
         // node visually stable, so a rename moves nothing.
+        // Any node: a latency gate switched between mark and check changes its
+        // handle count as much as a branch gaining an arm does.
         const target = ns.find((n) => n.id === id)
-        if (target && (target.type === 'branch' || target.type === 'parallel')) {
-          const beforeCount = configuredHandleIds(target)?.length ?? 0
+        if (target) {
+          const beforeCount = outputHandles(target).length
           const after = patched.find((n) => n.id === id)
-          const afterCount = after ? configuredHandleIds(after)?.length ?? 0 : 0
+          const afterCount = after ? outputHandles(after).length : 0
           if (beforeCount !== afterCount) return layoutWorkflow(patched, edges)
         }
         return patched

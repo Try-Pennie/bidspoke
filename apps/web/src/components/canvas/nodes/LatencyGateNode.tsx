@@ -5,31 +5,30 @@ import { Timer } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { SourceHandles, type HandleLabel } from './SourceHandles'
 
 type LatencyGateOp = 'mark' | 'check'
 
-export function LatencyGateNode({ data, selected }: NodeProps) {
+const LATENCY_LABEL: Record<string, HandleLabel> = {
+  within: { label: '↓ within', className: 'text-green-600' },
+  exceeded: { label: '↓ exceeded', className: 'text-red-500' },
+}
+
+export function LatencyGateNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const operation = (config.operation as LatencyGateOp | undefined) ?? 'mark'
   const correlationKey = (config.correlation_key as string | undefined) ?? ''
   const outputPreview = getOutputPreview(executionStep)
 
   const isCheck = operation === 'check'
-  const width = isCheck ? nodeWidth('latency_gate', data) : undefined
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number, fallbackPct: number): string => {
-    if (handleOffsets && handleOffsets[i] != null && width && width > 0) {
-      return `${50 + (handleOffsets[i] / width) * 100}%`
-    }
-    return `${fallbackPct}%`
-  }
+  const width = nodeWidth('latency_gate', data)
 
   return (
     <div
       className={`relative rounded-lg border bg-white shadow-sm ${
         selected ? 'border-orange-400 ring-2 ring-orange-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
-      style={{ ...getExecutionStyle(executionStep), width: width ?? 208 }}
+      style={{ ...getExecutionStyle(executionStep), width }}
     >
       <Handle type="target" position={Position.Top} id="input" />
 
@@ -50,24 +49,7 @@ export function LatencyGateNode({ data, selected }: NodeProps) {
       </div>
 
       {isCheck ? (
-        <>
-          <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
-            <span
-              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-green-600"
-              style={{ left: handleLeftPct(0, 30) }}
-            >
-              ↓ within
-            </span>
-            <span
-              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-red-500"
-              style={{ left: handleLeftPct(1, 70) }}
-            >
-              ↓ exceeded
-            </span>
-          </div>
-          <Handle type="source" position={Position.Bottom} id="within" style={{ left: handleLeftPct(0, 30) }} />
-          <Handle type="source" position={Position.Bottom} id="exceeded" style={{ left: handleLeftPct(1, 70) }} />
-        </>
+        <SourceHandles nodeId={id} type="latency_gate" width={width} data={data} describe={(h) => LATENCY_LABEL[h] ?? { label: h }} />
       ) : (
         <Handle type="source" position={Position.Bottom} id="output" />
       )}

@@ -6,6 +6,7 @@ import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { bidGroupPartnerSummary } from '@/lib/bid-group-partners'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { SourceHandles, type HandleLabel } from './SourceHandles'
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
 
@@ -16,7 +17,12 @@ interface BidGroupOutput {
   _route: 'winner' | 'no_winner'
 }
 
-export function BidGroupNode({ data, selected }: NodeProps) {
+const BID_GROUP_LABEL: Record<string, HandleLabel> = {
+  winner: { label: '↓ winner', className: 'text-rose-600' },
+  no_winner: { label: '↓ no winner', className: 'text-slate-400' },
+}
+
+export function BidGroupNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const mode = (config.mode as BidGroupMode | undefined) ?? 'highest_bid'
   // Counts the fallback partner too: the engine calls it when nobody wins, so
@@ -35,17 +41,9 @@ export function BidGroupNode({ data, selected }: NodeProps) {
     routeLabel = out._route ?? null
   }
 
-  // Render at layout's reserved span width so wide subtrees underneath don't
-  // visually overlap. Handle positions come from `_handleOffsets` so each
-  // handle sits directly above its child's column (matching branch/parallel).
+  // Rendered at the layout's reserved span width so wide subtrees underneath
+  // don't visually overlap, each handle above its child's column.
   const width = nodeWidth('bid_group', data)
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number, fallbackPct: number): string => {
-    if (handleOffsets && handleOffsets[i] != null && width > 0) {
-      return `${50 + (handleOffsets[i] / width) * 100}%`
-    }
-    return `${fallbackPct}%`
-  }
 
   return (
     <div
@@ -78,23 +76,7 @@ export function BidGroupNode({ data, selected }: NodeProps) {
         )}
       </div>
 
-      <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
-        <span
-          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-rose-600"
-          style={{ left: handleLeftPct(0, 30) }}
-        >
-          ↓ winner
-        </span>
-        <span
-          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-slate-400"
-          style={{ left: handleLeftPct(1, 70) }}
-        >
-          ↓ no winner
-        </span>
-      </div>
-
-      <Handle type="source" position={Position.Bottom} id="winner" style={{ left: handleLeftPct(0, 30) }} />
-      <Handle type="source" position={Position.Bottom} id="no_winner" style={{ left: handleLeftPct(1, 70) }} />
+      <SourceHandles nodeId={id} type="bid_group" width={width} data={data} describe={(h) => BID_GROUP_LABEL[h] ?? { label: h }} />
     </div>
   )
 }

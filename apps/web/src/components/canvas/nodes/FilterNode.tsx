@@ -6,8 +6,14 @@ import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution
 import { nodeWidth } from '@/lib/layout'
 import { filterConditionSummary } from '@/lib/filter-condition'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { SourceHandles, type HandleLabel } from './SourceHandles'
 
-export function FilterNode({ data, selected }: NodeProps) {
+const FILTER_LABEL: Record<string, HandleLabel> = {
+  pass: { label: '↓ pass', className: 'text-green-600' },
+  exit: { label: '↓ exit', className: 'text-red-500' },
+}
+
+export function FilterNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
   const outputPreview = getOutputPreview(executionStep)
@@ -17,13 +23,6 @@ export function FilterNode({ data, selected }: NodeProps) {
   const conditionSummary = filterConditionSummary(config)
 
   const width = nodeWidth('filter', data)
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number, fallbackPct: number): string => {
-    if (handleOffsets && handleOffsets[i] != null && width > 0) {
-      return `${50 + (handleOffsets[i] / width) * 100}%`
-    }
-    return `${fallbackPct}%`
-  }
 
   return (
     <div
@@ -51,23 +50,7 @@ export function FilterNode({ data, selected }: NodeProps) {
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}
       </div>
-      <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
-        <span
-          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-green-600"
-          style={{ left: handleLeftPct(0, 30) }}
-        >
-          ↓ pass
-        </span>
-        <span
-          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-red-500"
-          style={{ left: handleLeftPct(1, 70) }}
-        >
-          ↓ exit
-        </span>
-      </div>
-
-      <Handle type="source" position={Position.Bottom} id="pass" style={{ left: handleLeftPct(0, 30) }} />
-      <Handle type="source" position={Position.Bottom} id="exit" style={{ left: handleLeftPct(1, 70) }} />
+      <SourceHandles nodeId={id} type="filter" width={width} data={data} describe={(id) => FILTER_LABEL[id] ?? { label: id }} />
     </div>
   )
 }

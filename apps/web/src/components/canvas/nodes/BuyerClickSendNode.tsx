@@ -1,14 +1,11 @@
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import { NODE_TRAITS } from '@/types/workflow'
 import type { CanvasNodeData } from '@/types/workflow'
 import { MousePointerClick } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
-
-/** The seven outgoing handles, from the node type's own list, in the order the layout places them. */
-const HANDLES = NODE_TRAITS.buyer_click_send.staticHandles ?? []
+import { SourceHandles } from './SourceHandles'
 
 const label = (handle: string): string => handle.replace(/_/g, ' ')
 
@@ -26,7 +23,7 @@ interface ClickSendOutputPreview {
  * is never shown as a name), and after a run the route it took: the partner lead
  * id on a send, the reason otherwise.
  */
-export function BuyerClickSendNode({ data, selected }: NodeProps) {
+export function BuyerClickSendNode({ id, data, selected }: NodeProps) {
   const { namespace, label: title, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const hasPartner = typeof config.partner_id === 'string' && config.partner_id.trim() !== ''
   let partnerSlug = ''
@@ -45,11 +42,6 @@ export function BuyerClickSendNode({ data, selected }: NodeProps) {
   }
 
   const width = nodeWidth('buyer_click_send', data)
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number): string => {
-    if (handleOffsets && handleOffsets[i] != null && width > 0) return `${50 + (handleOffsets[i] / width) * 100}%`
-    return `${((i + 0.5) / HANDLES.length) * 100}%`
-  }
 
   return (
     <div
@@ -78,22 +70,17 @@ export function BuyerClickSendNode({ data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Each label owns the column above its handle and may wrap to two lines. */}
-      <div className="relative border-t border-gray-100 text-[10px] leading-tight" style={{ height: 34 }}>
-        {HANDLES.map((h, i) => (
-          <span
-            key={h}
-            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 px-0.5 text-center ${h === 'sent' ? 'font-semibold text-lime-800' : 'text-slate-500'}`}
-            style={{ left: handleLeftPct(i), width: `${100 / HANDLES.length}%` }}
-          >
-            {label(h)}
-          </span>
-        ))}
-      </div>
-
-      {HANDLES.map((h, i) => (
-        <Handle key={h} type="source" position={Position.Bottom} id={h} style={{ left: handleLeftPct(i) }} />
-      ))}
+      {/* Each label owns the room above its handle and may wrap to two lines. */}
+      <SourceHandles
+        nodeId={id}
+        type="buyer_click_send"
+        width={width}
+        data={data}
+        rowHeight={34}
+        textClassName="text-[10px]"
+        wrap
+        describe={(h) => ({ label: label(h), className: h === 'sent' ? 'font-semibold text-lime-800' : 'text-slate-500' })}
+      />
     </div>
   )
 }

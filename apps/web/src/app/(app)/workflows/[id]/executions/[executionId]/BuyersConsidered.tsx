@@ -13,6 +13,7 @@ import {
   CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS, NODE_REASON_LABELS, OUT_REASON_LABELS,
   type ConsideredOutcome, type ModeEffective, type NodeReason, type OutReason,
 } from '@bidspoke/buyer-profile'
+import { NODE_TRAITS } from '@/types/workflow'
 import { ToneBadge, type Tone } from './ToneBadge'
 
 export interface BuyerSelectStep {
@@ -34,8 +35,10 @@ export interface BuyerSelectStep {
   step_order: number
 }
 
-type Route = 'sold' | 'no_sale' | 'not_applicable' | 'deferred'
-const ROUTES: readonly Route[] = ['sold', 'no_sale', 'not_applicable', 'deferred']
+// The node's exits, from its own list (#1582): a copy here missed a new outcome,
+// and the page then called a real output unreadable.
+const ROUTES: readonly string[] = NODE_TRAITS.buyer_select.staticHandles ?? []
+type Route = string
 
 interface Considered {
   partner: string
@@ -62,7 +65,7 @@ export function readBuyerSelectOutput(output: unknown): Output | null {
   if (!isRecord(output)) return null
   const route = output._route
   const mode = output.mode_effective
-  if (typeof route !== 'string' || !(ROUTES as readonly string[]).includes(route)) return null
+  if (typeof route !== 'string' || !ROUTES.includes(route)) return null
   if (typeof mode !== 'string' || !(MODE_EFFECTIVE as readonly string[]).includes(mode)) return null
   if (typeof output.reason !== 'string' || !Array.isArray(output.considered) || !isRecord(output.sale)) return null
   const considered: Considered[] = []
@@ -79,7 +82,7 @@ export function readBuyerSelectOutput(output: unknown): Output | null {
     })
   }
   return {
-    _route: route as Route,
+    _route: route,
     reason: output.reason,
     detail: typeof output.detail === 'string' ? output.detail : undefined,
     mode_effective: mode as ModeEffective,
@@ -110,23 +113,24 @@ const OUTCOME_TONE: Record<ConsideredOutcome, Tone> = {
 
 const money = (cents: number): string => `$${(cents / 100).toFixed(2)}`
 
+/** What each exit says the node did, by exit. Every exit in the node's list has one (tested). */
+export const ROUTE_HEADLINES: Record<string, (out: Output) => { text: string; tone: Tone }> = {
+  sold: (out) => {
+    const soldTo = out.considered.find((c) => c.outcome === 'sold')
+    const who = out.sale.partner_slug ?? soldTo?.partner ?? 'a buyer'
+    const amount = soldTo?.payout_cents
+    return { text: `Sold to ${who}${amount !== null && amount !== undefined ? ` for ${money(amount)}` : ''}`, tone: 'green' }
+  },
+  no_sale: (out) => ({ text: `No sale: ${reasonLabel(out.reason)}`, tone: 'red' }),
+  not_applicable: (out) => ({ text: `Not for sale: ${reasonLabel(out.reason)}`, tone: 'gray' }),
+  // When the reason IS the mode (decide_only, report_only), the mode label beside the
+  // namespace already says it, so the headline does not say it twice (L605).
+  deferred: (out) => ({ text: out.reason === out.mode_effective ? 'Left to the workflow to decide' : `Left to the workflow to decide: ${reasonLabel(out.reason)}`, tone: 'amber' }),
+}
+
 function headline(out: Output): { text: string; tone: Tone } {
-  const soldTo = out.considered.find((c) => c.outcome === 'sold')
-  switch (out._route) {
-    case 'sold': {
-      const who = out.sale.partner_slug ?? soldTo?.partner ?? 'a buyer'
-      const amount = soldTo?.payout_cents
-      return { text: `Sold to ${who}${amount !== null && amount !== undefined ? ` for ${money(amount)}` : ''}`, tone: 'green' }
-    }
-    case 'no_sale':
-      return { text: `No sale: ${reasonLabel(out.reason)}`, tone: 'red' }
-    case 'not_applicable':
-      return { text: `Not for sale: ${reasonLabel(out.reason)}`, tone: 'gray' }
-    case 'deferred':
-      // When the reason IS the mode (decide_only, report_only), the mode label beside the
-      // namespace already says it, so the headline does not say it twice (L605).
-      return { text: out.reason === out.mode_effective ? 'Left to the workflow to decide' : `Left to the workflow to decide: ${reasonLabel(out.reason)}`, tone: 'amber' }
-  }
+  const own = ROUTE_HEADLINES[out._route]
+  return own ? own(out) : { text: `${out._route.replace(/_/g, ' ')}: ${reasonLabel(out.reason)}`, tone: 'gray' }
 }
 
 export function BuyersConsidered({ step }: { step: BuyerSelectStep }) {
