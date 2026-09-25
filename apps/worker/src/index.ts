@@ -514,6 +514,18 @@ export default {
           if (r.alerted) console.error(`[tripoint-pricing] ${r.differences.length} differences`)
         })().catch((e) => console.error('[tripoint-pricing] failed:', e)),
       )
+      // Do the Snowflake tables the nightly exports write to still accept what
+      // those exports send (#428)? The export column lists and the Snowflake DDL
+      // are maintained by hand in two places, and on 2026-06-27 a NOT NULL the
+      // source never promised failed the export with nothing warning first. Here,
+      // not inside the export, so it takes nothing from the export's time budget.
+      track(
+        (async () => {
+          const { checkExportSchema } = await import('./lib/export-schema-check')
+          const r = await checkExportSchema(env, supabase)
+          if (r.alerted) console.error(`[export-schema] ${r.findings.length} findings, ${r.unreadable.length} unreadable`)
+        })().catch((e) => console.error('[export-schema] failed:', e)),
+      )
       // Does each sale's Salesforce Lead carry the Completed its Submission
       // carries, per partner (#1524, #1525)? The copy stopped on 2026-07-08 for
       // every partner and nothing noticed for eleven weeks. Its own failure

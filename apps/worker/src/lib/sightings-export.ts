@@ -266,7 +266,7 @@ export function partitionBounds(
   return { min, max }
 }
 
-const SIGHTING_COLS: ColSpec[] = [
+export const SIGHTING_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
   { name: 'ssn', type: 'varchar' },
   { name: 'person_id', type: 'varchar' },
@@ -330,7 +330,7 @@ const SIGHTING_COLS: ColSpec[] = [
  */
 export const sightingExportColumns: string[] = SIGHTING_COLS.map((c) => c.name)
 
-const BID_COLS: ColSpec[] = [
+export const BID_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
   { name: 'sighting_id', type: 'varchar' },
   { name: 'ssn', type: 'varchar' },

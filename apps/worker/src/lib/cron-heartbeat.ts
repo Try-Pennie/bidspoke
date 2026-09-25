@@ -76,7 +76,7 @@ export const CRON_JOBS: CronJob[] = [
     // A dozen parallel checks, each seconds; the slowest measured is the gate.
     maxRunMs: 30 * MIN,
     dependents:
-      'volume-anomaly, field-presence, email-drop-rate, secret-drift, required-secrets, big-table-guard, drain-stall, archive-gate, archive-settings, archive-identities',
+      'volume-anomaly, field-presence, email-drop-rate, secret-drift, required-secrets, big-table-guard, drain-stall, archive-gate, archive-settings, archive-identities, export-schema-drift',
   },
   {
     id: 'timeout-audit',
