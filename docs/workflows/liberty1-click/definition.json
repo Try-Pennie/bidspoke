@@ -326,35 +326,20 @@
       {
         "id": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
         "namespace": "check_write",
-        "type": "branch",
+        "type": "filter",
         "label": "Anything to write?",
         "position": {
           "x": 0,
           "y": 2240
         },
         "config": {
-          "branches": [
-            {
-              "label": "write",
-              "condition": {
-                "logic": "AND",
-                "groups": [
-                  {
-                    "logic": "AND",
-                    "conditions": [
-                      {
-                        "field": "steps.click_patch.output.write",
-                        "operator": "is_true",
-                        "value": "true"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ],
-          "else_behavior": "none",
-          "retries": 0
+          "retries": 0,
+          "condition": {
+            "field": "steps.click_patch.output.write",
+            "operator": "is_true",
+            "value": "true"
+          },
+          "operation": "continue_if"
         },
         "variables": {}
       },
@@ -386,34 +371,19 @@
       {
         "id": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
         "namespace": "check_submission",
-        "type": "branch",
+        "type": "filter",
         "label": "Came from a submission?",
         "position": {
           "x": 0,
           "y": 2560
         },
         "config": {
-          "branches": [
-            {
-              "label": "has_submission",
-              "condition": {
-                "logic": "AND",
-                "groups": [
-                  {
-                    "logic": "AND",
-                    "conditions": [
-                      {
-                        "field": "steps.resolve_input.output.submission_id",
-                        "operator": "exists"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ],
-          "else_behavior": "none",
-          "retries": 0
+          "retries": 0,
+          "condition": {
+            "field": "steps.resolve_input.output.submission_id",
+            "operator": "exists"
+          },
+          "operation": "continue_if"
         },
         "variables": {}
       },
@@ -468,34 +438,19 @@
       {
         "id": "545ad3b0-ae65-54f3-9583-93b122c90595",
         "namespace": "check_lead",
-        "type": "branch",
+        "type": "filter",
         "label": "Has a lead?",
         "position": {
           "x": 0,
           "y": 3040
         },
         "config": {
-          "branches": [
-            {
-              "label": "has_lead",
-              "condition": {
-                "logic": "AND",
-                "groups": [
-                  {
-                    "logic": "AND",
-                    "conditions": [
-                      {
-                        "field": "steps.find_lead.output.body.records[0].Lead__c",
-                        "operator": "exists"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ],
-          "else_behavior": "none",
-          "retries": 0
+          "retries": 0,
+          "condition": {
+            "field": "steps.find_lead.output.body.records[0].Lead__c",
+            "operator": "exists"
+          },
+          "operation": "continue_if"
         },
         "variables": {}
       },
@@ -644,7 +599,7 @@
         "id": "d6bc6a70-6f4c-533f-96cc-17cceb1c5a33",
         "source": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
         "target": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
-        "source_handle": "write"
+        "source_handle": "pass"
       },
       {
         "id": "b170b01a-295d-5dd0-b946-6baf4d1942d5",
@@ -656,7 +611,7 @@
         "id": "cd9449cc-8aca-5d11-9d08-5dc06d86029a",
         "source": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
         "target": "c35ef4be-cf58-5a52-b284-8cf8bb3757a8",
-        "source_handle": "has_submission"
+        "source_handle": "pass"
       },
       {
         "id": "397abc8e-1838-5876-b8d5-94c4df4907b6",
@@ -674,7 +629,7 @@
         "id": "b170a47c-bd01-5d11-81a6-7e78089cdb9d",
         "source": "545ad3b0-ae65-54f3-9583-93b122c90595",
         "target": "5a290a6f-036c-5126-895d-e03e9e32af04",
-        "source_handle": "has_lead"
+        "source_handle": "pass"
       }
     ]
   }
