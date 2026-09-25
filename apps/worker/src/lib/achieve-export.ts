@@ -40,7 +40,7 @@ const BACKFILL_BATCH = 100
 
 /** The enrichment's slice of the invocation. Small on purpose: it is a second lens, and the
  *  export and the purge behind it need the rest. */
-const ENROLLMENT_BUDGET_MS = 90 * 1000
+export const ENROLLMENT_BUDGET_MS = 90 * 1000
 
 export const ACHIEVE_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
@@ -380,7 +380,7 @@ export async function notifyEnrollmentViewSkipped(
   if (skipped === null) return
   const items =
     skipped > 0
-      ? [`${skipped} ${skipped === 1 ? 'row' : 'rows'} still had no enrollment view when the 90 second budget ran out`]
+      ? [`${skipped} ${skipped === 1 ? 'row' : 'rows'} still had no enrollment view when the ${ENROLLMENT_BUDGET_MS / 1000} second budget ran out`]
       : []
   await notifyExportFailure(supabase, ENROLLMENT_SKIPPED_JOB, items, kv, {
     consequence:
