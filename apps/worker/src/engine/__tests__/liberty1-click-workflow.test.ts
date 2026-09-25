@@ -287,3 +287,23 @@ describe('a Liberty1 offer that is still open', () => {
     })
   }
 })
+
+describe('the three yes or no gates are filters', () => {
+  // A one arm branch with no else and a filter whose exit is not wired both end
+  // the run when their condition fails, so the walks above prove the swap kept
+  // every outcome; a filter reads as the gate it is, with no nested branch box.
+  const GATES: Record<string, { field: string; operator: string }> = {
+    check_write: { field: 'steps.click_patch.output.write', operator: 'is_true' },
+    check_submission: { field: 'steps.resolve_input.output.submission_id', operator: 'exists' },
+    check_lead: { field: 'steps.find_lead.output.body.records[0].Lead__c', operator: 'exists' },
+  }
+
+  it.each(Object.keys(GATES))('%s continues only when its condition holds, and wires only pass', (ns) => {
+    const node = definition.nodes.find((n) => n.namespace === ns)!
+    expect(node.type).toBe('filter')
+    const config = node.config as { operation?: string; condition?: { field: string; operator: string } }
+    expect(config.operation).toBe('continue_if')
+    expect({ field: config.condition?.field, operator: config.condition?.operator }).toEqual(GATES[ns])
+    expect(definition.edges.filter((e) => e.source === node.id).map((e) => e.source_handle)).toEqual(['pass'])
+  })
+})
