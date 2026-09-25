@@ -90,7 +90,8 @@ export const ARCHIVE_SEND_FAILED_REMEDY: AlertRemedy = {
     'hours unarchived. They are archived when the loop returns to them, which is a problem only if their ' +
     'Postgres partition is purged first:',
   fixHint:
-    'Check Snowflake availability and the archive writer credentials. While it stands, the deletion gate ' +
+    'Check Snowflake availability and the archive writer credentials. If the sends are timing out, ' +
+    'docs/snowflake-slow-write.md finds where the time went, read only. While it stands, the deletion gate ' +
     'cannot verify these days, so their Postgres partitions are spared rather than purged and the ' +
     'retained data grows until a run succeeds.',
 }

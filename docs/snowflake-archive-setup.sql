@@ -6,6 +6,7 @@
 --
 -- Plan: https://github.com/Try-Pennie/bidspoke/discussions/867
 -- ADR:  docs/adr/0009-never-delete-without-a-backup.md
+-- Slow or timing out writes: docs/snowflake-slow-write.md (read only diagnosis)
 --
 -- WHY ITS OWN DATABASE. This does not live in BIDSPOKE.PUBLIC, where
 -- LEAD_SIGHTINGS and the analytics role already are. The archive holds 13 months

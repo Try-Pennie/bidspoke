@@ -68,6 +68,8 @@ The realistic loss modes are account level and credential level, not hardware. T
 
 **A second copy in R2 is wanted and deliberately deferred**: issue #1001. Until it exists, a lost Snowflake account is a lost archive, and after A5 that is unrecoverable rather than inconvenient.
 
+**When archive writes are slow or timing out**, [snowflake-slow-write.md](./snowflake-slow-write.md) finds where the time went (compiling, executing, queued, warehouse starting, or blocked on a lock), read only and without an admin role.
+
 ## Scenarios
 
 ### A. Supabase project loss or corruption
