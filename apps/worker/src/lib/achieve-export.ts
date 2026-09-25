@@ -29,7 +29,7 @@ import { formatErr } from './format-error'
 import { parseJson } from './json'
 import { resolveSalesforceCredentialOrg, requireSalesforceCreds } from './salesforce-creds'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
-import { readSubmissionView, type SubmissionRecord } from './achieve-enrollment-view'
+import { readSubmissionView, type SubmissionRecord, type SubmissionView } from './achieve-enrollment-view'
 import { notifyExportFailure } from './export-alerts'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
@@ -206,31 +206,45 @@ export async function backfillEnrollmentView(
     return body.records ?? []
   }
 
+  // Keyset cursor (#1599): the last id this run has already tried. A row left unfilled (no
+  // submission id, or Salesforce had nothing for it) still matches the unfilled filter, so
+  // without the cursor every loop re-selected the same first page. With 100 or more such rows
+  // at the front, the run re-asked Salesforce about them until the budget ran out and never
+  // reached the fillable rows behind them. Ordering by id and starting after the cursor tries
+  // each row at most once per run.
+  const cursor: { after: string | null } = { after: null }
+
   let total = 0
   let skipped = 0
   while (true) {
     if (now() >= deadline) {
       // Counted rather than shrugged off: a row not filled here is exported and purged
       // without the enrichment and never gets another chance, so the shortfall has to be
-      // visible instead of looking like there was nothing to do.
-      const { count } = await supabase
+      // visible instead of looking like there was nothing to do. Only rows past the cursor
+      // count: those before it were tried this run and are not a budget shortfall.
+      const counted = supabase
         .from('achieve_evaluations')
         .select('id', { count: 'exact', head: true })
         .eq('is_test', false)
         .is('exported_at', null)
         .is('enrollment_view', null)
+      const { count, error: countError } = await (cursor.after === null ? counted : counted.gt('id', cursor.after))
+      if (countError) throw countError
       skipped = count ?? 0
       break
     }
-    const { data: rows, error } = await supabase
+    const page = supabase
       .from('achieve_evaluations')
       .select('id, requested_at_utc, request_payload')
       .eq('is_test', false)
       .is('exported_at', null)
       .is('enrollment_view', null)
+      .order('id')
       .limit(BACKFILL_BATCH)
+    const { data: rows, error } = await (cursor.after === null ? page : page.gt('id', cursor.after))
     if (error) throw error
     if (!rows || rows.length === 0) break
+    cursor.after = String(rows[rows.length - 1].id)
 
     // requested_at_utc is the partition key, carried alongside so the update below can name
     // it. Matching id alone scans every monthly partition, including drained ones that still
@@ -242,11 +256,12 @@ export async function backfillEnrollmentView(
         byId.set(String(row.id), { submissionId, requestedAt: String(row.requested_at_utc) })
       }
     }
-    // Nothing to look up in this batch, and the rows would be re-selected forever if we
-    // looped again: a row with no submission id can never be filled.
-    if (byId.size === 0) break
-
-    const views = await readSubmissionView([...new Set([...byId.values()].map((v) => v.submissionId))], query)
+    // A page with nothing to look up is passed over, not a reason to stop: the cursor has
+    // moved past it, and fillable rows may sit behind it.
+    const views =
+      byId.size === 0
+        ? new Map<string, SubmissionView>()
+        : await readSubmissionView([...new Set([...byId.values()].map((v) => v.submissionId))], query)
 
     for (const [rowId, { submissionId, requestedAt }] of byId) {
       const view = views.get(submissionId)
