@@ -108,6 +108,11 @@ describe('reading the history', () => {
     )
   })
 
+  it('refuses a duration that is not a number rather than comparing NaN', () => {
+    expect(() => readHistory(response(columns, { ...incident, COMPILATION_TIME: 'n/a' }))).toThrow(/compilation_time/)
+    expect(() => readHistory(response(columns, { ...incident, EXECUTION_TIME: null }))).toThrow(/execution_time/)
+  })
+
   it('names the part the statement spent its time in', () => {
     const [row] = readHistory(response(columns, incident))
     expect(dominantWait(row)).toBe('compilation')

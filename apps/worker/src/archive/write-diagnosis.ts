@@ -94,18 +94,26 @@ export function readHistory(response: SnowflakeStatementResponse): HistoryRow[] 
   if (missing.length > 0) {
     throw new Error(`the query history came back without ${missing.join(', ')}`)
   }
-  const ms = (v: unknown): number => Number(v ?? 0)
+  // A cell that will not parse is refused, never read as a number: NaN compares
+  // false against everything and would name the wrong part as the slow one (L50).
+  const ms = (v: unknown, column: string): number => {
+    const n = Number(v)
+    if (v === null || v === undefined || v === '' || !Number.isFinite(n)) {
+      throw new Error(`the query history's ${column} came back as ${JSON.stringify(v)}, which is not a duration`)
+    }
+    return n
+  }
   return (response.data ?? []).map((r) => ({
     startTime: String(r[at.start_time]),
     queryId: String(r[at.query_id]),
     status: String(r[at.execution_status]),
     errorCode: r[at.error_code] === null || r[at.error_code] === undefined ? null : String(r[at.error_code]),
-    totalMs: ms(r[at.total_elapsed_time]),
-    compilationMs: ms(r[at.compilation_time]),
-    executionMs: ms(r[at.execution_time]),
-    queuedMs: ms(r[at.queued_overload_time]),
-    provisioningMs: ms(r[at.queued_provisioning_time]),
-    blockedMs: ms(r[at.transaction_blocked_time]),
+    totalMs: ms(r[at.total_elapsed_time], 'total_elapsed_time'),
+    compilationMs: ms(r[at.compilation_time], 'compilation_time'),
+    executionMs: ms(r[at.execution_time], 'execution_time'),
+    queuedMs: ms(r[at.queued_overload_time], 'queued_overload_time'),
+    provisioningMs: ms(r[at.queued_provisioning_time], 'queued_provisioning_time'),
+    blockedMs: ms(r[at.transaction_blocked_time], 'transaction_blocked_time'),
   }))
 }
 
