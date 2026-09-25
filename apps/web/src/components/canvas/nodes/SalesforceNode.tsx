@@ -17,10 +17,14 @@ const OPERATION_LABELS: Record<string, string> = {
 
 // A query names its object inside its SOQL and has no `object` field (#1568), so
 // the subtitle reads the object after FROM, or plain "Query" when the SOQL is a
-// template. "Unconfigured" means only that there is no SOQL at all.
+// template. "Unconfigured" means only that there is no SOQL at all. Bracketed
+// subqueries are removed first, innermost out, so a relationship or semi join
+// subquery's FROM never names the card.
 function querySubtitle(soql: string): string {
   if (!soql.trim()) return 'Unconfigured'
-  const from = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(soql)
+  let outer = soql
+  for (let prev = ''; prev !== outer;) { prev = outer; outer = outer.replace(/\([^()]*\)/g, ' ') }
+  const from = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(outer)
   return from ? `Query ${from[1]}` : 'Query'
 }
 

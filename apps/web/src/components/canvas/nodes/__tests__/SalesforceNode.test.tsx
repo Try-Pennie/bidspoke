@@ -23,6 +23,11 @@ describe('SalesforceNode subtitle for a query (#1568)', () => {
     expect(screen.queryByText('Unconfigured')).toBeNull()
   })
 
+  it('names the outer object, never one inside a parenthesised subquery', () => {
+    renderCard({ operation: 'query', soql: 'SELECT Id, (SELECT Id FROM Contacts) FROM Account WHERE Id IN (SELECT AccountId FROM Case)' })
+    expect(screen.getByText('Query Account')).toBeInTheDocument()
+  })
+
   it('reads Query when the whole SOQL is a template, so no object can be named', () => {
     renderCard({ operation: 'query', soql: '{{steps.resolve_input.output.prospect_soql}}' })
     expect(screen.getByText('Query')).toBeInTheDocument()
