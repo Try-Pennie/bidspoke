@@ -7,14 +7,17 @@ vi.mock('../lib/sightings-export', () => ({
   runSightingsPurge: vi.fn().mockResolvedValue({ errors: [] }),
   notifySetAsideRows: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('../lib/achieve-export', () => ({ runAchieveExport: vi.fn().mockResolvedValue({ errors: [] }) }))
+vi.mock('../lib/achieve-export', () => ({
+  runAchieveExport: vi.fn().mockResolvedValue({ errors: [] }),
+  notifyEnrollmentViewSkipped: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('../lib/export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/supabase', () => ({ createSupabaseClient: vi.fn(() => ({})) }))
 
 import worker from '../index'
 import type { Env } from '../index'
 import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from '../lib/sightings-export'
-import { runAchieveExport } from '../lib/achieve-export'
+import { runAchieveExport, notifyEnrollmentViewSkipped } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
 
 const env = {} as unknown as Env
@@ -198,5 +201,39 @@ describe('the export reports rows it set aside', () => {
     await fireAndFlush('37 */2 * * *')
 
     expect(vi.mocked(notifySetAsideRows).mock.calls[0][1]).toEqual([])
+  })
+})
+
+// #1363: rows the enrollment view ran out of time for are exported and purged without it, so
+// the count goes to its own alert after every run rather than only to the log.
+describe('the Achieve export reports its enrollment view shortfall', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('hands the run\'s skipped count to its own alert', async () => {
+    vi.mocked(runAchieveExport).mockResolvedValueOnce({
+      trades_backfilled: 0, enrollment_view_filled: 3, enrollment_view_skipped: 12,
+      evaluations_exported: 15, evaluations_purged: 0, sandbox_purged: 0, errors: [],
+    })
+
+    await fireAndFlush('0 9 * * *')
+
+    expect(notifyEnrollmentViewSkipped).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notifyEnrollmentViewSkipped).mock.calls[0][1]).toBe(12)
+    // The export itself succeeded, so its own alert is still told so.
+    expect(vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === 'Achieve export')?.[2]).toEqual([])
+  })
+
+  // A failing shortfall alert must not swallow the export's own report.
+  it('still reports the export when the shortfall alert throws', async () => {
+    vi.mocked(runAchieveExport).mockResolvedValueOnce({
+      trades_backfilled: 0, enrollment_view_filled: 0, enrollment_view_skipped: 4,
+      evaluations_exported: 4, evaluations_purged: 0, sandbox_purged: 0, errors: ['evaluations export: boom'],
+    })
+    vi.mocked(notifyEnrollmentViewSkipped).mockRejectedValueOnce(new Error('slack down'))
+
+    await fireAndFlush('0 9 * * *')
+
+    expect(vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === 'Achieve export')?.[2])
+      .toEqual(['evaluations export: boom'])
   })
 })

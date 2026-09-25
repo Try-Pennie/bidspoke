@@ -35,7 +35,7 @@ import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from './lib/sightings-export'
-import { runAchieveExport } from './lib/achieve-export'
+import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
@@ -270,8 +270,13 @@ export default {
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
         runAchieveExport(supabase, env)
-          .then((s) => {
+          .then(async (s) => {
             console.log('[achieve-export]', JSON.stringify(s))
+            // Rows the enrollment view ran out of time for are exported and purged without
+            // it, so they are their own alert, not an export failure (#1363). Reported on
+            // every measured run, because the empty report is what clears the condition.
+            await notifyEnrollmentViewSkipped(supabase, s.enrollment_view_skipped, env.IDEMPOTENCY)
+              .catch((e) => console.error('[achieve-export] enrollment view shortfall alert failed:', e))
             return notifyExportFailure(supabase, 'Achieve export', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
