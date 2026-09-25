@@ -11,7 +11,7 @@
  * full re-scan; the COUNT(DISTINCT) gate, so a re-run's duplicates are harmless;
  * and the KV run lock, which is only an optimisation.
  */
-import { executeStatement, escapeSqlLiteral } from './snowflake'
+import { executeStatement, escapeSqlLiteral, type SnowflakeSendMeter } from './snowflake'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
 import type { ArchiveRow } from './execution-archive'
 import type { Env } from '../index'
@@ -118,11 +118,19 @@ export function buildInsert(rows: ArchiveRow[], archivedAtUtc: string): string {
  * `giveUpAt` is the moment the run's wall budget runs out (#1451). A batch that
  * keeps failing then stops resubmitting before it can spend past it, so the run
  * ends on a send failure it records rather than on the platform's kill.
+ *
+ * `meter` is the run's own, and counts this send's attempts, resubmits and
+ * duration into the run's record (#1443).
  */
-export async function sendArchiveBatch(env: Env, rows: ArchiveRow[], giveUpAt?: number): Promise<void> {
+export async function sendArchiveBatch(
+  env: Env,
+  rows: ArchiveRow[],
+  giveUpAt?: number,
+  meter?: SnowflakeSendMeter,
+): Promise<void> {
   const statement = buildInsert(rows, new Date().toISOString().replace('Z', ''))
   const config = archiveConfig(env, 'writer')
-  const response = await executeStatement(config, statement, undefined, { giveUpAt })
+  const response = await executeStatement(config, statement, undefined, { giveUpAt, meter })
 
   // Snowflake reports how many rows an INSERT affected. Checking it is the
   // difference between "the statement was accepted" and "the rows are there",
@@ -134,4 +142,18 @@ export async function sendArchiveBatch(env: Env, rows: ArchiveRow[], giveUpAt?: 
   if (affected !== rows.length) {
     throw new Error(`archive INSERT reported ${affected} rows for a batch of ${rows.length}`)
   }
+}
+
+/**
+ * The send function every archive caller hands the run (#1443).
+ *
+ * The hourly cron, the backlog walk and the admin re-archive each wrote this
+ * lambda out by hand, so a new argument the run passes had three places to be
+ * dropped, and a dropped one fails silently: the meter would read zero sends on
+ * whichever path forgot it. One definition means one place to forward it.
+ */
+export function archiveSender(
+  env: Env,
+): (rows: ArchiveRow[], giveUpAt: number, meter: SnowflakeSendMeter) => Promise<void> {
+  return (rows, giveUpAt, meter) => sendArchiveBatch(env, rows, giveUpAt, meter)
 }

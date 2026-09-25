@@ -23,8 +23,10 @@ import {
   executeStatement,
   escapeSqlLiteral,
   isTransientSnowflakeError,
+  SnowflakeSendMeter,
   SnowflakeStatementError,
   type SnowflakeConfig,
+  type SnowflakeSendStats,
   type SnowflakeStatementResponse,
 } from './snowflake'
 import { requireRowsAffected, toThrowable, toDbError } from './db-retry'
@@ -370,6 +372,8 @@ export interface ExportSummary {
   errors: string[]
   /** Rows Snowflake refused this run, now set aside rather than retried (#427). */
   set_aside: SetAsideRow[]
+  /** What this run's MERGEs cost and how often they were resubmitted (#1443). */
+  snowflake_send: SnowflakeSendStats
 }
 
 /** A row Snowflake refused on its own merits, set aside so the rest can export (#427). */
@@ -431,9 +435,11 @@ async function mergeIsolatingRefusals(
   cols: ColSpec[],
   rows: ExportRow[],
   budget: { refusedLeft: number },
+  // The run's send meter (#1443). Omitted by direct callers, which then count nothing.
+  meter?: SnowflakeSendMeter,
 ): Promise<{ shipped: ExportRow[]; refused: Array<{ row: ExportRow; reason: string }> }> {
   try {
-    await executeStatement(config, buildMergeSql(tableName, cols, rows))
+    await executeStatement(config, buildMergeSql(tableName, cols, rows), undefined, { meter })
     return { shipped: rows, refused: [] }
   } catch (e) {
     if (!isRowRejection(e)) throw e
@@ -448,8 +454,8 @@ async function mergeIsolatingRefusals(
       return { shipped: [], refused: [{ row: rows[0], reason: e.message.slice(0, SET_ASIDE_REASON_MAX_CHARS) }] }
     }
     const half = Math.ceil(rows.length / 2)
-    const left = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(0, half), budget)
-    const right = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(half), budget)
+    const left = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(0, half), budget, meter)
+    const right = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(half), budget, meter)
     return { shipped: [...left.shipped, ...right.shipped], refused: [...left.refused, ...right.refused] }
   }
 }
@@ -508,12 +514,15 @@ export async function runSightingsExport(
   now: () => number = Date.now,
 ): Promise<ExportSummary> {
   const config = readSnowflakeConfig(env)
-  const summary: ExportSummary = {
+  const summary: Omit<ExportSummary, 'snowflake_send'> = {
     sightings_exported: 0,
     bids_exported: 0,
     errors: [],
     set_aside: [],
   }
+  // One per run, shared by both phases, so the logged summary says what every
+  // MERGE of this run cost and how often one was resubmitted (#1443).
+  const sendMeter = new SnowflakeSendMeter()
   // One deadline for both export phases, set once up front, so each stops itself
   // cleanly before Cloudflare's hard ~15min cron kill. The purge is NOT here: it
   // runs in its own cron invocation with its own fresh budget. When they shared
@@ -537,6 +546,7 @@ export async function runSightingsExport(
       now,
       summary.set_aside,
       refusalBudget,
+      sendMeter,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.sightings_exported = e.exported
@@ -556,13 +566,14 @@ export async function runSightingsExport(
       now,
       summary.set_aside,
       refusalBudget,
+      sendMeter,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.bids_exported = e.exported
     summary.errors.push(`bids export: ${formatErr(e)}`)
   }
 
-  return summary
+  return { ...summary, snowflake_send: sendMeter.snapshot() }
 }
 
 // Deletes rows Snowflake already has. Runs in its OWN cron invocation, on its own
@@ -693,6 +704,8 @@ export async function exportTable(
   // How many more rows this RUN may set aside. A caller exporting several tables
   // passes one object to every call so the limit covers the run, not each table.
   refusalBudget: { refusedLeft: number } = { refusedLeft: SET_ASIDE_MAX_PER_RUN },
+  // The run's send meter (#1443). Omitted by direct callers, which then count nothing.
+  meter?: SnowflakeSendMeter,
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   const partitionKey = partitionKeyFor(tableName)
@@ -719,7 +732,7 @@ export async function exportTable(
 
         const selected = data as unknown as Array<Record<string, unknown>>
         const { shipped: rows, refused } = await mergeIsolatingRefusals(
-          config, tableName, cols, selected, refusalBudget,
+          config, tableName, cols, selected, refusalBudget, meter,
         )
 
         // Every row refused, and nothing else got through this run: that is the

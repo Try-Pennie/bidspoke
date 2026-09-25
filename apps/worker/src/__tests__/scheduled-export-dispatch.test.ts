@@ -19,6 +19,7 @@ import type { Env } from '../index'
 import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from '../lib/sightings-export'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
+import { SnowflakeSendMeter } from '../lib/snowflake'
 
 const env = {} as unknown as Env
 
@@ -184,7 +185,7 @@ describe('the export reports rows it set aside', () => {
   it('hands the run\'s set aside rows to their own alert', async () => {
     const setAside = [{ table: 'lead_sightings', id: 'abc', reason: 'Snowflake 422: refused' }]
     vi.mocked(runSightingsExport).mockResolvedValueOnce({
-      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: setAside,
+      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: setAside, snowflake_send: new SnowflakeSendMeter().snapshot(),
     })
 
     await fireAndFlush('37 */2 * * *')
@@ -195,7 +196,7 @@ describe('the export reports rows it set aside', () => {
 
   it('still reports on a run that set nothing aside, so the condition clears', async () => {
     vi.mocked(runSightingsExport).mockResolvedValueOnce({
-      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: [],
+      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: [], snowflake_send: new SnowflakeSendMeter().snapshot(),
     })
 
     await fireAndFlush('37 */2 * * *')

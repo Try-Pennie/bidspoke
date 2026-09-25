@@ -636,9 +636,9 @@ export default {
         (async () => {
           await writeHeartbeat(env.IDEMPOTENCY, 'execution-archive')
           const { runExecutionArchive } = await import('./lib/execution-archive')
-          const { sendArchiveBatch } = await import('./lib/execution-archive-send')
+          const { archiveSender } = await import('./lib/execution-archive-send')
           return runExecutionArchive(env, supabase, {
-            sendBatch: (rows, giveUpAt) => sendArchiveBatch(env, rows, giveUpAt),
+            sendBatch: archiveSender(env),
             // The event identity, so a platform retry of this cron can take over
             // the lock its terminated predecessor left (#1181).
             scheduledFor: new Date(event.scheduledTime),
@@ -715,11 +715,11 @@ export default {
         (async () => {
           const { runArchiveBacklog, backlogDeps, hoursOfDay } = await import('./lib/archive-backlog-run')
           const { runExecutionArchive } = await import('./lib/execution-archive')
-          const { sendArchiveBatch } = await import('./lib/execution-archive-send')
+          const { archiveSender } = await import('./lib/execution-archive-send')
           const { CRON_RUN_BUDGET } = await import('./archive/deadline')
           const deps = backlogDeps(env, supabase, async (day, alreadyRecorded, wallMs) => {
             const summary = await runExecutionArchive(env, supabase, {
-              sendBatch: (rows, giveUpAt) => sendArchiveBatch(env, rows, giveUpAt),
+              sendBatch: archiveSender(env),
               hours: hoursOfDay(day),
               alreadyRecorded,
               // What the WALK says is left of this invocation, never more than a

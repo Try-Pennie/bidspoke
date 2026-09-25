@@ -41,8 +41,13 @@ const writeHeartbeatCompleted = vi.fn().mockResolvedValue(undefined)
 vi.mock('../lib/execution-archive', () => ({
   runExecutionArchive: (...args: unknown[]) => runExecutionArchive(...args),
 }))
+// The one send function the archive callers share (#1443). Returns a marker so
+// a test can prove the run was handed exactly what archiveSender built.
+const archiveSenderMarker = vi.fn()
+const archiveSender = vi.fn(() => archiveSenderMarker)
 vi.mock('../lib/execution-archive-send', () => ({
   sendArchiveBatch: (...args: unknown[]) => sendArchiveBatch(...args),
+  archiveSender: (...args: unknown[]) => (archiveSender as (...a: unknown[]) => unknown)(...args),
 }))
 vi.mock('../lib/archive-gate', () => ({
   runArchiveGate: (...args: unknown[]) => runArchiveGate(...args),
@@ -212,6 +217,18 @@ describe('the scheduled handler', () => {
 
     const deps = runExecutionArchive.mock.calls[0]?.[2] as { sendBatch?: unknown }
     expect(typeof deps?.sendBatch).toBe('function')
+  })
+
+  it('hands the archive the shared sender, which forwards the run\'s meter (#1443)', async () => {
+    archiveSender.mockClear()
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.all(waited)
+
+    const deps = runExecutionArchive.mock.calls[runExecutionArchive.mock.calls.length - 1]?.[2] as { sendBatch?: unknown }
+    expect(archiveSender).toHaveBeenCalledWith(env)
+    expect(deps.sendBatch).toBe(archiveSenderMarker)
   })
 })
 
