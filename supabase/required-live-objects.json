@@ -277,5 +277,16 @@
     },
     "anon": "denied",
     "note": "Records a click claim buyer_click_send left held, so the partner page can list it (#1552). A WRITE, service_role only. Probed with every argument because PostgREST resolves a function by its argument names; as anon the call is refused before the body runs."
+  },
+  {
+    "name": "sightings_buffer_lag",
+    "args": {
+      "p_table": "lead_sightings",
+      "p_waiting_before": "2026-01-01T00:00:00",
+      "p_exported_before": "2026-01-01T00:00:00Z",
+      "p_cap": 1
+    },
+    "anon": "denied",
+    "note": "Read by the daily sightings buffer watchdog in the Worker as service_role (#463). Probed with every argument because PostgREST resolves a function by its argument names; as anon the call is refused before the body runs."
   }
 ]

@@ -2798,6 +2798,20 @@ export type Database = {
         }
         Returns: Json
       }
+      sightings_buffer_lag: {
+        Args: {
+          p_cap?: number
+          p_exported_before: string
+          p_table: string
+          p_waiting_before: string
+        }
+        Returns: {
+          oldest_exported_at: string
+          oldest_waiting: string
+          overdue_rows: number
+          waiting_rows: number
+        }[]
+      }
       sign_off_buyer_select_parity_day: {
         Args: {
           p_actor: string
