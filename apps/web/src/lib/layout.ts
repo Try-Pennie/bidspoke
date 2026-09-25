@@ -776,10 +776,15 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const src = nodeMap.get(sourceId)
       if (!src) continue
       const handles = configuredHandleIds(src)
-      if (!handles || handles.length < 2) continue
+      if (!handles || handles.length === 0) continue
       const parentPos = pos.get(sourceId)
       if (!parentPos) continue
-      const offsets = handleOffsetsByNode.get(sourceId)
+      // A branch with one arm (else_behavior "none") has one configured handle,
+      // at the card's centre, and no published offsets. It must still place its
+      // child here: the chain straightening below skips every node with
+      // configured handles, so otherwise the child keeps dagre's x and nested one
+      // arm branches walk right as a staircase (#1567).
+      const offsets = handleOffsetsByNode.get(sourceId) ?? (handles.length === 1 ? [0] : undefined)
       if (!offsets) continue
       // Offsets of the CONFIGURED handles feeding each child. An edge on a
       // handle the node does not have (a stray 'output' on a buyer_select, #1493)

@@ -15,6 +15,15 @@ const OPERATION_LABELS: Record<string, string> = {
   apex:   'Apex',
 }
 
+// A query names its object inside its SOQL and has no `object` field (#1568), so
+// the subtitle reads the object after FROM, or plain "Query" when the SOQL is a
+// template. "Unconfigured" means only that there is no SOQL at all.
+function querySubtitle(soql: string): string {
+  if (!soql.trim()) return 'Unconfigured'
+  const from = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(soql)
+  return from ? `Query ${from[1]}` : 'Query'
+}
+
 export function SalesforceNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
 
@@ -24,7 +33,9 @@ export function SalesforceNode({ data, selected }: NodeProps) {
   const opLabel = OPERATION_LABELS[operation] ?? operation
   const subtitle = operation === 'apex'
     ? (apexPath || 'Unconfigured')
-    : object ? `${opLabel} ${object}` : 'Unconfigured'
+    : operation === 'query'
+      ? querySubtitle((config.soql as string | undefined) ?? '')
+      : object ? `${opLabel} ${object}` : 'Unconfigured'
 
   const execOutput = executionStep?.output as { status?: number; body?: unknown } | null | undefined
   const statusCode = execOutput?.status
