@@ -255,6 +255,16 @@ describe('quiet: zero eligible for three hours inside the selling hours', () => 
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([expect.stringMatching(/liberty1: .*could not be read.*db down/)])
   })
 
+  it('keeps a found no-eligible problem when the offer half cannot be read, and says that half is unknown', async () => {
+    const { d, pages } = deps({ checks: noneEligible() })
+    d.readPartner = async () => { throw new Error('partner read failed') }
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet.verdict).toBe('quiet')
+    const lines = last(pages, CLICK_PATH_QUIET_JOB) ?? []
+    expect(lines.some((l) => /none was eligible/.test(l))).toBe(true)
+    expect(lines.some((l) => /not known.*partner read failed/.test(l))).toBe(true)
+  })
+
   it('refusals that cannot be read page as unknown, never as a quiet hour', async () => {
     const { d, pages } = deps()
     d.readSendRuns = async () => { throw new Error('steps timed out') }

@@ -490,34 +490,49 @@ async function judgeQuiet(
   }
 
   // No click: offers made by this org's own eligible check runs, and no click execution.
-  if (read.slug === null) {
-    return { verdict: 'unmeasured', reason: `the partner could not be read, so its offers could not be counted${read.partnerError ? `: ${read.partnerError}` : ''}` }
-  }
-  let offers: number
-  try {
-    const eligibleIds = new Set(read.checks.filter((r) => r.route === 'eligible').map((r) => r.execution_id))
-    offers = (await deps.readOfferExecutionIds(read.slug, from, now + 1)).filter((id) => eligibleIds.has(id)).length
-  } catch (err) {
-    return { verdict: 'unmeasured', reason: `the offers could not be read: ${messageOf(err)}` }
-  }
-  if (offers >= NO_CLICK_MIN_OFFERS) {
-    if (subject.send.workflow_ids.length === 0) {
-      found.push(`${offers} offers made in the last 3 hours and no live workflow sends this buyer's clicks, so no click can be sold`)
-    } else {
-      let clicks: number
-      try {
-        clicks = await deps.countClickExecutions(subject, from, now + 1)
-      } catch (err) {
-        return { verdict: 'unmeasured', reason: `the click executions could not be counted: ${messageOf(err)}` }
-      }
-      if (clicks === 0) found.push(`${offers} offers made in the last 3 hours and no click execution ran in the workflow that sends them`)
-    }
-  }
+  // A half that cannot be read never discards what the other half found (L530): it is
+  // reported beside it, and only a run that found nothing says unmeasured.
+  const noClick = await judgeNoClick(deps, subject, read.slug, read.partnerError, read.checks, from, now)
+  if (noClick.line) found.push(noClick.line)
+  if (noClick.unread && found.length > 0) found.push(`whether the offers turned into clicks is not known: ${noClick.unread}`)
+  const offers = noClick.offers
 
   if (found.length > 0) return { verdict: 'quiet', lines: found }
+  if (noClick.unread) return { verdict: 'unmeasured', reason: noClick.unread }
   if (!open) return { verdict: 'not_open', detail: `${counted.length} runs, ${eligible} eligible, ${offers} offers` }
   if (counted.length < QUIET_MIN_RUNS) return { verdict: 'too_few', detail: `${counted.length} runs, ${offers} offers` }
   return { verdict: 'normal', detail: `${counted.length} runs, ${eligible} eligible, ${offers} offers` }
+}
+
+/** The offers-but-no-clicks half of the quiet check: a finding, or the reason it could not be read. */
+async function judgeNoClick(
+  deps: ClickPathDeps,
+  subject: ClickSubject,
+  slug: string | null,
+  partnerError: string | null,
+  checks: CheckRun[],
+  from: number,
+  now: number,
+): Promise<{ line?: string; unread?: string; offers: number | null }> {
+  if (slug === null) return { unread: `the partner could not be read, so its offers could not be counted${partnerError ? `: ${partnerError}` : ''}`, offers: null }
+  let offers: number
+  try {
+    const eligibleIds = new Set(checks.filter((r) => r.route === 'eligible').map((r) => r.execution_id))
+    offers = (await deps.readOfferExecutionIds(slug, from, now + 1)).filter((id) => eligibleIds.has(id)).length
+  } catch (err) {
+    return { unread: `the offers could not be read: ${messageOf(err)}`, offers: null }
+  }
+  if (offers < NO_CLICK_MIN_OFFERS) return { offers }
+  if (subject.send.workflow_ids.length === 0) {
+    return { line: `${offers} offers made in the last 3 hours and no live workflow sends this buyer's clicks, so no click can be sold`, offers }
+  }
+  let clicks: number
+  try {
+    clicks = await deps.countClickExecutions(subject, from, now + 1)
+  } catch (err) {
+    return { unread: `the click executions could not be counted: ${messageOf(err)}`, offers }
+  }
+  return clicks === 0 ? { line: `${offers} offers made in the last 3 hours and no click execution ran in the workflow that sends them`, offers } : { offers }
 }
 
 const previousPacificDate = (date: string): string => zonedParts(zonedDayStartUtc(date, PACIFIC) - 1, PACIFIC).date
