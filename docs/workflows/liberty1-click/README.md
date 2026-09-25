@@ -45,19 +45,19 @@ The Salesforce writes are Brian's three bodies, field for field: exchange status
 
 ## What Dan builds
 
-The Liberty1 partner must exist first: a partner of type Buyer on the Partners page, which is what the send node's partner picker lists. There is none yet (checked 2026-09-24). That partner record names the click claim and the daily click count, so create it once and keep it. The 50 clicks a day is set on its buyer profile (Clicks per day), not on this workflow: the offer side stops offering at it and the send node judges its over cap notice against the same number (#1543).
+The Liberty1 partner must exist first: a partner of type Buyer on the Partners page, which is what the send node's partner picker lists. It was created on 2026-09-25 (#1547), slug `liberty1`. That partner record names the click claim and the daily click count, so create it once and keep it. The 50 clicks a day is set on its buyer profile (Clicks per day), not on this workflow: the offer side stops offering at it and the send node judges its over cap notice against the same number (#1543).
 
 Then, either:
 
-- **Create it from the file** (quickest): a session POSTs `definition.json` to `/api/workflows` (the file is exactly that request's body), which creates the workflow switched off. Dan opens it, sets the partner (below), and saves.
+- **Create it from the file** (quickest): a session POSTs `definition.json` to `/api/workflows` (the file is exactly that request's body), which creates the workflow switched ON: the create route always does, whatever the body says. Switch it off straight after (`PATCH /api/workflows/:id` with `{"is_active": false}`, the Workflows list toggle). The session must call as a user of the production organization, so from Dan's logged in browser tab, not with the E2E user. Dan opens it, sets the partner (below), and saves. This is how it was built on 2026-09-25: workflow `8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08`, renamed on the canvas to "Liberty1 Click Handler".
 - **Or build it on the canvas** by hand, node by node, using `definition.json` as the list: each node's namespace, type and config are there, and every code node's script box gets the matching file pasted in full.
 
 **The partner field.** In `definition.json` it is the one line `"partner_id": ""` on the `click_send` node: Liberty1's partner id (#1553), deliberately left empty because the partner does not exist yet. Empty, the canvas marks the node "No partner selected" and refuses to save the workflow live, so it cannot go live without a buyer. Pick Liberty1 in the node's partner picker, which fills it in.
 
 **Before switching it on:**
-1. Create a custom endpoint for the workflow on the Endpoints page, with an API key.
+1. Create an API key on the API Sources page, then a custom endpoint for the workflow on the Endpoints page (partner slug `liberty1`, path `/click`). The endpoint form has no key field: any key on API Sources opens it. Give partners the `https://hook.trypennie.dev/liberty1/click` form of the address; `liberty1.trypennie.dev` answers Cloudflare error 1014 and never reaches Bidspoke.
 2. Run it from the Test Runner with `{"Prospect__c": "<a real Liberty1 Bid prospect>"}`. A test run checks everything and routes `not_sent`: nothing is claimed, sent, counted or written.
-3. Put the workflow's id in `LIBERTY1_CLICK_WORKFLOW_ID` (`apps/worker/src/lib/engine-script-drift.ts`) in a PR, so the hourly drift check starts comparing the canvas with the kept scripts. Until then it records the three as `not_built`.
+3. The workflow's id is in `LIBERTY1_CLICK_WORKFLOW_ID` (`apps/worker/src/lib/engine-script-drift.ts`, #1547), so the hourly drift check compares the canvas with the kept scripts.
 
 ## What Brian changes
 
