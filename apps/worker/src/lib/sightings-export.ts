@@ -467,7 +467,11 @@ async function mergeIsolatingRefusals(
   tableName: string,
   cols: ColSpec[],
   rows: ExportRow[],
+  // This ATTEMPT's view of the allowance: a copy the caller throws away if the
+  // attempt is retried, so finding a row twice never spends the run's allowance twice.
   budget: { refusedLeft: number },
+  // A row this run already set aside costs nothing to find again.
+  alreadySetAside: (id: string) => boolean,
   // The run's send meter (#1443). Omitted by direct callers, which then count nothing.
   meter?: SnowflakeSendMeter,
 ): Promise<{ shipped: ExportRow[]; refused: Array<{ row: ExportRow; reason: string }> }> {
@@ -477,7 +481,7 @@ async function mergeIsolatingRefusals(
   } catch (e) {
     if (!isRowRejection(e)) throw e
     if (rows.length === 1) {
-      budget.refusedLeft--
+      if (!alreadySetAside(rows[0].id as string)) budget.refusedLeft--
       if (budget.refusedLeft < 0) {
         throw new Error(
           `${tableName}: Snowflake refused more than ${SET_ASIDE_MAX_PER_RUN} rows in one run, so this is treated as ` +
@@ -487,8 +491,8 @@ async function mergeIsolatingRefusals(
       return { shipped: [], refused: [{ row: rows[0], reason: e.message.slice(0, SET_ASIDE_REASON_MAX_CHARS) }] }
     }
     const half = Math.ceil(rows.length / 2)
-    const left = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(0, half), budget, meter)
-    const right = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(half), budget, meter)
+    const left = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(0, half), budget, alreadySetAside, meter)
+    const right = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(half), budget, alreadySetAside, meter)
     return { shipped: [...left.shipped, ...right.shipped], refused: [...left.refused, ...right.refused] }
   }
 }
@@ -783,8 +787,14 @@ export async function exportTable(
         if (!data || data.length === 0) return { shipped: 0, selected: 0 }
 
         const selected = data as unknown as Array<Record<string, unknown>>
+        // This closure is re-run whole when a statement times out, so nothing it
+        // counts may be counted at the moment a refusal is FOUND: a retry finds the
+        // same unmarked row again. The isolation works on a throwaway copy of the
+        // allowance, and the run's allowance is spent only below, once per row
+        // actually marked (#427).
+        const isSetAside = (id: string) => setAside.some((r) => r.table === tableName && r.id === id)
         const { shipped: rows, refused } = await mergeIsolatingRefusals(
-          config, tableName, cols, selected, refusalBudget, meter,
+          config, tableName, cols, selected, { refusedLeft: refusalBudget.refusedLeft }, isSetAside, meter,
         )
 
         // Every row refused, and nothing else got through this run: that is the
@@ -815,7 +825,9 @@ export async function exportTable(
                   .select('id'),
             )
             if (markErr) throw toThrowable(markErr)
+            if (isSetAside(id)) continue
             setAside.push({ table: tableName, id, reason })
+            refusalBudget.refusedLeft--
             console.warn(`[sightings-export] ${tableName}: set aside row ${id}, which Snowflake refused: ${reason}`)
           }
         }
