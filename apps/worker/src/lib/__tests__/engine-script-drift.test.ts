@@ -357,11 +357,26 @@ describe('the Liberty1 click workflow (#1545)', () => {
     }
   })
 
-  it('has no workflow id until it is built, and is then recorded as not_built without reading any mirror or paging', async () => {
-    expect(LIBERTY1_CLICK_WORKFLOW_ID).toBeNull()
-    const fetchImpl = vi.fn()
+  it('watches the built workflow (#1547): reads its own mirror file and judges the three kept scripts on the canvas as agreeing', async () => {
+    expect(LIBERTY1_CLICK_WORKFLOW_ID).toBe('8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08')
+    const urls: string[] = []
+    const fetchImpl = vi.fn(async (url: string) => {
+      urls.push(url)
+      const nodes = (liberty1?.scripts ?? []).map((k) => codeNode(k.namespace, k.script))
+      return new Response(JSON.stringify({ id: LIBERTY1_CLICK_WORKFLOW_ID, definition: { nodes } }), { status: 200 })
+    })
     const s = await runEngineScriptDrift({
       repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', workflows: [liberty1!], fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
+    })
+    expect(urls.map((u) => u.split('/').pop())).toEqual(['8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08.json'])
+    expect(s.findings).toEqual([])
+    expect(s.verdicts.map((v) => v.state)).toEqual(['agree', 'agree', 'agree'])
+  })
+
+  it('a workflow with no id is recorded as not_built without reading any mirror or paging', async () => {
+    const fetchImpl = vi.fn()
+    const s = await runEngineScriptDrift({
+      repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', workflows: [{ ...liberty1!, workflowId: null }], fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
     })
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(s.findings).toEqual([])

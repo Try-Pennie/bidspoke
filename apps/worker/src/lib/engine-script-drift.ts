@@ -147,13 +147,13 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
 ]
 
 /**
- * The Liberty1 click workflow (#1545), which replaces Brian's Pipedream flow.
- * Null until Dan builds it on the canvas and saves: the scripts were written
- * here first, so there is no canvas baseline and no mirror file yet. Once it is
- * saved, put the workflow's id here in a PR; from then on the check judges
- * these three like the Engine scripts, and any difference is a drift.
+ * The Liberty1 click workflow (#1545), which replaces Brian's Pipedream flow,
+ * built from docs/workflows/liberty1-click/definition.json and first saved on
+ * 2026-09-25 (#1547) as "Liberty1 Click Handler". The scripts were written here
+ * first, so they have no canvas baseline: the check judges these three like the
+ * Engine scripts, and any difference is a drift.
  */
-export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = null
+export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = '8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08'
 
 export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
   { namespace: 'resolve_input', file: 'resolve_click_input.js', script: RESOLVE_CLICK_INPUT, canvasBaselineSha256: null, baselineReadOn: null },
