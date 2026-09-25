@@ -1,19 +1,17 @@
-// Export of lead_sightings + lead_sighting_bids to Snowflake, and the purge that
-// drops rows once Snowflake has them.
+// Export of lead_sightings + lead_sighting_bids to Snowflake.
 //
-// TWO separate cron invocations, on purpose (see index.ts / wrangler.toml):
-//   runSightingsExport  "37 */2 * * *"    every 2h at :37
-//   runSightingsPurge   "47 1-23/2 * * *" odd hours at :47
-// They used to be one invocation sharing one WALL_TIME_BUDGET_MS deadline. When
-// export throughput grew to fill that budget, the purge phases found the deadline
-// already passed, deleted nothing, and logged a console.warn with `errors: []` --
-// so nothing alerted, and the backlog grew by a full day's inflow every day
-// (2026-07-10). A separate invocation gives the purge its own fresh budget.
+// runSightingsExport runs every 2h at :37 in its own cron invocation (see
+// index.ts / wrangler.toml). The purge that drops rows once Snowflake has had
+// them for a day is no longer here: it runs in the database as
+// purge_exported_sightings, hourly in pg_cron (#541,
+// supabase/migrations/20260926000000_sightings_purge_in_pg_cron.sql), because it
+// is pure database work and the PostgREST path gave it a 30s statement timeout,
+// a subrequest ceiling and a zero-row detector to paper over both. Only the
+// batched drain below (purgeBatched) is still used, by the Achieve sandbox purge.
 //
 // Snowflake is canonical for analytics; Supabase is a write buffer purged 24h
 // after a successful export. A failed EXPORT normally self-heals next run, under
-// 2h later. A failed PURGE does not mean analytics are stale: those rows are
-// already in Snowflake, and only the Supabase cleanup is behind.
+// 2h later.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
@@ -34,7 +32,11 @@ import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
-export const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
+// Rows are purged from Supabase this many hours after export. The purge itself is
+// the database's (purge_exported_sightings); this copy exists for the bid recording
+// check below, and a web guard (purge-grace-agrees.test.ts) requires it to equal
+// the procedure's grace (#541).
+export const PURGE_GRACE_HOURS = 24
 /**
  * The earliest a lead_sighting_bids row can have been purged, measured from its
  * attempt: the export runs after the attempt and the purge follows the export by
@@ -525,12 +527,6 @@ export async function notifySetAsideRows(
   )
 }
 
-export interface PurgeSummary {
-  sightings_purged: number
-  bids_purged: number
-  errors: string[]
-}
-
 // Strand cleanup (formerly the in-Worker sweepStaleInFlightSightings) now runs
 // DB-side via pg_cron functions BEFORE this 09:00 export: reduce_finalize_stranded
 // (every 30 minutes, plus a deeper 07:45 pass; recoverable strands → real outcome)
@@ -557,10 +553,10 @@ export async function runSightingsExport(
   // MERGE of this run cost and how often one was resubmitted (#1443).
   const sendMeter = new SnowflakeSendMeter()
   // One deadline for both export phases, set once up front, so each stops itself
-  // cleanly before Cloudflare's hard ~15min cron kill. The purge is NOT here: it
-  // runs in its own cron invocation with its own fresh budget. When they shared
-  // this deadline, export growth (the Lead Economy cutover roughly tripled inflow
-  // over 2 days) consumed the whole budget and the purge silently deleted nothing.
+  // cleanly before Cloudflare's hard ~15min cron kill. The purge is NOT here, and
+  // is not the Worker's at all since #541. When they once shared this deadline,
+  // export growth (the Lead Economy cutover roughly tripled inflow over 2 days)
+  // consumed the whole budget and the purge silently deleted nothing.
   const deadline = now() + WALL_TIME_BUDGET_MS
   // One set aside allowance for the whole run, shared by both tables (#427).
   const refusalBudget = { refusedLeft: SET_ASIDE_MAX_PER_RUN }
@@ -617,74 +613,6 @@ export async function runSightingsExport(
   }
 
   return { ...summary, snowflake_send: sendMeter.snapshot() }
-}
-
-// Deletes rows Snowflake already has. Runs in its OWN cron invocation, on its own
-// wall-time budget, precisely so a long export cannot leave it with nothing.
-// Nothing here touches Snowflake: a failure means Supabase is carrying rows it
-// should have dropped, NOT that analytics are stale.
-// The two tables share one Cloudflare invocation's subrequest budget, and this
-// runs sightings before bids. On 2026-07-10 the first real run spent the whole
-// budget draining an 87K sightings backlog and lead_sighting_bids got zero, so
-// the scheduled dispatch scopes each cron to ONE table (see index.ts): a
-// separate invocation per table means neither can starve the other of
-// subrequests. `tables` defaults to both for direct/manual use.
-export async function runSightingsPurge(
-  supabase: SupabaseClient,
-  now: () => number = Date.now,
-  sleep: Sleep = DEFAULT_SLEEP,
-  tables: readonly ('lead_sightings' | 'lead_sighting_bids')[] = ['lead_sightings', 'lead_sighting_bids'],
-): Promise<PurgeSummary> {
-  const summary: PurgeSummary = { sightings_purged: 0, bids_purged: 0, errors: [] }
-  const deadline = now() + WALL_TIME_BUDGET_MS
-
-  for (const tableName of tables) {
-    const label = tableName === 'lead_sightings' ? 'sightings' : 'bids'
-    try {
-      const purged = await purgeOldExported(supabase, tableName, MAX_ROWS_PER_RUN, sleep, deadline, now)
-      if (tableName === 'lead_sightings') summary.sightings_purged = purged
-      else summary.bids_purged = purged
-      await assertNothingLeftToPurge(supabase, tableName, purged)
-    } catch (e) {
-      summary.errors.push(`${label} purge: ${formatErr(e)}`)
-    }
-  }
-
-  return summary
-}
-
-// purgeOldExported returns 0 for two very different runs: "nothing needed
-// purging" (healthy) and "could not purge anything" (the wall-time budget or the
-// platform subrequest ceiling ended the drain before a delete landed). Both used
-// to report `purged: 0, errors: []`, which is how 107,274 purgeable rows sat
-// past their retention window for days with every run looking clean (#613).
-// Throwing here routes the second case into the caller's existing errors[], which
-// notifyExportFailure already alerts on.
-async function assertNothingLeftToPurge(
-  supabase: SupabaseClient,
-  tableName: string,
-  purged: number,
-): Promise<void> {
-  if (purged > 0) return
-  if (!(await purgeableBacklogExists(supabase, tableName))) return
-  throw new Error(
-    'deleted 0 rows while purgeable rows remain (the wall-time budget or the platform subrequest ceiling ended the drain before any delete landed)'
-  )
-}
-
-// Deliberately an existence probe, not a COUNT: an exact count over a six-figure
-// backlog spanning monthly partitions is the same query shape that keeps hitting
-// service_role's 30s statement_timeout, so a counting check would fail on exactly
-// the bad day it needs to fire. One bounded row answers the only question asked.
-async function purgeableBacklogExists(supabase: SupabaseClient, tableName: string): Promise<boolean> {
-  const { data, error } = await supabase
-    .from(tableName)
-    .select('id')
-    .not('exported_at', 'is', null)
-    .lt('exported_at', purgeCutoff())
-    .limit(1)
-  if (error) throw error
-  return (data ?? []).length > 0
 }
 
 // ============================================================
@@ -857,8 +785,8 @@ export async function exportTable(
             // A pre-correction group CAN legitimately match zero rows: every row in
             // it was corrected under us. Those rows keep exported_at null, so they
             // re-export and converge on the next run rather than being lost, and
-            // sustained non-convergence is exactly what the #613 purge-backlog alarm
-            // watches for. Every other group keeps the #583 hard guard, where a zero
+            // sustained non-convergence is what the daily buffer watchdog (#463)
+            // reports as rows waiting to export. Every other group keeps the #583 hard guard, where a zero
             // match means the write itself is broken.
             { onMiss: group.mayMissAll ? 'warn' : 'throw' },
           )
@@ -1042,41 +970,9 @@ export function formatValue(v: unknown, type: ColType): string {
 // Kept small so the id list stays within the PostgREST request-URL length limit.
 export const PURGE_BATCH = 200
 
-// Rows are purgeable once they have been exported and have aged past the grace
-// window. Shared by the drain loop and the zero-row backlog check so the two can
-// never disagree about which rows should already be gone.
-export function purgeCutoff(nowMs: number = Date.now()): string {
-  return new Date(nowMs - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
-}
-
-export async function purgeOldExported(
-  supabase: SupabaseClient,
-  tableName: string,
-  // Per-run backstop so a huge backlog drains over several nights rather than
-  // running the worker until it hits the platform subrequest ceiling. Steady
-  // state (~a day's exported rows) is far below this.
-  maxRows: number = MAX_ROWS_PER_RUN,
-  sleep: Sleep = DEFAULT_SLEEP,
-  // Soft wall-time deadline (epoch ms); undefined = no deadline (existing
-  // direct-call behavior is unchanged). See WALL_TIME_BUDGET_MS.
-  deadline?: number,
-  now: () => number = Date.now,
-): Promise<number> {
-  const cutoff = purgeCutoff()
-  // Only rows already shipped to Snowflake, and only once past the grace window.
-  return purgeBatched(
-    supabase,
-    tableName,
-    (q) => q.not('exported_at', 'is', null).lt('exported_at', cutoff),
-    maxRows,
-    sleep,
-    deadline,
-    now,
-  )
-}
-
 /**
- * The batched drain shared by every purge: page rows out under a filter, DELETE each
+ * The batched drain a Worker purge uses (today only the Achieve sandbox purge; rows
+ * already exported are purged by the database since #541): page rows out under a filter, DELETE each
  * page bounded by the partition key, and stop cleanly on the wall-time budget, the
  * platform subrequest ceiling, or a permanently-timing-out batch.
  *

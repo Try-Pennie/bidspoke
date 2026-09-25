@@ -10,9 +10,10 @@
  *
  * Each run now opens a `job_runs` row before it starts and closes it with its
  * summary, whichever way it ends (`withJobRun`), so a run the platform kills
- * leaves an open row, which is itself the evidence (#960). The three sightings
- * job names are the ids their cron heartbeats already use, so one name answers
- * for a job everywhere; the Achieve export has no heartbeat and takes its own.
+ * leaves an open row, which is itself the evidence (#960). The sightings export's
+ * job name is the id its cron heartbeat already uses, so one name answers for it
+ * everywhere; the Achieve export has no heartbeat and takes its own. The purge is
+ * pg_cron's (#541) and records itself as `sightings-buffer-purge`.
  *
  * The last runs of one job, newest first:
  *
@@ -20,8 +21,8 @@
  *   from job_runs where job = 'sightings-export'
  *   order by started_at desc limit 24;
  *
- * VOLUME: twelve export runs, twenty four purge runs (twelve per table) and one
- * Achieve run a day, about 37 rows a day on top of the archive's. `job_runs` is
+ * VOLUME: twelve export runs and one Achieve run a day from here, plus the hourly
+ * pg_cron purge's 24, about 37 rows a day on top of the archive's. `job_runs` is
  * already listed as a big table and every reader of it is bounded.
  *
  * THIS RAISES NO ALERT. The export and purge alerts already exist, and a second
@@ -35,8 +36,6 @@ import { classifyExportError } from './export-error-hints'
 /** The job_runs names; the sightings ones match their cron heartbeat ids. */
 export const EXPORT_JOBS = {
   sightingsExport: 'sightings-export',
-  sightingsPurge: 'sightings-purge',
-  bidsPurge: 'sighting-bids-purge',
   achieveExport: 'achieve-export',
 } as const
 

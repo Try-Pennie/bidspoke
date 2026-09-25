@@ -10,15 +10,15 @@
 // Snowflake where it lives permanently. Full payloads ship as VARIANTs so the
 // analysis can pick fields in Snowflake without re-exporting.
 //
-// Runs on the same 09:00 UTC schedule as the sightings export and reuses its
-// chassis (batched MERGE, exported_at marking, purge-after-grace).
+// Runs daily at 09:00 UTC and reuses the sightings export's chassis (batched
+// MERGE, exported_at marking). Exported rows are purged 24h later by the database
+// (purge_exported_sightings, pg_cron, #541); only the sandbox purge is here.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
 import {
   exportTable,
-  purgeOldExported,
   purgeBatched,
   readSnowflakeConfig,
   reconcileColumns,
@@ -108,7 +108,6 @@ export interface AchieveExportSummary {
    *  when the enrichment failed before it could count, which is not the same as none (#1363). */
   enrollment_view_skipped: number | null
   evaluations_exported: number
-  evaluations_purged: number
   sandbox_purged: number
   errors: string[]
 }
@@ -401,7 +400,6 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     enrollment_view_filled: 0,
     enrollment_view_skipped: 0,
     evaluations_exported: 0,
-    evaluations_purged: 0,
     sandbox_purged: 0,
     errors: [],
   }
@@ -466,13 +464,8 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     summary.errors.push(`evaluations export: ${formatErr(e)}`)
   }
 
-  try {
-    summary.evaluations_purged = await purgeOldExported(supabase, 'achieve_evaluations')
-  } catch (e) {
-    summary.errors.push(`evaluations purge: ${formatErr(e)}`)
-  }
-
-  // Sandbox rows never export, so the purge above can never reach them (#644).
+  // Exported evaluations are purged by the database, hourly (#541). Sandbox rows
+  // never export, so that purge can never reach them, and they are purged here (#644).
   try {
     summary.sandbox_purged = await purgeSandboxEvaluations(supabase)
   } catch (e) {

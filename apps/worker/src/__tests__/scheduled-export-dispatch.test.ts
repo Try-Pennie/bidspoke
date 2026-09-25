@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // cron triggers dispatch the sightings export, without running real export work.
 vi.mock('../lib/sightings-export', () => ({
   runSightingsExport: vi.fn().mockResolvedValue({ errors: [] }),
-  runSightingsPurge: vi.fn().mockResolvedValue({ errors: [] }),
   notifySetAsideRows: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('../lib/achieve-export', () => ({
@@ -22,7 +21,7 @@ vi.mock('../lib/export-run-record', async (importOriginal) => ({
 
 import worker from '../index'
 import type { Env } from '../index'
-import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from '../lib/sightings-export'
+import { runSightingsExport, notifySetAsideRows } from '../lib/sightings-export'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
 import { SnowflakeSendMeter } from '../lib/snowflake'
@@ -120,67 +119,30 @@ describe('export crash alerts name the real cause', () => {
   })
 })
 
-// The purge used to run inside the export invocation, sharing its 12-minute wall
-// budget. Once the export grew to fill that budget the purge got zero time and
-// silently deleted nothing for days (2026-07-10). It now has its own trigger, so
-// it always starts with a fresh budget no matter how long the export ran.
-describe('scheduled purge dispatch', () => {
+// #541: the purge is the database's own pg_cron job now, so the two crons that
+// used to run it in the Worker (odd hours for sightings, even for bids) are
+// retired. Nothing may answer them, so a stale trigger left in Cloudflare runs
+// nothing rather than a second purge.
+describe('the Worker no longer runs the sightings purge (#541)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('runs the sightings purge on its own odd-hour cron, scoped to lead_sightings', () => {
-    fire('47 1-23/2 * * *')
-    expect(runSightingsPurge).toHaveBeenCalledTimes(1)
-    // Scoped to one table: sightings and bids each get their own invocation, so
-    // draining a large sightings backlog cannot starve bids of the shared
-    // per-invocation subrequest budget (2026-07-10 first-run symptom).
-    expect(vi.mocked(runSightingsPurge).mock.calls[0][3]).toEqual(['lead_sightings'])
-    expect(runSightingsExport).not.toHaveBeenCalled()
-  })
+  for (const cron of ['47 1-23/2 * * *', '47 0-22/2 * * *']) {
+    it(`does nothing on the retired ${cron} cron`, () => {
+      const ctx = fakeCtx()
+      worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
+      expect(ctx.waitUntil).not.toHaveBeenCalled()
+    })
+  }
 
-  it('runs the bids purge on its own even-hour cron, scoped to lead_sighting_bids', () => {
-    fire('47 0-22/2 * * *')
-    expect(runSightingsPurge).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(runSightingsPurge).mock.calls[0][3]).toEqual(['lead_sighting_bids'])
-    expect(runSightingsExport).not.toHaveBeenCalled()
-  })
-
-  it('does NOT purge inside the export invocation', () => {
-    fire('37 */2 * * *')
+  // Flushed, because the alerts are sent in the export's continuation: asserting
+  // straight after fire() would read the mock before anything ran and pass however
+  // the export behaved.
+  it('the export invocation still does not purge', async () => {
+    await fireAndFlush('37 */2 * * *')
     expect(runSightingsExport).toHaveBeenCalledTimes(1)
-    expect(runSightingsPurge).not.toHaveBeenCalled()
-  })
-
-  it('alerts under its own job name, so a purge failure never reads as stale Snowflake analytics', async () => {
-    vi.mocked(runSightingsPurge).mockResolvedValueOnce({
-      sightings_purged: 0,
-      bids_purged: 0,
-      errors: ['sightings purge: canceling statement due to statement timeout (57014)'],
-    })
-    await fireAndFlush('47 1-23/2 * * *')
-    expect(notifyExportFailure).toHaveBeenCalledWith(
-      expect.anything(),
-      'Lead sightings purge',
-      ['sightings purge: canceling statement due to statement timeout (57014)'],
-      undefined,
-      // A real purge job, so it says so and keeps the classified export wording.
-      'export-job',
-    )
-  })
-
-  it('alerts the bids purge under its own distinct job name', async () => {
-    vi.mocked(runSightingsPurge).mockResolvedValueOnce({
-      sightings_purged: 0,
-      bids_purged: 0,
-      errors: ['bids purge: deleted 0 rows while purgeable rows remain'],
-    })
-    await fireAndFlush('47 0-22/2 * * *')
-    expect(notifyExportFailure).toHaveBeenCalledWith(
-      expect.anything(),
-      'Lead sighting bids purge',
-      ['bids purge: deleted 0 rows while purgeable rows remain'],
-      undefined,
-      'export-job',
-    )
+    const jobs = vi.mocked(notifyExportFailure).mock.calls.map((c) => String(c[1]))
+    expect(jobs).toContain('Lead sightings export')
+    expect(jobs.some((j) => /purge/i.test(j))).toBe(false)
   })
 })
 
@@ -220,7 +182,7 @@ describe('the Achieve export reports its enrollment view shortfall', () => {
   it('hands the run\'s skipped count to its own alert', async () => {
     vi.mocked(runAchieveExport).mockResolvedValueOnce({
       trades_backfilled: 0, enrollment_view_filled: 3, enrollment_view_skipped: 12,
-      evaluations_exported: 15, evaluations_purged: 0, sandbox_purged: 0, errors: [],
+      evaluations_exported: 15, sandbox_purged: 0, errors: [],
     })
 
     await fireAndFlush('0 9 * * *')
@@ -235,7 +197,7 @@ describe('the Achieve export reports its enrollment view shortfall', () => {
   it('still reports the export when the shortfall alert throws', async () => {
     vi.mocked(runAchieveExport).mockResolvedValueOnce({
       trades_backfilled: 0, enrollment_view_filled: 0, enrollment_view_skipped: 4,
-      evaluations_exported: 4, evaluations_purged: 0, sandbox_purged: 0, errors: ['evaluations export: boom'],
+      evaluations_exported: 4, sandbox_purged: 0, errors: ['evaluations export: boom'],
     })
     vi.mocked(notifyEnrollmentViewSkipped).mockRejectedValueOnce(new Error('slack down'))
 
@@ -246,15 +208,14 @@ describe('the Achieve export reports its enrollment view shortfall', () => {
   })
 })
 
-// #745: each export and purge run leaves a durable job_runs row, under the same
-// name as its heartbeat, so recurrence and throughput are one query.
-describe('every export and purge run is recorded in job_runs (#745)', () => {
+// #745: each export run leaves a durable job_runs row, under the same name as its
+// heartbeat, so recurrence and throughput are one query. The purge is pg_cron's now
+// (#541) and records itself in job_runs as sightings-buffer-purge.
+describe('every export run is recorded in job_runs (#745)', () => {
   beforeEach(() => vi.clearAllMocks())
 
   const cases: Array<[string, string, () => unknown]> = [
     ['37 */2 * * *', 'sightings-export', () => runSightingsExport],
-    ['47 1-23/2 * * *', 'sightings-purge', () => runSightingsPurge],
-    ['47 0-22/2 * * *', 'sighting-bids-purge', () => runSightingsPurge],
     ['0 9 * * *', 'achieve-export', () => runAchieveExport],
   ]
 
