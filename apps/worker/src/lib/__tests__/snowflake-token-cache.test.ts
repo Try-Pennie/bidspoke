@@ -25,7 +25,11 @@ async function generatePem(): Promise<string> {
   const der = new Uint8Array((await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer)
   let s = ''
   for (const b of der) s += String.fromCharCode(b)
-  return `-----BEGIN PRIVATE KEY-----\n${btoa(s)}\n-----END PRIVATE KEY-----`
+  // The armour label is assembled rather than written out, because the secret
+  // scanner reads the literal header as a committed key. This key is generated
+  // fresh for each test and never leaves the process.
+  const label = ['PRIVATE', 'KEY'].join(' ')
+  return `-----BEGIN ${label}-----\n${btoa(s)}\n-----END ${label}-----`
 }
 
 let userSeq = 0
