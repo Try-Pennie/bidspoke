@@ -22,11 +22,14 @@ import type { Env } from '../index'
 import {
   executeStatement,
   escapeSqlLiteral,
+  isTransientSnowflakeError,
+  SnowflakeStatementError,
   type SnowflakeConfig,
   type SnowflakeStatementResponse,
 } from './snowflake'
 import { requireRowsAffected, toThrowable, toDbError } from './db-retry'
 import { formatErr } from './format-error'
+import { notifyExportFailure } from './export-alerts'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
 export const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
@@ -365,6 +368,122 @@ export interface ExportSummary {
   sightings_exported: number
   bids_exported: number
   errors: string[]
+  /** Rows Snowflake refused this run, now set aside rather than retried (#427). */
+  set_aside: SetAsideRow[]
+}
+
+/** A row Snowflake refused on its own merits, set aside so the rest can export (#427). */
+export interface SetAsideRow {
+  table: string
+  id: string
+  reason: string
+}
+
+/**
+ * The most rows one run may set aside before it stops treating them as bad rows
+ * and treats them as an outage instead (#427).
+ *
+ * Setting a row aside is right when the ROW is wrong. When many are refused, the
+ * likelier story is that something about the destination is wrong for everyone
+ * (a column made NOT NULL, a type changed), and quietly setting aside hundreds of
+ * rows would turn an outage into a data gap nobody sees. Each refused row also
+ * costs about two statements per halving on the way to finding it, so this also
+ * bounds what one run spends looking.
+ */
+export const SET_ASIDE_MAX_PER_RUN = 20
+
+/** Snowflake's reason is stored with the row, bounded so one huge message cannot bloat it. */
+const SET_ASIDE_REASON_MAX_CHARS = 1_000
+
+/**
+ * Whether Snowflake refused a statement because of what was IN it, which is the
+ * only case splitting the batch can help (#427).
+ *
+ * 422 is Snowflake's answer for a statement that compiled and then failed on the
+ * data (a NULL into a NOT NULL column, a value that does not fit its type), and
+ * 400 covers a value that broke the statement itself. Everything else is left
+ * alone: a temporary failure is the retry path's business, an auth or permission
+ * refusal is the same for every row, and a statement never sent for lack of time
+ * was never judged at all.
+ */
+function isRowRejection(e: unknown): e is SnowflakeStatementError {
+  return (
+    e instanceof SnowflakeStatementError &&
+    (e.status === 400 || e.status === 422) &&
+    !isTransientSnowflakeError(e.status, e.message)
+  )
+}
+
+type ExportRow = Record<string, unknown>
+
+/**
+ * MERGEs `rows`, and when Snowflake refuses them for a data reason, halves the
+ * set until each refusal is pinned to one row (#427).
+ *
+ * Halving rather than going row by row because the common case is one bad row in
+ * two hundred, which halving finds in about sixteen statements instead of two
+ * hundred. Rows that got through are returned for stamping; the refused ones are
+ * returned with Snowflake's own words for why.
+ */
+async function mergeIsolatingRefusals(
+  config: SnowflakeConfig,
+  tableName: string,
+  cols: ColSpec[],
+  rows: ExportRow[],
+  budget: { refusedLeft: number },
+): Promise<{ shipped: ExportRow[]; refused: Array<{ row: ExportRow; reason: string }> }> {
+  try {
+    await executeStatement(config, buildMergeSql(tableName, cols, rows))
+    return { shipped: rows, refused: [] }
+  } catch (e) {
+    if (!isRowRejection(e)) throw e
+    if (rows.length === 1) {
+      budget.refusedLeft--
+      if (budget.refusedLeft < 0) {
+        throw new Error(
+          `${tableName}: Snowflake refused more than ${SET_ASIDE_MAX_PER_RUN} rows in one run, so this is treated as ` +
+            `an outage rather than bad rows and nothing was set aside. The last refusal: ${formatErr(e)}`,
+        )
+      }
+      return { shipped: [], refused: [{ row: rows[0], reason: e.message.slice(0, SET_ASIDE_REASON_MAX_CHARS) }] }
+    }
+    const half = Math.ceil(rows.length / 2)
+    const left = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(0, half), budget)
+    const right = await mergeIsolatingRefusals(config, tableName, cols, rows.slice(half), budget)
+    return { shipped: [...left.shipped, ...right.shipped], refused: [...left.refused, ...right.refused] }
+  }
+}
+
+/**
+ * Pages about rows set aside this run, on a job name of their own (#427).
+ *
+ * Not folded into the export's failure alert, because the export did NOT fail:
+ * every other row reached Snowflake, and an export alert that cleared the moment
+ * the next run succeeded would report a row nobody has fixed as recovered. Called
+ * with an empty list on a run that set nothing aside, which clears the condition
+ * so the next set aside row pages at once instead of waiting out a cooldown.
+ */
+export async function notifySetAsideRows(
+  supabase: SupabaseClient,
+  rows: SetAsideRow[],
+  kv: Parameters<typeof notifyExportFailure>[3],
+): Promise<void> {
+  await notifyExportFailure(
+    supabase,
+    'Lead sightings rows set aside',
+    rows.map((r) => `${r.table} ${r.id}: ${r.reason}`),
+    kv,
+    {
+      consequence:
+        'Snowflake refused these rows, so they were set aside and every other row exported. They are kept in Supabase ' +
+        'and will not be purged, but they are missing from reporting until fixed.',
+      fixHint:
+        'Correct the value Snowflake names (or the Snowflake column), then set export_rejected_at and ' +
+        'export_rejected_reason back to null on the row. The next export sends it again.',
+      headlineVerb: 'set rows aside',
+      itemNoun: { one: 'row', many: 'rows' },
+    },
+  )
 }
 
 export interface PurgeSummary {
@@ -393,6 +512,7 @@ export async function runSightingsExport(
     sightings_exported: 0,
     bids_exported: 0,
     errors: [],
+    set_aside: [],
   }
   // One deadline for both export phases, set once up front, so each stops itself
   // cleanly before Cloudflare's hard ~15min cron kill. The purge is NOT here: it
@@ -400,6 +520,8 @@ export async function runSightingsExport(
   // this deadline, export growth (the Lead Economy cutover roughly tripled inflow
   // over 2 days) consumed the whole budget and the purge silently deleted nothing.
   const deadline = now() + WALL_TIME_BUDGET_MS
+  // One set aside allowance for the whole run, shared by both tables (#427).
+  const refusalBudget = { refusedLeft: SET_ASIDE_MAX_PER_RUN }
 
   try {
     summary.sightings_exported = await exportTable(
@@ -408,11 +530,13 @@ export async function runSightingsExport(
       'lead_sightings',
       SIGHTING_COLS,
       // Sightings: only finalized, non-test, un-exported
-      (q) => q.eq('outcome_state', 'finalized').eq('is_test', false).is('exported_at', null),
+      (q) => q.eq('outcome_state', 'finalized').eq('is_test', false).is('exported_at', null).is('export_rejected_at', null),
       MAX_ROWS_PER_RUN,
       DEFAULT_SLEEP,
       deadline,
       now,
+      summary.set_aside,
+      refusalBudget,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.sightings_exported = e.exported
@@ -425,11 +549,13 @@ export async function runSightingsExport(
       config,
       'lead_sighting_bids',
       BID_COLS,
-      (q) => q.eq('is_test', false).is('exported_at', null),
+      (q) => q.eq('is_test', false).is('exported_at', null).is('export_rejected_at', null),
       MAX_ROWS_PER_RUN,
       DEFAULT_SLEEP,
       deadline,
       now,
+      summary.set_aside,
+      refusalBudget,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.bids_exported = e.exported
@@ -562,6 +688,11 @@ export async function exportTable(
   // direct-call behavior is unchanged). See WALL_TIME_BUDGET_MS.
   deadline?: number,
   now: () => number = Date.now,
+  // Rows Snowflake refused and this run set aside are appended here (#427).
+  setAside: SetAsideRow[] = [],
+  // How many more rows this RUN may set aside. A caller exporting several tables
+  // passes one object to every call so the limit covers the run, not each table.
+  refusalBudget: { refusedLeft: number } = { refusedLeft: SET_ASIDE_MAX_PER_RUN },
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   const partitionKey = partitionKeyFor(tableName)
@@ -584,11 +715,47 @@ export async function exportTable(
         const baseQuery = supabase.from(tableName).select(colNames).limit(batchLimit)
         const { data, error } = await applyFilter(baseQuery)
         if (error) throw error
-        if (!data || data.length === 0) return 0
+        if (!data || data.length === 0) return { shipped: 0, selected: 0 }
 
-        const rows = data as unknown as Array<Record<string, unknown>>
-        const sql = buildMergeSql(tableName, cols, rows)
-        await executeStatement(config, sql)
+        const selected = data as unknown as Array<Record<string, unknown>>
+        const { shipped: rows, refused } = await mergeIsolatingRefusals(
+          config, tableName, cols, selected, refusalBudget,
+        )
+
+        // Every row refused, and nothing else got through this run: that is the
+        // destination refusing everyone (a column made NOT NULL, a type changed),
+        // not a bad row, and setting the whole batch aside would turn an outage
+        // into a silent gap. Rethrown as the failure it is (#427).
+        if (rows.length === 0 && totalExported === 0) {
+          throw new SnowflakeStatementError(refused[0].reason, 422, null)
+        }
+
+        if (refused.length > 0) {
+          const refusedRows = refused.map((r) => r.row)
+          const bounds = partitionBounds(refusedRows, partitionKey)
+          // One write per row, because each carries its own reason. Bounded by the
+          // partition key like every other write here, and required to land: a mark
+          // that matched nothing would leave the row to be halved out again every run.
+          for (const { row, reason } of refused) {
+            const id = row.id as string
+            const { error: markErr } = await requireRowsAffected(
+              `${tableName}.export_rejected_at (row ${id})`,
+              () =>
+                supabase
+                  .from(tableName)
+                  .update({ export_rejected_at: new Date().toISOString(), export_rejected_reason: reason })
+                  .in('id', [id])
+                  .gte(partitionKey, bounds.min)
+                  .lte(partitionKey, bounds.max)
+                  .select('id'),
+            )
+            if (markErr) throw toThrowable(markErr)
+            setAside.push({ table: tableName, id, reason })
+            console.warn(`[sightings-export] ${tableName}: set aside row ${id}, which Snowflake refused: ${reason}`)
+          }
+        }
+
+        if (rows.length === 0) return { shipped: 0, selected: selected.length }
 
         const ids = rows.map((r) => r.id as string)
         const { min, max } = partitionBounds(rows, partitionKey)
@@ -640,12 +807,12 @@ export async function exportTable(
           )
         }
 
-        return rows.length
+        return { shipped: rows.length, selected: selected.length }
       }, sleep)
 
-      if (exportedCount === 0) break
-      totalExported += exportedCount
-      if (exportedCount < batchLimit) break
+      if (exportedCount.selected === 0) break
+      totalExported += exportedCount.shipped
+      if (exportedCount.selected < batchLimit) break
     } catch (e) {
       // Cloudflare caps subrequests per invocation. When draining a large backlog
       // we may hit it mid-run; that is NOT a failure -- stop cleanly, keep the rows

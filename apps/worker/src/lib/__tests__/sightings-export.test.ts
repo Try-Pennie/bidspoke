@@ -12,8 +12,12 @@ import {
   WALL_TIME_BUDGET_MS,
   PartialExportError,
   partitionKeyFor,
+  SET_ASIDE_MAX_PER_RUN,
+  notifySetAsideRows,
+  type SetAsideRow,
 } from '../sightings-export'
-import { executeStatement } from '../snowflake'
+import { executeStatement, SnowflakeStatementError, SnowflakeNotSentError } from '../snowflake'
+import { notifyExportFailure } from '../export-alerts'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 
@@ -22,6 +26,11 @@ import type { Env } from '../../index'
 vi.mock('../snowflake', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../snowflake')>()),
   executeStatement: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../export-alerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../export-alerts')>()),
+  notifyExportFailure: vi.fn().mockResolvedValue(undefined),
 }))
 
 type SnowflakeConfigArg = Parameters<typeof exportTable>[1]
@@ -476,6 +485,7 @@ describe('runSightingsExport wall-time budget (#exceededWallTime, 2026-07-03)', 
       sightings_exported: 0,
       bids_exported: 0,
       errors: [],
+      set_aside: [],
     })
   })
 })
@@ -1099,5 +1109,285 @@ describe('runSightingsPurge table scoping', () => {
     const { supabase, touched } = scopedFake(['lead_sightings', 'lead_sighting_bids'])
     await runSightingsPurge(supabase, () => 0, NO_SLEEP)
     expect([...new Set(touched())].sort()).toEqual(['lead_sighting_bids', 'lead_sightings'])
+  })
+})
+
+/**
+ * #427: one row Snowflake refuses must not stop the rest of the export.
+ *
+ * On 2026-06-27 a single NOT NULL mismatch failed every MERGE its batch was in,
+ * and because the next run selects the same rows first, the export stayed
+ * wedged while about 682K rows piled up in Supabase. The refused row is now
+ * found by halving the batch, set aside with Snowflake's reason so later runs
+ * skip it, and never stamped exported, so the purge can never delete it.
+ */
+describe('exportTable: a row Snowflake refuses is set aside, not allowed to stall the export (#427)', () => {
+  const REFUSED = (id: string) =>
+    new SnowflakeStatementError(
+      `Snowflake 422: {"code":"100072","message":"NULL result in a non-nullable column for ${id}"}`,
+      422,
+      '100072',
+    )
+
+  type Update = { payload: Record<string, unknown>; ids: string[] }
+
+  /** Batches by select call, and every UPDATE with the ids it was scoped to. */
+  function recordingSupabase(batches: string[][]) {
+    let call = 0
+    const updates: Update[] = []
+    const pk = partitionKeyFor('lead_sightings')
+    const client = {
+      from() {
+        return {
+          select() {
+            return {
+              limit(n: number) {
+                const ids = (batches[call++] ?? []).slice(0, n)
+                const data = ids.map((id, i) => ({ id, [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString() }))
+                const q = {
+                  eq: () => q,
+                  is: () => q,
+                  then: (resolve: (v: unknown) => void) => resolve({ data, error: null }),
+                }
+                return q
+              },
+            }
+          },
+          update(payload: Record<string, unknown>) {
+            const u: Update = { payload, ids: [] }
+            updates.push(u)
+            const q = {
+              in: (_c: string, ids: string[]) => {
+                u.ids = ids
+                return q
+              },
+              gte: () => q,
+              lte: () => q,
+              match: () => q,
+              select: () => Promise.resolve({ data: u.ids.map((id) => ({ id })), error: null }),
+            }
+            return q
+          },
+        }
+      },
+    }
+    return { client: client as unknown as Parameters<typeof exportTable>[0], updates }
+  }
+
+  /** Snowflake refuses any MERGE whose SQL carries one of these ids. */
+  function refuse(...bad: string[]) {
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      const hit = bad.find((id) => sql.includes(`'${id}'`))
+      if (hit) throw REFUSED(hit)
+      return undefined as never
+    })
+  }
+
+  const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`)
+  const stamped = (updates: Update[]) => updates.filter((u) => 'exported_at' in u.payload).flatMap((u) => u.ids)
+  const setAsideIds = (updates: Update[]) => updates.filter((u) => 'export_rejected_at' in u.payload).flatMap((u) => u.ids)
+
+  it('exports every other row in the batch and sets the refused one aside with its reason', async () => {
+    const batch = ids('r', 5)
+    const { client, updates } = recordingSupabase([batch])
+    refuse('r3')
+    const setAside: SetAsideRow[] = []
+
+    const exported = await exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, setAside)
+
+    expect(exported).toBe(4)
+    expect(stamped(updates).sort()).toEqual(['r0', 'r1', 'r2', 'r4'])
+    expect(setAsideIds(updates)).toEqual(['r3'])
+    const write = updates.find((u) => 'export_rejected_at' in u.payload)
+    expect(write?.payload.export_rejected_reason).toMatch(/non-nullable column/)
+    expect(setAside).toEqual([{ table: 'lead_sightings', id: 'r3', reason: expect.stringMatching(/100072/) }])
+  })
+
+  it('never stamps a set aside row exported, so the purge can never delete it', async () => {
+    const { client, updates } = recordingSupabase([ids('r', 8)])
+    refuse('r1', 'r6')
+
+    await exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, [])
+
+    expect(stamped(updates)).not.toContain('r1')
+    expect(stamped(updates)).not.toContain('r6')
+    expect(setAsideIds(updates).sort()).toEqual(['r1', 'r6'])
+  })
+
+  it('treats a batch where every row is refused as an outage, and sets nothing aside', async () => {
+    const batch = ids('r', 4)
+    const { client, updates } = recordingSupabase([batch])
+    refuse(...batch)
+
+    await expect(
+      exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, []),
+    ).rejects.toThrow(/Snowflake 422/)
+    expect(setAsideIds(updates)).toEqual([])
+    expect(stamped(updates)).toEqual([])
+  })
+
+  it('sets aside a lone refused row when an earlier batch in the same run got through', async () => {
+    const { client, updates } = recordingSupabase([ids('a', 200), ['bad']])
+    refuse('bad')
+
+    const exported = await exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, [])
+
+    expect(exported).toBe(200)
+    expect(setAsideIds(updates)).toEqual(['bad'])
+  })
+
+  it('does not split a batch on a temporary Snowflake failure', async () => {
+    const { client, updates } = recordingSupabase([ids('r', 4)])
+    vi.mocked(executeStatement).mockRejectedValue(new SnowflakeStatementError('Snowflake 503: busy', 503, null))
+
+    await expect(
+      exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, []),
+    ).rejects.toThrow(/503/)
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
+    expect(setAsideIds(updates)).toEqual([])
+  })
+
+  it('does not split a batch that was never sent for lack of time', async () => {
+    const { client, updates } = recordingSupabase([ids('r', 4)])
+    vi.mocked(executeStatement).mockRejectedValue(new SnowflakeNotSentError('not sent: 10s left'))
+
+    await expect(
+      exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, []),
+    ).rejects.toThrow(/not sent/)
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
+    expect(setAsideIds(updates)).toEqual([])
+  })
+
+  it('stops as an outage once more rows are refused than one run may set aside', async () => {
+    const batch = ids('r', 200)
+    const bad = batch.filter((_, i) => i % 5 === 0) // 40 refused, 160 fine
+    const { client, updates } = recordingSupabase([batch])
+    refuse(...bad)
+
+    await expect(
+      exportTable(client, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, []),
+    ).rejects.toThrow(new RegExp(`more than ${SET_ASIDE_MAX_PER_RUN} rows`))
+    expect(setAsideIds(updates)).toEqual([])
+  })
+})
+
+describe('the set aside limit covers the whole run, both tables together (#427)', () => {
+  it('stops the second table as an outage once the first has used the run\'s allowance', async () => {
+    // 15 refused sightings and 10 refused bids: each is under the limit alone,
+    // together they are over it, and the limit is documented as per run.
+    const sightings = Array.from({ length: 100 }, (_, i) => `s${i}`)
+    const bids = Array.from({ length: 100 }, (_, i) => `b${i}`)
+    const refused = new Set([...sightings.slice(0, 15), ...bids.slice(0, 10)])
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      const hit = [...refused].find((id) => sql.includes(`'${id}'`))
+      if (hit) throw new SnowflakeStatementError(`Snowflake 422: refused ${hit}`, 422, '100072')
+      return undefined as never
+    })
+    const served = new Map<string, boolean>()
+    const client = {
+      from(table: string) {
+        const pk = partitionKeyFor(table)
+        return {
+          select() {
+            return {
+              limit() {
+                const first = !served.get(table)
+                served.set(table, true)
+                const ids = first ? (table === 'lead_sightings' ? sightings : bids) : []
+                const data = ids.map((id, i) => ({
+                  id,
+                  [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString(),
+                  ...(table === 'lead_sighting_bids' ? { is_winner: false } : {}),
+                }))
+                const q = { eq: () => q, is: () => q, then: (r: (v: unknown) => void) => r({ data, error: null }) }
+                return q
+              },
+            }
+          },
+          update() {
+            const q = {
+              ids: [] as string[],
+              in: (_c: string, ids: string[]) => {
+                q.ids = ids
+                return q
+              },
+              gte: () => q,
+              lte: () => q,
+              match: () => q,
+              select: () => Promise.resolve({ data: q.ids.map((id) => ({ id })), error: null }),
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as SupabaseClient
+    const env = {
+      SNOWFLAKE_ACCOUNT: 'a', SNOWFLAKE_USER: 'u', SNOWFLAKE_PRIVATE_KEY: 'k', SNOWFLAKE_DATABASE: 'd',
+      SNOWFLAKE_SCHEMA: 's', SNOWFLAKE_WAREHOUSE: 'w', SNOWFLAKE_ROLE: 'r',
+    } as unknown as Env
+
+    const summary = await runSightingsExport(client, env)
+
+    expect(summary.set_aside.filter((r) => r.table === 'lead_sightings')).toHaveLength(15)
+    expect(summary.errors.join(' ')).toMatch(new RegExp(`bids export: .*more than ${SET_ASIDE_MAX_PER_RUN} rows`))
+  })
+})
+
+describe('runSightingsExport skips rows already set aside (#427)', () => {
+  it('selects only rows with no set aside mark, for both tables', async () => {
+    const isCalls: Array<[string, string, unknown]> = []
+    const client = {
+      from(table: string) {
+        return {
+          select() {
+            return {
+              limit() {
+                const q = {
+                  eq: () => q,
+                  is: (col: string, v: unknown) => {
+                    isCalls.push([table, col, v])
+                    return q
+                  },
+                  then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+                }
+                return q
+              },
+            }
+          },
+        }
+      },
+    } as unknown as SupabaseClient
+    const env = {
+      SNOWFLAKE_ACCOUNT: 'a', SNOWFLAKE_USER: 'u', SNOWFLAKE_PRIVATE_KEY: 'k', SNOWFLAKE_DATABASE: 'd',
+      SNOWFLAKE_SCHEMA: 's', SNOWFLAKE_WAREHOUSE: 'w', SNOWFLAKE_ROLE: 'r',
+    } as unknown as Env
+
+    const summary = await runSightingsExport(client, env)
+
+    expect(isCalls).toContainEqual(['lead_sightings', 'export_rejected_at', null])
+    expect(isCalls).toContainEqual(['lead_sighting_bids', 'export_rejected_at', null])
+    expect(summary.set_aside).toEqual([])
+  })
+})
+
+describe('notifySetAsideRows (#427)', () => {
+  beforeEach(() => vi.mocked(notifyExportFailure).mockClear())
+
+  it('pages on its own job name, naming each row and the reason Snowflake gave', async () => {
+    const rows: SetAsideRow[] = [{ table: 'lead_sightings', id: 'abc', reason: 'Snowflake 422: NULL result in a non-nullable column' }]
+
+    await notifySetAsideRows({} as SupabaseClient, rows, undefined)
+
+    const [, jobName, lines, , remedy] = vi.mocked(notifyExportFailure).mock.calls[0]
+    expect(jobName).toBe('Lead sightings rows set aside')
+    expect(lines).toEqual(['lead_sightings abc: Snowflake 422: NULL result in a non-nullable column'])
+    expect(remedy).not.toBe('export-job')
+    expect((remedy as { fixHint: string }).fixHint).toMatch(/export_rejected_at/)
+  })
+
+  it('clears the condition on a run that set nothing aside, so the next one pages at once', async () => {
+    await notifySetAsideRows({} as SupabaseClient, [], undefined)
+
+    expect(vi.mocked(notifyExportFailure).mock.calls[0][2]).toEqual([])
   })
 })

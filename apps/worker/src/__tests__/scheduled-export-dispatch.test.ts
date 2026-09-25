@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../lib/sightings-export', () => ({
   runSightingsExport: vi.fn().mockResolvedValue({ errors: [] }),
   runSightingsPurge: vi.fn().mockResolvedValue({ errors: [] }),
+  notifySetAsideRows: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('../lib/achieve-export', () => ({ runAchieveExport: vi.fn().mockResolvedValue({ errors: [] }) }))
 vi.mock('../lib/export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
@@ -12,7 +13,7 @@ vi.mock('../lib/supabase', () => ({ createSupabaseClient: vi.fn(() => ({})) }))
 
 import worker from '../index'
 import type { Env } from '../index'
-import { runSightingsExport, runSightingsPurge } from '../lib/sightings-export'
+import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from '../lib/sightings-export'
 import { runAchieveExport } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
 
@@ -169,5 +170,33 @@ describe('scheduled purge dispatch', () => {
       undefined,
       'export-job',
     )
+  })
+})
+
+// #427: rows Snowflake refused are reported on their own alert after every run,
+// including a run that set none aside, which is what clears the condition.
+describe('the export reports rows it set aside', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('hands the run\'s set aside rows to their own alert', async () => {
+    const setAside = [{ table: 'lead_sightings', id: 'abc', reason: 'Snowflake 422: refused' }]
+    vi.mocked(runSightingsExport).mockResolvedValueOnce({
+      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: setAside,
+    })
+
+    await fireAndFlush('37 */2 * * *')
+
+    expect(notifySetAsideRows).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notifySetAsideRows).mock.calls[0][1]).toEqual(setAside)
+  })
+
+  it('still reports on a run that set nothing aside, so the condition clears', async () => {
+    vi.mocked(runSightingsExport).mockResolvedValueOnce({
+      sightings_exported: 5, bids_exported: 0, errors: [], set_aside: [],
+    })
+
+    await fireAndFlush('37 */2 * * *')
+
+    expect(vi.mocked(notifySetAsideRows).mock.calls[0][1]).toEqual([])
   })
 })

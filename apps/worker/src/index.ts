@@ -34,7 +34,7 @@ import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
-import { runSightingsExport, runSightingsPurge } from './lib/sightings-export'
+import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from './lib/sightings-export'
 import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
@@ -549,8 +549,13 @@ export default {
       )
       ctx.waitUntil(completeAfter(
         runSightingsExport(supabase, env)
-          .then((s) => {
+          .then(async (s) => {
             console.log('[sightings-export]', JSON.stringify(s))
+            // Rows Snowflake refused are their own alert, not an export failure:
+            // everything else exported (#427). Reported on every run, even an empty
+            // one, because the empty report is what clears the condition.
+            await notifySetAsideRows(supabase, s.set_aside, env.IDEMPOTENCY)
+              .catch((e) => console.error('[sightings-export] set aside alert failed:', e))
             return notifyExportFailure(supabase, 'Lead sightings export', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
