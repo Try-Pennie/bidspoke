@@ -40,6 +40,7 @@ import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
+import { EdgeHopsProvider } from './edges/edge-hops'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import { api } from '@/lib/api'
@@ -3265,6 +3266,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             className="h-full w-full"
             style={layoutSettled ? undefined : { visibility: 'hidden', pointerEvents: 'none' }}
           >
+          {/* Every wire's crossings are computed once here and read by id (#1570). */}
+          <EdgeHopsProvider>
           <ReactFlow
             className={calmWarnings ? 'calm-warnings' : undefined}
             nodes={renderedNodes}
@@ -3517,6 +3520,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               maskColor="rgba(243,244,246,0.7)"
             />
           </ReactFlow>
+          </EdgeHopsProvider>
           </div>
 
           {contextMenu && (() => {
