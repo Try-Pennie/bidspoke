@@ -50,6 +50,14 @@ export const CLICK_CHECK_LAST_GOOD_MAX_AGE_MS = 15 * 60 * 1000
  */
 export const CLICK_URL_PROSPECT_PLACEHOLDER = '{prospect_id}'
 
+/**
+ * The one sentence for a click URL without the placeholder, said on the Click URL
+ * field by validateProfile when enabling a click buyer and by the partner save
+ * when breaking the URL of one already enabled (#1561), so the two refusals read
+ * the same.
+ */
+export const CLICK_URL_NO_PROSPECT_ID_MESSAGE = `Put ${CLICK_URL_PROSPECT_PLACEHOLDER} in the click URL where the prospect's id goes. Without it no offer can be made to this buyer.`
+
 /** True when the value is a click URL carrying the prospect id placeholder. */
 export function clickUrlCarriesProspectId(value: unknown): boolean {
   return typeof value === 'string' && value.includes(CLICK_URL_PROSPECT_PLACEHOLDER)

@@ -270,15 +270,29 @@ export function partnersPricedFor(snapshot: BuyerProfilesSnapshot, population: s
  * value outside the vocabulary throws, never guessing offer (L10).
  */
 export async function readBuyerSoldOn(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<SoldOn | null> {
+  return (await readBuyerSale(supabase, orgId, partnerId))?.soldOn ?? null
+}
+
+/**
+ * How one buyer is sold and whether it is switched on, from its one profile row.
+ * The partner save reads both (#1561): only an ENABLED click buyer is offered on
+ * the partner's click URL, so only its URL is refused when it loses the prospect
+ * id placeholder. Null means no profile; a failed read, a kind outside the
+ * vocabulary or an enabled flag that is not a boolean throws (L10).
+ */
+export async function readBuyerSale(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ soldOn: SoldOn; isEnabled: boolean } | null> {
   const { data, error } = await supabase
     .from('buyer_profiles')
-    .select('sold_on')
+    .select('sold_on, is_enabled')
     .eq('partner_id', partnerId)
     .eq('organization_id', orgId)
     .maybeSingle()
   if (error) throw new Error(`buyer_profiles: ${error.message}`)
   if (!data) return null
-  const soldOn = (data as { sold_on: unknown }).sold_on
-  if (typeof soldOn === 'string' && (SOLD_ON as readonly string[]).includes(soldOn)) return soldOn as SoldOn
-  throw new Error(`buyer_profiles: sold_on ${String(soldOn)} is not one of ${SOLD_ON.join(', ')}`)
+  const { sold_on: soldOn, is_enabled: isEnabled } = data as { sold_on: unknown; is_enabled: unknown }
+  if (typeof soldOn !== 'string' || !(SOLD_ON as readonly string[]).includes(soldOn)) {
+    throw new Error(`buyer_profiles: sold_on ${String(soldOn)} is not one of ${SOLD_ON.join(', ')}`)
+  }
+  if (typeof isEnabled !== 'boolean') throw new Error(`buyer_profiles: is_enabled ${String(isEnabled)} is not a boolean`)
+  return { soldOn: soldOn as SoldOn, isEnabled }
 }

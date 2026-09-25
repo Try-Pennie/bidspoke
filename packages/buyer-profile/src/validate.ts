@@ -1,4 +1,4 @@
-import { CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, isCap } from './click-send'
+import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, clickUrlCarriesProspectId, isCap } from './click-send'
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
 import type { PricingTier } from './tiers'
@@ -167,7 +167,7 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     } else if (click && !clickUrlCarriesProspectId(partner.clickUrl)) {
       // #1546: the offer replaces the placeholder with the prospect's id, and a
       // URL without it is refused on every lead, so the buyer is never offered.
-      err('click_url_has_no_prospect_id', 'clickUrl', `Put ${CLICK_URL_PROSPECT_PLACEHOLDER} in the click URL where the prospect's id goes. Without it no offer can be made to this buyer.`)
+      err('click_url_has_no_prospect_id', 'clickUrl', CLICK_URL_NO_PROSPECT_ID_MESSAGE)
     }
     if (partner.externalRoutingCode === null) {
       err('enabled_without_routing_code', 'externalRoutingCode', 'Set the Salesforce routing code on the partner before enabling. The prospect patch carries it on every sale.')

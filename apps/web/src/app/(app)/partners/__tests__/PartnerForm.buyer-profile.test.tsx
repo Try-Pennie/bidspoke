@@ -289,6 +289,42 @@ describe('how the buyer is sold', () => {
     expect(api.buyerProfiles.save).not.toHaveBeenCalled()
   })
 
+  // #1561: the partner save refuses breaking the URL of a click buyer enabled
+  // where this form cannot see it (loaded before it was enabled, or a profile
+  // that did not load), so the server's refusal lands on the same field, in the
+  // route's sentence and never its code.
+  function clickFieldError() {
+    const describedBy = screen.getByLabelText('Click URL').getAttribute('aria-describedby') ?? ''
+    return describedBy.split(' ').map((id) => document.getElementById(id)).find((el) => el?.getAttribute('role') === 'alert') ?? null
+  }
+
+  it.each([
+    [422, 'click_url_has_no_prospect_id', "Put {prospect_id} in the click URL where the prospect's id goes. Without it no offer can be made to this buyer."],
+    [503, 'click_url_unverifiable', 'Whether this buyer is sold on the click could not be read, so the new click URL was not saved and nothing else was either. Try again.'],
+  ])('a %i refusal of the partner save is shown on the Click URL field in the route\'s sentence', async (status, code, message) => {
+    const onSave = await renderWith(null, { click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' })
+    onSave.mockRejectedValue(Object.assign(new Error(code), { status, body: { error: code, message, errors: [{ code, path: 'clickUrl', message }] } }))
+    fireEvent.change(screen.getByLabelText('Click URL'), { target: { value: 'https://trypennie.com/portal/libertyone/' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(clickFieldError()).toHaveTextContent(message))
+    expect(await screen.findByText(`Nothing saved: ${message}`)).toBeInTheDocument()
+    expect(screen.queryByText(code, { exact: false })).not.toBeInTheDocument()
+    expect(api.buyerProfiles.save).not.toHaveBeenCalled()
+  })
+
+  it('the next save clears a refusal the server put on the Click URL field', async () => {
+    const onSave = await renderWith(null)
+    const message = "Put {prospect_id} in the click URL where the prospect's id goes. Without it no offer can be made to this buyer."
+    onSave.mockRejectedValueOnce(Object.assign(new Error('click_url_has_no_prospect_id'), { status: 422, body: { error: 'click_url_has_no_prospect_id', message, errors: [{ code: 'click_url_has_no_prospect_id', path: 'clickUrl', message }] } }))
+    fireEvent.change(screen.getByLabelText('Click URL'), { target: { value: 'https://trypennie.com/portal/libertyone/' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(clickFieldError()).not.toBeNull())
+    fireEvent.change(screen.getByLabelText('Click URL'), { target: { value: 'https://trypennie.com/portal/libertyone/{prospect_id}' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(clickFieldError()).toBeNull())
+  })
+
   it('the same click buyer with the placeholder in its click URL saves, and the field carries no error', async () => {
     const onSave = await renderWith(clickDoc, { click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))

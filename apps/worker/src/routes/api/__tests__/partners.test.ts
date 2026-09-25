@@ -16,7 +16,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
-import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -274,6 +274,115 @@ describe('PUT /partners/:id: zero-row 404 vs real DB error (#595)', () => {
     const res = await put('/partners/p-1', { name: 'Renamed' })
     expect(res.status).toBe(500)
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
+
+// #1561: the click URL lives on the partner record, and the Engine offer refuses
+// one without {prospect_id} on every lead (#1546). validateProfile refuses
+// ENABLING a click buyer with such a URL, so this route refuses BREAKING the URL
+// of one already enabled, with the same code and the field path the partner form
+// renders on its Click URL field. Only that one change is judged: any other
+// partner, and any save that leaves the URL alone, saves as before.
+describe('PUT /partners/:id refuses a click URL an enabled click buyer cannot be offered on (#1561)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const STORED = 'https://trypennie.com/portal/libertyone/{prospect_id}'
+  const BROKEN = 'https://trypennie.com/portal/libertyone/'
+
+  function supabaseFor(stored: string = STORED) {
+    return makeSupabase({
+      users: { single: testUser },
+      partner_configs: [{ single: { id: 'p-1', click_url: stored } }, { updateResult: { id: 'p-1', click_url: BROKEN } }],
+    }) as unknown as ReturnType<typeof createSupabaseClient>
+  }
+
+  function put(body: unknown) {
+    return app.request(
+      '/partners/p-1',
+      { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) },
+      testEnv,
+      mockCtx
+    )
+  }
+
+  const wrote = (sb: ReturnType<typeof createSupabaseClient>) =>
+    ((sb as unknown as { calls: Record<string, Array<[string, unknown[]]>> }).calls.partner_configs ?? []).some((call) => call[0] === 'update')
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(readBuyerSale).mockReset()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  it('an enabled click buyer is refused with a 422 carrying click_url_has_no_prospect_id on clickUrl, and nothing is written', async () => {
+    vi.mocked(readBuyerSale).mockResolvedValue({ soldOn: 'click', isEnabled: true })
+    const sb = supabaseFor()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+    const res = await put({ name: 'Liberty1', click_url: BROKEN })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string; message: string; errors: Array<{ code: string; path: string; message: string }> }
+    expect(body.error).toBe('click_url_has_no_prospect_id')
+    expect(body.message).toContain('{prospect_id}')
+    expect(body.errors).toEqual([{ code: 'click_url_has_no_prospect_id', path: 'clickUrl', message: body.message }])
+    expect(wrote(sb)).toBe(false)
+    expect(vi.mocked(readBuyerSale).mock.calls[0].slice(1)).toEqual(['org-abc', 'p-1'])
+  })
+
+  it('clearing the click URL of an enabled click buyer is refused the same way', async () => {
+    vi.mocked(readBuyerSale).mockResolvedValue({ soldOn: 'click', isEnabled: true })
+    const sb = supabaseFor()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+    const res = await put({ click_url: null })
+    expect(res.status).toBe(422)
+    expect(wrote(sb)).toBe(false)
+  })
+
+  it('a disabled click buyer, an offer buyer and a partner with no profile save the same URL as before', async () => {
+    for (const sale of [{ soldOn: 'click', isEnabled: false }, { soldOn: 'offer', isEnabled: true }, null] as const) {
+      vi.mocked(readBuyerSale).mockResolvedValue(sale)
+      const sb = supabaseFor()
+      vi.mocked(createSupabaseClient).mockReturnValue(sb)
+      const res = await put({ click_url: BROKEN })
+      expect(res.status, JSON.stringify(sale)).toBe(200)
+      expect(wrote(sb), JSON.stringify(sale)).toBe(true)
+    }
+    expect(readBuyerSale).toHaveBeenCalledTimes(3)
+  })
+
+  it('a click URL carrying the placeholder saves without reading the profile', async () => {
+    const sb = supabaseFor()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+    const res = await put({ click_url: 'https://trypennie.com/portal/libertyone/v2/{prospect_id}' })
+    expect(res.status).toBe(200)
+    expect(readBuyerSale).not.toHaveBeenCalled()
+  })
+
+  it('an unreadable profile refuses a change to the click URL with a 503 on the field, and writes nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(readBuyerSale).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    const sb = supabaseFor()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+    const res = await put({ name: 'Liberty1', click_url: BROKEN })
+    expect(res.status).toBe(503)
+    const body = await res.json() as { error: string; message: string; errors: Array<{ path: string }> }
+    expect(body.error).toBe('click_url_unverifiable')
+    expect(body.message).toMatch(/click URL/)
+    expect(body.errors.map((e) => e.path)).toEqual(['clickUrl'])
+    expect(wrote(sb)).toBe(false)
+  })
+
+  it('an unreadable profile does not stop a save that leaves the click URL as stored, or does not send it', async () => {
+    // The stored URL already lacks the placeholder, so only the unchanged value
+    // (never the placeholder) is what lets this save through without a read.
+    vi.mocked(readBuyerSale).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    for (const body of [{ name: 'Liberty1', click_url: BROKEN }, { name: 'Liberty1' }]) {
+      const sb = supabaseFor(BROKEN)
+      vi.mocked(createSupabaseClient).mockReturnValue(sb)
+      const res = await put(body)
+      expect(res.status, JSON.stringify(body)).toBe(200)
+      expect(wrote(sb)).toBe(true)
+    }
+    expect(readBuyerSale).not.toHaveBeenCalled()
   })
 })
 

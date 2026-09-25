@@ -14,7 +14,7 @@ import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
-import { clickCountIfClickSold } from './buyer-profiles'
+import { clickCountIfClickSold, refuseClickUrlWithoutProspectId } from './buyer-profiles'
 
 type Variables = AuthVariables
 
@@ -234,7 +234,7 @@ partners.put('/:id', async (c) => {
 
   const { data: partner, error: fetchError } = await supabase
     .from('partner_configs')
-    .select('id')
+    .select('id, click_url')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -242,6 +242,11 @@ partners.put('/:id', async (c) => {
   const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
   if (fetchBlocked) return fetchBlocked
   if (!partner) return c.json({ error: 'Partner not found' }, 404)
+
+  // An enabled click buyer is offered on this URL, and the offer refuses one
+  // without {prospect_id} on every lead (#1561). Judged before any write.
+  const clickUrlRefusal = await refuseClickUrlWithoutProspectId(c, supabase, orgId, id, partner.click_url ?? null, body.click_url)
+  if (clickUrlRefusal) return clickUrlRefusal
 
   const updates: Database['public']['Tables']['partner_configs']['Update'] = {
     updated_by: userId,
