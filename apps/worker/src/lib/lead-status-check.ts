@@ -27,6 +27,12 @@
  * read; its counts are reported every run and a count that could not be read
  * is still a finding, but its share raises nothing.
  *
+ * A PARTNER IT DOES NOT COVER IS A FINDING. The list below names Salesforce's
+ * own partner values, which no Bidspoke table holds, so it cannot be derived;
+ * instead every run asks Salesforce which partners had Completed sales that day
+ * and names any the list lacks. A fixed list that nobody extends is how this
+ * defect hid behind Tripoint (L96, L217).
+ *
  * A COUNT THAT COULD NOT BE READ IS ITS OWN FINDING, never a zero, and a
  * judged partner with no Completed sale at all is reported rather than read as
  * agreement (L98, L215).
@@ -34,7 +40,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { salesforceCount } from './salesforce-read'
+import { salesforceCount, salesforceGet } from './salesforce-read'
 import type { Env } from '../index'
 
 export const LEAD_STATUS_JOB = 'lead-status'
@@ -102,6 +108,8 @@ function isoSecond(d: Date): string {
 export interface LeadStatusDeps {
   /** Runs one COUNT() query. Injected so the check runs without Salesforce (L196). */
   count?: (soql: string) => Promise<number>
+  /** Every partner value with Completed sales created in the UTC day starting at `dayStart`. Injected likewise. */
+  listPartners?: (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>>
   now?: () => Date
 }
 
@@ -139,13 +147,14 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1))
   const day = dayStart.toISOString().slice(0, 10)
   const count = deps.count ?? ((soql: string) => salesforceCount(env, supabase, soql, 'the Lead status check'))
+  const listPartners = deps.listPartners ?? salesforcePartnerLister(env, supabase)
 
   let partners: PartnerLeadStatus[] = []
   let findings: string[]
   try {
     const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, p, dayStart, day)))
     partners = measured.map((m) => m.status)
-    findings = measured.flatMap((m) => m.findings)
+    findings = [...measured.flatMap((m) => m.findings), ...(await uncoveredPartners(listPartners, dayStart, day))]
   } catch (err) {
     findings = [`the Lead status check itself failed: ${formatErr(err)}`]
   }
@@ -217,4 +226,55 @@ async function measure(
   }
 
   return { status, findings }
+}
+
+/**
+ * A line for every partner Salesforce sold to that day which this check does
+ * not cover. A sale with no partner is skipped: its Lead has no partner to
+ * compare, so there is nothing this check could judge.
+ */
+async function uncoveredPartners(
+  listPartners: (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>>,
+  dayStart: Date,
+  day: string,
+): Promise<string[]> {
+  let sold: Array<{ partner: string | null; n: number }>
+  try {
+    sold = await listPartners(dayStart)
+  } catch (err) {
+    return [`the partners with Completed sales created on ${day} could not be listed, so a partner this check does not cover would go unseen: ${formatErr(err)}`]
+  }
+  const covered = new Set(LEAD_STATUS_PARTNERS.map((p) => p.partner))
+  return sold
+    .filter((s): s is { partner: string; n: number } => s.partner !== null && s.partner !== '' && !covered.has(s.partner))
+    .map(
+      (s) =>
+        `${s.partner}: ${fmt(s.n)} sales created on ${day} read Completed, and this check does not cover that partner, ` +
+        'so its Leads were not compared. Add it to LEAD_STATUS_PARTNERS in apps/worker/src/lib/lead-status-check.ts',
+    )
+}
+
+/** The real lister: one aggregate query over the day, through the shared Salesforce read. */
+export function salesforcePartnerLister(
+  env: Env,
+  supabase: SupabaseClient,
+): (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>> {
+  return async (dayStart) => {
+    const from = isoSecond(dayStart)
+    const to = isoSecond(new Date(dayStart.getTime() + 86_400_000))
+    const soql =
+      `SELECT External_Partner_Name__c, COUNT(Id) n FROM Submission__c WHERE External_Exchange_Status__c = 'Completed' ` +
+      `AND Lead__c != null AND CreatedDate >= ${from} AND CreatedDate < ${to} GROUP BY External_Partner_Name__c`
+    const body = await salesforceGet<{ records?: Array<{ External_Partner_Name__c?: unknown; n?: unknown }> }>(
+      env,
+      supabase,
+      `query?q=${encodeURIComponent(soql)}`,
+      'the Lead status check',
+    )
+    if (!Array.isArray(body.records)) throw new Error('Salesforce answered the partner listing with no records array')
+    return body.records.map((r) => ({
+      partner: typeof r.External_Partner_Name__c === 'string' ? r.External_Partner_Name__c : null,
+      n: typeof r.n === 'number' ? r.n : 0,
+    }))
+  }
 }

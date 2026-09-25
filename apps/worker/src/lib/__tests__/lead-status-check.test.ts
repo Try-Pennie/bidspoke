@@ -39,6 +39,10 @@ type PartnerAnswers = { submissions: Answer; leads: Answer; backlog: Answer }
 
 const HEALTHY: PartnerAnswers = { submissions: 600, leads: 598, backlog: 0 }
 
+/** Salesforce sold only to partners the check covers: the seam set explicitly, never left to the real reader (L284). */
+const ONLY_CHECKED: LeadStatusDeps['listPartners'] = async () =>
+  LEAD_STATUS_PARTNERS.map((p) => ({ partner: p.partner, n: 1 }))
+
 /** A counter answering by partner and by which of that partner's three queries it was handed. */
 function counter(answers: Record<string, PartnerAnswers>) {
   const asked: string[] = []
@@ -100,7 +104,7 @@ describe('leadStatusQueries', () => {
 
 describe('checkLeadStatus', () => {
   it('names the partner whose Leads stopped carrying Completed, with both counts, as measured on 2026-09-24', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({
         Tripoint: { submissions: 1035, leads: 1033, backlog: 0 },
         AmOne: { submissions: 63, leads: 0, backlog: 4259 },
@@ -119,7 +123,7 @@ describe('checkLeadStatus', () => {
   })
 
   it('reports Engine without alerting on it, since it has no healthy share to judge against', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({ Engine: { submissions: 696, leads: 1, backlog: 73000 } }).count,
       now: NOW,
     })
@@ -130,7 +134,7 @@ describe('checkLeadStatus', () => {
   })
 
   it('still refuses by name when an unjudged partner cannot be counted', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({ Engine: { submissions: new Error('query failed (500)'), leads: 1, backlog: 0 } }).count,
       now: NOW,
     })
@@ -140,7 +144,7 @@ describe('checkLeadStatus', () => {
   })
 
   it('sends an empty list when every judged partner is healthy, which is what clears a standing alert', async () => {
-    const r = await checkLeadStatus(env, supabase, { count: counter({}).count, now: NOW })
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({}).count, now: NOW })
 
     expect(r.alerted).toBe(false)
     expect(vi.mocked(notifyExportFailure)).toHaveBeenCalledTimes(1)
@@ -148,14 +152,14 @@ describe('checkLeadStatus', () => {
   })
 
   it('stays quiet at the threshold and speaks just under it', async () => {
-    const at = await checkLeadStatus(env, supabase, { count: counter({ Tripoint: { submissions: 100, leads: 90, backlog: 0 } }).count, now: NOW })
+    const at = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({ Tripoint: { submissions: 100, leads: 90, backlog: 0 } }).count, now: NOW })
     expect(at.alerted).toBe(false)
-    const under = await checkLeadStatus(env, supabase, { count: counter({ Tripoint: { submissions: 100, leads: 89, backlog: 0 } }).count, now: NOW })
+    const under = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({ Tripoint: { submissions: 100, leads: 89, backlog: 0 } }).count, now: NOW })
     expect(under.alerted).toBe(true)
   })
 
   it('reports the backlog while it remains, even on a day the sync is healthy', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({ Tripoint: { submissions: 1035, leads: 1033, backlog: 32 } }).count,
       now: NOW,
     })
@@ -165,20 +169,20 @@ describe('checkLeadStatus', () => {
   })
 
   it('says so when a judged partner had nothing to compare, rather than reading it as agreement', async () => {
-    const r = await checkLeadStatus(env, supabase, { count: counter({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }).count, now: NOW })
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }).count, now: NOW })
 
     expect(r.alerted).toBe(true)
     expect(alerted()[0]).toMatch(/^AmOne: no .*created on 2026-09-24 reads Completed/)
   })
 
   it('does not judge a share on too few sales', async () => {
-    const r = await checkLeadStatus(env, supabase, { count: counter({ AmOne: { submissions: 5, leads: 3, backlog: 0 } }).count, now: NOW })
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({ AmOne: { submissions: 5, leads: 3, backlog: 0 } }).count, now: NOW })
 
     expect(r.alerted).toBe(false)
   })
 
   it('refuses, naming the partner and the count, when Salesforce cannot be read', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({ Tripoint: { submissions: new Error('query failed (401): INVALID_SESSION_ID'), leads: 2, backlog: 0 } }).count,
       now: NOW,
     })
@@ -191,7 +195,7 @@ describe('checkLeadStatus', () => {
   })
 
   it('still judges the day when only the backlog count fails, and says the backlog is unknown', async () => {
-    const r = await checkLeadStatus(env, supabase, {
+    const r = await checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED,
       count: counter({ AmOne: { submissions: 600, leads: 590, backlog: new Error('timeout') } }).count,
       now: NOW,
     })
@@ -204,8 +208,60 @@ describe('checkLeadStatus', () => {
     vi.mocked(notifyExportFailure).mockRejectedValueOnce(new Error('slack down'))
 
     await expect(
-      checkLeadStatus(env, supabase, { count: counter({ AmOne: { submissions: 63, leads: 0, backlog: 1 } }).count, now: NOW }),
+      checkLeadStatus(env, supabase, { listPartners: ONLY_CHECKED, count: counter({ AmOne: { submissions: 63, leads: 0, backlog: 1 } }).count, now: NOW }),
     ).resolves.toMatchObject({ alerted: true })
+  })
+
+  it('names a partner Salesforce sold to that the check does not cover, so a new one is never silently exempt', async () => {
+    const r = await checkLeadStatus(env, supabase, {
+      count: counter({}).count,
+      listPartners: async () => [
+        { partner: 'Tripoint', n: 1035 },
+        { partner: 'Engine', n: 696 },
+        { partner: 'Liberty1', n: 12 },
+      ],
+      now: NOW,
+    })
+
+    expect(r.alerted).toBe(true)
+    expect(alerted()).toEqual([expect.stringMatching(/^Liberty1: 12 sales created on 2026-09-24 read Completed, and this check does not cover/)])
+  })
+
+  it('does not report sales with no partner, which have no Lead partner to compare', async () => {
+    const r = await checkLeadStatus(env, supabase, {
+      count: counter({}).count,
+      listPartners: async () => [{ partner: null, n: 4 }, { partner: 'AmOne', n: 63 }],
+      now: NOW,
+    })
+
+    expect(r.alerted).toBe(false)
+  })
+
+  it('refuses by name when the partners sold to cannot be listed', async () => {
+    const r = await checkLeadStatus(env, supabase, {
+      count: counter({}).count,
+      listPartners: async () => {
+        throw new Error('query failed (503)')
+      },
+      now: NOW,
+    })
+
+    expect(r.alerted).toBe(true)
+    expect(alerted()).toEqual([expect.stringMatching(/partners .*could not be listed.*503/)])
+  })
+
+  it('asks for the partners sold to over the same UTC day it judges', async () => {
+    const days: Date[] = []
+    await checkLeadStatus(env, supabase, {
+      count: counter({}).count,
+      listPartners: async (dayStart) => {
+        days.push(dayStart)
+        return []
+      },
+      now: NOW,
+    })
+
+    expect(days.map((d) => d.toISOString())).toEqual(['2026-09-24T00:00:00.000Z'])
   })
 
   it('tells the reader this is Salesforce and that Submission based reporting is right', () => {
