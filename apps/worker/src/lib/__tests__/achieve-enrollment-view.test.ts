@@ -58,6 +58,38 @@ describe('the enrollment view read from Salesforce', () => {
     })
   })
 
+  // The field list is the contract with the stored column, so the stored object holds Id and
+  // those six and nothing else (#1364). Salesforce puts an `attributes` object ({ type, url }) on
+  // every query record, which nothing reads, and storing the record as returned exported it to
+  // Snowflake on every row.
+  it('keeps only Id and the declared fields, dropping the Salesforce attributes object', async () => {
+    const record: Record<string, unknown> = {
+      attributes: { type: 'Submission__c', url: '/services/data/v60.0/sobjects/Submission__c/a04Ui00000MSNppIAH' },
+      Id: 'a04Ui00000MSNppIAH',
+      SomethingSalesforceAddedLater__c: 'not in the contract',
+    }
+    SUBMISSION_VIEW_FIELDS.forEach((field, i) => { record[field] = i })
+    const query = vi.fn().mockResolvedValue([record])
+
+    const view = (await readSubmissionView(['a04Ui00000MSNppIAH'], query)).get('a04Ui00000MSNppIAH')
+
+    expect(Object.keys(view ?? {}).sort()).toEqual(['Id', ...SUBMISSION_VIEW_FIELDS].sort())
+    SUBMISSION_VIEW_FIELDS.forEach((field, i) => expect(view?.[field]).toBe(i))
+  })
+
+  // A null field is a value Salesforce returned ("this submission holds nothing here") and is
+  // kept, while a field missing from the answer is not invented as null, so the stored object
+  // never claims Salesforce said something it did not.
+  it('keeps a null field but does not invent one Salesforce did not return', async () => {
+    const query = vi.fn().mockResolvedValue([
+      { attributes: { type: 'Submission__c' }, Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: null },
+    ])
+
+    const view = (await readSubmissionView(['a04Ui00000MSNppIAH'], query)).get('a04Ui00000MSNppIAH')
+
+    expect(view).toEqual({ Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: null })
+  })
+
   // A submission Salesforce does not return is absent rather than an empty object, so a row
   // whose record could not be read stays distinguishable from one whose record held nothing.
   it('omits a submission Salesforce did not return', async () => {

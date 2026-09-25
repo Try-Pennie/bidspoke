@@ -260,6 +260,46 @@ describe('runAchieveExport trades-backfill failure', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  // What reaches the column is the stored contract, not the Salesforce record as returned
+  // (#1364). The `attributes` object Salesforce puts on every query record was stored and
+  // exported to Snowflake on every row although nothing reads it.
+  it('stores Id and the declared fields only, never the Salesforce attributes object', async () => {
+    const stored: unknown[] = []
+    const supabase = {
+      from: vi.fn(() => {
+        const b: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'is', 'limit']) b[m] = vi.fn(() => b)
+        b.update = vi.fn((values: { enrollment_view: unknown }) => {
+          stored.push(values.enrollment_view)
+          const u: Record<string, unknown> = {
+            eq: vi.fn(() => u),
+            select: () => Promise.resolve({ data: [{ id: 'row-1' }], error: null }),
+          }
+          return u
+        })
+        b.then = (resolve: (r: unknown) => unknown) =>
+          resolve({
+            data: [{ id: 'row-1', requested_at_utc: '2026-09-16T00:00:00Z', request_payload: { partner_lead_id: 'a04Ui00000MSNppIAH' } }],
+            error: null,
+          })
+        return b
+      }),
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      records: [{
+        attributes: { type: 'Submission__c', url: '/services/data/v60.0/sobjects/Submission__c/a04Ui00000MSNppIAH' },
+        Id: 'a04Ui00000MSNppIAH',
+        RevolvingTotalBalance__c: 6370,
+      }],
+    }), { status: 200 })))
+
+    const result = await backfillEnrollmentView(supabase as never, {} as never, 10_000, () => 0)
+    vi.unstubAllGlobals()
+
+    expect(result.filled).toBe(1)
+    expect(stored).toEqual([{ Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: 6370 }])
+  })
+
   // The enrollment view is a second lens on the same lead, not the analysis payload, so it is
   // deliberately NOT allowed to gate the export the way the trades backfill does. A Salesforce
   // outage must leave the column null and let otherwise complete rows through, because holding

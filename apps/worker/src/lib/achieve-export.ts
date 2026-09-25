@@ -29,7 +29,7 @@ import { formatErr } from './format-error'
 import { parseJson } from './json'
 import { resolveSalesforceCredentialOrg, requireSalesforceCreds } from './salesforce-creds'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
-import { readSubmissionView, type SubmissionView } from './achieve-enrollment-view'
+import { readSubmissionView, type SubmissionRecord } from './achieve-enrollment-view'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
 // output = { status, body } with the trades response in body).
@@ -193,14 +193,14 @@ export async function backfillEnrollmentView(
   )
   const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
 
-  const query = async (soql: string): Promise<SubmissionView[]> => {
+  const query = async (soql: string): Promise<SubmissionRecord[]> => {
     const res = await fetch(`${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) {
       throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
     }
-    const body = await parseJson<{ records?: SubmissionView[] }>(res)
+    const body = await parseJson<{ records?: SubmissionRecord[] }>(res)
     return body.records ?? []
   }
 
