@@ -1316,6 +1316,8 @@ export type Database = {
           duration_ms: number | null
           estimated_revenue_cents: number | null
           execution_id: string
+          export_rejected_at: string | null
+          export_rejected_reason: string | null
           exported_at: string | null
           http_status: number | null
           id: string
@@ -1341,6 +1343,8 @@ export type Database = {
           duration_ms?: number | null
           estimated_revenue_cents?: number | null
           execution_id: string
+          export_rejected_at?: string | null
+          export_rejected_reason?: string | null
           exported_at?: string | null
           http_status?: number | null
           id?: string
@@ -1366,6 +1370,8 @@ export type Database = {
           duration_ms?: number | null
           estimated_revenue_cents?: number | null
           execution_id?: string
+          export_rejected_at?: string | null
+          export_rejected_reason?: string | null
           exported_at?: string | null
           http_status?: number | null
           id?: string
@@ -1397,6 +1403,8 @@ export type Database = {
           execution_id: string
           execution_started_at_et: string
           execution_started_at_utc: string
+          export_rejected_at: string | null
+          export_rejected_reason: string | null
           exported_at: string | null
           external_debt: number | null
           external_exchange_status: string | null
@@ -1454,6 +1462,8 @@ export type Database = {
           execution_id: string
           execution_started_at_et: string
           execution_started_at_utc: string
+          export_rejected_at?: string | null
+          export_rejected_reason?: string | null
           exported_at?: string | null
           external_debt?: number | null
           external_exchange_status?: string | null
@@ -1511,6 +1521,8 @@ export type Database = {
           execution_id?: string
           execution_started_at_et?: string
           execution_started_at_utc?: string
+          export_rejected_at?: string | null
+          export_rejected_reason?: string | null
           exported_at?: string | null
           external_debt?: number | null
           external_exchange_status?: string | null
