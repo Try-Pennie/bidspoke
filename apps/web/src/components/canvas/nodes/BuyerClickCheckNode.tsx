@@ -1,15 +1,12 @@
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { OUT_REASON_LABELS, type OutReason } from '@bidspoke/buyer-profile'
-import { NODE_TRAITS } from '@/types/workflow'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ShieldCheck } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
-import { NODE_W } from '@/lib/layout'
+import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
-
-/** The two outgoing handles, from the node type's own list. */
-const HANDLES = NODE_TRAITS.buyer_click_check.staticHandles ?? []
+import { SourceHandles } from './SourceHandles'
 
 const label = (handle: string): string => handle.replace(/_/g, ' ')
 
@@ -33,7 +30,7 @@ function reasonLabel(reason: string): string {
  * shown as a name), and after a run what it decided: the clicks it judged
  * against the cap when eligible, the plain reason otherwise.
  */
-export function BuyerClickCheckNode({ data, selected }: NodeProps) {
+export function BuyerClickCheckNode({ id, data, selected }: NodeProps) {
   const { namespace, label: title, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const hasPartner = typeof config.partner_id === 'string' && config.partner_id.trim() !== ''
   let partnerName = ''
@@ -55,12 +52,14 @@ export function BuyerClickCheckNode({ data, selected }: NodeProps) {
     }
   }
 
+  const width = nodeWidth('buyer_click_check', data)
+
   return (
     <div
       className={`relative rounded-lg border bg-white shadow-sm ${
         selected ? 'border-lime-500 ring-2 ring-lime-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
-      style={{ ...getExecutionStyle(executionStep), width: NODE_W }}
+      style={{ ...getExecutionStyle(executionStep), width }}
     >
       <Handle type="target" position={Position.Top} id="input" />
 
@@ -82,17 +81,16 @@ export function BuyerClickCheckNode({ data, selected }: NodeProps) {
         )}
       </div>
 
-      <div className="flex border-t border-gray-100 text-[10px]">
-        {HANDLES.map((h) => (
-          <span key={h} className={`flex-1 py-1 text-center ${h === 'eligible' ? 'font-semibold text-lime-800' : 'text-slate-500'}`}>
-            {label(h)}
-          </span>
-        ))}
-      </div>
-
-      {HANDLES.map((h, i) => (
-        <Handle key={h} type="source" position={Position.Bottom} id={h} style={{ left: `${((i + 0.5) / HANDLES.length) * 100}%` }} />
-      ))}
+      <SourceHandles
+        nodeId={id}
+        type="buyer_click_check"
+        width={width}
+        data={data}
+        rowHeight={34}
+        textClassName="text-[10px]"
+        wrap
+        describe={(h) => ({ label: label(h), className: h === 'eligible' ? 'font-semibold text-lime-800' : 'text-slate-500' })}
+      />
     </div>
   )
 }

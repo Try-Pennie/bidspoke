@@ -2,6 +2,7 @@ import dagre from '@dagrejs/dagre'
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeType } from '@/types/workflow'
 import { NODE_TRAITS } from '@/types/workflow'
+import { SLOT_GAP, cardKind, fixedHandleOffsets, outputHandles, slotColumns } from './handle-geometry'
 
 // All canvas nodes share this width (w-52 = 208px)
 export const NODE_W = 208
@@ -168,97 +169,11 @@ export function findFreePosition(
   return { x: preferX, y: bottomY }
 }
 
-/**
- * Returns a sort index for a source handle so that siblings are ordered
- * left-to-right on the canvas to match the visual handle positions on the node.
- *
- * filter:         pass=0 (30% left), exit=1 (70% left)
- * bid_group:      winner=0, no_winner=1
- * branch:         branch labels in order + else last
- */
-/**
- * Returns the configured handle ids on a multi-output node, in left-to-right
- * order. Returns null for nodes that don't have multi-output semantics (or
- * have only a single output, in which case the layout never branches).
- */
-export function configuredHandleIds(node: Node): string[] | null {
-  const type = node.type
-  const config = (node.data as { config?: Record<string, unknown> } | undefined)?.config
-  if (type === 'branch') {
-    const branches = (config?.branches as { label: string }[] | undefined) ?? []
-    const elseBehavior =
-      (config?.else_behavior as 'output' | 'none' | 'error' | undefined) ??
-      ((config?.use_else as boolean | undefined) === false ? 'none' : 'output')
-    const ids = [
-      ...branches.map((b) => b.label),
-      ...(elseBehavior === 'output' ? ['else'] : []),
-    ]
-    return ids.length > 0 ? ids : null
-  }
-  if (type === 'filter') return ['pass', 'exit']
-  if (type === 'bid_group') return ['winner', 'no_winner']
-  if (type === 'buyer_select') return ['sold', 'no_sale', 'not_applicable', 'deferred']
-  if (type === 'buyer_click_send') return [...(NODE_TRAITS.buyer_click_send.staticHandles ?? [])]
-  if (type === 'buyer_click_check') return [...(NODE_TRAITS.buyer_click_check.staticHandles ?? [])]
-  if (type === 'latency_gate') {
-    const op = (config?.operation as string | undefined) ?? 'mark'
-    return op === 'check' ? ['within', 'exceeded'] : null
-  }
-  if (type === 'parallel') {
-    const raw = config?.children
-    if (!Array.isArray(raw) || raw.length === 0) return null
-    if (typeof raw[0] === 'string') {
-      return (raw as string[]).map((_, i) => `child-${i}`)
-    }
-    return (raw as { id: string }[]).map((s) => s.id)
-  }
-  return null
-}
-
-function handleSortIndex(
-  nodeType: string | undefined,
-  handleId: string | null | undefined,
-  nodeData: unknown
-): number {
-  if (!handleId) return 0
-  if (nodeType === 'filter') {
-    if (handleId === 'pass') return 0
-    if (handleId === 'exit') return 1
-  }
-  if (nodeType === 'bid_group') {
-    if (handleId === 'winner') return 0
-    if (handleId === 'no_winner') return 1
-  }
-  if (nodeType === 'buyer_select') {
-    const idx = ['sold', 'no_sale', 'not_applicable', 'deferred'].indexOf(handleId)
-    return idx >= 0 ? idx : 999
-  }
-  if (nodeType === 'buyer_click_send') {
-    const idx = (NODE_TRAITS.buyer_click_send.staticHandles ?? []).indexOf(handleId)
-    return idx >= 0 ? idx : 999
-  }
-  if (nodeType === 'buyer_click_check') {
-    const idx = (NODE_TRAITS.buyer_click_check.staticHandles ?? []).indexOf(handleId)
-    return idx >= 0 ? idx : 999
-  }
-  if (nodeType === 'latency_gate') {
-    if (handleId === 'within') return 0
-    if (handleId === 'exceeded') return 1
-  }
-  if (nodeType === 'branch') {
-    type BranchData = { config?: { branches?: { label: string }[] } }
-    const cfg = (nodeData as BranchData | undefined)?.config
-    const branches = cfg?.branches ?? []
-    const handles = [...branches.map((b) => b.label), 'else']
-    const idx = handles.indexOf(handleId)
-    return idx >= 0 ? idx : 999
-  }
-  if (nodeType === 'parallel') {
-    // child-0, child-1, ... → sort left-to-right by index
-    const m = /^child-(\d+)$/.exec(handleId)
-    return m ? parseInt(m[1]) : 999
-  }
-  return 0
+/** Left to right position of an edge's handle on its source, for ordering siblings; a handle the node does not have sorts last. */
+function handleSortIndex(src: Node | undefined, handleId: string | null | undefined): number {
+  if (!handleId || !src) return 0
+  const idx = outputHandles(src).indexOf(handleId)
+  return idx >= 0 ? idx : 999
 }
 
 /**
@@ -287,8 +202,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // from 48 → 96 on 2026-05-05 because adjacent branch clusters' region
   // backdrops were touching when one subtree was wide and the next was
   // also wide (nested branches in adjacent slots). 96 gives a visible gap
-  // even after the region backdrops extend their own padding.
-  const NODESEP_PRE = 96
+  // even after the region backdrops extend their own padding. (SLOT_GAP.)
+  const NODESEP_PRE = SLOT_GAP
   // Compute the set of nodes where a multi-output's chain rejoins (convergence
   // points reachable from every handle, plus the paired branch_end/parallel_end
   // via the backbone). Width recursion stops at these so the multi-output's
@@ -330,14 +245,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     return stops
   }
-  // Node types that render their card wide enough to span their arms' subtrees
-  // (handles placed above each child column). `filter` is intentionally NOT here:
-  // it's a 2-way gate, not a fan-out splitter, so it stays a fixed-width card and
-  // its pass/exit wires just bend to their targets — otherwise a filter whose arm
-  // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
-  // Typed by NodeType so a misspelt member is a compile error (#1411); which
-  // types belong is a layout judgement, stated above, not a trait.
-  const FANOUT_TYPES: ReadonlySet<string> = new Set<NodeType>(['branch', 'parallel', 'bid_group', 'latency_gate', 'buyer_select', 'buyer_click_send'])
+  // Which cards widen to span their arms (fanout) and which keep a fixed width
+  // (a filter is a 2 way gate, not a splitter, so a filter pointing at a wide
+  // subtree must not balloon across the canvas) is CARD_KIND in handle-geometry.
+  const isFanout = (n: Node) => cardKind(n.type) === 'fanout'
+  const isFixed = (n: Node) => cardKind(n.type) === 'fixed'
 
   // Cross-path edges: a filter can fork into a node that already sits on another
   // path (e.g. a filter on one branch routing into a bid_group on another).
@@ -395,6 +307,28 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  const isEndId = (id: string) => { const t = nodeMap.get(id)?.type; return t === 'branch_end' || t === 'parallel_end' }
+  const wiredHandles = (n: Node, handles: string[]) =>
+    new Set(handles.filter((h) => edges.some((e) => e.source === n.id && e.sourceHandle === h)))
+  // The edge an arm places its child by: never a cross-link, whose target its own
+  // primary parent places (#1499), and never an end marker, which sits in its
+  // branch's column.
+  const placedEdge = (n: Node, h: string) =>
+    edges.find((e) => e.source === n.id && e.sourceHandle === h && !crossEdgeIds.has(e.id) && !isEndId(e.target))
+  // A fixed card's columns: every wired arm that leads somewhere other than an
+  // end marker. A cross-link arm keeps its column (Dan, 2026-09-25: "No, both
+  // count"), so the real child beside it moves aside, but moves nothing itself.
+  const fixedColumnHandles = (n: Node, handles: string[]) =>
+    handles.filter((h) => edges.some((e) => e.source === n.id && e.sourceHandle === h && !isEndId(e.target)))
+  // Each fan-out slot's width: its child's subtree, or a card's width for an
+  // empty slot, whose lane stays reserved.
+  const fanoutSlotWidths = (n: Node, handles: string[], visited: Set<string>, stopAt: Set<string>) =>
+    handles.map((h) => {
+      const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h && !crossEdgeIds.has(e.id))
+      if (!slotEdge) return NODE_W
+      return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited), stopAt))
+    })
+
   const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>, outerStopAt?: Set<string>): number => {
     if (visited.has(startId)) return 0
     if (outerStopAt && outerStopAt.has(startId)) return 0
@@ -402,18 +336,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const n = nodeMap.get(startId)
     if (!n) return NODE_W
     const ownWidth = nodeWidth(n.type, n.data)
-    const handles = configuredHandleIds(n)
-    if (handles && handles.length >= 2 && FANOUT_TYPES.has(n.type ?? '')) {
+    const handles = outputHandles(n)
+    if (handles.length >= 2 && isFanout(n)) {
       // Add this multi-output's own convergence + paired end to the stopAt
       // before walking its slot chains, so each slot's width reflects its
       // exclusive territory (not any rejoin or post-cluster downstream).
       const innerStops = stopAtForMultiOutput(n, handles)
       const merged = outerStopAt ? new Set([...outerStopAt, ...innerStops]) : innerStops
-      const slotWidths = handles.map((h) => {
-        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h && !crossEdgeIds.has(e.id))
-        if (!slotEdge) return NODE_W
-        return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited), merged))
-      })
+      const slotWidths = fanoutSlotWidths(n, handles, visited, merged)
       const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
       // When this branch/parallel is itself nested inside an outer slot, the
       // chain that exits via its end node and continues toward the outer
@@ -440,6 +370,18 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       }
       return Math.max(ownWidth, fanOutWidth, pastEndWidth)
     }
+    if (isFixed(n)) {
+      // A fixed card with two or more children spreads them side by side, so its
+      // territory is their columns together. A cross-link column is left out
+      // here: a fork must not drive width reservation (#1499).
+      const placed = handles.map((h) => placedEdge(n, h)).filter((e): e is Edge => e !== undefined)
+      if (placed.length >= 2) {
+        const stops = stopAtForMultiOutput(n, handles)
+        const merged = outerStopAt ? new Set([...outerStopAt, ...stops]) : stops
+        const widths = placed.map((e) => Math.max(NODE_W, effectiveSubtreeWidthPre(e.target, new Set(visited), merged)))
+        return Math.max(ownWidth, widths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (widths.length - 1))
+      }
+    }
     let maxBelow = 0
     for (const e of edges) {
       if (e.source !== startId || crossEdgeIds.has(e.id)) continue
@@ -449,40 +391,43 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return Math.max(ownWidth, maxBelow)
   }
   const effectiveWidthByNode = new Map<string, number>()
+  // Where each card draws its handles (offsets from its centre), published as
+  // `_handleOffsets` for <SourceHandles>, and the column each wired arm places
+  // its child in. One rule for every node with output handles (#1576):
+  // - a fan-out card with two or more handles widens to `_spanWidth` so each
+  //   handle sits straight above its child's column, the empty ones included;
+  // - a card with one handle (a one arm branch) draws it at its centre with its
+  //   child straight below, and keeps its width;
+  // - a fixed card keeps its width: one wired output is drawn at the centre with
+  //   its child straight below, and with more wired the handles stay at the
+  //   card's fractions while the children spread, so the wires bend.
   const handleOffsetsByNode = new Map<string, number[]>()
-  // Every multi-output node type renders its card wide enough to span its
-  // children's columns and reads `_handleOffsets` to place handles directly
-  // above each child. This is what keeps wires straight and prevents wide
-  // sibling subtrees from horizontally overlapping each other.
-  //
-  // The card-render side of each of these types MUST read `_spanWidth` and
-  // `_handleOffsets` from `data`. See `BranchNode.tsx`, `ParallelNode.tsx`,
-  // `BranchEndNode.tsx`, `BidGroupNode.tsx`. New node
-  // types that opt in here must do the same. (`filter` is excluded — see
-  // FANOUT_TYPES above; it renders fixed-width with handles at 30%/70%.)
+  const columnsByNode = new Map<string, Map<string, number>>()
   for (const n of nodes) {
-    if (!FANOUT_TYPES.has(n.type ?? '')) continue
-    const handles = configuredHandleIds(n)
-    if (!handles || handles.length < 2) continue
-    const stopAt = stopAtForMultiOutput(n, handles)
-    const slotWidths = handles.map((h) => {
-      const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
-      if (!slotEdge) return NODE_W
-      return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set([n.id]), stopAt))
-    })
-    const totalSpan = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
-    const labelW = nodeWidth(n.type, n.data)
-    const effW = Math.max(labelW, totalSpan)
-    effectiveWidthByNode.set(n.id, effW)
-    // Per-handle offset from the node's center, used for child placement and
-    // for rendering each handle above its child's column.
-    let cursor = -totalSpan / 2
-    const offsets = slotWidths.map((w) => {
-      const center = cursor + w / 2
-      cursor += w + NODESEP_PRE
-      return center
-    })
-    handleOffsetsByNode.set(n.id, offsets)
+    const handles = outputHandles(n)
+    if (handles.length === 0) continue
+    if (handles.length === 1) {
+      handleOffsetsByNode.set(n.id, [0])
+      columnsByNode.set(n.id, new Map([[handles[0], 0]]))
+    } else if (isFanout(n)) {
+      const stopAt = stopAtForMultiOutput(n, handles)
+      const slotWidths = fanoutSlotWidths(n, handles, new Set([n.id]), stopAt)
+      const totalSpan = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
+      effectiveWidthByNode.set(n.id, Math.max(nodeWidth(n.type, n.data), totalSpan))
+      const offsets = slotColumns(slotWidths, NODESEP_PRE)
+      handleOffsetsByNode.set(n.id, offsets)
+      columnsByNode.set(n.id, new Map(handles.map((h, i) => [h, offsets[i]])))
+    } else if (isFixed(n)) {
+      handleOffsetsByNode.set(n.id, fixedHandleOffsets(n.type, handles, wiredHandles(n, handles), nodeWidth(n.type, n.data)))
+      const cols = fixedColumnHandles(n, handles)
+      const stopAt = stopAtForMultiOutput(n, cols)
+      const widths = cols.map((h) => {
+        const e = placedEdge(n, h)
+        return e ? Math.max(NODE_W, effectiveSubtreeWidthPre(e.target, new Set([n.id]), stopAt)) : NODE_W
+      })
+      const offsets = slotColumns(widths, NODESEP_PRE)
+      columnsByNode.set(n.id, new Map(cols.map((h, i) => [h, offsets[i]])))
+    }
   }
   // Parallel_end / branch_end inherit their paired start node's effective
   // width so the join visually closes the cluster instead of staying NODE_W
@@ -493,7 +438,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
     if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
     const branch = nodeMap.get(branchId)
-    const handleCount = branch ? (configuredHandleIds(branch)?.length ?? 0) : 0
+    const handleCount = branch ? outputHandles(branch).length : 0
     const wiredHandles = new Set<string>()
     const seedTargets: string[] = []
     for (const e of edges) {
@@ -554,8 +499,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   const convergenceCandidatesByBranch = new Map<string, Set<string>>()
   for (const n of nodes) {
     if (n.type !== 'branch') continue
-    const handles = configuredHandleIds(n)
-    if (!handles || handles.length < 2) continue
+    const handles = outputHandles(n)
+    if (handles.length < 2) continue
     const perHandle = handles.map((h) => {
       const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
       if (!slotEdge) return new Set<string>()
@@ -589,8 +534,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   const sortedEdges = [...edges].sort((a, b) => {
     if (a.source !== b.source) return 0
     const src = nodeMap.get(a.source)
-    const aIdx = handleSortIndex(src?.type, a.sourceHandle, src?.data)
-    const bIdx = handleSortIndex(src?.type, b.sourceHandle, src?.data)
+    const aIdx = handleSortIndex(src, a.sourceHandle)
+    const bIdx = handleSortIndex(src, b.sourceHandle)
     return aIdx - bIdx
   })
 
@@ -634,11 +579,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // Phantom children for unconnected multi-output handles. dagre allocates a
   // column for each phantom, which keeps the empty handle's "lane" of canvas
   // visible (and reachable for future drops) instead of letting the connected
-  // chain collapse into the whole branch's territory. Phantoms are dagre-only
-  // — never in React Flow's nodes/edges, never rendered, never saved.
+  // chain collapse into the whole branch's territory. Phantoms are dagre-only:
+  // never in React Flow's nodes/edges, never rendered, never saved. Only a
+  // fan-out card reserves an empty lane: a fixed card's lone wired output sits at
+  // its centre, so a phantom beside it would only pull that child off centre.
   for (const node of nodes) {
-    const handles = configuredHandleIds(node)
-    if (!handles || handles.length < 2) continue
+    if (!isFanout(node)) continue
+    const handles = outputHandles(node)
+    if (handles.length < 2) continue
     const usedHandles = new Set<string>()
     for (const e of edges) {
       if (e.source === node.id && e.sourceHandle) usedHandles.add(e.sourceHandle)
@@ -671,9 +619,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     })
     if (!pairEdge) continue
     const pairId = pairEdge.target
-    const slotEdges = edges.filter(
-      (e) => e.source === node.id && (e.sourceHandle ?? '').startsWith('child-')
-    )
+    // Slot edges by the parallel's own handle list: a parallel whose slots have
+    // their own ids names its handles by them, not child-N (#1581).
+    const slotHandles = outputHandles(node)
+    const slotEdges = edges.filter((e) => e.source === node.id && slotHandles.includes(e.sourceHandle ?? ''))
     for (const slotEdge of slotEdges) {
       let current = slotEdge.target
       const visited = new Set<string>([node.id])
@@ -736,7 +685,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       .filter((e) => pos.has(e.target))
       .map((e) => ({
         nodeId: e.target,
-        handleIdx: handleSortIndex(src?.type, e.sourceHandle, src?.data),
+        handleIdx: handleSortIndex(src, e.sourceHandle),
         ...pos.get(e.target)!,
       }))
 
@@ -763,51 +712,37 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
-  // ── Post-process: children of multi-output nodes sit at the X they would
-  // occupy if every configured handle had a child attached. This keeps a
-  // 1-of-N child directly under its specific handle (instead of centered),
-  // and lays out 2-of-3 cases without collapsing the gap left by the unused
-  // middle handle. A child fed by SEVERAL handles of one node sits centred
-  // under them (#1499, Dan 2026-09-23); before, each edge overwrote the last
-  // and the child landed under whichever handle happened to be visited last.
-  // Branch and parallel ends keep their own per-edge placement.
+  // ── Post-process: every node with output handles places its children in the
+  // columns computed above (#1576, one rule for every card type). A fan-out
+  // card's columns cover every handle, so a 1-of-N child sits under its own
+  // handle and an unused middle handle keeps its gap; a fixed card's lone wired
+  // output puts its child straight below it. A child fed by SEVERAL handles of
+  // one node sits centred under their columns (#1499, Dan 2026-09-23). Two kinds
+  // of edge place nothing: a cross-link, whose target only its own primary
+  // parent places (the red team found a draft dragging Main Flow's shared
+  // bid_group onto its filter), and one into an end marker, which the end pass
+  // below pins to its branch's column.
   const applyMultiOutputOverride = () => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
-      const src = nodeMap.get(sourceId)
-      if (!src) continue
-      const handles = configuredHandleIds(src)
-      if (!handles || handles.length === 0) continue
+      const columns = columnsByNode.get(sourceId)
+      if (!columns) continue
       const parentPos = pos.get(sourceId)
       if (!parentPos) continue
-      // A branch with one arm (else_behavior "none") has one configured handle,
-      // at the card's centre, and no published offsets. It must still place its
-      // child here: the chain straightening below skips every node with
-      // configured handles, so otherwise the child keeps dagre's x and nested one
-      // arm branches walk right as a staircase (#1567).
-      const offsets = handleOffsetsByNode.get(sourceId) ?? (handles.length === 1 ? [0] : undefined)
-      if (!offsets) continue
-      // Offsets of the CONFIGURED handles feeding each child. An edge on a
-      // handle the node does not have (a stray 'output' on a buyer_select, #1493)
-      // only places the child, at the parent's centre, when no configured handle
-      // feeds it; otherwise it would drag a centred child off centre.
+      // An edge on a handle the node does not have (a stray 'output' on a
+      // buyer_select, #1493) only places the child, at the parent's centre, when
+      // no real handle feeds it; otherwise it would drag a centred child off centre.
       const offsetsByChild = new Map<string, number[]>()
       const strayChildren = new Set<string>()
       for (const e of outEdges) {
-        if (!e.sourceHandle) continue
-        const childPos = pos.get(e.target)
-        if (!childPos) continue
-        const idx = handles.indexOf(e.sourceHandle)
-        const childType = nodeMap.get(e.target)?.type
-        if (childType === 'branch_end' || childType === 'parallel_end') {
-          childPos.x = parentPos.x + (idx >= 0 ? offsets[idx] : 0)
-          continue
-        }
-        if (idx < 0) {
+        if (!e.sourceHandle || crossEdgeIds.has(e.id) || isEndId(e.target)) continue
+        if (!pos.get(e.target)) continue
+        const column = columns.get(e.sourceHandle)
+        if (column === undefined) {
           strayChildren.add(e.target)
           continue
         }
         const list = offsetsByChild.get(e.target) ?? []
-        list.push(offsets[idx])
+        list.push(column)
         offsetsByChild.set(e.target, list)
       }
       for (const childId of strayChildren) {
@@ -878,8 +813,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         const parentOut = outEdgesBySource.get(parentId) ?? []
         const uniqueChildren = new Set(parentOut.map((e) => e.target))
         if (uniqueChildren.size !== 1) continue
-        const parent = nodeMap.get(parentId)
-        if (parent && configuredHandleIds(parent)) continue
+        // The placement pass owns every child of a node with output handles.
+        if (columnsByNode.has(parentId)) continue
         const childPos = pos.get(node.id)
         const parentPos = pos.get(parentId)
         if (!childPos || !parentPos) continue
@@ -927,7 +862,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (b.type !== 'branch' && b.type !== 'parallel') continue
     const endType = b.type === 'branch' ? 'branch_end' : 'parallel_end'
     const pairEnd = edges.find((e) => e.source === b.id && nodeMap.get(e.target)?.type === endType)?.target
-    const handles = configuredHandleIds(b) ?? []
+    const handles = outputHandles(b)
     const reach = new Set<string>()
     const q: string[] = []
     for (const h of handles) {
@@ -973,7 +908,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
     // (1) Deepest CONTENT in this branch's subtree (skip end nodes; stop
     // recursing at ends so we don't run downstream into outer ends).
-    const handles = branch ? configuredHandleIds(branch) ?? [] : []
+    const handles = branch ? outputHandles(branch) : []
     let contentDeepestY = branchPos.y
     let contentDeepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
     const visited = new Set<string>([branchId, node.id])
@@ -1174,14 +1109,13 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       .map((e) => e.source)
     const order = [...pos.keys()].filter((id) => reachable.has(id)).sort((a, b) => pos.get(a)!.y - pos.get(b)!.y)
     for (const p of order) {
-      // Don't straighten a multi-output node's lone wired child back to center.
-      // applyMultiOutputOverride placed that child under its specific handle, and
-      // childrenOf() excludes end nodes — so a branch/filter with only one arm
-      // wired (e.g. only the "Bid" handle → a salesforce node, "No Bid" empty)
-      // looks like a single-child linear chain here and would otherwise get
-      // recentered under the card. It should stay directly under its handle.
-      const parentNode = nodeMap.get(p)
-      if (parentNode && configuredHandleIds(parentNode)) continue
+      // Never re-straighten a child the placement pass put in its column. A
+      // fan-out card with one arm wired (only "Bid" wired to a salesforce node,
+      // "No Bid" empty) looks like a single-child linear chain here, because
+      // childrenOf() excludes end nodes, and would be recentered under the card;
+      // it stays under its handle (d748054c). A fixed card's lone child is
+      // already at its centre (#1576).
+      if (columnsByNode.has(p)) continue
       const kids = childrenOf(p)
       if (kids.length !== 1) continue
       const c = kids[0]
@@ -1292,9 +1226,9 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
     const isReachable = reachable.has(node.id)
     const hasExistingPos = node.position.x !== 0 || node.position.y !== 0
-    // Layout-computed canvas-only data: effective width (so multi-output nodes
-    // render wide enough to cover their children's span) and per-handle
-    // offsets (so handles render above each child's actual column).
+    // Layout-computed canvas-only data: a fan-out card's effective width (so it
+    // renders wide enough to cover its children's span) and, for every node with
+    // output handles, where each handle is drawn (read by <SourceHandles>).
     const effW = effectiveWidthByNode.get(node.id)
     const offsets = handleOffsetsByNode.get(node.id)
     const staleData = node.data as { _spanWidth?: number; _handleOffsets?: number[] } | undefined
@@ -1302,8 +1236,9 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (effW || offsets) {
       layoutData = { ...node.data, _spanWidth: effW, _handleOffsets: offsets }
     } else if (staleData?._spanWidth != null || staleData?._handleOffsets != null) {
-      // Node is no longer an active fan-out (e.g. a `filter`, or a type change) —
-      // drop the stale span so `nodeWidth` stops honoring it. Only rebuilds the
+      // Node no longer has output handles (a latency gate switched to mark, a
+      // type change): drop the stale span so `nodeWidth` stops honoring it, and
+      // the stale handle positions with it. Only rebuilds the
       // object when the fields actually exist, preserving identity otherwise.
       const { _spanWidth, _handleOffsets, ...rest } = node.data
       void _spanWidth; void _handleOffsets

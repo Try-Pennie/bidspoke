@@ -1,11 +1,11 @@
-import { useEffect } from 'react'
-import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
+import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { SourceHandles } from './SourceHandles'
 
 interface BranchEntry { label: string }
 
@@ -17,37 +17,10 @@ export function BranchNode({ id, data, selected }: NodeProps) {
   const elseLabel = (config.else_label as string | undefined) || 'else'
   const outputPreview = getOutputPreview(executionStep)
 
-  // Handle id stays 'else' (engine + edges depend on it); only the rendered label is customizable.
-  const handles: { id: string; label: string; isElse: boolean }[] = [
-    ...branches.map((b) => ({ id: b.label, label: b.label, isElse: false })),
-    ...(elseBehavior === 'output' ? [{ id: 'else', label: elseLabel, isElse: true }] : []),
-  ]
-  const handleCount = handles.length
-
-  // Adding/removing/renaming branches changes the handle list at runtime.
-  // Without this, React Flow's nodeInternals doesn't know about the new
-  // handles and connections silently fail (drag wire doesn't drop, drop
-  // auto-connect can't find an "occupied" edge).
-  const updateNodeInternals = useUpdateNodeInternals()
-  const handleIdsKey = handles.map((h) => h.id).join(',')
-  useEffect(() => {
-    updateNodeInternals(id)
-  }, [id, handleIdsKey, updateNodeInternals])
+  // Handle id stays 'else' (engine + edges depend on it); only the rendered label
+  // is customizable. SourceHandles tells React Flow when the arms change, so a
+  // wire dropped on a freshly added arm finds its handle.
   const width = nodeWidth('branch', data)
-  // Place handles at the X positions that match `layout.ts`'s per-slot offsets,
-  // so each handle sits directly above its child's column. Without this, the
-  // DOM falls back to evenly-spaced handles while layout positions children at
-  // subtree-width-proportional offsets — the mismatch puts a small horizontal
-  // bend on every outgoing wire, which compounds when subtrees are asymmetric.
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number): string => {
-    if (handleOffsets && handleOffsets[i] != null && width > 0) {
-      // Offsets are signed distances from the node's center; convert to a
-      // percentage of the rendered width (which equals layout's _spanWidth).
-      return `${50 + (handleOffsets[i] / width) * 100}%`
-    }
-    return `${((i + 0.5) / handleCount) * 100}%`
-  }
 
   const description = branches.length === 0
     ? 'No branches'
@@ -76,29 +49,15 @@ export function BranchNode({ id, data, selected }: NodeProps) {
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}
       </div>
-      {handles.length > 0 && (
-        <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
-          {handles.map((h, i) => (
-            <span
-              key={h.id}
-              className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}
-              style={{ left: handleLeftPct(i), maxWidth: `${(100 / handleCount).toFixed(2)}%` }}
-            >
-              ↓ {h.label}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {handles.map((h, i) => (
-        <Handle
-          key={h.id}
-          type="source"
-          position={Position.Bottom}
-          id={h.id}
-          style={{ left: handleLeftPct(i) }}
-        />
-      ))}
+      <SourceHandles
+        nodeId={id}
+        type="branch"
+        width={width}
+        data={data}
+        describe={(h) => (h === 'else' && elseBehavior === 'output'
+          ? { label: `↓ ${elseLabel}`, className: 'text-slate-400' }
+          : { label: `↓ ${h}`, className: 'text-purple-600' })}
+      />
     </div>
   )
 }

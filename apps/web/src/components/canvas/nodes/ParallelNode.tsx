@@ -1,13 +1,13 @@
 'use client'
 
-import { useEffect } from 'react'
-import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
+import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { NODE_TYPE_COLOR } from './node-colors'
+import { SourceHandles } from './SourceHandles'
 
 interface ParallelChildResult {
   namespace: string
@@ -29,16 +29,6 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const slots = readSlots(config)
-
-  // Force React Flow to re-scan this node's handles whenever the slot list
-  // changes. Without this, an edge created from a freshly-added slot
-  // (e.g. a webhook auto-attaching right after the user added the slot)
-  // silently fails to render because the new handle isn't in nodeInternals yet.
-  const updateNodeInternals = useUpdateNodeInternals()
-  const slotIdsKey = slots.map((s) => s.id).join(',')
-  useEffect(() => {
-    updateNodeInternals(id)
-  }, [id, slotIdsKey, updateNodeInternals])
 
   let resultLine: string | null = null
   let hasChildFailure = false
@@ -90,43 +80,18 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Slot label row + source handles. Place each at the X position that
-          matches `layout.ts`'s per-slot offset so each handle sits directly
-          above its child's column. Falls back to evenly-spaced if offsets
-          aren't set yet (very first render before layout has run). */}
-      {slots.length > 0 ? (() => {
-        const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-        const handleLeftPct = (i: number): string => {
-          if (handleOffsets && handleOffsets[i] != null && width > 0) {
-            return `${50 + (handleOffsets[i] / width) * 100}%`
-          }
-          return `${((i + 0.5) / slots.length) * 100}%`
-        }
-        return (
-          <>
-            <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
-              {slots.map((s, i) => (
-                <span
-                  key={s.id}
-                  className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-slate-500"
-                  style={{ left: handleLeftPct(i), maxWidth: `${(100 / slots.length).toFixed(2)}%` }}
-                >
-                  ↓ {s.label}
-                </span>
-              ))}
-            </div>
-            {slots.map((s, i) => (
-              <Handle
-                key={s.id}
-                type="source"
-                position={Position.Bottom}
-                id={s.id}
-                style={{ left: handleLeftPct(i) }}
-              />
-            ))}
-          </>
-        )
-      })() : (
+      {/* Each slot's handle sits above its child's column; SourceHandles also
+          tells React Flow when the slot list changes, so an edge from a freshly
+          added slot finds its handle. */}
+      {slots.length > 0 ? (
+        <SourceHandles
+          nodeId={id}
+          type="parallel"
+          width={width}
+          data={data}
+          describe={(h) => ({ label: `↓ ${slots.find((s) => s.id === h)?.label ?? h}`, className: 'text-slate-500' })}
+        />
+      ) : (
         <Handle type="source" position={Position.Bottom} id="output" />
       )}
     </div>
