@@ -3,7 +3,7 @@ import { render } from '@testing-library/react'
 import type { EdgeProps } from '@xyflow/react'
 import { LateBendEdge } from '../LateBendEdge'
 import { ConvergeEdge } from '../ConvergeEdge'
-import { EdgeHopsContext, routesFromState } from '../edge-hops'
+import { EdgeHopsContext, routesFromState, routesKeySelector } from '../edge-hops'
 import { turnY, HOP_RADIUS } from '../edge-routes'
 
 // #1570: both wire types draw the arches the canvas-wide crossing pass gives them,
@@ -66,5 +66,39 @@ describe('routesFromState', () => {
       { id: 'climbs', source: 'a', target: 'up', sourceHandle: 'sent', targetHandle: null },
     ]) as never)
     expect(routes).toEqual([])
+  })
+})
+
+describe('routesKeySelector', () => {
+  // The store notifies on every pan and zoom. Those move only the view, so the
+  // whole canvas walk is skipped for them; anything else, including React Flow's
+  // empty update after measuring handles, walks again.
+  function counted() {
+    let walks = 0
+    const nodeLookup = new Map<string, unknown>()
+    const edges: object[] = []
+    const lookup = { get(id: string) { walks++; return nodeLookup.get(id) } }
+    return { edges: [{ id: 'e', source: 'a', target: 'b' }], lookup, walks: () => walks, edgesArr: edges }
+  }
+
+  it('does not walk the canvas again when only the view moved', () => {
+    const c = counted()
+    const select = routesKeySelector()
+    const s1 = { edges: c.edges, nodes: [], nodeLookup: c.lookup, transform: [0, 0, 1] }
+    select(s1 as never)
+    const before = c.walks()
+    select({ ...s1, transform: [40, 10, 1] } as never)
+    select({ ...s1, transform: [80, 20, 1.2] } as never)
+    expect(c.walks()).toBe(before)
+  })
+
+  it('walks again on an update that leaves the view alone, as after handles are measured', () => {
+    const c = counted()
+    const select = routesKeySelector()
+    const s1 = { edges: c.edges, nodes: [], nodeLookup: c.lookup, transform: [0, 0, 1] }
+    select(s1 as never)
+    const before = c.walks()
+    select({ ...s1 } as never)
+    expect(c.walks()).toBeGreaterThan(before)
   })
 })

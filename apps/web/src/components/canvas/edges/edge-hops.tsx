@@ -55,11 +55,33 @@ export function routesFromState(state: Pick<ReactFlowState, 'edges' | 'nodeLooku
   return out
 }
 
+type KeyState = Pick<ReactFlowState, 'edges' | 'nodes' | 'nodeLookup' | 'transform'>
+
+/**
+ * A store selector giving every wire's ends as one string, so the store compares
+ * it by value and the wires re-render only when an end moves. The store calls a
+ * selector on EVERY change, pan and zoom included, so the walk over the canvas is
+ * skipped when only the view moved (same wires, same nodes, a new transform).
+ * Anything else walks again, including React Flow's empty update after it
+ * measures handles, which changes no list but does move wire ends.
+ */
+export function routesKeySelector(): (s: KeyState) => string {
+  let last: { edges: unknown; nodes: unknown; transform: unknown; key: string } | null = null
+  return (s) => {
+    if (last && last.edges === s.edges && last.nodes === s.nodes && last.transform !== s.transform) {
+      last.transform = s.transform
+      return last.key
+    }
+    const key = JSON.stringify(routesFromState(s))
+    last = { edges: s.edges, nodes: s.nodes, transform: s.transform, key }
+    return key
+  }
+}
+
 /** Computes every wire's hops from the canvas store and provides them to the wires below. */
 export function EdgeHopsProvider({ children }: { children: ReactNode }) {
-  // A string, so the store compares it by value and hops are recomputed only when
-  // a wire or a handle actually moves, not on every pan or zoom.
-  const key = useStore((s) => JSON.stringify(routesFromState(s)))
+  const select = useMemo(() => routesKeySelector(), [])
+  const key = useStore(select)
   const hops = useMemo(() => {
     const routes = (JSON.parse(key) as ReturnType<typeof routesFromState>).map((r) => ({ ...r, by: turnY({ sourceY: r.sy, targetY: r.ty }) }))
     return crossingHops(routes)
