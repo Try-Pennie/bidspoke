@@ -71,36 +71,32 @@ describe('CRON_JOBS registry', () => {
     expect(firstSeenKey('daily-1300')).toBe('cron-heartbeat:daily-1300:first-seen')
   })
 
-  it('registers the two-hour export and purge crons as watched jobs', () => {
+  it('registers the two-hour export cron as a watched job', () => {
     const ids = CRON_JOBS.map((j) => j.id)
     expect(ids).toContain('sightings-export')
-    expect(ids).toContain('sightings-purge')
   })
 
-  it('watches the bids purge, which runs on its own cron so a sightings backlog cannot starve it', () => {
-    // The bids purge got its own even-hour cron (2026-07-10: sharing one purge
-    // invocation let an 87K sightings backlog exhaust the subrequest budget and
-    // leave bids at zero). A separate cron that nothing watches is exactly the
-    // #612 gap, so it must be registered too.
+  // #541: the sightings purge is the database's own pg_cron job now, watched by
+  // pg-cron-watch, so the Worker's heartbeat registry must not keep waiting for
+  // two crons that no longer fire; it would page on them forever.
+  it('no longer watches the retired Worker purge crons', () => {
     const ids = CRON_JOBS.map((j) => j.id)
-    expect(ids).toContain('sighting-bids-purge')
-    expect(cronJob('sighting-bids-purge').triggerCron).toBe('47 0-22/2 * * *')
+    expect(ids).not.toContain('sightings-purge')
+    expect(ids).not.toContain('sighting-bids-purge')
   })
 
-  it('gives the two-hour jobs a tighter stale threshold than the daily job', () => {
-    expect(cronJob('sightings-purge').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
-    expect(cronJob('sighting-bids-purge').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
+  it('gives the two-hour job a tighter stale threshold than the daily job', () => {
+    expect(cronJob('sightings-export').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
     // A 2h cadence must still tolerate one on-time run without flapping.
-    expect(cronJob('sightings-purge').staleMs).toBeGreaterThan(2 * H)
-    expect(cronJob('sighting-bids-purge').staleMs).toBeGreaterThan(2 * H)
+    expect(cronJob('sightings-export').staleMs).toBeGreaterThan(2 * H)
   })
 })
 
 describe('writeHeartbeat', () => {
   it('records the run timestamp under the per-job heartbeat key', async () => {
     const kv = fakeKv()
-    await writeHeartbeat(kv, 'sightings-purge', NOW)
-    expect(kv.store.get(heartbeatKey('sightings-purge'))).toBe(iso(NOW))
+    await writeHeartbeat(kv, 'sightings-export', NOW)
+    expect(kv.store.get(heartbeatKey('sightings-export'))).toBe(iso(NOW))
     // Does not touch a different job's key.
     expect(kv.store.get(heartbeatKey('daily-1300'))).toBeUndefined()
   })
@@ -117,25 +113,25 @@ describe('runHeartbeatChecks', () => {
   it('alerts for the one dark job while the others stay silent', async () => {
     const kv = fakeKv({
       ...allFresh(NOW),
-      [heartbeatKey('sightings-purge')]: iso(NOW - 5 * H),
+      [heartbeatKey('sightings-export')]: iso(NOW - 5 * H),
     })
     const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
 
-    const purge = results.find((r) => r.jobId === 'sightings-purge')
-    expect(purge?.status).toBe('stale')
-    expect(purge?.alerted).toBe(true)
-    // Exactly one alert, and it names the purge job.
+    const exp = results.find((r) => r.jobId === 'sightings-export')
+    expect(exp?.status).toBe('stale')
+    expect(exp?.alerted).toBe(true)
+    // Exactly one alert, and it names the export job.
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][2]).toMatchObject({ id: 'sightings-purge' })
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][2]).toMatchObject({ id: 'sightings-export' })
   })
 
   it('uses a per-job cooldown so one dark job does not suppress alerts for another', async () => {
-    // Purge already alerted (cooldown set); export goes dark next. The export
-    // must still alert -- a shared cooldown key would swallow it.
+    // The timeout audit already alerted (cooldown set); export goes dark next.
+    // The export must still alert -- a shared cooldown key would swallow it.
     const kv = fakeKv({
       ...allFresh(NOW),
       [heartbeatKey('sightings-export')]: iso(NOW - 5 * H),
-      'cron-heartbeat:sightings-purge:alerted': '1',
+      'cron-heartbeat:timeout-audit:alerted': '1',
     })
     const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
 
@@ -149,7 +145,7 @@ describe('runHeartbeatChecks', () => {
     const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
     expect(results.every((r) => r.status === 'pending')).toBe(true)
     expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
-    expect(kv.store.get(firstSeenKey('sightings-purge'))).toBe(iso(NOW))
+    expect(kv.store.get(firstSeenKey('sightings-export'))).toBe(iso(NOW))
     expect(kv.store.get(firstSeenKey('daily-1300'))).toBe(iso(NOW))
   })
 

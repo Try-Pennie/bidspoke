@@ -10,7 +10,6 @@ import { buildMergeSql, formatValue, reconcileColumns } from '../sightings-expor
 
 const mocks = vi.hoisted(() => ({
   exportTable: vi.fn(),
-  purgeOldExported: vi.fn(),
   executeStatement: vi.fn(),
 }))
 
@@ -34,7 +33,6 @@ vi.mock('../sightings-export', async (importOriginal) => {
     // reader returns the configured value here.
     readSnowflakeConfig: () => ({ schema: 'PUBLIC' }),
     exportTable: mocks.exportTable,
-    purgeOldExported: mocks.purgeOldExported,
   }
 })
 
@@ -184,7 +182,6 @@ describe('matchTradesToEvaluations', () => {
 describe('runAchieveExport trades-backfill failure', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
-    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
     mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
@@ -403,7 +400,6 @@ describe('variant column merge SQL', () => {
 describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
-    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
     mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
@@ -453,7 +449,6 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
 describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
-    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
     mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
@@ -577,7 +572,6 @@ describe('purgeSandboxEvaluations (#644)', () => {
 describe('runAchieveExport sandbox purge wiring (#644)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
-    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
     mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
@@ -601,5 +595,40 @@ describe('runAchieveExport sandbox purge wiring (#644)', () => {
     }
     const summary = await runAchieveExport(supabase as never, {} as never)
     expect(summary.errors.some((e) => e.includes('sandbox purge'))).toBe(true)
+  })
+})
+
+// #541: exported evaluations are purged by the database (purge_exported_sightings,
+// hourly in pg_cron), so the export must not also purge them. The only purge it
+// starts is the sandbox one, which nothing else covers.
+describe('runAchieveExport leaves exported rows to the database purge (#541)', () => {
+  beforeEach(() => {
+    mocks.exportTable.mockReset().mockResolvedValue(0)
+    mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
+  })
+
+  it('starts no purge but the sandbox one', async () => {
+    const selects: string[][] = []
+    const supabase = {
+      from: () => {
+        const b = makeThenableBuilder({ data: [], error: null })
+        const filters: string[] = []
+        for (const op of ['eq', 'not', 'is', 'lt']) {
+          const inner = b[op] as (...a: unknown[]) => unknown
+          b[op] = (col: string, ...rest: unknown[]) => {
+            filters.push(`${op}:${col}`)
+            return inner(col, ...rest)
+          }
+        }
+        selects.push(filters)
+        return b
+      },
+    }
+
+    const summary = await runAchieveExport(supabase as never, {} as never)
+
+    expect(summary).not.toHaveProperty('evaluations_purged')
+    // No query anywhere selected rows by their export stamp to delete them.
+    expect(selects.some((f) => f.includes('not:exported_at') && f.includes('lt:exported_at'))).toBe(false)
   })
 })

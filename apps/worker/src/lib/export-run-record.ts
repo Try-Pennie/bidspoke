@@ -35,8 +35,6 @@ import { classifyExportError } from './export-error-hints'
 /** The job_runs names; the sightings ones match their cron heartbeat ids. */
 export const EXPORT_JOBS = {
   sightingsExport: 'sightings-export',
-  sightingsPurge: 'sightings-purge',
-  bidsPurge: 'sighting-bids-purge',
   achieveExport: 'achieve-export',
 } as const
 

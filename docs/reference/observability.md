@@ -165,7 +165,11 @@ In practice this means the dashboard, execution history, and execution detail vi
 
 `lead_sightings`, `lead_sighting_bids` and `achieve_evaluations` are a write buffer: rows are exported to Snowflake, which is canonical for analytics, and purged from Supabase 24 hours after export.
 
-- **Every run is recorded.** Each export and purge run writes one row to `job_runs` (`sightings-export`, `sightings-purge`, `sighting-bids-purge`, `achieve-export`) with its counts, its errors and their classes (#745). A row with `finished_at` null is a run that was killed. The last day of one job: `select started_at, finished_at, outcome, detail, summary from job_runs where job = 'sightings-export' order by started_at desc limit 12;`
+- **Every run is recorded.** Each export and purge run writes one row to `job_runs` (`sightings-export`, `achieve-export`, and `sightings-buffer-purge` for the purge described below) with its counts, its errors and their classes (#745). A row with `finished_at` null is a run that was killed. The last day of one job: `select started_at, finished_at, outcome, detail, summary from job_runs where job = 'sightings-export' order by started_at desc limit 12;`
+
+### Lead sightings purge
+
+Rows in `lead_sightings`, `lead_sighting_bids` and `achieve_evaluations` are deleted from Supabase once they were exported to Snowflake more than 24 hours ago, by the database itself: the pg_cron job `purge-exported-sightings` runs `purge_exported_sightings()` hourly at :13, deleting committed pages of up to 5,000 rows round robin across the three tables within a 60 second budget (#541). Rows not yet exported, rows set aside because Snowflake refused them, and Achieve sandbox rows are never touched. Each run is recorded in `job_runs` as `sightings-buffer-purge`, with the rows deleted per table and `ok` (drained) or `budget` (stopped with work left for the next hour). A failed or missing run is paged by the pg_cron watch.
 
 ### Past-month sightings partitions
 

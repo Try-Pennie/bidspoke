@@ -26,8 +26,8 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
-const SIGHTINGS_SUMMARY = { sightings_exported: 12, bids_exported: 3, purged: 0, errors: [] }
-const ACHIEVE_SUMMARY = { trades_backfilled: 2, evaluations_exported: 25, evaluations_purged: 0, errors: [] }
+const SIGHTINGS_SUMMARY = { sightings_exported: 12, bids_exported: 3, errors: [] }
+const ACHIEVE_SUMMARY = { trades_backfilled: 2, evaluations_exported: 25, errors: [] }
 
 // Minimal Supabase stub: this route only needs jwtAuth's user lookup to resolve.
 function makeSupabase() {

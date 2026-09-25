@@ -99,16 +99,6 @@ export const CRON_JOBS: CronJob[] = [
     dependents: 'finalized lead sightings are no longer being exported to Snowflake',
   },
   {
-    id: 'sightings-purge',
-    label: 'Lead sightings purge',
-    triggerCron: '47 1-23/2 * * *',
-    // 2h cadence (odd hours), 1h slack.
-    staleMs: 3 * H,
-    maxRunMs: 30 * MIN,
-    dependents:
-      'exported lead_sightings rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
-  },
-  {
     id: 'execution-archive',
     label: 'Execution archive to Snowflake',
     triggerCron: '23 * * * *',
@@ -136,17 +126,6 @@ export const CRON_JOBS: CronJob[] = [
     maxRunMs: 30 * MIN,
     dependents:
       'archived executions are no longer being deleted once they pass 13 months, so unredacted SSNs, dates of birth, addresses and credit reports accumulate in Snowflake with no upper bound',
-  },
-  {
-    id: 'sighting-bids-purge',
-    label: 'Lead sighting bids purge',
-    triggerCron: '47 0-22/2 * * *',
-    // 2h cadence (even hours), 1h slack. Its own cron so a large sightings purge
-    // cannot exhaust one invocation's subrequest budget and starve it (2026-07-10).
-    staleMs: 3 * H,
-    maxRunMs: 30 * MIN,
-    dependents:
-      'exported lead_sighting_bids rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
   },
   {
     id: 'partner-reachability',

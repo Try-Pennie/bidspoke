@@ -303,8 +303,6 @@ describe('the completed heartbeat stamp (#985)', () => {
     for (const [cron, id] of [
       ['15 8 * * *', 'timeout-audit'],
       ['37 */2 * * *', 'sightings-export'],
-      ['47 1-23/2 * * *', 'sightings-purge'],
-      ['47 0-22/2 * * *', 'sighting-bids-purge'],
     ] as const) {
       writeHeartbeatCompleted.mockClear()
       const waited: Promise<unknown>[] = []

@@ -3,9 +3,8 @@ import { formatErr } from '../format-error'
 import {
   exportTable,
   formatValue,
-  purgeOldExported,
+  purgeBatched,
   runSightingsExport,
-  runSightingsPurge,
   PURGE_BATCH,
   isStatementTimeout,
   STATEMENT_TIMEOUT_MAX_ATTEMPTS,
@@ -277,7 +276,7 @@ describe('exportTable backlog guard', () => {
 })
 
 // Batched purge (issue: the old single unbounded DELETE hit statement_timeout
-// 57014 on a large backlog). purgeOldExported now selects a page of ids and
+// 57014 on a large backlog). purgeBatched selects a page of ids and
 // deletes them in bounded batches so no single DELETE exceeds service_role's
 // 30s statement_timeout.
 function fakePurgeSupabase(opts: {
@@ -351,11 +350,17 @@ function fakePurgeSupabase(opts: {
   }
 }
 
-describe('purgeOldExported — batched delete', () => {
+// The exported-row purge is the database's since #541; this drain is what the
+// Achieve sandbox purge still runs on, so it is tested through the same filter
+// shape the old exported-row purge used.
+const PAST_GRACE = (q: Parameters<Parameters<typeof purgeBatched>[2]>[0]) =>
+  q.not('exported_at', 'is', null).lt('exported_at', new Date(Date.now() - 24 * 3600_000).toISOString())
+
+describe('purgeBatched: the batched drain', () => {
   it('drains a backlog larger than one batch, never issuing an unbounded delete', async () => {
     const total = PURGE_BATCH * 2 + 50
     const { supabase, deleteCalls } = fakePurgeSupabase({ total })
-    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE)
     expect(purged).toBe(total)
     // full, full, then a short final batch -> exactly 3 bounded deletes
     expect(deleteCalls()).toBe(3)
@@ -363,36 +368,35 @@ describe('purgeOldExported — batched delete', () => {
 
   it('does nothing (no delete) when there is no purgeable backlog', async () => {
     const { supabase, deleteCalls } = fakePurgeSupabase({ total: 0 })
-    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE)
     expect(purged).toBe(0)
     expect(deleteCalls()).toBe(0)
   })
 
   it('caps a single run at maxRows so a huge backlog drains over several runs', async () => {
     const { supabase } = fakePurgeSupabase({ total: 10_000_000 })
-    const purged = await purgeOldExported(supabase, 'lead_sightings', PURGE_BATCH * 2)
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE, PURGE_BATCH * 2)
     expect(purged).toBe(PURGE_BATCH * 2)
   })
 
   it('stops cleanly (no throw) when the platform refuses more subrequests', async () => {
     const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: new Error('Too many subrequests.') })
     // First select yields a batch, the delete hits the CF ceiling -> stop clean, 0 purged.
-    // Stopping clean is this function's contract; runSightingsPurge is what turns a
-    // 0 with a surviving backlog into an alert (#613).
-    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    // Stopping clean is this function's contract; the next run carries on.
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE)
     expect(purged).toBe(0)
   })
 
   it('propagates a genuine delete error so real failures still alert', async () => {
     const dbErr = { message: 'permission denied for table lead_sightings', code: '42501' }
     const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: dbErr })
-    await expect(purgeOldExported(supabase, 'lead_sightings')).rejects.toMatchObject({ code: '42501' })
+    await expect(purgeBatched(supabase, 'lead_sightings', PAST_GRACE)).rejects.toMatchObject({ code: '42501' })
   })
 
   it('retries a batch whose row-finding select hits a statement timeout, then completes once it clears', async () => {
     const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
     const { supabase, deleteCalls } = fakePurgeSupabase({ total: 50, selectErrorOnce: timeoutErr })
-    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE, undefined, NO_SLEEP)
     expect(purged).toBe(50)
     expect(deleteCalls()).toBe(1)
   })
@@ -401,7 +405,7 @@ describe('purgeOldExported — batched delete', () => {
     const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
     const { supabase, deleteCalls } = fakePurgeSupabase({ total: 10_000, deleteError: timeoutErr })
     await expect(
-      purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+      purgeBatched(supabase, 'lead_sightings', PAST_GRACE, undefined, NO_SLEEP)
     ).rejects.toMatchObject({ code: '57014' })
     expect(deleteCalls()).toBe(STATEMENT_TIMEOUT_MAX_ATTEMPTS)
   })
@@ -450,13 +454,13 @@ describe('purgeOldExported — batched delete', () => {
       },
     }
     const supabase = { from: () => tableApi } as unknown as SupabaseClient
-    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE, undefined, NO_SLEEP)
     expect(purged).toBe(PURGE_BATCH)
   })
 
   it('stops cleanly (no throw) when the wall-time deadline has already passed, without starting another delete batch (#exceededWallTime, 2026-07-03)', async () => {
     const { supabase } = fakePurgeSupabase({ total: 10_000 })
-    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP, 1000, () => 2000)
+    const purged = await purgeBatched(supabase, 'lead_sightings', PAST_GRACE, undefined, NO_SLEEP, 1000, () => 2000)
     expect(purged).toBe(0)
   })
 })
@@ -468,7 +472,7 @@ describe('runSightingsExport wall-time budget (#exceededWallTime, 2026-07-03)', 
     // completion log, no failure alert, nothing. The fix is a soft deadline (set
     // once, before any phase runs) so every phase stops itself cleanly with time
     // to spare, and the caller's .then()/.catch() still runs. The purge no longer
-    // shares this budget; see runSightingsPurge.
+    // shares this budget: it is the database's since #541.
     const supabase = {
       from: () => {
         throw new Error('should never touch supabase once the shared deadline has passed')
@@ -878,9 +882,9 @@ describe('partition pruning on writes', () => {
           },
         }
       },
-    } as unknown as Parameters<typeof purgeOldExported>[0]
+    } as unknown as Parameters<typeof purgeBatched>[0]
 
-    await purgeOldExported(supabase, 'lead_sightings', 1000, NO_SLEEP)
+    await purgeBatched(supabase, 'lead_sightings', PAST_GRACE, 1000, NO_SLEEP)
 
     // The purge must fetch the partition key, not just the id, or it has no bounds to send.
     expect(recorder.selectedCols).toContain(PK)
@@ -950,7 +954,7 @@ describe('partition pruning on writes', () => {
 // a console.warn with `errors: []`, so no alert fired. The backlog grew by a
 // full day's inflow every day, silently, for days. The purge now runs in its own
 // cron invocation with its own fresh budget, so the export cannot starve it.
-describe('purge runs on its own budget, not the export leftovers', () => {
+describe('the export never purges', () => {
   it('runSightingsExport no longer purges, so a slow export cannot starve the purge', async () => {
     // This fake models only the export's query shapes: it has no delete(), and its
     // select() has no .not()/.lt(). Any attempt to purge from here would therefore
@@ -964,155 +968,6 @@ describe('purge runs on its own budget, not the export leftovers', () => {
     expect(summary).not.toHaveProperty('bids_purged')
   })
 
-  it('runSightingsPurge drains a backlog on a budget it computes for itself', async () => {
-    const { supabase, deleteCalls } = fakePurgeSupabase({ total: 500 })
-    // A clock that is already far past the *export's* notional start deadline.
-    // runSightingsPurge must anchor its own deadline at its own first now() call.
-    let t = 10 * WALL_TIME_BUDGET_MS
-    const now = () => (t += 1)
-
-    const summary = await runSightingsPurge(supabase, now, NO_SLEEP)
-
-    expect(summary.sightings_purged).toBe(500)
-    expect(summary.errors).toEqual([])
-    expect(deleteCalls()).toBeGreaterThan(0)
-  })
-
-  it('stops cleanly once its own deadline passes, without inheriting a stale one', async () => {
-    const { supabase } = fakePurgeSupabase({ total: 10_000 })
-    let call = 0
-    // Call 0 anchors the deadline; every later call is already past it.
-    const now = () => (call++ === 0 ? 0 : WALL_TIME_BUDGET_MS + 1)
-
-    const summary = await runSightingsPurge(supabase, now, NO_SLEEP)
-
-    expect(summary.sightings_purged).toBe(0)
-    expect(summary.bids_purged).toBe(0)
-    // Stopping cleanly is not the same as succeeding: a 10,000 row backlog is
-    // still sitting there, so this must alert rather than report a clean run
-    // (#613). Before that fix this asserted errors == [], which is precisely
-    // the assertion that let the 2026-07-10 incident run silent for days.
-    expect(summary.errors).toHaveLength(2)
-    expect(summary.errors.join(' ')).toMatch(/sightings purge: deleted 0 rows while purgeable rows remain/)
-    expect(summary.errors.join(' ')).toMatch(/bids purge: deleted 0 rows while purgeable rows remain/)
-  })
-
-  it('reports a purge failure as an error so it can alert, instead of a silent warn', async () => {
-    const { supabase } = fakePurgeSupabase({ total: 100, deleteError: new Error('boom') })
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-
-    expect(summary.errors.join(' ')).toMatch(/sightings purge/)
-    expect(summary.errors.join(' ')).toMatch(/boom/)
-  })
-})
-
-// #613: purgeOldExported returns 0 both when there was nothing to purge (healthy)
-// and when it could not purge (subrequest ceiling, wall-time budget). Only the
-// second is a problem, and it was reported as `purged: 0, errors: []` while
-// 107,274 purgeable rows accumulated. Tell the two apart by asking whether a
-// purgeable row still exists.
-describe('runSightingsPurge zero-row backlog detection (#613)', () => {
-  it('alerts when the subrequest ceiling stops the drain before a single delete lands', async () => {
-    // The 2026-07-10 incident shape: the run ends without deleting anything and
-    // the backlog is untouched.
-    const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: new Error('Too many subrequests.') })
-
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-
-    expect(summary.sightings_purged).toBe(0)
-    expect(summary.errors.join(' ')).toMatch(/sightings purge: deleted 0 rows while purgeable rows remain/)
-  })
-
-  it('stays silent when the purge deleted nothing because there was nothing to purge', async () => {
-    const { supabase, probeCalls } = fakePurgeSupabase({ total: 0 })
-
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-
-    expect(summary.sightings_purged).toBe(0)
-    expect(summary.bids_purged).toBe(0)
-    expect(summary.errors).toEqual([])
-    // Checked both tables and found each genuinely empty.
-    expect(probeCalls()).toBe(2)
-  })
-
-  it('skips the backlog check entirely when rows were purged', async () => {
-    // Sightings drains all 500 and never asks; only the now-empty bids table
-    // does. A run that purged rows must not pay for an extra query.
-    const { supabase, probeCalls } = fakePurgeSupabase({ total: 500 })
-
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-
-    expect(summary.sightings_purged).toBe(500)
-    expect(summary.errors).toEqual([])
-    expect(probeCalls()).toBe(1)
-  })
-
-  it('surfaces a failure of the backlog check itself rather than swallowing it', async () => {
-    const { supabase } = fakePurgeSupabase({
-      total: 10_000,
-      deleteError: new Error('Too many subrequests.'),
-      probeError: { code: '57014', message: 'canceling statement due to statement timeout' },
-    })
-
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-
-    expect(summary.errors.join(' ')).toMatch(/sightings purge/)
-    expect(summary.errors.join(' ')).toMatch(/statement timeout/)
-  })
-})
-
-// The two tables share one Cloudflare invocation's subrequest budget, and the
-// purge does sightings first. On 2026-07-10 the first real run spent that whole
-// budget draining an 87K sightings backlog, so lead_sighting_bids got zero: the
-// starvation moved one level down, from wall-time (export vs purge) to
-// subrequests (sightings vs bids inside the purge). Scoping each cron to one
-// table gives each its own invocation, so neither can starve the other.
-describe('runSightingsPurge table scoping', () => {
-  // Records every table name passed to from(), and throws if a table this run is
-  // not scoped to is touched at all.
-  function scopedFake(allowed: string[]) {
-    const touched: string[] = []
-    const supabase = {
-      from(table: string) {
-        touched.push(table)
-        if (!allowed.includes(table)) {
-          throw new Error(`out-of-scope table touched: ${table}`)
-        }
-        const q: Record<string, unknown> = {
-          select() {
-            const s = {
-              not() { return s },
-              lt() { return s },
-              limit() { return Promise.resolve({ data: [], error: null }) },
-            }
-            return s
-          },
-        }
-        return q
-      },
-    } as unknown as SupabaseClient
-    return { supabase, touched: () => touched }
-  }
-
-  it('touches only lead_sightings when scoped to it', async () => {
-    const { supabase, touched } = scopedFake(['lead_sightings'])
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP, ['lead_sightings'])
-    expect(summary.errors).toEqual([])
-    expect([...new Set(touched())]).toEqual(['lead_sightings'])
-  })
-
-  it('touches only lead_sighting_bids when scoped to it', async () => {
-    const { supabase, touched } = scopedFake(['lead_sighting_bids'])
-    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP, ['lead_sighting_bids'])
-    expect(summary.errors).toEqual([])
-    expect([...new Set(touched())]).toEqual(['lead_sighting_bids'])
-  })
-
-  it('defaults to purging both tables when no scope is given', async () => {
-    const { supabase, touched } = scopedFake(['lead_sightings', 'lead_sighting_bids'])
-    await runSightingsPurge(supabase, () => 0, NO_SLEEP)
-    expect([...new Set(touched())].sort()).toEqual(['lead_sighting_bids', 'lead_sightings'])
-  })
 })
 
 /**
