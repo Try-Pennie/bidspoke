@@ -71,7 +71,9 @@ BEGIN
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind = 'p'
     AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'exported_at' AND NOT a.attisdropped);
-  IF NOT (v_tables @> ARRAY['achieve_evaluations', 'lead_sighting_bids', 'lead_sightings']) THEN
+  -- NULL when nothing matched, and NOT NULL is NULL, which IF reads as false: so an
+  -- empty catalogue must be refused on its own, or this passes on finding nothing.
+  IF v_tables IS NULL OR NOT (v_tables @> ARRAY['achieve_evaluations', 'lead_sighting_bids', 'lead_sightings']) THEN
     RAISE EXCEPTION 'the buffer tables were not all found: %', v_tables;
   END IF;
   INSERT INTO index_cases(name) VALUES ('buffer tables found');
