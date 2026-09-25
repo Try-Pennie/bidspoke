@@ -235,10 +235,13 @@ export async function executeStatement(
   // retry=true is Snowflake's idempotency contract: it will not execute a
   // statement that already succeeded, which is what makes retrying a request
   // that died before we saw its response safe.
+  // Stamped before the send, so a statement that goes async can say how long it
+  // had already run when polling began (#608).
+  const sentAt = Date.now()
   const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID(), {
     giveUpAt: opts.giveUpAt,
   })
-  return resolveStatementResult(config, headers, status, text)
+  return resolveStatementResult(config, headers, status, text, { sentAt })
 }
 
 // Statuses worth resubmitting. 429/503/504 are Snowflake's own documented
@@ -502,10 +505,20 @@ async function fetchPartition(
   return parseResponse(text).data ?? []
 }
 
-interface PollOptions {
+export interface PollOptions {
   intervalMs?: number
   maxAttempts?: number
   requestDeadlineMs?: number
+  /** Injected so a test can poll without waiting. */
+  sleep?: (ms: number) => Promise<void>
+  /** Epoch ms. Injected with `sleep` so the elapsed figures are testable. */
+  now?: () => number
+  /**
+   * Epoch ms at which the statement was first sent. Every log line and failure
+   * reports elapsed time from here, because that is the time the caller's wall
+   * budget actually lost. Omitted means polling began at send.
+   */
+  sentAt?: number
 }
 
 const POLL_INTERVAL_MS = 2000
@@ -519,6 +532,12 @@ const POLL_MAX_ATTEMPTS = 30
 // state. 202 = still running (keep polling); 2xx = complete (return the body);
 // non-2xx = failed (throw, so the export batch fails and retries next run
 // without stamping exported_at). Exhausting the attempts also throws.
+//
+// Logged at entry, on every poll and at completion (#608). This path spends a
+// caller's wall budget sleeping, up to POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS per
+// statement, and it used to say nothing, so a run slowing down here looked the
+// same as a run that was simply slow, and the timeout it ended in did not say it
+// had been waiting. Every failure it throws now carries how long it waited.
 // Exported for unit testing.
 export async function pollStatement(
   config: SnowflakeConfig,
@@ -529,16 +548,42 @@ export async function pollStatement(
   const intervalMs = pollOpts.intervalMs ?? POLL_INTERVAL_MS
   const maxAttempts = pollOpts.maxAttempts ?? POLL_MAX_ATTEMPTS
   const deadlineMs = pollOpts.requestDeadlineMs ?? REQUEST_DEADLINE_MS
+  const doSleep = pollOpts.sleep ?? sleep
+  const now = pollOpts.now ?? Date.now
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements/${handle}?partition=0`
+  const pollingFrom = now()
+  const sentAt = pollOpts.sentAt ?? pollingFrom
+  const sinceSent = (): string => `${Math.round((now() - sentAt) / 1000)}s after it was sent`
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await sleep(intervalMs)
+  console.warn(
+    `[snowflake] statement ${handle} went async (202) ${sinceSent()}; ` +
+      `polling every ${Math.round(intervalMs / 1000)}s, at most ${maxAttempts} times`,
+  )
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await doSleep(intervalMs)
     const { res, text } = await fetchTextWithDeadline(url, { method: 'GET', headers }, deadlineMs)
-    if (res.status === 202) continue // still running
-    if (!res.ok) throw new SnowflakeStatementError(`Snowflake poll ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
+    const elapsed = Math.round((now() - sentAt) / 1000)
+    if (res.status === 202) {
+      console.warn(
+        `[snowflake] statement ${handle} still running after poll ${attempt} of ${maxAttempts}, ${elapsed}s since it was sent`,
+      )
+      continue
+    }
+    if (!res.ok) {
+      throw new SnowflakeStatementError(
+        `Snowflake poll ${res.status} on poll ${attempt} of ${maxAttempts}, ${elapsed}s after statement ${handle} was sent: ${text}`,
+        res.status,
+        snowflakeErrorCode(text),
+      )
+    }
+    console.warn(`[snowflake] statement ${handle} completed after ${attempt} polls, ${elapsed}s after it was sent`)
     return parseResponse(text)
   }
-  throw new Error(`Snowflake statement ${handle} did not complete after ${maxAttempts} polls`)
+  throw new Error(
+    `Snowflake statement ${handle} did not complete after ${maxAttempts} polls, ${sinceSent()}: ` +
+      `it went async and was waited on for ${Math.round((now() - pollingFrom) / 1000)}s`,
+  )
 }
 
 function parseResponse(text: string): SnowflakeStatementResponse {
