@@ -52,7 +52,30 @@ export const SUBMISSION_VIEW_FIELDS = [
   'InstallmentTotalBalance__c',
 ] as const
 
-export type SubmissionView = Record<string, unknown> & { Id: string }
+export type SubmissionViewField = (typeof SUBMISSION_VIEW_FIELDS)[number]
+
+/** A record as the Salesforce query API returns it, `attributes` object and all. */
+export type SubmissionRecord = Record<string, unknown> & { Id: string }
+
+/** What is stored: the id and the declared fields, and nothing else (#1364). */
+export type SubmissionView = { Id: string } & Partial<Record<SubmissionViewField, unknown>>
+
+/**
+ * Projects a query record down to the stored contract.
+ *
+ * Salesforce puts an `attributes` object ({ type, url }) on every record it returns, and storing
+ * the record as returned carried it into the column and on to Snowflake on every row, where the
+ * comment above calls this field list the contract. A field Salesforce returned as null is kept,
+ * because that is its answer; a field missing from the answer is left missing rather than
+ * written as null, so the stored object never claims more than Salesforce said.
+ */
+export function toSubmissionView(record: SubmissionRecord): SubmissionView {
+  const view: SubmissionView = { Id: record.Id }
+  for (const field of SUBMISSION_VIEW_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(record, field)) view[field] = record[field]
+  }
+  return view
+}
 
 /**
  * Ids are REFUSED rather than escaped. A Salesforce id has a known shape, so anything else is a
@@ -77,13 +100,13 @@ export function buildSubmissionViewSoql(ids: string[]): string {
  */
 export async function readSubmissionView(
   ids: string[],
-  query: (soql: string) => Promise<SubmissionView[]>
+  query: (soql: string) => Promise<SubmissionRecord[]>
 ): Promise<Map<string, SubmissionView>> {
   if (ids.length === 0) return new Map()
   const records = await query(buildSubmissionViewSoql(ids))
   const byId = new Map<string, SubmissionView>()
   for (const record of records) {
-    if (record && typeof record.Id === 'string') byId.set(record.Id, record)
+    if (record && typeof record.Id === 'string') byId.set(record.Id, toSubmissionView(record))
   }
   return byId
 }
