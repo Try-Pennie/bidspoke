@@ -1,13 +1,12 @@
 import { BaseEdge } from '@xyflow/react'
 import type { EdgeProps } from '@xyflow/react'
+import { edgePath, turnY } from './edge-routes'
+import { useEdgeHops } from './edge-hops'
 
 /**
- * Convergence edge routed with the bend near the target (parallel_end), so
- * each chain leaf descends in its own column before turning to converge at
- * the join. Three segments: source down to just above target, horizontal to
- * target X, into target. Compared to default smoothstep (bend at midpoint),
- * this keeps the vertical segment in the source's column instead of cutting
- * sideways through the middle of the cluster.
+ * Convergence edge into a parallel_end: each chain leaf descends in its own
+ * column, turns on the shared line above the join, and converges there. It
+ * follows the same routing and hop rule as every other wire (#1570).
  */
 export function ConvergeEdge({
   id,
@@ -18,13 +17,7 @@ export function ConvergeEdge({
   style,
   markerEnd,
 }: EdgeProps) {
-  const turnOffset = 24
-  const turnY = targetY - turnOffset
-  const d = [
-    `M ${sourceX},${sourceY}`,
-    `L ${sourceX},${turnY}`,
-    `L ${targetX},${turnY}`,
-    `L ${targetX},${targetY}`,
-  ].join(' ')
-  return <BaseEdge id={id} path={d} style={style} markerEnd={markerEnd} />
+  const hops = useEdgeHops(id)
+  const path = edgePath({ id, sx: sourceX, sy: sourceY, tx: targetX, ty: targetY, by: turnY({ sourceY, targetY }) }, hops)
+  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
 }
