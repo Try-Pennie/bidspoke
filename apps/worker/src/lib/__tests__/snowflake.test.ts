@@ -18,6 +18,8 @@ import {
   EDGE_TIMEOUT_CEILING_SECONDS,
   REQUEST_DEADLINE_MS,
   SnowflakeRequestTimeoutError,
+  SnowflakeNotSentError,
+  SnowflakeStatementError,
   type SnowflakeConfig,
 } from '../snowflake'
 
@@ -293,8 +295,10 @@ describe('postStatementWithRetry, bounded by its caller (#1451)', () => {
 
   it('does not resubmit when another attempt could outlast the time the caller gives up at', async () => {
     const spy = mockFetchSequence([{ status: 503, body: 'connection termination' }])
-    // 60 seconds left, and one attempt may take 1s of backoff plus 120s.
-    const giveUpAt = NOW + 60_000
+    // Room for one attempt (120s) but not for a resubmit (1s of backoff plus
+    // 120s), so the first is sent and the second is refused (#1591 sends
+    // nothing when even one attempt does not fit).
+    const giveUpAt = NOW + 120_500
 
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt })).rejects.toThrow(
       /gave up.*Snowflake 503: connection termination/s,
@@ -327,6 +331,34 @@ describe('postStatementWithRetry, bounded by its caller (#1451)', () => {
       postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, now: () => clock, sleep, giveUpAt }),
     ).rejects.toThrow(/gave up/)
     expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  // #1591: the first attempt is held to the same rule as a resubmit, because a
+  // batch that starts a moment before the deadline can otherwise run on into the
+  // platform's kill, which leaves no record at all.
+  it('does not send at all when even one attempt could outlast the time the caller gives up at', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+    const giveUpAt = NOW + 60_000
+
+    const sent = postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt })
+    await expect(sent).rejects.toBeInstanceOf(SnowflakeNotSentError)
+    await expect(sent).rejects.toThrow(/not sent: 60s left.*120s/)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('reports a refusal to send as something other than a Snowflake failure', async () => {
+    mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+
+    const sent = postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt: NOW })
+    await expect(sent).rejects.not.toBeInstanceOf(SnowflakeStatementError)
+  })
+
+  it('sends the first attempt when exactly one attempt fits', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt: NOW + 120_000 })
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 
   it('stops after the second statement timeout rather than sending the same statement a third time', async () => {

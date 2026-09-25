@@ -17,6 +17,7 @@
  * and a cap of three in 47. Both recover. Only one hour per run does not.
  */
 import { formatErr } from '../lib/format-error'
+import { SnowflakeNotSentError } from '../lib/snowflake'
 import { nextHourToArchive } from './clock'
 import { batchByBytes, type SizedBundle } from './batching'
 import type { HourBundle, HourStream } from './stream-hour'
@@ -192,6 +193,12 @@ export type HourOutcome =
   | { kind: 'empty' }
   | { kind: 'read-failed'; reason: string; executionsArchived: number; executionsRefused: number }
   | { kind: 'send-failed'; reason: string; executionsArchived: number; executionsRefused: number }
+  /**
+   * A send was refused because the run had no time left for it (#1591). The
+   * run's budget stopping it, not Snowflake failing, so it is its own kind: a
+   * shared status would page a clean stop as an outage (L53).
+   */
+  | { kind: 'out-of-time'; reason: string; executionsArchived: number; executionsRefused: number }
 
 /** The subset of RunDeps that archiving one hour needs. Deliberately no watermark. */
 export type HourDeps = Pick<
@@ -211,6 +218,7 @@ export async function archiveHour(
   // reported as a read failure. They have different remedies and must not share
   // one status (L53).
   let sendFailure: string | null = null
+  let outOfTime: string | null = null
 
   let hour: HourStream
   try {
@@ -246,7 +254,8 @@ export async function archiveHour(
           await deps.recordArchived(batch.map((b) => b.executionId))
           executionsArchived += batch.length
         } catch (err) {
-          sendFailure = formatErr(err)
+          if (err instanceof SnowflakeNotSentError) outOfTime = err.message
+          else sendFailure = formatErr(err)
           // Thrown so the read stops immediately rather than streaming the rest
           // of the hour into a destination that is refusing it.
           throw err
@@ -258,6 +267,7 @@ export async function archiveHour(
     // with its own wording. Anything else is rethrown rather than folded into
     // the send-failed status, because a status field shared by two unrelated
     // causes can report neither (L53).
+    if (outOfTime !== null) return { kind: 'out-of-time', reason: outOfTime, executionsArchived, executionsRefused }
     if (sendFailure === null) throw err
     return { kind: 'send-failed', reason: String(sendFailure), executionsArchived, executionsRefused }
   }
@@ -371,6 +381,17 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     longestHourMs = Math.max(longestHourMs, deps.now().getTime() - hourStartedAt)
     result.executionsArchived += outcome.kind === 'empty' ? 0 : outcome.executionsArchived ?? 0
     result.executionsRefused += outcome.kind === 'empty' ? 0 : outcome.executionsRefused ?? 0
+
+    if (outcome.kind === 'out-of-time') {
+      // Stopped the way the wall-time check between hours stops a run: cleanly,
+      // with the watermark left on this hour so the next run archives it. What
+      // was already sent is harmless to send again, because the deletion gate
+      // counts distinct executions.
+      result.stop = 'wall-time'
+      result.detail = `hour ${next.hourStart}: ${outcome.reason}`
+      result.hoursBehind = await measureLag()
+      return result
+    }
 
     if (outcome.kind === 'send-failed') {
       result.stop = 'send-failed'
@@ -553,6 +574,13 @@ export async function reArchiveHours(
 
     result.executionsArchived += outcome.executionsArchived
     result.executionsRefused += outcome.executionsRefused
+
+    if (outcome.kind === 'out-of-time') {
+      // The budget ran out mid hour, so this hour and every one after it is
+      // work the run did not reach, which is what `skipped` reports (#1591).
+      result.skipped = work.slice(i)
+      break
+    }
 
     if (outcome.kind === 'read-failed' || outcome.kind === 'send-failed') {
       // One hour failing does not stop the others: they are independent repairs
