@@ -75,6 +75,15 @@ describe('leadStatusQueries', () => {
     expect(q.backlog).toContain("Lead__r.External_Exchange_Status__c != 'Completed'")
     expect(q.backlog).not.toContain('CreatedDate <')
   })
+
+  it('leaves out a Lead a later submission re-routed to another partner', () => {
+    // Measured 2026-09-25 after the backfill: 1,426 of the 1,458 left had a
+    // Lead now naming Engine or AmOne and pointing at a newer submission. The
+    // Lead records the consumer's latest sale, so it is right not to read
+    // Tripoint Completed, and counting it would keep the alert up for ever.
+    const q = leadStatusQueries(new Date('2026-09-23T00:00:00Z'))
+    expect(q.backlog).toContain("Lead__r.ExternalPartnerName__c = 'Tripoint'")
+  })
 })
 
 describe('checkTripointLeadStatus', () => {

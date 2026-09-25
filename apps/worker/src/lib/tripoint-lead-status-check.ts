@@ -68,8 +68,12 @@ export function leadStatusQueries(dayStart: Date): { submissions: string; leads:
   return {
     submissions: `SELECT COUNT() FROM Submission__c WHERE ${TRIPOINT_SALE} AND ${day}`,
     leads: `SELECT COUNT() FROM Submission__c WHERE ${TRIPOINT_SALE} AND Lead__r.External_Exchange_Status__c = 'Completed' AND ${day}`,
+    // Only Leads still naming Tripoint: a consumer who came back and was sold
+    // elsewhere has a Lead pointing at that newer submission, which is right
+    // not to read Tripoint Completed (1,426 of 1,458 left on 2026-09-25).
     backlog:
       `SELECT COUNT() FROM Submission__c WHERE ${TRIPOINT_SALE} ` +
+      `AND Lead__r.ExternalPartnerName__c = 'Tripoint' ` +
       `AND Lead__r.External_Exchange_Status__c != 'Completed' AND CreatedDate >= ${SYNC_BROKE_ON}T00:00:00Z`,
   }
 }
