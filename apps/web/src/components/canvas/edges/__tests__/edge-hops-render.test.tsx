@@ -54,6 +54,12 @@ describe('routesFromState', () => {
     expect(r).toEqual({ id: 'e1', sx: 1103, sy: 1399, tx: 1404, ty: 1461 })
   })
 
+  it('leaves out a wire whose handle is not measured to real numbers, rather than placing it at 0', () => {
+    const s = state([{ id: 'nan', source: 'a', target: 'b', sourceHandle: 'sent', targetHandle: null }])
+    ;(s.nodeLookup.get('a') as { internals: { handleBounds: { source: Array<{ width: number }> } } }).internals.handleBounds.source[0].width = Number.NaN
+    expect(routesFromState(s as never)).toEqual([])
+  })
+
   it('leaves out hidden wires and wires that climb back up, which are not drawn down, across and down', () => {
     const routes = routesFromState(state([
       { id: 'hidden', source: 'a', target: 'b', sourceHandle: 'sent', targetHandle: null, hidden: true },

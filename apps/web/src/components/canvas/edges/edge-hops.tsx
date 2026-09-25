@@ -46,6 +46,9 @@ export function routesFromState(state: Pick<ReactFlowState, 'edges' | 'nodeLooku
     const sy = src.internals.positionAbsolute.y + sh.y + sh.height
     const tx = tgt.internals.positionAbsolute.x + th.x + th.width / 2
     const ty = tgt.internals.positionAbsolute.y + th.y
+    // A handle not yet measured to real numbers is left out rather than written
+    // as JSON null and compared as 0, which would hop at the wrong place.
+    if (![sx, sy, tx, ty].every(Number.isFinite)) continue
     if (ty <= sy) continue
     out.push({ id: e.id, sx, sy, tx, ty })
   }
