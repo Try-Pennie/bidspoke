@@ -182,10 +182,22 @@ export function statementRequestBody(
   return body
 }
 
+/** What a caller may tell one statement about the run it belongs to. */
+export interface StatementOptions {
+  /**
+   * Epoch ms after which the caller will have stopped, so no resubmit may be
+   * started that could still be running then (#1451). Omitted means only the
+   * attempt count bounds the retries, which is what every caller without a
+   * budget of its own has always had.
+   */
+  giveUpAt?: number
+}
+
 export async function executeStatement(
   config: SnowflakeConfig,
   statement: string,
   bindings?: unknown[],
+  opts: StatementOptions = {},
 ): Promise<SnowflakeStatementResponse> {
   const privateKey = await importPrivateKey(config.privateKeyPem)
   const jwt = await signSnowflakeJwt(config, privateKey)
@@ -204,7 +216,9 @@ export async function executeStatement(
   // retry=true is Snowflake's idempotency contract: it will not execute a
   // statement that already succeeded, which is what makes retrying a request
   // that died before we saw its response safe.
-  const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID())
+  const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID(), {
+    giveUpAt: opts.giveUpAt,
+  })
   return resolveStatementResult(config, headers, status, text)
 }
 
@@ -256,7 +270,25 @@ export interface RetryOptions {
   requestDeadlineMs?: number
   delaysMs?: number[]
   sleep?: (ms: number) => Promise<void>
+  /** See StatementOptions.giveUpAt. */
+  giveUpAt?: number
+  /** Epoch ms. Injected so the give-up arithmetic is testable without waiting. */
+  now?: () => number
 }
+
+/**
+ * How many times a statement may be CANCELLED at its own statement timeout
+ * before it is not sent again (#1451).
+ *
+ * A 408 is Snowflake cancelling the statement at STATEMENT_TIMEOUT_SECONDS, so a
+ * resubmit is the same work against the same limit. On 2026-09-22 the three
+ * attempts on one archive hour were identical and so were their outcomes, and
+ * the third cost another full timeout for nothing. Two is kept rather than one
+ * because the archive's hours succeed 35 runs in 39: a single cancel is usually a
+ * busy moment, and a second one in a row says the warehouse is not going to take
+ * this statement now. Other transient failures keep the full attempt count.
+ */
+const MAX_STATEMENT_TIMEOUTS = 2
 
 // Bounded on purpose. The export's per-run wall-time budget (12 min, see
 // sightings-export.ts) is spent across hundreds of batches, so a long retry
@@ -285,6 +317,8 @@ export async function postStatementWithRetry(
   const delaysMs = opts.delaysMs ?? RETRY_DELAYS_MS
   const doSleep = opts.sleep ?? sleep
   const deadlineMs = opts.requestDeadlineMs ?? REQUEST_DEADLINE_MS
+  const now = opts.now ?? Date.now
+  let statementTimeouts = 0
 
   for (let attempt = 1; ; attempt++) {
     const target = `${url}?requestId=${encodeURIComponent(requestId)}${attempt > 1 ? '&retry=true' : ''}`
@@ -294,6 +328,7 @@ export async function postStatementWithRetry(
     try {
       const { res, text } = await fetchTextWithDeadline(target, { method: 'POST', headers, body }, deadlineMs)
       if (res.ok) return { status: res.status, text }
+      if (res.status === 408) statementTimeouts++
       retryable = isTransientSnowflakeError(res.status, text)
       error = new SnowflakeStatementError(`Snowflake ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
     } catch (e) {
@@ -305,6 +340,25 @@ export async function postStatementWithRetry(
     }
 
     if (!retryable || attempt >= maxAttempts) throw error
+    // Both refusals below keep the original error, class and status included,
+    // and only say in front of it why nothing more was tried, so a caller that
+    // reads the status still can and a reader of the message learns the reason.
+    if (statementTimeouts >= MAX_STATEMENT_TIMEOUTS) {
+      error.message = `statement timed out twice, so it was not sent a third time: ${error.message}`
+      throw error
+    }
+    const delayMs = delaysMs[Math.min(attempt - 1, delaysMs.length - 1)]
+    // The run's wall budget is checked between hours, never during a send, so
+    // this is the only place a batch that keeps failing can be stopped before it
+    // spends the rest of the run (#1451). An attempt is priced at its full
+    // request deadline, because that is how long one can take before anything
+    // here gets to decide again.
+    if (opts.giveUpAt !== undefined && now() + delayMs + deadlineMs > opts.giveUpAt) {
+      error.message =
+        `gave up after attempt ${attempt} of ${maxAttempts}: another could run past the caller's deadline ` +
+        `${Math.max(0, Math.round((opts.giveUpAt - now()) / 1000))}s away: ${error.message}`
+      throw error
+    }
     // A silent retry makes one benign stall and a systemic Snowflake
     // degradation indistinguishable: a run where most batches retried looked
     // exactly like a clean run, so the first visible signal was a whole run
@@ -312,7 +366,7 @@ export async function postStatementWithRetry(
     console.warn(
       `[snowflake] retrying statement ${requestId} (attempt ${attempt} of ${maxAttempts}): ${error.message}`,
     )
-    await doSleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)])
+    await doSleep(delayMs)
   }
 }
 

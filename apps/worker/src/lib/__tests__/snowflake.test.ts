@@ -276,6 +276,81 @@ describe('postStatementWithRetry', () => {
   })
 })
 
+/**
+ * #1451: a send that keeps failing must not be able to spend the whole run.
+ *
+ * The run's own wall budget is consulted between hours, never during a send, so
+ * before this one batch could hold a run for its entire retry ladder: the 15:23
+ * UTC archive run on 2026-09-22 spent 642 seconds on one hour and archived
+ * nothing. Two limits close that, each asserted here on its own.
+ */
+describe('postStatementWithRetry, bounded by its caller (#1451)', () => {
+  const url = 'https://acct.snowflakecomputing.com/api/v2/statements'
+  const TIMEOUT_408 =
+    '{"code":"000630","message":"Statement reached its statement or warehouse timeout of 90 second(s) and was canceled.","sqlState":"57014"}'
+  const NOW = 1_000_000
+  const base = { maxAttempts: 3, delaysMs: [1_000, 4_000], sleep: async () => {}, now: () => NOW, requestDeadlineMs: 120_000 }
+
+  it('does not resubmit when another attempt could outlast the time the caller gives up at', async () => {
+    const spy = mockFetchSequence([{ status: 503, body: 'connection termination' }])
+    // 60 seconds left, and one attempt may take 1s of backoff plus 120s.
+    const giveUpAt = NOW + 60_000
+
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt })).rejects.toThrow(
+      /gave up.*Snowflake 503: connection termination/s,
+    )
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('resubmits as before when there is room for another attempt', async () => {
+    const spy = mockFetchSequence([
+      { status: 503, body: 'connection termination' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    const giveUpAt = NOW + 10 * 60_000
+
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, giveUpAt })
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('measures the room from the clock at the moment of each resubmit, not from the start', async () => {
+    const spy = mockFetchSequence([{ status: 503, body: 'connection termination' }])
+    // Room for the first resubmit at NOW, none for the second once 200s have gone.
+    let clock = NOW
+    const giveUpAt = NOW + 150_000
+    const sleep = async (ms: number) => {
+      clock += ms + 100_000
+    }
+
+    await expect(
+      postStatementWithRetry(url, headers, '{}', 'req-1', { ...base, now: () => clock, sleep, giveUpAt }),
+    ).rejects.toThrow(/gave up/)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops after the second statement timeout rather than sending the same statement a third time', async () => {
+    const spy = mockFetchSequence([{ status: 408, body: TIMEOUT_408 }])
+
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', base)).rejects.toThrow(
+      /timed out twice.*Snowflake 408/s,
+    )
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('still makes a third attempt when only one failure was a statement timeout', async () => {
+    const spy = mockFetchSequence([
+      { status: 408, body: TIMEOUT_408 },
+      { status: 503, body: 'connection termination' },
+      { status: 200, body: { code: '090001' } },
+    ])
+
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', base)
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(3)
+  })
+})
+
 describe('pollStatement', () => {
   it('resolves once the statement completes (202 → 202 → 200)', async () => {
     mockFetchSequence([

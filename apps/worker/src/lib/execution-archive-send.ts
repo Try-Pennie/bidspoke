@@ -114,10 +114,15 @@ export function buildInsert(rows: ArchiveRow[], archivedAtUtc: string): string {
   )
 }
 
-export async function sendArchiveBatch(env: Env, rows: ArchiveRow[]): Promise<void> {
+/**
+ * `giveUpAt` is the moment the run's wall budget runs out (#1451). A batch that
+ * keeps failing then stops resubmitting before it can spend past it, so the run
+ * ends on a send failure it records rather than on the platform's kill.
+ */
+export async function sendArchiveBatch(env: Env, rows: ArchiveRow[], giveUpAt?: number): Promise<void> {
   const statement = buildInsert(rows, new Date().toISOString().replace('Z', ''))
   const config = archiveConfig(env, 'writer')
-  const response = await executeStatement(config, statement)
+  const response = await executeStatement(config, statement, undefined, { giveUpAt })
 
   // Snowflake reports how many rows an INSERT affected. Checking it is the
   // difference between "the statement was accepted" and "the rows are there",

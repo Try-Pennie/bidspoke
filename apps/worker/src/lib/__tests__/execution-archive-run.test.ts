@@ -351,6 +351,23 @@ describe('an execution the archive table could not accept', () => {
     expect(result.executionsArchived).toBe(1)
   })
 
+  // #1451: the send is told when the run must stop, so a batch that keeps
+  // failing cannot spend past the run's own wall budget on its retries.
+  it('hands every send the moment the wall budget of the run runs out', async () => {
+    withHour([bundle()])
+    const { client } = fakeSupabase(live)
+    const sendBatch = vi.fn()
+
+    await runExecutionArchive(envWith(fakeKv()), client, {
+      sendBatch,
+      now: NOW,
+      budget: { wallMs: 5 * 60_000, maxHours: 1 },
+    })
+
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sendBatch.mock.calls[0][1]).toBe(NOW().getTime() + 5 * 60_000)
+  })
+
   it('refuses it by id, and still finishes the hour, when it has no workflow', async () => {
     withHour([bundle({ workflow_id: null })])
     const { client, writes } = fakeSupabase(live)
@@ -490,6 +507,14 @@ describe('sendArchiveBatch', () => {
     executeStatement.mockResolvedValue({ message: 'Statement executed successfully.' })
 
     await expect(sendArchiveBatch(env, rows)).rejects.toThrow(/no row count/)
+  })
+
+  it('passes the time the run gives up at through to Snowflake (#1451)', async () => {
+    executeStatement.mockResolvedValue({ data: [['2']] })
+
+    await sendArchiveBatch(env, rows, 1_234_567)
+
+    expect(executeStatement.mock.calls[0][3]).toEqual({ giveUpAt: 1_234_567 })
   })
 
   it('lets a Snowflake failure propagate, so the run stops rather than recording ids', async () => {
