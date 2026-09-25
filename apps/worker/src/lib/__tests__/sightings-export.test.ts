@@ -1271,6 +1271,68 @@ describe('exportTable: a row Snowflake refuses is set aside, not allowed to stal
   })
 })
 
+describe('the set aside limit covers the whole run, both tables together (#427)', () => {
+  it('stops the second table as an outage once the first has used the run\'s allowance', async () => {
+    // 15 refused sightings and 10 refused bids: each is under the limit alone,
+    // together they are over it, and the limit is documented as per run.
+    const sightings = Array.from({ length: 100 }, (_, i) => `s${i}`)
+    const bids = Array.from({ length: 100 }, (_, i) => `b${i}`)
+    const refused = new Set([...sightings.slice(0, 15), ...bids.slice(0, 10)])
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      const hit = [...refused].find((id) => sql.includes(`'${id}'`))
+      if (hit) throw new SnowflakeStatementError(`Snowflake 422: refused ${hit}`, 422, '100072')
+      return undefined as never
+    })
+    const served = new Map<string, boolean>()
+    const client = {
+      from(table: string) {
+        const pk = partitionKeyFor(table)
+        return {
+          select() {
+            return {
+              limit() {
+                const first = !served.get(table)
+                served.set(table, true)
+                const ids = first ? (table === 'lead_sightings' ? sightings : bids) : []
+                const data = ids.map((id, i) => ({
+                  id,
+                  [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString(),
+                  ...(table === 'lead_sighting_bids' ? { is_winner: false } : {}),
+                }))
+                const q = { eq: () => q, is: () => q, then: (r: (v: unknown) => void) => r({ data, error: null }) }
+                return q
+              },
+            }
+          },
+          update() {
+            const q = {
+              ids: [] as string[],
+              in: (_c: string, ids: string[]) => {
+                q.ids = ids
+                return q
+              },
+              gte: () => q,
+              lte: () => q,
+              match: () => q,
+              select: () => Promise.resolve({ data: q.ids.map((id) => ({ id })), error: null }),
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as SupabaseClient
+    const env = {
+      SNOWFLAKE_ACCOUNT: 'a', SNOWFLAKE_USER: 'u', SNOWFLAKE_PRIVATE_KEY: 'k', SNOWFLAKE_DATABASE: 'd',
+      SNOWFLAKE_SCHEMA: 's', SNOWFLAKE_WAREHOUSE: 'w', SNOWFLAKE_ROLE: 'r',
+    } as unknown as Env
+
+    const summary = await runSightingsExport(client, env)
+
+    expect(summary.set_aside.filter((r) => r.table === 'lead_sightings')).toHaveLength(15)
+    expect(summary.errors.join(' ')).toMatch(new RegExp(`bids export: .*more than ${SET_ASIDE_MAX_PER_RUN} rows`))
+  })
+})
+
 describe('runSightingsExport skips rows already set aside (#427)', () => {
   it('selects only rows with no set aside mark, for both tables', async () => {
     const isCalls: Array<[string, string, unknown]> = []

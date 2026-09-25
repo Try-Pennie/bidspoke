@@ -520,6 +520,8 @@ export async function runSightingsExport(
   // this deadline, export growth (the Lead Economy cutover roughly tripled inflow
   // over 2 days) consumed the whole budget and the purge silently deleted nothing.
   const deadline = now() + WALL_TIME_BUDGET_MS
+  // One set aside allowance for the whole run, shared by both tables (#427).
+  const refusalBudget = { refusedLeft: SET_ASIDE_MAX_PER_RUN }
 
   try {
     summary.sightings_exported = await exportTable(
@@ -534,6 +536,7 @@ export async function runSightingsExport(
       deadline,
       now,
       summary.set_aside,
+      refusalBudget,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.sightings_exported = e.exported
@@ -552,6 +555,7 @@ export async function runSightingsExport(
       deadline,
       now,
       summary.set_aside,
+      refusalBudget,
     )
   } catch (e) {
     if (e instanceof PartialExportError) summary.bids_exported = e.exported
@@ -686,12 +690,13 @@ export async function exportTable(
   now: () => number = Date.now,
   // Rows Snowflake refused and this run set aside are appended here (#427).
   setAside: SetAsideRow[] = [],
+  // How many more rows this RUN may set aside. A caller exporting several tables
+  // passes one object to every call so the limit covers the run, not each table.
+  refusalBudget: { refusedLeft: number } = { refusedLeft: SET_ASIDE_MAX_PER_RUN },
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   const partitionKey = partitionKeyFor(tableName)
   let totalExported = 0
-  // Shared by every batch this run, so the ceiling is per run, not per batch.
-  const refusalBudget = { refusedLeft: SET_ASIDE_MAX_PER_RUN }
 
   // Loop until no more un-exported rows (or we hit the per-run cap / platform limit).
   while (true) {
