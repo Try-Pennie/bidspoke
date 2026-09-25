@@ -1361,3 +1361,105 @@ describe('a run that stops with rows still waiting says so (#749)', () => {
     expect(isTransientExportError(summary.errors[0])).toBe(true)
   })
 })
+
+/**
+ * #427 follow-up: a statement timeout inside the export closure re-runs the whole
+ * closure (withStatementTimeoutRetry), so anything the closure counts must be
+ * counted once per row actually set aside, never once per attempt. Before this,
+ * the per-run refusal allowance was spent at the moment a refusal was FOUND, so a
+ * retry that found the same still-unmarked row again spent it twice and could end
+ * a run as an "outage" over a handful of rows.
+ */
+describe('a statement timeout retry does not count a set aside row twice (#427)', () => {
+  const REFUSED = (id: string) =>
+    new SnowflakeStatementError(`Snowflake 422: {"code":"100072","message":"refused ${id}"}`, 422, '100072')
+  const TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' }
+
+  /**
+   * `batches[n]` is what the nth SELECT returns. The export_rejected_at mark for
+   * `timeoutOnce` answers with a statement timeout the first time only.
+   */
+  function client(batches: string[][], timeoutOnce: string) {
+    let call = 0
+    let timedOut = false
+    const pk = partitionKeyFor('lead_sightings')
+    const c = {
+      from() {
+        return {
+          select() {
+            return {
+              limit(n: number) {
+                const ids = (batches[call++] ?? []).slice(0, n)
+                const data = ids.map((id, i) => ({ id, [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString() }))
+                const q = { eq: () => q, is: () => q, then: (r: (v: unknown) => void) => r({ data, error: null }) }
+                return q
+              },
+            }
+          },
+          update(payload: Record<string, unknown>) {
+            const q = {
+              ids: [] as string[],
+              in: (_c: string, ids: string[]) => {
+                q.ids = ids
+                return q
+              },
+              gte: () => q,
+              lte: () => q,
+              match: () => q,
+              select: () => {
+                if ('export_rejected_at' in payload && q.ids.includes(timeoutOnce) && !timedOut) {
+                  timedOut = true
+                  return Promise.resolve({ data: null, error: TIMEOUT })
+                }
+                return Promise.resolve({ data: q.ids.map((id) => ({ id })), error: null })
+              },
+            }
+            return q
+          },
+        }
+      },
+    }
+    return c as unknown as Parameters<typeof exportTable>[0]
+  }
+
+  beforeEach(() => {
+    vi.mocked(executeStatement).mockImplementation(async (_c, sql: string) => {
+      const hit = ['r1', 'r3'].find((id) => sql.includes(`'${id}'`))
+      if (hit) throw REFUSED(hit)
+      return undefined as never
+    })
+  })
+
+  it('spends the allowance once per row marked, so two refusals fit an allowance of two', async () => {
+    // The first attempt marks r1, then times out marking r3. The retry re-selects
+    // without r1 (it is marked now, so the real filter skips it) and finds r3 again.
+    const batch = ['r0', 'r1', 'r2', 'r3', 'r4']
+    const supabase = client([batch, ['r0', 'r2', 'r3', 'r4']], 'r3')
+    const setAside: SetAsideRow[] = []
+    const budget = { refusedLeft: 2 }
+
+    const exported = await exportTable(
+      supabase, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, setAside, budget,
+    )
+
+    expect(exported).toBe(3)
+    expect(setAside.map((r) => r.id)).toEqual(['r1', 'r3'])
+    expect(budget.refusedLeft).toBe(0)
+  })
+
+  it('lists a row once even when the retry is handed a row it already set aside', async () => {
+    // A caller whose filter does not skip set aside rows sees r1 again on the retry.
+    const batch = ['r0', 'r1', 'r2', 'r3', 'r4']
+    const supabase = client([batch, batch], 'r3')
+    const setAside: SetAsideRow[] = []
+    const budget = { refusedLeft: 2 }
+
+    const exported = await exportTable(
+      supabase, CONFIG, 'lead_sightings', COLS, FILTER, undefined, NO_SLEEP, undefined, Date.now, setAside, budget,
+    )
+
+    expect(exported).toBe(3)
+    expect(setAside.map((r) => r.id)).toEqual(['r1', 'r3'])
+    expect(budget.refusedLeft).toBe(0)
+  })
+})
