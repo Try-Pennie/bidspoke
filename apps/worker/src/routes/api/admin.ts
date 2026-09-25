@@ -24,7 +24,7 @@ import { runExecutionArchive } from '../../lib/execution-archive'
 import { checkArchiveSettings } from '../../lib/archive-settings-check'
 import { runArchiveGate } from '../../lib/archive-gate'
 import { checkTripointPricing } from '../../lib/tripoint-pricing-check'
-import { checkTripointLeadStatus } from '../../lib/tripoint-lead-status-check'
+import { checkLeadStatus } from '../../lib/lead-status-check'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
@@ -700,27 +700,17 @@ admin.post('/tripoint-pricing-check', async (c) => {
 })
 
 /**
- * Runs the Tripoint Lead status check now (#1524), rather than at the 13:00 UTC
- * cron: after the Salesforce fix in #1525 ships, whether new sales reach the
- * Lead is the question, and a day is too long to wait. The SAME function the
- * cron calls. Any finding, a count that could not be read included, is a 500,
- * so a caller reading only the status cannot take it for agreement (L98).
+ * Runs the Lead status check now (#1524, #1525), rather than at the 13:00 UTC
+ * cron: after a Salesforce fix ships, whether new sales reach the Lead is the
+ * question, and a day is too long to wait. The SAME function the cron calls.
+ * Any finding, a count that could not be read included, is a 500, so a caller
+ * reading only the status cannot take it for agreement (L98).
  */
-admin.post('/tripoint-lead-status-check', async (c) => {
+admin.post('/lead-status-check', async (c) => {
   const supabase = createSupabaseClient(c.env)
-  const r = await checkTripointLeadStatus(c.env, supabase)
+  const r = await checkLeadStatus(c.env, supabase)
   const ok = r.findings.length === 0
-  return c.json(
-    {
-      ok,
-      day: r.day,
-      submissions_completed: r.submissions_completed,
-      leads_completed: r.leads_completed,
-      backlog: r.backlog,
-      findings: r.findings,
-    },
-    ok ? 200 : 500,
-  )
+  return c.json({ ok, day: r.day, partners: r.partners, findings: r.findings }, ok ? 200 : 500)
 })
 
 /**

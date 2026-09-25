@@ -39,7 +39,7 @@ import { RETENTION_CHECK_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
 import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
-import { TRIPOINT_LEAD_STATUS_REMEDY } from '../tripoint-lead-status-check'
+import { LEAD_STATUS_REMEDY } from '../lead-status-check'
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
@@ -69,7 +69,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
   ['tripoint pricing', TRIPOINT_PRICING_REMEDY],
-  ['tripoint lead status', TRIPOINT_LEAD_STATUS_REMEDY],
+  ['lead status', LEAD_STATUS_REMEDY],
   ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
   ['buyer sales mismatch', BUYER_SALES_MISMATCH_REMEDY],
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
