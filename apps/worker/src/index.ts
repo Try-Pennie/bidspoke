@@ -36,6 +36,7 @@ import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from './lib/sightings-export'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
+import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
@@ -269,7 +270,7 @@ export default {
         .catch((e) => console.error(`[cron-heartbeat] ${jobId} completed write failed:`, e))
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
-        runAchieveExport(supabase, env)
+        recordExportRun(supabase, EXPORT_JOBS.achieveExport, () => runAchieveExport(supabase, env))
           .then(async (s) => {
             console.log('[achieve-export]', JSON.stringify(s))
             // Rows the enrollment view ran out of time for are exported and purged without
@@ -565,7 +566,7 @@ export default {
           .catch((e) => console.error('[cron-heartbeat] export write failed:', e))
       )
       ctx.waitUntil(completeAfter(
-        runSightingsExport(supabase, env)
+        recordExportRun(supabase, EXPORT_JOBS.sightingsExport, () => runSightingsExport(supabase, env))
           .then(async (s) => {
             console.log('[sightings-export]', JSON.stringify(s))
             // Rows Snowflake refused are their own alert, not an export failure:
@@ -595,7 +596,7 @@ export default {
           .catch((e) => console.error('[cron-heartbeat] purge write failed:', e))
       )
       ctx.waitUntil(completeAfter(
-        runSightingsPurge(supabase, Date.now, undefined, ['lead_sightings'])
+        recordExportRun(supabase, EXPORT_JOBS.sightingsPurge, () => runSightingsPurge(supabase, Date.now, undefined, ['lead_sightings']))
           .then((s) => {
             console.log('[sightings-purge]', JSON.stringify(s))
             return notifyExportFailure(supabase, 'Lead sightings purge', s.errors, env.IDEMPOTENCY, 'export-job')
@@ -614,7 +615,7 @@ export default {
           .catch((e) => console.error('[cron-heartbeat] bids purge write failed:', e))
       )
       ctx.waitUntil(completeAfter(
-        runSightingsPurge(supabase, Date.now, undefined, ['lead_sighting_bids'])
+        recordExportRun(supabase, EXPORT_JOBS.bidsPurge, () => runSightingsPurge(supabase, Date.now, undefined, ['lead_sighting_bids']))
           .then((s) => {
             console.log('[sighting-bids-purge]', JSON.stringify(s))
             return notifyExportFailure(supabase, 'Lead sighting bids purge', s.errors, env.IDEMPOTENCY, 'export-job')

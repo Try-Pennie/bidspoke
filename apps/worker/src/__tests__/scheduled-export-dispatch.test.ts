@@ -13,6 +13,12 @@ vi.mock('../lib/achieve-export', () => ({
 }))
 vi.mock('../lib/export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/supabase', () => ({ createSupabaseClient: vi.fn(() => ({})) }))
+// The run record is a pass-through here that remembers which job each run was
+// recorded under; its own behaviour is proven in export-run-record.test.ts.
+vi.mock('../lib/export-run-record', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/export-run-record')>()),
+  recordExportRun: vi.fn((_supabase: unknown, _job: string, work: () => Promise<unknown>) => work()),
+}))
 
 import worker from '../index'
 import type { Env } from '../index'
@@ -20,6 +26,7 @@ import { runSightingsExport, runSightingsPurge, notifySetAsideRows } from '../li
 import { runAchieveExport, notifyEnrollmentViewSkipped } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
 import { SnowflakeSendMeter } from '../lib/snowflake'
+import { recordExportRun } from '../lib/export-run-record'
 
 const env = {} as unknown as Env
 
@@ -237,4 +244,26 @@ describe('the Achieve export reports its enrollment view shortfall', () => {
     expect(vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === 'Achieve export')?.[2])
       .toEqual(['evaluations export: boom'])
   })
+})
+
+// #745: each export and purge run leaves a durable job_runs row, under the same
+// name as its heartbeat, so recurrence and throughput are one query.
+describe('every export and purge run is recorded in job_runs (#745)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const cases: Array<[string, string, () => unknown]> = [
+    ['37 */2 * * *', 'sightings-export', () => runSightingsExport],
+    ['47 1-23/2 * * *', 'sightings-purge', () => runSightingsPurge],
+    ['47 0-22/2 * * *', 'sighting-bids-purge', () => runSightingsPurge],
+    ['0 9 * * *', 'achieve-export', () => runAchieveExport],
+  ]
+
+  for (const [cron, job, work] of cases) {
+    it(`records the ${cron} run as ${job}, around the run itself`, async () => {
+      await fireAndFlush(cron)
+
+      expect(vi.mocked(recordExportRun).mock.calls.map((c) => c[1])).toEqual([job])
+      expect(work()).toHaveBeenCalledTimes(1)
+    })
+  }
 })
