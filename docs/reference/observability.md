@@ -167,6 +167,12 @@ In practice this means the dashboard, execution history, and execution detail vi
 
 - **Every run is recorded.** Each export and purge run writes one row to `job_runs` (`sightings-export`, `sightings-purge`, `sighting-bids-purge`, `achieve-export`) with its counts, its errors and their classes (#745). A row with `finished_at` null is a run that was killed. The last day of one job: `select started_at, finished_at, outcome, detail, summary from job_runs where job = 'sightings-export' order by started_at desc limit 12;`
 
+### Past-month sightings partitions
+
+`lead_sightings`, `lead_sighting_bids` and `achieve_evaluations` are partitioned by month and drained row by row once exported to Snowflake. A nightly pg_cron job (`drop-exported-sighting-partitions`, 08:10 UTC) then drops a past month's partition, but only when no row in it is still waiting to export, none was set aside because Snowflake refused it (#427), and every row was exported more than 24 hours ago. The current month and the months ahead are never touched. Every decision, including a refusal and its reason, is logged in `purge_run_log` under job `sightings-partition-drop` (#464).
+
+A dropped month can no longer be re-imported with `POST /api/admin/backfill-sightings`, which writes rows with their original timestamps: the insert fails until the month's partition is recreated by hand (`CREATE TABLE public.lead_sightings_YYYY_MM PARTITION OF public.lead_sightings FOR VALUES FROM (...) TO (...)`, and the same for `lead_sighting_bids`). Those months are already in Snowflake, which is canonical.
+
 ## See also
 
 - [Error handling](./error-handling.md) - error classification, retries, fallbacks, and alert configuration
