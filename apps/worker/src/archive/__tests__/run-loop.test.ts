@@ -3,6 +3,7 @@ interface FakeBundle { executionId: string; execution: Record<string, unknown>; 
 
 import { runArchive, reArchiveHours, type RunDeps, type RunStop } from '../run-loop'
 import { SETTLE_WINDOW_MS } from '../clock'
+import { SnowflakeNotSentError } from '../../lib/snowflake'
 
 const HOUR = 60 * 60 * 1000
 const WATERMARK = '2026-08-16T10:00:00.000Z'
@@ -530,5 +531,54 @@ describe('the wall budget reserves room for the next hour', () => {
 
     expect(result.hoursArchived).toBeGreaterThan(1)
     expect(clock.atMs - NOW.getTime()).toBeLessThanOrEqual(600_000)
+  })
+})
+
+/**
+ * #1591: a send refused because the run has no time left is the run's budget
+ * stopping it, not Snowflake failing. So it stops the run cleanly, as the
+ * wall-time budget does between hours, without paging anyone as a failure, and
+ * the hour is left for the next run.
+ */
+describe('a send refused for lack of time (#1591)', () => {
+  const outOfTime = async () => {
+    throw new SnowflakeNotSentError('not sent: 30s left, and one attempt can take 120s')
+  }
+
+  it('stops the run on its wall-time budget, not as a failed send', async () => {
+    const d = deps({ send: outOfTime })
+
+    const result = await runArchive(d)
+
+    expect(result.stop).toBe<RunStop>('wall-time')
+    expect(result.failed).toBe(false)
+    expect(result.detail).toMatch(/2026-08-16T10:00:00\.000Z|2026-08-16T11:00:00\.000Z/)
+    expect(result.detail).toMatch(/not sent/)
+  })
+
+  it('leaves the watermark on the hour, so the next run archives it', async () => {
+    let watermark = WATERMARK
+    const d = deps({
+      send: outOfTime,
+      readWatermark: async () => watermark,
+      advanceWatermark: async (h) => {
+        watermark = h
+      },
+    })
+
+    await runArchive(d)
+
+    expect(watermark).toBe(WATERMARK)
+    expect(d.hoursRecorded).toEqual([])
+  })
+
+  it('is reported by a re-archive as an hour the budget did not reach, not as a failed hour', async () => {
+    const hours = ['2026-08-16T11:00:00.000Z', '2026-08-16T12:00:00.000Z']
+    const d = deps({ send: outOfTime })
+
+    const result = await reArchiveHours(d, hours)
+
+    expect(result.failures).toEqual([])
+    expect(result.skipped).toEqual(hours)
   })
 })

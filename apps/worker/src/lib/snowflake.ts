@@ -117,6 +117,23 @@ export const STATEMENT_TIMEOUT_SECONDS = 90
  */
 export const REQUEST_DEADLINE_MS = (EDGE_TIMEOUT_CEILING_SECONDS + 20) * 1000
 
+/**
+ * A statement never sent, because even one attempt could run past the time the
+ * caller gives up at (#1591).
+ *
+ * Its own class, and deliberately NOT a SnowflakeStatementError, because nothing
+ * reached Snowflake: a caller that reported this as a Snowflake failure would send
+ * whoever reads the alert to look for a fault in a service that was never asked.
+ * It means the caller is out of time, which callers treat as their budget
+ * stopping them.
+ */
+export class SnowflakeNotSentError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SnowflakeNotSentError'
+  }
+}
+
 /** A request abandoned at its deadline, distinct from one that failed outright. */
 export class SnowflakeRequestTimeoutError extends Error {
   constructor(message: string) {
@@ -319,6 +336,17 @@ export async function postStatementWithRetry(
   const deadlineMs = opts.requestDeadlineMs ?? REQUEST_DEADLINE_MS
   const now = opts.now ?? Date.now
   let statementTimeouts = 0
+
+  // The same rule the resubmit below follows, applied before the FIRST attempt
+  // too (#1591). Inside an archive hour sends run one after another, so a batch
+  // can start seconds before the run's deadline and then take a whole request
+  // deadline, which is long enough to reach the platform's cron kill.
+  if (opts.giveUpAt !== undefined && now() + deadlineMs > opts.giveUpAt) {
+    throw new SnowflakeNotSentError(
+      `not sent: ${Math.max(0, Math.round((opts.giveUpAt - now()) / 1000))}s left before the caller's deadline, ` +
+        `and one attempt can take ${Math.round(deadlineMs / 1000)}s`,
+    )
+  }
 
   for (let attempt = 1; ; attempt++) {
     const target = `${url}?requestId=${encodeURIComponent(requestId)}${attempt > 1 ? '&retry=true' : ''}`
