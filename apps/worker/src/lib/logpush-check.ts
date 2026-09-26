@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logpushDifferences, type ObservedLogpush, type ObservedLogpushJob } from '../archive/logpush-drift'
-import { EXPECTED_LOGPUSH_JOBS } from './logpush-expectation'
+import { EXPECTED_LOGPUSH_JOBS, type ExpectedLogpushJob } from './logpush-expectation'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 
 /**
@@ -32,7 +32,15 @@ export interface LogpushCheckResult {
 export interface LogpushCheckDeps {
   fetchJobs?: () => Promise<unknown>
   now?: () => number
+  /** Defaults to the committed expectation. */
+  expected?: readonly ExpectedLogpushJob[]
 }
+
+/**
+ * Cloudflare's refusal when Logpush is switched off for the whole account.
+ * Measured 2026-09-26: `1004 logpush is not enabled for this account`.
+ */
+const LOGPUSH_NOT_ENABLED_CODE = 1004
 
 /** Host of a destination_conf, without credentials, path or query. */
 function hostOf(destinationConf: string): string {
@@ -71,6 +79,7 @@ export async function checkLogpush(
   deps: LogpushCheckDeps = {},
 ): Promise<LogpushCheckResult> {
   const now = deps.now ?? (() => Date.now())
+  const expected = deps.expected ?? EXPECTED_LOGPUSH_JOBS
   const observed: ObservedLogpush = { jobs: [], unreadable: [] }
 
   const fetchJobs =
@@ -98,7 +107,20 @@ export async function checkLogpush(
       errors?: Array<{ code?: number; message?: string }>
       result?: Array<Record<string, unknown>>
     }
-    if (body.success !== true) {
+    const errors = body.errors ?? []
+    if (
+      body.success !== true &&
+      expected.length === 0 &&
+      errors.length > 0 &&
+      errors.every((e) => e.code === LOGPUSH_NOT_ENABLED_CODE)
+    ) {
+      // Logpush switched off on the account means no job can exist, which is
+      // exactly what an empty expectation asks for. Only this one refusal, and
+      // only while nothing is expected: any other refusal is still not knowing,
+      // and while a job IS expected the refusal is reported as it stands, since it
+      // is the precise reason that job cannot be running (L215).
+      observed.jobs = []
+    } else if (body.success !== true) {
       const why = (body.errors ?? []).map((e) => `${String(e.code)} ${String(e.message)}`).join('; ')
       observed.unreadable.push(`the Logpush job list was refused: ${why || 'no reason given'}`)
     } else if (!Array.isArray(body.result)) {
@@ -130,7 +152,7 @@ export async function checkLogpush(
     observed.unreadable.push(`the Logpush job list could not be read: ${formatErr(err)}`)
   }
 
-  const differences = logpushDifferences(observed, EXPECTED_LOGPUSH_JOBS, now())
+  const differences = logpushDifferences(observed, expected, now())
 
   await notifyExportFailure(
     supabase,

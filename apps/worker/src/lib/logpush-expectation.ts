@@ -23,36 +23,26 @@ export interface ExpectedLogpushJob {
 }
 
 /**
- * As of 2026-09-09.
+ * As of 2026-09-26: no jobs.
  *
- * One job. Its field list was narrowed that day from nine fields to these
- * seven, removing `Event` and `Logs`, which had been exporting applicant SSNs
- * and request headers to an external vendor (#1007, #1214). The R2 job that had
- * delivered nothing since April was deleted the same day (#1008).
+ * Cloudflare switched Logpush off for the whole Pennie account on or just
+ * before 2026-09-26, and the API now refuses the job list with `1004 logpush is
+ * not enabled for this account`. Dan accepted that the same day rather than
+ * re-enabling it: nothing in Bidspoke reads the Better Stack feed, execution
+ * history lives in Supabase and the Snowflake archive, and Cloudflare's own log
+ * viewer covers recent debugging.
  *
- * Every field below is metadata about which script ran and when. If a future
- * change needs one of the PII bearing fields, that is a decision about sending
- * consumer data to a third party, and it belongs in an ADR rather than in an
- * edit to this list.
+ * Until then there was one job, `logpush-better-stack-logs` (1740821) to
+ * Better Stack, narrowed on 2026-09-09 to seven metadata fields after it had
+ * been exporting applicant SSNs and request headers to that vendor (#1007,
+ * #1214). The R2 job was deleted the same day (#1008).
+ *
+ * The check reads the not-enabled refusal as zero jobs, so this stays quiet,
+ * and any job that appears is reported as unexpected. Re-adding one is a
+ * decision about where this worker's logs go, and if it needs a PII bearing
+ * field, about sending consumer data to a third party, which belongs in an ADR.
  */
-export const EXPECTED_LOGPUSH_JOBS: readonly ExpectedLogpushJob[] = [
-  {
-    id: 1740821,
-    name: 'logpush-better-stack-logs',
-    destinationHost: 's2537399.eu-fsn-3.betterstackdata.com',
-    dataset: 'workers_trace_events',
-    enabled: true,
-    fieldNames: [
-      'DispatchNamespace',
-      'Entrypoint',
-      'EventTimestampMs',
-      'EventType',
-      'ScriptName',
-      'ScriptTags',
-      'ScriptVersion',
-    ],
-  },
-]
+export const EXPECTED_LOGPUSH_JOBS: readonly ExpectedLogpushJob[] = []
 
 /**
  * How long a job may go without a successful push before it is reported.
