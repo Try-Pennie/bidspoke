@@ -29,7 +29,8 @@ export type AuditEntityType =
   // A subject erasure across the archive and both sightings tables (#875).
   | 'archive_erasure'
   // The worker's own recovery secrets (#384): a SECRET_ENCRYPTION_KEY re-lock, and
-  // the one-time sealed handover of SSN_HASH_PEPPER. Neither row holds a value.
+  // the one-time sealed handover of SSN_HASH_PEPPER, which ran once on 2026-09-28
+  // and whose route is deleted. Neither row holds a value.
   | 'recovery_secret'
   // One archived execution read back out of Snowflake (#874). Every archived
   // read is audited, because the archive holds full fidelity PII for thirteen
@@ -49,6 +50,7 @@ export type AuditAction =
   | 'field_silence_cleared'
   | 'subject_erased'
   | 'secrets_reencrypted'
+  // Written once, on 2026-09-28; nothing writes it now. Kept so that row reads.
   | 'ssn_pepper_escrow_sealed'
   // A dry run of an erasure. Distinct from subject_erased because nothing was
   // removed, and a reader must not take one for the other (#823).
