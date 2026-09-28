@@ -31,9 +31,10 @@
 #   TARGET_DB_URL='postgresql://postgres:<pw>@db.<scratch-ref>.supabase.co:5432/postgres' \
 #   scripts/dr-restore-drill.sh
 #
-#   Get each connection string from Supabase: Project Settings -> Database ->
-#   Connection string -> URI. SOURCE is production (read-only use here); TARGET
-#   is the scratch project you created for the drill.
+#   SOURCE is production (read-only use here); TARGET is the scratch project you
+#   created for the drill. See docs/dr-restore-drill.md for how to get each
+#   without handling the production password (a temporary CLI login, which needs
+#   `?options=-c%20role%3Dpostgres` on the end of its URL to read the tables).
 #
 set -euo pipefail
 
@@ -99,6 +100,24 @@ if grep -qoE "^COPY \"?public\"?\.\"?(${leak_pattern})(_[0-9]{4}_[0-9]{2})?\"? "
   exit 3
 fi
 
+# Count the source rows NOW, straight after the data dump, and never again. Two
+# reasons. The counts then describe the snapshot that was dumped, so live writes
+# during the restore (audit_log, buyer_sales) no longer read as a mismatch. And the
+# source login is used only in the first minute or so: the temporary login that
+# `supabase db dump --dry-run` issues is valid for five minutes (measured
+# 2026-09-28), the restore takes about four, and re-reading the source after it
+# made 32 failed logins in a row, which got this machine's address banned from
+# the database. So a failed source read stops the drill at once.
+source_counts=()
+for t in "${TABLES[@]}"; do
+  if ! c=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from public.\"$t\"" 2>"$WORKDIR/count_err.txt"); then
+    echo "ABORT: could not count source table $t:" >&2
+    sed -E 's#://[^@]*@#://***@#' "$WORKDIR/count_err.txt" >&2
+    exit 6
+  fi
+  source_counts+=("$c")
+done
+
 echo "[3/4] Restoring schema then data into target..."
 psql "$TARGET_DB_URL" -q -v ON_ERROR_STOP=0 -f "$WORKDIR/schema.sql" >/dev/null 2>"$WORKDIR/schema_err.txt" || true
 # session_replication_role=replica bypasses the circular FKs (folders <-> env_var_folders)
@@ -111,8 +130,9 @@ data_errs=$(grep -ciE '^ERROR' "$WORKDIR/data_err.txt" || true)
 echo "[4/4] Verifying row counts (source vs target)..."
 fail=0
 printf '%-32s %12s %12s   %s\n' "TABLE" "SOURCE" "TARGET" "RESULT"
-for t in "${TABLES[@]}"; do
-  s=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from public.\"$t\"" 2>/dev/null || echo ERR)
+for i in "${!TABLES[@]}"; do
+  t="${TABLES[$i]}"
+  s="${source_counts[$i]}"
   d=$(psql "$TARGET_DB_URL" -tAc "select count(*) from public.\"$t\"" 2>/dev/null || echo ERR)
   if [[ "$s" == "$d" && "$s" != "ERR" ]]; then res="ok"; else res="MISMATCH"; fail=1; fi
   printf '%-32s %12s %12s   %s\n' "$t" "$s" "$d" "$res"

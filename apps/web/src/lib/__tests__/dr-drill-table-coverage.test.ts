@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { listFiles, REPO_ROOT } from './_scan-utils'
@@ -132,5 +133,80 @@ describe('dr_unclassified_tables (the drill refuses on an unlisted live table)',
     const r = unclassified(['brand_new_2026_09'])
     expect(r.status).toBe(1)
     expect(r.stdout.trim()).toBe('brand_new_2026_09')
+  })
+})
+
+/**
+ * The drill against stand-in pg_dump and psql commands that record every call.
+ *
+ * Measured 2026-09-28: the temporary login `supabase db dump --dry-run` issues for
+ * production is valid for five minutes, and the restore takes about four. The
+ * script used to count the source rows again after the restore, so on the first
+ * real run every source count failed and the 32 failed logins got the machine's
+ * address banned. These tests hold the fix: production is touched only before the
+ * restore starts, and a failed source read stops the drill at once.
+ */
+describe('dr-restore-drill.sh reads production only before the restore', () => {
+  const DRILL = path.join(REPO_ROOT, 'scripts/dr-restore-drill.sh')
+
+  function runDrill(opts: { failSourceCountAfter?: number } = {}) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'dr-drill-'))
+    const log = path.join(dir, 'calls.log')
+    const tables = readList('DRILL_COPY_TABLES').concat(readList('DRILL_STRUCTURE_ONLY_TABLES'))
+    writeFileSync(path.join(dir, 'tables.txt'), tables.join('\n') + '\n')
+    // Each stand-in names which database a call reached and what kind it was.
+    const who = 'case "$*" in *source.example*) db=source;; *target.example*) db=target;; *) db=unknown;; esac'
+    writeFileSync(
+      path.join(dir, 'pg_dump'),
+      `#!/bin/bash\n${who}\necho "$db dump" >> "${log}"\nout=""; while [ $# -gt 0 ]; do [ "$1" = -f ] && out="$2"; shift; done\n: > "$out"\n`,
+      { mode: 0o755 },
+    )
+    writeFileSync(
+      path.join(dir, 'psql'),
+      `#!/bin/bash\n${who}\nargs="$*"\n` +
+        `if [[ "$args" == *pg_class* ]]; then echo "$db list" >> "${log}"; cat "${dir}/tables.txt"; exit 0; fi\n` +
+        `if [[ "$args" == *"count(*)"* ]]; then\n` +
+        `  n=$(grep -c "^$db count" "${log}" 2>/dev/null); echo "$db count" >> "${log}"\n` +
+        `  if [ "$db" = source ] && [ -n "$FAIL_AFTER" ] && [ "$n" -ge "$FAIL_AFTER" ]; then echo "password authentication failed" >&2; exit 2; fi\n` +
+        `  echo 7; exit 0\nfi\n` +
+        `echo "$db restore" >> "${log}"; cat > /dev/null\n`,
+      { mode: 0o755 },
+    )
+    let status = 0
+    try {
+      execFileSync('bash', [DRILL], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH}`,
+          SOURCE_DB_URL: 'postgresql://u:p@source.example:5432/postgres',
+          TARGET_DB_URL: 'postgresql://u:p@target.example:5432/postgres',
+          FAIL_AFTER: opts.failSourceCountAfter === undefined ? '' : String(opts.failSourceCountAfter),
+        },
+      })
+    } catch (err) {
+      status = (err as { status: number }).status
+    }
+    const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    rmSync(dir, { recursive: true, force: true })
+    return { status, calls }
+  }
+
+  it('passes, and makes no source call after the first restore call', () => {
+    const { status, calls } = runDrill()
+    expect(status).toBe(0)
+    const firstRestore = calls.indexOf('target restore')
+    expect(firstRestore).toBeGreaterThan(-1)
+    // Positive control: the source really was counted, before the restore.
+    expect(calls.slice(0, firstRestore).filter((c) => c === 'source count').length).toBe(readList('DRILL_COPY_TABLES').length)
+    expect(calls.slice(firstRestore).filter((c) => c.startsWith('source'))).toEqual([])
+  })
+
+  it('stops at the first failed source count, before restoring anything', () => {
+    const { status, calls } = runDrill({ failSourceCountAfter: 3 })
+    expect(status).toBe(6)
+    expect(calls.filter((c) => c === 'source count').length).toBe(4)
+    expect(calls).not.toContain('target restore')
   })
 })
