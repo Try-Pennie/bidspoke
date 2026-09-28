@@ -147,7 +147,8 @@ describe('checkLogpush', () => {
   })
 
   // The not-enabled refusal reads as zero jobs only while nothing is expected.
-  // Nothing is expected today, but the rule stays for the day that changes.
+  // The Better Stack job is expected today, so these pass an empty expectation
+  // in explicitly to keep that rule covered for the day no job is expected.
   describe('when no job is expected', () => {
     const none: readonly ExpectedLogpushJob[] = []
     const notEnabled = () => ({ success: false, errors: [{ code: 1004, message: 'logpush is not enabled for this account' }] })
