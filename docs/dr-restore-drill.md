@@ -20,11 +20,18 @@ To confirm the managed backups exist and their span, open the Supabase dashboard
 The database is ~25 GB, but most of that is **rebuildable execution-log partitions** (`execution_steps*`, `workflow_executions*`, `achieve_evaluations*`) and **raw-SSN tables** (`persons`, `lead_sightings*`, `lead_sighting_bids*`). The drill restores:
 
 - **All schema** — every table's structure, plus functions, RLS policies, indexes, sequences.
-- **Config / system-of-record data only** — the 24 tables in `scripts/dr-restore-drill.sh`'s `TABLES` list (workflows, versions, partner configs, bid matrix, env vars, sources, endpoints, allowlist, audit log, etc.). This is the data needed to **resume bidding**.
+- **Config / system-of-record data only**: the tables in `DRILL_COPY_TABLES` in `scripts/dr-drill-tables.sh` (workflows, versions, partner configs, bid matrix, buyer profiles and their pricing, hours, blackouts and sales, env vars, sources, endpoints, allowlist, audit log, and so on). This is the data needed to **resume bidding**.
 
 It deliberately **does not copy the bulk execution logs or the raw-SSN tables' data**, for two reasons: (1) they are not needed to bring bidding back, and (2) copying 6 GB of SSNs into a throwaway project is an avoidable PII spread. Their full restore is a Supabase-managed operation (the bulk follows the same physical backup) and its time is dominated by raw data size; the figure below is the **"resume-bidding" RTO**, which is the number that matters for getting money moving again.
 
-The table list is an explicit **allow-list**, not an exclude-glob — a money/PII system must never silently widen what gets copied. (An earlier exclude-glob approach was abandoned after it leaked `execution_steps` data; see the script comments.)
+The table list is an explicit **allow-list**, not an exclude-glob, because a money and PII system must never silently widen what gets copied. (An earlier exclude-glob approach was abandoned after it leaked `execution_steps` data.)
+
+Every table must be in exactly one of the two lists in `scripts/dr-drill-tables.sh`: `DRILL_COPY_TABLES` or `DRILL_STRUCTURE_ONLY_TABLES`. Two checks hold that, because the row count verification compares only the copied tables and so can never notice a table that is missing from the list:
+
+- **In CI**, `apps/web/src/lib/__tests__/dr-drill-table-coverage.test.ts` fails when a migration creates a table in neither list. So a new table is classified in the pull request that adds it, not three months later.
+- **In the drill**, the script lists the live database's tables before dumping anything and refuses to run if one is unlisted, which covers a table created outside the migrations.
+
+This was added on 2026-09-28, when the June list turned out to be missing all five buyer profile tables: the drill would have restored them empty and still printed PASS.
 
 ## Procedure
 
@@ -56,7 +63,7 @@ export PATH="$(brew --prefix libpq)/bin:$PATH"
 
 ## Cadence
 
-Re-run **quarterly** (and after any major schema change or migration that adds/removes a system-of-record table). The reminder is a recurring Google Calendar event linking this doc. When the allow-list in the script drifts from reality, the drill's verification will flag a missing table — update `TABLES` and re-run.
+Re-run **quarterly** (and after any major schema change or migration that adds/removes a system-of-record table). The reminder is a recurring Google Calendar event linking this doc. If the drill refuses because a table is unlisted, add it to one of the two lists in `scripts/dr-drill-tables.sh` and re-run.
 
 ## Results log
 
