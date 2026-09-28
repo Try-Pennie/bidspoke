@@ -160,7 +160,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Supabase | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` |
 | Webhook auth | `API_KEY_MAP` (JSON map of webhook API keys to source names) |
 | Cloudflare (partner-secret sync) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
-| Encryption / PII | `SECRET_ENCRYPTION_KEY` (env-var reveal), `SSN_HASH_PEPPER` (person dedup — effectively immutable) |
+| Encryption / PII | `SECRET_ENCRYPTION_KEY` (decrypts every secret environment variable on every run, and reveal), `SSN_HASH_PEPPER` (the archive's erasure resolver, never rotate it) |
 | Snowflake export | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | Salesforce | `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
 | Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY`, `ACHIEVE_PARTNER_KEY` (shared with Achieve, matched by their firewall Skip rule; see disaster-recovery.md) |
@@ -169,9 +169,14 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 ### Cloudflare log access is partner API key access (#958)
 The `Workers trace events` stream carries request headers with values intact, `X-API-Key` included, so anyone who can `wrangler tail` this worker or read Workers Logs can read every partner webhook key. Measured 2026-09-09. Grant log access on that basis, and delete any tail capture you write to a file: it is a file full of live partner credentials. The Better Stack Logpush job did forward those header fields until 2026-09-09, when its field list was narrowed to drop `Logs` and `Event`; the history it already holds stays there by Dan's decision (#1007, closed). The daily check now reads the Logpush job list itself, with a token that carries Logs Write because Cloudflare offers no read only scope for that API (#1010, closed). Full note in [docs/disaster-recovery.md](./docs/disaster-recovery.md).
 
-Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (changing it breaks person dedup) and `SECRET_ENCRYPTION_KEY` (for old reveals).
+Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (a new value leaves every archived record unfindable by SSN for an erasure request) and `SECRET_ENCRYPTION_KEY` (every stored secret environment variable is locked with it).
 
 ### Rotating `SECRET_ENCRYPTION_KEY`
-Generate: `openssl rand -base64 32`, then `wrangler secret put SECRET_ENCRYPTION_KEY --name bidspoke-worker`.
+The engine decrypts every secret environment variable with this key on every execution (`lib/env-loader.ts`), so it is never swapped in one step: a secret that no longer decrypts is skipped, and a node reading it through `{{env.X}}` gets nothing. Rotate it in four steps with no window where anything fails to decrypt (#384):
 
-**Warning:** rotating this key breaks reveal for any secrets created before the rotation. Users will see "rotate to enable reveal" until they re-save the affected env vars with a new value.
+1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
+2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables and `app_settings.value_encrypted`). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
+3. Set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, then delete `SECRET_ENCRYPTION_KEY_NEXT`.
+4. Run the route once more as a preview: every row should count as already current under the primary alone.
+
+Every call site passes `secretKeys(env)`, never the raw key; `__guards__/worker/secret-key-ring-guard.test.ts` fails on one that does.

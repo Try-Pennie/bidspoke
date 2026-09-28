@@ -8,7 +8,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../../index'
 
-vi.mock('../secret-crypto', () => ({ decryptSecret: vi.fn() }))
+// Only decryptSecret is stood in for; secretKeys stays real (L727).
+vi.mock('../secret-crypto', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../secret-crypto')>()),
+  decryptSecret: vi.fn(),
+}))
 vi.mock('../slack', () => ({ getSlackConnection: vi.fn(), sendSecretDecryptAlert: vi.fn() }))
 
 import {

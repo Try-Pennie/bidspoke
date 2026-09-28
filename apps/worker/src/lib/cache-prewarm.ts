@@ -10,6 +10,7 @@ import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { loadPartnerConstants } from './partner-constants-loader'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import type { Env } from '../index'
+import { secretKeys } from './secret-crypto'
 
 export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promise<void> {
   const start = Date.now()
@@ -35,7 +36,7 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const perOrg = orgIds.flatMap((orgId) => {
     const tasks: Promise<unknown>[] = [
-      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY).catch(() => undefined),
+      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env)).catch(() => undefined),
       loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
     ]
     // Declines quietly for an organization with no credentials: a prewarm is an

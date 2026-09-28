@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import type { WorkflowDefinition, EdgeDefinition } from '../types'
-import { decryptSecret } from './secret-crypto'
+import { decryptSecret, secretKeys } from './secret-crypto'
 import { parseJson } from './json'
 
 interface ConfigDiff {
@@ -218,7 +218,7 @@ export async function getAnthropicKey(
     logReadFailure('changelog-drafter', 'workflow versions', dataError)
     if (data?.value_encrypted) {
       try {
-        return await decryptSecret(data.value_encrypted as string, env.SECRET_ENCRYPTION_KEY)
+        return await decryptSecret(data.value_encrypted as string, secretKeys(env))
       } catch (e) {
         console.error('[changelog-drafter] failed to decrypt anthropic_api_key:', e)
       }

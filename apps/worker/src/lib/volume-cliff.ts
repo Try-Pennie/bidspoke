@@ -21,7 +21,7 @@ import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from '.
 import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { decryptSecret, encryptSecret } from './secret-crypto'
+import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import type { AlertClaims } from './alert-claim'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
@@ -81,7 +81,7 @@ const dbUnreachableCooldownKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}-co
 
 async function rememberSlackConnections(
   kv: KvLike,
-  secretEncryptionKey: string,
+  secretEncryptionKey: SecretKeyInput,
   connections: Map<string, SlackConnection>,
 ): Promise<void> {
   try {
@@ -93,7 +93,7 @@ async function rememberSlackConnections(
   }
 }
 
-export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: string): Promise<Map<string, SlackConnection>> {
+export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: SecretKeyInput): Promise<Map<string, SlackConnection>> {
   const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
   if (!blob) return new Map()
   try {
@@ -118,7 +118,7 @@ export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionK
  */
 async function reportDatabaseUnreachable(
   kv: KvLike,
-  secretEncryptionKey: string,
+  secretEncryptionKey: SecretKeyInput,
   what: string,
   error: unknown,
   appUrl: string,
@@ -198,7 +198,7 @@ export async function runVolumeCliffCheck(
   kv: KvLike,
   appUrl: string,
   selfCheckUrl: string = DEFAULT_SELF_CHECK_URL,
-  secretEncryptionKey: string,
+  secretEncryptionKey: SecretKeyInput,
   // The claim that decides which of several simultaneous ticks posts (#1298).
   // Optional only so the pure detection tests need not build one; production
   // always passes it, and without it two ticks that pass the cooldown together

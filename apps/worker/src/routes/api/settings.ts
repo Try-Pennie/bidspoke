@@ -3,7 +3,7 @@ import { dbError, rowsTouched } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { encryptSecret } from '../../lib/secret-crypto'
+import { encryptSecret, secretKeys } from '../../lib/secret-crypto'
 import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
@@ -66,7 +66,7 @@ settings.put('/anthropic-key', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const value_encrypted = await encryptSecret(key, c.env.SECRET_ENCRYPTION_KEY)
+  const value_encrypted = await encryptSecret(key, secretKeys(c.env))
 
   const { error } = await supabase
     .from('app_settings')

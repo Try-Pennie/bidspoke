@@ -32,6 +32,7 @@ import { formatErr } from './format-error'
 import { resolveSlackForBlockAlert } from './partner-block-alert'
 import { etTime, getSlackConnection, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
 import { readLastGoodSlackConnections } from './volume-cliff'
+import { secretKeys } from './secret-crypto'
 
 /** One page per buyer per reason per quarter hour. */
 export const CLICK_PAGE_COOLDOWN_SECONDS = 15 * 60
@@ -195,7 +196,7 @@ export function productionClickAlert(orgId: string, env: Env, supabase: Supabase
           resolveSlackForBlockAlert(
             orgId,
             () => getSlackConnection(supabase, orgId),
-            () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+            () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
           ),
         appUrl: env.APP_URL,
       },
