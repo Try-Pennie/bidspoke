@@ -1,10 +1,9 @@
 /**
- * POST /api/admin/reencrypt-secrets and POST /api/admin/escrow-pepper (#384).
+ * POST /api/admin/reencrypt-secrets, and the removal of POST /api/admin/escrow-pepper (#384).
  *
- * The re-lock and the sealing are covered against their inputs in
- * lib/__tests__/secret-reencrypt.test.ts and lib/__tests__/pepper-escrow.test.ts.
- * What is covered here is what only the routes decide: the preview default, the
- * single use of the pepper handover, and what is written down.
+ * The re-lock is covered against its inputs in lib/__tests__/secret-reencrypt.test.ts.
+ * What is covered here is what only the route decides: the preview default and
+ * what is written down, plus the handover route staying gone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -18,8 +17,6 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { reencryptSecrets } from '../../../lib/secret-reencrypt'
-import { PEPPER_ESCROW_CANARY } from '../../../lib/pepper-escrow'
-import { hashSsn } from '../../../engine/persons-crypto'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@trypennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@trypennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -118,28 +115,12 @@ describe('admin secret escrow routes', () => {
   })
 
   describe('POST /admin/escrow-pepper', () => {
-    it('returns the sealed pepper and its canary hash, never the pepper itself', async () => {
+    // The one-time handover ran on 2026-09-28 and the copy in 1Password was proved
+    // against production's canary hash. The route is gone, so the pepper has no
+    // path out of the worker at all.
+    it('no longer exists', async () => {
       const res = await post(app, '/admin/escrow-pepper', {}, env())
-      expect(res.status).toBe(200)
-      const text = await res.text()
-      expect(text).not.toContain('the-pepper')
-      const body = JSON.parse(text) as { ciphertext: string; canaryHash: string }
-      expect(body.canaryHash).toBe(await hashSsn(PEPPER_ESCROW_CANARY, 'the-pepper'))
-      expect(atob(body.ciphertext).length).toBe(512)
-      expect(vi.mocked(writeAuditLog).mock.calls[0][4]).toBe('ssn_pepper_escrow_sealed')
-    })
-
-    it('works once, then refuses and says when it was used', async () => {
-      const e = env()
-      expect((await post(app, '/admin/escrow-pepper', {}, e)).status).toBe(200)
-      const second = await post(app, '/admin/escrow-pepper', {}, e)
-      expect(second.status).toBe(409)
-      expect(((await second.json()) as { sealed_at: string }).sealed_at).toMatch(/^\d{4}-\d\d-\d\dT/)
-    })
-
-    it('refuses when the pepper is not set rather than escrowing nothing', async () => {
-      const res = await post(app, '/admin/escrow-pepper', {}, env({ SSN_HASH_PEPPER: '' }))
-      expect(res.status).toBe(503)
+      expect(res.status).toBe(404)
     })
   })
 })
