@@ -42,7 +42,7 @@ Two items are pure dead weight in the figures above and removing them shortens t
    - R2: the Logpush destination (cold-tier log archive).
    - DNS + routes: wildcard `*.trypennie.dev` (partner subdomain endpoints), the Worker route, and the `bidspoke.trypennie.dev` bypass route that protects Pages.
    - Crons: `0 9 * * *`, `0 13 * * *`, `0 * * * *`, `* * * * *` (defined in `apps/worker/wrangler.toml`).
-3. **Worker secrets** (NOT escrowed today — see Secret inventory). The `wrangler secret put` values are not in git; losing them without an escrow copy means re-obtaining each from its source.
+3. **Worker secrets.** The two that cannot be re-derived (`SSN_HASH_PEPPER`, `SECRET_ENCRYPTION_KEY`) are in 1Password; every other one is re-obtained from its source. See Secret inventory.
 4. **External integrations** whose credentials/config must be re-provisioned: Salesforce (External Client App "Bidspoke API", client-credentials flow), Equifax, the Tripoint proxy, M1, Snowflake (nightly export), the GitHub workflow-backup repo, Achieve, and Slack (alerts).
 
 ## Independent backups that survive a Bidspoke loss
@@ -111,7 +111,7 @@ Everything here is redeployable from git — no data loss, since state lives in 
 
 1. Re-provision from each source (Secret inventory). For a compromise, rotate at the source first, then update the worker secret.
 2. **Special case — `SECRET_ENCRYPTION_KEY`:** rotating it breaks "reveal" for env-var secrets created before the rotation (users see "rotate to enable reveal" until they re-save). See CLAUDE.md.
-3. **Special case — `SSN_HASH_PEPPER`:** changing it changes the peppered SSN hash, breaking person-dedup continuity for `lead_sightings`. Treat as effectively immutable; escrow it.
+3. **Special case, `SSN_HASH_PEPPER`:** never generate a new one. The execution archive stores its hash of each lead's SSN to find a person's records for an erasure request, so a new value leaves every earlier record unfindable. Restore it from 1Password.
 
 ## Cloudflare log access IS partner API key access (#958)
 
@@ -167,13 +167,13 @@ the Better Stack job (1740821) came back with it, which the daily
 the job, so the check expects it again on its seven metadata fields and reports
 any change to its fields, destination or delivery, or Logpush going off again.
 
-## Secret inventory (and the escrow gap)
+## Secret inventory (and escrow)
 
-The authoritative live list is `wrangler secret list --name bidspoke-worker`. Worker secrets are **not escrowed** today — losing the worker without a copy means re-obtaining each from its origin. Categories (re-provision source in parentheses):
+The authoritative live list is `wrangler secret list --name bidspoke-worker`. Two of them are escrowed (see Escrow status below); every other one is re-obtained from its origin if lost. Categories (re-provision source in parentheses):
 
 - Supabase: `SUPABASE_SECRET_KEY` (a secret key of the new `sb_secret_` kind, from the dashboard under Settings, API Keys; NOT the legacy JWT service_role key), `SUPABASE_JWKS_URL`. `bidspoke-worker-tail` holds its own copy of `SUPABASE_SECRET_KEY`, so it is set twice. Rotation is zero downtime because several secret keys can be live at once: create a new key in the dashboard, `wrangler secret put SUPABASE_SECRET_KEY` on both workers (pipe the value in, never on the command line), confirm `workflow_executions` keeps gaining rows with `cost_usd` filled, update `apps/worker/.dev.vars`, then delete the old key, which is irreversible. Last rotated 2026-09-25 (the old key had sat in plain text in a local permission rules file). Other workers and Pages projects in the same Cloudflare account hold same named secrets for OTHER Supabase projects (Slate, PaperBoi, PET, Migo, Eavesly); measured 2026-09-25, none reads this project.
 - Cloudflare: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (for partner-secret sync).
-- Encryption/PII: `SECRET_ENCRYPTION_KEY` (regenerate = breaks old reveals), `SSN_HASH_PEPPER` (immutable — escrow), `PII_REDACTION_FIELDS`.
+- Encryption/PII: `SECRET_ENCRYPTION_KEY` (unlocks every secret environment variable on every run; in 1Password; rotate only with the steps in CLAUDE.md), `SSN_HASH_PEPPER` (never rotate; in 1Password), `PII_REDACTION_FIELDS`.
 - Salesforce: `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_INSTANCE_URL` (External Client App in SF Setup).
 - Partners: Equifax (`EQ_USER`, `EQ_PASS`), Eligibility Scout (`SCOUT_KEY`), Tripoint proxy secret, Achieve (`ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, ...), webhook keys (`API_KEY_MAP`).
 - Achieve firewall identity: `ACHIEVE_PARTNER_KEY`, a secret we choose and share with Achieve. Their Cloudflare Skip rule matches on it, so without it every call to `oauth.prd.ffngcp.com`, `fdrapis-gateway.prd.fdrgcp.com` and `api.freedomfinancialnet.com` is refused with a 403 before reaching them (that outage ran 2026-09-05 to 09-10). Re-provisioning it means generating a new value AND telling Achieve, because both sides hold it. Set it in the Bidspoke Environment Variables page as a secret, not with `wrangler secret put`: that page stores it for the Eligibility Scout code node and syncs it to the worker binding the Achieve node reads, in one write.
@@ -181,13 +181,15 @@ The authoritative live list is `wrangler secret list --name bidspoke-worker`. Wo
 - Execution archive (#870, three separate identities in `BIDSPOKE_ARCHIVE`): `ARCHIVE_WRITER_USER` + `ARCHIVE_WRITER_PRIVATE_KEY`, `ARCHIVE_READER_USER` + `ARCHIVE_READER_PRIVATE_KEY`, `ARCHIVE_ERASER_USER` + `ARCHIVE_ERASER_PRIVATE_KEY`. Re-provision by generating a fresh RSA key pair per identity and setting the public half on the Snowflake service user (`ALTER USER ... SET RSA_PUBLIC_KEY`); the users, roles and grants themselves are re-createable from `docs/snowflake-archive-setup.sql`. None of the three needs escrow: all six are freely re-derivable, because rotating a key pair costs one `ALTER USER` and loses no data. **The archived data itself is the thing that cannot be re-derived**, and the eraser identity is the only credential in the account that can destroy it, so treat it with the care its blast radius deserves rather than the care its re-provisioning cost suggests.
 - Other: `GITHUB_TOKEN` + `GITHUB_REPO` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads `GITHUB_CODE_REPO`'s Actions history for the scheduled-workflow watch, and since #1058 also DISPATCHES those workflows because GitHub stopped delivering their cron events reliably; re-obtain as a fine-grained GitHub token scoped to this repository with **Actions: read and write** plus Metadata: read. Read alone can list runs but cannot start one, and the dispatch then fails with 403), `ANTHROPIC_API_KEY`, `APP_URL`.
 
-**Escrow status (2026-06-26): NOT YET ESCROWED — open blocker.** There is no shared team secret store today, so a restore operator would have to re-obtain each secret from its origin mid-incident. Two secrets cannot be re-derived and *must* be escrowed or they are lost forever: `SSN_HASH_PEPPER` (changing it breaks person-dedup continuity — treat as immutable) and, for old reveals, `SECRET_ENCRYPTION_KEY`.
+**Escrow status (2026-09-28): the two secrets that cannot be re-derived are escrowed (#384).** Both live in the 1Password item `Bidspoke recovery keys`, fields `SSN_HASH_PEPPER` and `SECRET_ENCRYPTION_KEY`. Each copy was proved against production that day without the value being printed:
+- `SSN_HASH_PEPPER` was handed over once by the worker, sealed to a key held offline, and the saved copy produced the same hash of a canary value as production. The handover route and the offline key were deleted afterwards, so the pepper has no path out of the worker.
+- `SECRET_ENCRYPTION_KEY` was rotated to a new key generated for the purpose and saved in 1Password first. Production was set from the 1Password copy, and all 24 secret environment variables plus the one app setting then opened with it alone, with no failed executions across the swap.
 
-To close this gap:
-1. Stand up a shared secret store (a 1Password vault is the expected choice; any team-accessible manager works).
-2. Run `wrangler secret list --name bidspoke-worker` for the authoritative live list, then copy each value (from its source) into the vault, grouped as in the categories above.
-3. Grant the restore operators / on-call access to that vault and note its location here.
-4. Re-confirm on each quarterly restore drill that the escrowed copy is current (new secrets get added over time).
+To restore either: set it on the worker from the 1Password field with `wrangler secret put <NAME> --name bidspoke-worker`, piping the value in rather than typing it on a command line.
+
+**Still not escrowed:** every other worker secret. Each can be re-obtained from its source (see the categories above), which is slow mid-incident but loses nothing. Copying them into the same vault would shorten a recovery; that is a separate choice.
+
+On each quarterly restore drill, confirm the item still exists and that `SECRET_ENCRYPTION_KEY` has not been rotated since without the 1Password copy being updated (the rotation steps in CLAUDE.md save it there first).
 
 ## Configuration that exists only in a dashboard (#1011)
 
