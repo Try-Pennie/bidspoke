@@ -9,10 +9,11 @@ const supabase = { from: () => ({ insert: () => Promise.resolve({ error: null })
 const NOW = () => Date.parse('2026-09-09T17:00:00Z')
 
 /**
- * The Better Stack job as it stood on 2026-09-09, kept as a fixture so the
- * per-job comparisons stay covered for the day a job is deliberately expected
- * again. The committed expectation is now empty (Logpush was switched off on the
- * account on 2026-09-26), so these tests pass the fixture in explicitly.
+ * The Better Stack job as narrowed on 2026-09-09 (#1214). Logpush was off on the
+ * account from 2026-09-26 to 2026-09-28 (#1613), and the job came back when it
+ * was switched on again; Dan chose to keep it, so it is the committed
+ * expectation once more. The per-job tests pass it in explicitly so they do not
+ * depend on what the committed list holds.
  */
 const JOB: ExpectedLogpushJob = {
   id: 1740821,
@@ -123,26 +124,45 @@ describe('checkLogpush', () => {
     expect(r.differences.join(' ').toLowerCase()).toContain('never')
   })
 
-  // 2026-09-26: Cloudflare switched Logpush off for the whole account, and Dan
-  // accepted that rather than re-enabling it. The committed expectation is
-  // therefore no jobs, and "not enabled" is how the API says there are none.
-  describe('with Logpush switched off on the account', () => {
+  // 2026-09-28: Logpush came back on the account with the Better Stack job, and
+  // Dan chose to keep it rather than delete it. It is expected again, on the
+  // seven metadata fields it was narrowed to on 2026-09-09.
+  it('expects the Better Stack job on its seven metadata fields', () => {
+    expect(EXPECTED_LOGPUSH_JOBS).toEqual([JOB])
+  })
+
+  it('raises nothing when the live account matches the committed expectation', async () => {
+    const r = await checkLogpush({}, supabase, { fetchJobs: async () => liveBody(), now: NOW })
+    expect(r.differences).toEqual([])
+    expect(r.alerted).toBe(false)
+  })
+
+  it('reports Logpush being switched off again, since the expected job cannot be running', async () => {
+    const r = await checkLogpush({}, supabase, {
+      fetchJobs: async () => ({ success: false, errors: [{ code: 1004, message: 'logpush is not enabled for this account' }] }),
+      now: NOW,
+    })
+    expect(r.alerted).toBe(true)
+    expect(r.differences.join(' ')).toContain('1004 logpush is not enabled')
+  })
+
+  // The not-enabled refusal reads as zero jobs only while nothing is expected.
+  // The Better Stack job is expected today, so these pass an empty expectation
+  // in explicitly to keep that rule covered for the day no job is expected.
+  describe('when no job is expected', () => {
+    const none: readonly ExpectedLogpushJob[] = []
     const notEnabled = () => ({ success: false, errors: [{ code: 1004, message: 'logpush is not enabled for this account' }] })
 
-    it('expects no Logpush jobs', () => {
-      expect(EXPECTED_LOGPUSH_JOBS).toEqual([])
-    })
-
     it('reads the not-enabled refusal as zero jobs and raises nothing', async () => {
-      const r = await checkLogpush({}, supabase, { fetchJobs: async () => notEnabled(), now: NOW })
+      const r = await checkLogpush({}, supabase, { fetchJobs: async () => notEnabled(), now: NOW, expected: none })
       expect(r.observed.unreadable).toEqual([])
       expect(r.observed.jobs).toEqual([])
       expect(r.differences).toEqual([])
       expect(r.alerted).toBe(false)
     })
 
-    it('alerts when any job reappears, since logs would be leaving the account again', async () => {
-      const r = await checkLogpush({}, supabase, { fetchJobs: async () => liveBody(), now: NOW })
+    it('alerts when any job appears, since logs would be leaving the account', async () => {
+      const r = await checkLogpush({}, supabase, { fetchJobs: async () => liveBody(), now: NOW, expected: none })
       expect(r.alerted).toBe(true)
       expect(r.differences.join(' ')).toContain('unexpected Logpush job')
     })
@@ -151,15 +171,10 @@ describe('checkLogpush', () => {
       const r = await checkLogpush({}, supabase, {
         fetchJobs: async () => ({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }),
         now: NOW,
+        expected: none,
       })
       expect(r.alerted).toBe(true)
       expect(r.differences.join(' ')).toContain('10000')
-    })
-
-    it('still reports the refusal when a job is expected, since that job cannot be running', async () => {
-      const r = await checkLogpush({}, supabase, { fetchJobs: async () => notEnabled(), now: NOW, expected })
-      expect(r.alerted).toBe(true)
-      expect(r.differences.join(' ')).toContain('1004 logpush is not enabled')
     })
   })
 })

@@ -159,13 +159,13 @@ delivering nothing for months, so it forwards nothing. Reading a job's field lis
 needs the Cloudflare API plugin's credential, not one this codebase holds
 (#1010).
 
-**Logpush is off since 2026-09-26 (#1613).** Cloudflare now refuses the account's
-job list with `1004 logpush is not enabled for this account`, so no job, the
-Better Stack one included, delivers anything. Dan accepted that rather than
-re-enabling it. The daily `logpush-destinations` check expects no jobs, reads
-that refusal as none, and alerts if any job reappears. Better Stack keeps
-whatever it received before, which is why it stays a data location in
-`apps/worker/src/archive/erasure.ts`.
+**Logpush was off from 2026-09-26 to 2026-09-28 (#1613).** Cloudflare refused
+the account's job list with `1004 logpush is not enabled for this account`, and
+Dan accepted that. Logpush was then switched back on for the shared account, and
+the Better Stack job (1740821) came back with it, which the daily
+`logpush-destinations` check reported on 2026-09-28. Dan chose that day to keep
+the job, so the check expects it again on its seven metadata fields and reports
+any change to its fields, destination or delivery, or Logpush going off again.
 
 ## Secret inventory (and the escrow gap)
 
@@ -210,7 +210,7 @@ destination arrived.
 
 | What | Touches customer data | Would anything notice a change | Declarable in the repo |
 |---|---|---|---|
-| Account Logpush, currently switched off (#1613). Until 2026-09-26 it held the Better Stack job (1740821, `Workers trace events`); the R2 job (1564508) was deleted 2026-09-09 (#1008) | Not while off. The dataset carries request headers verbatim, `x-api-key` included (#958), so any job that reappears could | Yes. The daily `logpush-destinations` check expects no jobs and alerts on any that appears | Yes. `apps/worker/src/lib/logpush-expectation.ts` |
+| Logpush job to Better Stack (1740821, `Workers trace events`, account scoped). Off from 2026-09-26 to 2026-09-28 (#1613), kept when it came back; the R2 job (1564508) was deleted 2026-09-09 (#1008) | Not on its expected fields: seven metadata fields since 2026-09-09 (#1214). The dataset carries request headers verbatim, `x-api-key` included (#958), so an added field could | Yes. The daily `logpush-destinations` check compares its fields, destination and delivery against the expectation | Yes. `apps/worker/src/lib/logpush-expectation.ts` |
 | R2 bucket `bidspoke-logs` and any lifecycle or retention rule on it | Intended to hold worker logs. Currently 2 objects, 96 bytes | No | Yes. Noted as dashboard configured at `apps/worker/wrangler.toml:177` |
 | Worker route `*.trypennie.dev/*` to `bidspoke-worker` | Yes. It is the ingress for partner lead traffic | Partly. `SELF_CHECK_URL` probes `hook.trypennie.dev` | Not today. `apps/worker/wrangler.toml:86` records that the CI token lacks Zone Workers Routes Edit, so declaring it would fail the deploy |
 | Bypass route `bidspoke.trypennie.dev/*` protecting Pages from the worker | No, but its loss takes the app down | No | Same constraint as above |
