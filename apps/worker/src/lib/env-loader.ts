@@ -18,7 +18,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { decryptSecret, encryptSecret } from './secret-crypto'
+import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
@@ -32,7 +32,7 @@ const lastGoodKey = (orgId: string) => `env-vars-${orgId}-lastgood`
 async function readEncrypted(
   kv: KVNamespace,
   key: string,
-  secretEncryptionKey: string
+  secretEncryptionKey: SecretKeyInput
 ): Promise<Record<string, string> | null> {
   const blob = await kv.get(key)
   if (!blob) return null
@@ -47,7 +47,7 @@ export async function loadEnvVars(
   orgId: string,
   kv: KVNamespace,
   supabase: SupabaseClient,
-  secretEncryptionKey: string
+  secretEncryptionKey: SecretKeyInput
 ): Promise<Record<string, string>> {
   const cached = await readEncrypted(kv, cacheKey(orgId), secretEncryptionKey)
   if (cached) return cached
@@ -104,7 +104,7 @@ export async function invalidateEnvCache(
   orgId: string,
   kv: KVNamespace,
   supabase: SupabaseClient,
-  secretEncryptionKey: string
+  secretEncryptionKey: SecretKeyInput
 ): Promise<void> {
   await kv.delete(cacheKey(orgId))
 

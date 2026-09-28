@@ -21,7 +21,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
-import { decryptSecret } from './secret-crypto'
+import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { getSlackConnection, sendSecretDecryptAlert } from './slack'
 
 export interface SecretRow {
@@ -35,7 +35,7 @@ export interface SecretRow {
  * not a decrypt failure. */
 export async function findUndecryptableSecrets(
   rows: SecretRow[],
-  secretEncryptionKey: string,
+  secretEncryptionKey: SecretKeyInput,
 ): Promise<SecretRow[]> {
   const bad: SecretRow[] = []
   for (const row of rows) {
@@ -80,7 +80,7 @@ export async function runSecretDecryptHealthCheck(
   }
 
   const rows = (data ?? []) as SecretRow[]
-  const bad = await findUndecryptableSecrets(rows, env.SECRET_ENCRYPTION_KEY)
+  const bad = await findUndecryptableSecrets(rows, secretKeys(env))
   if (bad.length === 0) return { checked: rows.length, undecryptable: 0, alerted: false }
 
   // Group by org so each org's Slack connection gets only its own undecryptable keys.

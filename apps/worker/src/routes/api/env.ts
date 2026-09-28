@@ -6,7 +6,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../lib/cf-secrets'
 import { changedFields, writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
-import { encryptSecret, decryptSecret } from '../../lib/secret-crypto'
+import { encryptSecret, decryptSecret, secretKeys } from '../../lib/secret-crypto'
 import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
@@ -67,7 +67,7 @@ env.post('/', async (c) => {
   let storedValue: string | null = body.value ?? null
   if (body.is_secret && body.value) {
     await setCfSecret(body.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
-    storedValue = await encryptSecret(body.value, c.env.SECRET_ENCRYPTION_KEY)
+    storedValue = await encryptSecret(body.value, secretKeys(c.env))
   }
 
   const { data, error } = await supabase
@@ -99,7 +99,7 @@ env.post('/', async (c) => {
       workflow_id: data.workflow_id,
       ...(body.is_secret ? { value_set: true } : { value: { old: null, new: data.value } }),
     }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env)),
   ])
 
   return c.json({ ...data, value: data.is_secret ? null : data.value }, 201)
@@ -161,13 +161,13 @@ env.put('/:id', async (c) => {
       if (!existing.value) {
         return c.json({ error: 'Provide a new value to rename this secret' }, 400)
       }
-      plaintext = await decryptSecret(existing.value, c.env.SECRET_ENCRYPTION_KEY)
+      plaintext = await decryptSecret(existing.value, secretKeys(c.env))
     }
     if (plaintext !== null) {
       // Write under the NEW name first (no window without a secret), then drop
       // the old name so it isn't orphaned in Cloudflare.
       await setCfSecret(newKey, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
-      updatedValue = await encryptSecret(plaintext, c.env.SECRET_ENCRYPTION_KEY)
+      updatedValue = await encryptSecret(plaintext, secretKeys(c.env))
     }
     if (isRename) {
       await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
@@ -220,7 +220,7 @@ env.put('/:id', async (c) => {
       ...(existing.is_secret ? { value_rotated: body.value !== undefined } : changedFields(existing, data, ['value'])),
       ...changedFields(existing, data, ['folder_id']),
     }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env)),
   ])
 
   return c.json({ ...data, value: existing.is_secret ? null : data.value })
@@ -245,7 +245,7 @@ env.get('/:id/reveal', async (c) => {
   if (!data.is_secret) return c.json({ error: 'Not a secret' }, 400)
   if (!data.value) return c.json({ error: 'Value not available — rotate to enable reveal' }, 422)
 
-  const plaintext = await decryptSecret(data.value, c.env.SECRET_ENCRYPTION_KEY)
+  const plaintext = await decryptSecret(data.value, secretKeys(c.env))
 
   c.executionCtx.waitUntil(
     writeAuditLog(supabase, orgId, 'environment_variable', id, 'secret_revealed', userId, { key: data.key })
@@ -284,7 +284,7 @@ env.post('/resync-secrets', async (c) => {
       continue
     }
     try {
-      const plaintext = await decryptSecret(enc, c.env.SECRET_ENCRYPTION_KEY)
+      const plaintext = await decryptSecret(enc, secretKeys(c.env))
       await setCfSecret(key, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
       resynced.push(key)
     } catch (e) {
@@ -337,7 +337,7 @@ env.delete('/:id', async (c) => {
       key: existing.key,
       ...(existing.is_secret ? {} : { value: { old: existing.value, new: null } }),
     }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env)),
   ])
 
   return c.json({ ok: true })

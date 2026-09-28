@@ -13,7 +13,9 @@ vi.mock('../../../lib/audit', async (importOriginal) => ({
   writeAuditLog: vi.fn(),
 }))
 vi.mock('../../../lib/cf-secrets')
-vi.mock('../../../lib/secret-crypto', () => ({
+// Only the two crypto calls are stood in for; secretKeys stays real (L727).
+vi.mock('../../../lib/secret-crypto', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/secret-crypto')>()),
   encryptSecret: vi.fn().mockResolvedValue('encrypted-test-value'),
   decryptSecret: vi.fn().mockResolvedValue('decrypted-test-value'),
 }))

@@ -214,7 +214,7 @@ export async function executeWorkflow(
     useIdempotency && !isRecoveryRun
       ? checkIdempotency(env.IDEMPOTENCY, workflowId, source, idempotencyKey)
       : Promise.resolve(null),
-    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY),
+    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase, secretKeys(env)),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
     // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
     // node retries on its own access and surfaces any real failure there.
@@ -388,7 +388,7 @@ export async function executeWorkflow(
       const conn = await resolveSlackForBlockAlert(
         org_id,
         () => getSlackConnection(supabase, org_id),
-        () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+        () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
       )
       return conn ? [conn] : []
     },
@@ -2125,6 +2125,7 @@ type ExecutionContext_CF = {
 
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../lib/code-node-deployer'
 import { parseCodeSandboxResponse } from './code-response'
+import { secretKeys } from '../lib/secret-crypto'
 
 interface ChainStepResult {
   namespace: string

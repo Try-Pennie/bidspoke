@@ -1,0 +1,193 @@
+/**
+ * Re-lock every stored secret with the key new writes use (#384).
+ *
+ * The middle step of a SECRET_ENCRYPTION_KEY rotation (see secret-crypto.ts).
+ * With SECRET_ENCRYPTION_KEY_NEXT set, each stored value is read with whichever
+ * key opens it and written back locked with NEXT. Once every row reports current,
+ * the primary can be set to the NEXT value with nothing left that only the old
+ * key could read.
+ *
+ * Two tables hold values locked with this key: the secret environment variables
+ * and app_settings.value_encrypted. The other things it locks (the env and Slack
+ * caches in KV) are rebuilt from these tables when they cannot be read, so they
+ * need no pass here.
+ *
+ * Run twice or concurrently, it is safe: a row already locked with NEXT is left
+ * alone, and each write is conditional on the value it read, so a secret somebody
+ * saves while this runs is never overwritten with the older value. Such a row is
+ * reported, and a second run confirms it.
+ */
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { decryptSecret, encryptSecret, type SecretKeys } from './secret-crypto'
+import { NO_ROW_MATCHED_CODE, requireRowsAffected } from './db-retry'
+
+/** PostgREST's default row cap. A read that reaches it may be missing rows. */
+const ROW_CAP = 1000
+
+export interface ReencryptTableResult {
+  table: 'environment_variables' | 'app_settings'
+  checked: number
+  alreadyCurrent: number
+  /** Rows re-locked, or on a preview, rows that would be. */
+  relocked: number
+  /** Names of values no key in the ring can open. Left untouched. */
+  undecryptable: string[]
+  /** Names of values that changed between this pass's read and its write. */
+  changedMeanwhile: string[]
+}
+
+export interface ReencryptResult {
+  dryRun: boolean
+  /** True when every stored value is, or on a preview would be, readable by the lock key alone. */
+  ok: boolean
+  tables: ReencryptTableResult[]
+}
+
+interface StoredValue {
+  name: string
+  value: string
+  /** Writes the new value only if the row still holds `value`; resolves to rows changed. */
+  write: (next: string) => Promise<number>
+}
+
+async function opensWith(value: string, key: string): Promise<boolean> {
+  try {
+    await decryptSecret(value, key)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function relockAll(
+  table: ReencryptTableResult['table'],
+  stored: StoredValue[],
+  keys: SecretKeys,
+  dryRun: boolean,
+): Promise<ReencryptTableResult> {
+  const result: ReencryptTableResult = {
+    table,
+    checked: stored.length,
+    alreadyCurrent: 0,
+    relocked: 0,
+    undecryptable: [],
+    changedMeanwhile: [],
+  }
+  for (const row of stored) {
+    if (await opensWith(row.value, keys.encryptWith)) {
+      result.alreadyCurrent++
+      continue
+    }
+    let plaintext: string
+    try {
+      plaintext = await decryptSecret(row.value, keys)
+    } catch {
+      result.undecryptable.push(row.name)
+      continue
+    }
+    const relocked = await encryptSecret(plaintext, keys)
+    // Refuse to write anything the lock key cannot read back to the same value.
+    if ((await decryptSecret(relocked, keys.encryptWith)) !== plaintext) {
+      throw new Error(`re-locked value for ${row.name} did not read back`)
+    }
+    if (dryRun) {
+      result.relocked++
+      continue
+    }
+    const changed = await row.write(relocked)
+    if (changed === 1) result.relocked++
+    else result.changedMeanwhile.push(row.name)
+  }
+  return result
+}
+
+function checkRead<T>(table: string, res: { data: T[] | null; error: { message: string } | null }): T[] {
+  if (res.error) throw new Error(`reading ${table} failed: ${res.error.message}`)
+  const rows = res.data ?? []
+  if (rows.length >= ROW_CAP) throw new Error(`reading ${table} returned ${rows.length} rows, the cap, so some may be missing`)
+  return rows
+}
+
+/**
+ * How many rows a conditional write changed. Matching no row is expected (the
+ * value changed since it was read) and answers 0; a real database error throws,
+ * so it can never read as a row changed meanwhile.
+ */
+function rowsChanged(target: string, result: Awaited<ReturnType<typeof requireRowsAffected>>): number {
+  if (result.error && result.error.code !== NO_ROW_MATCHED_CODE) {
+    throw new Error(`writing ${target} failed: ${result.error.message}`)
+  }
+  return result.rows.length
+}
+
+export async function reencryptSecrets(
+  supabase: SupabaseClient,
+  keys: SecretKeys,
+  opts: { dryRun: boolean },
+): Promise<ReencryptResult> {
+  const envRows = checkRead(
+    'environment_variables',
+    (await supabase.from('environment_variables').select('id, key, value').eq('is_secret', true)) as {
+      data: { id: string; key: string; value: string | null }[] | null
+      error: { message: string } | null
+    },
+  )
+  const envStored: StoredValue[] = envRows
+    .filter((r) => r.value)
+    .map((r) => ({
+      name: r.key,
+      value: r.value as string,
+      write: async (next) =>
+        rowsChanged(
+          'environment_variables.value',
+          await requireRowsAffected(
+            'environment_variables.value',
+            () =>
+              supabase
+                .from('environment_variables')
+                .update({ value: next })
+                .eq('id', r.id)
+                .eq('value', r.value as string)
+                .select('id'),
+            { onMiss: 'silent' },
+          ),
+        ),
+    }))
+
+  const settingRows = checkRead(
+    'app_settings',
+    (await supabase.from('app_settings').select('organization_id, key, value_encrypted')) as {
+      data: { organization_id: string; key: string; value_encrypted: string | null }[] | null
+      error: { message: string } | null
+    },
+  )
+  const settingStored: StoredValue[] = settingRows
+    .filter((r) => r.value_encrypted)
+    .map((r) => ({
+      name: r.key,
+      value: r.value_encrypted as string,
+      write: async (next) =>
+        rowsChanged(
+          'app_settings.value_encrypted',
+          await requireRowsAffected(
+            'app_settings.value_encrypted',
+            () =>
+              supabase
+                .from('app_settings')
+                .update({ value_encrypted: next })
+                .eq('organization_id', r.organization_id)
+                .eq('key', r.key)
+                .eq('value_encrypted', r.value_encrypted as string)
+                .select('key'),
+            { onMiss: 'silent' },
+          ),
+        ),
+    }))
+
+  const tables = [
+    await relockAll('environment_variables', envStored, keys, opts.dryRun),
+    await relockAll('app_settings', settingStored, keys, opts.dryRun),
+  ]
+  const ok = tables.every((t) => t.undecryptable.length === 0 && t.changedMeanwhile.length === 0)
+  return { dryRun: opts.dryRun, ok, tables }
+}

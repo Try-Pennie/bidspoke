@@ -33,6 +33,9 @@ import { REQUEST_RUN_BUDGET } from '../../archive/deadline'
 import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
+import { secretKeys } from '../../lib/secret-crypto'
+import { reencryptSecrets } from '../../lib/secret-reencrypt'
+import { sealPepper } from '../../lib/pepper-escrow'
 import { writeAuditLog } from '../../lib/audit'
 import { buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
@@ -796,6 +799,71 @@ admin.post('/erase-subject', async (c) => {
     { status: result.verdict.status, dryRun, summary: result.summary, outcomes: result.outcomes },
     result.verdict.status === 'partial' ? 500 : 200,
   )
+})
+
+/**
+ * Re-locks every stored secret with the key new writes use (#384): the middle
+ * step of a SECRET_ENCRYPTION_KEY rotation (see lib/secret-crypto.ts). Without
+ * SECRET_ENCRYPTION_KEY_NEXT set it is a check that every stored value opens
+ * with the primary key alone.
+ *
+ * DEFAULTS TO A PREVIEW, because it rewrites every credential the engine reads
+ * (L72). A non-boolean dryRun is refused rather than read as truthy.
+ */
+admin.post('/reencrypt-secrets', async (c) => {
+  const { orgId, email } = c.get('user')
+  const body = await c.req.json<{ dryRun?: unknown }>().catch(() => ({}) as { dryRun?: unknown })
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
+    return c.json({ error: 'dryRun must be true or false' }, 400)
+  }
+  const dryRun = body.dryRun !== false
+  const keys = secretKeys(c.env)
+  const supabase = createSupabaseClient(c.env)
+  try {
+    const result = await reencryptSecrets(supabase, keys, { dryRun })
+    if (!dryRun) {
+      await writeAuditLog(supabase, orgId, 'recovery_secret', 'SECRET_ENCRYPTION_KEY', 'secrets_reencrypted', email ?? 'unknown', {
+        ok: result.ok,
+        tables: result.tables,
+      })
+    }
+    return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
+  } catch (err) {
+    return c.json({ error: formatErr(err) }, 500)
+  }
+})
+
+const PEPPER_ESCROW_FLAG = 'escrow:ssn-hash-pepper:sealed'
+
+/**
+ * Hands over SSN_HASH_PEPPER once, sealed to the offline key in
+ * lib/pepper-escrow.ts, so it can be copied into escrow (#384). Returns only the
+ * ciphertext and a canary hash that proves the copy; the pepper is never in the
+ * response, the audit row or a log.
+ *
+ * Single use: a second call is refused with the time of the first. The flag is
+ * KV, which is not atomic, so two calls racing could both succeed; that is
+ * harmless, since both return ciphertext only the offline key opens. The route
+ * is deleted once the copy is confirmed.
+ */
+admin.post('/escrow-pepper', async (c) => {
+  const { orgId, email } = c.get('user')
+  const pepper = c.env.SSN_HASH_PEPPER
+  if (typeof pepper !== 'string' || pepper.length === 0) {
+    return c.json({ error: 'SSN_HASH_PEPPER is not set, so there is nothing to escrow' }, 503)
+  }
+  const sealedAt = await c.env.IDEMPOTENCY.get(PEPPER_ESCROW_FLAG)
+  if (sealedAt) {
+    return c.json({ error: 'the pepper has already been handed over once', sealed_at: sealedAt }, 409)
+  }
+  const sealed = await sealPepper(pepper)
+  const now = new Date().toISOString()
+  await c.env.IDEMPOTENCY.put(PEPPER_ESCROW_FLAG, now)
+  await writeAuditLog(createSupabaseClient(c.env), orgId, 'recovery_secret', 'SSN_HASH_PEPPER', 'ssn_pepper_escrow_sealed', email ?? 'unknown', {
+    canary_hash: sealed.canaryHash,
+    sealed_at: now,
+  })
+  return c.json(sealed)
 })
 
 export default admin

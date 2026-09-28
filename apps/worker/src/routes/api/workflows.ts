@@ -27,6 +27,7 @@ import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles, partnersPricedFor } from '../../lib/buyer-profile-loader'
 import { populationsInUse, workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
+import { secretKeys } from '../../lib/secret-crypto'
 
 type Variables = AuthVariables
 
@@ -999,7 +1000,7 @@ workflows.post('/:id/test-node', async (c) => {
   }
 
   // Reconstruct execution context
-  const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY)
+  const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env))
   const ctx = buildContext(triggerPayload, source, id, traceId, envVars, orgId, body.execution_id, c.env.APP_URL)
   ctx.steps = ctxSteps
 

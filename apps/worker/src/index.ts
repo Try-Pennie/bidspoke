@@ -42,6 +42,7 @@ import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
+import { secretKeys } from './lib/secret-crypto'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
@@ -121,6 +122,9 @@ export interface Env {
   // Env var secret encryption — AES-GCM key, base64-encoded 32 bytes
   // Generate: openssl rand -base64 32 | wrangler secret put SECRET_ENCRYPTION_KEY
   SECRET_ENCRYPTION_KEY: string
+  // Set only during a key rotation (#384): new writes lock with it and reads accept
+  // either key. See lib/secret-crypto.ts and POST /api/admin/reencrypt-secrets.
+  SECRET_ENCRYPTION_KEY_NEXT?: string
 
   // SSN hash pepper — used for indexed dedup lookups on persons.ssn_hash
   // Generate: openssl rand -base64 32 | wrangler secret put SSN_HASH_PEPPER
@@ -774,7 +778,7 @@ export default {
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
                 getConnection: getSlackConnection,
-                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
                 log: (line) => console.error(line),
               }),
               senders: liveSenders,
@@ -890,7 +894,7 @@ export default {
         ),
       )
       ctx.waitUntil(
-        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, env.SECRET_ENCRYPTION_KEY, makeAlertClaims(env.ALERT_CLAIM))
+        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, secretKeys(env), makeAlertClaims(env.ALERT_CLAIM))
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       ctx.waitUntil(

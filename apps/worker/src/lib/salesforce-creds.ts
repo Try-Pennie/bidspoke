@@ -24,6 +24,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { loadEnvVars } from './env-loader'
+import { secretKeys } from './secret-crypto'
 
 export interface SalesforceCreds {
   instanceUrl: string
@@ -79,7 +80,7 @@ export async function resolveSalesforceCredsFor(
   supabase: SupabaseClient,
   orgId: string,
 ): Promise<{ creds: SalesforceCreds | null; missing: string[] }> {
-  const orgVars = await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY)
+  const orgVars = await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env))
   return pickSalesforceCreds(orgVars, env as unknown as Record<string, string | undefined>)
 }
 
