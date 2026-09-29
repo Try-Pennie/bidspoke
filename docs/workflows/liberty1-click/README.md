@@ -47,6 +47,7 @@ The Salesforce writes are Brian's three bodies, field for field: exchange status
 - A 2xx from Liberty1 that is not the success line was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have created the record.
 - A prospect without the Liberty1 offer is refused. Brian's flow sent any prospect it was given. A submission with no prospect is still sent without one, as his flow does, because nothing records an offer there.
 - Failures page through Bidspoke, not the hard coded Slack webhook.
+- `consentsToTcpa` is always true. Brian's flow copied the earlier form's `TCPAConsentFlag__c`, which reads false for most leads; the person reaches this workflow only by pressing the button under Liberty1's own TCPA disclosure, so the press is the consent (Dan, 2026-09-29). The flag is still queried and mapped, now unused by the send.
 - The portal's answer says what happened in its body. Brian's always said `{"success": true}`. Every answer is a 200, because the portal moves to the Liberty1 lander only on a 200 (Brian, 2026-09-29); `success` and `outcome` in the body carry the result.
 
 **Kept from Brian's flow, worth knowing.** A click that arrives with only a `Prospect__c` updates the Prospect alone: the Lead is found only through a Submission, as in his flow. A submission with no prospect updates the Submission and its Lead, never a Prospect. And once a Fail is written, the offer check refuses the next click on that prospect, because its status is no longer Bid.
