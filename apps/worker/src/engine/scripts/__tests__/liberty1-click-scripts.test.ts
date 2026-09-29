@@ -5,7 +5,10 @@
  * build_liberty1_request must post byte for byte the body his buildPayload
  * built, to the DV1 or DI4 URL his pickRoute chose, for the same prospect
  * record, and for a Submission with no Prospect the body his
- * submissionAsProspect then buildPayload built (2026-09-29). pick_click_record
+ * submissionAsProspect then buildPayload built (2026-09-29), with one
+ * deliberate difference: consentsToTcpa is true on every click, because the
+ * button the person pressed sits under Liberty1's own TCPA disclosure (Dan,
+ * 2026-09-29), where his flow copied the earlier form's flag. pick_click_record
  * decides which record a click is for and whether it may be sent. liberty1_click_patch must write his three Salesforce bodies, with
  * Completed only when buyer_click_send routed `sent` and Fail only on
  * `refused`, and nothing at all on any other route. resolve_click_input picks
@@ -59,11 +62,25 @@ async function build(record: Rec) {
   return (await runCanvasScript(BUILD, { payload: {}, steps: { pick_record: { output: { record } } } })) as { url: string; body: Rec; route: string; state: string | null }
 }
 
+/** His body with the one field the port sets differently: the click is the TCPA consent. */
+const clicked = <T extends Rec>(body: T): T => ({ ...body, consentsToTcpa: true })
+
 describe("build_liberty1_request against Brian's buildPayload", () => {
+  it('a click tells Liberty1 the person consented to TCPA, even when the earlier form\'s flag was false', async () => {
+    const unflagged = Object.entries(RECORDS).filter(([, r]) => r.TCPAConsentFlag__c !== true)
+    // The fixture that makes this test mean something: a prospect whose own flag is not true.
+    expect(unflagged.length).toBeGreaterThan(0)
+    for (const [, record] of unflagged) {
+      expect(buildPayload(record).consentsToTcpa).toBe(false)
+      expect((await build(record)).body.consentsToTcpa).toBe(true)
+    }
+    for (const record of Object.values(RECORDS)) expect((await build(record)).body.consentsToTcpa).toBe(true)
+  })
+
   for (const [name, record] of Object.entries(RECORDS)) {
     it(`${name}: the body is exactly what his flow sent, to the route the canvas now names`, async () => {
       const out = await build(record)
-      const theirs = buildPayload(record)
+      const theirs = clicked(buildPayload(record))
       // Byte for byte: key order and every null included, as JSON on the wire.
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
       expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
@@ -75,7 +92,7 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     it(`${name}: a Submission with no Prospect sends exactly what his flow sends from the Submission`, async () => {
       const picked = await pick('submission', row)
       const out = await build(picked.record as Rec)
-      const theirs = buildPayload(submissionAsProspect(row))
+      const theirs = clicked(buildPayload(submissionAsProspect(row)))
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
       expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
     })

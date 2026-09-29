@@ -1,7 +1,7 @@
 // The Liberty1 request for one click (#1545): Brian's buildPayload and his DV1
-// or DI4 route, unchanged, over the record pick_record chose (a prospect, or a
-// submission mapped onto prospect field names). Pure: buyer_click_send posts
-// it, this only builds it.
+// or DI4 route, unchanged but for consentsToTcpa (see below), over the record
+// pick_record chose (a prospect, or a submission mapped onto prospect field
+// names). Pure: buyer_click_send posts it, this only builds it.
 //
 // Back on the Liberty1 Salesforce site on 2026-09-29, where Brian's flow posts
 // "until later in the week"; the LeadConnector routes it used from 2026-09-25
@@ -60,7 +60,10 @@ function buildPayload(p) {
     annualIncome: num(p.AnnualIncomeBeforeTaxes__c),
     educationLevel: toEnum(p.EducationLevel__c),
     consentsToFcra: p.FCRAConsentFlag__c === true,
-    consentsToTcpa: p.TCPAConsentFlag__c === true,
+    // True on every click, not the earlier form's TCPAConsentFlag__c: the person
+    // reaches this workflow only by pressing a button that sits under Liberty1's
+    // own TCPA disclosure, so the press is the consent (Dan, 2026-09-29).
+    consentsToTcpa: true,
     ipAddress: clean(p.User_IP__c),
   };
 }
