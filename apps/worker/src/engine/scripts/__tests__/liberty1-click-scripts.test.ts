@@ -21,6 +21,7 @@ import fixtures from './fixtures/liberty1-prospects.json'
 import submissionFixtures from './fixtures/liberty1-submissions.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
+import { codeSentinel } from '../../nodes/code'
 import { buildPayload, pickRoute, ROUTES, SUBMISSION_FIELDS, submissionAsProspect, updateBodies } from './liberty1-pipedream-oracle'
 
 type Rec = Record<string, unknown>
@@ -132,7 +133,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
       payload: {},
       steps: { click_send: { output: clickOutput(route, partnerLeadId) } },
       execution: link === null ? {} : { bidspoke_link: link },
-    })) as { write: boolean; exchange_status: string | null; prospect: Rec | null; submission: Rec | null; lead: Rec | null; response: { success: boolean; outcome: string } }
+    })) as { write: boolean; exchange_status: string | null; prospect: Rec | null; submission: Rec | null; lead: Rec | null; reply: { success: boolean; outcome: string } }
   }
 
   it('sent: Completed bodies byte for byte, with the partner lead id and the Bidspoke execution link where he wrote his inspect URL', async () => {
@@ -143,7 +144,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
     expect(JSON.stringify(out.prospect)).toBe(JSON.stringify(theirs.prospect))
     expect(JSON.stringify(out.submission)).toBe(JSON.stringify(theirs.submission))
     expect(JSON.stringify(out.lead)).toBe(JSON.stringify(theirs.lead))
-    expect(out.response).toEqual({ success: true, outcome: 'sent' })
+    expect(out.reply).toEqual({ success: true, outcome: 'sent' })
   })
 
   it('refused: Fail bodies byte for byte, with no partner lead id so the field is not blanked', async () => {
@@ -155,7 +156,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
     expect(JSON.stringify(out.submission)).toBe(JSON.stringify(theirs.submission))
     expect(JSON.stringify(out.lead)).toBe(JSON.stringify(theirs.lead))
     expect(out.prospect).not.toHaveProperty('ExternalPartnerLeadId__c')
-    expect(out.response).toEqual({ success: false, outcome: 'refused' })
+    expect(out.reply).toEqual({ success: false, outcome: 'refused' })
   })
 
   it('routing code is a Number on the Prospect and a String on the Submission and the Lead', async () => {
@@ -177,9 +178,21 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
       expect(out.write).toBe(false)
       expect(out.exchange_status).toBeNull()
       expect([out.prospect, out.submission, out.lead]).toEqual([null, null, null])
-      expect(out.response.outcome).toBe(route)
+      expect(out.reply.outcome).toBe(route)
     })
   }
+
+  it('never returns a field the engine reads as respond now or stop (a response or exit field), on any route', async () => {
+    // The engine treats a code node's returned `response` object as $.respond()
+    // and ends the walk there (codeSentinel): on 2026-09-29 the first live click
+    // stopped here and its Salesforce writes never ran.
+    for (const route of ['sent', 'refused', 'unknown', 'needs_review', 'in_progress', 'already_sent', 'not_sent']) {
+      const out = (await patch(route)) as unknown as Record<string, unknown>
+      expect(codeSentinel(out), route).toEqual({})
+      expect(out, route).not.toHaveProperty('response')
+      expect(out, route).not.toHaveProperty('exit')
+    }
+  })
 
   it('a missing click_send step writes nothing', async () => {
     const out = (await runCanvasScript(PATCH, { payload: {}, steps: {} })) as { write: boolean }

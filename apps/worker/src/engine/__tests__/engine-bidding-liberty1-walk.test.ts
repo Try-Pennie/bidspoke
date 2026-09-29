@@ -40,7 +40,10 @@ vi.mock('../step-logger', () => ({
   updateExecutionRecord: vi.fn().mockResolvedValue(undefined),
   flushStepLogs: vi.fn().mockResolvedValue(null),
 }))
-vi.mock('../nodes/code', () => ({ executeCodeNode: vi.fn() }))
+vi.mock('../nodes/code', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../nodes/code')>()),
+  executeCodeNode: vi.fn(),
+}))
 vi.mock('../nodes/constants', () => ({ executeConstantsNode: vi.fn() }))
 vi.mock('../nodes/salesforce', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../nodes/salesforce')>()),
@@ -59,7 +62,7 @@ vi.mock('../nodes/buyer-click-check', async (importOriginal) => ({
 
 import { walkGraph } from '../index'
 import { buildContext, resolveValue } from '../context'
-import { executeCodeNode } from '../nodes/code'
+import { codeSentinel, executeCodeNode } from '../nodes/code'
 import { executeConstantsNode } from '../nodes/constants'
 import { executeSalesforceNode } from '../nodes/salesforce'
 import { executeBuyerSelectNode } from '../nodes/buyer-select'
@@ -115,15 +118,17 @@ beforeEach(() => {
   sfWrites = []
 
   vi.mocked(executeConstantsNode).mockResolvedValue({ output: fixtures.constants })
-  vi.mocked(executeCodeNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => ({
-    output: await runCanvasScript(String((node.config as Rec).script), {
+  // Through the engine's own sentinel rule (codeSentinel), as the live walker does.
+  vi.mocked(executeCodeNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => {
+    const output = await runCanvasScript(String((node.config as Rec).script), {
       payload: ctx.trigger.payload,
       steps: ctx.steps as CanvasRun['steps'],
       env: fixtures.env,
       execution: fixtures.execution,
       fetch: answerWith(tripointAnswer.httpStatus, tripointAnswer.body),
-    }),
-  }))
+    })
+    return { output, ...codeSentinel(output) }
+  })
   vi.mocked(executeSalesforceNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => {
     if (node.namespace === 'create_prospect') return { output: { status: 201, body: fixtures.create_prospect } }
     if (node.namespace === 'prospect_trades') return { output: { status: 200, body: fixtures.prospect_trades_sell_off } }

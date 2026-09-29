@@ -10,6 +10,10 @@
 //
 // Undefined values are dropped so nothing is blanked. PDFlow_3__c, where his
 // flow wrote the Pipedream inspect URL, carries this run's Bidspoke link.
+//
+// The answer for the portal is `reply`, never `response`: the engine reads a
+// code node's returned `response` object as $.respond() and ends the walk there,
+// which on 2026-09-29 stopped the first live click before its Salesforce writes.
 const PARTNER_NAME = "Liberty1";
 const ROUTING_CODE = 4; // Number on Prospect, Text on Submission/Lead
 const LEAD_SALE_TYPE = "Form";
@@ -32,7 +36,7 @@ if (exchangeStatus === null) {
     prospect: null,
     submission: null,
     lead: null,
-    response: { success: false, outcome: route },
+    reply: { success: false, outcome: route },
   };
 }
 
@@ -73,5 +77,5 @@ return {
     External_Timestamp__c: now,
     LeadSaleType__c: LEAD_SALE_TYPE,
   }),
-  response: { success: route === "sent", outcome: route },
+  reply: { success: route === "sent", outcome: route },
 };
