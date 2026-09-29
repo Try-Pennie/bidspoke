@@ -3,9 +3,12 @@
 // queried directly. Otherwise a Submission__c that is one queries the
 // submission itself, with its Lead and, through Prospect__r, every field of the
 // prospect it points at, so pick_record can send from the prospect when there
-// is one and from the submission when there is not (Brian, 2026-09-29). A
-// Submission__c posted beside a usable Prospect__c is ignored: nothing ties that
-// submission to this prospect.
+// is one and from the submission when there is not (Brian, 2026-09-29).
+//
+// The portal posts both ids. A Prospect__c posted with a Submission__c queries
+// the submission too, so its Lead is written, and names the prospect it must
+// belong to: pick_record refuses a pair that does not agree, so a posted
+// Submission__c can never attach this click to someone else's records.
 //
 // An id is interpolated into SOQL, so anything that is not exactly 15 or 18
 // letters and digits is refused here and never reaches a query. valid false
@@ -44,7 +47,7 @@ const asId = (v) => (typeof v === "string" && SF_ID.test(v.trim()) ? v.trim() : 
 const prospectId = asId(body.Prospect__c);
 const submissionId = asId(body.Submission__c);
 
-if (prospectId) {
+if (prospectId && !submissionId) {
   return {
     valid: true,
     reason: null,
@@ -61,7 +64,7 @@ if (submissionId) {
     valid: true,
     reason: null,
     source: "submission",
-    prospect_id: null,
+    prospect_id: prospectId,
     submission_id: submissionId,
     soql: `SELECT ${selected.join(", ")} FROM Submission__c WHERE Id = '${submissionId}'`,
   };

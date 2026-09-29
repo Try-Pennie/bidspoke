@@ -239,6 +239,19 @@ describe('pick_click_record', () => {
     expect(noOffer.verdict).toBe('no_offer')
   })
 
+  it('a Submission posted with a Prospect__c it does not belong to is refused and never sent: a posted pair must agree', async () => {
+    const row = { ...SUB, Prospect__c: PROSPECT.Id, Prospect__r: { attributes: { type: 'Prospect__c' }, ...PROSPECT } }
+    const out = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: 'a0P5f00000OtherXAAA' } }, query_record: queried(row) } })) as Picked
+    expect(out).toMatchObject({ verdict: 'not_found', not_found_outcome: 'submission_not_for_prospect', record: null, sale_key: null })
+    const agree = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: PROSPECT.Id } }, query_record: queried(row) } })) as Picked
+    expect(agree).toMatchObject({ verdict: 'open', prospect_id: PROSPECT.Id, submission_id: SUB.Id, lead_id: SUB.Lead__c })
+  })
+
+  it('a Submission with no Prospect posted with a Prospect__c is refused as not that prospect\'s, never trusted as Submission-only', async () => {
+    const out = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: PROSPECT.Id } }, query_record: queried(SUB) } })) as Picked
+    expect(out).toMatchObject({ verdict: 'not_found', not_found_outcome: 'submission_not_for_prospect' })
+  })
+
   it('a Submission that names a Prospect the query could not return is not found as a prospect, never sent from the submission instead', async () => {
     expect(await pick('submission', { ...SUB, Prospect__c: PROSPECT.Id, Prospect__r: null })).toMatchObject({ verdict: 'not_found', not_found_outcome: 'prospect_not_found' })
   })
@@ -300,14 +313,15 @@ describe('resolve_click_input', () => {
     expect(new Set(selected).size).toBe(selected.length)
   })
 
-  it('a valid Prospect__c wins over a Submission__c, which is then ignored: nothing ties that submission to this prospect', async () => {
+  it('a Prospect__c posted with a Submission__c queries the submission, so its Lead is written too, and names the prospect it must belong to (Brian: the portal sends both)', async () => {
     const r = await resolve({ Prospect__c: PROSPECT_18, Submission__c: SUBMISSION_15 })
-    expect(r).toMatchObject({ source: 'prospect', prospect_id: PROSPECT_18, submission_id: null })
+    expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: PROSPECT_18, submission_id: SUBMISSION_15 })
+    expect(r.soql).toMatch(new RegExp(`FROM Submission__c WHERE Id = '${SUBMISSION_15}'$`))
   })
 
-  it('an invalid Prospect__c falls back to a valid Submission__c, as his run() did', async () => {
+  it('an invalid Prospect__c falls back to a valid Submission__c, as his run() did, naming no prospect it must belong to', async () => {
     const r = await resolve({ Prospect__c: 'nope', Submission__c: SUBMISSION_15 })
-    expect(r).toMatchObject({ valid: true, source: 'submission', submission_id: SUBMISSION_15 })
+    expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: null, submission_id: SUBMISSION_15 })
   })
 
   it('trims surrounding whitespace from an id', async () => {

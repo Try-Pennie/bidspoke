@@ -324,6 +324,25 @@ describe('a Liberty1 offer that is still open', () => {
   }
 })
 
+describe('the portal posts both ids (2026-09-29, as the first live click did)', () => {
+  it('sent: writes Completed to the prospect, the submission and its lead', async () => {
+    const r = await click({ Prospect__c: PROSPECT_ID, Submission__c: SUBMISSION_ID })
+    expect(r.body).toEqual({ success: true, outcome: 'sent' })
+    expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
+    expect(r.writes.map((w) => [w.namespace, w.record_id])).toEqual([
+      ['update_prospect', PROSPECT_ID], ['update_submission', SUBMISSION_ID], ['update_lead', LEAD_ID],
+    ])
+  })
+
+  it('a submission that belongs to another prospect is refused, nothing sent, nothing written', async () => {
+    org.submissionProspect = 'a0P5f00000OtherXAAA'
+    const r = await click({ Prospect__c: PROSPECT_ID, Submission__c: SUBMISSION_ID })
+    expect(r.body).toMatchObject({ success: false })
+    expect(clickInputs).toEqual([])
+    expect(r.writes).toEqual([])
+  })
+})
+
 describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
   beforeEach(() => { org.submissionProspect = null })
 
