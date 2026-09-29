@@ -66,7 +66,7 @@ Then, either:
 2. Run it from the Test Runner with `{"Prospect__c": "<a real Liberty1 Bid prospect>"}`. A test run checks everything and routes `not_sent`: nothing is claimed, sent, counted or written.
 3. The workflow's id is in `LIBERTY1_CLICK_WORKFLOW_ID` (`apps/worker/src/lib/engine-script-drift.ts`, #1547), so the hourly drift check compares the canvas with the kept scripts.
 
-**The 2026-09-29 change on the canvas.** The live workflow (version 6) predates the Submission-only change, and the drift check reads that as a paste awaited, not a drift, through the baselines recorded that day. The canvas needs: `resolve_input` and `build_request` pasted again; `query_prospect` renamed `query_record`, its SOQL `{{steps.resolve_input.output.soql}}`; a new `pick_record` code node between it and `check_offer`; `check_offer`'s three branches reading `steps.pick_record.output.verdict`; the not found response's outcome `{{steps.pick_record.output.not_found_outcome}}`; `click_send`'s prospect id `{{steps.pick_record.output.sale_key}}`; a new `check_prospect` filter after `check_write` whose pass goes to `update_prospect` and whose exit goes to `check_submission`; the three update nodes' record ids and the two gates' fields reading `pick_record`; and `find_lead` deleted. After the paste, set the two baselines back to null and drop `pick_record`'s `newNodeSince`.
+**The 2026-09-29 change on the canvas** was saved as version 7 the same day through the workflow API, applied onto version 6 so the picked partner and the layout stayed; its four code scripts are these files byte for byte, and the drift check holds no baseline for any of them.
 
 ## What Brian changes
 
