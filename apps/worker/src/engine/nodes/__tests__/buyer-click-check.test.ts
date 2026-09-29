@@ -75,6 +75,7 @@ interface Harness {
   loads: number
   timeouts: number[]
   alerts: ClickAlert[]
+  logs: Array<{ event: string } & Record<string, unknown>>
   fire: () => void
 }
 
@@ -88,7 +89,7 @@ function harness(opts: {
 } = {}): Harness {
   const pending: Array<() => void> = []
   const h: Harness = {
-    counterReads: [], objectReads: 0, copyReads: 0, seeds: [], loads: 0, timeouts: [], alerts: [], deps: undefined as never,
+    counterReads: [], objectReads: 0, copyReads: 0, seeds: [], loads: 0, timeouts: [], alerts: [], logs: [], deps: undefined as never,
     fire: () => pending.splice(0).forEach((fn) => fn()),
   }
   const timers: Timers | undefined = opts.manualTimers
@@ -120,7 +121,7 @@ function harness(opts: {
     clock: () => opts.clockMs ?? NOW,
     timers,
     alert: (alert) => { h.alerts.push(alert) },
-    log: () => undefined,
+    log: (fields) => { h.logs.push(fields) },
   }
   return h
 }
@@ -456,6 +457,8 @@ describe('the saved copy of the count (#1632)', () => {
     const h = harness({ copy: async () => { throw new Error('kv get failed') }, count: 4 })
     expect((await run(h)).output).toMatchObject({ _route: 'eligible', count: 4, count_source: 'counter' })
     expect(h.objectReads).toBe(1)
+    // Said out loud, so a store outage is not a silent slow path (L11).
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_click_check_copy_unreadable', partner_id: PARTNER_ID, detail: expect.stringContaining('kv get failed') }))
   })
 
   it('no copy and a failed object read is still cap_check_error: nothing is read as zero', async () => {

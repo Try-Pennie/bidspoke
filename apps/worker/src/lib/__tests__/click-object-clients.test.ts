@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
+import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -44,7 +44,7 @@ const EVAFI = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a'
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 /** A stand-in for the worker's KV store: what was put, and a put that can be made to fail. */
-function memoryKv(opts: { failPut?: boolean; failGet?: boolean } = {}) {
+function memoryKv(opts: { failPut?: boolean; failGet?: boolean; hangPut?: boolean } = {}) {
   const store = new Map<string, string>()
   const puts: Array<{ key: string; value: string; ttl: number | undefined }> = []
   const kv = {
@@ -54,6 +54,7 @@ function memoryKv(opts: { failPut?: boolean; failGet?: boolean } = {}) {
     },
     put: async (key: string, value: string, o?: { expirationTtl?: number }) => {
       if (opts.failPut) throw new Error('kv put failed')
+      if (opts.hangPut) return new Promise<void>(() => undefined)
       puts.push({ key, value, ttl: o?.expirationTtl })
       store.set(key, value)
     },
@@ -233,5 +234,51 @@ describe('the saved copy of the click count (#1632)', () => {
     const copy = memoryKv()
     await new ClickCounterClient(namespace(() => json({})).ns, copy.kv, LIBERTY1, AT).seedCopy(0)
     expect(copy.store.get(`click-count:${LIBERTY1}:2027-09-20`)).toBe('0')
+  })
+})
+
+describe('the saved copy never moves down (#1632 review)', () => {
+  const AT = Date.UTC(2027, 8, 21, 6, 59)
+  const KEY = `click-count:${LIBERTY1}:2027-09-20`
+
+  it('an add whose answer is below the stored copy leaves the copy alone, so two adds landing out of order cannot lower it', async () => {
+    const copy = memoryKv()
+    copy.store.set(KEY, '11')
+    await new ClickCounterClient(namespace(() => json({ added: true, count: 10 })).ns, copy.kv, LIBERTY1, AT).addMember('p-1')
+    expect(copy.store.get(KEY)).toBe('11')
+    expect(copy.puts).toEqual([])
+  })
+
+  it('an add above the stored copy raises it', async () => {
+    const copy = memoryKv()
+    copy.store.set(KEY, '11')
+    await new ClickCounterClient(namespace(() => json({ added: true, count: 12 })).ns, copy.kv, LIBERTY1, AT).addMember('p-1')
+    expect(copy.store.get(KEY)).toBe('12')
+  })
+
+  it('a seed cannot overwrite a higher count a click wrote meanwhile', async () => {
+    const copy = memoryKv()
+    copy.store.set(KEY, '11')
+    await new ClickCounterClient(namespace(() => json({})).ns, copy.kv, LIBERTY1, AT).seedCopy(10)
+    expect(copy.store.get(KEY)).toBe('11')
+  })
+
+  it('a stored copy that cannot be read is overwritten by the count the object answered', async () => {
+    const copy = memoryKv()
+    copy.store.set(KEY, 'garbage')
+    await new ClickCounterClient(namespace(() => json({ added: true, count: 4 })).ns, copy.kv, LIBERTY1, AT).addMember('p-1')
+    expect(copy.store.get(KEY)).toBe('4')
+  })
+
+  it('a copy write that never answers is abandoned at its deadline, and the add still returns the count', async () => {
+    const pending: Array<() => void> = []
+    const deadlines: number[] = []
+    const timers: Timers = { setTimeout: (fn, ms) => { deadlines.push(ms); pending.push(fn); return pending.length }, clearTimeout: () => undefined }
+    const copy = memoryKv({ hangPut: true })
+    const p = new ClickCounterClient(namespace(() => json({ added: true, count: 5 })).ns, copy.kv, LIBERTY1, AT, { timers }).addMember('p-1')
+    for (let i = 0; i < 10 && pending.length < 2; i++) await Promise.resolve()
+    pending.splice(0).forEach((fn) => fn())
+    expect(await p).toEqual({ added: true, count: 5 })
+    expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS)
   })
 })

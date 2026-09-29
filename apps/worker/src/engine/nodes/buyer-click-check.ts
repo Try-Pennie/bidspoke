@@ -22,9 +22,10 @@
  *      trusted right up to the cap (Dan, 2026-09-29), because reaching the
  *      counter object cost 130 to 760 ms of this budget; only with no readable
  *      copy is the object asked, and its answer seeds the copy. A slight
- *      overshoot is accepted, because clicks arrive after offers, the copy can
- *      lag by up to a minute, and the send side counts exactly and refuses past
- *      the cap. A profile with no cap routes no_daily_cap.
+ *      overshoot is accepted, because clicks arrive after offers and the copy
+ *      can lag; nothing downstream refuses a click past the cap (the send counts
+ *      it and pages), which Dan accepted for a fast check. A profile with no cap
+ *      routes no_daily_cap.
  *
  * One budget (CLICK_CHECK_BUDGET_MS) covers the profile load and the count
  * together, with injected timers (L524, and one timer for the whole path rather
@@ -278,8 +279,12 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
   let countSource: 'copy' | 'counter'
   try {
     counter = deps.counter(partnerId, instantMs)
-    // An unreadable copy is no copy: the object is asked, as when none was written.
-    const copied = await counter.copyCount().catch(() => null)
+    // An unreadable copy is no copy: the object is asked, as when none was written,
+    // and it is logged, so a store outage is not a silent slow path.
+    const copied = await counter.copyCount().catch((err: unknown) => {
+      deps.log({ event: 'buyer_click_check_copy_unreadable', partner_id: partnerId, count_date: counter.date, detail: messageOf(err) })
+      return null
+    })
     if (copied !== null) {
       count = copied
       countSource = 'copy'

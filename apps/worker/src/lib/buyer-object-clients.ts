@@ -220,9 +220,12 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
  * worker's KV store. The offer check reads it instead of the object, because
  * reaching one object from wherever Engine's request lands took 130 to 760 ms
  * on 2026-09-29 while the object itself answered in 5. The object stays the
- * truth: buyer_click_send counts against it and refuses past the cap, so a copy
- * that lags (KV takes up to a minute to reach every data centre) can only offer
- * a lead whose click is then refused, never sell one past the cap.
+ * truth, but nothing downstream refuses a click past the cap: buyer_click_send
+ * sends it, counts it and pages over the cap. So a copy that lags (KV takes up
+ * to a minute to reach every data centre, and accepts about one write a second
+ * to a key) can let a few clicks past the cap be offered and sold. Dan accepted
+ * that on 2026-09-29 for a fast check all day. To keep the lag short, a write
+ * only ever raises the copy, so two adds landing out of order cannot lower it.
  */
 export function clickCountCopyKey(partnerId: string, date: string): string {
   return `click-count:${partnerId}:${date}`
@@ -230,6 +233,12 @@ export function clickCountCopyKey(partnerId: string, date: string): string {
 
 /** Kept past the Pacific day it counts, then left to expire; nothing reads another day's key. */
 export const CLICK_COUNT_COPY_TTL_S = 3 * 24 * 60 * 60
+
+/**
+ * The copy's read and write together, bounded so a slow store cannot spend the
+ * deadline buyer_click_send and the held click release size for the add itself.
+ */
+export const CLICK_COUNT_COPY_WRITE_DEADLINE_MS = 500
 
 /**
  * The day's distinct set of prospects a click sold buyer was sent, one object
@@ -271,14 +280,23 @@ export class ClickCounterClient {
     return Number(raw)
   }
 
-  /** Writes a count the object answered, so the first check of a day seeds the copy for the rest. */
+  /** Writes a count the object answered, so the first check of a day seeds the copy for the rest; never lowers it. */
   seedCopy(count: number): Promise<void> {
     return this.writeCopy(count)
   }
 
+  /**
+   * Raises the copy to `count`, never lowers it. KV has no compare and set, so
+   * two writers can still race between the read and the put; the window is the
+   * read's few milliseconds rather than the whole add. Never rejects.
+   */
   private async writeCopy(count: number): Promise<void> {
     try {
-      await this.copyStore.put(this.copyKey, String(count), { expirationTtl: CLICK_COUNT_COPY_TTL_S })
+      await withDeadline((async () => {
+        const stored = await this.copyCount().catch(() => null)
+        if (stored !== null && stored >= count) return
+        await this.copyStore.put(this.copyKey, String(count), { expirationTtl: CLICK_COUNT_COPY_TTL_S })
+      })(), CLICK_COUNT_COPY_WRITE_DEADLINE_MS, 'click count copy', this.opts.timers)
     } catch (err) {
       console.error(`[click-counter] the saved copy ${this.copyKey} could not be written: ${messageOf(err)}`)
     }
