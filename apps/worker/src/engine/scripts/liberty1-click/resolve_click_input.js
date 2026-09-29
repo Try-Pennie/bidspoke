@@ -1,14 +1,17 @@
-// Which record a Liberty1 click is for (#1545). The portal posts {Prospect__c}
-// or {Submission__c}, whichever it has. A Prospect__c that is a Salesforce id is
-// queried directly. Otherwise a Submission__c that is one queries the
-// submission itself, with its Lead and, through Prospect__r, every field of the
-// prospect it points at, so pick_record can send from the prospect when there
-// is one and from the submission when there is not (Brian, 2026-09-29).
+// Which record a Liberty1 click is for (#1545). The portal posts both ids,
+// {Prospect__c, Submission__c}; either alone is still accepted.
 //
-// The portal posts both ids. A Prospect__c posted with a Submission__c queries
-// the submission too, so its Lead is written, and names the prospect it must
-// belong to: pick_record refuses a pair that does not agree, so a posted
-// Submission__c can never attach this click to someone else's records.
+// - A valid Submission__c queries the submission itself, with its Lead and,
+//   through Prospect__r, every field of the prospect it points at, so
+//   pick_record sends from the prospect when there is one and from the
+//   submission when there is not (Brian, 2026-09-29). With a valid Prospect__c
+//   beside it, the submission must belong to that prospect: pick_record refuses
+//   a pair that does not agree, so a Submission__c cannot attach this click to
+//   someone else's records.
+// - A valid Prospect__c alone (or with a Submission__c that is not an id, which
+//   Brian's flow also skips) queries that prospect directly.
+// - A Prospect__c that is present but not an id is refused, even beside a valid
+//   Submission__c, as Brian's run() threw on it.
 //
 // An id is interpolated into SOQL, so anything that is not exactly 15 or 18
 // letters and digits is refused here and never reaches a query. valid false
