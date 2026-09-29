@@ -20,6 +20,16 @@
  * which is what tells anyone a backfill has finished. Both counts go into the
  * alert, so the reader sees the divergence rather than a verdict (L11).
  *
+ * A RETURNING CUSTOMER IS NOT BACKLOG. A Lead follows its customer's newest
+ * Submission (`Lead.Submission_Object_ID__c`), so when a customer sold on
+ * 08-18 comes back on 09-20 the Lead now carries the 09-20 visit's status and
+ * no backfill of the 08-18 sale can change it. On 2026-09-29, 53 of Tripoint's
+ * 56 backlog sales were that. SOQL cannot compare one field with another, so
+ * the backlog is read as rows and split here: a sale whose Lead names it (or
+ * names nothing) is left behind, one whose Lead names another Submission is
+ * counted apart and never raises the alert on its own. Which visit's revenue
+ * such a Lead should carry is a Salesforce decision (#1525).
+ *
  * JUDGED ONLY WHERE A HEALTHY SHARE IS ON RECORD. In the week before the break
  * the share was 100.0% for Tripoint and 97.0% for AmOne, so both are judged
  * against LEAD_COMPLETED_MIN_SHARE. Engine was 21.9%, so there is no healthy
@@ -40,7 +50,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { salesforceCount, salesforceGet } from './salesforce-read'
+import { salesforceCount, salesforceGet, salesforceRows } from './salesforce-read'
 import type { Env } from '../index'
 
 export const LEAD_STATUS_JOB = 'lead-status'
@@ -54,6 +64,13 @@ export const LEAD_COMPLETED_MIN_SHARE = 0.9
  * none at all is still reported, as its own line (L716).
  */
 export const MIN_SUBMISSIONS_TO_JUDGE = 20
+
+/**
+ * The most backlog rows one partner's read will page through. The largest real
+ * backlog was about 25,000 (Tripoint, Jul 8 to Sep 24); past this the backlog is
+ * refused rather than split on part of it.
+ */
+export const BACKLOG_MAX_ROWS = 50_000
 
 /** The day the Submission to Lead copy stopped, where the backlog count starts. */
 export const SYNC_BROKE_ON = '2026-07-08'
@@ -83,7 +100,7 @@ export const LEAD_STATUS_REMEDY: AlertRemedy = {
   itemNoun: { one: 'finding', many: 'findings' },
 }
 
-/** The three COUNT() queries for one partner and the UTC day starting at `dayStart`. */
+/** The two COUNT() queries and the backlog row query for one partner and the UTC day starting at `dayStart`. */
 export function leadStatusQueries(partner: string, dayStart: Date): { submissions: string; leads: string; backlog: string } {
   const sale =
     `External_Partner_Name__c = '${partner}' AND External_Exchange_Status__c = 'Completed' ` +
@@ -95,7 +112,7 @@ export function leadStatusQueries(partner: string, dayStart: Date): { submission
     submissions: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND ${day}`,
     leads: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND Lead__r.External_Exchange_Status__c = 'Completed' AND ${day}`,
     backlog:
-      `SELECT COUNT() FROM Submission__c WHERE ${sale} ` +
+      `SELECT Id, Lead__r.Submission_Object_ID__c FROM Submission__c WHERE ${sale} ` +
       `AND Lead__r.External_Exchange_Status__c != 'Completed' AND CreatedDate >= ${SYNC_BROKE_ON}T00:00:00Z`,
   }
 }
@@ -108,6 +125,8 @@ function isoSecond(d: Date): string {
 export interface LeadStatusDeps {
   /** Runs one COUNT() query. Injected so the check runs without Salesforce (L196). */
   count?: (soql: string) => Promise<number>
+  /** Runs one row query, every page. Injected likewise. */
+  rows?: (soql: string) => Promise<Array<Record<string, unknown>>>
   /** Every partner value with Completed sales created in the UTC day starting at `dayStart`. Injected likewise. */
   listPartners?: (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>>
   now?: () => Date
@@ -119,8 +138,10 @@ export interface PartnerLeadStatus {
   /** Null when the count could not be read. */
   submissions_completed: number | null
   leads_completed: number | null
-  /** Completed sales since SYNC_BROKE_ON whose Lead does not read Completed; null when unread. */
+  /** Completed sales since SYNC_BROKE_ON whose Lead does not read Completed and still names that sale; null when unread. */
   backlog: number | null
+  /** The same, where the Lead has moved on to a later Submission, so no backfill can change it; null when unread. */
+  backlog_returning: number | null
 }
 
 export interface LeadStatusResult {
@@ -147,12 +168,13 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1))
   const day = dayStart.toISOString().slice(0, 10)
   const count = deps.count ?? ((soql: string) => salesforceCount(env, supabase, soql, 'the Lead status check'))
+  const rows = deps.rows ?? ((soql: string) => salesforceRows(env, supabase, soql, 'the Lead status check', BACKLOG_MAX_ROWS))
   const listPartners = deps.listPartners ?? salesforcePartnerLister(env, supabase)
 
   let partners: PartnerLeadStatus[] = []
   let findings: string[]
   try {
-    const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, p, dayStart, day)))
+    const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, rows, p, dayStart, day)))
     partners = measured.map((m) => m.status)
     findings = [...measured.flatMap((m) => m.findings), ...(await uncoveredPartners(listPartners, dayStart, day))]
   } catch (err) {
@@ -172,22 +194,59 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   console.log(
     `[lead-status] day=${day} ` +
       partners
-        .map((p) => `${p.partner}=${unread(p.leads_completed)}/${unread(p.submissions_completed)} backlog=${unread(p.backlog)}`)
+        .map((p) => `${p.partner}=${unread(p.leads_completed)}/${unread(p.submissions_completed)} backlog=${unread(p.backlog)} returning=${unread(p.backlog_returning)}`)
         .join(' ') +
       ` findings=${findings.length}`,
   )
   return { day, partners, findings, alerted: findings.length > 0 }
 }
 
+/** A Salesforce id, 15 or 18 characters; the first 15 are the record. */
+const SALESFORCE_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/
+
+/**
+ * Splits backlog rows into sales whose Lead still names them (left behind) and
+ * sales whose Lead names a later Submission (a returning customer). A Lead
+ * naming nothing counts as left behind: nothing shows it moved on. Throws on a
+ * row with no readable id, so a changed answer is a refusal, never a smaller
+ * backlog (L90).
+ */
+export function splitBacklog(records: Array<Record<string, unknown>>): { own: number; returning: number } {
+  let own = 0
+  let returning = 0
+  for (const r of records) {
+    if (typeof r.Id !== 'string' || !SALESFORCE_ID.test(r.Id)) {
+      throw new Error(`Salesforce returned a backlog row with no readable Id: ${JSON.stringify(r).slice(0, 200)}`)
+    }
+    const lead = r.Lead__r
+    const current = lead !== null && typeof lead === 'object' ? (lead as Record<string, unknown>).Submission_Object_ID__c : null
+    if (typeof current !== 'string' || current === '' || current.slice(0, 15) === r.Id.slice(0, 15)) own++
+    else returning++
+  }
+  return { own, returning }
+}
+
+async function tryBacklog(
+  rows: (soql: string) => Promise<Array<Record<string, unknown>>>,
+  soql: string,
+): Promise<{ own: number; returning: number } | { err: string }> {
+  try {
+    return splitBacklog(await rows(soql))
+  } catch (err) {
+    return { err: formatErr(err) }
+  }
+}
+
 async function measure(
   count: (soql: string) => Promise<number>,
+  rows: (soql: string) => Promise<Array<Record<string, unknown>>>,
   rule: { partner: string; judged: boolean; before: string },
   dayStart: Date,
   day: string,
 ): Promise<{ status: PartnerLeadStatus; findings: string[] }> {
   const { partner, judged, before } = rule
   const q = leadStatusQueries(partner, dayStart)
-  const [subs, leads, backlog] = await Promise.all([tryCount(count, q.submissions), tryCount(count, q.leads), tryCount(count, q.backlog)])
+  const [subs, leads, backlog] = await Promise.all([tryCount(count, q.submissions), tryCount(count, q.leads), tryBacklog(rows, q.backlog)])
   const findings: string[] = []
   const say = (text: string) => findings.push(`${partner}: ${text}`)
 
@@ -196,8 +255,11 @@ async function measure(
     judged,
     submissions_completed: 'n' in subs ? subs.n : null,
     leads_completed: 'n' in leads ? leads.n : null,
-    backlog: 'n' in backlog ? backlog.n : null,
+    backlog: 'err' in backlog ? null : backlog.own,
+    backlog_returning: 'err' in backlog ? null : backlog.returning,
   }
+  const returningNote =
+    status.backlog_returning ? ` ${fmt(status.backlog_returning)} more have a Lead that has moved on to a later Submission by the same customer, which no backfill changes (#1525).` : ''
 
   // A count that could not be read is a refusal for every partner, judged or
   // not: the check did not measure what it reports.
@@ -209,19 +271,26 @@ async function measure(
   } else if (judged && subs.n >= MIN_SUBMISSIONS_TO_JUDGE && leads.n / subs.n < LEAD_COMPLETED_MIN_SHARE) {
     say(
       `${fmt(leads.n)} of ${fmt(subs.n)} sales created on ${day} have a Lead reading Completed ` +
-        `(${Math.round((leads.n / subs.n) * 100)}%); before ${SYNC_BROKE_ON} this was ${before}.` +
-        (status.backlog !== null ? ` ${fmt(status.backlog)} Completed sales since ${SYNC_BROKE_ON} still have a Lead that does not.` : ''),
+        `(${Math.round((leads.n / subs.n) * 100)}%); before ${SYNC_BROKE_ON} this was ${before}. ` +
+        'So new sales are not reaching the Lead: the ongoing copy is broken, and a backfill alone will not keep up.' +
+        (status.backlog !== null ? ` ${fmt(status.backlog)} Completed sales since ${SYNC_BROKE_ON} still have a Lead that does not.` : '') +
+        returningNote,
     )
   }
 
   if ('err' in backlog) {
     say(`the backlog of Leads not reading Completed since ${SYNC_BROKE_ON} could not be counted: ${backlog.err}`)
-  } else if (judged && backlog.n > 0 && findings.length === 0) {
-    // Only claim new sales carry over when the day was large enough to judge.
+  } else if (judged && backlog.own > 0 && findings.length === 0) {
+    // Reached only when the day raised nothing, so the day's sales did sync:
+    // what is left is older sales for a backfill. Say the day's count only
+    // when it was large enough to judge.
     const dayJudged = status.submissions_completed !== null && status.submissions_completed >= MIN_SUBMISSIONS_TO_JUDGE
     say(
-      `${fmt(backlog.n)} Completed sales since ${SYNC_BROKE_ON} still have a Lead that does not read Completed` +
-        (dayJudged ? `; sales created on ${day} are carrying over, so this is the backfill still to do` : ''),
+      `${fmt(backlog.own)} Completed sales since ${SYNC_BROKE_ON} still have a Lead that does not read Completed` +
+        (dayJudged
+          ? `, while ${fmt(status.leads_completed ?? 0)} of ${fmt(status.submissions_completed ?? 0)} sales created on ${day} did reach the Lead, so these are older sales for a backfill.`
+          : ', so these are sales for a backfill.') +
+        returningNote,
     )
   }
 
