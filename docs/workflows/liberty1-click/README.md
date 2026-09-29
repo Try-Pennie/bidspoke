@@ -74,4 +74,4 @@ In the `liberty-1-proxy` worker (`libertyone.trypennie.app/cta-clicked`), point 
 
 - **It must forward a POST, with the JSON body.** A custom endpoint answers any GET with `{"ok": true}` and runs nothing, so a GET forward looks healthy and sends no one.
 - Send the endpoint's `X-API-Key`.
-- Confirm what the portal does with the answer (see above).
+- Every answer is a 200, so the portal can move to the lander on any answer; `success` and `outcome` in the body say what happened (settled 2026-09-29).
