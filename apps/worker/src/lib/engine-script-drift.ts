@@ -95,55 +95,46 @@ export interface KeptWorkflow {
 }
 
 /**
- * Baselines read on 2026-09-24 from the live definition (version 100, the Stage
- * A paste of 2026-09-23): the SHA-256 of each code node's script exactly as the
- * canvas holds it, which is the kept file of PR #1470 (tripoint_ping without
- * its final newline). The kept files were then re-derived for #1416, so until
- * Stage C pastes them the check reports awaiting_paste, not drift.
+ * The Engine Bidding Workflow's kept scripts. The three sale scripts were first
+ * kept against the canvas of version 100 (the Stage A paste of 2026-09-23),
+ * with baselines so edits made here first (#1416, #1540 and #1544) read as
+ * pastes awaited rather than drift, and known_no_gate (#1544) as a new node.
  *
- * tripoint_ping was edited again for #1540 (every answer named, no throw, a 15 s
- * abort). The canvas was re-read on 2026-09-24 for that change and still holds
- * the same version 100 script, so its baseline is unchanged: the edit is one
- * more paste not yet made, and the check keeps reporting awaiting_paste until
- * it lands. A baseline moves only when the CANVAS moves.
- *
- * build_response_body and patch_prospect_body were edited again for #1544 (the
- * click sold buyer offered on a known Tripoint no). The mirror was re-read on
- * 2026-09-24 for that change and all three code nodes still hash to the
- * baselines below, so those edits too are pastes not yet made.
+ * All four were saved to the live workflow as version 101 on 2026-09-29 and the
+ * hourly check read each as agree, so none carries a baseline any more: any
+ * difference from the canvas is a drift, and a missing node pages as missing.
+ * To edit one here before its paste again, record the live canvas script's hash
+ * as its baseline in the same change.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
     namespace: 'tripoint_ping',
     file: 'tripoint_ping.js',
     script: TRIPOINT_PING,
-    canvasBaselineSha256: '9cda1574d6d2735636656615f7ad8df743afd508a182af87f7c21db28e91f2fb',
-    baselineReadOn: '2026-09-24',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
   {
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: 'e9a9af5788469160f7a845473aa472f9d13c031ffb17da162245a2b90c47dd04',
-    baselineReadOn: '2026-09-24',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
   {
     namespace: 'patch_prospect_body',
     file: 'patch_prospect_body.js',
     script: PATCH_PROSPECT_BODY,
-    canvasBaselineSha256: '13d25373e7e22a26df3c9ce14e03d7a33d61cff0540a59524ae0f5d68b61e2f5',
-    baselineReadOn: '2026-09-24',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
-  // The known no gate (#1544) is a new code node: it was written here first, so it
-  // has no canvas baseline, and until Dan adds the node the check reads its absence
-  // as a first paste awaited rather than a missing node.
+  // The known no gate (#1544), written here first and on the canvas since version 101.
   {
     namespace: 'known_no_gate',
     file: 'known_no_gate.js',
     script: KNOWN_NO_GATE,
     canvasBaselineSha256: null,
     baselineReadOn: null,
-    newNodeSince: '2026-09-24',
   },
 ]
 

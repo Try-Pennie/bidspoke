@@ -84,19 +84,11 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('each record the hash of the canvas script they were derived from, with the day it was read', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => !k.newNodeSince)) {
-      expect(kept.canvasBaselineSha256, kept.file).toMatch(/^[0-9a-f]{64}$/)
-      expect(kept.baselineReadOn, kept.file).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-    }
-  })
-
-  it('a script for a node the canvas does not have yet carries no baseline, only the day it was written (#1544)', () => {
-    const fresh = KEPT_ENGINE_SCRIPTS.filter((k) => k.newNodeSince)
-    expect(fresh.map((k) => k.namespace)).toEqual(['known_no_gate'])
-    for (const kept of fresh) {
+  it('carry no canvas baseline and no new node allowance: Engine Bidding version 101 (2026-09-29) holds all four, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS) {
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
-      expect(kept.newNodeSince, kept.file).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(kept.baselineReadOn, kept.file).toBeNull()
+      expect(kept.newNodeSince, kept.file).toBeUndefined()
     }
   })
 

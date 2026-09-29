@@ -1516,7 +1516,7 @@ export async function walkGraph(
     }
 
     // ── Buyer Click Check node (#1543): may a click sold buyer be offered this lead ──
-    // Walker only like buyer_click_send: it runs exactly once under its own 800 ms
+    // Walker only like buyer_click_send: it runs exactly once under its own CLICK_CHECK_BUDGET_MS
     // budget, never through executeNode's retry loop, so a slow read cannot be
     // retried past the response Engine is waiting for. One step row under the
     // node's id; the route is checked before the row is written, so an unwired
