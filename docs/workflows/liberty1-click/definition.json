@@ -71,7 +71,7 @@
           "y": 480
         },
         "config": {
-          "status_code": 400,
+          "status_code": 200,
           "body": {
             "success": false,
             "outcome": "invalid_request",
@@ -200,7 +200,7 @@
           "y": 1120
         },
         "config": {
-          "status_code": 404,
+          "status_code": 200,
           "body": {
             "success": false,
             "outcome": "{{steps.pick_record.output.not_found_outcome}}"
@@ -218,7 +218,7 @@
           "y": 1280
         },
         "config": {
-          "status_code": 409,
+          "status_code": 200,
           "body": {
             "success": false,
             "outcome": "no_liberty1_offer"

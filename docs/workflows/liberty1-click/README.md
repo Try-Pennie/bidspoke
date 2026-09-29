@@ -23,11 +23,11 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 
 | What happened | Portal gets | Salesforce |
 |---|---|---|
-| Body has no id | 400 `{"success": false, "outcome": "invalid_request", "reason": "no_id"}` | nothing read, nothing written |
-| An id that is not a Salesforce id | 400, reason `invalid_id` | nothing read, nothing written |
-| No such prospect (or the submission names one Salesforce does not return) | 404 `prospect_not_found` | nothing written |
-| No such submission | 404 `submission_not_found` | nothing written |
-| Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed), or a submission with no prospect already Completed for another buyer | 409 `no_liberty1_offer` | nothing written |
+| Body has no id | 200 `{"success": false, "outcome": "invalid_request", "reason": "no_id"}` | nothing read, nothing written |
+| An id that is not a Salesforce id | 200, outcome `invalid_request`, reason `invalid_id` | nothing read, nothing written |
+| No such prospect (or the submission names one Salesforce does not return) | 200, outcome `prospect_not_found` | nothing written |
+| No such submission | 200, outcome `submission_not_found` | nothing written |
+| Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed), or a submission with no prospect already Completed for another buyer | 200, outcome `no_liberty1_offer` | nothing written |
 | Liberty1 offer already Completed (on the prospect, or on a submission with no prospect) | 200 `{"success": true, "outcome": "already_sent"}` | nothing written, nothing sent |
 | A submission with no prospect, not yet Completed for Liberty1 | sent with no offer check, then as the rows below | the Submission and its Lead only |
 | `sent`: Liberty1 created the record | 200 `{"success": true, "outcome": "sent"}` | Completed, with Liberty1's lead id |
@@ -46,7 +46,7 @@ The Salesforce writes are Brian's three bodies, field for field: exchange status
 - A 2xx from Liberty1 that is not the success line was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have created the record.
 - A prospect without the Liberty1 offer is refused. Brian's flow sent any prospect it was given. A submission with no prospect is still sent without one, as his flow does, because nothing records an offer there.
 - Failures page through Bidspoke, not the hard coded Slack webhook.
-- The portal's answer says what happened. Brian's always said `{"success": true}`. Brian needs to confirm the portal does not act on a `false` or on the 400, 404 and 409 statuses.
+- The portal's answer says what happened in its body. Brian's always said `{"success": true}`. Every answer is a 200, because the portal moves to the Liberty1 lander only on a 200 (Brian, 2026-09-29); `success` and `outcome` in the body carry the result.
 
 **Kept from Brian's flow, worth knowing.** A click that arrives with only a `Prospect__c` updates the Prospect alone: the Lead is found only through a Submission, as in his flow. A submission with no prospect updates the Submission and its Lead, never a Prospect. And once a Fail is written, the offer check refuses the next click on that prospect, because its status is no longer Bid.
 
