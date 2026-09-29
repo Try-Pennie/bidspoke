@@ -38,6 +38,7 @@ import KNOWN_NO_GATE from '../engine/scripts/engine-bidding/known_no_gate.js'
 import RESOLVE_CLICK_INPUT from '../engine/scripts/liberty1-click/resolve_click_input.js'
 import BUILD_LIBERTY1_REQUEST from '../engine/scripts/liberty1-click/build_liberty1_request.js'
 import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_click_patch.js'
+import PICK_CLICK_RECORD from '../engine/scripts/liberty1-click/pick_click_record.js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { fetchGitHubFileText } from './github'
@@ -150,14 +151,22 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
  * The Liberty1 click workflow (#1545), which replaces Brian's Pipedream flow,
  * built from docs/workflows/liberty1-click/definition.json and first saved on
  * 2026-09-25 (#1547) as "Liberty1 Click Handler". The scripts were written here
- * first, so they have no canvas baseline: the check judges these three like the
- * Engine scripts, and any difference is a drift.
+ * first, so they had no canvas baseline.
+ *
+ * On 2026-09-29 Brian's Pipedream flow moved back to the Liberty1 Salesforce
+ * site and learned Submission-only clicks, and resolve_input and build_request
+ * were re-derived here for it with pick_record added between them. Their
+ * baselines are the canvas scripts read from the live workflow (version 6) that
+ * day, so until Dan pastes the new ones the check records a paste awaited rather
+ * than a drift. Once the paste lands, set both back to null and drop
+ * pick_record's newNodeSince, so any later difference pages again.
  */
 export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = '8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08'
 
 export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
-  { namespace: 'resolve_input', file: 'resolve_click_input.js', script: RESOLVE_CLICK_INPUT, canvasBaselineSha256: null, baselineReadOn: null },
-  { namespace: 'build_request', file: 'build_liberty1_request.js', script: BUILD_LIBERTY1_REQUEST, canvasBaselineSha256: null, baselineReadOn: null },
+  { namespace: 'resolve_input', file: 'resolve_click_input.js', script: RESOLVE_CLICK_INPUT, canvasBaselineSha256: '4aa97e8e941fd08f158bfcf212d4a712aa510b4e54f503e337943c681838a587', baselineReadOn: '2026-09-29' },
+  { namespace: 'pick_record', file: 'pick_click_record.js', script: PICK_CLICK_RECORD, canvasBaselineSha256: null, baselineReadOn: null, newNodeSince: '2026-09-29' },
+  { namespace: 'build_request', file: 'build_liberty1_request.js', script: BUILD_LIBERTY1_REQUEST, canvasBaselineSha256: '56389374a6b0cd44a9b73577bda6c0b92748fefea1e84a46dd460761c0023ff6', baselineReadOn: '2026-09-29' },
   { namespace: 'click_patch', file: 'liberty1_click_patch.js', script: LIBERTY1_CLICK_PATCH, canvasBaselineSha256: null, baselineReadOn: null },
 ]
 

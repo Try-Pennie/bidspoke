@@ -104,6 +104,7 @@ interface World {
   buyer?: LoadedBuyer | null | Error
   members?: Record<string, string[]>
   salesforce?: Array<{ id: string; at: string }> | Error
+  submissions?: Array<{ id: string; at: string }> | Error
   now?: number
   kv?: ReturnType<typeof fakeKv>
 }
@@ -112,6 +113,7 @@ function deps(w: World = {}) {
   const pages: Record<string, string[][]> = {}
   const notify = (job: string) => async (lines: string[]) => { (pages[job] ??= []).push(lines) }
   const sfCalls: Array<{ routingCode: number; fromMs: number; toMs: number }> = []
+  const submissionCalls: Array<{ routingCode: number; fromMs: number; toMs: number }> = []
   const d: ClickPathDeps = {
     listSubjects: async () => [SUBJECT],
     readPartner: async () => ({ slug: 'liberty1', external_routing_code: 4 }),
@@ -129,6 +131,11 @@ function deps(w: World = {}) {
       if (w.salesforce instanceof Error) throw w.salesforce
       return w.salesforce ?? []
     },
+    readCompletedSubmissionsWithoutProspect: async (_org, routingCode, fromMs, toMs) => {
+      submissionCalls.push({ routingCode, fromMs, toMs })
+      if (w.submissions instanceof Error) throw w.submissions
+      return w.submissions ?? []
+    },
     kv: w.kv ?? fakeKv(),
     notify: {
       [CLICK_CHECK_ERRORS_JOB]: notify(CLICK_CHECK_ERRORS_JOB),
@@ -141,7 +148,7 @@ function deps(w: World = {}) {
     appUrl: 'https://app.test',
     log: () => undefined,
   }
-  return { d, pages, sfCalls }
+  return { d, pages, sfCalls, submissionCalls }
 }
 
 /** The lines a family was last notified with, or undefined when it was not notified this run. */
@@ -383,6 +390,36 @@ describe('reconcile: the counted prospects against Salesforce, once per Pacific 
     const { d, sfCalls } = deps({ now: early, members: { [DAY]: ['a0X000000000001'] } })
     await runClickPathChecks(d)
     expect(sfCalls).toHaveLength(0)
+  })
+
+  it('a Submission-only sale (no Prospect, keyed on the submission) matches its Completed submission, read over the same padded day', async () => {
+    const { d, pages, sfCalls, submissionCalls } = deps({
+      members: { [DAY]: ['a0X000000000001', 'a04000000000001'] },
+      salesforce: [{ id: 'a0X000000000001', at: at(18) }],
+      submissions: [{ id: 'a04000000000001', at: at(19) }],
+    })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].reconcile).toMatchObject({ verdict: 'match' })
+    expect(last(pages, CLICK_RECONCILE_JOB)).toEqual([])
+    expect(submissionCalls).toEqual(sfCalls)
+  })
+
+  it('a Completed Liberty1 submission with no Prospect that was never counted pages naming it', async () => {
+    const { d, pages } = deps({ members: { [DAY]: [] }, submissions: [{ id: 'a04000000000002', at: at(19) }] })
+    await runClickPathChecks(d)
+    expect((last(pages, CLICK_RECONCILE_JOB) ?? [])[0]).toMatch(/never counted.*a04000000000002/)
+  })
+
+  it('a counted click with neither a Completed prospect nor a Completed submission is a mismatch named as such', async () => {
+    const { d, pages } = deps({ members: { [DAY]: ['a04000000000003'] } })
+    await runClickPathChecks(d)
+    expect((last(pages, CLICK_RECONCILE_JOB) ?? [])[0]).toMatch(/no Completed prospect or submission.*a04000000000003/)
+  })
+
+  it('a submission read that fails is unreconciled, never a match on the prospects alone', async () => {
+    const { d } = deps({ members: { [DAY]: ['a0X000000000001'] }, salesforce: [{ id: 'a0X000000000001', at: at(18) }], submissions: new Error('Salesforce query failed (503)') })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].reconcile).toMatchObject({ verdict: 'unmeasured' })
   })
 
   it('a Salesforce read that fails is reported as unreconciled, never as a match, and is retried on the next run', async () => {

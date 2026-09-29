@@ -1,14 +1,19 @@
-// The Liberty1 request for one clicked prospect (#1545): Brian's buildPayload
-// and his DV1 or DI4 route, unchanged, over the record the query_prospect
-// Salesforce node read. Pure: buyer_click_send posts it, this only builds it.
+// The Liberty1 request for one click (#1545): Brian's buildPayload and his DV1
+// or DI4 route, unchanged, over the record pick_record chose (a prospect, or a
+// submission mapped onto prospect field names). Pure: buyer_click_send posts
+// it, this only builds it.
+//
+// Back on the Liberty1 Salesforce site on 2026-09-29, where Brian's flow posts
+// "until later in the week"; the LeadConnector routes it used from 2026-09-25
+// return when Liberty1 moves again.
 const LIBERTY1_BASE =
-  "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/";
+  "https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks";
 
 const DV1_STATES = new Set(["DE", "HI", "IA", "MN", "OR", "RI", "VT", "WA", "WI", "WY"]);
 
 const ROUTES = {
-  DV1: `${LIBERTY1_BASE}/CTTs3WKFFvjTUTQOlrHF`,
-  DI4: `${LIBERTY1_BASE}/AYAF77n9lUw8WbZ4kaRM`, // all other states
+  DV1: `${LIBERTY1_BASE}/DV1`,
+  DI4: `${LIBERTY1_BASE}/DI4`, // all other states
 };
 
 const clean = (v) => {
@@ -62,11 +67,11 @@ function buildPayload(p) {
 
 const pickRoute = (state) => (state && DV1_STATES.has(state) ? "DV1" : "DI4");
 
-// The offer check before this node routes only a found record here, so an
-// absent one is a wiring fault: refuse by name rather than post a body of nulls.
-const record = steps.query_prospect?.output?.body?.records?.[0];
+// The offer check before this node routes only an open click here, so an
+// absent record is a wiring fault: refuse by name rather than post a body of nulls.
+const record = steps.pick_record?.output?.record;
 if (!record || !record.Id) {
-  throw new Error("build_liberty1_request: no prospect record in steps.query_prospect, so nothing to send");
+  throw new Error("build_liberty1_request: no record picked in steps.pick_record, so nothing to send");
 }
 
 const body = buildPayload(record);
@@ -75,7 +80,6 @@ const route = pickRoute(body.state);
 return {
   url: ROUTES[route],
   body,
-  prospect_id: record.Id,
   route,
   state: body.state,
 };

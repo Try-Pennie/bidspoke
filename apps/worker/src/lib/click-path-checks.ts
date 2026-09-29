@@ -53,8 +53,12 @@
  *                 read is padded by RECONCILE_PAD_MS both sides, and a Completed
  *                 prospect is looked for in the day before and after too,
  *                 because the count is taken a moment before the write and the
- *                 two can straddle midnight. A mismatch pages naming the
- *                 prospects. The Salesforce read follows buyer-sales-checks'
+ *                 two can straddle midnight. A Liberty1 click from a
+ *                 Submission with no Prospect (2026-09-29) is counted by the
+ *                 submission's id and written to the submission alone, so the
+ *                 Completed submissions with the routing code and no Prospect
+ *                 are read beside the prospects, over the same padded day. A
+ *                 mismatch pages naming the records. The Salesforce read follows buyer-sales-checks'
  *                 independent record read: the org's credentials, the cached
  *                 token, SOQL through nextRecordsUrl, bounded.
  *
@@ -263,6 +267,8 @@ export interface ClickPathDeps {
   counterMembers(partnerId: string, date: string): Promise<string[]>
   /** Salesforce prospects with this routing code, exchange status Completed, and ExternalTimestamp__c in [fromMs, toMs). */
   readCompletedProspects(orgId: string, routingCode: number, fromMs: number, toMs: number): Promise<CompletedProspect[]>
+  /** Salesforce submissions with NO Prospect, this routing code, exchange status Completed, and External_Timestamp__c in [fromMs, toMs). */
+  readCompletedSubmissionsWithoutProspect(orgId: string, routingCode: number, fromMs: number, toMs: number): Promise<CompletedProspect[]>
   kv: BackoffKv
   notify: Record<ClickAlertJob, (lines: string[]) => Promise<void>>
   now(): number
@@ -568,7 +574,11 @@ async function reconcileDay(deps: ClickPathDeps, subject: ClickSubject, partner:
   const end = zonedDayStartUtc(nextPacificDate(date), PACIFIC)
   let completed: CompletedProspect[]
   try {
-    completed = await deps.readCompletedProspects(subject.organization_id, code, start - RECONCILE_PAD_MS, end + RECONCILE_PAD_MS)
+    const [prospects, submissions] = await Promise.all([
+      deps.readCompletedProspects(subject.organization_id, code, start - RECONCILE_PAD_MS, end + RECONCILE_PAD_MS),
+      deps.readCompletedSubmissionsWithoutProspect(subject.organization_id, code, start - RECONCILE_PAD_MS, end + RECONCILE_PAD_MS),
+    ])
+    completed = [...prospects, ...submissions]
   } catch (err) {
     return unmeasured(`Salesforce could not be read: ${messageOf(err)}`)
   }
@@ -581,7 +591,7 @@ async function reconcileDay(deps: ClickPathDeps, subject: ClickSubject, partner:
   }
   const named = (ids: string[]) => `${ids.slice(0, RECONCILE_NAMED_MAX).join(', ')}${ids.length > RECONCILE_NAMED_MAX ? `, and ${ids.length - RECONCILE_NAMED_MAX} more` : ''}`
   const parts: string[] = []
-  if (countedOnly.length) parts.push(`${countedOnly.length} counted as clicks with no Completed prospect in Salesforce: ${named(countedOnly)}`)
+  if (countedOnly.length) parts.push(`${countedOnly.length} counted as clicks with no Completed prospect or submission in Salesforce: ${named(countedOnly)}`)
   if (salesforceOnly.length) parts.push(`${salesforceOnly.length} Completed in Salesforce with routing code ${code} and never counted: ${named(salesforceOnly)}`)
   return markDone(deps, doneKey, { verdict: 'mismatch', date, detail: parts.join('; ') })
 }
@@ -644,6 +654,34 @@ export function subjectsFromWorkflows(rows: readonly WorkflowRow[]): ClickSubjec
 
 const SALESFORCE_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/
 const SOQL_INSTANT = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+/**
+ * One bounded SOQL read of Completed records for the reconcile: the org's
+ * credentials, the cached token, every page through nextRecordsUrl. LIMIT is one
+ * past the bound, so a day beyond it is refused rather than reconciled on part.
+ */
+async function readCompletedRecords(env: Env, supabase: SupabaseClient, orgId: string, kind: 'prospect' | 'submission', stampField: string, soql: string): Promise<CompletedProspect[]> {
+  const { creds, missing } = await resolveSalesforceCredsFor(env, supabase, orgId)
+  if (!creds) throw new Error(`Salesforce credentials missing: ${missing.join(', ')}`)
+  const token = await getSalesforceToken(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
+  const out: CompletedProspect[] = []
+  let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+  while (next) {
+    const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
+    const body = await parseJson<{ records: Array<Record<string, unknown>>; done: boolean; nextRecordsUrl?: string }>(res)
+    for (const rec of body.records) {
+      const at = rec[stampField]
+      if (typeof rec.Id !== 'string' || !SALESFORCE_ID.test(rec.Id) || typeof at !== 'string') {
+        throw new Error(`Salesforce returned an unreadable ${kind}: ${JSON.stringify(rec).slice(0, 200)}`)
+      }
+      out.push({ id: rec.Id, at })
+    }
+    if (out.length > RECONCILE_MAX_RECORDS) throw new Error(`more than ${RECONCILE_MAX_RECORDS} Completed ${kind}s in the day, so the day was not reconciled on part of them`)
+    next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
+  }
+  return out
+}
 
 export function productionClickPathDeps(supabase: SupabaseClient, env: Env): ClickPathDeps {
   const stepRows = <T>(subject: ClickSubject, which: 'check' | 'send', select: string, fromMs: number, toMs: number) =>
@@ -743,29 +781,21 @@ export function productionClickPathDeps(supabase: SupabaseClient, env: Env): Cli
     },
     readCompletedProspects: async (orgId, routingCode, fromMs, toMs) => {
       if (!Number.isInteger(routingCode)) throw new Error(`routing code ${String(routingCode)} is not a whole number`)
-      const { creds, missing } = await resolveSalesforceCredsFor(env, supabase, orgId)
-      if (!creds) throw new Error(`Salesforce credentials missing: ${missing.join(', ')}`)
-      const token = await getSalesforceToken(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
-      // One bounded query: a day is about a cap's worth of prospects. LIMIT one
-      // past the bound, so a day beyond it is refused rather than reconciled on part.
-      const soql = `SELECT Id, ExternalTimestamp__c FROM Prospect__c WHERE ExternalRoutingCode__c = ${routingCode} AND ExternalExchangeStatus__c = 'Completed' ` +
-        `AND ExternalTimestamp__c >= ${SOQL_INSTANT(fromMs)} AND ExternalTimestamp__c < ${SOQL_INSTANT(toMs)} ORDER BY ExternalTimestamp__c LIMIT ${RECONCILE_MAX_RECORDS + 1}`
-      const out: CompletedProspect[] = []
-      let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
-      while (next) {
-        const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
-        if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
-        const body = await parseJson<{ records: Array<{ Id?: unknown; ExternalTimestamp__c?: unknown }>; done: boolean; nextRecordsUrl?: string }>(res)
-        for (const rec of body.records) {
-          if (typeof rec.Id !== 'string' || !SALESFORCE_ID.test(rec.Id) || typeof rec.ExternalTimestamp__c !== 'string') {
-            throw new Error(`Salesforce returned an unreadable prospect: ${JSON.stringify(rec).slice(0, 200)}`)
-          }
-          out.push({ id: rec.Id, at: rec.ExternalTimestamp__c })
-        }
-        if (out.length > RECONCILE_MAX_RECORDS) throw new Error(`more than ${RECONCILE_MAX_RECORDS} Completed prospects in the day, so the day was not reconciled on part of them`)
-        next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
-      }
-      return out
+      return readCompletedRecords(env, supabase, orgId, 'prospect', 'ExternalTimestamp__c',
+        `SELECT Id, ExternalTimestamp__c FROM Prospect__c WHERE ExternalRoutingCode__c = ${routingCode} AND ExternalExchangeStatus__c = 'Completed' ` +
+        `AND ExternalTimestamp__c >= ${SOQL_INSTANT(fromMs)} AND ExternalTimestamp__c < ${SOQL_INSTANT(toMs)} ORDER BY ExternalTimestamp__c LIMIT ${RECONCILE_MAX_RECORDS + 1}`)
+    },
+    readCompletedSubmissionsWithoutProspect: async (orgId, routingCode, fromMs, toMs) => {
+      if (!Number.isInteger(routingCode)) throw new Error(`routing code ${String(routingCode)} is not a whole number`)
+      // The routing code is a Text field on the Submission, a Number on the Prospect.
+      // SystemModstamp is indexed and the click's own write moves it, so it bounds
+      // the scan without losing a record: unfiltered this read took 80s on the org
+      // on 2026-09-29, with it 11s, and Salesforce stops a query at 120s.
+      return readCompletedRecords(env, supabase, orgId, 'submission', 'External_Timestamp__c',
+        `SELECT Id, External_Timestamp__c FROM Submission__c WHERE SystemModstamp >= ${SOQL_INSTANT(fromMs)} ` +
+        `AND External_Routing_Code__c = '${routingCode}' AND External_Exchange_Status__c = 'Completed' ` +
+        `AND Prospect__c = null AND External_Timestamp__c >= ${SOQL_INSTANT(fromMs)} AND External_Timestamp__c < ${SOQL_INSTANT(toMs)} ` +
+        `ORDER BY External_Timestamp__c LIMIT ${RECONCILE_MAX_RECORDS + 1}`)
     },
     kv: env.IDEMPOTENCY,
     notify: {

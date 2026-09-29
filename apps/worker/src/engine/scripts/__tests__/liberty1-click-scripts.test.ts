@@ -4,7 +4,9 @@
  *
  * build_liberty1_request must post byte for byte the body his buildPayload
  * built, to the DV1 or DI4 URL his pickRoute chose, for the same prospect
- * record. liberty1_click_patch must write his three Salesforce bodies, with
+ * record, and for a Submission with no Prospect the body his
+ * submissionAsProspect then buildPayload built (2026-09-29). pick_click_record
+ * decides which record a click is for and whether it may be sent. liberty1_click_patch must write his three Salesforce bodies, with
  * Completed only when buyer_click_send routed `sent` and Fail only on
  * `refused`, and nothing at all on any other route. resolve_click_input picks
  * the prospect the way his run() did, and refuses anything it cannot use as a
@@ -16,13 +18,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtures from './fixtures/liberty1-prospects.json'
+import submissionFixtures from './fixtures/liberty1-submissions.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
-import { buildPayload, pickRoute, updateBodies } from './liberty1-pipedream-oracle'
-import { CANVAS_ROUTES as ROUTES } from './liberty1-canvas-routes'
+import { buildPayload, pickRoute, ROUTES, SUBMISSION_FIELDS, submissionAsProspect, updateBodies } from './liberty1-pipedream-oracle'
 
 type Rec = Record<string, unknown>
 const RECORDS = fixtures.records as Record<string, Rec>
+const SUBMISSIONS = submissionFixtures.records as Record<string, Rec>
 
 const kept = (namespace: string): string => {
   const k = KEPT_LIBERTY1_CLICK_SCRIPTS.find((s) => s.namespace === namespace)
@@ -30,14 +33,29 @@ const kept = (namespace: string): string => {
   return k.script
 }
 const RESOLVE = kept('resolve_input')
+const PICK = kept('pick_record')
 const BUILD = kept('build_request')
 const PATCH = kept('click_patch')
 
 /** The Salesforce query node's output: `{ status, body }`, with the records under body. */
 const queried = (record: Rec | null) => ({ output: { status: 200, body: { totalSize: record ? 1 : 0, done: true, records: record ? [record] : [] } } })
 
+type Picked = {
+  verdict: 'not_found' | 'completed' | 'open' | 'no_offer'
+  not_found_outcome: string | null
+  offer: 'on_record' | 'trusted' | null
+  record: Rec | null
+  prospect_id: string | null
+  submission_id: string | null
+  lead_id: string | null
+  sale_key: string | null
+}
+async function pick(source: 'prospect' | 'submission' | null, row: Rec | null): Promise<Picked> {
+  return (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source } }, query_record: queried(row) } })) as Picked
+}
+
 async function build(record: Rec) {
-  return (await runCanvasScript(BUILD, { payload: {}, steps: { query_prospect: queried(record) } })) as { url: string; body: Rec; prospect_id: string; route: string; state: string | null }
+  return (await runCanvasScript(BUILD, { payload: {}, steps: { pick_record: { output: { record } } } })) as { url: string; body: Rec; route: string; state: string | null }
 }
 
 describe("build_liberty1_request against Brian's buildPayload", () => {
@@ -49,9 +67,35 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
       expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
       expect(out.route).toBe(pickRoute(theirs.state))
-      expect(out.prospect_id).toBe(record.Id)
     })
   }
+
+  for (const [name, row] of Object.entries(SUBMISSIONS)) {
+    it(`${name}: a Submission with no Prospect sends exactly what his flow sends from the Submission`, async () => {
+      const picked = await pick('submission', row)
+      const out = await build(picked.record as Rec)
+      const theirs = buildPayload(submissionAsProspect(row))
+      expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
+      expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
+    })
+  }
+
+  it('the Submission fixtures cover both routes, the Lead mobile over the Lead phone and the home phone, a name from the Lead, and income as text', async () => {
+    const mobile = await build((await pick('submission', SUBMISSIONS.di4_lead_mobile)).record as Rec)
+    expect(mobile.route).toBe('DI4')
+    expect(mobile.body).toMatchObject({ leadId1: 'a04Ui00000TestS1AA', firstName: 'Casey', lastName: 'Example', primaryPhone: '4155550133', annualIncome: 65000, state: 'CA', leadId2: 'trypennie.com' })
+    const home = await build((await pick('submission', SUBMISSIONS.dv1_home_phone_no_lead)).record as Rec)
+    expect(home.route).toBe('DV1')
+    expect(home.body).toMatchObject({ primaryPhone: '2065550144', annualIncome: null, consentsToFcra: false, leadId2: 'Website' })
+  })
+
+  it('posts to the Liberty1 Salesforce site again, one route per state group, with no doubled slash', async () => {
+    expect(ROUTES).toEqual({
+      DV1: 'https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DV1',
+      DI4: 'https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DI4',
+    })
+    expect(BUILD).not.toContain('leadconnectorhq')
+  })
 
   it('the fixtures cover both routes, every apartment form, an 11 digit phone and blanks', async () => {
     const routes = await Promise.all(Object.values(RECORDS).map(async (r) => (await build(r)).route))
@@ -66,9 +110,9 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     expect((await build(RECORDS.missing_optionals)).url).toBe(ROUTES.DI4)
   })
 
-  it('refuses by name when the query found no prospect, rather than posting a body of nulls', async () => {
-    await expect(runCanvasScript(BUILD, { payload: {}, steps: { query_prospect: queried(null) } })).rejects.toThrow(/no prospect record/)
-    await expect(runCanvasScript(BUILD, { payload: {}, steps: {} })).rejects.toThrow(/no prospect record/)
+  it('refuses by name when no record was picked, rather than posting a body of nulls', async () => {
+    await expect(runCanvasScript(BUILD, { payload: {}, steps: { pick_record: { output: { record: null } } } })).rejects.toThrow(/no record picked/)
+    await expect(runCanvasScript(BUILD, { payload: {}, steps: {} })).rejects.toThrow(/no record picked/)
   })
 })
 
@@ -143,23 +187,104 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
   })
 })
 
+describe('pick_click_record', () => {
+  const PROSPECT = RECORDS.dv1_state_plain
+  const SUB = SUBMISSIONS.di4_lead_mobile
+
+  it('a Prospect__c click with an open Liberty1 offer (routing code 4, Bid) is open, keyed and written on the prospect alone', async () => {
+    expect(await pick('prospect', PROSPECT)).toEqual({
+      verdict: 'open', not_found_outcome: null, offer: 'on_record', record: PROSPECT,
+      prospect_id: PROSPECT.Id, submission_id: null, lead_id: null, sale_key: PROSPECT.Id,
+    })
+  })
+
+  for (const [name, code, status, verdict] of [
+    ['routing code 4 Completed', 4, 'Completed', 'completed'],
+    ['routing code 4 as text', '4', 'Bid', 'open'],
+    ['a Tripoint offer', 2, 'Bid', 'no_offer'],
+    ['a Tripoint sale', 2, 'Completed', 'no_offer'],
+    ['no routing code', null, 'Bid', 'no_offer'],
+    ['routing code 4 already failed', 4, 'Fail', 'no_offer'],
+    ['routing code 4 with no status', 4, null, 'no_offer'],
+    ['routing code 4 as Success', 4, 'Success', 'no_offer'],
+  ] as const) {
+    it(`a prospect with ${name} is ${verdict}`, async () => {
+      expect((await pick('prospect', { ...PROSPECT, ExternalRoutingCode__c: code, ExternalExchangeStatus__c: status })).verdict).toBe(verdict)
+    })
+  }
+
+  it('a prospect Salesforce does not hold is not found, as a prospect', async () => {
+    expect(await pick('prospect', null)).toMatchObject({ verdict: 'not_found', not_found_outcome: 'prospect_not_found', record: null, sale_key: null })
+  })
+
+  it("a Submission with a Prospect is judged on the PROSPECT's offer, keyed on the prospect, and carries the submission and its lead for the writes", async () => {
+    const row = { ...SUB, Prospect__c: PROSPECT.Id, Prospect__r: { attributes: { type: 'Prospect__c' }, ...PROSPECT } }
+    const out = await pick('submission', row)
+    expect(out).toMatchObject({ verdict: 'open', offer: 'on_record', prospect_id: PROSPECT.Id, submission_id: SUB.Id, lead_id: SUB.Lead__c, sale_key: PROSPECT.Id })
+    expect(out.record).toMatchObject({ Id: PROSPECT.Id, State__c: 'WA' })
+    const noOffer = await pick('submission', { ...row, Prospect__r: { ...PROSPECT, ExternalRoutingCode__c: 2 } })
+    expect(noOffer.verdict).toBe('no_offer')
+  })
+
+  it('a Submission that names a Prospect the query could not return is not found as a prospect, never sent from the submission instead', async () => {
+    expect(await pick('submission', { ...SUB, Prospect__c: PROSPECT.Id, Prospect__r: null })).toMatchObject({ verdict: 'not_found', not_found_outcome: 'prospect_not_found' })
+  })
+
+  it('a Submission with no Prospect is TRUSTED (Dan, 2026-09-29): open with no offer mark, keyed on the submission, no prospect to write', async () => {
+    const out = await pick('submission', SUB)
+    expect(out).toMatchObject({ verdict: 'open', offer: 'trusted', prospect_id: null, submission_id: SUB.Id, lead_id: SUB.Lead__c, sale_key: SUB.Id })
+    expect(out.record).toEqual(submissionAsProspect(SUB))
+  })
+
+  it('a trusted Submission already sold to Liberty1 (routing code 4, Completed) is completed, so a repeat click is never sent', async () => {
+    expect((await pick('submission', { ...SUB, External_Routing_Code__c: '4', External_Exchange_Status__c: 'Completed' })).verdict).toBe('completed')
+  })
+
+  it('a trusted Submission already sold to ANOTHER buyer is refused as no Liberty1 offer (Dan, 2026-09-29), like a prospect sold elsewhere', async () => {
+    expect((await pick('submission', { ...SUB, External_Routing_Code__c: '2', External_Exchange_Status__c: 'Completed' })).verdict).toBe('no_offer')
+    expect((await pick('submission', { ...SUB, External_Routing_Code__c: null, External_Exchange_Status__c: 'Completed' })).verdict).toBe('no_offer')
+  })
+
+  it('a trusted Submission with any status short of Completed is still sent', async () => {
+    for (const status of [null, 'Bid', 'Fail', 'Pending']) {
+      expect((await pick('submission', { ...SUB, External_Routing_Code__c: '2', External_Exchange_Status__c: status })).verdict, String(status)).toBe('open')
+    }
+  })
+
+  it('a Submission Salesforce does not hold is not found, as a submission', async () => {
+    expect(await pick('submission', null)).toMatchObject({ verdict: 'not_found', not_found_outcome: 'submission_not_found' })
+  })
+
+  it('a Submission with no lead carries no lead id', async () => {
+    expect((await pick('submission', SUBMISSIONS.dv1_home_phone_no_lead)).lead_id).toBeNull()
+  })
+
+  it('refuses by name when resolve_input named no source, rather than guessing which object the row is', async () => {
+    await expect(pick(null, PROSPECT)).rejects.toThrow(/no source/)
+  })
+})
+
 describe('resolve_click_input', () => {
   const PROSPECT_18 = 'a0P5f00000TestA1AA'
   const SUBMISSION_15 = 'a0S5f00000TestZ'
-  type Resolved = { valid: boolean; reason: string | null; source: string | null; prospect_id: string | null; submission_id: string | null; prospect_soql: string | null }
+  type Resolved = { valid: boolean; reason: string | null; source: string | null; prospect_id: string | null; submission_id: string | null; soql: string | null }
   const resolve = async (payload: unknown) => (await runCanvasScript(RESOLVE, { payload, steps: {} })) as Resolved
 
   it('uses a valid Prospect__c directly and queries it by id, with every field his flow read plus the two offer fields', async () => {
     const r = await resolve({ Prospect__c: PROSPECT_18 })
     expect(r).toMatchObject({ valid: true, reason: null, source: 'prospect', prospect_id: PROSPECT_18, submission_id: null })
-    expect(r.prospect_soql).toMatch(new RegExp(`FROM Prospect__c WHERE Id = '${PROSPECT_18}'$`))
-    for (const f of ['SocialSecurityNumber__c', 'User_IP__c', 'ExternalRoutingCode__c', 'ExternalExchangeStatus__c']) expect(r.prospect_soql).toContain(f)
+    expect(r.soql).toMatch(new RegExp(`FROM Prospect__c WHERE Id = '${PROSPECT_18}'$`))
+    for (const f of ['SocialSecurityNumber__c', 'User_IP__c', 'ExternalRoutingCode__c', 'ExternalExchangeStatus__c']) expect(r.soql).toContain(f)
   })
 
-  it('a valid Submission__c resolves the prospect through the submission, and keeps the submission for the patch', async () => {
+  it("a valid Submission__c queries the submission itself: Brian's submission fields, its offer fields, and every prospect field through Prospect__r", async () => {
     const r = await resolve({ Submission__c: SUBMISSION_15 })
     expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: null, submission_id: SUBMISSION_15 })
-    expect(r.prospect_soql).toMatch(new RegExp(`WHERE Id IN \\(SELECT Prospect__c FROM Submission__c WHERE Id = '${SUBMISSION_15}'\\)$`))
+    expect(r.soql).toMatch(new RegExp(`^SELECT .* FROM Submission__c WHERE Id = '${SUBMISSION_15}'$`))
+    const selected = String(r.soql).replace(/^SELECT /, '').replace(/ FROM .*$/, '').split(', ')
+    for (const f of SUBMISSION_FIELDS) expect(selected).toContain(f)
+    for (const f of ['External_Routing_Code__c', 'External_Exchange_Status__c', 'Prospect__r.Id', 'Prospect__r.State__c', 'Prospect__r.ExternalRoutingCode__c', 'Prospect__r.ExternalExchangeStatus__c', 'Prospect__r.TCPAConsentFlag__c']) expect(selected).toContain(f)
+    expect(new Set(selected).size).toBe(selected.length)
   })
 
   it('a valid Prospect__c wins over a Submission__c, which is then ignored: nothing ties that submission to this prospect', async () => {
@@ -190,7 +315,7 @@ describe('resolve_click_input', () => {
   for (const [name, payload, reason] of refusals) {
     it(`refuses ${name} as ${reason}, with no query to run`, async () => {
       const r = await resolve(payload)
-      expect(r).toEqual({ valid: false, reason, source: null, prospect_id: null, submission_id: null, prospect_soql: null })
+      expect(r).toEqual({ valid: false, reason, source: null, prospect_id: null, submission_id: null, soql: null })
     })
   }
 })

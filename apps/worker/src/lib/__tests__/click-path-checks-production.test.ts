@@ -105,6 +105,35 @@ describe('the Salesforce read', () => {
     expect(urls[1]).toBe('https://sf.test/services/data/v60.0/query/next')
   })
 
+  it('asks for Completed Liberty1 submissions with NO Prospect, by the submission fields (routing code as text), inside the bounds', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ records: [{ Id: 'a04000000000001', External_Timestamp__c: '2027-09-20T18:00:00.000+0000' }], done: true }), { status: 200 })
+    }))
+    const { supabase } = recordingSupabase()
+    const out = await productionClickPathDeps(supabase, env).readCompletedSubmissionsWithoutProspect(ORG, 4, Date.UTC(2027, 8, 20, 6, 45), Date.UTC(2027, 8, 21, 7, 15))
+    expect(out).toEqual([{ id: 'a04000000000001', at: '2027-09-20T18:00:00.000+0000' }])
+    const soql = decodeURIComponent(urls[0].split('q=')[1])
+    expect(soql).toMatch(/^SELECT Id, External_Timestamp__c FROM Submission__c WHERE /)
+    expect(soql).toContain("External_Routing_Code__c = '4'")
+    expect(soql).toContain("External_Exchange_Status__c = 'Completed'")
+    expect(soql).toContain('Prospect__c = null')
+    // SystemModstamp is indexed and a click's write always moves it, so it bounds the
+    // scan without losing a record: unfiltered, this read took 80s against the org
+    // on 2026-09-29, with it 11s, and Salesforce stops a query at 120s.
+    expect(soql).toContain('SystemModstamp >= 2027-09-20T06:45:00Z')
+    expect(soql).toContain('External_Timestamp__c >= 2027-09-20T06:45:00Z')
+    expect(soql).toContain('External_Timestamp__c < 2027-09-21T07:15:00Z')
+    expect(soql).toContain(`LIMIT ${RECONCILE_MAX_RECORDS + 1}`)
+  })
+
+  it('a submission row without its stamp is refused by name rather than dropped', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ records: [{ Id: 'a04000000000001', External_Timestamp__c: null }], done: true }), { status: 200 })))
+    const { supabase } = recordingSupabase()
+    await expect(productionClickPathDeps(supabase, env).readCompletedSubmissionsWithoutProspect(ORG, 4, 0, 1)).rejects.toThrow(/unreadable submission/)
+  })
+
   it('refuses a day past its bound rather than reconciling part of it, and a failed query throws with its status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ records: Array.from({ length: RECONCILE_MAX_RECORDS + 1 }, (_, i) => record(i)), done: true }), { status: 200 })))
     const { supabase } = recordingSupabase()

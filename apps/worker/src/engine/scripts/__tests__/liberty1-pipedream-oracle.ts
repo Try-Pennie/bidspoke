@@ -10,10 +10,18 @@
  * is `pickRoute(payload.state)` (the state after `upper`), which is how the
  * route is read from his result object's `state` and `route` pair.
  *
- * `update_salesforce` reached us as a summary of the three bodies (field names,
- * their order, the constants, the status rule), not as verbatim code, so its
- * oracle is built from that summary: this half proves the port matches the
- * summary, and says so.
+ * `update_salesforce` first reached us as a summary of the three bodies, so its
+ * oracle was built from that summary. Brian's own code arrived on 2026-09-29
+ * (with his Submission-only change) and carries the same bodies field for field,
+ * so the summary below now matches his code, not only a reading of it. Which
+ * records get a body is decided by the workflow's gates, not here: his step
+ * writes a Submission when there is one, a Prospect when there is one, and the
+ * Submission's Lead when it has one.
+ *
+ * On 2026-09-29 Brian also moved the routes back from LeadConnector to the
+ * Liberty1 Salesforce site below ("until later in the week"), and added
+ * Submission-only leads: a click whose Submission has no Prospect is sent from
+ * the Submission's own *_SO__c fields and its Lead (submissionAsProspect).
  */
 
 type Rec = Record<string, unknown>
@@ -80,6 +88,79 @@ export function buildPayload(p: Rec) {
 }
 
 export const pickRoute = (state: string | null) => (state && DV1_STATES.has(state) ? "DV1" : "DI4");
+
+// ---------- Submission-only leads (no linked Prospect) ----------
+// Added to send_to_liberty_1 by Brian on 2026-09-29, verbatim like the rest.
+
+// Applicant data lives in the *_SO__c fields; phone only exists on the linked Lead
+export const SUBMISSION_FIELDS = [
+  "Id",
+  "Prospect__c",
+  "Lead__c",
+  "Source__c",
+  "FundedDemandSubAccountName__c",
+  "SubaccountUUID__c",
+  "Prospect_Subaccount_UUID__c",
+  "FirstNameSO__c",
+  "LastNameSO__c",
+  "Email_SO__c",
+  "Home_Phone__c",
+  "StreetSO__c",
+  "Apt_Suite_SO__c",
+  "City_SO__c",
+  "State_SO__c",
+  "Zip_Code_SO__c",
+  "Date_of_Birth_SO__c",
+  "Social_Security_Number_SO__c",
+  "Loan_Purpose_SO__c",
+  "Loan_Amount_SO__c",
+  "Rent_or_Own_SO__c",
+  "Approximate_Credit_Rating_SO__c",
+  "Employment_Status_SO__c",
+  "Income_Pmt_Frequency_SO__c",
+  "Annual_Income_Before_Taxes_SO__c",
+  "Education_Level_SO__c",
+  "ConsentFCRA__c",
+  "Consent__c",
+  "User_IP__c",
+  "Lead__r.FirstName",
+  "Lead__r.LastName",
+  "Lead__r.Email",
+  "Lead__r.Phone",
+  "Lead__r.MobilePhone",
+];
+
+// Map a Submission onto the Prospect field names so buildPayload() handles both
+export function submissionAsProspect(s: Rec): Rec {
+  const lead = (s.Lead__r || {}) as Rec;
+  return {
+    Id: s.Id,
+    SubaccountName__c: s.FundedDemandSubAccountName__c ?? s.Source__c,
+    SubaccountUUID__c: s.SubaccountUUID__c ?? s.Prospect_Subaccount_UUID__c,
+    First_Name__c: s.FirstNameSO__c ?? lead.FirstName,
+    Last_Name__c: s.LastNameSO__c ?? lead.LastName,
+    Email__c: s.Email_SO__c ?? lead.Email,
+    Phone__c: lead.MobilePhone ?? lead.Phone ?? s.Home_Phone__c,
+    Street__c: s.StreetSO__c,
+    AptSuite__c: s.Apt_Suite_SO__c,
+    City__c: s.City_SO__c,
+    State__c: s.State_SO__c,
+    Zip__c: s.Zip_Code_SO__c,
+    BirthDate__c: s.Date_of_Birth_SO__c,
+    SocialSecurityNumber__c: s.Social_Security_Number_SO__c,
+    LoanPurpose__c: s.Loan_Purpose_SO__c,
+    LoanAmount__c: s.Loan_Amount_SO__c,
+    RentOrOwn__c: s.Rent_or_Own_SO__c,
+    ApproximateCreditRating__c: s.Approximate_Credit_Rating_SO__c,
+    EmploymentStatus__c: s.Employment_Status_SO__c,
+    IncomePmtFrequency__c: s.Income_Pmt_Frequency_SO__c,
+    AnnualIncomeBeforeTaxes__c: s.Annual_Income_Before_Taxes_SO__c,
+    EducationLevel__c: s.Education_Level_SO__c,
+    FCRAConsentFlag__c: s.ConsentFCRA__c,
+    TCPAConsentFlag__c: s.Consent__c,
+    User_IP__c: s.User_IP__c,
+  };
+}
 
 // ---- update_salesforce, from the summary -----------------------------------
 
