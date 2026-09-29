@@ -26,8 +26,14 @@ export function isCap(value: unknown): value is number {
  * together (#1543). It sits on Engine's synchronous response path, and a warm
  * run is a KV hit plus one Durable Object read (about 25 ms warm, #1428). Here
  * rather than in the executor so the node form states the same number.
+ *
+ * 800 ms since 2026-09-29, the first live day: at 300 ms an eligible Liberty1
+ * lead missed its offer when the profile read took about 250 ms and the counter
+ * answer landed just past the deadline. 800 ms matches buyer_select's own
+ * budget. It still does not cover the counter's cold p99 (1,492 ms, #1557), so
+ * a cold start can cost the odd offer, counted by the check error share.
  */
-export const CLICK_CHECK_BUDGET_MS = 300
+export const CLICK_CHECK_BUDGET_MS = 800
 
 /**
  * The oldest a last good copy of the buyer profiles may be for buyer_click_check

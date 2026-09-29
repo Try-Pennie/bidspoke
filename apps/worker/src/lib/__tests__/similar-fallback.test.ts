@@ -6,9 +6,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { NODE_TYPES } from '@bidspoke/node-types'
+import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 import { SIMILAR_FALLBACK_BY_SUBTYPE, SIMILAR_FALLBACK_EXCLUDED, SIMILAR_FALLBACK_STABLE, qualifiesForSimilarFallback } from '../similar-fallback'
 
 describe('similar fallback placement', () => {
+  it('the buyer click check reason states the budget the check really has, whatever it is set to', () => {
+    expect(SIMILAR_FALLBACK_EXCLUDED.buyer_click_check).toContain(`${CLICK_CHECK_BUDGET_MS} ms budget`)
+  })
+
   it('places every node type in exactly one of stable, by subtype, or excluded with a reason', () => {
     const placements = NODE_TYPES.map((t) => ({
       type: t,
