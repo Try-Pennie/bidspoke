@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, ClickCounterClient, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
+import { CLICK_CLAIM_KIND, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -42,6 +42,24 @@ const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const EVAFI = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+/** A stand-in for the worker's KV store: what was put, and a put that can be made to fail. */
+function memoryKv(opts: { failPut?: boolean; failGet?: boolean } = {}) {
+  const store = new Map<string, string>()
+  const puts: Array<{ key: string; value: string; ttl: number | undefined }> = []
+  const kv = {
+    get: async (key: string) => {
+      if (opts.failGet) throw new Error('kv get failed')
+      return store.get(key) ?? null
+    },
+    put: async (key: string, value: string, o?: { expirationTtl?: number }) => {
+      if (opts.failPut) throw new Error('kv put failed')
+      puts.push({ key, value, ttl: o?.expirationTtl })
+      store.set(key, value)
+    },
+  } as unknown as KVNamespace
+  return { kv, store, puts }
+}
 
 describe('clickCounterObjectName', () => {
   it('names the counter by partner id and the Pacific date: 11:59pm is today, 12:01am is tomorrow', () => {
@@ -96,7 +114,7 @@ describe('the click claim key', () => {
 describe('ClickCounterClient', () => {
   it('adds a member through /add-member and returns what the object said', async () => {
     const { ns, names, requests } = namespace(() => json({ added: true, count: 3 }))
-    const client = new ClickCounterClient(ns, LIBERTY1, Date.UTC(2027, 8, 21, 6, 59))
+    const client = new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, Date.UTC(2027, 8, 21, 6, 59))
     expect(await client.addMember('p-1')).toEqual({ added: true, count: 3 })
     expect(names).toEqual([`clicks-${LIBERTY1}-2027-09-20`])
     expect(new URL(requests[0].url).pathname).toBe('/add-member')
@@ -105,32 +123,32 @@ describe('ClickCounterClient', () => {
 
   it('an object error is an ObjectCallError naming the call, never an answer', async () => {
     const { ns } = namespace(() => json({ error: 'bad_member' }, 400))
-    await expect(new ClickCounterClient(ns, LIBERTY1, 0).addMember('')).rejects.toBeInstanceOf(ObjectCallError)
+    await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('')).rejects.toBeInstanceOf(ObjectCallError)
   })
 
   it('an answer that is not the add shape is refused rather than read as a count', async () => {
     const { ns } = namespace(() => json({ added: 'yes' }))
-    await expect(new ClickCounterClient(ns, LIBERTY1, 0).addMember('p-1')).rejects.toThrow(/click counter add answered an unreadable body/)
+    await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1')).rejects.toThrow(/click counter add answered an unreadable body/)
   })
 
   it('carries a deadline, proven with timers fired by hand', async () => {
     const pending: Array<() => void> = []
     const timers: Timers = { setTimeout: (fn) => { pending.push(fn); return pending.length }, clearTimeout: () => undefined }
     const ns = { idFromName: (n: string) => ({ n }), get: () => ({ fetch: () => new Promise(() => undefined) }) } as unknown as DurableObjectNamespace
-    const p = new ClickCounterClient(ns, LIBERTY1, 0, { timers, deadlineMs: 50 }).addMember('p-1')
+    const p = new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0, { timers, deadlineMs: 50 }).addMember('p-1')
     pending.forEach((fn) => fn())
     await expect(p).rejects.toBeInstanceOf(DeadlineError)
   })
 
   it('reads the members list', async () => {
     const { ns, requests } = namespace(() => json({ count: 1, members: [{ member: 'p-1', added_at: 5 }] }))
-    expect(await new ClickCounterClient(ns, LIBERTY1, 0).members()).toEqual({ count: 1, members: [{ member: 'p-1', added_at: 5 }] })
+    expect(await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).members()).toEqual({ count: 1, members: [{ member: 'p-1', added_at: 5 }] })
     expect(new URL(requests[0].url).pathname).toBe('/members')
   })
 
   it('reads the plain count through /member-count, a GET that sends no member (#1543)', async () => {
     const { ns, requests } = namespace(() => json({ count: 49 }))
-    expect(await new ClickCounterClient(ns, LIBERTY1, 0).memberCount()).toBe(49)
+    expect(await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).memberCount()).toBe(49)
     expect(new URL(requests[0].url).pathname).toBe('/member-count')
     expect(requests[0].method).toBe('GET')
   })
@@ -138,18 +156,82 @@ describe('ClickCounterClient', () => {
   it('a count answer that is not a whole number is refused rather than compared with the cap', async () => {
     for (const body of [{}, { count: -1 }, { count: 1.5 }, { count: '3' }]) {
       const { ns } = namespace(() => json(body))
-      await expect(new ClickCounterClient(ns, LIBERTY1, 0).memberCount(), JSON.stringify(body)).rejects.toThrow(/click counter count answered an unreadable body/)
+      await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).memberCount(), JSON.stringify(body)).rejects.toThrow(/click counter count answered an unreadable body/)
     }
   })
 
   it('a failed count read is an ObjectCallError, never a zero', async () => {
     const { ns } = namespace(() => json({ error: 'boom' }, 500))
-    await expect(new ClickCounterClient(ns, LIBERTY1, 0).memberCount()).rejects.toBeInstanceOf(ObjectCallError)
+    await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).memberCount()).rejects.toBeInstanceOf(ObjectCallError)
   })
 })
 
 describe('the partner id rule is the package one (#1543)', () => {
   it('the worker re-exports the exact function save validation calls', () => {
     expect(workerIsPartnerId).toBe(packageIsPartnerId)
+  })
+})
+
+describe('the saved copy of the click count (#1632)', () => {
+  const AT = Date.UTC(2027, 8, 21, 6, 59) // 2027-09-20 in Pacific
+
+  it('is keyed on the partner id and the Pacific date the counter is for', () => {
+    expect(clickCountCopyKey(LIBERTY1, '2027-09-20')).toBe(`click-count:${LIBERTY1}:2027-09-20`)
+  })
+
+  it('every add writes the count the object answered to the copy, so the offer check can read it without the object', async () => {
+    const { ns } = namespace(() => json({ added: true, count: 7 }))
+    const copy = memoryKv()
+    const client = new ClickCounterClient(ns, copy.kv, LIBERTY1, AT)
+    expect(await client.addMember('p-1')).toEqual({ added: true, count: 7 })
+    expect(copy.puts).toEqual([{ key: `click-count:${LIBERTY1}:2027-09-20`, value: '7', ttl: 3 * 24 * 60 * 60 }])
+    expect(await client.copyCount()).toBe(7)
+  })
+
+  it('a repeat add that counted nothing still writes the unchanged count, so a missing copy is repaired', async () => {
+    const { ns } = namespace(() => json({ added: false, count: 7 }))
+    const copy = memoryKv()
+    await new ClickCounterClient(ns, copy.kv, LIBERTY1, AT).addMember('p-1')
+    expect(copy.store.get(`click-count:${LIBERTY1}:2027-09-20`)).toBe('7')
+  })
+
+  it('a copy that fails to write never fails the add: the click was counted, and the next offer check falls back to the object', async () => {
+    const { ns } = namespace(() => json({ added: true, count: 8 }))
+    const copy = memoryKv({ failPut: true })
+    expect(await new ClickCounterClient(ns, copy.kv, LIBERTY1, AT).addMember('p-1')).toEqual({ added: true, count: 8 })
+  })
+
+  it('a failed add writes no copy', async () => {
+    const { ns } = namespace(() => json({ error: 'boom' }, 500))
+    const copy = memoryKv()
+    await expect(new ClickCounterClient(ns, copy.kv, LIBERTY1, AT).addMember('p-1')).rejects.toBeInstanceOf(ObjectCallError)
+    expect(copy.puts).toEqual([])
+  })
+
+  it('no copy reads as null, never as zero clicks, and asks nothing of the object', async () => {
+    const { ns, requests } = namespace(() => json({ count: 3 }))
+    expect(await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, AT).copyCount()).toBeNull()
+    expect(requests).toEqual([])
+  })
+
+  it('a stored copy that is not a whole number reads as null rather than as a count', async () => {
+    for (const bad of ['', 'abc', '-1', '1.5', 'NaN']) {
+      const copy = memoryKv()
+      copy.store.set(`click-count:${LIBERTY1}:2027-09-20`, bad)
+      expect(await new ClickCounterClient(namespace(() => json({})).ns, copy.kv, LIBERTY1, AT).copyCount(), bad).toBeNull()
+    }
+  })
+
+  it('a copy for another day or another partner is not read', async () => {
+    const copy = memoryKv()
+    copy.store.set(`click-count:${LIBERTY1}:2027-09-19`, '40')
+    copy.store.set(`click-count:${EVAFI}:2027-09-20`, '40')
+    expect(await new ClickCounterClient(namespace(() => json({})).ns, copy.kv, LIBERTY1, AT).copyCount()).toBeNull()
+  })
+
+  it('seedCopy writes a count the object answered, for the first check of a day before any click', async () => {
+    const copy = memoryKv()
+    await new ClickCounterClient(namespace(() => json({})).ns, copy.kv, LIBERTY1, AT).seedCopy(0)
+    expect(copy.store.get(`click-count:${LIBERTY1}:2027-09-20`)).toBe('0')
   })
 })

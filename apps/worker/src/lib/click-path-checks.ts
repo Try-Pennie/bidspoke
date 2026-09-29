@@ -773,7 +773,7 @@ export function productionClickPathDeps(supabase: SupabaseClient, env: Env): Cli
     },
     counterMembers: async (partnerId, date) => {
       // The counter is named by the Pacific date of an instant; noon of that date names it.
-      const counter = new ClickCounterClient(env.DAILY_CAP, partnerId, zonedDayStartUtc(date, PACIFIC) + 12 * HOUR)
+      const counter = new ClickCounterClient(env.DAILY_CAP, env.WORKFLOW_CACHE, partnerId, zonedDayStartUtc(date, PACIFIC) + 12 * HOUR)
       if (counter.date !== date) throw new Error(`click counter for ${date} resolved to ${counter.date}`)
       const r = await counter.members()
       if (!r || !Array.isArray(r.members)) throw new Error(`click counter members answered an unreadable body: ${JSON.stringify(r)}`)

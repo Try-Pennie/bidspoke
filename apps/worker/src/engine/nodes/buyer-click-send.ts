@@ -270,7 +270,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
       return slug ? { slug } : null
     },
     saleClient: (key) => new LeadSaleClient(env.LEAD_SALE, key),
-    counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, partnerId, nowMs),
+    counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, env.WORKFLOW_CACHE, partnerId, nowMs),
     // The one outbound POST (L613): the URL is the node's, and a click buyer carries no stored credential.
     post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
     // The one production alert, shared with buyer_click_check (#1557).

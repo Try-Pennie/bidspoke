@@ -16,11 +16,15 @@
  *      evaluateClickEligibility (states, blackout days, hours, debt, loan
  *      amount), judged at the instant the node RUNS, not when the lead arrived
  *      (Dan, 2026-09-24).
- *   3. Today's distinct click count from the click counter (the Pacific day,
- *      keyed on the partner id), compared with the profile's daily cap: eligible
- *      only while count < cap, else daily_click_cap. A slight overshoot is
- *      accepted, because clicks arrive after offers and the send side counts
- *      exactly. A profile with no cap routes no_daily_cap.
+ *   3. Today's distinct click count (the Pacific day, keyed on the partner id),
+ *      compared with the profile's daily cap: eligible only while count < cap,
+ *      else daily_click_cap. The count is read from its saved copy (#1632) and
+ *      trusted right up to the cap (Dan, 2026-09-29), because reaching the
+ *      counter object cost 130 to 760 ms of this budget; only with no readable
+ *      copy is the object asked, and its answer seeds the copy. A slight
+ *      overshoot is accepted, because clicks arrive after offers, the copy can
+ *      lag by up to a minute, and the send side counts exactly and refuses past
+ *      the cap. A profile with no cap routes no_daily_cap.
  *
  * One budget (CLICK_CHECK_BUDGET_MS) covers the profile load and the count
  * together, with injected timers (L524, and one timer for the whole path rather
@@ -95,6 +99,8 @@ export interface BuyerClickCheckOutput {
   daily_lead_cap: number | null
   /** The Pacific date the count is for, null when the counter was not opened. */
   count_date: string | null
+  /** Where the count came from: its saved copy, the counter object, or null when none was read. */
+  count_source: 'copy' | 'counter' | null
   profile_served_from: BuyerProfilesSnapshot['served_from'] | null
   duration_ms: number
 }
@@ -115,6 +121,10 @@ export interface BuyerClickCheckResult {
 export interface ClickCountApi {
   readonly date: string
   memberCount(): Promise<number>
+  /** The saved count, null when there is none; may throw when the store cannot be read. */
+  copyCount(): Promise<number | null>
+  /** Writes a count the object answered to the copy; never rejects. */
+  seedCopy(count: number): Promise<void>
 }
 
 export interface BuyerClickCheckDeps {
@@ -138,7 +148,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   return {
     // The one reader (#1492): an ageing cached copy is rebuilt in the background, so the read this lead pays stays a cache hit.
     loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
-    counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, partnerId, nowMs, { deadlineMs: CLICK_CHECK_BUDGET_MS }),
+    counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, env.WORKFLOW_CACHE, partnerId, nowMs, { deadlineMs: CLICK_CHECK_BUDGET_MS }),
     clock: () => Date.now(),
     alert: (alert) => background(productionClickAlert(orgId, env, supabase)(alert)),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
@@ -151,7 +161,7 @@ type PartnerFacts = Pick<BuyerClickCheckOutput, 'partner_slug' | 'partner_name' 
 
 /** What the budgeted part decided, as a value, so nothing it does after the budget ends can reach the output. */
 type Decision =
-  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: ClickPageReason }
+  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; countSource?: 'copy' | 'counter'; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: ClickPageReason }
 
 export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps): Promise<BuyerClickCheckResult> {
   const startedAt = deps.clock()
@@ -168,6 +178,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
     count: null,
     daily_lead_cap: null,
     count_date: null,
+    count_source: null,
     profile_served_from: null,
     duration_ms: 0,
   }
@@ -201,6 +212,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
   if (decision.cap !== undefined) output.daily_lead_cap = decision.cap
   if (decision.count !== undefined) output.count = decision.count
   if (decision.countDate !== undefined) output.count_date = decision.countDate
+  if (decision.countSource !== undefined) output.count_source = decision.countSource
   if (decision.servedFrom !== undefined) output.profile_served_from = decision.servedFrom
   finish()
   if (decision.page) page(node, ctx, deps, output, decision.page)
@@ -263,13 +275,24 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
   }
   let counter: ClickCountApi
   let count: number
+  let countSource: 'copy' | 'counter'
   try {
     counter = deps.counter(partnerId, instantMs)
-    count = await counter.memberCount()
+    // An unreadable copy is no copy: the object is asked, as when none was written.
+    const copied = await counter.copyCount().catch(() => null)
+    if (copied !== null) {
+      count = copied
+      countSource = 'copy'
+    } else {
+      count = await counter.memberCount()
+      countSource = 'counter'
+      // Not awaited, so seeding never spends the budget; seedCopy never rejects.
+      void counter.seedCopy(count)
+    }
   } catch (err) {
     return { ...base, route: 'not_eligible', reason: 'cap_check_error', detail: `today's click count could not be read, so the buyer is not offered: ${messageOf(err)}` }
   }
-  const counted = { ...base, count, countDate: counter.date }
+  const counted = { ...base, count, countDate: counter.date, countSource }
   if (count >= cap) return { ...counted, route: 'not_eligible', reason: 'daily_click_cap', detail: `${count} clicks on ${counter.date} (Pacific) of a cap of ${cap}` }
   return { ...counted, route: 'eligible', reason: 'eligible' }
 }

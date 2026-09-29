@@ -332,7 +332,7 @@ export async function clickCountIfClickSold(
   }
   if (soldOn !== 'click') return null
   try {
-    const counter = new ClickCounterClient(c.env.DAILY_CAP, partnerId, Date.now())
+    const counter = new ClickCounterClient(c.env.DAILY_CAP, c.env.WORKFLOW_CACHE, partnerId, Date.now())
     const count = await counter.memberCount()
     return c.json({ sold_on: 'click', count, date: counter.date, day_zone: PACIFIC })
   } catch (err) {
