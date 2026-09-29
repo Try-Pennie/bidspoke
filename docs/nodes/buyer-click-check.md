@@ -16,6 +16,8 @@ On the Engine Bidding response path, after Tripoint has given a known no, and be
 3. **Judges the lead** against the profile, at the moment the node runs (not when the lead arrived): the partner's own active switch (`inactive`), then the partner's click URL, which must carry `{prospect_id}` where the prospect's id goes (`click_url_has_no_prospect_id`, and a person is paged once per buyer per 15 minutes, because the offer replaces that placeholder and refuses a URL without it; the profile cannot be enabled without it either), then the shared buy box, in this order: a missing or unreadable state, debt or loan amount (`missing_lead_field`), the state list (`state_not_allowed`), days off (`blackout`), hours (`closed`), the debt range (`debt_below_min`, `debt_above_max`) and the loan amount minimum (`loan_amount_below_min`). The first rule the lead fails is the reason. The buy box is the same code Buyer Select runs, so the two cannot drift.
 4. **Reads today's clicks** from the buyer's click counter, the distinct prospects Buyer Click Send has sent it on this **Pacific** day, and compares them with the profile's clicks per day. Eligible only while the count is below the cap: 49 clicks of 50 is eligible, 50 of 50 is `daily_click_cap`. A profile with no clicks per day is `no_daily_cap`: the buyer is never offered without one. A few clicks past the cap can still land, because offers already made can still be clicked; the send side counts every one exactly.
 
+   The count is read from its **saved copy** (#1632), which Buyer Click Send writes every time it counts a click, and is trusted right up to the cap (Dan, 2026-09-29). Reaching the counter itself took 130 to 760 ms of the budget on launch day while the counter answered in about 5 ms, because every lead paid a trip to wherever the counter lives; the copy is a few milliseconds. Only when there is no readable copy (the first check of a Pacific day before any click, or a copy that failed to write) is the counter asked, and its answer is saved as the copy for the next lead. The copy only ever moves up, but it can lag the counter: other data centres see a new value up to a minute late, and two clicks within a second can leave it one behind until the next click. Nothing refuses a click past the cap (Buyer Click Send sends it, counts it and pages over the cap), so on a busy day a few clicks past the cap can be sold. Dan accepted that on 2026-09-29 in exchange for a fast check all day. A copy that cannot be read is logged as `buyer_click_check_copy_unreadable`.
+
 ## The budget, and failing toward under sending
 
 The profile read and the count read share one 800 ms budget (`CLICK_CHECK_BUDGET_MS` in `@bidspoke/buyer-profile`; 300 ms until 2026-09-29, when an eligible lead missed its offer on a slow profile read). A read that fails, one that has not answered when the budget ends, or a stored cap that is not a whole number above zero routes `not_eligible` as `cap_check_error`, with the cause in `detail`. The buyer is then not offered on this lead: a check that cannot finish never offers on a guess. A read that lands after the budget ended cannot change the answer already given.
@@ -62,12 +64,13 @@ The rules themselves (states, hours, days off, debt range, loan amount minimum, 
   "count": 12,
   "daily_lead_cap": 50,
   "count_date": "2026-09-29",
+  "count_source": "copy",
   "profile_served_from": "cache",
   "duration_ms": 18
 }
 ```
 
-`partner_name`, `click_url` and `external_routing_code` are the partner record's, so the steps that build the offer and the Salesforce patch read them from `steps.<namespace>.output`. They are null when no enabled profile was found. `count` and `count_date` are null when the counter was not read (the lead was out before the cap was checked, or the read failed). `daily_lead_cap` is the profile's clicks per day the count was judged against. `profile_served_from` says whether the profiles came from the database, the cache or the last good copy.
+`partner_name`, `click_url` and `external_routing_code` are the partner record's, so the steps that build the offer and the Salesforce patch read them from `steps.<namespace>.output`. They are null when no enabled profile was found. `count` and `count_date` are null when the counter was not read (the lead was out before the cap was checked, or the read failed). `count_source` says where the count came from: `copy` (the saved copy), `counter` (no copy, so the counter was asked), or null when no count was read. `daily_lead_cap` is the profile's clicks per day the count was judged against. `profile_served_from` says whether the profiles came from the database, the cache or the last good copy.
 
 ## See also
 

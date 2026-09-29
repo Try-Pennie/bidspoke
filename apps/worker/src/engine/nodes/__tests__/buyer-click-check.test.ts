@@ -68,21 +68,28 @@ function ctx(payload: Record<string, unknown> = {}): ExecutionContext {
 interface Harness {
   deps: BuyerClickCheckDeps
   counterReads: Array<{ partnerId: string; nowMs: number }>
+  /** How many times the object itself was asked, as distinct from the saved copy. */
+  objectReads: number
+  copyReads: number
+  seeds: number[]
   loads: number
   timeouts: number[]
   alerts: ClickAlert[]
+  logs: Array<{ event: string } & Record<string, unknown>>
   fire: () => void
 }
 
 function harness(opts: {
   profiles?: BuyerProfilesSnapshot | (() => Promise<BuyerProfilesSnapshot>)
   count?: number | (() => Promise<number>)
+  /** The saved copy of the count; absent (null) by default, so the object is read. */
+  copy?: number | null | (() => Promise<number | null>)
   clockMs?: number
   manualTimers?: boolean
 } = {}): Harness {
   const pending: Array<() => void> = []
   const h: Harness = {
-    counterReads: [], loads: 0, timeouts: [], alerts: [], deps: undefined as never,
+    counterReads: [], objectReads: 0, copyReads: 0, seeds: [], loads: 0, timeouts: [], alerts: [], logs: [], deps: undefined as never,
     fire: () => pending.splice(0).forEach((fn) => fn()),
   }
   const timers: Timers | undefined = opts.manualTimers
@@ -99,15 +106,22 @@ function harness(opts: {
       return {
         date: '2027-09-21',
         memberCount: async () => {
+          h.objectReads += 1
           const c = opts.count ?? 12
           return typeof c === 'function' ? c() : c
         },
+        copyCount: async () => {
+          h.copyReads += 1
+          const c = opts.copy ?? null
+          return typeof c === 'function' ? c() : c
+        },
+        seedCopy: async (n) => { h.seeds.push(n) },
       }
     },
     clock: () => opts.clockMs ?? NOW,
     timers,
     alert: (alert) => { h.alerts.push(alert) },
-    log: () => undefined,
+    log: (fields) => { h.logs.push(fields) },
   }
   return h
 }
@@ -407,5 +421,56 @@ describe('refusals', () => {
     const other = clickBuyer({ partnerId: OTHER_ID }, { id: OTHER_ID, slug: 'evafi', name: 'EvaFi' })
     const r = await run(harness({ profiles: snapshot(other) }))
     expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_disabled', partner_slug: null })
+  })
+})
+
+describe('the saved copy of the count (#1632)', () => {
+  it('a copy under the cap is eligible without asking the object, and says it judged the copy', async () => {
+    const h = harness({ copy: 12, count: async () => { throw new Error('the object must not be asked') } })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'eligible', reason: 'eligible', count: 12, daily_lead_cap: 50, count_date: '2027-09-21', count_source: 'copy' })
+    expect(h.objectReads).toBe(0)
+    expect(h.seeds).toEqual([])
+  })
+
+  it('the copy is trusted right up to the cap (Dan, 2026-09-29): 49 of 50 is eligible', async () => {
+    const h = harness({ copy: 49 })
+    expect((await run(h)).output).toMatchObject({ _route: 'eligible', count: 49, count_source: 'copy' })
+    expect(h.objectReads).toBe(0)
+  })
+
+  it('a copy at the cap is daily_click_cap without asking the object', async () => {
+    const h = harness({ copy: 50 })
+    expect((await run(h)).output).toMatchObject({ _route: 'not_eligible', reason: 'daily_click_cap', count: 50, count_source: 'copy' })
+    expect(h.objectReads).toBe(0)
+  })
+
+  it('no copy asks the object, and seeds the copy with its answer so the next check need not', async () => {
+    const h = harness({ copy: null, count: 3 })
+    expect((await run(h)).output).toMatchObject({ _route: 'eligible', count: 3, count_source: 'counter' })
+    expect(h.copyReads).toBe(1)
+    expect(h.objectReads).toBe(1)
+    expect(h.seeds).toEqual([3])
+  })
+
+  it('a copy that cannot be read falls back to the object rather than failing the check', async () => {
+    const h = harness({ copy: async () => { throw new Error('kv get failed') }, count: 4 })
+    expect((await run(h)).output).toMatchObject({ _route: 'eligible', count: 4, count_source: 'counter' })
+    expect(h.objectReads).toBe(1)
+    // Said out loud, so a store outage is not a silent slow path (L11).
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_click_check_copy_unreadable', partner_id: PARTNER_ID, detail: expect.stringContaining('kv get failed') }))
+  })
+
+  it('no copy and a failed object read is still cap_check_error: nothing is read as zero', async () => {
+    const h = harness({ copy: null, count: async () => { throw new Error('click counter count answered 500') } })
+    expect((await run(h)).output).toMatchObject({ _route: 'not_eligible', reason: 'cap_check_error', count: null, count_source: null })
+    expect(h.seeds).toEqual([])
+  })
+
+  it('a check that stops before the count reads neither the copy nor the object', async () => {
+    const h = harness({ copy: 12, profiles: snapshot(clickBuyer({ dailyLeadCap: null })) })
+    expect((await run(h)).output).toMatchObject({ reason: 'no_daily_cap', count_source: null })
+    expect(h.copyReads).toBe(0)
+    expect(h.objectReads).toBe(0)
   })
 })

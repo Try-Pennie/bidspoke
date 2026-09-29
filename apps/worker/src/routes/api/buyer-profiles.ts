@@ -313,9 +313,12 @@ buyerProfiles.get('/:id/buyer-usage', async (c) => {
  * here and the partner cap-count route, so both answer the same way: today's
  * distinct clicks from the click counter, keyed on the partner id, on the
  * PACIFIC day the counter resets on (the day CapsGrid names), read with the
- * plain count call that never adds a member. The count is the one
- * buyer_click_check judges the cap against, so the panel and the node agree
- * (L16). A counter that does not answer is a 503, never a zero (L633).
+ * plain count call that never adds a member. This is the counter itself, the
+ * true count. buyer_click_check judges the cap against its saved copy instead
+ * (#1632), which can trail the counter by a click or two for up to a minute,
+ * so on a busy moment the panel can read one or two higher than the count the
+ * last offer was judged on; the panel is the one to believe. A counter that
+ * does not answer is a 503, never a zero (L633).
  */
 export async function clickCountIfClickSold(
   c: Context<{ Bindings: Env; Variables: AuthVariables }>,
@@ -332,7 +335,7 @@ export async function clickCountIfClickSold(
   }
   if (soldOn !== 'click') return null
   try {
-    const counter = new ClickCounterClient(c.env.DAILY_CAP, partnerId, Date.now())
+    const counter = new ClickCounterClient(c.env.DAILY_CAP, c.env.WORKFLOW_CACHE, partnerId, Date.now())
     const count = await counter.memberCount()
     return c.json({ sold_on: 'click', count, date: counter.date, day_zone: PACIFIC })
   } catch (err) {

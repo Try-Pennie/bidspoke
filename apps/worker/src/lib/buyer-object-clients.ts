@@ -213,23 +213,96 @@ function isAddMemberResult(v: unknown): v is AddMemberResult {
   return r !== null && typeof r === 'object' && typeof r.added === 'boolean' && typeof r.count === 'number' && Number.isInteger(r.count) && r.count >= 0
 }
 
-/** The day's distinct set of prospects a click sold buyer was sent, one object per buyer per Pacific day. */
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
+
+/**
+ * The saved copy of a buyer's click count for one Pacific day (#1632), in the
+ * worker's KV store. The offer check reads it instead of the object, because
+ * reaching one object from wherever Engine's request lands took 130 to 760 ms
+ * on 2026-09-29 while the object itself answered in 5. The object stays the
+ * truth, but nothing downstream refuses a click past the cap: buyer_click_send
+ * sends it, counts it and pages over the cap. So a copy that lags (KV takes up
+ * to a minute to reach every data centre, and accepts about one write a second
+ * to a key) can let a few clicks past the cap be offered and sold. Dan accepted
+ * that on 2026-09-29 for a fast check all day. To keep the lag short, a write
+ * only ever raises the copy, so two adds landing out of order cannot lower it.
+ */
+export function clickCountCopyKey(partnerId: string, date: string): string {
+  return `click-count:${partnerId}:${date}`
+}
+
+/** Kept past the Pacific day it counts, then left to expire; nothing reads another day's key. */
+export const CLICK_COUNT_COPY_TTL_S = 3 * 24 * 60 * 60
+
+/**
+ * The copy's read and write together, bounded so a slow store cannot spend the
+ * deadline buyer_click_send and the held click release size for the add itself.
+ */
+export const CLICK_COUNT_COPY_WRITE_DEADLINE_MS = 500
+
+/**
+ * The day's distinct set of prospects a click sold buyer was sent, one object
+ * per buyer per Pacific day, and its saved copy. The copy store is a required
+ * argument rather than an option, so no caller can add a click without the copy
+ * following (L621): a forgotten copy would leave the offer check trusting a
+ * count that never moves.
+ */
 export class ClickCounterClient {
   private readonly stub: DurableObjectStub
+  private readonly copyKey: string
   readonly name: string
   readonly date: string
-  constructor(ns: DurableObjectNamespace, partnerId: string, nowMs: number, private readonly opts: ClientOptions = {}) {
+  constructor(ns: DurableObjectNamespace, private readonly copyStore: KVNamespace, partnerId: string, nowMs: number, private readonly opts: ClientOptions = {}) {
     const n = clickCounterObjectName(partnerId, nowMs)
     this.name = n.name
     this.date = n.date
+    this.copyKey = clickCountCopyKey(partnerId, n.date)
     this.stub = ns.get(ns.idFromName(n.name))
   }
 
-  /** Adds the member once; a repeat answers added false with the unchanged count. */
+  /**
+   * Adds the member once; a repeat answers added false with the unchanged count.
+   * Then writes the count the object answered to the copy. A copy that fails to
+   * write never fails the add, because the click was counted; it is logged, and
+   * the next offer check reads the object while the copy is missing.
+   */
   async addMember(member: string): Promise<AddMemberResult> {
     const r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
     if (!isAddMemberResult(r)) throw new Error(`click counter add answered an unreadable body: ${JSON.stringify(r)}`)
+    await this.writeCopy(r.count)
     return r
+  }
+
+  /** The saved count, or null when there is none or it is not a whole number: null is never zero clicks. */
+  async copyCount(): Promise<number | null> {
+    const raw = await this.copyStore.get(this.copyKey)
+    if (raw === null || !/^\d+$/.test(raw)) return null
+    return Number(raw)
+  }
+
+  /** Writes a count the object answered, so the first check of a day seeds the copy for the rest; never lowers it. */
+  seedCopy(count: number): Promise<void> {
+    return this.writeCopy(count)
+  }
+
+  /**
+   * Raises the copy to `count`, never lowers it. KV has no compare and set, so
+   * two writers can still race between the read and the put; the window is the
+   * read's few milliseconds rather than the whole add. Never rejects.
+   */
+  private async writeCopy(count: number): Promise<void> {
+    try {
+      await withDeadline((async () => {
+        const stored = await this.copyCount().catch((err: unknown) => {
+          console.error(`[click-counter] the saved copy ${this.copyKey} could not be read before saving: ${messageOf(err)}`)
+          return null
+        })
+        if (stored !== null && stored >= count) return
+        await this.copyStore.put(this.copyKey, String(count), { expirationTtl: CLICK_COUNT_COPY_TTL_S })
+      })(), CLICK_COUNT_COPY_WRITE_DEADLINE_MS, 'click count copy', this.opts.timers)
+    } catch (err) {
+      console.error(`[click-counter] the saved copy ${this.copyKey} could not be written: ${messageOf(err)}`)
+    }
   }
 
   members(): Promise<MembersResult> {

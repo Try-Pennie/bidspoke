@@ -162,7 +162,7 @@ describe('POST /held-clicks/:id/mark-sent', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, list_cleared: true })
     expect(saleStub.heal).toHaveBeenCalledWith(2, { buyer_reference: LEAD_ID, result_code: 'marked_sent', http_status: null, payout_cents: 0 })
-    expect(vi.mocked(ClickCounterClient)).toHaveBeenCalledWith(testEnv.DAILY_CAP, PARTNER, Date.parse(HELD_AT))
+    expect(vi.mocked(ClickCounterClient)).toHaveBeenCalledWith(testEnv.DAILY_CAP, testEnv.WORKFLOW_CACHE, PARTNER, Date.parse(HELD_AT))
     expect(counterStub.addMember).toHaveBeenCalledWith(PROSPECT)
     expect(sb.eqCalls.held_click_claims).toEqual(expect.arrayContaining([['id', ROW_ID], ['organization_id', 'org-abc'], ['last_execution_id', 'exec-1']]))
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, {

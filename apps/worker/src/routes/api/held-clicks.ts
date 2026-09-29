@@ -252,7 +252,7 @@ heldClicks.post('/:id/mark-sent', async (c) => {
   // The day the click was held is the day the buyer received it.
   let count: { added: boolean; count: number; date: string } | null = null
   let countError: string | null = null
-  const counter = new ClickCounterClient(c.env.DAILY_CAP, row.partner_id, Date.parse(row.held_at))
+  const counter = new ClickCounterClient(c.env.DAILY_CAP, c.env.WORKFLOW_CACHE, row.partner_id, Date.parse(row.held_at))
   try {
     const added = await withDeadline(counter.addMember(row.prospect_id), OBJECT_CALL_DEADLINE_MS, 'click counter add')
     count = { ...added, date: counter.date }
