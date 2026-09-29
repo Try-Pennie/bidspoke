@@ -121,7 +121,7 @@ export const CHECK_ERROR_REASONS = ['cap_check_error', 'profile_copy_stale'] as 
 export const CHECK_ERROR_MIN_RUNS = 20
 /**
  * The share that pages. The #1557 review measured the object call p99 at 1,492
- * ms against the check's budget (800 ms since 2026-09-29), so a cold counter will cost SOME runs every day;
+ * ms against the check's budget (CLICK_CHECK_BUDGET_MS), so a cold counter will cost SOME runs every day;
  * a fifth is well past a cold start and well short of an outage. The real share
  * on the first live day is what to set this from.
  */
