@@ -293,7 +293,10 @@ export class ClickCounterClient {
   private async writeCopy(count: number): Promise<void> {
     try {
       await withDeadline((async () => {
-        const stored = await this.copyCount().catch(() => null)
+        const stored = await this.copyCount().catch((err: unknown) => {
+          console.error(`[click-counter] the saved copy ${this.copyKey} could not be read before saving: ${messageOf(err)}`)
+          return null
+        })
         if (stored !== null && stored >= count) return
         await this.copyStore.put(this.copyKey, String(count), { expirationTtl: CLICK_COUNT_COPY_TTL_S })
       })(), CLICK_COUNT_COPY_WRITE_DEADLINE_MS, 'click count copy', this.opts.timers)

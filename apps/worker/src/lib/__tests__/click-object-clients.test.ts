@@ -10,7 +10,7 @@
  * Both are named by the partner ID, never its slug (#1553, L15): a renamed slug
  * must find the same claims and the same count.
  */
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
 import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
 
@@ -280,5 +280,19 @@ describe('the saved copy never moves down (#1632 review)', () => {
     pending.splice(0).forEach((fn) => fn())
     expect(await p).toEqual({ added: true, count: 5 })
     expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS)
+  })
+})
+
+describe('a copy that cannot be read while saving is said out loud', () => {
+  it('logs the failed read, then writes the count the object answered', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const copy = memoryKv({ failGet: true })
+      await new ClickCounterClient(namespace(() => json({ added: true, count: 6 })).ns, copy.kv, LIBERTY1, Date.UTC(2027, 8, 21, 6, 59)).addMember('p-1')
+      expect(copy.store.get(`click-count:${LIBERTY1}:2027-09-20`)).toBe('6')
+      expect(spy.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining('could not be read before saving: kv get failed'))
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
