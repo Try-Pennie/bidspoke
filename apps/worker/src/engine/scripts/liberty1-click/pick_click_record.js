@@ -9,9 +9,11 @@
 // A Submission with NO Prospect is TRUSTED (Dan, 2026-09-29): nothing writes a
 // Liberty1 offer onto a Submission before the click, so there is no mark to
 // check, and it is sent from the submission itself with Brian's mapping below.
-// It is still answered already sent when the submission itself was sold to
-// Liberty1 (code 4, Completed), and the claim in click_send keys it on the
-// submission id, so a repeat click is never sent twice.
+// A submission already Completed is never sent: for Liberty1 (code 4) it is
+// answered already sent, and for any other buyer it is refused as no Liberty1
+// offer (Dan, 2026-09-29), as a prospect sold elsewhere is, so one person is not
+// sold twice. The claim in click_send keys it on the submission id, so a repeat
+// click is never sent twice.
 //
 // A Submission that names a Prospect the query could not return is not found
 // as a prospect, never sent from the submission instead.
@@ -108,9 +110,10 @@ if (idOf(row.Prospect__c)) {
   };
 }
 
-const soldToLiberty1 = isOffer(row.External_Routing_Code__c) && row.External_Exchange_Status__c === "Completed";
+const sold = row.External_Exchange_Status__c === "Completed";
+const soldToLiberty1 = sold && isOffer(row.External_Routing_Code__c);
 return {
-  verdict: soldToLiberty1 ? "completed" : "open",
+  verdict: soldToLiberty1 ? "completed" : sold ? "no_offer" : "open",
   not_found_outcome: null,
   offer: "trusted",
   record: submissionAsProspect(row),

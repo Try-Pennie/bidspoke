@@ -348,6 +348,14 @@ describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
     expect(r.writes).toEqual([])
   })
 
+  it('already sold to another buyer (Completed, another routing code) is refused 409 as no Liberty1 offer and sends nothing', async () => {
+    org.submission = { ...SUBMISSION_ROW, External_Routing_Code__c: '2', External_Exchange_Status__c: 'Completed' }
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r).toMatchObject({ status: 409, body: { success: false, outcome: 'no_liberty1_offer' } })
+    expect(clickInputs).toEqual([])
+    expect(r.writes).toEqual([])
+  })
+
   it('an unknown outcome writes nothing', async () => {
     clickRoute = 'unknown'
     const r = await click({ Submission__c: SUBMISSION_ID })

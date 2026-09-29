@@ -11,7 +11,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 3. **Reads the record** from Salesforce (`query_record`): every field Brian's flow read, plus the routing code and exchange status.
 4. **Picks what to send** (`pick_record`), then **checks the offer** (`check_offer`):
    - A prospect, or a submission whose prospect came back, is judged on the **prospect**: only routing code 4 with exchange status Bid is sent. This is what stops an arbitrary id posted to the public URL being sold or counted.
-   - A submission with **no Prospect is trusted** (Dan, 2026-09-29): nothing writes a Liberty1 offer onto a Submission before the click, so there is no mark to check. It is sent from the submission's own `*_SO__c` fields, the phone taken from its Lead first (Brian's `submissionAsProspect`), unless the submission itself is already Completed for Liberty1. A submission completed for another buyer is still sent, as in Brian's flow.
+   - A submission with **no Prospect is trusted** (Dan, 2026-09-29): nothing writes a Liberty1 offer onto a Submission before the click, so there is no mark to check. It is sent from the submission's own `*_SO__c` fields, the phone taken from its Lead first (Brian's `submissionAsProspect`), unless the submission is already Completed: for Liberty1 it is answered already sent, and for any other buyer refused as no Liberty1 offer (Dan, 2026-09-29), so one person is not sold twice. Brian's flow sends those.
    - A submission that names a prospect Salesforce does not return is refused as not found, never sent from the submission instead.
 5. **Builds the request** (`build_request`): Brian's body, byte for byte, to the DV1 URL for DE, HI, IA, MN, OR, RI, VT, WA, WI and WY, and to DI4 for every other state.
 
@@ -27,7 +27,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 | An id that is not a Salesforce id | 400, reason `invalid_id` | nothing read, nothing written |
 | No such prospect (or the submission names one Salesforce does not return) | 404 `prospect_not_found` | nothing written |
 | No such submission | 404 `submission_not_found` | nothing written |
-| Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed) | 409 `no_liberty1_offer` | nothing written |
+| Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed), or a submission with no prospect already Completed for another buyer | 409 `no_liberty1_offer` | nothing written |
 | Liberty1 offer already Completed (on the prospect, or on a submission with no prospect) | 200 `{"success": true, "outcome": "already_sent"}` | nothing written, nothing sent |
 | A submission with no prospect, not yet Completed for Liberty1 | sent with no offer check, then as the rows below | the Submission and its Lead only |
 | `sent`: Liberty1 created the record | 200 `{"success": true, "outcome": "sent"}` | Completed, with Liberty1's lead id |

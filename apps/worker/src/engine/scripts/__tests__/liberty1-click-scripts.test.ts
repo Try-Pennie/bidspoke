@@ -240,8 +240,15 @@ describe('pick_click_record', () => {
     expect((await pick('submission', { ...SUB, External_Routing_Code__c: '4', External_Exchange_Status__c: 'Completed' })).verdict).toBe('completed')
   })
 
-  it('a trusted Submission completed for ANOTHER buyer is still sent: nothing on a Submission records a Liberty1 offer to check it against', async () => {
-    expect((await pick('submission', { ...SUB, External_Routing_Code__c: '2', External_Exchange_Status__c: 'Completed' })).verdict).toBe('open')
+  it('a trusted Submission already sold to ANOTHER buyer is refused as no Liberty1 offer (Dan, 2026-09-29), like a prospect sold elsewhere', async () => {
+    expect((await pick('submission', { ...SUB, External_Routing_Code__c: '2', External_Exchange_Status__c: 'Completed' })).verdict).toBe('no_offer')
+    expect((await pick('submission', { ...SUB, External_Routing_Code__c: null, External_Exchange_Status__c: 'Completed' })).verdict).toBe('no_offer')
+  })
+
+  it('a trusted Submission with any status short of Completed is still sent', async () => {
+    for (const status of [null, 'Bid', 'Fail', 'Pending']) {
+      expect((await pick('submission', { ...SUB, External_Routing_Code__c: '2', External_Exchange_Status__c: status })).verdict, String(status)).toBe('open')
+    }
   })
 
   it('a Submission Salesforce does not hold is not found, as a submission', async () => {
