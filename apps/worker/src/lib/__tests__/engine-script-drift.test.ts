@@ -48,13 +48,6 @@ import BUILD_LIBERTY1_REQUEST_RAW from '../../engine/scripts/liberty1-click/buil
 import LIBERTY1_CLICK_PATCH_RAW from '../../engine/scripts/liberty1-click/liberty1_click_patch.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import PICK_CLICK_RECORD_RAW from '../../engine/scripts/liberty1-click/pick_click_record.js?raw'
-// The two scripts the live click workflow's canvas held on 2026-09-29 (version 6),
-// before the Submission-only change was pasted: main's files then, without the
-// final newline, exactly as the canvas stores them.
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import CANVAS_V6_RESOLVE_RAW from './fixtures/liberty1-click-canvas-v6/resolve_input.txt?raw'
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import CANVAS_V6_BUILD_RAW from './fixtures/liberty1-click-canvas-v6/build_request.txt?raw'
 const LIBERTY1_ON_DISK: Record<string, string> = {
   'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
   'pick_click_record.js': PICK_CLICK_RECORD_RAW as string,
@@ -358,32 +351,20 @@ describe('endingOf', () => {
 describe('the Liberty1 click workflow (#1545)', () => {
   const liberty1 = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'liberty1-click')
 
-  it('is watched with its four kept scripts, each the file on disk', () => {
+  it('is watched with its four kept scripts, each the file on disk, with no canvas baseline: the canvas holds all four since version 7 (2026-09-29)', () => {
     expect(liberty1?.scripts.map((k) => k.namespace)).toEqual(['resolve_input', 'pick_record', 'build_request', 'click_patch'])
     for (const kept of liberty1?.scripts ?? []) {
       expect(kept.script, kept.file).toBe(LIBERTY1_ON_DISK[kept.file])
       expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
+      expect(kept.canvasBaselineSha256, kept.file).toBeNull()
+      expect(kept.newNodeSince, kept.file).toBeUndefined()
     }
-    const patch = liberty1?.scripts.find((k) => k.namespace === 'click_patch')
-    expect(patch?.canvasBaselineSha256).toBeNull()
   })
 
-  it('the canvas as it stood on 2026-09-29, before the Submission-only paste, is a paste awaited and pages nothing', async () => {
-    const definition = definitionWith(
-      codeNode('resolve_input', CANVAS_V6_RESOLVE_RAW as string),
-      codeNode('build_request', CANVAS_V6_BUILD_RAW as string),
-      codeNode('click_patch', (LIBERTY1_CLICK_PATCH_RAW as string).replace(/\n$/, '')),
-    )
+  it('a canvas missing pick_record pages as a missing node, never an awaited paste', async () => {
+    const definition = definitionWith(...liberty1!.scripts.filter((k) => k.namespace !== 'pick_record').map((k) => codeNode(k.namespace, k.script)))
     const verdicts = await judgeKeptScripts(liberty1!.scripts, definition, 'Liberty1 click workflow')
-    expect(verdicts.map((v) => [v.namespace, v.state])).toEqual([
-      ['resolve_input', 'awaiting_paste'], ['pick_record', 'awaiting_paste'], ['build_request', 'awaiting_paste'], ['click_patch', 'agree'],
-    ])
-  })
-
-  it('a canvas edited away from both the kept file and its 2026-09-29 baseline is still a drift', async () => {
-    const definition = definitionWith(codeNode('resolve_input', `${CANVAS_V6_RESOLVE_RAW as string}\n// edited`))
-    const [v] = await judgeKeptScripts(liberty1!.scripts.filter((k) => k.namespace === 'resolve_input'), definition, 'Liberty1 click workflow')
-    expect(v.state).toBe('drift')
+    expect(verdicts.find((v) => v.namespace === 'pick_record')?.state).toBe('missing_node')
   })
 
   it('watches the built workflow (#1547): reads its own mirror file and judges the four kept scripts on the canvas as agreeing', async () => {
