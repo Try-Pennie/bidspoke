@@ -40,6 +40,35 @@ export async function salesforceGet<T>(env: Env, supabase: SupabaseClient, path:
 }
 
 /**
+ * Every record a SOQL query matches, following `nextRecordsUrl` page by page.
+ * Refuses past `maxRecords` rather than returning part of the answer, so a
+ * caller never judges a population it only read the start of (L211).
+ */
+export async function salesforceRows(
+  env: Env,
+  supabase: SupabaseClient,
+  soql: string,
+  purpose: string,
+  maxRecords: number,
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = []
+  const prefix = `/services/data/${SALESFORCE_API_VERSION}/`
+  let path: string | undefined = `query?q=${encodeURIComponent(soql)}`
+  while (path) {
+    const body: { records?: unknown; done?: unknown; nextRecordsUrl?: unknown } = await salesforceGet(env, supabase, path, purpose)
+    if (!Array.isArray(body.records)) throw new Error(`Salesforce answered a query with no records array: ${JSON.stringify(body).slice(0, 200)}`)
+    out.push(...(body.records as Array<Record<string, unknown>>))
+    if (out.length > maxRecords) throw new Error(`more than ${maxRecords} records matched, so none were used rather than part of them`)
+    if (body.done === true) break
+    if (typeof body.nextRecordsUrl !== 'string' || !body.nextRecordsUrl.startsWith(prefix)) {
+      throw new Error(`Salesforce said the query was not done but gave no next page: ${JSON.stringify(body.nextRecordsUrl)}`)
+    }
+    path = body.nextRecordsUrl.slice(prefix.length)
+  }
+  return out
+}
+
+/**
  * The number of records a `SELECT COUNT() FROM ...` query matches. Throws when
  * the answer carries no count, so a changed response shape is a refusal and
  * never a zero (L90).
