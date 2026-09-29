@@ -214,25 +214,31 @@ export async function executeCodeNode(
   const output: unknown = parsedRes.output
   const logs = parsedRes.logs
 
-  // Detect early-exit sentinels emitted by translated Pipedream code:
-  //   $.respond({...})  → return { response: { status, body, headers? } }
-  //   $.flow.exit(...)  → return { exit: true, reason: ... }
-  if (output !== null && typeof output === 'object') {
-    const obj = output as Record<string, unknown>
-    if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
-      const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
-      const expected = obj.expected === true ? (true as const) : undefined
-      if (obj.continueExecution === true) {
-        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true, expected, logs, resolvedInput }
-      }
-      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, expected, logs, resolvedInput }
-    }
-    if (obj.exit === true) {
-      return { output, earlyExit: true, logs, resolvedInput }
-    }
-  }
+  return { output, ...codeSentinel(output), logs, resolvedInput }
+}
 
-  return { output, logs, resolvedInput }
+/**
+ * The early exit sentinels translated Pipedream code emits, read from a code
+ * node's returned value:
+ *   $.respond({...})  → return { response: { status, body, headers? } }
+ *   $.flow.exit(...)  → return { exit: true, reason: ... }
+ * ANY returned object with a non null object `response` field is a respond
+ * sentinel and ends the walk there, so a kept script must never return a field
+ * of that name for any other purpose (the Liberty1 click patch did, 2026-09-29:
+ * the portal got an empty answer and the Salesforce writes never ran).
+ * Exported so tests that stand in for the sandbox apply the same rule.
+ */
+export function codeSentinel(output: unknown): Pick<StepExecutionResult, 'earlyResponse' | 'continueAfterResponse' | 'expected' | 'earlyExit'> {
+  if (output === null || typeof output !== 'object') return {}
+  const obj = output as Record<string, unknown>
+  if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
+    const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
+    const expected = obj.expected === true ? (true as const) : undefined
+    const earlyResponse = { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }
+    return obj.continueExecution === true ? { earlyResponse, continueAfterResponse: true, expected } : { earlyResponse, expected }
+  }
+  if (obj.exit === true) return { earlyExit: true }
+  return {}
 }
 
 /**

@@ -16,7 +16,9 @@
 // click is never sent twice.
 //
 // A Submission that names a Prospect the query could not return is not found
-// as a prospect, never sent from the submission instead.
+// as a prospect, never sent from the submission instead. When a Prospect__c was
+// posted with the Submission__c, the submission must belong to that prospect,
+// or the click is refused as submission_not_for_prospect and nothing is sent.
 const OFFER_CODE = "4";
 
 // Map a Submission onto the Prospect field names so buildPayload() handles both
@@ -94,6 +96,12 @@ if (source === "prospect") {
 }
 
 const leadId = idOf(row.Lead__c);
+
+// Salesforce ids compare on their first 15 characters (the 18 character form
+// adds a case checksum), so a 15 and an 18 character id for one record agree.
+const sameId = (a, b) => typeof a === "string" && typeof b === "string" && a.slice(0, 15) === b.slice(0, 15);
+const postedProspect = idOf(steps.resolve_input?.output?.prospect_id);
+if (postedProspect && !sameId(row.Prospect__c, postedProspect)) return notFound("submission_not_for_prospect");
 
 if (idOf(row.Prospect__c)) {
   const prospect = row.Prospect__r;

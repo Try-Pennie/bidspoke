@@ -41,7 +41,10 @@ vi.mock('../nodes/buyer-click-send', async (importOriginal) => ({
   executeBuyerClickSendNode: vi.fn(),
   productionDeps: vi.fn(() => ({})),
 }))
-vi.mock('../nodes/code', () => ({ executeCodeNode: vi.fn() }))
+vi.mock('../nodes/code', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../nodes/code')>()),
+  executeCodeNode: vi.fn(),
+}))
 vi.mock('../nodes/salesforce', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../nodes/salesforce')>()),
   executeSalesforceNode: vi.fn(),
@@ -50,7 +53,7 @@ vi.mock('../nodes/salesforce', async (importOriginal) => ({
 import { walkGraph } from '../index'
 import { buildContext, resolveValue } from '../context'
 import { executeBuyerClickSendNode } from '../nodes/buyer-click-send'
-import { executeCodeNode } from '../nodes/code'
+import { codeSentinel, executeCodeNode } from '../nodes/code'
 import { executeSalesforceNode } from '../nodes/salesforce'
 
 type Rec = Record<string, unknown>
@@ -102,13 +105,17 @@ beforeEach(() => {
   clickRoute = 'sent'
   org = { prospect: { ...RECORD }, submission: { ...SUBMISSION_ROW }, submissionProspect: PROSPECT_ID, submissionLead: LEAD_ID }
 
-  vi.mocked(executeCodeNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => ({
-    output: await runCanvasScript(String((node.config as Rec).script), {
+  // The script runs as the sandbox runs it, and its result goes through the
+  // engine's own sentinel rule (codeSentinel), so a script returning a field the
+  // engine reads as "respond now and stop" fails here as it does live.
+  vi.mocked(executeCodeNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => {
+    const output = await runCanvasScript(String((node.config as Rec).script), {
       payload: ctx.trigger.payload,
       steps: ctx.steps as Record<string, { output: unknown }>,
       execution: ctx.execution as Rec,
-    }),
-  }))
+    })
+    return { output, ...codeSentinel(output) }
+  })
 
   vi.mocked(executeSalesforceNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => {
     const c = node.config as Rec
@@ -315,6 +322,25 @@ describe('a Liberty1 offer that is still open', () => {
       expect(r.ran).not.toContain('click_patch')
     })
   }
+})
+
+describe('the portal posts both ids (2026-09-29, as the first live click did)', () => {
+  it('sent: writes Completed to the prospect, the submission and its lead', async () => {
+    const r = await click({ Prospect__c: PROSPECT_ID, Submission__c: SUBMISSION_ID })
+    expect(r.body).toEqual({ success: true, outcome: 'sent' })
+    expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
+    expect(r.writes.map((w) => [w.namespace, w.record_id])).toEqual([
+      ['update_prospect', PROSPECT_ID], ['update_submission', SUBMISSION_ID], ['update_lead', LEAD_ID],
+    ])
+  })
+
+  it('a submission that belongs to another prospect is refused, nothing sent, nothing written', async () => {
+    org.submissionProspect = 'a0P5f00000OtherXAAA'
+    const r = await click({ Prospect__c: PROSPECT_ID, Submission__c: SUBMISSION_ID })
+    expect(r.body).toMatchObject({ success: false })
+    expect(clickInputs).toEqual([])
+    expect(r.writes).toEqual([])
+  })
 })
 
 describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {

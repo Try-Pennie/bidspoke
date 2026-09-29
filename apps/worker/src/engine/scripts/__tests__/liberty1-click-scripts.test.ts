@@ -21,6 +21,7 @@ import fixtures from './fixtures/liberty1-prospects.json'
 import submissionFixtures from './fixtures/liberty1-submissions.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
+import { codeSentinel } from '../../nodes/code'
 import { buildPayload, pickRoute, ROUTES, SUBMISSION_FIELDS, submissionAsProspect, updateBodies } from './liberty1-pipedream-oracle'
 
 type Rec = Record<string, unknown>
@@ -132,7 +133,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
       payload: {},
       steps: { click_send: { output: clickOutput(route, partnerLeadId) } },
       execution: link === null ? {} : { bidspoke_link: link },
-    })) as { write: boolean; exchange_status: string | null; prospect: Rec | null; submission: Rec | null; lead: Rec | null; response: { success: boolean; outcome: string } }
+    })) as { write: boolean; exchange_status: string | null; prospect: Rec | null; submission: Rec | null; lead: Rec | null; reply: { success: boolean; outcome: string } }
   }
 
   it('sent: Completed bodies byte for byte, with the partner lead id and the Bidspoke execution link where he wrote his inspect URL', async () => {
@@ -143,7 +144,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
     expect(JSON.stringify(out.prospect)).toBe(JSON.stringify(theirs.prospect))
     expect(JSON.stringify(out.submission)).toBe(JSON.stringify(theirs.submission))
     expect(JSON.stringify(out.lead)).toBe(JSON.stringify(theirs.lead))
-    expect(out.response).toEqual({ success: true, outcome: 'sent' })
+    expect(out.reply).toEqual({ success: true, outcome: 'sent' })
   })
 
   it('refused: Fail bodies byte for byte, with no partner lead id so the field is not blanked', async () => {
@@ -155,7 +156,7 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
     expect(JSON.stringify(out.submission)).toBe(JSON.stringify(theirs.submission))
     expect(JSON.stringify(out.lead)).toBe(JSON.stringify(theirs.lead))
     expect(out.prospect).not.toHaveProperty('ExternalPartnerLeadId__c')
-    expect(out.response).toEqual({ success: false, outcome: 'refused' })
+    expect(out.reply).toEqual({ success: false, outcome: 'refused' })
   })
 
   it('routing code is a Number on the Prospect and a String on the Submission and the Lead', async () => {
@@ -177,9 +178,21 @@ describe("liberty1_click_patch against Brian's update_salesforce", () => {
       expect(out.write).toBe(false)
       expect(out.exchange_status).toBeNull()
       expect([out.prospect, out.submission, out.lead]).toEqual([null, null, null])
-      expect(out.response.outcome).toBe(route)
+      expect(out.reply.outcome).toBe(route)
     })
   }
+
+  it('never returns a field the engine reads as respond now or stop (a response or exit field), on any route', async () => {
+    // The engine treats a code node's returned `response` object as $.respond()
+    // and ends the walk there (codeSentinel): on 2026-09-29 the first live click
+    // stopped here and its Salesforce writes never ran.
+    for (const route of ['sent', 'refused', 'unknown', 'needs_review', 'in_progress', 'already_sent', 'not_sent']) {
+      const out = (await patch(route)) as unknown as Record<string, unknown>
+      expect(codeSentinel(out), route).toEqual({})
+      expect(out, route).not.toHaveProperty('response')
+      expect(out, route).not.toHaveProperty('exit')
+    }
+  })
 
   it('a missing click_send step writes nothing', async () => {
     const out = (await runCanvasScript(PATCH, { payload: {}, steps: {} })) as { write: boolean }
@@ -224,6 +237,19 @@ describe('pick_click_record', () => {
     expect(out.record).toMatchObject({ Id: PROSPECT.Id, State__c: 'WA' })
     const noOffer = await pick('submission', { ...row, Prospect__r: { ...PROSPECT, ExternalRoutingCode__c: 2 } })
     expect(noOffer.verdict).toBe('no_offer')
+  })
+
+  it('a Submission posted with a Prospect__c it does not belong to is refused and never sent: a posted pair must agree', async () => {
+    const row = { ...SUB, Prospect__c: PROSPECT.Id, Prospect__r: { attributes: { type: 'Prospect__c' }, ...PROSPECT } }
+    const out = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: 'a0P5f00000OtherXAAA' } }, query_record: queried(row) } })) as Picked
+    expect(out).toMatchObject({ verdict: 'not_found', not_found_outcome: 'submission_not_for_prospect', record: null, sale_key: null })
+    const agree = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: PROSPECT.Id } }, query_record: queried(row) } })) as Picked
+    expect(agree).toMatchObject({ verdict: 'open', prospect_id: PROSPECT.Id, submission_id: SUB.Id, lead_id: SUB.Lead__c })
+  })
+
+  it('a Submission with no Prospect posted with a Prospect__c is refused as not that prospect\'s, never trusted as Submission-only', async () => {
+    const out = (await runCanvasScript(PICK, { payload: {}, steps: { resolve_input: { output: { source: 'submission', prospect_id: PROSPECT.Id } }, query_record: queried(SUB) } })) as Picked
+    expect(out).toMatchObject({ verdict: 'not_found', not_found_outcome: 'submission_not_for_prospect' })
   })
 
   it('a Submission that names a Prospect the query could not return is not found as a prospect, never sent from the submission instead', async () => {
@@ -287,14 +313,20 @@ describe('resolve_click_input', () => {
     expect(new Set(selected).size).toBe(selected.length)
   })
 
-  it('a valid Prospect__c wins over a Submission__c, which is then ignored: nothing ties that submission to this prospect', async () => {
+  it('a Prospect__c posted with a Submission__c queries the submission, so its Lead is written too, and names the prospect it must belong to (Brian: the portal sends both)', async () => {
     const r = await resolve({ Prospect__c: PROSPECT_18, Submission__c: SUBMISSION_15 })
-    expect(r).toMatchObject({ source: 'prospect', prospect_id: PROSPECT_18, submission_id: null })
+    expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: PROSPECT_18, submission_id: SUBMISSION_15 })
+    expect(r.soql).toMatch(new RegExp(`FROM Submission__c WHERE Id = '${SUBMISSION_15}'$`))
   })
 
-  it('an invalid Prospect__c falls back to a valid Submission__c, as his run() did', async () => {
+  it('a present but malformed Prospect__c is refused even beside a valid Submission__c, as his run() threw: it must not skip the pair check', async () => {
     const r = await resolve({ Prospect__c: 'nope', Submission__c: SUBMISSION_15 })
-    expect(r).toMatchObject({ valid: true, source: 'submission', submission_id: SUBMISSION_15 })
+    expect(r).toEqual({ valid: false, reason: 'invalid_id', source: null, prospect_id: null, submission_id: null, soql: null })
+  })
+
+  it('a blank Prospect__c beside a valid Submission__c is a Submission-only click', async () => {
+    const r = await resolve({ Prospect__c: '', Submission__c: SUBMISSION_15 })
+    expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: null, submission_id: SUBMISSION_15 })
   })
 
   it('trims surrounding whitespace from an id', async () => {

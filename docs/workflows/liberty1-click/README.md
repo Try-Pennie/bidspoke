@@ -6,8 +6,8 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 
 ## What it does
 
-1. **Receives the click.** A custom endpoint, POST with a JSON body and an `X-API-Key`. The body is `{"Prospect__c": "<id>"}` or `{"Submission__c": "<id>"}`, whichever the portal has.
-2. **Works out the query** (`resolve_input`). A `Prospect__c` that is a 15 or 18 character Salesforce id queries that prospect. Otherwise a `Submission__c` that is one queries the submission itself, with its Lead and, through `Prospect__r`, every field of the prospect it points at. A `Submission__c` sent beside a usable `Prospect__c` is ignored, because nothing ties it to that prospect. Anything else is refused before any query is built from it.
+1. **Receives the click.** A custom endpoint, POST with a JSON body and an `X-API-Key`. The portal's body carries both ids, `{"Prospect__c": "<id>", "Submission__c": "<id>"}`; either alone is still accepted.
+2. **Works out the query** (`resolve_input`). A valid `Submission__c` (a 15 or 18 character Salesforce id) queries the submission itself, with its Lead and, through `Prospect__r`, every field of the prospect it points at. The portal sends both ids, and then the submission must belong to the posted `Prospect__c` or the click is refused as `submission_not_for_prospect` with nothing sent. A valid `Prospect__c` with no usable `Submission__c` queries that prospect directly. A `Prospect__c` that is present but not an id is refused. Anything else is refused before any query is built from it.
 3. **Reads the record** from Salesforce (`query_record`): every field Brian's flow read, plus the routing code and exchange status.
 4. **Picks what to send** (`pick_record`), then **checks the offer** (`check_offer`):
    - A prospect, or a submission whose prospect came back, is judged on the **prospect**: only routing code 4 with exchange status Bid is sent. This is what stops an arbitrary id posted to the public URL being sold or counted.
@@ -17,7 +17,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 
    **The routes are the Liberty1 Salesforce site again** (`https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DV1` and `/DI4`), where Brian's flow posts since 2026-09-29 "until later in the week". From 2026-09-25 they were LeadConnector webhook triggers (Brian's version 4); when Liberty1 moves back to LeadConnector, two things must be settled first: whether the doubled slash in those URLs is intended, and what LeadConnector answers on success, because `click_send` counts a click only on "Records created successfully" and every other answer routes `unknown`.
 6. **Sends it** (`click_send`, a Buyer Click Send node). The node claims the click so two cannot both send it, keyed on the prospect, or on the submission when there is no prospect, posts, and counts it only when Liberty1 answers "Records created successfully". See [the node's page](../../nodes/buyer-click-send.md).
-7. **Answers the portal**, then **writes Salesforce** (sent and refused only): the Prospect when there is one, then the Submission and its Lead when the click came with a Submission id.
+7. **Answers the portal**, then **writes Salesforce** (sent and refused only): the Prospect when there is one, then the Submission and its Lead when the click came with a Submission id (the portal always sends one).
 
 ## Every outcome
 
@@ -27,6 +27,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 | An id that is not a Salesforce id | 200, outcome `invalid_request`, reason `invalid_id` | nothing read, nothing written |
 | No such prospect (or the submission names one Salesforce does not return) | 200, outcome `prospect_not_found` | nothing written |
 | No such submission | 200, outcome `submission_not_found` | nothing written |
+| A submission posted with a prospect it does not belong to | 200, outcome `submission_not_for_prospect` | nothing written, nothing sent |
 | Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed), or a submission with no prospect already Completed for another buyer | 200, outcome `no_liberty1_offer` | nothing written |
 | Liberty1 offer already Completed (on the prospect, or on a submission with no prospect) | 200 `{"success": true, "outcome": "already_sent"}` | nothing written, nothing sent |
 | A submission with no prospect, not yet Completed for Liberty1 | sent with no offer check, then as the rows below | the Submission and its Lead only |
