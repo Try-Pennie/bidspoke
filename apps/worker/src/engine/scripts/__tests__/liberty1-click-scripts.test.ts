@@ -319,8 +319,13 @@ describe('resolve_click_input', () => {
     expect(r.soql).toMatch(new RegExp(`FROM Submission__c WHERE Id = '${SUBMISSION_15}'$`))
   })
 
-  it('an invalid Prospect__c falls back to a valid Submission__c, as his run() did, naming no prospect it must belong to', async () => {
+  it('a present but malformed Prospect__c is refused even beside a valid Submission__c, as his run() threw: it must not skip the pair check', async () => {
     const r = await resolve({ Prospect__c: 'nope', Submission__c: SUBMISSION_15 })
+    expect(r).toEqual({ valid: false, reason: 'invalid_id', source: null, prospect_id: null, submission_id: null, soql: null })
+  })
+
+  it('a blank Prospect__c beside a valid Submission__c is a Submission-only click', async () => {
+    const r = await resolve({ Prospect__c: '', Submission__c: SUBMISSION_15 })
     expect(r).toMatchObject({ valid: true, source: 'submission', prospect_id: null, submission_id: SUBMISSION_15 })
   })
 

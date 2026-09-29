@@ -47,6 +47,12 @@ const asId = (v) => (typeof v === "string" && SF_ID.test(v.trim()) ? v.trim() : 
 const prospectId = asId(body.Prospect__c);
 const submissionId = asId(body.Submission__c);
 
+// A Prospect__c that is present but not an id is refused outright, as Brian's
+// run() threw on it, even beside a valid Submission__c: falling back to the
+// submission would skip the check that the pair belongs together.
+const refuse = (reason) => ({ valid: false, reason, source: null, prospect_id: null, submission_id: null, soql: null });
+if (present(body.Prospect__c) && !prospectId) return refuse("invalid_id");
+
 if (prospectId && !submissionId) {
   return {
     valid: true,
@@ -70,11 +76,4 @@ if (submissionId) {
   };
 }
 
-return {
-  valid: false,
-  reason: present(body.Prospect__c) || present(body.Submission__c) ? "invalid_id" : "no_id",
-  source: null,
-  prospect_id: null,
-  submission_id: null,
-  soql: null,
-};
+return refuse(present(body.Submission__c) ? "invalid_id" : "no_id");

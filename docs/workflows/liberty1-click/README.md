@@ -6,7 +6,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 
 ## What it does
 
-1. **Receives the click.** A custom endpoint, POST with a JSON body and an `X-API-Key`. The body is `{"Prospect__c": "<id>"}` or `{"Submission__c": "<id>"}`, whichever the portal has.
+1. **Receives the click.** A custom endpoint, POST with a JSON body and an `X-API-Key`. The portal's body carries both ids, `{"Prospect__c": "<id>", "Submission__c": "<id>"}`; either alone is still accepted.
 2. **Works out the query** (`resolve_input`). A `Prospect__c` that is a 15 or 18 character Salesforce id queries that prospect. Otherwise a `Submission__c` that is one queries the submission itself, with its Lead and, through `Prospect__r`, every field of the prospect it points at. The portal sends both: a `Prospect__c` posted with a `Submission__c` queries the submission, so its Lead is written too, and the submission must belong to that prospect or the click is refused as `submission_not_for_prospect` with nothing sent. Anything else is refused before any query is built from it.
 3. **Reads the record** from Salesforce (`query_record`): every field Brian's flow read, plus the routing code and exchange status.
 4. **Picks what to send** (`pick_record`), then **checks the offer** (`check_offer`):
