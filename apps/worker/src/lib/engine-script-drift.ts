@@ -95,24 +95,16 @@ export interface KeptWorkflow {
 }
 
 /**
- * Baselines read on 2026-09-24 from the live definition (version 100, the Stage
- * A paste of 2026-09-23): the SHA-256 of each code node's script exactly as the
- * canvas holds it, which is the kept file of PR #1470 (tripoint_ping without
- * its final newline). The kept files were then re-derived for #1416, so until
- * Stage C pastes them the check reports awaiting_paste, not drift.
- *
- * tripoint_ping was edited again for #1540 (every answer named, no throw, a 15 s
- * abort). The canvas was re-read on 2026-09-24 for that change and still holds
- * the same version 100 script, so its baseline is unchanged: the edit is one
- * more paste not yet made, and the check keeps reporting awaiting_paste until
- * it lands. A baseline moves only when the CANVAS moves.
- *
- * build_response_body and patch_prospect_body were edited again for #1544 (the
- * click sold buyer offered on a known Tripoint no).
+ * The Engine Bidding Workflow's kept scripts. The three sale scripts were first
+ * kept against the canvas of version 100 (the Stage A paste of 2026-09-23),
+ * with baselines so edits made here first (#1416, #1540 and #1544) read as
+ * pastes awaited rather than drift, and known_no_gate (#1544) as a new node.
  *
  * All four were saved to the live workflow as version 101 on 2026-09-29 and the
  * hourly check read each as agree, so none carries a baseline any more: any
  * difference from the canvas is a drift, and a missing node pages as missing.
+ * To edit one here before its paste again, record the live canvas script's hash
+ * as its baseline in the same change.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
