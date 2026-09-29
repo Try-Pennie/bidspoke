@@ -8,7 +8,8 @@
  * prospect, one submission and one lead) and buyer_click_send (which answers
  * the route a test names; its own behaviour is nodes/__tests__/buyer-click-send.test.ts).
  *
- * What it proves: an unusable body is refused with a 400 and nothing is read
+ * What it proves: every answer is a 200 with the outcome in the body; an
+ * unusable body is refused and nothing is read
  * or sent; a prospect without the Liberty1 offer on record is refused and never
  * sent; a Completed one is answered already sent and never sent; the request
  * posted is Brian's body to his route; Completed is written only on `sent`
@@ -155,6 +156,16 @@ async function click(payload: unknown) {
   return { status: result.status, body: result.body, early, ran, writes: sfCalls.filter((c) => c.operation === 'update') }
 }
 
+describe('every answer to the portal is a 200', () => {
+  // Denys's portal moves to the Liberty1 lander only on a 200 (Brian, 2026-09-29),
+  // so the outcome travels in the body: success false and the outcome's name.
+  it('no response node answers with anything but 200', () => {
+    const responses = definition.nodes.filter((n) => n.type === 'response')
+    expect(responses.length).toBeGreaterThan(0)
+    expect(responses.map((n) => [n.namespace, (n.config as Rec).status_code])).toEqual(responses.map((n) => [n.namespace, 200]))
+  })
+})
+
 describe('the definition carries the kept scripts', () => {
   it('each code node holds its kept file byte for byte, so the paste and the tested script are one text (L41)', () => {
     for (const kept of KEPT_LIBERTY1_CLICK_SCRIPTS) {
@@ -177,9 +188,9 @@ describe('an unusable body is refused before anything is read or sent', () => {
     ['no id', {}, 'no_id'],
     ['a malformed id', { Prospect__c: "x' OR Id != '" }, 'invalid_id'],
   ] as const) {
-    it(`${name}: 400 ${reason}`, async () => {
+    it(`${name}: refused as ${reason}`, async () => {
       const r = await click(payload)
-      expect(r.status).toBe(400)
+      expect(r.status).toBe(200)
       expect(r.body).toEqual({ success: false, outcome: 'invalid_request', reason })
       expect(sfCalls).toEqual([])
       expect(clickInputs).toEqual([])
@@ -188,32 +199,32 @@ describe('an unusable body is refused before anything is read or sent', () => {
 })
 
 describe('the offer check', () => {
-  const refused = async (status: number, outcome: string) => {
+  const refused = async (outcome: string) => {
     const r = await click({ Prospect__c: PROSPECT_ID })
-    expect(r.status).toBe(status)
+    expect(r.status).toBe(200)
     expect(r.body).toEqual({ success: false, outcome })
     expect(clickInputs).toEqual([])
     expect(r.writes).toEqual([])
   }
 
-  it('a prospect Salesforce does not hold is 404, never sent', async () => {
+  it('a prospect Salesforce does not hold is refused as not found, never sent', async () => {
     org.prospect = null
-    await refused(404, 'prospect_not_found')
+    await refused('prospect_not_found')
   })
 
-  it('a submission Salesforce does not hold is 404 as a submission, never sent', async () => {
+  it('a submission Salesforce does not hold is refused as a submission not found, never sent', async () => {
     org.submission = null
     const r = await click({ Submission__c: SUBMISSION_ID })
-    expect(r.status).toBe(404)
+    expect(r.status).toBe(200)
     expect(r.body).toEqual({ success: false, outcome: 'submission_not_found' })
     expect(clickInputs).toEqual([])
     expect(r.writes).toEqual([])
   })
 
-  it('a submission naming a prospect Salesforce cannot return is 404 as a prospect, never sent from the submission instead', async () => {
+  it('a submission naming a prospect Salesforce cannot return is refused as a prospect not found, never sent from the submission instead', async () => {
     org.submissionProspect = 'a0P5f00000GoneXAAA'
     const r = await click({ Submission__c: SUBMISSION_ID })
-    expect(r.status).toBe(404)
+    expect(r.status).toBe(200)
     expect(r.body).toEqual({ success: false, outcome: 'prospect_not_found' })
     expect(clickInputs).toEqual([])
   })
@@ -226,9 +237,9 @@ describe('the offer check', () => {
     ['routing code 4 as Success', 4, 'Success'],
     ['a Tripoint sale already completed (code 2, Completed)', 2, 'Completed'],
   ] as const) {
-    it(`${name} is refused 409 as no Liberty1 offer, never sent`, async () => {
+    it(`${name} is refused as no Liberty1 offer, never sent`, async () => {
       org.prospect = { ...RECORD, ExternalRoutingCode__c: code, ExternalExchangeStatus__c: status }
-      await refused(409, 'no_liberty1_offer')
+      await refused('no_liberty1_offer')
     })
   }
 
@@ -348,10 +359,10 @@ describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
     expect(r.writes).toEqual([])
   })
 
-  it('already sold to another buyer (Completed, another routing code) is refused 409 as no Liberty1 offer and sends nothing', async () => {
+  it('already sold to another buyer (Completed, another routing code) is refused as no Liberty1 offer and sends nothing', async () => {
     org.submission = { ...SUBMISSION_ROW, External_Routing_Code__c: '2', External_Exchange_Status__c: 'Completed' }
     const r = await click({ Submission__c: SUBMISSION_ID })
-    expect(r).toMatchObject({ status: 409, body: { success: false, outcome: 'no_liberty1_offer' } })
+    expect(r).toMatchObject({ status: 200, body: { success: false, outcome: 'no_liberty1_offer' } })
     expect(clickInputs).toEqual([])
     expect(r.writes).toEqual([])
   })

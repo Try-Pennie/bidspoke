@@ -9,7 +9,7 @@
 //
 // An id is interpolated into SOQL, so anything that is not exactly 15 or 18
 // letters and digits is refused here and never reaches a query. valid false
-// sends the run to the 400 response, with the reason named.
+// sends the run to the refusal response, with the reason named.
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 
 // Brian's PROSPECT_FIELDS, then the two fields the offer check reads.
