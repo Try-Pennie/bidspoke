@@ -14,13 +14,13 @@
         "id": "f984463f-8821-57b0-ad5f-239d9b8cf0bc",
         "namespace": "resolve_input",
         "type": "code",
-        "label": "Resolve prospect id",
+        "label": "Resolve the clicked record",
         "position": {
           "x": 0,
           "y": 160
         },
         "config": {
-          "script": "// Which prospect a Liberty1 click is for (#1545). The portal posts {Prospect__c}\n// or {Submission__c}, whichever it has. A Prospect__c that is a Salesforce id is\n// used directly; otherwise a Submission__c that is one resolves the prospect\n// through the submission, inside the same query, so the submission patched later\n// is always one that belongs to the prospect that was sent. A Submission__c\n// posted beside a usable Prospect__c is ignored for the same reason.\n//\n// An id is interpolated into SOQL, so anything that is not exactly 15 or 18\n// letters and digits is refused here and never reaches a query. valid false\n// sends the run to the 400 response, with the reason named.\nconst SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;\n\n// Brian's PROSPECT_FIELDS, then the two fields the offer check reads.\nconst FIELDS = [\n  \"Id\", \"SubaccountName__c\", \"SubaccountUUID__c\", \"First_Name__c\", \"Last_Name__c\", \"Email__c\",\n  \"Phone__c\", \"Street__c\", \"AptSuite__c\", \"City__c\", \"State__c\", \"Zip__c\", \"BirthDate__c\",\n  \"SocialSecurityNumber__c\", \"LoanPurpose__c\", \"LoanAmount__c\", \"RentOrOwn__c\",\n  \"ApproximateCreditRating__c\", \"EmploymentStatus__c\", \"IncomePmtFrequency__c\",\n  \"AnnualIncomeBeforeTaxes__c\", \"EducationLevel__c\", \"FCRAConsentFlag__c\", \"TCPAConsentFlag__c\",\n  \"User_IP__c\", \"ExternalRoutingCode__c\", \"ExternalExchangeStatus__c\",\n];\n\nconst body = payload !== null && typeof payload === \"object\" && !Array.isArray(payload) ? payload : {};\n\nconst present = (v) => v !== undefined && v !== null && !(typeof v === \"string\" && v.trim() === \"\");\nconst asId = (v) => (typeof v === \"string\" && SF_ID.test(v.trim()) ? v.trim() : null);\n\nconst prospectId = asId(body.Prospect__c);\nconst submissionId = asId(body.Submission__c);\nconst select = `SELECT ${FIELDS.join(\", \")} FROM Prospect__c`;\n\nif (prospectId) {\n  return {\n    valid: true,\n    reason: null,\n    source: \"prospect\",\n    prospect_id: prospectId,\n    submission_id: null,\n    prospect_soql: `${select} WHERE Id = '${prospectId}'`,\n  };\n}\n\nif (submissionId) {\n  return {\n    valid: true,\n    reason: null,\n    source: \"submission\",\n    prospect_id: null,\n    submission_id: submissionId,\n    prospect_soql: `${select} WHERE Id IN (SELECT Prospect__c FROM Submission__c WHERE Id = '${submissionId}')`,\n  };\n}\n\nreturn {\n  valid: false,\n  reason: present(body.Prospect__c) || present(body.Submission__c) ? \"invalid_id\" : \"no_id\",\n  source: null,\n  prospect_id: null,\n  submission_id: null,\n  prospect_soql: null,\n};",
+          "script": "// Which record a Liberty1 click is for (#1545). The portal posts {Prospect__c}\n// or {Submission__c}, whichever it has. A Prospect__c that is a Salesforce id is\n// queried directly. Otherwise a Submission__c that is one queries the\n// submission itself, with its Lead and, through Prospect__r, every field of the\n// prospect it points at, so pick_record can send from the prospect when there\n// is one and from the submission when there is not (Brian, 2026-09-29). A\n// Submission__c posted beside a usable Prospect__c is ignored: nothing ties that\n// submission to this prospect.\n//\n// An id is interpolated into SOQL, so anything that is not exactly 15 or 18\n// letters and digits is refused here and never reaches a query. valid false\n// sends the run to the 400 response, with the reason named.\nconst SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;\n\n// Brian's PROSPECT_FIELDS, then the two fields the offer check reads.\nconst FIELDS = [\n  \"Id\", \"SubaccountName__c\", \"SubaccountUUID__c\", \"First_Name__c\", \"Last_Name__c\", \"Email__c\",\n  \"Phone__c\", \"Street__c\", \"AptSuite__c\", \"City__c\", \"State__c\", \"Zip__c\", \"BirthDate__c\",\n  \"SocialSecurityNumber__c\", \"LoanPurpose__c\", \"LoanAmount__c\", \"RentOrOwn__c\",\n  \"ApproximateCreditRating__c\", \"EmploymentStatus__c\", \"IncomePmtFrequency__c\",\n  \"AnnualIncomeBeforeTaxes__c\", \"EducationLevel__c\", \"FCRAConsentFlag__c\", \"TCPAConsentFlag__c\",\n  \"User_IP__c\", \"ExternalRoutingCode__c\", \"ExternalExchangeStatus__c\",\n];\n\n// Brian's SUBMISSION_FIELDS (the applicant lives in the *_SO__c fields, the\n// phone on the Lead), then the submission's two offer fields.\nconst SUBMISSION_FIELDS = [\n  \"Id\", \"Prospect__c\", \"Lead__c\", \"Source__c\", \"FundedDemandSubAccountName__c\", \"SubaccountUUID__c\",\n  \"Prospect_Subaccount_UUID__c\", \"FirstNameSO__c\", \"LastNameSO__c\", \"Email_SO__c\", \"Home_Phone__c\",\n  \"StreetSO__c\", \"Apt_Suite_SO__c\", \"City_SO__c\", \"State_SO__c\", \"Zip_Code_SO__c\",\n  \"Date_of_Birth_SO__c\", \"Social_Security_Number_SO__c\", \"Loan_Purpose_SO__c\", \"Loan_Amount_SO__c\",\n  \"Rent_or_Own_SO__c\", \"Approximate_Credit_Rating_SO__c\", \"Employment_Status_SO__c\",\n  \"Income_Pmt_Frequency_SO__c\", \"Annual_Income_Before_Taxes_SO__c\", \"Education_Level_SO__c\",\n  \"ConsentFCRA__c\", \"Consent__c\", \"User_IP__c\",\n  \"Lead__r.FirstName\", \"Lead__r.LastName\", \"Lead__r.Email\", \"Lead__r.Phone\", \"Lead__r.MobilePhone\",\n  \"External_Routing_Code__c\", \"External_Exchange_Status__c\",\n];\n\nconst body = payload !== null && typeof payload === \"object\" && !Array.isArray(payload) ? payload : {};\n\nconst present = (v) => v !== undefined && v !== null && !(typeof v === \"string\" && v.trim() === \"\");\nconst asId = (v) => (typeof v === \"string\" && SF_ID.test(v.trim()) ? v.trim() : null);\n\nconst prospectId = asId(body.Prospect__c);\nconst submissionId = asId(body.Submission__c);\n\nif (prospectId) {\n  return {\n    valid: true,\n    reason: null,\n    source: \"prospect\",\n    prospect_id: prospectId,\n    submission_id: null,\n    soql: `SELECT ${FIELDS.join(\", \")} FROM Prospect__c WHERE Id = '${prospectId}'`,\n  };\n}\n\nif (submissionId) {\n  const selected = [...SUBMISSION_FIELDS, ...FIELDS.map((f) => `Prospect__r.${f}`)];\n  return {\n    valid: true,\n    reason: null,\n    source: \"submission\",\n    prospect_id: null,\n    submission_id: submissionId,\n    soql: `SELECT ${selected.join(\", \")} FROM Submission__c WHERE Id = '${submissionId}'`,\n  };\n}\n\nreturn {\n  valid: false,\n  reason: present(body.Prospect__c) || present(body.Submission__c) ? \"invalid_id\" : \"no_id\",\n  source: null,\n  prospect_id: null,\n  submission_id: null,\n  soql: null,\n};",
           "retries": 0,
           "timeout_ms": 1000
         },
@@ -82,16 +82,16 @@
       },
       {
         "id": "5f2563a5-cae8-5f7d-8cfe-64a62aa2725c",
-        "namespace": "query_prospect",
+        "namespace": "query_record",
         "type": "salesforce",
-        "label": "Read prospect",
+        "label": "Read the clicked record",
         "position": {
           "x": 0,
           "y": 640
         },
         "config": {
           "operation": "query",
-          "soql": "{{steps.resolve_input.output.prospect_soql}}",
+          "soql": "{{steps.resolve_input.output.soql}}",
           "retries": 2,
           "timeout_ms": 10000,
           "transient_errors": [
@@ -104,13 +104,29 @@
         "variables": {}
       },
       {
+        "id": "7fa872e5-f479-49d9-9edf-b235c032d150",
+        "namespace": "pick_record",
+        "type": "code",
+        "label": "Pick record and offer",
+        "position": {
+          "x": 0,
+          "y": 800
+        },
+        "config": {
+          "script": "// Which record a Liberty1 click sends, and whether it may be sent (#1547). Reads\n// the one row query_record returned for resolve_input's query.\n//\n// A Prospect__c click, or a Submission__c whose Prospect__r came back, is judged\n// on the PROSPECT: open only with Liberty1's routing code 4 and status Bid, which\n// the Engine Bidding offer writes, and completed when that offer is already\n// Completed. Anything else was never offered Liberty1.\n//\n// A Submission with NO Prospect is TRUSTED (Dan, 2026-09-29): nothing writes a\n// Liberty1 offer onto a Submission before the click, so there is no mark to\n// check, and it is sent from the submission itself with Brian's mapping below.\n// It is still answered already sent when the submission itself was sold to\n// Liberty1 (code 4, Completed), and the claim in click_send keys it on the\n// submission id, so a repeat click is never sent twice.\n//\n// A Submission that names a Prospect the query could not return is not found\n// as a prospect, never sent from the submission instead.\nconst OFFER_CODE = \"4\";\n\n// Map a Submission onto the Prospect field names so buildPayload() handles both\n// (Brian's submissionAsProspect, verbatim).\nfunction submissionAsProspect(s) {\n  const lead = s.Lead__r || {};\n  return {\n    Id: s.Id,\n    SubaccountName__c: s.FundedDemandSubAccountName__c ?? s.Source__c,\n    SubaccountUUID__c: s.SubaccountUUID__c ?? s.Prospect_Subaccount_UUID__c,\n    First_Name__c: s.FirstNameSO__c ?? lead.FirstName,\n    Last_Name__c: s.LastNameSO__c ?? lead.LastName,\n    Email__c: s.Email_SO__c ?? lead.Email,\n    Phone__c: lead.MobilePhone ?? lead.Phone ?? s.Home_Phone__c,\n    Street__c: s.StreetSO__c,\n    AptSuite__c: s.Apt_Suite_SO__c,\n    City__c: s.City_SO__c,\n    State__c: s.State_SO__c,\n    Zip__c: s.Zip_Code_SO__c,\n    BirthDate__c: s.Date_of_Birth_SO__c,\n    SocialSecurityNumber__c: s.Social_Security_Number_SO__c,\n    LoanPurpose__c: s.Loan_Purpose_SO__c,\n    LoanAmount__c: s.Loan_Amount_SO__c,\n    RentOrOwn__c: s.Rent_or_Own_SO__c,\n    ApproximateCreditRating__c: s.Approximate_Credit_Rating_SO__c,\n    EmploymentStatus__c: s.Employment_Status_SO__c,\n    IncomePmtFrequency__c: s.Income_Pmt_Frequency_SO__c,\n    AnnualIncomeBeforeTaxes__c: s.Annual_Income_Before_Taxes_SO__c,\n    EducationLevel__c: s.Education_Level_SO__c,\n    FCRAConsentFlag__c: s.ConsentFCRA__c,\n    TCPAConsentFlag__c: s.Consent__c,\n    User_IP__c: s.User_IP__c,\n  };\n}\n\nconst isOffer = (code) => code !== null && code !== undefined && String(code) === OFFER_CODE;\nconst prospectVerdict = (p) => {\n  if (!isOffer(p.ExternalRoutingCode__c)) return \"no_offer\";\n  if (p.ExternalExchangeStatus__c === \"Completed\") return \"completed\";\n  if (p.ExternalExchangeStatus__c === \"Bid\") return \"open\";\n  return \"no_offer\";\n};\nconst idOf = (v) => (typeof v === \"string\" && v.trim() !== \"\" ? v : null);\n\nconst source = steps.resolve_input?.output?.source;\nif (source !== \"prospect\" && source !== \"submission\") {\n  throw new Error(`pick_record: resolve_input named no source (${JSON.stringify(source ?? null)}), so the row cannot be read as either object`);\n}\n\nconst row = steps.query_record?.output?.body?.records?.[0] ?? null;\nconst notFound = (what) => ({\n  verdict: \"not_found\",\n  not_found_outcome: what,\n  offer: null,\n  record: null,\n  prospect_id: null,\n  submission_id: null,\n  lead_id: null,\n  sale_key: null,\n});\n\nif (!row || !idOf(row.Id)) return notFound(source === \"prospect\" ? \"prospect_not_found\" : \"submission_not_found\");\n\nif (source === \"prospect\") {\n  return {\n    verdict: prospectVerdict(row),\n    not_found_outcome: null,\n    offer: \"on_record\",\n    record: row,\n    prospect_id: row.Id,\n    submission_id: null,\n    lead_id: null,\n    sale_key: row.Id,\n  };\n}\n\nconst leadId = idOf(row.Lead__c);\n\nif (idOf(row.Prospect__c)) {\n  const prospect = row.Prospect__r;\n  if (!prospect || !idOf(prospect.Id)) return notFound(\"prospect_not_found\");\n  return {\n    verdict: prospectVerdict(prospect),\n    not_found_outcome: null,\n    offer: \"on_record\",\n    record: prospect,\n    prospect_id: prospect.Id,\n    submission_id: row.Id,\n    lead_id: leadId,\n    sale_key: prospect.Id,\n  };\n}\n\nconst soldToLiberty1 = isOffer(row.External_Routing_Code__c) && row.External_Exchange_Status__c === \"Completed\";\nreturn {\n  verdict: soldToLiberty1 ? \"completed\" : \"open\",\n  not_found_outcome: null,\n  offer: \"trusted\",\n  record: submissionAsProspect(row),\n  prospect_id: null,\n  submission_id: row.Id,\n  lead_id: leadId,\n  sale_key: row.Id,\n};",
+          "retries": 0,
+          "timeout_ms": 1000
+        },
+        "variables": {}
+      },
+      {
         "id": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
         "namespace": "check_offer",
         "type": "branch",
         "label": "Liberty1 offer on record?",
         "position": {
           "x": 0,
-          "y": 800
+          "y": 960
         },
         "config": {
           "branches": [
@@ -123,8 +139,9 @@
                     "logic": "AND",
                     "conditions": [
                       {
-                        "field": "steps.query_prospect.output.body.records[0].Id",
-                        "operator": "not_exists"
+                        "field": "steps.pick_record.output.verdict",
+                        "operator": "eq",
+                        "value": "not_found"
                       }
                     ]
                   }
@@ -140,14 +157,9 @@
                     "logic": "AND",
                     "conditions": [
                       {
-                        "field": "steps.query_prospect.output.body.records[0].ExternalRoutingCode__c",
+                        "field": "steps.pick_record.output.verdict",
                         "operator": "eq",
-                        "value": "4"
-                      },
-                      {
-                        "field": "steps.query_prospect.output.body.records[0].ExternalExchangeStatus__c",
-                        "operator": "eq",
-                        "value": "Completed"
+                        "value": "completed"
                       }
                     ]
                   }
@@ -163,14 +175,9 @@
                     "logic": "AND",
                     "conditions": [
                       {
-                        "field": "steps.query_prospect.output.body.records[0].ExternalRoutingCode__c",
+                        "field": "steps.pick_record.output.verdict",
                         "operator": "eq",
-                        "value": "4"
-                      },
-                      {
-                        "field": "steps.query_prospect.output.body.records[0].ExternalExchangeStatus__c",
-                        "operator": "eq",
-                        "value": "Bid"
+                        "value": "open"
                       }
                     ]
                   }
@@ -187,16 +194,16 @@
         "id": "6756fea1-aa74-53e1-a741-17eb973a66fc",
         "namespace": "respond_not_found",
         "type": "response",
-        "label": "Refuse: no such prospect",
+        "label": "Refuse: record not found",
         "position": {
           "x": -420,
-          "y": 960
+          "y": 1120
         },
         "config": {
           "status_code": 404,
           "body": {
             "success": false,
-            "outcome": "prospect_not_found"
+            "outcome": "{{steps.pick_record.output.not_found_outcome}}"
           }
         },
         "variables": {}
@@ -208,7 +215,7 @@
         "label": "Refuse: no Liberty1 offer",
         "position": {
           "x": 420,
-          "y": 1120
+          "y": 1280
         },
         "config": {
           "status_code": 409,
@@ -226,7 +233,7 @@
         "label": "Already sent",
         "position": {
           "x": 840,
-          "y": 1280
+          "y": 1440
         },
         "config": {
           "status_code": 200,
@@ -244,10 +251,10 @@
         "label": "Build Liberty1 request",
         "position": {
           "x": 0,
-          "y": 1440
+          "y": 1600
         },
         "config": {
-          "script": "// The Liberty1 request for one clicked prospect (#1545): Brian's buildPayload\n// and his DV1 or DI4 route, unchanged, over the record the query_prospect\n// Salesforce node read. Pure: buyer_click_send posts it, this only builds it.\nconst LIBERTY1_BASE =\n  \"https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/\";\n\nconst DV1_STATES = new Set([\"DE\", \"HI\", \"IA\", \"MN\", \"OR\", \"RI\", \"VT\", \"WA\", \"WI\", \"WY\"]);\n\nconst ROUTES = {\n  DV1: `${LIBERTY1_BASE}/CTTs3WKFFvjTUTQOlrHF`,\n  DI4: `${LIBERTY1_BASE}/AYAF77n9lUw8WbZ4kaRM`, // all other states\n};\n\nconst clean = (v) => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return s === \"\" ? null : s;\n};\nconst digits = (v) => { const s = clean(v); return s === null ? null : s.replace(/\\D/g, \"\"); };\nconst phone10 = (v) => { const d = digits(v); if (d === null) return null; return d.length === 11 && d.startsWith(\"1\") ? d.slice(1) : d; };\nconst zip5 = (v) => { const d = digits(v); return d === null ? null : d.slice(0, 5); };\nconst titleCase = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase().replace(/(^|[\\s\\-'])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); };\nconst upper = (v) => { const s = clean(v); return s === null ? null : s.toUpperCase(); };\nconst lower = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase(); };\n// Picklist value -> API enum: \"Poor (<600)\" -> \"poor\", \"Own with Mortgage\" -> \"own_with_mortgage\"\nconst toEnum = (v) => { const s = clean(v); if (s === null) return null; return s.replace(/\\s*\\(.*?\\)\\s*/g, \" \").trim().toLowerCase().replace(/\\s+/g, \"_\"); };\nconst num = (v) => { if (v === null || v === undefined || v === \"\") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };\nconst address1 = (street, apt) => {\n  const s = clean(street); const a = clean(apt);\n  if (s === null) return a; if (a === null) return s;\n  return /^(apt|unit|ste|suite|#)/i.test(a) ? `${s} ${a}` : `${s} Apt ${a}`;\n};\n\nfunction buildPayload(p) {\n  return {\n    leadId1: p.Id,\n    leadId2: clean(p.SubaccountName__c),\n    leadId3: clean(p.SubaccountUUID__c),\n    firstName: clean(p.First_Name__c),\n    lastName: clean(p.Last_Name__c),\n    email: lower(p.Email__c),\n    primaryPhone: phone10(p.Phone__c),\n    address1: address1(p.Street__c, p.AptSuite__c),\n    city: titleCase(p.City__c),\n    state: upper(p.State__c),\n    zipcode: zip5(p.Zip__c),\n    dateOfBirth: clean(p.BirthDate__c),\n    ssn: digits(p.SocialSecurityNumber__c),\n    purpose: toEnum(p.LoanPurpose__c),\n    loanAmount: num(p.LoanAmount__c),\n    propertyStatus: toEnum(p.RentOrOwn__c),\n    providedCreditRating: toEnum(p.ApproximateCreditRating__c),\n    employmentStatus: toEnum(p.EmploymentStatus__c),\n    employmentPayFrequency: toEnum(p.IncomePmtFrequency__c),\n    annualIncome: num(p.AnnualIncomeBeforeTaxes__c),\n    educationLevel: toEnum(p.EducationLevel__c),\n    consentsToFcra: p.FCRAConsentFlag__c === true,\n    consentsToTcpa: p.TCPAConsentFlag__c === true,\n    ipAddress: clean(p.User_IP__c),\n  };\n}\n\nconst pickRoute = (state) => (state && DV1_STATES.has(state) ? \"DV1\" : \"DI4\");\n\n// The offer check before this node routes only a found record here, so an\n// absent one is a wiring fault: refuse by name rather than post a body of nulls.\nconst record = steps.query_prospect?.output?.body?.records?.[0];\nif (!record || !record.Id) {\n  throw new Error(\"build_liberty1_request: no prospect record in steps.query_prospect, so nothing to send\");\n}\n\nconst body = buildPayload(record);\nconst route = pickRoute(body.state);\n\nreturn {\n  url: ROUTES[route],\n  body,\n  prospect_id: record.Id,\n  route,\n  state: body.state,\n};",
+          "script": "// The Liberty1 request for one click (#1545): Brian's buildPayload and his DV1\n// or DI4 route, unchanged, over the record pick_record chose (a prospect, or a\n// submission mapped onto prospect field names). Pure: buyer_click_send posts\n// it, this only builds it.\n//\n// Back on the Liberty1 Salesforce site on 2026-09-29, where Brian's flow posts\n// \"until later in the week\"; the LeadConnector routes it used from 2026-09-25\n// return when Liberty1 moves again.\nconst LIBERTY1_BASE =\n  \"https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks\";\n\nconst DV1_STATES = new Set([\"DE\", \"HI\", \"IA\", \"MN\", \"OR\", \"RI\", \"VT\", \"WA\", \"WI\", \"WY\"]);\n\nconst ROUTES = {\n  DV1: `${LIBERTY1_BASE}/DV1`,\n  DI4: `${LIBERTY1_BASE}/DI4`, // all other states\n};\n\nconst clean = (v) => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  return s === \"\" ? null : s;\n};\nconst digits = (v) => { const s = clean(v); return s === null ? null : s.replace(/\\D/g, \"\"); };\nconst phone10 = (v) => { const d = digits(v); if (d === null) return null; return d.length === 11 && d.startsWith(\"1\") ? d.slice(1) : d; };\nconst zip5 = (v) => { const d = digits(v); return d === null ? null : d.slice(0, 5); };\nconst titleCase = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase().replace(/(^|[\\s\\-'])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); };\nconst upper = (v) => { const s = clean(v); return s === null ? null : s.toUpperCase(); };\nconst lower = (v) => { const s = clean(v); return s === null ? null : s.toLowerCase(); };\n// Picklist value -> API enum: \"Poor (<600)\" -> \"poor\", \"Own with Mortgage\" -> \"own_with_mortgage\"\nconst toEnum = (v) => { const s = clean(v); if (s === null) return null; return s.replace(/\\s*\\(.*?\\)\\s*/g, \" \").trim().toLowerCase().replace(/\\s+/g, \"_\"); };\nconst num = (v) => { if (v === null || v === undefined || v === \"\") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };\nconst address1 = (street, apt) => {\n  const s = clean(street); const a = clean(apt);\n  if (s === null) return a; if (a === null) return s;\n  return /^(apt|unit|ste|suite|#)/i.test(a) ? `${s} ${a}` : `${s} Apt ${a}`;\n};\n\nfunction buildPayload(p) {\n  return {\n    leadId1: p.Id,\n    leadId2: clean(p.SubaccountName__c),\n    leadId3: clean(p.SubaccountUUID__c),\n    firstName: clean(p.First_Name__c),\n    lastName: clean(p.Last_Name__c),\n    email: lower(p.Email__c),\n    primaryPhone: phone10(p.Phone__c),\n    address1: address1(p.Street__c, p.AptSuite__c),\n    city: titleCase(p.City__c),\n    state: upper(p.State__c),\n    zipcode: zip5(p.Zip__c),\n    dateOfBirth: clean(p.BirthDate__c),\n    ssn: digits(p.SocialSecurityNumber__c),\n    purpose: toEnum(p.LoanPurpose__c),\n    loanAmount: num(p.LoanAmount__c),\n    propertyStatus: toEnum(p.RentOrOwn__c),\n    providedCreditRating: toEnum(p.ApproximateCreditRating__c),\n    employmentStatus: toEnum(p.EmploymentStatus__c),\n    employmentPayFrequency: toEnum(p.IncomePmtFrequency__c),\n    annualIncome: num(p.AnnualIncomeBeforeTaxes__c),\n    educationLevel: toEnum(p.EducationLevel__c),\n    consentsToFcra: p.FCRAConsentFlag__c === true,\n    consentsToTcpa: p.TCPAConsentFlag__c === true,\n    ipAddress: clean(p.User_IP__c),\n  };\n}\n\nconst pickRoute = (state) => (state && DV1_STATES.has(state) ? \"DV1\" : \"DI4\");\n\n// The offer check before this node routes only an open click here, so an\n// absent record is a wiring fault: refuse by name rather than post a body of nulls.\nconst record = steps.pick_record?.output?.record;\nif (!record || !record.Id) {\n  throw new Error(\"build_liberty1_request: no record picked in steps.pick_record, so nothing to send\");\n}\n\nconst body = buildPayload(record);\nconst route = pickRoute(body.state);\n\nreturn {\n  url: ROUTES[route],\n  body,\n  route,\n  state: body.state,\n};",
           "retries": 0,
           "timeout_ms": 1000
         },
@@ -260,11 +267,11 @@
         "label": "Send click to Liberty1",
         "position": {
           "x": 0,
-          "y": 1600
+          "y": 1760
         },
         "config": {
           "partner_id": "",
-          "prospect_id": "{{steps.build_request.output.prospect_id}}",
+          "prospect_id": "{{steps.pick_record.output.sale_key}}",
           "request_url": "{{steps.build_request.output.url}}",
           "request_body": "{{steps.build_request.output.body}}",
           "success_pattern": "Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)",
@@ -280,7 +287,7 @@
         "label": "Not sent or not known",
         "position": {
           "x": 420,
-          "y": 1760
+          "y": 1920
         },
         "config": {
           "status_code": 200,
@@ -298,7 +305,7 @@
         "label": "Build Salesforce updates",
         "position": {
           "x": 0,
-          "y": 1920
+          "y": 2080
         },
         "config": {
           "script": "// What the Liberty1 click writes to Salesforce, from buyer_click_send's route\n// (#1545): Brian's three update bodies (Submission, Prospect, Lead), unchanged\n// in fields and order.\n//\n// Completed only on `sent` (Liberty1 confirmed it created the record) and Fail\n// only on `refused` (Liberty1 turned it down with its own error). Every other\n// route writes NOTHING: `unknown` means nobody knows whether Liberty1 created\n// the record, and the rest never sent. write false is what the check_write\n// branch reads to skip every update node.\n//\n// Undefined values are dropped so nothing is blanked. PDFlow_3__c, where his\n// flow wrote the Pipedream inspect URL, carries this run's Bidspoke link.\nconst PARTNER_NAME = \"Liberty1\";\nconst ROUTING_CODE = 4; // Number on Prospect, Text on Submission/Lead\nconst LEAD_SALE_TYPE = \"Form\";\nconst LIBERTY1_TCPA = `By clicking \"Connect with Liberty1 Financial\": I expressly agree to Liberty1 Financial's TCPA consent below, Terms & Conditions, Privacy Policy, and Consent for Electronic Communications.\n\nI expressly provide my consent to receive marketing calls and texts/SMS regarding personal loan and debt consolidation products from Clear Vision Financial LLC, doing business as Liberty1 Financial, at the phone number I provided, including via an automatic telephone dialing system or an artificial, prerecorded, or AI-generated voice, even if my number is on a federal, state, or company Do-Not-Call list. I understand that my consent is not a condition of purchasing any goods or services and that my consent may be revoked at any time, such as by replying \"STOP\" to opt out of SMS or by telling Liberty1 Financial to stop on any call. I also acknowledge that Liberty1 Financial's Terms & Conditions include a Jury Trial Waiver, Class Action Waiver, and Arbitration Agreement, and, if I am a California resident, that the California Privacy Notice describes my privacy rights. Message and data rates may apply, and message frequency varies.\n\nText HELP for help or text STOP to cancel.`;\n\nconst EXCHANGE_STATUS_BY_ROUTE = { sent: \"Completed\", refused: \"Fail\" };\n\nconst click = steps.click_send?.output ?? {};\nconst route = typeof click._route === \"string\" ? click._route : \"not_run\";\nconst exchangeStatus = EXCHANGE_STATUS_BY_ROUTE[route] ?? null;\n\nif (exchangeStatus === null) {\n  return {\n    write: false,\n    exchange_status: null,\n    prospect: null,\n    submission: null,\n    lead: null,\n    response: { success: false, outcome: route },\n  };\n}\n\nconst dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));\nconst partnerLeadId = route === \"sent\" && click.partner_lead_id ? click.partner_lead_id : undefined;\nconst now = new Date().toISOString();\nconst link = execution?.bidspoke_link || undefined;\n\nreturn {\n  write: true,\n  exchange_status: exchangeStatus,\n  prospect: dropUndefined({\n    ExternalExchangeStatus__c: exchangeStatus,\n    ExternalPartnerLeadId__c: partnerLeadId,\n    ExternalPartnerName__c: PARTNER_NAME,\n    ExternalRoutingCode__c: ROUTING_CODE,\n    TCPA_Consent__c: LIBERTY1_TCPA,\n    ExternalTimestamp__c: now,\n    PDFlow_3__c: link,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  submission: dropUndefined({\n    External_Exchange_Status__c: exchangeStatus,\n    External_Partner_Lead_Id__c: partnerLeadId,\n    External_Partner_Name__c: PARTNER_NAME,\n    External_Routing_Code__c: String(ROUTING_CODE),\n    External_TCPA_Consent__c: LIBERTY1_TCPA,\n    External_Timestamp__c: now,\n    PDFlow_3__c: link,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  lead: dropUndefined({\n    External_Exchange_Status__c: exchangeStatus,\n    ExternalPartnerLeadId__c: partnerLeadId,\n    ExternalPartnerName__c: PARTNER_NAME,\n    External_Routing_Code__c: String(ROUTING_CODE),\n    TCPAConsent__c: LIBERTY1_TCPA,\n    External_Timestamp__c: now,\n    LeadSaleType__c: LEAD_SALE_TYPE,\n  }),\n  response: { success: route === \"sent\", outcome: route },\n};",
@@ -314,7 +321,7 @@
         "label": "Respond with the outcome",
         "position": {
           "x": 0,
-          "y": 2080
+          "y": 2240
         },
         "config": {
           "status_code": 200,
@@ -330,7 +337,7 @@
         "label": "Anything to write?",
         "position": {
           "x": 0,
-          "y": 2240
+          "y": 2400
         },
         "config": {
           "retries": 0,
@@ -344,18 +351,37 @@
         "variables": {}
       },
       {
+        "id": "0b7a30f1-0814-4d21-9249-523099bccae4",
+        "namespace": "check_prospect",
+        "type": "filter",
+        "label": "Has a prospect?",
+        "position": {
+          "x": 0,
+          "y": 2560
+        },
+        "config": {
+          "retries": 0,
+          "condition": {
+            "field": "steps.pick_record.output.prospect_id",
+            "operator": "exists"
+          },
+          "operation": "continue_if"
+        },
+        "variables": {}
+      },
+      {
         "id": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
         "namespace": "update_prospect",
         "type": "salesforce",
         "label": "Update prospect",
         "position": {
           "x": 0,
-          "y": 2400
+          "y": 2720
         },
         "config": {
           "operation": "update",
           "object": "Prospect__c",
-          "record_id": "{{steps.build_request.output.prospect_id}}",
+          "record_id": "{{steps.pick_record.output.prospect_id}}",
           "body": "{{steps.click_patch.output.prospect}}",
           "retries": 2,
           "timeout_ms": 10000,
@@ -375,12 +401,12 @@
         "label": "Came from a submission?",
         "position": {
           "x": 0,
-          "y": 2560
+          "y": 2880
         },
         "config": {
           "retries": 0,
           "condition": {
-            "field": "steps.resolve_input.output.submission_id",
+            "field": "steps.pick_record.output.submission_id",
             "operator": "exists"
           },
           "operation": "continue_if"
@@ -394,36 +420,13 @@
         "label": "Update submission",
         "position": {
           "x": 0,
-          "y": 2720
+          "y": 3040
         },
         "config": {
           "operation": "update",
           "object": "Submission__c",
-          "record_id": "{{steps.resolve_input.output.submission_id}}",
+          "record_id": "{{steps.pick_record.output.submission_id}}",
           "body": "{{steps.click_patch.output.submission}}",
-          "retries": 2,
-          "timeout_ms": 10000,
-          "transient_errors": [
-            {
-              "code": "REQUEST_LIMIT_EXCEEDED",
-              "message_contains": "Concurrent"
-            }
-          ]
-        },
-        "variables": {}
-      },
-      {
-        "id": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
-        "namespace": "find_lead",
-        "type": "salesforce",
-        "label": "Find the lead",
-        "position": {
-          "x": 0,
-          "y": 2880
-        },
-        "config": {
-          "operation": "query",
-          "soql": "SELECT Id, Lead__c FROM Submission__c WHERE Id = '{{steps.resolve_input.output.submission_id}}'",
           "retries": 2,
           "timeout_ms": 10000,
           "transient_errors": [
@@ -442,12 +445,12 @@
         "label": "Has a lead?",
         "position": {
           "x": 0,
-          "y": 3040
+          "y": 3200
         },
         "config": {
           "retries": 0,
           "condition": {
-            "field": "steps.find_lead.output.body.records[0].Lead__c",
+            "field": "steps.pick_record.output.lead_id",
             "operator": "exists"
           },
           "operation": "continue_if"
@@ -461,12 +464,12 @@
         "label": "Update lead",
         "position": {
           "x": 0,
-          "y": 3200
+          "y": 3360
         },
         "config": {
           "operation": "update",
           "object": "Lead",
-          "record_id": "{{steps.find_lead.output.body.records[0].Lead__c}}",
+          "record_id": "{{steps.pick_record.output.lead_id}}",
           "body": "{{steps.click_patch.output.lead}}",
           "retries": 2,
           "timeout_ms": 10000,
@@ -508,6 +511,12 @@
       {
         "id": "7d8b978e-a03d-56dc-aba1-0bac3c33b76e",
         "source": "5f2563a5-cae8-5f7d-8cfe-64a62aa2725c",
+        "target": "7fa872e5-f479-49d9-9edf-b235c032d150",
+        "source_handle": "output"
+      },
+      {
+        "id": "ef8be744-fbe2-443c-b96e-59acc740cca4",
+        "source": "7fa872e5-f479-49d9-9edf-b235c032d150",
         "target": "5c4ab38e-0461-5f3c-ac09-e61c97861a05",
         "source_handle": "output"
       },
@@ -598,8 +607,20 @@
       {
         "id": "d6bc6a70-6f4c-533f-96cc-17cceb1c5a33",
         "source": "393e9dd7-e289-5dcf-a5aa-d5b7956be6d8",
+        "target": "0b7a30f1-0814-4d21-9249-523099bccae4",
+        "source_handle": "pass"
+      },
+      {
+        "id": "2793aeef-adbe-4d29-b45e-b76c8642561b",
+        "source": "0b7a30f1-0814-4d21-9249-523099bccae4",
         "target": "8373d788-ebe7-5f0f-9e46-0b2a602c81dc",
         "source_handle": "pass"
+      },
+      {
+        "id": "d63e412b-df4d-40f1-9a34-c0bfe10cb054",
+        "source": "0b7a30f1-0814-4d21-9249-523099bccae4",
+        "target": "3f73ee1b-5ad4-57af-86e0-3c9d5fd35c6a",
+        "source_handle": "exit"
       },
       {
         "id": "b170b01a-295d-5dd0-b946-6baf4d1942d5",
@@ -616,12 +637,6 @@
       {
         "id": "397abc8e-1838-5876-b8d5-94c4df4907b6",
         "source": "c35ef4be-cf58-5a52-b284-8cf8bb3757a8",
-        "target": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
-        "source_handle": "output"
-      },
-      {
-        "id": "f5150566-3320-5be0-ab5a-a144b57a2d49",
-        "source": "f91bc734-96b4-5a7b-872f-b3cd9241a192",
         "target": "545ad3b0-ae65-54f3-9583-93b122c90595",
         "source_handle": "output"
       },

@@ -13,7 +13,9 @@
  * sent; a Completed one is answered already sent and never sent; the request
  * posted is Brian's body to his route; Completed is written only on `sent`
  * and Fail only on `refused`, to exactly the records the click resolves to; and
- * every other route answers and writes nothing.
+ * every other route answers and writes nothing. A Submission with no Prospect
+ * (2026-09-29) is sent from the submission with no offer check, keyed on the
+ * submission, and writes the submission and its lead but no prospect.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -23,9 +25,9 @@ import type { StepLogEntry } from '../step-logger'
 import type { BuyerClickSendOutput, BuyerClickSendReason, BuyerClickSendRoute } from '../nodes/buyer-click-send'
 import workflowFile from '../../../../../docs/workflows/liberty1-click/definition.json'
 import fixtures from '../scripts/__tests__/fixtures/liberty1-prospects.json'
+import submissionFixtures from '../scripts/__tests__/fixtures/liberty1-submissions.json'
 import { runCanvasScript } from '../scripts/__tests__/canvas-script'
-import { buildPayload, pickRoute, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
-import { CANVAS_ROUTES as ROUTES } from '../scripts/__tests__/liberty1-canvas-routes'
+import { buildPayload, pickRoute, ROUTES, submissionAsProspect, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../lib/engine-script-drift'
 
 vi.mock('../step-logger', () => ({
@@ -70,18 +72,24 @@ const REASON: Record<BuyerClickSendRoute, BuyerClickSendReason> = {
 
 /** Every Salesforce call the walk made, in order. */
 let sfCalls: Array<{ namespace: string; operation: string; object?: string; record_id?: string; soql?: string; body?: unknown }>
+/** The submission row the fake org answers with, before the test's prospect and lead are set on it. */
+const SUBMISSION_ROW: Rec = { ...(submissionFixtures.records.di4_lead_mobile as Rec), Id: SUBMISSION_ID }
+
 /** What the fake org holds; tests change it. */
-let org: { prospect: Rec | null; submissionProspect: string | null; submissionLead: string | null }
+let org: { prospect: Rec | null; submission: Rec | null; submissionProspect: string | null; submissionLead: string | null }
 let clickRoute: BuyerClickSendRoute
 let clickInputs: Array<{ prospect_id: unknown; request_url: unknown; request_body: unknown; partner: unknown }>
 
 function fakeSoql(soql: string): Rec[] {
   const direct = soql.match(/FROM Prospect__c WHERE Id = '([A-Za-z0-9]+)'$/)
   if (direct) return org.prospect && org.prospect.Id === direct[1] ? [org.prospect] : []
-  const viaSub = soql.match(/FROM Prospect__c WHERE Id IN \(SELECT Prospect__c FROM Submission__c WHERE Id = '([A-Za-z0-9]+)'\)$/)
-  if (viaSub) return viaSub[1] === SUBMISSION_ID && org.prospect && org.submissionProspect === org.prospect.Id ? [org.prospect] : []
-  const lead = soql.match(/^SELECT Id, Lead__c FROM Submission__c WHERE Id = '([A-Za-z0-9]+)'$/)
-  if (lead) return lead[1] === SUBMISSION_ID ? [{ Id: SUBMISSION_ID, Lead__c: org.submissionLead }] : []
+  const sub = soql.match(/^SELECT .*Prospect__r\.ExternalExchangeStatus__c FROM Submission__c WHERE Id = '([A-Za-z0-9]+)'$/)
+  if (sub) {
+    if (sub[1] !== SUBMISSION_ID || !org.submission) return []
+    // Salesforce answers Prospect__r only when the linked prospect is readable.
+    const linked = org.submissionProspect !== null && org.prospect && org.prospect.Id === org.submissionProspect ? org.prospect : null
+    return [{ ...org.submission, Prospect__c: org.submissionProspect, Lead__c: org.submissionLead, Prospect__r: linked }]
+  }
   throw new Error(`the fake org does not know this query: ${soql}`)
 }
 
@@ -91,7 +99,7 @@ beforeEach(() => {
   sfCalls = []
   clickInputs = []
   clickRoute = 'sent'
-  org = { prospect: { ...RECORD }, submissionProspect: PROSPECT_ID, submissionLead: LEAD_ID }
+  org = { prospect: { ...RECORD }, submission: { ...SUBMISSION_ROW }, submissionProspect: PROSPECT_ID, submissionLead: LEAD_ID }
 
   vi.mocked(executeCodeNode).mockImplementation(async (node: NodeDefinition, ctx: ExecutionContext) => ({
     output: await runCanvasScript(String((node.config as Rec).script), {
@@ -193,10 +201,20 @@ describe('the offer check', () => {
     await refused(404, 'prospect_not_found')
   })
 
-  it('a submission that points at no prospect is 404, never sent', async () => {
-    org.submissionProspect = null
+  it('a submission Salesforce does not hold is 404 as a submission, never sent', async () => {
+    org.submission = null
     const r = await click({ Submission__c: SUBMISSION_ID })
     expect(r.status).toBe(404)
+    expect(r.body).toEqual({ success: false, outcome: 'submission_not_found' })
+    expect(clickInputs).toEqual([])
+    expect(r.writes).toEqual([])
+  })
+
+  it('a submission naming a prospect Salesforce cannot return is 404 as a prospect, never sent from the submission instead', async () => {
+    org.submissionProspect = 'a0P5f00000GoneXAAA'
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r.status).toBe(404)
+    expect(r.body).toEqual({ success: false, outcome: 'prospect_not_found' })
     expect(clickInputs).toEqual([])
   })
 
@@ -288,22 +306,84 @@ describe('a Liberty1 offer that is still open', () => {
   }
 })
 
-describe('the three yes or no gates are filters', () => {
+describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
+  beforeEach(() => { org.submissionProspect = null })
+
+  it("is sent with no offer check: Brian's submission body to his route, keyed on the submission", async () => {
+    await click({ Submission__c: SUBMISSION_ID })
+    const body = buildPayload(submissionAsProspect({ ...SUBMISSION_ROW, Lead__c: LEAD_ID, Prospect__c: null }))
+    expect(clickInputs).toHaveLength(1)
+    expect(clickInputs[0].prospect_id).toBe(SUBMISSION_ID)
+    expect(clickInputs[0].request_url).toBe(ROUTES[pickRoute(body.state)])
+    expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
+  })
+
+  it('sent: writes Completed to the submission and its lead, and never touches a prospect', async () => {
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r.body).toEqual({ success: true, outcome: 'sent' })
+    const theirs = updateBodies({ ok: true, text: `Records created successfully : ${L1_LEAD}` }, NOW, LINK)
+    expect(r.writes).toEqual([
+      { namespace: 'update_submission', operation: 'update', object: 'Submission__c', record_id: SUBMISSION_ID, body: theirs.submission },
+      { namespace: 'update_lead', operation: 'update', object: 'Lead', record_id: LEAD_ID, body: theirs.lead },
+    ])
+  })
+
+  it('with no lead, writes the submission alone and stops cleanly', async () => {
+    org.submissionLead = null
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r.writes.map((w) => w.namespace)).toEqual(['update_submission'])
+  })
+
+  it('refused: writes Fail to the submission and its lead', async () => {
+    clickRoute = 'refused'
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r.writes.map((w) => [w.namespace, (w.body as Rec).External_Exchange_Status__c])).toEqual([['update_submission', 'Fail'], ['update_lead', 'Fail']])
+  })
+
+  it('already sold to Liberty1 (code 4, Completed) answers already sent and sends nothing', async () => {
+    org.submission = { ...SUBMISSION_ROW, External_Routing_Code__c: '4', External_Exchange_Status__c: 'Completed' }
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r).toMatchObject({ status: 200, body: { success: true, outcome: 'already_sent' } })
+    expect(clickInputs).toEqual([])
+    expect(r.writes).toEqual([])
+  })
+
+  it('an unknown outcome writes nothing', async () => {
+    clickRoute = 'unknown'
+    const r = await click({ Submission__c: SUBMISSION_ID })
+    expect(r.body).toEqual({ success: false, outcome: 'unknown' })
+    expect(r.writes).toEqual([])
+  })
+})
+
+describe('the yes or no gates are filters', () => {
   // A one arm branch with no else and a filter whose exit is not wired both end
   // the run when their condition fails, so the walks above prove the swap kept
   // every outcome; a filter reads as the gate it is, with no nested branch box.
-  const GATES: Record<string, { field: string; operator: string }> = {
-    check_write: { field: 'steps.click_patch.output.write', operator: 'is_true' },
-    check_submission: { field: 'steps.resolve_input.output.submission_id', operator: 'exists' },
-    check_lead: { field: 'steps.find_lead.output.body.records[0].Lead__c', operator: 'exists' },
+  // check_prospect alone wires exit too: a submission with no prospect skips the
+  // prospect write and goes on to the submission's, where the others end the run.
+  const GATES: Record<string, { field: string; operator: string; handles: string[] }> = {
+    check_write: { field: 'steps.click_patch.output.write', operator: 'is_true', handles: ['pass'] },
+    check_prospect: { field: 'steps.pick_record.output.prospect_id', operator: 'exists', handles: ['pass', 'exit'] },
+    check_submission: { field: 'steps.pick_record.output.submission_id', operator: 'exists', handles: ['pass'] },
+    check_lead: { field: 'steps.pick_record.output.lead_id', operator: 'exists', handles: ['pass'] },
   }
 
-  it.each(Object.keys(GATES))('%s continues only when its condition holds, and wires only pass', (ns) => {
+  it.each(Object.keys(GATES))('%s continues only when its condition holds, with the handles it needs wired', (ns) => {
     const node = definition.nodes.find((n) => n.namespace === ns)!
     expect(node.type).toBe('filter')
     const config = node.config as { operation?: string; condition?: { field: string; operator: string } }
     expect(config.operation).toBe('continue_if')
-    expect({ field: config.condition?.field, operator: config.condition?.operator }).toEqual(GATES[ns])
-    expect(definition.edges.filter((e) => e.source === node.id).map((e) => e.source_handle)).toEqual(['pass'])
+    expect({ field: config.condition?.field, operator: config.condition?.operator }).toEqual({ field: GATES[ns].field, operator: GATES[ns].operator })
+    expect(definition.edges.filter((e) => e.source === node.id).map((e) => e.source_handle)).toEqual(GATES[ns].handles)
+  })
+
+  it("check_prospect's exit rejoins at check_submission, the node its pass reaches after the prospect write", () => {
+    const gate = definition.nodes.find((n) => n.namespace === 'check_prospect')!
+    const target = (id: string, handle: string) => definition.edges.find((e) => e.source === id && e.source_handle === handle)?.target
+    const updateProspect = target(gate.id, 'pass')!
+    expect(definition.nodes.find((n) => n.id === updateProspect)?.namespace).toBe('update_prospect')
+    expect(target(gate.id, 'exit')).toBe(target(updateProspect, 'output'))
+    expect(definition.nodes.find((n) => n.id === target(gate.id, 'exit'))?.namespace).toBe('check_submission')
   })
 })

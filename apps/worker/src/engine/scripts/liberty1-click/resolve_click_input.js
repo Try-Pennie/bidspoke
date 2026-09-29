@@ -1,9 +1,11 @@
-// Which prospect a Liberty1 click is for (#1545). The portal posts {Prospect__c}
+// Which record a Liberty1 click is for (#1545). The portal posts {Prospect__c}
 // or {Submission__c}, whichever it has. A Prospect__c that is a Salesforce id is
-// used directly; otherwise a Submission__c that is one resolves the prospect
-// through the submission, inside the same query, so the submission patched later
-// is always one that belongs to the prospect that was sent. A Submission__c
-// posted beside a usable Prospect__c is ignored for the same reason.
+// queried directly. Otherwise a Submission__c that is one queries the
+// submission itself, with its Lead and, through Prospect__r, every field of the
+// prospect it points at, so pick_record can send from the prospect when there
+// is one and from the submission when there is not (Brian, 2026-09-29). A
+// Submission__c posted beside a usable Prospect__c is ignored: nothing ties that
+// submission to this prospect.
 //
 // An id is interpolated into SOQL, so anything that is not exactly 15 or 18
 // letters and digits is refused here and never reaches a query. valid false
@@ -20,6 +22,20 @@ const FIELDS = [
   "User_IP__c", "ExternalRoutingCode__c", "ExternalExchangeStatus__c",
 ];
 
+// Brian's SUBMISSION_FIELDS (the applicant lives in the *_SO__c fields, the
+// phone on the Lead), then the submission's two offer fields.
+const SUBMISSION_FIELDS = [
+  "Id", "Prospect__c", "Lead__c", "Source__c", "FundedDemandSubAccountName__c", "SubaccountUUID__c",
+  "Prospect_Subaccount_UUID__c", "FirstNameSO__c", "LastNameSO__c", "Email_SO__c", "Home_Phone__c",
+  "StreetSO__c", "Apt_Suite_SO__c", "City_SO__c", "State_SO__c", "Zip_Code_SO__c",
+  "Date_of_Birth_SO__c", "Social_Security_Number_SO__c", "Loan_Purpose_SO__c", "Loan_Amount_SO__c",
+  "Rent_or_Own_SO__c", "Approximate_Credit_Rating_SO__c", "Employment_Status_SO__c",
+  "Income_Pmt_Frequency_SO__c", "Annual_Income_Before_Taxes_SO__c", "Education_Level_SO__c",
+  "ConsentFCRA__c", "Consent__c", "User_IP__c",
+  "Lead__r.FirstName", "Lead__r.LastName", "Lead__r.Email", "Lead__r.Phone", "Lead__r.MobilePhone",
+  "External_Routing_Code__c", "External_Exchange_Status__c",
+];
+
 const body = payload !== null && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
 
 const present = (v) => v !== undefined && v !== null && !(typeof v === "string" && v.trim() === "");
@@ -27,7 +43,6 @@ const asId = (v) => (typeof v === "string" && SF_ID.test(v.trim()) ? v.trim() : 
 
 const prospectId = asId(body.Prospect__c);
 const submissionId = asId(body.Submission__c);
-const select = `SELECT ${FIELDS.join(", ")} FROM Prospect__c`;
 
 if (prospectId) {
   return {
@@ -36,18 +51,19 @@ if (prospectId) {
     source: "prospect",
     prospect_id: prospectId,
     submission_id: null,
-    prospect_soql: `${select} WHERE Id = '${prospectId}'`,
+    soql: `SELECT ${FIELDS.join(", ")} FROM Prospect__c WHERE Id = '${prospectId}'`,
   };
 }
 
 if (submissionId) {
+  const selected = [...SUBMISSION_FIELDS, ...FIELDS.map((f) => `Prospect__r.${f}`)];
   return {
     valid: true,
     reason: null,
     source: "submission",
     prospect_id: null,
     submission_id: submissionId,
-    prospect_soql: `${select} WHERE Id IN (SELECT Prospect__c FROM Submission__c WHERE Id = '${submissionId}')`,
+    soql: `SELECT ${selected.join(", ")} FROM Submission__c WHERE Id = '${submissionId}'`,
   };
 }
 
@@ -57,5 +73,5 @@ return {
   source: null,
   prospect_id: null,
   submission_id: null,
-  prospect_soql: null,
+  soql: null,
 };
