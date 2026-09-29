@@ -27,7 +27,7 @@ export const SIMILAR_FALLBACK_EXCLUDED: Readonly<Partial<Record<NodeType, string
   achieve_offers: 'one external API whose latency has no counterpart in another workflow',
   buyer_select: 'a cascade over whichever buyers hold a profile, so its duration is the buyer set of the day, not the type',
   buyer_click_send: 'one click buyer endpoint, named in its own config, whose latency has no counterpart in another workflow',
-  buyer_click_check: 'a profile read and one counter read under its own 300 ms budget, so its duration is the cache and the object colo, not the type',
+  buyer_click_check: 'a profile read and one counter read under its own 800 ms budget, so its duration is the cache and the object colo, not the type',
   branch_end: 'a passthrough: its duration is the chain that led to it, not its own',
   data_store: 'a KV round trip whose latency depends on the key and the colo, not the type',
   latency_gate: 'a KV round trip whose latency depends on the key and the colo, not the type',

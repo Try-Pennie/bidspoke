@@ -18,7 +18,7 @@ On the Engine Bidding response path, after Tripoint has given a known no, and be
 
 ## The budget, and failing toward under sending
 
-The profile read and the count read share one 300 ms budget (`CLICK_CHECK_BUDGET_MS` in `@bidspoke/buyer-profile`). A read that fails, one that has not answered when the budget ends, or a stored cap that is not a whole number above zero routes `not_eligible` as `cap_check_error`, with the cause in `detail`. The buyer is then not offered on this lead: a check that cannot finish never offers on a guess. A read that lands after the budget ended cannot change the answer already given.
+The profile read and the count read share one 800 ms budget (`CLICK_CHECK_BUDGET_MS` in `@bidspoke/buyer-profile`; 300 ms until 2026-09-29, when an eligible lead missed its offer on a slow profile read). A read that fails, one that has not answered when the budget ends, or a stored cap that is not a whole number above zero routes `not_eligible` as `cap_check_error`, with the cause in `detail`. The buyer is then not offered on this lead: a check that cannot finish never offers on a guess. A read that lands after the budget ended cannot change the answer already given.
 
 ## Routes
 

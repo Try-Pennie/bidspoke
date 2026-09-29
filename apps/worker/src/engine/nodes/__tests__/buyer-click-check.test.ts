@@ -4,7 +4,7 @@
  *
  * Every eligibility reason, the cap boundary (49 of 50 is eligible, 50 of 50 is
  * not), a slow counter and a slow or failed profile load each routing
- * cap_check_error inside the node's own 300 ms budget, an offer buyer refused by
+ * cap_check_error inside the node's own 800 ms budget, an offer buyer refused by
  * name, and the partner's own facts carried on the output so no script holds a
  * partner literal. The profiles, the counter, the clock and the timers are all
  * injected, so nothing waits and nothing leaves the process.
@@ -140,6 +140,13 @@ const run = (h: Harness, n = node(), c = ctx()) => executeBuyerClickCheckNode(n,
 describe('the node type', () => {
   it('its routes are exactly the handles NODE_TRAITS fixes', () => {
     expect([...BUYER_CLICK_CHECK_ROUTES]).toEqual(NODE_TRAITS.buyer_click_check.staticHandles)
+  })
+
+  it('its budget is 800 ms, room for a slow profile read plus the counter round trip', () => {
+    // At 300 ms an eligible Liberty1 lead missed its offer on the first live day
+    // (2026-09-29 16:00:06 UTC): the profile read took about 250 ms and the counter
+    // answer landed just past the deadline. 800 ms matches buyer_select's own budget.
+    expect(CLICK_CHECK_BUDGET_MS).toBe(800)
   })
 
   it('its budget is the package constant the form states, and the one timer it arms is that budget', async () => {

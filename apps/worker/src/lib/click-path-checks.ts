@@ -78,7 +78,7 @@
  * stamps are written by the cron wiring (L514).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { PACIFIC, isOpen, isPartnerId, zonedDayStartUtc, zonedParts, type OutReason } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, PACIFIC, isOpen, isPartnerId, zonedDayStartUtc, zonedParts, type OutReason } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { CLICK_RESOLVER_TYPE } from '../engine/bid-log'
@@ -121,7 +121,7 @@ export const CHECK_ERROR_REASONS = ['cap_check_error', 'profile_copy_stale'] as 
 export const CHECK_ERROR_MIN_RUNS = 20
 /**
  * The share that pages. The #1557 review measured the object call p99 at 1,492
- * ms against a 300 ms budget, so a cold counter will cost SOME runs every day;
+ * ms against the check's budget (800 ms since 2026-09-29), so a cold counter will cost SOME runs every day;
  * a fifth is well past a cold start and well short of an outage. The real share
  * on the first live day is what to set this from.
  */
@@ -173,7 +173,7 @@ export const CLICK_CHECK_ERRORS_REMEDY: AlertRemedy = {
     'else pages for it. Each line names the buyer and the share:',
   fixHint:
     'Open a recent Engine Bidding execution and read the Buyer Click Check step: cap_check_error with a timeout means the click counter ' +
-    'answered past the 300 ms budget, with a read failure means the profile could not be loaded; profile_copy_stale means the ' +
+    `answered past the ${CLICK_CHECK_BUDGET_MS} ms budget, with a read failure means the profile could not be loaded; profile_copy_stale means the ` +
     'database was unreadable for more than 15 minutes. Check Supabase and the Durable Object health before changing the budget.',
   headlineVerb: 'shows a click buyer check that cannot answer',
   itemNoun: { one: 'buyer', many: 'buyers' },
