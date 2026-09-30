@@ -78,7 +78,7 @@ Then, either:
 
 **The 2026-09-30 change** was made on the canvas: version 11 (15:46:50 UTC) moved `build_request` back to the LeadConnector routes and version 12 (15:57:59 UTC) set `click_send`'s success line to LeadConnector's reply. The kept files and `definition.json` were brought to version 12 afterwards. Version 14 (19:00 UTC) added `click_send`'s `state` template, the same hour Liberty1's profile gained its Click delivery.
 
-**#1671** then took the routes out of `build_request` and the address and success line off `click_send`, here first. Until the new `build_request` is pasted on the canvas, the drift check holds the version 14 script as its baseline, so it reads awaiting_paste rather than paging, and the `request_url` and `success_pattern` still on the canvas are listed as unwatched, because the node no longer reads them.
+**#1671** then took the routes out of `build_request` and the address and success line off `click_send`, here first, and Dan applied both on the canvas as version 15 (2026-09-30 19:54 UTC). The drift check holds no baseline for any of the four scripts, and a `request_url` or `success_pattern` reappearing on `click_send` pages as a retired setting (`RETIRED_CONFIG_FIELDS` in `kept-node-config.ts`), because the node no longer reads either.
 
 ## What Brian changes
 

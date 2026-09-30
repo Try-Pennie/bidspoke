@@ -22,6 +22,9 @@
  *                                               finding, never an agreement)
  *   a vocabulary setting (buyer_select mode)    judged against the vocabulary,
  *                                               not the file: outside_allowed
+ *   a retired setting (RETIRED_CONFIG_FIELDS)    retired_setting whenever the
+ *   on the canvas at all                        canvas holds it: the node no
+ *                                               longer reads it
  * A committed node absent from the canvas is missing_node, and one of another
  * type is type_changed. Object key order is not a difference; nothing else is
  * forgiven (L273).
@@ -131,13 +134,6 @@ export const UNWATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly Unwatched
     { field: 'alert_over_percent', why: 'when the over cap notice pages, an alert threshold an operator tunes; it decides no sale' },
     { field: 'retries', why: RETRIES_IGNORED },
     { field: 'daily_lead_cap', why: 'ignored by the node and reported as such; the cap lives on the buyer profile' },
-    // #1671: the address and the success line are the buyer profile's click
-    // delivery, and the node never reads these two again. A canvas saved before
-    // then still holds both until someone clears them, so they are listed here
-    // rather than dropped, which would read the same to the check but hide the
-    // decision (L96). Remove both entries once no kept canvas carries them.
-    { field: 'request_url', why: "removed by #1671 and never read by the node: where a click goes is the buyer profile's click delivery, so a leftover value decides nothing" },
-    { field: 'success_pattern', why: "removed by #1671 and never read by the node: the reply that counts as sold is the buyer profile's success reply, so a leftover value decides nothing" },
   ],
   buyer_select: [{ field: 'retries', why: RETRIES_IGNORED }],
   branch: [
@@ -157,12 +153,26 @@ export const UNWATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly Unwatched
   ],
 }
 
+/**
+ * Settings a node type no longer reads (#1671). A canvas holding one means
+ * somebody expects it to do something it no longer does, so any value, even an
+ * empty one, is a finding. The live Liberty1 canvas was cleared of both at
+ * version 15 (2026-09-30).
+ */
+export const RETIRED_CONFIG_FIELDS: Readonly<Record<string, readonly UnwatchedField[]>> = {
+  buyer_click_send: [
+    { field: 'request_url', why: "where a click goes is the buyer profile's Click delivery since #1671" },
+    { field: 'success_pattern', why: "the reply that counts as sold is the buyer profile's Click delivery success reply since #1671" },
+  ],
+}
+
 type VerdictBase = { workflow: string; namespace: string; file: string }
 export type ConfigVerdict =
   | (VerdictBase & { state: 'agree' })
   | (VerdictBase & { state: 'config_drift'; field: string; path: string; committed: string; canvas: string })
   | (VerdictBase & { state: 'not_committed'; field: string; canvas: string })
   | (VerdictBase & { state: 'outside_allowed'; field: string; canvas: string; allowed: readonly string[] })
+  | (VerdictBase & { state: 'retired_setting'; field: string; canvas: string; why: string })
   | (VerdictBase & { state: 'missing_node'; nodeType: string })
   | (VerdictBase & { state: 'type_changed'; committedType: string; canvasType: string })
 
@@ -238,6 +248,9 @@ export function judgeKeptConfig(sources: readonly CommittedSource[], definition:
         const d = firstDifference(inRepo, onCanvas, rule.field)
         if (d) found.push({ ...base, state: 'config_drift', field: rule.field, path: d.path, committed: render(d.a), canvas: render(d.b) })
       }
+      for (const retired of RETIRED_CONFIG_FIELDS[committed.type] ?? []) {
+        if (canvasConfig[retired.field] !== undefined) found.push({ ...base, state: 'retired_setting', field: retired.field, canvas: render(canvasConfig[retired.field]), why: retired.why })
+      }
       out.push(...(found.length > 0 ? found : [{ ...base, state: 'agree' as const }]))
     }
   }
@@ -252,6 +265,8 @@ export function describeConfigVerdict(v: ConfigVerdict): string {
       return `${v.workflow}, ${v.namespace}: the canvas holds ${v.field} ${v.canvas}, and the setting is not in ${v.file}, so the repo has no record of it.`
     case 'outside_allowed':
       return `${v.workflow}, ${v.namespace}: ${v.field} on the canvas is ${v.canvas}, which is none of ${v.allowed.join(', ')}.`
+    case 'retired_setting':
+      return `${v.workflow}, ${v.namespace}: the canvas holds ${v.field} ${v.canvas}, a setting the node no longer reads: ${v.why}. Remove it from the step.`
     case 'missing_node':
       return `${v.workflow}, ${v.namespace}: the workflow has no node with this namespace, while ${v.file} holds a ${v.nodeType} node of that name.`
     case 'type_changed':

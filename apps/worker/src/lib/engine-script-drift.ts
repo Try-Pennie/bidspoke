@@ -175,25 +175,16 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
  * build_liberty1_request.js was re-derived from version 12.
  *
  * #1671 then took the routes out of build_liberty1_request.js here first (the
- * buyer profile's click delivery picks the route since #1639), so build_request
- * carries the hash of the script the live canvas held at version 14 until Dan
- * pastes the new one: it reads awaiting_paste, never drift. Remove both fields
- * in the change after the hourly check reads it as agree. The other three are
- * on the canvas as kept, so they have no baseline: any difference is a drift.
+ * buyer profile's click delivery picks the route since #1639), and Dan pasted it
+ * as version 15 on 2026-09-30 (19:54 UTC). The canvas holds all four files, so
+ * none has a baseline: any difference is a drift.
  */
 export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = '8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08'
 
 export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
   { namespace: 'resolve_input', file: 'resolve_click_input.js', script: RESOLVE_CLICK_INPUT, canvasBaselineSha256: null, baselineReadOn: null },
   { namespace: 'pick_record', file: 'pick_click_record.js', script: PICK_CLICK_RECORD, canvasBaselineSha256: null, baselineReadOn: null },
-  // sha256 of build_request in the live Liberty1 Click Handler (version 14), read from workflows on 2026-09-30.
-  {
-    namespace: 'build_request',
-    file: 'build_liberty1_request.js',
-    script: BUILD_LIBERTY1_REQUEST,
-    canvasBaselineSha256: '1d5edfc41eac997641a745d9c674333feb9860dd1e3b90b2a84d6fed30e98929',
-    baselineReadOn: '2026-09-30',
-  },
+  { namespace: 'build_request', file: 'build_liberty1_request.js', script: BUILD_LIBERTY1_REQUEST, canvasBaselineSha256: null, baselineReadOn: null },
   { namespace: 'click_patch', file: 'liberty1_click_patch.js', script: LIBERTY1_CLICK_PATCH, canvasBaselineSha256: null, baselineReadOn: null },
 ]
 
