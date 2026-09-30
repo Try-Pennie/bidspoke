@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, loadBuyerProfiles, partnersPricedFor, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -298,6 +298,126 @@ describe('the cache is refreshed before it expires (#1492)', () => {
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
     const put = spies.put.mock.calls.find(([k]) => k === 'buyer-profiles:org-1')
     expect(put?.[2]).toEqual({ expirationTtl: BUYER_PROFILES_CACHE_TTL_SECONDS })
+  })
+})
+
+// #1632: over 2026-09-24 to 30, 23 of the 29 buyer_select reads that missed the
+// cache came after more than 300 s with no buyer_select read, all overnight US
+// time, and each paid the cold path (the database read plus three serial KV
+// calls), which is how a read used the whole 800 ms. The per minute prewarm
+// kept every other hot path cache warm and never this one.
+describe('keepBuyerProfilesWarm (#1632)', () => {
+  const T0 = Date.parse('2026-09-30T08:00:00.000Z')
+
+  it('rebuilds the cache even while a copy is present, so a quiet night never lets it reach its TTL', async () => {
+    const { kv, store } = fakeKv()
+    let now = T0
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+    now = T0 + 30_000
+    const fresh = fakeSupabase({ data: [{ ...ROW, version: 4 }], error: null })
+    const snapshot = await keepBuyerProfilesWarm('org-1', kv, fresh.supabase, { now: () => now })
+    expect(fresh.calls).toHaveLength(1)
+    expect(snapshot?.buyers[0].version).toBe(4)
+    const cached = JSON.parse(store.get('buyer-profiles:org-1')!.value) as { loaded_at: string }
+    expect(cached.loaded_at).toBe(new Date(now).toISOString())
+    expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
+  })
+
+  it('a failed rebuild keeps the copy that is there, answers null, never throws, and says so', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const result = await keepBuyerProfilesWarm('org-1', kv, fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase)
+      expect(result).toBeNull()
+      expect(store.has('buyer-profiles:org-1')).toBe(true)
+      expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/keep warm failed for org org-1: connection reset/)
+    } finally {
+      errors.mockRestore()
+    }
+  })
+})
+
+// #1632: a miss used to await the cache write, the last good read and its write
+// before answering, so a lead paid three KV round trips on top of the database.
+describe('a cache miss answers from the database without waiting on KV writes (#1632)', () => {
+  it('with a background hook, the writes go to the background and the lead is answered from the read', async () => {
+    const { kv, store, spies } = fakeKv()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    spies.put.mockImplementation(async (key: string, value: string, opts?: { expirationTtl?: number }) => { await gate; store.set(key, { value, ttl: opts?.expirationTtl }) })
+    const handed: Promise<unknown>[] = []
+    const snapshot = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { background: (work) => { handed.push(work) } })
+    expect(snapshot.served_from).toBe('database')
+    expect(snapshot.buyers.map((b) => b.partner.slug)).toEqual(['tripoint'])
+    expect(handed).toHaveLength(1)
+    expect(store.has('buyer-profiles:org-1')).toBe(false)
+    release()
+    await Promise.all(handed)
+    expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
+    expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+
+  it('a background write that fails is logged and swallowed, and the lead keeps its answer', async () => {
+    const { kv, spies } = fakeKv()
+    spies.put.mockImplementation(async () => { throw new Error('KV PUT failed: 429 Too Many Requests') })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const handed: Promise<unknown>[] = []
+      const snapshot = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { background: (work) => { handed.push(work) } })
+      expect(snapshot.served_from).toBe('database')
+      await expect(Promise.all(handed)).resolves.toBeDefined()
+      expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/cache write failed for org org-1: KV PUT failed: 429/)
+    } finally {
+      errors.mockRestore()
+    }
+  })
+
+  it('logs how long the KV get and the database read each took, so the next slow read names its cause', async () => {
+    const { kv, spies } = fakeKv()
+    let now = 1_000
+    spies.get.mockImplementation(async () => { now += 120; return null })
+    const supabase = {
+      from() {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          then(resolve: (v: unknown) => unknown) { now += 450; return Promise.resolve({ data: [ROW], error: null }).then(resolve) },
+        }
+        return builder
+      },
+    } as never
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      await loadBuyerProfiles('org-1', kv, supabase, { now: () => now, background: () => undefined })
+      const line = logs.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[buyer-profiles] cache miss'))
+      expect(line).toBeDefined()
+      expect(line).toContain('org=org-1')
+      expect(line).toContain('kv_get_ms=120')
+      expect(line).toContain('db_read_ms=450')
+    } finally {
+      logs.mockRestore()
+    }
+  })
+
+  it('a slow KV get on a hit is logged with its duration; a fast one is not', async () => {
+    const { kv, spies } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const realGet = spies.get.getMockImplementation()!
+    let now = 5_000
+    let cost = 250
+    spies.get.mockImplementation(async (key: string, type?: string) => { now += cost; return realGet(key, type) })
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+      cost = 5
+      await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => now })
+      const lines = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('[buyer-profiles] slow cache hit'))
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain('kv_get_ms=250')
+    } finally {
+      logs.mockRestore()
+    }
   })
 })
 
