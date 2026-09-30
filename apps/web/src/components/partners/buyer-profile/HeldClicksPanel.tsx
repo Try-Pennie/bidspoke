@@ -127,10 +127,18 @@ interface Props {
 
 export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
+  // Rows removed from the list here: their Salesforce retry went with them, so a finished row never offers it again.
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set())
 
   if (error) return <p role="alert" className="text-xs text-red-700">The held clicks could not be read: {error}</p>
   if (!held) return <p role="status" className="text-xs text-gray-600">Reading the held clicks…</p>
   if (held.entries.length === 0) return <p className="text-xs text-green-700">No clicks are held for {partnerName}: every click sent has an outcome.</p>
+
+  function remove(row: HeldClick) {
+    setPending(null)
+    setRemoved((r) => new Set(r).add(row.id))
+    void onClear(row)
+  }
 
   function confirmSent(row: HeldClick, generation: number, leadId: string) {
     const id = leadId.trim()
@@ -179,7 +187,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                     {outcome.kind === 'done' ? (
                       <div className="space-y-1">
                         <Outcome state={outcome} />
-                        <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
+                        {removed.has(row.id) ? null : <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
                       </div>
                     ) :row.claim.status === 'unreadable' ? (
                       <p role="alert" className="text-red-700">{row.claim.message}</p>
@@ -201,7 +209,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                                 Removing this entry also removes its retry. The Salesforce updates that did not land will not be written from Bidspoke, so fix those records in Salesforce by hand. The sale stays marked sent.
                               </p>
                               <div className="flex gap-1.5">
-                                <Button variant="danger" className="btn-sm" busy={busy} onClick={() => { setPending(null); void onClear(row) }}>Remove it</Button>
+                                <Button variant="danger" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove it</Button>
                                 <Button variant="secondary" className="btn-sm" onClick={() => setPending(null)}>Cancel</Button>
                               </div>
                             </div>
@@ -209,7 +217,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                             <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setPending({ id: row.id, action: 'remove' })}>Remove from the list</Button>
                           )
                         ) : (
-                          <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onClear(row)}>Remove from the list</Button>
+                          <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove from the list</Button>
                         )}
                         <Outcome state={outcome} />
                       </div>

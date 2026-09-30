@@ -197,6 +197,17 @@ describe('HeldClicksPanel Salesforce updates after Mark sent (#1659)', () => {
     expect(h.onClear).toHaveBeenCalledWith(expect.objectContaining({ id: 'held-1' }))
   })
 
+  it('once an entry is removed, its row says so and offers no retry of updates that went with it', () => {
+    const entry = row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })
+    const handlers = { onMarkSent: vi.fn(), onFree: vi.fn(), onClear: vi.fn(), onRetrySalesforce: vi.fn() }
+    const view = render(<HeldClicksPanel partnerName="Liberty1" held={{ entries: [entry], total: 1 }} error={null} outcomes={{}} {...handlers} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from the list' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    view.rerender(<HeldClicksPanel partnerName="Liberty1" held={{ entries: [entry], total: 1 }} error={null} outcomes={{ 'held-1': { kind: 'done', message: 'Removed from the list.' } }} {...handlers} />)
+    expect(screen.getByText('Removed from the list.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).not.toBeInTheDocument()
+  })
+
   it('removing an entry whose updates all landed, or a freed one, needs no confirmation', () => {
     const complete: SaleWrites = { ...oneFailed, complete: true, writes: oneFailed.writes.map((w) => ({ ...w, outcome: 'written' as const })) as SaleWrites['writes'] }
     const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } })], total: 1 } })
