@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    workflows: { list: vi.fn(), save: vi.fn() },
+    workflows: { list: vi.fn(), save: vi.fn(), duplicate: vi.fn() },
     stats: { get: vi.fn() },
     folders: { list: vi.fn(), delete: vi.fn() },
   },
@@ -100,5 +100,31 @@ describe('Workflows page — failed rename surfaces an error (#514)', () => {
     expect(await screen.findByText('Failed to save workflow')).toBeInTheDocument()
     expect(await screen.findByText('My Workflow')).toBeInTheDocument()
     expect(screen.queryByText('Renamed Workflow')).not.toBeInTheDocument()
+  })
+})
+
+describe('Workflows page: a copy made without its version history says so', () => {
+  it('names the missing history when the server reports it was not copied', async () => {
+    vi.mocked(api.workflows.list).mockResolvedValue([workflow])
+    vi.mocked(api.workflows.duplicate).mockResolvedValue({ ...(workflow as object), id: 'wf-2', name: 'My Workflow (copy)', history_copied: false } as never)
+    render(<WorkflowsPage />)
+
+    fireEvent.click(await screen.findByLabelText('More options'))
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }))
+
+    expect(await screen.findByText('My Workflow (copy)')).toBeInTheDocument()
+    expect(await screen.findByText(/version history could not be copied/)).toBeInTheDocument()
+  })
+
+  it('says nothing extra when the history was copied', async () => {
+    vi.mocked(api.workflows.list).mockResolvedValue([workflow])
+    vi.mocked(api.workflows.duplicate).mockResolvedValue({ ...(workflow as object), id: 'wf-2', name: 'My Workflow (copy)', history_copied: true } as never)
+    render(<WorkflowsPage />)
+
+    fireEvent.click(await screen.findByLabelText('More options'))
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }))
+
+    expect(await screen.findByText('My Workflow (copy)')).toBeInTheDocument()
+    expect(screen.queryByText(/version history could not be copied/)).not.toBeInTheDocument()
   })
 })

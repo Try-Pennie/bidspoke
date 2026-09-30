@@ -539,6 +539,9 @@ export default function WorkflowsPage() {
     try {
       const copy = await api.workflows.duplicate(id)
       setWorkflows((ws) => [copy as unknown as WorkflowSummary, ...ws])
+      if (copy.history_copied === false) {
+        setError(`Made "${copy.name}", but its version history could not be copied, so it starts with no saved versions.`)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Duplicate failed')
     } finally {

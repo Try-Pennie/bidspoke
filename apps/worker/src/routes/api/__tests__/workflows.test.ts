@@ -477,6 +477,7 @@ describe('POST /workflows/:id/duplicate', () => {
     expect(inserts).toHaveLength(1)
     const rows = inserts[0][1][0] as Array<{ version_number: number }>
     expect(rows.map((r) => r.version_number)).toEqual(Array.from({ length: 1002 }, (_, i) => i + 1))
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(true)
   })
 
   it('does not invent a v1 when the source history could not be read', async () => {
@@ -491,6 +492,22 @@ describe('POST /workflows/:id/duplicate', () => {
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
     expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')).toEqual([])
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
+  })
+
+  it('reports the history as not copied when writing the copied versions fails', async () => {
+    const source = { name: 'Real', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
+    const clone = { id: 'wf-copy5', name: 'Real (copy)', organization_id: USER_ORG }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: source }, { insertResult: clone }],
+        workflow_versions: [{ list: [{ version_number: 1, definition: { nodes: [] } }] }, { insertError: { message: 'insert failed' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
   })
 
   it('seeds a baseline v1 when the source has no saved versions', async () => {

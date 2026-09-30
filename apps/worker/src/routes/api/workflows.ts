@@ -173,6 +173,9 @@ workflows.post('/:id/duplicate', async (c) => {
     versions = null
   }
 
+  // Said in the response rather than only logged, so the page can tell the
+  // person their copy starts with no saved versions (L12).
+  let historyCopied = versions !== null
   if (versions === null) {
     // Logged above; nothing to copy and nothing honest to seed.
   } else if (versions.length > 0) {
@@ -186,18 +189,25 @@ workflows.post('/:id/duplicate', async (c) => {
       message: v.message,
     }))
     const { error: versionsErr } = await supabase.from('workflow_versions').insert(rows)
-    if (versionsErr) console.error('[duplicate] version history copy failed:', versionsErr.message)
+    if (versionsErr) {
+      console.error('[duplicate] version history copy failed:', versionsErr.message)
+      historyCopied = false
+    }
   } else {
     // Source never had a saved version (created but not yet saved). Seed v1 from
     // the current definition so the clone has a baseline snapshot, matching what
     // a first save produces.
-    await supabase.from('workflow_versions').insert({
+    const { error: seedErr } = await supabase.from('workflow_versions').insert({
       workflow_id: clone.id,
       version_number: 1,
       definition: source.definition,
       created_by: userId,
       message: `Duplicated from ${source.name}`,
     })
+    if (seedErr) {
+      console.error('[duplicate] baseline version write failed:', seedErr.message)
+      historyCopied = false
+    }
   }
 
   // Deploy the clone's code-node bundle. Bundles are keyed per workflow id, so
@@ -217,7 +227,7 @@ workflows.post('/:id/duplicate', async (c) => {
   }
 
   await writeAuditLog(supabase, orgId, 'workflow', clone.id, 'created', userId, { duplicated_from: id })
-  return c.json({ ...clone, deploy_errors: deployErrors.length ? deployErrors : undefined }, 201)
+  return c.json({ ...clone, history_copied: historyCopied, deploy_errors: deployErrors.length ? deployErrors : undefined }, 201)
 })
 
 // GET /api/workflows/:id
