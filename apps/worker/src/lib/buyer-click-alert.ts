@@ -106,7 +106,7 @@ export function clickAlertKey(alert: ClickAlert): { key: string; ttlSeconds: num
 const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = {
   outcome_unknown: {
     header: 'sent a click with no readable answer',
-    held: 'Whether the buyer created the record is not known. The claim on this prospect is held, so no later click on it sends until a person checks with the buyer and releases it.',
+    held: 'Whether the buyer received the lead is not known. The claim on this prospect is held, so no later click on it sends until a person checks with the buyer and releases it.',
   },
   claim_in_doubt: {
     header: 'has a click claim in doubt',

@@ -121,8 +121,8 @@ export type HeldClickReason = (typeof HELD_CLICK_REASONS)[number]
 
 /** What each reason means for the person deciding, in the domain's words. */
 export const HELD_CLICK_REASON_LABELS: Record<HeldClickReason, string> = {
-  outcome_unknown: 'The buyer gave no readable answer, so whether it created the lead is not known.',
-  sold_mark_failed: 'The buyer created the lead, and recording that failed.',
+  outcome_unknown: 'The buyer gave no readable answer, so whether it received the lead is not known.',
+  sold_mark_failed: 'The buyer confirmed receipt of the lead, and recording that failed.',
   free_failed: 'The buyer refused the lead, and releasing the claim failed.',
   claim_in_doubt: 'An earlier send never recorded its outcome.',
 }

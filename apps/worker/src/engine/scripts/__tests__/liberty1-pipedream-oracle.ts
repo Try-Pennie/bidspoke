@@ -4,8 +4,10 @@
  * produces what his code produces rather than what somebody read his code as.
  *
  * `send_to_liberty_1` below is his code verbatim, with TypeScript parameter
- * types added and nothing else changed: the helpers, buildPayload, the state
- * set and the routes. His run() is not code here because it fetches; the one
+ * types added and nothing else changed: the helpers, buildPayload and the
+ * state set. His two route URLs (LIBERTY1_BASE and ROUTES, the Liberty1
+ * Salesforce site) are left out, because the canvas does not post there and a
+ * copy nothing reads would only look like an oracle. His run() is not code here because it fetches; the one
  * line of it the port depends on, picking the route from the payload's state,
  * is `pickRoute(payload.state)` (the state after `upper`), which is how the
  * route is read from his result object's `state` and `route` pair.
@@ -18,8 +20,8 @@
  * writes a Submission when there is one, a Prospect when there is one, and the
  * Submission's Lead when it has one.
  *
- * On 2026-09-29 Brian also moved the routes back from LeadConnector to the
- * Liberty1 Salesforce site below ("until later in the week"), and added
+ * On 2026-09-29 Brian also moved his routes back from LeadConnector to the
+ * Liberty1 Salesforce site ("until later in the week"), and added
  * Submission-only leads: a click whose Submission has no Prospect is sent from
  * the Submission's own *_SO__c fields and its Lead (submissionAsProspect).
  *
@@ -32,15 +34,7 @@ type Rec = Record<string, unknown>
 
 // ---- send_to_liberty_1, verbatim -------------------------------------------
 
-const LIBERTY1_BASE =
-  "https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks";
-
 const DV1_STATES = new Set(["DE", "HI", "IA", "MN", "OR", "RI", "VT", "WA", "WI", "WY"]);
-
-export const ROUTES = {
-  DV1: `${LIBERTY1_BASE}/DV1`,
-  DI4: `${LIBERTY1_BASE}/DI4`, // all other states
-};
 
 const clean = (v: unknown) => {
   if (v === null || v === undefined) return null;
@@ -224,8 +218,8 @@ export function updateBodies(l1: { ok: boolean; text: string }, now: string, ins
 // ---- the routes the canvas posts to, which are NOT Brian's -----------------
 // Dan decided on 2026-09-30 that Liberty1 clicks go to Liberty1's LeadConnector
 // webhook triggers, as the canvas has run them since version 11 (saved
-// 2026-09-30 15:46:50 UTC). Brian's routes above stay his, so ROUTES is the
-// oracle for which route a state takes and these are the URLs each route is.
+// 2026-09-30 15:46:50 UTC). His pickRoute above decides which route a state
+// takes, and these are the URLs each route posts to.
 // Written out in full rather than derived from the kept script, so the test is
 // not the script agreeing with itself (L70).
 export const CANVAS_ROUTES = {
