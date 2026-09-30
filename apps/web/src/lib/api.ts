@@ -95,13 +95,15 @@ export interface HeldClick {
 }
 
 export type MarkSentResult =
-  | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; salesforce: SaleWrites; list_cleared: boolean }
-  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; salesforce: SaleWrites; list_cleared: boolean }
+  | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
+  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
 
 /** Writing a marked sent click's Salesforce updates again (#1659). */
 export interface SalesforceRetryResult {
   outcome: 'written' | 'incomplete'
   salesforce: SaleWrites
+  /** False when the audit entry, the only record of this outcome, did not land. */
+  audit_recorded: boolean
   list_cleared: boolean
 }
 

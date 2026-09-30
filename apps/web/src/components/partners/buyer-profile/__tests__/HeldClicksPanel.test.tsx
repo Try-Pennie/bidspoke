@@ -225,6 +225,22 @@ describe('HeldClicksPanel Salesforce updates after Mark sent (#1659)', () => {
     expect(h.onRetrySalesforce).toHaveBeenCalled()
   })
 
+  it('a click still held never shows Salesforce updates, whatever it carries, and keeps its releases', () => {
+    panel({ held: { entries: [row({ salesforce: { status: 'none' } }), row({ id: 'held-2', salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })], total: 2 } })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Mark sent' })).toHaveLength(2)
+  })
+
+  it('a freed click whose outcome is on its row shows no Salesforce updates either', () => {
+    panel({
+      held: { entries: [row({ claim: { status: 'free', generation: 3 }, salesforce: { status: 'none' } })], total: 1 },
+      outcomes: { 'held-1': { kind: 'done', message: 'Freed. The next click on this prospect sends it to Liberty1.' } },
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+  })
+
   it('a last update that could not be read is an alert with a retry', () => {
     panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'unreadable', message: 'The last Salesforce update could not be read: timeout' } })], total: 1 } })
     expect(screen.getByRole('alert')).toHaveTextContent('The last Salesforce update could not be read: timeout')

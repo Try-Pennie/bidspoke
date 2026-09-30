@@ -139,6 +139,9 @@ function salesforceSentence(writes: SaleWrites): string {
   return updated.length ? ` Salesforce updated: ${updated.join(', ')}.` : ''
 }
 
+/** Said when the audit entry, the only record of the Salesforce outcome, did not land. */
+const AUDIT_NOT_RECORDED = ' The record of these Salesforce updates could not be saved, so after a reload this page will not know them.'
+
 function markSentMessage(result: MarkSentResult, leadId: string, partnerName: string): string {
   const base = `Marked sent as ${leadId}.`
   const counted = result.count
@@ -148,7 +151,7 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
     : ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}`
   // An entry kept for its Salesforce retry is kept on purpose, so the not-removed note is only for a complete one.
   const notCleared = !result.list_cleared && result.salesforce.complete ? LIST_NOT_CLEARED : ''
-  return `${base}${counted}${salesforceSentence(result.salesforce)}${notCleared}`
+  return `${base}${counted}${salesforceSentence(result.salesforce)}${result.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notCleared}`
 }
 
 export function BuyerProfileSection(props: Props) {
@@ -244,8 +247,9 @@ export function BuyerProfileSection(props: Props) {
     release(row.id, 'Updating Salesforce', async () => {
       const r = await api.heldClicks.retrySalesforce(row.id)
       patchHeld(row.id, { salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce } })
-      if (!r.salesforce.complete) return 'Retried. Salesforce was still not fully updated; the records are listed below.'
-      return `Retried.${salesforceSentence(r.salesforce)}${r.list_cleared ? '' : LIST_NOT_CLEARED}`
+      const unrecorded = r.audit_recorded ? '' : AUDIT_NOT_RECORDED
+      if (!r.salesforce.complete) return `Retried. Salesforce was still not fully updated; the records are listed below.${unrecorded}`
+      return `Retried.${salesforceSentence(r.salesforce)}${unrecorded}${r.list_cleared ? '' : LIST_NOT_CLEARED}`
     })
   const free = (row: HeldClick, generation: number) =>
     release(row.id, 'Freeing it', async () => {

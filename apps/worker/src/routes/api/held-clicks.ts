@@ -41,7 +41,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
-import { writeAuditLog } from '../../lib/audit'
+import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { ClickCounterClient, CLICK_CLAIM_KIND, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from '../../lib/buyer-object-clients'
 import { GenerationMovedError, WrongStateError } from '../../lib/buyer-sale-attempt'
@@ -323,7 +323,8 @@ heldClicks.post('/:id/mark-sent', async (c) => {
   const salesforce = await writeSale(c, orgId, userId, row, leadId)
 
   const supabase = createSupabaseClient(c.env)
-  await writeAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
+  // The audit entry is the only record of the Salesforce outcome, so whether it landed is part of the answer (L11).
+  const auditRecorded = await recordAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
     claim_state: { old: checked.state.state, new: 'sold' },
     claim_generation: { old: generation, new: next },
     buyer_lead_id: { old: null, new: leadId },
@@ -333,8 +334,8 @@ heldClicks.post('/:id/mark-sent', async (c) => {
   // An entry whose writes did not all land stays listed, so its retry is on the page.
   const listCleared = salesforce.complete ? await clearEntry(c.env, row, orgId) : false
   return c.json(count
-    ? { outcome: 'sent', generation: next, count, salesforce, list_cleared: listCleared }
-    : { outcome: 'sent', generation: next, count: null, count_error: countError, count_date: counter.date, salesforce, list_cleared: listCleared })
+    ? { outcome: 'sent', generation: next, count, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared }
+    : { outcome: 'sent', generation: next, count: null, count_error: countError, count_date: counter.date, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
 })
 
 heldClicks.post('/:id/free', async (c) => {
@@ -386,14 +387,18 @@ heldClicks.post('/:id/salesforce', async (c) => {
   const leadId = state.outcome.buyer_reference
   if (!leadId) return c.json({ error: 'no_lead_id', message: 'This sale holds no lead id from the buyer, so Salesforce was not written. Nothing was changed.' }, 409)
 
+  // The outcome this retry replaces, read before writing, so the audit entry carries old and new (L529).
+  const before = (await lastSalesforceWrites(c, orgId, [row.id]))(row.id)
+  const previous = before.status === 'recorded' ? before.writes : before.status === 'unreadable' ? { unreadable: before.message } : null
+
   const salesforce = await writeSale(c, orgId, userId, row, leadId)
   const supabase = createSupabaseClient(c.env)
-  await writeAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
-    salesforce_writes: { old: null, new: salesforce },
+  const auditRecorded = await recordAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
+    salesforce_writes: { old: previous, new: salesforce },
     subject: subjectOf(row),
   })
   const listCleared = salesforce.complete ? await clearEntry(c.env, row, orgId) : false
-  return c.json({ outcome: salesforce.complete ? 'written' : 'incomplete', salesforce, list_cleared: listCleared })
+  return c.json({ outcome: salesforce.complete ? 'written' : 'incomplete', salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
 })
 
 heldClicks.post('/:id/clear', async (c) => {

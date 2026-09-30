@@ -77,8 +77,9 @@ function sharedReason(writes: readonly SaleWrite[]): string | null {
 }
 
 /** A sold entry's Salesforce updates that did not all land, each record's result, and the retry. */
-function SalesforceUpdates({ view, busy, onRetry }: { view: SalesforceWritesView | null; busy: boolean; onRetry: () => void }) {
-  if (!view || !needsRetry(view)) return null
+function SalesforceUpdates({ sold, view, busy, onRetry }: { sold: boolean; view: SalesforceWritesView | null; busy: boolean; onRetry: () => void }) {
+  // Only a sale has Salesforce updates: a click still held, or freed, never shows them, whatever it carries.
+  if (!sold || !view || !needsRetry(view)) return null
   let body
   if (view.status === 'unreadable') {
     body = <p className="text-red-700">{view.message}</p>
@@ -178,7 +179,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                     {outcome.kind === 'done' ? (
                       <div className="space-y-1">
                         <Outcome state={outcome} />
-                        <SalesforceUpdates view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
+                        <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
                       </div>
                     ) :row.claim.status === 'unreadable' ? (
                       <p role="alert" className="text-red-700">{row.claim.message}</p>
@@ -191,7 +192,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                             ? 'No longer held: the claim is free.'
                             : `No longer held: already marked sent${row.claim.partner_lead_id ? ` as ${row.claim.partner_lead_id}` : ''}.`}
                         </p>
-                        {row.claim.status === 'sold' && <SalesforceUpdates view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
+                        <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
                         <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onClear(row)}>Remove from the list</Button>
                         <Outcome state={outcome} />
                       </div>
