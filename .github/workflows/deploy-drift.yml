@@ -252,10 +252,14 @@ jobs:
           ref: ${{ steps.compare.outputs.live_sha }}
           path: live
 
+      # The version comes from package.json `packageManager` (#1677). The root
+      # checkout comes later in this job, so point at HEAD's copy. HEAD, not
+      # live: a live commit may predate the declaration, and both builds should
+      # be made by the same pnpm so the comparison measures the code.
       - uses: pnpm/action-setup@v6
         if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
         with:
-          version: 9
+          package_json_file: head/package.json
 
       # Deliberately no `cache: 'pnpm'`, matching deploy.yml's gate: a cache
       # shared between the two installs is the contamination route #725 flagged

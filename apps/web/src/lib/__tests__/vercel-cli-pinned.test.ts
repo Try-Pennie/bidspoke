@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT, declaredPnpmVersion } from './_scan-utils'
 
 /**
  * The Vercel CLI that builds the Pages artifact must be installed and pinned
@@ -35,7 +35,8 @@ import { REPO_ROOT } from './_scan-utils'
  *   pnpm 9  prints `vercel 47.0.4`        -> matched, runs `pnpm exec vercel build`
  *   pnpm 10 prints `├── vercel@47.0.4`    -> no match, runs `pnpm dlx vercel build`
  *
- * CI and Deploy both pin pnpm 9, so the pin takes effect there, and that is
+ * The root package.json declares pnpm 9 as its `packageManager` (#1677), which
+ * CI and Deploy both install, so the pin takes effect there, and that is
  * verified in the build log rather than assumed: the run under pnpm 9 reports
  * "Vercel CLI 47.0.4" and "Completed `pnpm exec vercel build`". A local build on
  * pnpm 10 still downloads, which is a next-on-pages limitation and costs only
@@ -137,19 +138,19 @@ describe('the Vercel CLI used by pages:build is pinned (#1064)', () => {
     // read the log. Keep the bump only if it says "Completed `pnpm exec vercel
     // build`". If it says `pnpm dlx`, the download and the unpinned version are
     // both back.
-    for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/deploy.yml']) {
-      const yaml = readFileSync(path.join(REPO_ROOT, workflow), 'utf8')
-      const versions = [...yaml.matchAll(/pnpm\/action-setup@[^\n]*\n\s*with:\n\s*version:\s*(\S+)/g)].map(
-        (m) => m[1],
-      )
-      expect(versions.length, `${workflow} sets up pnpm nowhere, so this cannot pass vacuously`).toBeGreaterThan(0)
-      for (const version of versions) {
-        expect(
-          version,
-          `${workflow} sets up pnpm ${version}. next-on-pages can only find the pinned vercel CLI on pnpm 9; on anything newer it silently downloads an arbitrary one instead. See this file's header.`,
-        ).toBe('9')
-      }
-    }
+    //
+    // The version is declared once, in the root package.json `packageManager`,
+    // which CI, Deploy, a local pnpm and Dependabot all read (#1677).
+    // pnpm-version-declared.test.ts holds every workflow to that declaration.
+    const version = declaredPnpmVersion()
+    expect(
+      version,
+      "the root package.json declares no pnpm packageManager, so which pnpm builds the Pages artifact is nobody's decision",
+    ).toBeDefined()
+    expect(
+      version!.split('.')[0],
+      `the root package.json declares pnpm@${version!}. next-on-pages can only find the pinned vercel CLI on pnpm 9; on anything newer it silently downloads an arbitrary one instead. See this file's header.`,
+    ).toBe('9')
   })
 
   it('still builds through next-on-pages, which is what picks the local CLI up', () => {
