@@ -52,6 +52,14 @@ describe('judgeKeptConfig', () => {
     expect(verdicts).toEqual([{ workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'agree' }])
   })
 
+  // #1639: the canvas gains the click send state template by a guarded save before the committed file
+  // does, and that save must not page; the follow-up moves state to the watched list with its committed value.
+  it('the click send state template on the canvas alone does not page', () => {
+    const canvas = { ...SEND, state: '{{steps.build_request.output.state}}' }
+    const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', canvas)] }, 'W')
+    expect(verdicts.map((v) => v.state)).toEqual(['agree'])
+  })
+
   it('a canvas differing only in success_pattern is a config drift naming the setting and both values', () => {
     const canvas = { ...SEND, success_pattern: 'Created (?<id>\\w+)' }
     const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', canvas)] }, 'W')

@@ -70,7 +70,7 @@ describe('productionDeps.resolvePartner (#1553)', () => {
  * the buyer PROFILE's daily cap, read through the one profile reader, so the
  * send and buyer_click_check can never disagree about the number.
  */
-describe('productionDeps.profileCap (#1543)', () => {
+describe('productionDeps.readProfile (#1543, #1639)', () => {
   const buyerSnapshot = (org: string, cap: number | null) => ({
     org_id: org, loaded_at: new Date().toISOString(), content_hash: 'test', served_from: 'database',
     buyers: [{ partner: { id: LIBERTY1, slug: 'liberty1' }, profile: { partnerId: LIBERTY1, soldOn: 'click', isEnabled: true, dailyLeadCap: cap }, version: 1, updated_at: '2027-09-20T10:00:00.000Z' }],
@@ -79,18 +79,27 @@ describe('productionDeps.profileCap (#1543)', () => {
   it('answers the enabled profile daily cap and how the buyer is sold from the cached snapshot', async () => {
     const org = 'org-cap-hit'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: buyerSnapshot(org, 50) })), failingSupabase())
-    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click' })
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click', clickDelivery: null })
+  })
+
+  it('carries the enabled profile click delivery from the same read, so the route and the cap come from one snapshot (#1639)', async () => {
+    const org = 'org-delivery-hit'
+    const delivery = { routes: [{ name: 'All', url: 'https://a.example/all', states: [] }], successPattern: '(?<id>\\w+)' }
+    const snapshot = buyerSnapshot(org, 50)
+    const withDelivery = { ...snapshot, buyers: [{ ...snapshot.buyers[0], profile: { ...snapshot.buyers[0].profile, clickDelivery: delivery } }] }
+    const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: withDelivery })), failingSupabase())
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click', clickDelivery: delivery })
   })
 
   it('answers found false when the org holds no enabled profile for the partner', async () => {
     const org = 'org-cap-none'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [] } })), failingSupabase())
-    expect(await deps.profileCap(LIBERTY1)).toEqual({ found: false })
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: false })
   })
 
   it('throws when the profiles cannot be read and there is no copy, never answering no profile', async () => {
     const org = 'org-cap-unreadable'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({})), failingSupabase())
-    await expect(deps.profileCap(LIBERTY1)).rejects.toThrow(/buyer profiles read failed/)
+    await expect(deps.readProfile(LIBERTY1)).rejects.toThrow(/buyer profiles read failed/)
   })
 })

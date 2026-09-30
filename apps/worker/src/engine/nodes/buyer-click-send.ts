@@ -45,6 +45,16 @@
  * an enabled one holding no cap, pages cap_unreadable; no enabled profile at all
  * (switched off while offers were still out) is recorded and pages nothing.
  *
+ * WHERE the click goes and WHICH reply counts as sold are the buyer profile's
+ * click delivery when the profile holds one (#1639): the route whose states
+ * list the lead's state (the node's `state` template), else the one catch-all
+ * route, and the profile's success line. Both come from the same profile read
+ * as the cap, made once before anything is claimed, so a profile that cannot
+ * be read refuses the click rather than guess an address (L75). A profile with
+ * no delivery leaves the node's own request_url and success_pattern in force,
+ * which is how every buyer ran before #1639; the output says which source was
+ * used, and notes a node success line the profile supersedes.
+ *
  * The partner is stored by its partner_configs id (#1553, L15), and the claim,
  * the counter and the alert cooldowns are all keyed on that id, so renaming a
  * buyer's slug keeps its held claims and the day's count. The slug is resolved
@@ -54,7 +64,7 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, isCap, partnerIdOf, withDeadline, type HeldClickReason, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
@@ -98,8 +108,13 @@ export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 /** How long the node waits on one Slack alert before recording it as failed. */
 export const CLICK_ALERT_DEADLINE_MS = 5_000
 
-/** How long the node waits on the profile's cap after the click is counted; past it the notice is cap_unreadable. */
-export const CLICK_CAP_READ_DEADLINE_MS = 5_000
+/**
+ * How long the node waits on the buyer profile, read once before anything is
+ * claimed, for the click delivery and the cap (#1639). Past it the step fails
+ * profile_unreadable and nothing is sent. The read is the cached snapshot, a KV
+ * hit on the warm path.
+ */
+export const CLICK_PROFILE_READ_DEADLINE_MS = 5_000
 
 /** How long the node waits on the held click record before reporting it as not recorded. */
 export const CLICK_HOLD_RECORD_DEADLINE_MS = 5_000
@@ -130,6 +145,9 @@ export type BuyerClickSendFailureReason =
   | 'request_body_invalid'
   | 'claim_unavailable'
   | 'buyer_click_send_handle_unwired'
+  | 'profile_unreadable'
+  | 'click_delivery_invalid'
+  | 'state_template_unset'
 
 /** Whether the over cap notice went out on this click. */
 export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'no_enabled_profile' | 'not_counted'
@@ -150,6 +168,11 @@ export interface BuyerClickSendConfig {
    * matched against the WHOLE trimmed body. Per partner; no default (L72).
    */
   success_pattern: string
+  /**
+   * Template resolving to the lead's state (#1639), which picks the route when
+   * the buyer profile holds click delivery. Unused while it holds none.
+   */
+  state?: string
   /**
    * Ignored and reported (#1543): the cap lives on the buyer profile, where
    * buyer_click_check reads it too, so there is one home for it (L83).
@@ -190,6 +213,17 @@ export interface BuyerClickSendOutput {
   /** Why the record failed, when hold_recorded is false: the page sends the person here for it. */
   hold_record_error?: string
   would_send_body_sha256?: string
+  /** The profile route posted to (#1639); null when the node's own request_url was used. */
+  route_name: string | null
+  /** Why that route: it lists the lead's state, the state is in no route (catch_all), or the lead had no readable state. */
+  route_matched?: PickedClickRoute['matched']
+  /** The lead's state as the route choice read it. */
+  route_state?: string | null
+  /** Where the address and the success line came from: the buyer profile's click delivery, or the node's own settings. */
+  url_source: 'profile' | 'node' | null
+  pattern_source: 'profile' | 'node' | null
+  /** Set when the profile's success line is used and the node still holds a different one, which is not in force. */
+  node_success_pattern_superseded?: true
   retries_ignored?: number
   duration_ms: number
 }
@@ -231,12 +265,16 @@ export interface ClickCounterApi {
   addMember(member: string): Promise<AddMemberResult>
 }
 
-/** The enabled profile's cap and how the buyer is sold, so an offer buyer's leads cap is never judged against clicks (#1557). */
-export type ProfileCap = { found: false } | { found: true; cap: number | null; soldOn: SoldOn | null }
+/**
+ * The enabled profile as the node reads it: its cap and how the buyer is sold,
+ * so an offer buyer's leads cap is never judged against clicks (#1557), and its
+ * click delivery, null when it holds none (#1639).
+ */
+export type ProfileRead = { found: false } | { found: true; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
 
 export interface BuyerClickSendDeps {
-  /** The buyer's enabled profile's daily cap, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
-  profileCap: (partnerId: string) => Promise<ProfileCap>
+  /** The buyer's enabled profile, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
+  readProfile: (partnerId: string) => Promise<ProfileRead>
   /** The org's partner by id, for its slug; null when the org holds no such partner. Throws when it cannot be read. */
   resolvePartner: (partnerId: string) => Promise<{ slug: string } | null>
   saleClient: (key: ClickClaimKey) => ClickSaleApi
@@ -256,10 +294,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   // Fire and forget, as buyer_select does: the walk is still inside the request, and the rebuild never rejects.
   const background = (work: Promise<unknown>) => { void work }
   return {
-    profileCap: async (partnerId) => {
+    readProfile: async (partnerId) => {
       const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })
       const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
-      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn } : { found: false }
+      // A snapshot cached before #1639 carries no clickDelivery: no delivery, so the node settings stay in force.
+      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null } : { found: false }
     },
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
@@ -307,11 +346,11 @@ const UNJUDGED_4XX = new Set([408, 429])
 
 /**
  * A buyer's success line as the node runs it: matched against the WHOLE answer.
- * Exported so a test of one buyer's line compiles it exactly this way.
+ * The one compile lives in the shared package (#1639), where the profile form and
+ * save validation read it too; re-exported so a test of one buyer's line
+ * compiles it exactly this way.
  */
-export function compileSuccessPattern(successPattern: string): RegExp {
-  return new RegExp(`^(?:${successPattern})$`)
-}
+export { compileSuccessPattern } from '@bidspoke/buyer-profile'
 
 /**
  * The buyer's answer, three ways. `pattern` is the partner's success line,
@@ -349,14 +388,21 @@ export async function executeBuyerClickSendNode(node: NodeDefinition, ctx: Execu
   return result
 }
 
-interface Validated {
+interface Checked {
   partnerId: string
-  slug: string
-  pattern: RegExp
   percent: number
   prospectId: string
-  url: string
   body: Record<string, unknown>
+}
+
+interface Target {
+  pattern: RegExp
+  url: string
+}
+
+interface Validated extends Checked, Target {
+  slug: string
+  profile: ProfileRead
 }
 
 class Run {
@@ -383,6 +429,9 @@ class Run {
       over_cap: null,
       daily_lead_cap: null,
       pages: [],
+      route_name: null,
+      url_source: null,
+      pattern_source: null,
       duration_ms: 0,
     }
     if (typeof this.config.retries === 'number') this.out.retries_ignored = this.config.retries
@@ -409,7 +458,7 @@ class Run {
       return this.fail('recovery_run_refused', 'permanent', `this is a ${this.ctx.recovery} of an earlier execution, and a click is never re-sent by one; a new click starts a new execution`)
     }
     const checked = this.validate()
-    if (!('pattern' in checked)) return checked
+    if (!('prospectId' in checked)) return checked
     this.out.prospect_id = checked.prospectId
 
     // The slug, for words only. Resolved before a report only run returns, so a
@@ -422,7 +471,19 @@ class Run {
     }
     if (!partner) return this.fail('partner_not_found', 'permanent', `no partner with id ${checked.partnerId} in this organization, so nothing was sent; pick the buyer again on the node`)
     this.out.partner_slug = partner.slug
-    const v: Validated = { ...checked, slug: partner.slug }
+
+    // The profile, once, before anything is claimed (#1639): it may say where the
+    // click goes, and its cap judges the over cap notice after the count.
+    let profile: ProfileRead
+    try {
+      profile = await withDeadline(this.deps.readProfile(checked.partnerId), CLICK_PROFILE_READ_DEADLINE_MS, 'buyer profile', this.deps.timers)
+    } catch (err) {
+      return this.fail('profile_unreadable', 'transient', `the buyer profile could not be read, so where this click goes is not known and nothing was sent: ${messageOf(err)}`)
+    }
+    const delivery = profile.found && profile.soldOn === 'click' ? profile.clickDelivery : null
+    const target = delivery ? this.fromProfile(delivery) : this.fromNode()
+    if ('output' in target) return target
+    const v: Validated = { ...checked, ...target, slug: partner.slug, profile }
 
     if (this.out.mode_effective === 'report_only') {
       this.out.would_send_body_sha256 = await canonicalBodySha256(v.body)
@@ -512,14 +573,8 @@ class Run {
     this.out.count = added.count
     this.out.counted = added.added
 
-    let profile: ProfileCap
-    try {
-      profile = await withDeadline(this.deps.profileCap(v.partnerId), CLICK_CAP_READ_DEADLINE_MS, 'buyer profile cap', this.deps.timers)
-    } catch (err) {
-      this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the buyer profile could not be read for its daily cap: ${messageOf(err)}`, null)
-      return
-    }
+    // The same read the address came from (#1639), so the route and the cap are one snapshot.
+    const profile = v.profile
     if (!profile.found) {
       // Switched off while offers were out: nothing more is offered, so there is no overshoot to warn about.
       this.out.over_cap = 'no_enabled_profile'
@@ -606,21 +661,12 @@ class Run {
     }
   }
 
-  private validate(): Omit<Validated, 'slug'> | BuyerClickSendResult {
+  private validate(): Checked | BuyerClickSendResult {
     const c = this.config
     // The one partner id rule, shared with save validation (#1543).
     const partnerRule = partnerIdOf(c.partner_id)
     if (!partnerRule.ok) return this.fail('partner_id_invalid', 'permanent', partnerRule.reason)
     const partnerId = partnerRule.id
-
-    let pattern: RegExp
-    try {
-      if (typeof c.success_pattern !== 'string' || c.success_pattern.trim() === '') throw new Error('it is unset, and there is no default')
-      pattern = compileSuccessPattern(c.success_pattern)
-      if (!/\(\?<id>/.test(c.success_pattern)) throw new Error('it has no (?<id>...) group to capture the partner lead id')
-    } catch (err) {
-      return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${messageOf(err)}`)
-    }
 
     const percentRule = alertOverPercentOf(c.alert_over_percent)
     if (!percentRule.ok) return this.fail('alert_over_percent_invalid', 'permanent', percentRule.reason)
@@ -630,6 +676,19 @@ class Run {
     const prospectId = typeof prospect === 'string' ? prospect.trim() : typeof prospect === 'number' ? String(prospect) : ''
     if (prospectId === '' || prospectId.length > 200) return this.fail('prospect_id_empty', 'permanent', `prospect_id ${JSON.stringify(c.prospect_id ?? null)} resolved to nothing usable`)
 
+    const body = this.resolve(c.request_body)
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return this.fail('request_body_invalid', 'permanent', `request_body ${JSON.stringify(c.request_body ?? null)} resolved to ${body === null ? 'null' : Array.isArray(body) ? 'an array' : typeof body}, not an object`)
+    }
+    return { partnerId, percent, prospectId, body: body as Record<string, unknown> }
+  }
+
+  /** The node's own address and success line: how every buyer ran before #1639, and still does while its profile holds no delivery. */
+  private fromNode(): Target | BuyerClickSendResult {
+    const c = this.config
+    // The one success line rule, shared with the profile validator and canvas save validation (#1639).
+    const rule = successPatternOf(c.success_pattern)
+    if (!rule.ok) return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${rule.reason}`)
     const url = this.resolve(c.request_url)
     let parsed: URL | null
     try {
@@ -638,12 +697,39 @@ class Run {
       parsed = null
     }
     if (!parsed || parsed.protocol !== 'https:') return this.fail('request_url_invalid', 'permanent', `request_url ${JSON.stringify(c.request_url ?? null)} did not resolve to an https URL`)
+    this.out.url_source = 'node'
+    this.out.pattern_source = 'node'
+    return { pattern: rule.pattern, url: parsed.toString() }
+  }
 
-    const body = this.resolve(c.request_body)
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return this.fail('request_body_invalid', 'permanent', `request_body ${JSON.stringify(c.request_body ?? null)} resolved to ${body === null ? 'null' : Array.isArray(body) ? 'an array' : typeof body}, not an object`)
+  /**
+   * The profile's click delivery (#1639): the route for the lead's state and the
+   * profile's success line. Re-checked with the shared rules, which save
+   * validation already applied, so a delivery the save would refuse fails by
+   * name here rather than posting somewhere.
+   */
+  private fromProfile(delivery: ClickDelivery): Target | BuyerClickSendResult {
+    const rule = successPatternOf(delivery.successPattern)
+    if (!rule.ok) return this.fail('click_delivery_invalid', 'permanent', `the buyer profile's success line: ${rule.reason}`)
+    // With a route per state, a node that names no state would send every lead to
+    // the catch-all, which for a buyer licensed state by state is the wrong buyer
+    // product, so it is refused by name until the canvas gains the template.
+    const stateTemplate = typeof this.config.state === 'string' ? this.config.state.trim() : ''
+    if (stateTemplate === '' && delivery.routes.some((r) => r.states.length > 0)) {
+      return this.fail('state_template_unset', 'permanent', "the buyer profile routes clicks by state, and this node has no state template, so the route cannot be chosen; set the node's state")
     }
-    return { partnerId, pattern, percent, prospectId, url: parsed.toString(), body: body as Record<string, unknown> }
+    const picked = pickClickRoute(delivery, stateTemplate === '' ? undefined : this.resolve(stateTemplate))
+    if (!picked) return this.fail('click_delivery_invalid', 'permanent', "the buyer profile's click delivery has no route with no states to take every other state")
+    if (!isHttpsUrl(picked.route.url)) return this.fail('click_delivery_invalid', 'permanent', `the buyer profile's route ${picked.route.name} has no https address`)
+    this.out.route_name = picked.route.name
+    this.out.route_matched = picked.matched
+    this.out.route_state = picked.state
+    this.out.url_source = 'profile'
+    this.out.pattern_source = 'profile'
+    if (typeof this.config.success_pattern === 'string' && this.config.success_pattern.trim() !== '' && this.config.success_pattern !== delivery.successPattern) {
+      this.out.node_success_pattern_superseded = true
+    }
+    return { pattern: rule.pattern, url: new URL(picked.route.url).toString() }
   }
 
   private resolve(template: unknown): unknown {

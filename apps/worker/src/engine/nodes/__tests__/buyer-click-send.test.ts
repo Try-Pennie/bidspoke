@@ -9,7 +9,7 @@
  * every object are injected, so nothing waits and nothing leaves the process.
  */
 import { describe, expect, it, vi } from 'vitest'
-import type { Timers } from '@bidspoke/buyer-profile'
+import type { ClickDelivery, Timers } from '@bidspoke/buyer-profile'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
@@ -24,7 +24,7 @@ import {
   classifyClickAnswer,
   executeBuyerClickSendNode,
   type BuyerClickSendDeps,
-  type ProfileCap,
+  type ProfileRead,
   type HeldClickRecord,
 } from '../buyer-click-send'
 import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
@@ -79,6 +79,7 @@ interface Harness {
   counterNames: string[]
   resolved: string[]
   holds: HeldClickRecord[]
+  profileReads: number
 }
 
 function harness(opts: {
@@ -97,21 +98,24 @@ function harness(opts: {
   /** Shared across runs, so a second run sees the first run's count. */
   memberSet?: Set<string>
   /** The profile's daily cap: a number, null for a profile holding none, 'none' for no enabled profile, or a read that throws. */
-  cap?: number | null | 'none' | (() => Promise<ProfileCap>)
+  cap?: number | null | 'none' | (() => Promise<ProfileRead>)
   /** The held click record write throws (#1552). */
   holdFails?: boolean
+  /** The enabled profile's click delivery (#1639); absent means none. */
+  delivery?: ClickDelivery
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], holds: [], deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, deps: undefined as never,
   }
   h.deps = {
-    profileCap: async (partnerId) => {
+    readProfile: async (partnerId) => {
       expect(partnerId).toBe(PARTNER_ID)
+      h.profileReads++
       const c = opts.cap === undefined ? 50 : opts.cap
       if (typeof c === 'function') return c()
-      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click' }
+      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click', clickDelivery: opts.delivery ?? null }
     },
     resolvePartner: async (partnerId) => {
       h.resolved.push(partnerId)
@@ -295,11 +299,23 @@ describe('the over cap notice', () => {
     expect(h.logs.some((l) => l.event === 'buyer_click_alert_failed' && /slack is down/.test(String(l.error_message)))).toBe(true)
   })
 
-  it('a profile that cannot be read pages cap_unreadable and still sends: the click already happened', async () => {
+  // #1639: the profile now also says WHERE the click goes, so it is read once,
+  // before anything is claimed, and the cap is judged from that same read. A
+  // profile that cannot be read is a refusal, never a guess at the address (L75).
+  it('a profile that cannot be read fails the step transiently by name, and claims, sends and counts nothing', async () => {
     const h = harness({ cap: async () => { throw new Error('buyer profiles read failed for org org-1: timeout') } })
     const r = await run(h)
-    expect(r.output).toMatchObject({ _route: 'sent', counted: true, over_cap: 'cap_unreadable', daily_lead_cap: null })
-    expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['cap_unreadable'])
+    expect(r.failure).toMatchObject({ errorType: 'transient', reason: 'profile_unreadable' })
+    expect(r.failure?.message).toMatch(/timeout/)
+    expect(h.claims).toEqual([])
+    expect(h.posts).toEqual([])
+    expect(h.members.size).toBe(0)
+  })
+
+  it('reads the profile once per click, for the address and the cap alike', async () => {
+    const h = harness({ members: upTo(59) })
+    await run(h)
+    expect(h.profileReads).toBe(1)
   })
 
   it('an enabled profile holding no cap pages cap_unreadable too', async () => {
@@ -317,7 +333,7 @@ describe('the over cap notice', () => {
   })
 
   it('a profile sold on the offer is an unreadable cap: its leads cap is never judged against clicks (#1557)', async () => {
-    const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer' }), members: upTo(80) })
+    const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer', clickDelivery: null }), members: upTo(80) })
     const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
     expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
@@ -330,6 +346,122 @@ describe('the over cap notice', () => {
     const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'sent', counted: true, over_cap: 'no_enabled_profile', daily_lead_cap: null })
     expect(h.alerts).toEqual([])
+  })
+})
+
+describe('the address and the success line from the buyer profile (#1639)', () => {
+  const LC = 'https://services.leadconnectorhq.com/hooks/abc/webhook-trigger'
+  const LC_PATTERN = '\\s*\\{[\\s\\S]*?"id"\\s*:\\s*"(?<id>[A-Za-z0-9]{15,20})"[\\s\\S]*\\}\\s*'
+  const RUN_ID = 'Ab12Cd34Ef56Gh78Ij'
+  const delivery: ClickDelivery = {
+    routes: [
+      { name: 'DV1', url: `${LC}/dv1`, states: ['WA', 'OR'] },
+      { name: 'DI4', url: `${LC}/di4`, states: [] },
+    ],
+    successPattern: LC_PATTERN,
+  }
+  const lcAnswer = answer(200, `{"status":"Success: request sent to trigger execution server","id":"${RUN_ID}"}`)
+  const withState = (state: unknown) => {
+    const c = ctx()
+    c.steps.build = { output: { url: 'https://example.my.salesforce-sites.com/services/apexrest/lead', body: { FirstName: 'Test' }, state } } as never
+    return c
+  }
+  const stateNode = (over: Record<string, unknown> = {}) => node({ state: '{{steps.build.output.state}}', ...over })
+
+  it('posts to the route listing the lead state and confirms with the profile success line', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, stateNode(), withState('WA'))
+    expect(h.posts.map((p) => p.url)).toEqual([`${LC}/dv1`])
+    expect(r.output).toMatchObject({
+      _route: 'sent', partner_lead_id: RUN_ID, route_name: 'DV1', route_matched: 'state', route_state: 'WA', url_source: 'profile', pattern_source: 'profile',
+    })
+  })
+
+  it('sends a state in no route to the catch-all', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, stateNode(), withState('TX'))
+    expect(h.posts.map((p) => p.url)).toEqual([`${LC}/di4`])
+    expect(r.output).toMatchObject({ route_name: 'DI4', route_matched: 'catch_all', route_state: 'TX' })
+  })
+
+  it('sends a lead with no state to the catch-all and records that it had none', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, stateNode(), withState(null))
+    expect(h.posts.map((p) => p.url)).toEqual([`${LC}/di4`])
+    expect(r.output).toMatchObject({ route_name: 'DI4', route_matched: 'no_state', route_state: null })
+  })
+
+  it('the profile wins over the node: the node url is not posted to, and a different node success line is noted as superseded', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, stateNode(), withState('OR'))
+    expect(h.posts.map((p) => p.url)).not.toContain('https://example.my.salesforce-sites.com/services/apexrest/lead')
+    expect(r.output.node_success_pattern_superseded).toBe(true)
+    // Superseded is a note on the step, never a page.
+    expect(h.alerts).toEqual([])
+  })
+
+  it('a node success line that matches the profile is not noted', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, stateNode({ success_pattern: LC_PATTERN }), withState('OR'))
+    expect(r.output.node_success_pattern_superseded).toBeUndefined()
+  })
+
+  it('judges the answer with the profile line, so the node line cannot confirm a click', async () => {
+    const h = harness({ delivery, post: answer(200, `Records created successfully : ${SF_ID}`) })
+    const r = await run(h, stateNode(), withState('WA'))
+    expect(r.output).toMatchObject({ _route: 'unknown', pattern_source: 'profile' })
+  })
+
+  it('a profile with no delivery leaves the node settings in force, exactly as before', async () => {
+    const h = harness()
+    const r = await run(h, stateNode(), withState('WA'))
+    expect(h.posts.map((p) => p.url)).toEqual(['https://example.my.salesforce-sites.com/services/apexrest/lead'])
+    expect(r.output).toMatchObject({ _route: 'sent', partner_lead_id: SF_ID, route_name: null, url_source: 'node', pattern_source: 'node' })
+  })
+
+  it('no enabled profile leaves the node settings in force too', async () => {
+    const h = harness({ cap: 'none' })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'sent', url_source: 'node', pattern_source: 'node' })
+  })
+
+  it('refuses by name, before any claim, a delivery with state routes on a node with no state template, rather than send every state to the catch-all', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, node(), withState('WA'))
+    expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'state_template_unset' })
+    expect(h.claims).toEqual([])
+    expect(h.posts).toEqual([])
+  })
+
+  it('a delivery that is only a catch-all needs no state template', async () => {
+    const h = harness({ delivery: { ...delivery, routes: [delivery.routes[1]] }, post: lcAnswer })
+    const r = await run(h, node(), withState('WA'))
+    expect(r.output).toMatchObject({ _route: 'sent', route_name: 'DI4', route_matched: 'no_state' })
+  })
+
+  const broken: Array<[string, ClickDelivery]> = [
+    ['a stored success line with no id group', { ...delivery, successPattern: 'Success' }],
+    ['a stored success line that does not compile', { ...delivery, successPattern: '(' }],
+    ['stored routes with no catch-all', { ...delivery, routes: [delivery.routes[0]] }],
+    ['a stored route address that is not https', { ...delivery, routes: [delivery.routes[0], { ...delivery.routes[1], url: 'http://x.example' }] }],
+  ]
+  for (const [name, d] of broken) {
+    it(`${name} fails permanently by name before any claim or send`, async () => {
+      const h = harness({ delivery: d, post: lcAnswer })
+      const r = await run(h, stateNode(), withState('TX'))
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'click_delivery_invalid' })
+      expect(h.claims).toEqual([])
+      expect(h.posts).toEqual([])
+    })
+  }
+
+  it('a test run shows the route it would use, and sends nothing', async () => {
+    const h = harness({ delivery })
+    const c = withState('WA')
+    c.isTest = true
+    const r = await run(h, stateNode(), c)
+    expect(r.output).toMatchObject({ _route: 'not_sent', route_name: 'DV1', url_source: 'profile' })
+    expect(h.posts).toEqual([])
   })
 })
 
@@ -386,10 +518,12 @@ describe('an unknown send keeps the claim held, pages and routes unknown', () =>
     const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
     const h = harness({ post: () => new Promise<PartnerCallResult>(() => undefined), timers })
     const p = run(h)
-    await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0))
-    expect(pending[0].ms).toBeGreaterThan(CLICK_POST_TIMEOUT_MS)
-    expect(pending[0].ms).toBeLessThan(CLICK_CLAIM_DEADLINE_MS)
-    pending.forEach((t) => t.fn())
+    // The profile read's own bound (#1639) is set first and settled; the post's is the one past the post timeout.
+    await vi.waitFor(() => expect(pending.some((t) => t.ms > CLICK_POST_TIMEOUT_MS)).toBe(true))
+    const postBound = pending.filter((t) => t.ms > CLICK_POST_TIMEOUT_MS)
+    expect(postBound).toHaveLength(1)
+    expect(postBound[0].ms).toBeLessThan(CLICK_CLAIM_DEADLINE_MS)
+    postBound[0].fn()
     expect((await p).output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
   })
 })

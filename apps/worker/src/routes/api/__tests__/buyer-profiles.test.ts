@@ -227,6 +227,62 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
+  // #1639: a click buyer's delivery rides the document to save_buyer_profile, judged by the shared validator first.
+  describe('click delivery', () => {
+    const delivery = {
+      routes: [{ name: 'DV1', url: 'https://a.example/dv1', states: ['WA'] }, { name: 'DI4', url: 'https://a.example/di4', states: [] }],
+      success_pattern: '(?<id>\\w+)',
+    }
+    const click: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50, click_delivery: delivery }
+
+    it('is passed to save_buyer_profile as sent and comes back on the saved document', async () => {
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+      expect(res.status).toBe(200)
+      expect(rpc).toHaveBeenCalledWith('save_buyer_profile', expect.objectContaining({ p_profile: expect.objectContaining({ click_delivery: delivery }) }))
+      expect(((await res.json()) as { profile: BuyerProfileDocument }).profile.click_delivery).toEqual(delivery)
+    })
+
+    it('a document without it sends no key, so the function keeps what is stored', async () => {
+      const rpc = vi.fn().mockResolvedValue({ data: { ...click, version: 3 }, error: null })
+      supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
+      const { click_delivery: _omit, ...older } = click
+      await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: older })
+      const sent = rpc.mock.calls.find((c) => c[0] === 'save_buyer_profile')?.[1] as { p_profile: Record<string, unknown> }
+      expect('click_delivery' in sent.p_profile).toBe(false)
+    })
+
+    it('two catch-all routes are 422 by name before the database is asked', async () => {
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
+      const bad = { ...click, click_delivery: { ...delivery, routes: [delivery.routes[1], { ...delivery.routes[1], name: 'Other' }] } }
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: bad })
+      expect(res.status).toBe(422)
+      const body = await res.json() as { errors: Array<{ code: string }> }
+      expect(body.errors.map((e) => e.code)).toEqual(['click_route_two_catch_alls'])
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it('on a buyer sold on the offer is 422 click_delivery_on_offer_buyer before the database is asked', async () => {
+      const rpc = vi.fn()
+      supabaseWith({ partner_configs: { single: partnerRow } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: { ...doc, click_delivery: delivery } })
+      expect(res.status).toBe(422)
+      const body = await res.json() as { errors: Array<{ code: string }> }
+      expect(body.errors.map((e) => e.code)).toEqual(['click_delivery_on_offer_buyer'])
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it('the database refusal of a malformed delivery comes back as 422 with its name and detail', async () => {
+      const rpc = vi.fn().mockResolvedValue({ data: null, error: { code: 'BP422', message: 'click_delivery_invalid', details: 'WA is in more than one route' } })
+      supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })
+      const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: click })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toEqual({ error: 'click_delivery_invalid', detail: 'WA is in more than one route' })
+    })
+  })
+
   it('a click buyer with an hourly cap is 422 click_buyer_cap_unsupported before the database is asked', async () => {
     const rpc = vi.fn()
     supabaseWith({ partner_configs: { single: clickPartnerRow } }, { rpc })

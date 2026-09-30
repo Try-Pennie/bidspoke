@@ -19,7 +19,8 @@ import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
-import { Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
+import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
+import { Button as UiButton, Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
@@ -207,6 +208,14 @@ export default function PartnerForm({
   const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
   const [conflict, setConflict] = useState<ProfileConflict | null>(null)
   const [saveOutcome, setSaveOutcome] = useState<OutcomeState>({ kind: 'idle' })
+  /**
+   * What saving a click delivery change does, state by state (#1639, L180), shown
+   * for a yes before anything is written; null when nothing is waiting on it.
+   */
+  const [deliveryConfirm, setDeliveryConfirm] = useState<string[] | null>(null)
+  // The confirmation describes the profile as it was when Save was pressed; any
+  // later edit makes it describe something else, so it is withdrawn and Save asks again.
+  useEffect(() => { setDeliveryConfirm(null) }, [profile])
   // What the profile looked like when it loaded or was last saved, so an edit to
   // it counts as dirty and a load does not.
   const profileBaseline = useRef<string | null>(null)
@@ -395,8 +404,14 @@ export default function PartnerForm({
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    void submit(false)
+  }
+
+  /** confirmed: the person has read what the click delivery change does and said save. */
+  async function submit(confirmed: boolean) {
+    setDeliveryConfirm(null)
     setError(null)
     setProfileErrors([])
     const snapshot = captureSnapshot()
@@ -419,6 +434,16 @@ export default function PartnerForm({
         // wrong way and said nothing about which field (L111, L399).
         setSaveOutcome({ kind: 'failed', message: `Nothing saved. Fix the buyer profile first: ${describeProfileErrors(validation.errors, profile.sold_on)}` })
         return
+      }
+      // Where clicks go is changing (#1639): say so, state by state, and wait for a yes.
+      if (!confirmed && profileDirty && profileBaseline.current !== null) {
+        const stored = (JSON.parse(profileBaseline.current) as BuyerProfileDocument).click_delivery ?? null
+        const consequences = clickDeliveryConsequences(stored, profile.click_delivery === undefined ? stored : profile.click_delivery)
+        if (consequences.length > 0) {
+          setDeliveryConfirm(consequences)
+          setSaveOutcome({ kind: 'idle' })
+          return
+        }
       }
     }
 
@@ -926,6 +951,19 @@ export default function PartnerForm({
             </div>
           </div>
         </Section>}
+
+        {deliveryConfirm && (
+          <div role="alertdialog" aria-labelledby="delivery-confirm-title" className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
+            <p id="delivery-confirm-title" className="text-sm font-medium text-amber-900">Confirm the click delivery change</p>
+            <ul className="list-disc space-y-1 pl-5 text-sm text-amber-900">
+              {deliveryConfirm.map((line) => <li key={line} className="break-all">{line}</li>)}
+            </ul>
+            <div className="flex items-center gap-2">
+              <UiButton variant="primary" onClick={() => { void submit(true) }}>Save these changes</UiButton>
+              <UiButton variant="secondary" onClick={() => setDeliveryConfirm(null)}>Keep editing</UiButton>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center gap-3 border-t border-gray-100 pt-6">
           <button

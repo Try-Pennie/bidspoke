@@ -220,7 +220,7 @@ describe('status output key contract', () => {
       }),
       ctx,
       {
-        profileCap: async () => ({ found: true, cap: 50, soldOn: 'click' }),
+        readProfile: async () => ({ found: true, cap: 50, soldOn: 'click', clickDelivery: null }),
         resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),

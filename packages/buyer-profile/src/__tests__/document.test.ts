@@ -110,3 +110,54 @@ describe('sold_on on the document (#1541)', () => {
     if (!r.ok) expect(r.errors.map((e) => e.path)).toEqual(['sold_on'])
   })
 })
+
+describe('click_delivery on the document (#1639)', () => {
+  const delivery = {
+    routes: [
+      { name: 'DV1', url: 'https://x.example/dv1', states: ['WA'] },
+      { name: 'DI4', url: 'https://x.example/di4', states: [] },
+    ],
+    success_pattern: '(?<id>[A-Z]+)',
+  }
+
+  it('carries a delivery through the parse and into the evaluator shape', () => {
+    const r = parseProfileDocument({ ...doc, sold_on: 'click', click_delivery: delivery })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.document.click_delivery).toEqual(delivery)
+    expect(documentToProfile(r.document).clickDelivery).toEqual({ routes: delivery.routes, successPattern: delivery.success_pattern })
+  })
+
+  it('keeps an absent key absent, so a save from a form that predates it leaves the stored delivery alone', () => {
+    const r = parseProfileDocument(doc)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect('click_delivery' in r.document).toBe(false)
+    expect(JSON.parse(JSON.stringify(r.document))).not.toHaveProperty('click_delivery')
+  })
+
+  it('keeps an explicit null, which clears it', () => {
+    const r = parseProfileDocument({ ...doc, click_delivery: null })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.document.click_delivery).toBeNull()
+      expect(documentToProfile(r.document).clickDelivery).toBeNull()
+    }
+  })
+
+  it('names every malformed part at once', () => {
+    const r = parseProfileDocument({ ...doc, click_delivery: { routes: [{ name: 1, url: null, states: 'WA' }], success_pattern: 5 } })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.errors.map((e) => e.path).sort()).toEqual([
+        'click_delivery.routes[0].name', 'click_delivery.routes[0].states', 'click_delivery.routes[0].url', 'click_delivery.success_pattern',
+      ])
+    }
+  })
+
+  it('refuses a delivery that is not an object, and routes that are not a list', () => {
+    for (const bad of ['x', [], { routes: 'x', success_pattern: 'a' }]) {
+      expect(parseProfileDocument({ ...doc, click_delivery: bad }).ok, JSON.stringify(bad)).toBe(false)
+    }
+  })
+})

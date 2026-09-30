@@ -30,7 +30,7 @@
  * (L692).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { SOLD_ON, type BuyerProfile, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
+import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
@@ -104,7 +104,7 @@ export interface BuyerProfilesSnapshot {
 
 const SELECT =
   'partner_id, version, sold_on, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, ' +
-  'hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, updated_at, ' +
+  'hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, click_delivery, updated_at, ' +
   'partner_configs!inner(id, slug, name, is_active, api_endpoint, cf_secret_key, outbound_field_mapping, extra_extraction, ' +
   'accept_signals, response_classification, click_url, external_routing_code, duplicate_signals, ' +
   'circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds), ' +
@@ -126,6 +126,8 @@ interface ProfileRow {
   daily_lead_cap: number | null
   hourly_spend_cap_cents: number | null
   daily_spend_cap_cents: number | null
+  /** A click buyer's delivery (#1639); its structure is refused on save by save_buyer_profile. */
+  click_delivery: ClickDeliveryDocument | null
   updated_at: string
   partner_configs: LoadedBuyerPartner & { accept_signals: unknown; duplicate_signals: unknown }
   buyer_operating_windows: Array<{ day_of_week: number; opens_minute: number; closes_minute: number }> | null
@@ -183,6 +185,8 @@ function shape(row: ProfileRow): LoadedBuyer {
       windows: (row.buyer_operating_windows ?? []).map((w) => ({ dayOfWeek: w.day_of_week, opensMinute: w.opens_minute, closesMinute: w.closes_minute })),
       blackoutDates: (row.buyer_blackout_dates ?? []).map((b) => b.blackout_date),
       tiers: (row.buyer_pricing_tiers ?? []).map((t) => ({ population: t.population, debtFrom: Number(t.debt_from), debtTo: num(t.debt_to), multiplier: Number(t.multiplier) })),
+      // buyer_click_send picks its route and success line from this (#1639); it re-checks it with the shared rules before sending.
+      clickDelivery: row.click_delivery ? clickDeliveryFromDocument(row.click_delivery) : null,
     },
     version: row.version,
     updated_at: row.updated_at,

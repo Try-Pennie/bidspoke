@@ -1,3 +1,4 @@
+import { isHttpsUrl, successPatternOf, type ClickDelivery } from './click-delivery'
 import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, clickUrlCarriesProspectId, isCap } from './click-send'
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
@@ -32,6 +33,16 @@ export type ProfileErrorCode =
   | 'sold_on_locked'
   | 'click_buyer_priced'
   | 'click_buyer_cap_unsupported'
+  | 'click_delivery_on_offer_buyer'
+  | 'click_route_no_catch_all'
+  | 'click_route_two_catch_alls'
+  | 'click_route_state_repeated'
+  | 'click_route_url_invalid'
+  | 'click_route_name_invalid'
+  | 'click_route_unknown_state'
+  | 'success_pattern_unset'
+  | 'success_pattern_invalid'
+  | 'success_pattern_no_id_group'
 
 export interface ProfileError {
   code: ProfileErrorCode
@@ -137,6 +148,13 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
     if (profile.tiers.length > 0) err('click_buyer_priced', 'tiers', 'A buyer sold on the click is quoted at the Engine bid, so it has no pricing.')
   }
 
+  // A click buyer's delivery (#1639). Absent is allowed: the node's own settings
+  // stay in force until the profile holds one.
+  if (profile.clickDelivery) {
+    if (profile.soldOn === 'click') checkClickDelivery(profile.clickDelivery, err)
+    else err('click_delivery_on_offer_buyer', 'clickDelivery', 'Only a buyer sold on the click has click delivery. Remove it, or sell this buyer on the click.')
+  }
+
   checkWindows(profile, err)
 
   for (const date of profile.blackoutDates) {
@@ -188,6 +206,52 @@ function checkBound(value: number | null, path: string, label: string, err: Err)
 function checkCap(value: number | null, path: string, label: string, err: Err): void {
   if (value === null) return
   if (!isCap(value)) err('cap_invalid', path, `${label} must be a whole number above zero.`)
+}
+
+const SUCCESS_PATTERN_MESSAGES = {
+  success_pattern_unset: 'Enter the reply that confirms the buyer received the lead.',
+  success_pattern_invalid: 'This reply is not a valid pattern.',
+  success_pattern_no_id_group: 'The reply needs an (?<id>...) group for the id the buyer returns.',
+} as const
+
+/**
+ * The routes and the success line, every problem at once. Exactly one route
+ * lists no states: it takes every state the others do not, so no click is left
+ * with nowhere to go and none has two.
+ */
+function checkClickDelivery(delivery: ClickDelivery, err: Err): void {
+  const names = new Set<string>()
+  const seen = new Map<string, string>()
+  const repeated = new Set<string>()
+  let catchAlls = 0
+  delivery.routes.forEach((route, i) => {
+    const name = route.name.trim()
+    // The history and the diff key a route by its name as stored, so a name with
+    // spaces around it would read as a different route from its trimmed self.
+    if (name === '' || names.has(name) || name !== route.name) {
+      const why = name === '' ? 'Name this route.' : name !== route.name ? 'Remove the spaces around the route name.' : `Two routes are named ${name}.`
+      err('click_route_name_invalid', `clickDelivery.routes[${i}].name`, why)
+    }
+    names.add(name)
+    if (!isHttpsUrl(route.url)) err('click_route_url_invalid', `clickDelivery.routes[${i}].url`, 'Enter an https address.')
+    if (route.states.length === 0) catchAlls++
+    for (const state of new Set(route.states)) {
+      if (!STATE_SET.has(state)) {
+        err('click_route_unknown_state', `clickDelivery.routes[${i}].states`, `${state} is not one of the 50 states or DC.`)
+        continue
+      }
+      if (seen.has(state)) repeated.add(state)
+      else seen.set(state, name)
+    }
+  })
+  if (catchAlls === 0) err('click_route_no_catch_all', 'clickDelivery.routes', 'Leave one route with no states, for every state the other routes do not list.')
+  if (catchAlls > 1) err('click_route_two_catch_alls', 'clickDelivery.routes', 'Only one route may have no states. Every state it does not list goes to it.')
+  if (repeated.size > 0) {
+    const list = [...repeated].sort()
+    err('click_route_state_repeated', 'clickDelivery.routes', `${list.join(', ')} ${list.length === 1 ? 'is' : 'are'} in more than one route. A state goes to one route.`)
+  }
+  const rule = successPatternOf(delivery.successPattern)
+  if (!rule.ok) err(rule.code, 'clickDelivery.successPattern', SUCCESS_PATTERN_MESSAGES[rule.code])
 }
 
 function checkWindows(profile: BuyerProfile, err: Err): void {

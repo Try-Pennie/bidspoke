@@ -1813,6 +1813,11 @@ function BuyerClickSendConfig({
         <input className="input" placeholder="{{steps.build_request.output.body}}" value={text('request_body')} onChange={(e) => onChange({ request_body: e.target.value || undefined })} />
       </Field>
 
+      {/* #1639: picks the buyer profile's route once the profile holds click delivery, which then also replaces the URL and success line here. */}
+      <Field label="State" hint="The lead's state. A buyer whose profile routes clicks by state is sent each click at the address for its state.">
+        <input className="input" aria-label="State" placeholder="{{steps.build_request.output.state}}" value={text('state')} onChange={(e) => onChange({ state: e.target.value || undefined })} />
+      </Field>
+
       <Field label="Success line" hint="The buyer's answer that confirms it received the lead, as a pattern matched against the whole answer, with an (?<id>...) group for the id the buyer returns. Any other answer holds the prospect until a person checks with the buyer.">
         <input className="input font-mono" placeholder="Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)" value={text('success_pattern')} onChange={(e) => onChange({ success_pattern: e.target.value || undefined })} />
       </Field>

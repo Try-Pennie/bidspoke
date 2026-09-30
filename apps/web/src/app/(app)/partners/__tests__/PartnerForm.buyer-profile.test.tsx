@@ -522,3 +522,136 @@ describe('how the buyer is sold', () => {
     await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 3, profile: expect.objectContaining({ sold_on: 'click' }) }))
   })
 })
+
+// #1639: where a click buyer's clicks are posted, and the reply that counts as sold,
+// kept on the profile so a move is a settings edit with history.
+describe('click delivery', () => {
+  const LC = 'https://services.leadconnectorhq.com/hooks/abc/webhook-trigger'
+  const PATTERN = '\\s*\\{[\\s\\S]*?"id"\\s*:\\s*"(?<id>[A-Za-z0-9]{15,20})"[\\s\\S]*\\}\\s*'
+  const delivery = {
+    routes: [
+      { name: 'DV1', url: `${LC}/dv1`, states: ['OR', 'WA'] },
+      { name: 'DI4', url: `${LC}/di4`, states: [] },
+    ],
+    success_pattern: PATTERN,
+  }
+  const clickDoc: BuyerProfileDocument = { ...doc, sold_on: 'click', priority: null, tiers: [], daily_lead_cap: 50 }
+  const clickPartner = { accept_signals: [], click_url: 'https://trypennie.com/portal/l1/{prospect_id}' }
+
+  async function renderWith(profile: BuyerProfileDocument) {
+    vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile, accept_signals: [], other_sellers: [] })
+    vi.mocked(api.buyerProfiles.save).mockImplementation(async (_id, body) => ({ profile: { ...body.profile, version: (profile.version ?? 0) + 1 } }))
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<PartnerForm partner={{ ...partner, ...clickPartner }} onSave={onSave} onCancel={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Sold on' })).toBeInTheDocument())
+    return onSave
+  }
+
+  it('is shown for a click buyer and never for an offer buyer', async () => {
+    await renderWith({ ...clickDoc, click_delivery: delivery })
+    expect(screen.getByRole('heading', { name: 'Click delivery' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Route 1 address')).toHaveValue(`${LC}/dv1`)
+    expect(screen.getByLabelText('Success reply')).toHaveValue(PATTERN)
+  })
+
+  it('is absent on an offer buyer', async () => {
+    await renderWith(doc)
+    expect(screen.queryByRole('heading', { name: 'Click delivery' })).toBeNull()
+  })
+
+  it('a click buyer with none says where clicks go now, and can add one', async () => {
+    await renderWith(clickDoc)
+    expect(screen.getByText('Clicks go to the address on the workflow click send node.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add click delivery' }))
+    expect(screen.getByLabelText('Route 1 address')).toHaveValue('')
+    expect(screen.getByLabelText('Success reply')).toHaveValue('')
+  })
+
+  it('says inline when the success reply has no id group or does not compile', async () => {
+    await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Success reply'), { target: { value: 'Success' } })
+    expect(screen.getByText('The reply needs an (?<id>...) group for the id the buyer returns.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Success reply'), { target: { value: '(?<id>' } })
+    expect(screen.getByText('This reply is not a valid pattern.')).toBeInTheDocument()
+  })
+
+  it('removing a route is a destructive control', async () => {
+    await renderWith({ ...clickDoc, click_delivery: delivery })
+    const remove = screen.getByRole('button', { name: 'Remove route DV1' })
+    expect(remove.className).toMatch(/btn-danger/)
+    fireEvent.click(remove)
+    expect(screen.queryByDisplayValue(`${LC}/dv1`)).toBeNull()
+  })
+
+  it('a changed address asks first, naming the states and both addresses, and saves only when confirmed', async () => {
+    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
+    expect(confirm).toHaveTextContent(`Clicks from OR, WA will go to ${LC}/dv1-new instead of ${LC}/dv1.`)
+    expect(onSave).not.toHaveBeenCalled()
+    expect(api.buyerProfiles.save).not.toHaveBeenCalled()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Save these changes' }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', {
+      expected_version: 3,
+      profile: expect.objectContaining({ click_delivery: { ...delivery, routes: [{ ...delivery.routes[0], url: `${LC}/dv1-new` }, delivery.routes[1]] } }),
+    }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+  })
+
+  it('an edit made while the confirmation shows withdraws it, so what is saved is always what was confirmed', async () => {
+    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-other` } })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(onSave).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    expect(await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })).toHaveTextContent(`${LC}/dv1-other instead of ${LC}/dv1.`)
+  })
+
+  it('keep editing leaves everything unsaved and the edit in the form', async () => {
+    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Route 2 address'), { target: { value: `${LC}/di4-new` } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
+    expect(confirm).toHaveTextContent(`Clicks from every state no other route lists will go to ${LC}/di4-new instead of ${LC}/di4.`)
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByLabelText('Route 2 address')).toHaveValue(`${LC}/di4-new`)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('adding delivery where there was none names the node address it replaces, and the success reply', async () => {
+    await renderWith(clickDoc)
+    fireEvent.click(screen.getByRole('button', { name: 'Add click delivery' }))
+    fireEvent.change(screen.getByLabelText('Route 1 name'), { target: { value: 'All' } })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/all` } })
+    fireEvent.change(screen.getByLabelText('Success reply'), { target: { value: PATTERN } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
+    expect(confirm).toHaveTextContent(`Clicks from every state will go to ${LC}/all instead of the address on the workflow click send node.`)
+    expect(confirm).toHaveTextContent('A click counts as sent only when the reply matches')
+  })
+
+  it('a delivery the validator refuses is not saved and names the refusal', async () => {
+    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.click(screen.getByRole('button', { name: 'Add route' }))
+    fireEvent.change(screen.getByLabelText('Route 3 name'), { target: { value: 'X' } })
+    fireEvent.change(screen.getByLabelText('Route 3 address'), { target: { value: `${LC}/x` } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const outcome = await screen.findByText(/Nothing saved\./)
+    expect(outcome).toHaveTextContent('Only one route may have no states.')
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('an edit elsewhere on the profile saves without asking', async () => {
+    await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '60' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalled())
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+})

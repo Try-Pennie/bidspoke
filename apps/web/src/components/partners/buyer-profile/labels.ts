@@ -48,6 +48,22 @@ export const CLICK_FIELD_LABELS: Record<string, string> = {
   daily_lead_cap: 'Clicks per day',
 }
 
+/**
+ * A click buyer's delivery (#1639), named as its editor names its controls: the
+ * section, the routes as a set, a route's field by its number, and the reply.
+ */
+const SUCCESS_REPLY = 'Success reply'
+const ROUTE_FIELD_LABELS: Record<string, string> = { name: 'name', url: 'address', states: 'states' }
+
+function clickDeliveryErrorLabel(path: string): string | null {
+  if (path === 'clickDelivery') return 'Click delivery'
+  if (path === 'clickDelivery.routes') return 'Routes'
+  if (path === 'clickDelivery.successPattern') return SUCCESS_REPLY
+  const route = /^clickDelivery\.routes\[(\d+)\]\.(\w+)$/.exec(path)
+  if (route) return `Route ${Number(route[1]) + 1} ${ROUTE_FIELD_LABELS[route[2]] ?? route[2]}`
+  return null
+}
+
 const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
 
 /**
@@ -59,6 +75,8 @@ const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_$
  * named as its form names it.
  */
 export function profileErrorLabel(path: string, soldOn?: SoldOn | null): string {
+  const delivery = clickDeliveryErrorLabel(path)
+  if (delivery) return delivery
   const snake = camelToSnake(path)
   if (soldOn === 'click' && CLICK_FIELD_LABELS[snake]) return CLICK_FIELD_LABELS[snake]
   return FIELD_LABELS[snake] ?? (SECTION_LABELS as Record<string, string>)[snake] ?? path
@@ -112,6 +130,9 @@ export function minutesToTime(minutes: number): string {
 /** A human label for a diff or history path. */
 export function profileFieldLabel(path: string): string {
   if (FIELD_LABELS[path]) return FIELD_LABELS[path]
+  if (path === 'click_delivery.success_pattern') return SUCCESS_REPLY
+  const clickRoute = /^click_delivery\.routes\[(.*)\]$/.exec(path)
+  if (clickRoute) return `Route ${clickRoute[1]}`
   const window = /^windows\[(\d+):(\d+)\]$/.exec(path)
   if (window) {
     const day = DAYS_OF_WEEK.find((d) => d.index === Number(window[1]))?.label ?? `Day ${window[1]}`
@@ -132,6 +153,11 @@ export function formatProfileValue(path: string, value: unknown): string {
   if (value === null || value === undefined) return 'none'
   if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]
   if (path.endsWith('_cents') && typeof value === 'number') return formatCents(value)
+  if (path.startsWith('click_delivery.routes[') && typeof value === 'object') {
+    const r = value as { url?: unknown; states?: unknown }
+    const states = Array.isArray(r.states) && r.states.length > 0 ? [...r.states].map(String).sort().join(', ') : 'every state no other route lists'
+    return `${String(r.url)} for ${states}`
+  }
   if (path === 'allowed_states' && Array.isArray(value)) return value.length ? [...value].map(String).sort().join(', ') : 'none'
   if (path.startsWith('windows[') && typeof value === 'object') {
     const w = value as { opens_minute?: number; closes_minute?: number }
