@@ -68,10 +68,16 @@ const checkOutput = (route: 'eligible' | 'not_eligible', over: Json = {}): Json 
   ...over,
 })
 
-/** A buyer_select output as the node emits it on a route, with the reason it gives. */
+/**
+ * A buyer_select output as the node emits it on a route, with the reason it gives. A
+ * declined_by_buyer carries the detail the node writes for Tripoint's invalid data 502
+ * ("http 502", no result code), the decline the gate can tell from a 1009 (#1653); every
+ * Tripoint answer through the real node is in known-no-gate-buyer-select.test.ts.
+ */
 const buyerSelect = (route: string, reason: string, mode = 'live'): Json => ({
   _route: route,
   reason,
+  ...(reason === 'declined_by_buyer' ? { detail: 'http 502' } : {}),
   mode_effective: mode,
   population: 'engine',
   sale: {
@@ -156,8 +162,9 @@ describe('known_no_gate: a known no from tripoint_ping (Stage A, every lead toda
 })
 
 describe('known_no_gate: a known no from buyer_select (Stage B, the node sells live and tripoint_ping does not run)', () => {
-  const cases: Array<[string, string, boolean]> = [
-    ['no_sale', 'declined_by_buyer', true],
+  // [route, reason, known no, the answer the gate names]: a decline is named in tripoint_ping's words.
+  const cases: Array<[string, string, boolean, string?]> = [
+    ['no_sale', 'declined_by_buyer', true, 'declined'],
     ['no_sale', 'buyer_error', false],
     ['no_sale', 'outcome_unknown', false],
     ['no_sale', 'circuit_open', false],
@@ -173,11 +180,11 @@ describe('known_no_gate: a known no from buyer_select (Stage B, the node sells l
     ['deferred', 'canary_out', false],
     ['deferred', 'decide_only', false],
   ]
-  for (const [route, reason, knownNo] of cases) {
+  for (const [route, reason, knownNo, answer] of cases) {
     it(`${route} ${reason} is ${knownNo ? '' : 'not '}a known no`, async () => {
       const steps = baseSteps()
       steps.buyer_select = { output: buyerSelect(route, reason) }
-      expect(await gate(steps)).toEqual({ known_no: knownNo, decided_by: 'buyer_select', answer: reason })
+      expect(await gate(steps)).toEqual({ known_no: knownNo, decided_by: 'buyer_select', answer: answer ?? reason })
     })
   }
 

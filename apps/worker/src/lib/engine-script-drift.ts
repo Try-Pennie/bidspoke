@@ -133,12 +133,15 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     baselineReadOn: null,
   },
   // The known no gate (#1544), written here first and on the canvas since version 101.
+  // #1653 edited it here first (a buyer_select decline is judged in tripoint_ping's words),
+  // so it carries the hash of the script versions 103 and 104 hold until that paste; remove
+  // both fields in the change after the hourly check reads it as agree.
   {
     namespace: 'known_no_gate',
     file: 'known_no_gate.js',
     script: KNOWN_NO_GATE,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    canvasBaselineSha256: 'e74b9d55a4c5a82b29d755015e52b22301ba6c9b8f5fb200a80e2131cdf69476',
+    baselineReadOn: '2026-09-30',
   },
 ]
 
