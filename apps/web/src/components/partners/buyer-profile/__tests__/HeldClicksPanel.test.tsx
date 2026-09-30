@@ -9,16 +9,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { HeldClick } from '@/lib/api'
+import type { SaleWrites } from '@bidspoke/buyer-profile'
 import { HeldClicksPanel } from '../HeldClicksPanel'
 
 const row = (over: Partial<HeldClick> = {}): HeldClick => ({
   id: 'held-1', prospect_id: 'a0B000000000001AAA', reason: 'outcome_unknown', detail: 'http 503: Service Unavailable', partner_lead_id: null,
   workflow_id: 'wf-1', execution_id: 'exec-1', held_at: '2027-09-20T18:00:00.000Z', last_seen_at: '2027-09-20T18:00:00.000Z',
-  claim: { status: 'held', generation: 2 }, ...over,
+  claim: { status: 'held', generation: 2 }, salesforce: null, ...over,
 })
 
 function panel(props: Partial<Parameters<typeof HeldClicksPanel>[0]> = {}) {
-  const handlers = { onMarkSent: vi.fn(), onFree: vi.fn(), onClear: vi.fn() }
+  const handlers = { onMarkSent: vi.fn(), onFree: vi.fn(), onClear: vi.fn(), onRetrySalesforce: vi.fn() }
   render(<HeldClicksPanel partnerName="Liberty1" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} {...handlers} {...props} />)
   return handlers
 }
@@ -101,7 +102,7 @@ describe('HeldClicksPanel releases', () => {
     const onMarkSent = vi.fn()
     render(
       <form onSubmit={onSubmit}>
-        <HeldClicksPanel partnerName="Liberty1" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} onMarkSent={onMarkSent} onFree={vi.fn()} onClear={vi.fn()} />
+        <HeldClicksPanel partnerName="Liberty1" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} onMarkSent={onMarkSent} onFree={vi.fn()} onClear={vi.fn()} onRetrySalesforce={vi.fn()} />
       </form>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Mark sent' }))
@@ -154,5 +155,129 @@ describe('HeldClicksPanel claim states other than held', () => {
     panel({ held: { entries: [row({ claim: { status: 'unreadable', message: 'The claim did not answer: timeout' } })], total: 1 } })
     expect(screen.getByRole('alert')).toHaveTextContent('The claim did not answer: timeout')
     expect(screen.queryByRole('button')).toBeNull()
+  })
+})
+
+describe('HeldClicksPanel Salesforce updates after Mark sent (#1659)', () => {
+  const sold = { status: 'sold' as const, generation: 3, partner_lead_id: 'L1F-778' }
+  const oneFailed: SaleWrites = {
+    complete: false,
+    records_from: 'step_log',
+    writes: [
+      { record: 'prospect', object: 'Prospect__c', id: 'a06Ui00002qCeSaIAK', outcome: 'written' },
+      { record: 'submission', object: 'Submission__c', id: 'a0CUi00000abcdeFAA', outcome: 'failed', message: 'Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION' },
+      { record: 'lead', object: 'Lead', id: '00QUi00000lead1AAA', outcome: 'written' },
+    ],
+  }
+
+  it('a sold entry whose updates did not all land names each record\'s result and offers a retry', () => {
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: '2027-09-22T18:01:00Z', writes: oneFailed } })], total: 1 } })
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Salesforce was not fully updated.')
+    expect(alert).toHaveTextContent('Prospect a06Ui00002qCeSaIAK: updated')
+    expect(alert).toHaveTextContent('Submission a0CUi00000abcdeFAA: not updated. Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION')
+    expect(alert).toHaveTextContent('Lead 00QUi00000lead1AAA: updated')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry the Salesforce updates' }))
+    expect(h.onRetrySalesforce).toHaveBeenCalledWith(expect.objectContaining({ id: 'held-1' }))
+    // Removing the entry is still offered, and the mark is not undone from here.
+    expect(screen.getByRole('button', { name: 'Remove from the list' })).toBeInTheDocument()
+  })
+
+  it('removing an entry whose updates did not land looks destructive, says the retry goes with it, and asks first', () => {
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })], total: 1 } })
+    const remove = screen.getByRole('button', { name: 'Remove from the list' })
+    expect(remove.className).toMatch(/btn-danger/)
+    fireEvent.click(remove)
+    expect(h.onClear).not.toHaveBeenCalled()
+    expect(screen.getByText(/Removing this entry also removes its retry\. The Salesforce updates that did not land will not be written from Bidspoke/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(h.onClear).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from the list' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    expect(h.onClear).toHaveBeenCalledWith(expect.objectContaining({ id: 'held-1' }))
+  })
+
+  it('once an entry is confirmed removed, its row says so and offers no retry of updates that went with it', () => {
+    const entry = row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed }, cleared: true })
+    panel({ held: { entries: [entry], total: 1 }, outcomes: { 'held-1': { kind: 'done', message: 'Removed from the list.' } } })
+    expect(screen.getByText('Removed from the list.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).not.toBeInTheDocument()
+  })
+
+  it('a removal that did not clear the entry keeps its retry', () => {
+    const entry = row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })
+    panel({ held: { entries: [entry], total: 1 }, outcomes: { 'held-1': { kind: 'done', message: 'The entry could not be removed from the list.' } } })
+    expect(screen.getByRole('button', { name: 'Retry the Salesforce updates' })).toBeInTheDocument()
+  })
+
+  it('removing an entry whose updates all landed, or a freed one, needs no confirmation', () => {
+    const complete: SaleWrites = { ...oneFailed, complete: true, writes: oneFailed.writes.map((w) => ({ ...w, outcome: 'written' as const })) as SaleWrites['writes'] }
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } })], total: 1 } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from the list' }))
+    expect(h.onClear).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates that were never attempted for one reason state it once, not once per record', () => {
+    const reason = 'the run exec-1 is in neither the step log nor the execution archive, so which records the click was for is not known'
+    const none: SaleWrites = { complete: false, records_from: null, writes: (['prospect', 'submission', 'lead'] as const).map((record) => ({ record, object: record, id: null, outcome: 'not_attempted' as const, message: reason })) }
+    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: '2027-09-22T18:01:00Z', writes: none } })], total: 1 } })
+    expect(screen.getByRole('alert')).toHaveTextContent(`Salesforce was not updated: ${reason}`)
+    expect(screen.getAllByText(new RegExp(reason.slice(0, 20)))).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Retry the Salesforce updates' })).toBeInTheDocument()
+  })
+
+  it('a record the click did not name is said to be not part of the click, not a failure', () => {
+    const partial: SaleWrites = { complete: false, records_from: 'archive', writes: [
+      { record: 'prospect', object: 'Prospect__c', id: 'a06Ui00002qCeSaIAK', outcome: 'failed', message: 'Salesforce token fetch failed (503)' },
+      { record: 'submission', object: 'Submission__c', id: null, outcome: 'not_named' },
+      { record: 'lead', object: 'Lead', id: null, outcome: 'not_named' },
+    ] }
+    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: partial } })], total: 1 } })
+    expect(screen.getByRole('alert')).toHaveTextContent('Submission: not part of this click')
+  })
+
+  it('the outcome of Mark sent stays on the row, and a failed update under it keeps its retry', () => {
+    panel({
+      held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })], total: 1 },
+      outcomes: { 'held-1': { kind: 'done', message: 'Marked sent as L1F-778.' } },
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('Marked sent as L1F-778.')
+    expect(screen.getByRole('button', { name: 'Retry the Salesforce updates' })).toBeInTheDocument()
+  })
+
+  it('complete updates offer no retry', () => {
+    const complete: SaleWrites = { ...oneFailed, complete: true, writes: oneFailed.writes.map((w) => ({ ...w, outcome: 'written' as const })) as SaleWrites['writes'] }
+    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } })], total: 1 } })
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('a sold entry with no update recorded (a mark that stopped before its updates were audited) is offered them', () => {
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'none' } })], total: 1 } })
+    expect(screen.getByRole('alert')).toHaveTextContent('No Salesforce update is recorded for this sale.')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry the Salesforce updates' }))
+    expect(h.onRetrySalesforce).toHaveBeenCalled()
+  })
+
+  it('a click still held never shows Salesforce updates, whatever it carries, and keeps its releases', () => {
+    panel({ held: { entries: [row({ salesforce: { status: 'none' } }), row({ id: 'held-2', salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })], total: 2 } })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Mark sent' })).toHaveLength(2)
+  })
+
+  it('a freed click whose outcome is on its row shows no Salesforce updates either', () => {
+    panel({
+      held: { entries: [row({ claim: { status: 'free', generation: 3 }, salesforce: { status: 'none' } })], total: 1 },
+      outcomes: { 'held-1': { kind: 'done', message: 'Freed. The next click on this prospect sends it to Liberty1.' } },
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+  })
+
+  it('a last update that could not be read is an alert with a retry', () => {
+    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'unreadable', message: 'The last Salesforce update could not be read: timeout' } })], total: 1 } })
+    expect(screen.getByRole('alert')).toHaveTextContent('The last Salesforce update could not be read: timeout')
+    expect(screen.getByRole('button', { name: 'Retry the Salesforce updates' })).toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@
  * Smoke tests: verify insert shape, no throw when Supabase returns an error.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { changedFields, writeAuditLog } from '../audit'
+import { changedFields, recordAuditLog, writeAuditLog } from '../audit'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +17,14 @@ function makeSupabase(insertError: { message: string } | null = null) {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('recordAuditLog (#1659)', () => {
+  it('answers true when the row landed and false when it did not, never throwing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(recordAuditLog(makeSupabase() as never, 'org-1', 'held_click', 'h-1', 'updated', 'user-1', {}, [0, 0])).resolves.toBe(true)
+    await expect(recordAuditLog(makeSupabase({ message: 'statement timeout' }) as never, 'org-1', 'held_click', 'h-1', 'updated', 'user-1', {}, [0, 0])).resolves.toBe(false)
+  })
+})
 
 describe('writeAuditLog', () => {
   it('inserts a row with all required fields', async () => {

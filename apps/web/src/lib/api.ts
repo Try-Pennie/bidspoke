@@ -14,7 +14,7 @@ export type ExtraExtractionSpec =
 
 export type ExtraExtractionConfig = Record<string, ExtraExtractionSpec>
 
-import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
+import type { BuyerProfileDocument, SaleWrites, SalesforceWritesView } from '@bidspoke/buyer-profile'
 
 export interface Partner {
   id: string
@@ -90,11 +90,24 @@ export interface HeldClick {
   held_at: string
   last_seen_at: string
   claim: HeldClaim
+  /** A sold entry's last Salesforce updates (#1659); null while the claim is not sold. */
+  salesforce: SalesforceWritesView | null
+  /** Set on the page only, once the server confirmed the entry left the list; its Salesforce retry went with it. */
+  cleared?: boolean
 }
 
 export type MarkSentResult =
-  | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; list_cleared: boolean }
-  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; list_cleared: boolean }
+  | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
+  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
+
+/** Writing a marked sent click's Salesforce updates again (#1659). */
+export interface SalesforceRetryResult {
+  outcome: 'written' | 'incomplete'
+  salesforce: SaleWrites
+  /** False when the audit entry, the only record of this outcome, did not land. */
+  audit_recorded: boolean
+  list_cleared: boolean
+}
 
 export interface BidConfigDimension {
   name: string
@@ -863,6 +876,8 @@ export const api = {
       req<{ outcome: 'freed'; generation: number; list_cleared: boolean }>(`/api/held-clicks/${id}/free`, { method: 'POST', body: JSON.stringify({ generation }) }),
     clear: (id: string) =>
       req<{ outcome: 'cleared'; claim: 'free' | 'sold'; list_cleared: boolean }>(`/api/held-clicks/${id}/clear`, { method: 'POST', body: JSON.stringify({}) }),
+    retrySalesforce: (id: string) =>
+      req<SalesforceRetryResult>(`/api/held-clicks/${id}/salesforce`, { method: 'POST', body: JSON.stringify({}) }),
   },
 
   partnerBidConfigs: {

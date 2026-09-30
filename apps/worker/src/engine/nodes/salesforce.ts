@@ -66,8 +66,11 @@ interface SalesforceConfig {
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
 
+/** The one KV key an organization's Salesforce token is cached under, read here and cleared on a 401 by every caller. */
+export const salesforceTokenCacheKey = (orgId: string): string => `sf-token-${orgId}`
+
 export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: string, clientId: string, clientSecret: string): Promise<string> {
-  const cacheKey = `sf-token-${orgId}`
+  const cacheKey = salesforceTokenCacheKey(orgId)
   const cached = await env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return cached
 
@@ -274,7 +277,7 @@ export async function executeSalesforceNode(
   if (!res.ok) {
     // If token expired (401), evict cache so next attempt re-fetches
     if (res.status === 401) {
-      await env.WORKFLOW_CACHE.delete(`sf-token-${ctx.trigger.org_id}`)
+      await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
     }
 
     // Expected-error short-circuit: if the SF error matches a configured

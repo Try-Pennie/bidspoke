@@ -6,6 +6,7 @@
  *   POST /held-clicks/:id/mark-sent  { generation, buyer_lead_id }   the buyer has the lead
  *   POST /held-clicks/:id/free       { generation }                  the buyer does not have it
  *   POST /held-clicks/:id/clear                                      remove an entry whose claim is no longer held
+ *   POST /held-clicks/:id/salesforce                                 write a marked sent click's Salesforce updates again
  *
  * The claim in the LeadSaleObject is the authority; held_click_claims only says
  * which claims to ask about, because an object cannot be listed. So every read
@@ -21,21 +22,31 @@
  * already counted is not counted twice. A count that fails is reported on a sale
  * that stands (L33).
  *
+ * Mark sent then writes the click's Salesforce updates (#1659): the Prospect,
+ * Submission and Lead bodies a live `sent` click writes, through
+ * lib/held-click-sale-writes.ts. The mark stands whatever Salesforce answers,
+ * because the buyer does have the lead; each write's outcome is returned and
+ * audited, and an entry whose writes did not all land stays on the list so the
+ * person can retry them (POST /:id/salesforce, with the lead id the CLAIM holds,
+ * never one sent in the request). The updates are the same bodies every time,
+ * so a retry, or two at once, is safe. Free writes nothing to Salesforce.
+ *
  * The list entry is deleted only while its last_execution_id is still the one
  * this route read, so a hold recorded while the person acted is not deleted with
  * the old one. Every release is audited with the claim's old and new state (L529).
  */
 import { Hono, type Context } from 'hono'
-import { withDeadline } from '@bidspoke/buyer-profile'
+import { withDeadline, type SalesforceWritesView } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
-import { writeAuditLog } from '../../lib/audit'
+import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { ClickCounterClient, CLICK_CLAIM_KIND, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from '../../lib/buyer-object-clients'
 import { GenerationMovedError, WrongStateError } from '../../lib/buyer-sale-attempt'
 import type { SaleState } from '../../durable-objects/lead-sale'
+import { notAttempted, writeHeldClickSale, type SaleWrites } from '../../lib/held-click-sale-writes'
 
 type HeldClicksEnv = { Bindings: Env; Variables: AuthVariables }
 type Ctx = Context<HeldClicksEnv>
@@ -52,6 +63,7 @@ export type HeldClaimView =
   | { status: 'free'; generation: number }
   | { status: 'sold'; generation: number; partner_lead_id: string | null }
   | { status: 'unreadable'; message: string }
+
 
 interface HeldRow {
   id: string
@@ -119,20 +131,57 @@ heldClicks.get('/', async (c) => {
   const rows = (data ?? []) as HeldRow[]
 
   const now = Date.now()
-  const entries = await Promise.all(rows.map(async (row) => {
-    let claim: HeldClaimView
+  const claims = await Promise.all(rows.map(async (row): Promise<HeldClaimView> => {
     try {
-      claim = viewOf(await saleClient(c.env, row).read(), now)
+      return viewOf(await saleClient(c.env, row).read(), now)
     } catch (err) {
-      claim = { status: 'unreadable', message: `The claim did not answer: ${messageOf(err)}` }
+      return { status: 'unreadable', message: `The claim did not answer: ${messageOf(err)}` }
     }
-    return {
-      id: row.id, prospect_id: row.prospect_id, reason: row.reason, detail: row.detail, partner_lead_id: row.partner_lead_id,
-      workflow_id: row.workflow_id, execution_id: row.execution_id, held_at: row.held_at, last_seen_at: row.last_seen_at, claim,
-    }
+  }))
+  // A sold entry is on the list only when its Salesforce writes did not all land (or its removal did not), so the page shows the last outcome.
+  const soldIds = rows.filter((_, i) => claims[i].status === 'sold').map((r) => r.id)
+  const salesforce = await lastSalesforceWrites(c, orgId, soldIds)
+  const entries = rows.map((row, i) => ({
+    id: row.id, prospect_id: row.prospect_id, reason: row.reason, detail: row.detail, partner_lead_id: row.partner_lead_id,
+    workflow_id: row.workflow_id, execution_id: row.execution_id, held_at: row.held_at, last_seen_at: row.last_seen_at, claim: claims[i],
+    salesforce: claims[i].status === 'sold' ? salesforce(row.id) : null,
   }))
   return c.json({ entries, total: count ?? rows.length })
 })
+
+function isSaleWrites(v: unknown): v is SaleWrites {
+  return v !== null && typeof v === 'object' && Array.isArray((v as SaleWrites).writes) && typeof (v as SaleWrites).complete === 'boolean'
+}
+
+/** One entry's latest audited Salesforce writes. */
+async function latestSalesforceWrites(c: Ctx, orgId: string, id: string): Promise<SalesforceWritesView> {
+  const supabase = createSupabaseClient(c.env)
+  // Its OWN newest row that carries salesforce_writes, so other audit rows (this
+  // entry's or another's) can never push it out of the read and make it read as none.
+  const { data, error } = await supabase
+    .from('audit_log')
+    .select('changed_at, changes')
+    .eq('organization_id', orgId)
+    .eq('entity_type', 'held_click')
+    .eq('entity_id', id)
+    .not('changes->salesforce_writes', 'is', null)
+    .order('changed_at', { ascending: false })
+    .limit(1)
+  if (error) return { status: 'unreadable', message: `The last Salesforce update could not be read: ${error.message}` }
+  const r = ((data ?? []) as Array<{ changed_at: string; changes: unknown }>)[0]
+  if (!r) return { status: 'none' }
+  const writes = (r.changes as { salesforce_writes?: { new?: unknown } } | null)?.salesforce_writes?.new
+  return isSaleWrites(writes)
+    ? { status: 'recorded', at: r.changed_at, writes }
+    : { status: 'unreadable', message: 'The last Salesforce update was recorded in a shape this page cannot read.' }
+}
+
+/** The latest audited Salesforce writes of each sold entry, one bounded read per entry (at most HELD_CLICKS_LIMIT). */
+async function lastSalesforceWrites(c: Ctx, orgId: string, ids: string[]): Promise<(id: string) => SalesforceWritesView> {
+  const views = await Promise.all(ids.map((id) => latestSalesforceWrites(c, orgId, id)))
+  const byId = new Map(ids.map((id, i) => [id, views[i]]))
+  return (id) => byId.get(id) ?? { status: 'none' }
+}
 
 // ── Releases ──────────────────────────────────────────────────────────────────
 
@@ -214,6 +263,17 @@ function subjectOf(row: HeldRow) {
   return { partner_id: row.partner_id, prospect_id: row.prospect_id, reason: row.reason, held_at: row.held_at }
 }
 
+/** The click's Salesforce updates; an unexpected throw is reported on every record rather than lost (L11). */
+async function writeSale(c: Ctx, orgId: string, userId: string, row: HeldRow, buyerLeadId: string): Promise<SaleWrites> {
+  try {
+    return await writeHeldClickSale(c.env, createSupabaseClient(c.env), { orgId, userId, row, buyerLeadId })
+  } catch (err) {
+    const message = messageOf(err)
+    console.error(`[held-clicks] Salesforce writes for ${row.id} threw: ${message}`)
+    return notAttempted(`the Salesforce updates stopped before they started: ${message}`)
+  }
+}
+
 function generationOf(body: Record<string, unknown>): number | null {
   const g = body.generation
   return typeof g === 'number' && Number.isInteger(g) && g >= 0 ? g : null
@@ -261,17 +321,23 @@ heldClicks.post('/:id/mark-sent', async (c) => {
     console.error(`[held-clicks] count after mark sent failed for ${row.id}: ${countError}`)
   }
 
+  // The sale stands whatever Salesforce answers: the buyer has the lead.
+  const salesforce = await writeSale(c, orgId, userId, row, leadId)
+
   const supabase = createSupabaseClient(c.env)
-  await writeAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
+  // The audit entry is the only record of the Salesforce outcome, so whether it landed is part of the answer (L11).
+  const auditRecorded = await recordAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
     claim_state: { old: checked.state.state, new: 'sold' },
     claim_generation: { old: generation, new: next },
     buyer_lead_id: { old: null, new: leadId },
+    salesforce_writes: { old: null, new: salesforce },
     subject: subjectOf(row),
   })
-  const listCleared = await clearEntry(c.env, row, orgId)
+  // An entry whose writes did not all land stays listed, so its retry is on the page.
+  const listCleared = salesforce.complete ? await clearEntry(c.env, row, orgId) : false
   return c.json(count
-    ? { outcome: 'sent', generation: next, count, list_cleared: listCleared }
-    : { outcome: 'sent', generation: next, count: null, count_error: countError, count_date: counter.date, list_cleared: listCleared })
+    ? { outcome: 'sent', generation: next, count, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared }
+    : { outcome: 'sent', generation: next, count: null, count_error: countError, count_date: counter.date, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
 })
 
 heldClicks.post('/:id/free', async (c) => {
@@ -301,6 +367,40 @@ heldClicks.post('/:id/free', async (c) => {
   })
   const listCleared = await clearEntry(c.env, row, orgId)
   return c.json({ outcome: 'freed', generation: next, list_cleared: listCleared })
+})
+
+heldClicks.post('/:id/salesforce', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const loaded = await loadRow(c, c.req.param('id'), orgId)
+  if ('response' in loaded) return loaded.response
+  const { row } = loaded
+
+  let state: SaleState
+  try {
+    state = await saleClient(c.env, row).read()
+  } catch (err) {
+    console.error(`[held-clicks] claim read failed for ${row.id}: ${messageOf(err)}`)
+    return c.json({ error: 'claim_unavailable', message: 'The claim did not answer, so nothing was written. Try again in a minute.' }, 503)
+  }
+  if (state.state !== 'sold') {
+    return c.json({ error: 'not_sold', message: 'This click is not marked sent, so there is no sale to write to Salesforce. Nothing was written.' }, 409)
+  }
+  // The lead id the claim was sold with is the authority; the request carries none.
+  const leadId = state.outcome.buyer_reference
+  if (!leadId) return c.json({ error: 'no_lead_id', message: 'This sale holds no lead id from the buyer, so Salesforce was not written. Nothing was changed.' }, 409)
+
+  // The outcome this retry replaces, read before writing, so the audit entry carries old and new (L529).
+  const before = (await lastSalesforceWrites(c, orgId, [row.id]))(row.id)
+  const previous = before.status === 'recorded' ? before.writes : before.status === 'unreadable' ? { unreadable: before.message } : null
+
+  const salesforce = await writeSale(c, orgId, userId, row, leadId)
+  const supabase = createSupabaseClient(c.env)
+  const auditRecorded = await recordAuditLog(supabase, orgId, 'held_click', row.id, 'updated', userId, {
+    salesforce_writes: { old: previous, new: salesforce },
+    subject: subjectOf(row),
+  })
+  const listCleared = salesforce.complete ? await clearEntry(c.env, row, orgId) : false
+  return c.json({ outcome: salesforce.complete ? 'written' : 'incomplete', salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
 })
 
 heldClicks.post('/:id/clear', async (c) => {

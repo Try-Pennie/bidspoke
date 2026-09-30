@@ -126,3 +126,34 @@ export const HELD_CLICK_REASON_LABELS: Record<HeldClickReason, string> = {
   free_failed: 'The buyer refused the lead, and releasing the claim failed.',
   claim_in_doubt: 'An earlier send never recorded its outcome.',
 }
+
+// ── A held click's Salesforce updates (#1659) ────────────────────────────────
+
+/** The three Salesforce records a click sale updates, in the order the live flow writes them. */
+export const SALE_RECORDS = ['prospect', 'submission', 'lead'] as const
+export type SaleRecord = (typeof SALE_RECORDS)[number]
+
+/** How the page names each record. */
+export const SALE_RECORD_LABELS: Record<SaleRecord, string> = { prospect: 'Prospect', submission: 'Submission', lead: 'Lead' }
+
+/** One record's update, as the Worker reports it and the partner page shows it. */
+export type SaleWrite =
+  | { record: SaleRecord; object: string; id: string; outcome: 'written' }
+  | { record: SaleRecord; object: string; id: string; outcome: 'failed'; message: string }
+  /** The click named no such record, so the live flow writes none either. */
+  | { record: SaleRecord; object: string; id: null; outcome: 'not_named' }
+  | { record: SaleRecord; object: string; id: null; outcome: 'not_attempted'; message: string }
+
+export interface SaleWrites {
+  /** True when no write failed and none was left unattempted. */
+  complete: boolean
+  /** Where the record ids were read: the live step log, the execution archive, or neither. */
+  records_from: 'step_log' | 'archive' | null
+  writes: SaleWrite[]
+}
+
+/** A sold held click's last Salesforce updates, as the list reports them; null on an entry still held. */
+export type SalesforceWritesView =
+  | { status: 'none' }
+  | { status: 'recorded'; at: string; writes: SaleWrites }
+  | { status: 'unreadable'; message: string }

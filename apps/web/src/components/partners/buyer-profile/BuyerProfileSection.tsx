@@ -17,7 +17,7 @@
  * priority direction on the priority field.
  */
 import { useEffect, useState } from 'react'
-import { PRIORITY_DIRECTION, SOLD_ON, type BuyerProfileDocument, type ProfileError, type Signal } from '@bidspoke/buyer-profile'
+import { PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-body'
 import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
@@ -128,6 +128,20 @@ function countDay(date: string): string {
 
 const LIST_NOT_CLEARED = ' The entry was not removed from this list; reload to see it as it stands.'
 
+/**
+ * What the Salesforce updates did, in one sentence. A complete set names the
+ * records updated; anything else points at the per record list under it, which
+ * carries the reasons, so they are not said twice (L605).
+ */
+function salesforceSentence(writes: SaleWrites): string {
+  if (!writes.complete) return ' Salesforce was not fully updated; the records are listed below with a retry.'
+  const updated = writes.writes.filter((w) => w.outcome === 'written').map((w) => SALE_RECORD_LABELS[w.record])
+  return updated.length ? ` Salesforce updated: ${updated.join(', ')}.` : ''
+}
+
+/** Said when the audit entry, the only record of the Salesforce outcome, did not land. */
+const AUDIT_NOT_RECORDED = ' The record of these Salesforce updates could not be saved, so after a reload this page will not know them.'
+
 function markSentMessage(result: MarkSentResult, leadId: string, partnerName: string): string {
   const base = `Marked sent as ${leadId}.`
   const counted = result.count
@@ -135,7 +149,9 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
       ? ` Counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
       : ` It was already counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
     : ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}`
-  return `${base}${counted}${result.list_cleared ? '' : LIST_NOT_CLEARED}`
+  // An entry kept for its Salesforce retry is kept on purpose, so the not-removed note is only for a complete one.
+  const notCleared = !result.list_cleared && result.salesforce.complete ? LIST_NOT_CLEARED : ''
+  return `${base}${counted}${salesforceSentence(result.salesforce)}${result.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notCleared}`
 }
 
 export function BuyerProfileSection(props: Props) {
@@ -214,8 +230,27 @@ export function BuyerProfileSection(props: Props) {
     }
   }
 
+  /** Puts what a release returned on its row, so the row's controls follow the claim and its Salesforce updates without a reload. */
+  const patchHeld = (id: string, patch: Partial<HeldClick>) =>
+    setHeld((h) => (h ? { ...h, entries: h.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)) } : h))
+
   const markSent = (row: HeldClick, generation: number, leadId: string) =>
-    release(row.id, 'Marking it sent', async () => markSentMessage(await api.heldClicks.markSent(row.id, generation, leadId), leadId, partnerName))
+    release(row.id, 'Marking it sent', async () => {
+      const r = await api.heldClicks.markSent(row.id, generation, leadId)
+      patchHeld(row.id, {
+        claim: { status: 'sold', generation: r.generation, partner_lead_id: leadId },
+        salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce },
+      })
+      return markSentMessage(r, leadId, partnerName)
+    })
+  const retrySalesforce = (row: HeldClick) =>
+    release(row.id, 'Updating Salesforce', async () => {
+      const r = await api.heldClicks.retrySalesforce(row.id)
+      patchHeld(row.id, { salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce } })
+      const unrecorded = r.audit_recorded ? '' : AUDIT_NOT_RECORDED
+      if (!r.salesforce.complete) return `Retried. Salesforce was still not fully updated; the records are listed below.${unrecorded}`
+      return `Retried.${salesforceSentence(r.salesforce)}${unrecorded}${r.list_cleared ? '' : LIST_NOT_CLEARED}`
+    })
   const free = (row: HeldClick, generation: number) =>
     release(row.id, 'Freeing it', async () => {
       const r = await api.heldClicks.free(row.id, generation)
@@ -224,6 +259,7 @@ export function BuyerProfileSection(props: Props) {
   const clear = (row: HeldClick) =>
     release(row.id, 'Removing it', async () => {
       const r = await api.heldClicks.clear(row.id)
+      if (r.list_cleared) patchHeld(row.id, { cleared: true })
       return r.list_cleared ? 'Removed from the list.' : LIST_NOT_CLEARED.trim()
     })
 
@@ -374,7 +410,7 @@ export function BuyerProfileSection(props: Props) {
           {click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
-              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} />
+              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} />
             </div>
           )}
 

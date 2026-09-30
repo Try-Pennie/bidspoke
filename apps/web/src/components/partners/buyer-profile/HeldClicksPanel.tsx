@@ -13,10 +13,15 @@
  * destructive one, because freeing a lead the buyer does have sends it twice,
  * so it looks destructive at rest. The outcome shows on the row (L608).
  * Loading, a failed read and an empty list are three different screens (L10).
+ *
+ * Mark sent also writes the click's Salesforce updates (#1659). The mark stands
+ * whatever Salesforce answers, so an entry whose updates did not all land stays
+ * here with each record's result and a retry, which writes the same updates
+ * again with the lead id the sale was marked with.
  */
 import { useState } from 'react'
 import Link from 'next/link'
-import { HELD_CLICK_REASON_LABELS, type HeldClickReason } from '@bidspoke/buyer-profile'
+import { HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, type HeldClickReason, type SaleWrite, type SalesforceWritesView } from '@bidspoke/buyer-profile'
 import type { HeldClick } from '@/lib/api'
 import { Button, Outcome, TextInput, type OutcomeState } from '@/components/ui/form'
 
@@ -42,7 +47,71 @@ function reasonLabel(reason: string): string {
   return (HELD_CLICK_REASON_LABELS as Record<string, string>)[reason as HeldClickReason] ?? reason
 }
 
-type Pending = { id: string; action: 'sent'; leadId: string } | { id: string; action: 'free' }
+function writeLine(w: SaleWrite): string {
+  const name = w.id ? `${SALE_RECORD_LABELS[w.record]} ${w.id}` : SALE_RECORD_LABELS[w.record]
+  switch (w.outcome) {
+    case 'written': return `${name}: updated`
+    case 'failed': return `${name}: not updated. ${w.message}`
+    case 'not_named': return `${name}: not part of this click`
+    case 'not_attempted': return `${name}: not updated. ${w.message}`
+  }
+}
+
+/**
+ * Whether a row's last Salesforce updates leave something for the person to do.
+ * A sold entry with NO recorded updates is one whose mark stopped before its
+ * updates were audited (a crash between the two), so it is offered them too.
+ */
+function needsRetry(view: SalesforceWritesView | null): boolean {
+  return view !== null && (view.status !== 'recorded' || !view.writes.complete)
+}
+
+/** The one reason every record went unattempted for, when there is exactly one. */
+function sharedReason(writes: readonly SaleWrite[]): string | null {
+  const reasons = new Set<string>()
+  for (const w of writes) {
+    if (w.outcome !== 'not_attempted') return null
+    reasons.add(w.message)
+  }
+  return reasons.size === 1 ? [...reasons][0] : null
+}
+
+/** A sold entry's Salesforce updates that did not all land, each record's result, and the retry. */
+function SalesforceUpdates({ sold, view, busy, onRetry }: { sold: boolean; view: SalesforceWritesView | null; busy: boolean; onRetry: () => void }) {
+  // Only a sale has Salesforce updates: a click still held, or freed, never shows them, whatever it carries.
+  if (!sold || !view || !needsRetry(view)) return null
+  let body
+  if (view.status === 'unreadable') {
+    body = <p className="text-red-700">{view.message}</p>
+  } else if (view.status === 'none') {
+    body = <p className="text-red-700">No Salesforce update is recorded for this sale.</p>
+  } else {
+    const writes = view.writes.writes
+    const reason = sharedReason(writes)
+    // Nothing was attempted, for one reason: say it once (L605).
+    body = reason !== null ? (
+      <p className="text-red-700">Salesforce was not updated: {reason}</p>
+    ) : (
+      <>
+        <p className="text-red-700">Salesforce was not fully updated.</p>
+        <ul className="list-disc pl-4">
+          {writes.map((w) => (
+            <li key={w.record} className={w.outcome === 'written' ? 'text-graphite' : w.outcome === 'not_named' ? 'text-gray-600' : 'text-red-700'}>{writeLine(w)}</li>
+          ))}
+        </ul>
+      </>
+    )
+  }
+  return (
+    // A Salesforce error is often one unbroken JSON string, so it wraps anywhere rather than widening the table.
+    <div className="max-w-md space-y-1 [overflow-wrap:anywhere]">
+      <div role="alert">{body}</div>
+      <Button variant="secondary" className="btn-sm" busy={busy} onClick={onRetry}>Retry the Salesforce updates</Button>
+    </div>
+  )
+}
+
+type Pending ={ id: string; action: 'sent'; leadId: string } | { id: string; action: 'free' } | { id: string; action: 'remove' }
 
 interface Props {
   partnerName: string
@@ -53,14 +122,20 @@ interface Props {
   onMarkSent: (row: HeldClick, generation: number, leadId: string) => void | Promise<void>
   onFree: (row: HeldClick, generation: number) => void | Promise<void>
   onClear: (row: HeldClick) => void | Promise<void>
+  onRetrySalesforce: (row: HeldClick) => void | Promise<void>
 }
 
-export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear }: Props) {
+export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
 
   if (error) return <p role="alert" className="text-xs text-red-700">The held clicks could not be read: {error}</p>
   if (!held) return <p role="status" className="text-xs text-gray-600">Reading the held clicks…</p>
   if (held.entries.length === 0) return <p className="text-xs text-green-700">No clicks are held for {partnerName}: every click sent has an outcome.</p>
+
+  function remove(row: HeldClick) {
+    setPending(null)
+    void onClear(row)
+  }
 
   function confirmSent(row: HeldClick, generation: number, leadId: string) {
     const id = leadId.trim()
@@ -107,8 +182,11 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                   </td>
                   <td className="py-1">
                     {outcome.kind === 'done' ? (
-                      <Outcome state={outcome} />
-                    ) : row.claim.status === 'unreadable' ? (
+                      <div className="space-y-1">
+                        <Outcome state={outcome} />
+                        {row.cleared ? null : <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
+                      </div>
+                    ) :row.claim.status === 'unreadable' ? (
                       <p role="alert" className="text-red-700">{row.claim.message}</p>
                     ) : row.claim.status === 'sending' ? (
                       <p className="text-gray-600">Still sending. It can be released after {pacificTime(row.claim.releasable_at)}.</p>
@@ -119,7 +197,25 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                             ? 'No longer held: the claim is free.'
                             : `No longer held: already marked sent${row.claim.partner_lead_id ? ` as ${row.claim.partner_lead_id}` : ''}.`}
                         </p>
-                        <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onClear(row)}>Remove from the list</Button>
+                        <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
+                        {row.claim.status === 'sold' && needsRetry(row.salesforce) ? (
+                          // This row is the only place the retry lives, so removing it says what is lost and asks first (L9).
+                          mine?.action === 'remove' ? (
+                            <div className="space-y-1">
+                              <p className="text-graphite">
+                                Removing this entry also removes its retry. The Salesforce updates that did not land will not be written from Bidspoke, so fix those records in Salesforce by hand. The sale stays marked sent.
+                              </p>
+                              <div className="flex gap-1.5">
+                                <Button variant="danger" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove it</Button>
+                                <Button variant="secondary" className="btn-sm" onClick={() => setPending(null)}>Cancel</Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setPending({ id: row.id, action: 'remove' })}>Remove from the list</Button>
+                          )
+                        ) : (
+                          <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove from the list</Button>
+                        )}
                         <Outcome state={outcome} />
                       </div>
                     ) : generation === null ? null : mine?.action === 'sent' ? (

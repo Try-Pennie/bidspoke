@@ -112,6 +112,25 @@ export async function writeAuditLog(
   changes?: Record<string, unknown>,
   retryDelaysMs: number[] = AUDIT_RETRY_DELAYS_MS
 ): Promise<void> {
+  await recordAuditLog(supabase, orgId, entityType, entityId, action, changedBy, changes, retryDelaysMs)
+}
+
+/**
+ * The same write, answering whether the row landed, for a caller whose audit
+ * entry is the ONLY record of something (a held click's Salesforce outcome,
+ * #1659), so a failure can be reported rather than read later as nothing
+ * having happened (L11). Still best effort: it never throws.
+ */
+export async function recordAuditLog(
+  supabase: SupabaseClient,
+  orgId: string,
+  entityType: AuditEntityType,
+  entityId: string,
+  action: AuditAction,
+  changedBy: string,
+  changes?: Record<string, unknown>,
+  retryDelaysMs: number[] = AUDIT_RETRY_DELAYS_MS
+): Promise<boolean> {
   const row = {
     organization_id: orgId,
     entity_type: entityType,
@@ -127,7 +146,7 @@ export async function writeAuditLog(
     if (attempt > 0) await sleep(retryDelaysMs[attempt - 1])
     attempts++
     const { error } = await supabase.from('audit_log').insert(row)
-    if (!error) return
+    if (!error) return true
     lastError = error as DbError
     // A permanent error (a bad value, a missing column) fails identically on
     // every attempt, so spending the ladder on it only delays the report.
@@ -148,4 +167,5 @@ export async function writeAuditLog(
     message: lastError?.message,
     code: lastError?.code,
   })
+  return false
 }
