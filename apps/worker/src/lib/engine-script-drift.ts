@@ -154,8 +154,12 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
  * On 2026-09-29 Brian's Pipedream flow moved back to the Liberty1 Salesforce
  * site and learned Submission-only clicks; resolve_input and build_request were
  * re-derived here for it, pick_record was added, and the result was saved to the
- * workflow as version 7 the same day. The canvas holds all four files, so none
- * has a baseline: any difference is a drift.
+ * workflow as version 7 the same day.
+ *
+ * On 2026-09-30 Dan moved the clicks back to Liberty1's LeadConnector triggers on
+ * the canvas (build_request at version 11, click_send's success line at 12), and
+ * build_liberty1_request.js was re-derived from version 12. The canvas holds all
+ * four files, so none has a baseline: any difference is a drift.
  */
 export const LIBERTY1_CLICK_WORKFLOW_ID: string | null = '8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08'
 

@@ -3,7 +3,8 @@
  * flow they replace.
  *
  * build_liberty1_request must post byte for byte the body his buildPayload
- * built, to the DV1 or DI4 URL his pickRoute chose, for the same prospect
+ * built, on the DV1 or DI4 route his pickRoute chose (posted to Liberty1's
+ * LeadConnector trigger for that route, Dan 2026-09-30), for the same prospect
  * record, and for a Submission with no Prospect the body his
  * submissionAsProspect then buildPayload built (2026-09-29), with one
  * deliberate difference: consentsToTcpa is true on every click, because the
@@ -25,7 +26,7 @@ import submissionFixtures from './fixtures/liberty1-submissions.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
 import { codeSentinel } from '../../nodes/code'
-import { buildPayload, pickRoute, ROUTES, SUBMISSION_FIELDS, submissionAsProspect, updateBodies } from './liberty1-pipedream-oracle'
+import { buildPayload, CANVAS_ROUTES, pickRoute, SUBMISSION_FIELDS, submissionAsProspect, updateBodies } from './liberty1-pipedream-oracle'
 
 type Rec = Record<string, unknown>
 const RECORDS = fixtures.records as Record<string, Rec>
@@ -83,7 +84,7 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
       const theirs = clicked(buildPayload(record))
       // Byte for byte: key order and every null included, as JSON on the wire.
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
-      expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
+      expect(out.url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
       expect(out.route).toBe(pickRoute(theirs.state))
     })
   }
@@ -94,7 +95,7 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
       const out = await build(picked.record as Rec)
       const theirs = clicked(buildPayload(submissionAsProspect(row)))
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
-      expect(out.url).toBe(ROUTES[pickRoute(theirs.state)])
+      expect(out.url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
     })
   }
 
@@ -107,12 +108,21 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     expect(home.body).toMatchObject({ primaryPhone: '2065550144', annualIncome: null, consentsToFcra: false, leadId2: 'Website' })
   })
 
-  it('posts to the Liberty1 Salesforce site again, one route per state group, with no doubled slash', async () => {
-    expect(ROUTES).toEqual({
-      DV1: 'https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DV1',
-      DI4: 'https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DI4',
-    })
-    expect(BUILD).not.toContain('leadconnectorhq')
+  it("posts to Liberty1's LeadConnector triggers (Dan, 2026-09-30), one per state group, never the Salesforce site", async () => {
+    const dv1 = await build(RECORDS.dv1_state_plain)
+    const di4 = await build(RECORDS.missing_optionals)
+    expect([dv1.route, dv1.url]).toEqual(['DV1', CANVAS_ROUTES.DV1])
+    expect([di4.route, di4.url]).toEqual(['DI4', CANVAS_ROUTES.DI4])
+    expect(BUILD).not.toContain('salesforce-sites')
+  })
+
+  it('builds no URL with a doubled slash: the base does not end in one and each route adds exactly one', async () => {
+    // Brian's earlier LeadConnector URLs carried "//" before the trigger id.
+    for (const record of Object.values(RECORDS)) {
+      const { url } = await build(record)
+      expect(url.replace(/^https:\/\//, ''), url).not.toContain('//')
+      expect(new URL(url).pathname.split('/').filter((p) => p === '')).toHaveLength(1)
+    }
   })
 
   it('the fixtures cover both routes, every apartment form, an 11 digit phone and blanks', async () => {
@@ -124,8 +134,8 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     expect((await build(RECORDS.apt_with_hash)).body.address1).toBe('77 Fake Way #12')
     expect((await build(RECORDS.missing_optionals)).body.address1).toBe('Apt 3')
     expect((await build(RECORDS.apt_with_suite_prefix)).body.providedCreditRating).toBe('excellent')
-    expect((await build(RECORDS.lowercase_dv1_state)).url).toBe(ROUTES.DV1)
-    expect((await build(RECORDS.missing_optionals)).url).toBe(ROUTES.DI4)
+    expect((await build(RECORDS.lowercase_dv1_state)).url).toBe(CANVAS_ROUTES.DV1)
+    expect((await build(RECORDS.missing_optionals)).url).toBe(CANVAS_ROUTES.DI4)
   })
 
   it('refuses by name when no record was picked, rather than posting a body of nulls', async () => {

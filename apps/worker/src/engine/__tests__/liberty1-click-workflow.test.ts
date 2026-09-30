@@ -12,7 +12,7 @@
  * unusable body is refused and nothing is read
  * or sent; a prospect without the Liberty1 offer on record is refused and never
  * sent; a Completed one is answered already sent and never sent; the request
- * posted is Brian's body to his route; Completed is written only on `sent`
+ * posted is Brian's body on his route, at Liberty1's LeadConnector trigger; Completed is written only on `sent`
  * and Fail only on `refused`, to exactly the records the click resolves to; and
  * every other route answers and writes nothing. A Submission with no Prospect
  * (2026-09-29) is sent from the submission with no offer check, keyed on the
@@ -28,7 +28,7 @@ import workflowFile from '../../../../../docs/workflows/liberty1-click/definitio
 import fixtures from '../scripts/__tests__/fixtures/liberty1-prospects.json'
 import submissionFixtures from '../scripts/__tests__/fixtures/liberty1-submissions.json'
 import { runCanvasScript } from '../scripts/__tests__/canvas-script'
-import { buildPayload, pickRoute, ROUTES, submissionAsProspect, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
+import { buildPayload, CANVAS_ROUTES, pickRoute, submissionAsProspect, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../lib/engine-script-drift'
 
 vi.mock('../step-logger', () => ({
@@ -265,7 +265,7 @@ describe('a Liberty1 offer that is still open', () => {
     const body = buildPayload(RECORD)
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
-    expect(clickInputs[0].request_url).toBe(ROUTES[pickRoute(body.state)])
+    expect(clickInputs[0].request_url).toBe(CANVAS_ROUTES[pickRoute(body.state)])
     expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
     expect(clickInputs[0].partner).toBe('')
   })
@@ -351,7 +351,7 @@ describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
     const body = buildPayload(submissionAsProspect({ ...SUBMISSION_ROW, Lead__c: LEAD_ID, Prospect__c: null }))
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(SUBMISSION_ID)
-    expect(clickInputs[0].request_url).toBe(ROUTES[pickRoute(body.state)])
+    expect(clickInputs[0].request_url).toBe(CANVAS_ROUTES[pickRoute(body.state)])
     expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
   })
 
