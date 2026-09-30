@@ -23,6 +23,7 @@ import {
   CLICK_POST_TIMEOUT_MS,
   classifyClickAnswer,
   executeBuyerClickSendNode,
+  readClickProfile,
   type BuyerClickSendDeps,
   type ProfileRead,
   type HeldClickRecord,
@@ -117,7 +118,7 @@ function harness(opts: {
       h.profileReads++
       const c = opts.cap === undefined ? 50 : opts.cap
       if (typeof c === 'function') return c()
-      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click', clickDelivery: opts.delivery === undefined ? DEFAULT_DELIVERY : opts.delivery }
+      return c === 'none' ? { found: false } : { found: true, enabled: true, cap: c, soldOn: 'click', clickDelivery: opts.delivery === undefined ? DEFAULT_DELIVERY : opts.delivery }
     },
     resolvePartner: async (partnerId) => {
       h.resolved.push(partnerId)
@@ -468,16 +469,23 @@ describe('the address and the success line from the buyer profile (#1639)', () =
       expect(h.posts.map((p) => p.url)).not.toContain(STALE_URL)
     })
 
-    it('no enabled profile (switched off while offers were out) is refused as no_enabled_profile, naming the fix', async () => {
+    it('a buyer with no profile at all is refused as no_profile, naming the fix', async () => {
       const h = harness({ cap: 'none' })
       const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
-      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'no_enabled_profile' })
-      expect(r.failure?.message).toMatch(/no enabled buyer profile/)
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'no_profile' })
+      expect(r.failure?.message).toMatch(/no buyer profile/)
+      refusedBeforeAnything(h)
+    })
+
+    it('a switched off profile holding no delivery is refused as click_delivery_unset', async () => {
+      const h = harness({ cap: async () => ({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: null }) })
+      const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'click_delivery_unset' })
       refusedBeforeAnything(h)
     })
 
     it('a profile sold on the offer is refused as not_sold_on_click: an offer buyer holds no click delivery (#1557)', async () => {
-      const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer', clickDelivery: null }) })
+      const h = harness({ cap: async () => ({ found: true, enabled: true, cap: 50, soldOn: 'offer', clickDelivery: null }) })
       const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
       expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'not_sold_on_click' })
       expect(r.failure?.message).toMatch(/sold on the offer/)
@@ -497,6 +505,32 @@ describe('the address and the success line from the buyer profile (#1639)', () =
       c.isTest = true
       const r = await run(h, stateNode(), c)
       expect(r.failure).toMatchObject({ reason: 'click_delivery_unset' })
+    })
+  })
+
+  // Dan, 2026-09-30: switching a click buyer's profile off stops new OFFERS only. A click
+  // on an offer already shown still goes out, through that profile's click delivery, and
+  // is recorded as before: the notice has no overshoot to warn about, so it pages nothing.
+  describe('a switched off profile that holds a click delivery', () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => `p-${i}`)
+    const switchedOff = (): Promise<ProfileRead> => Promise.resolve({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: delivery })
+
+    it('sends the click through its route and success line, claims and counts it, and pages nothing', async () => {
+      const h = harness({ cap: switchedOff, post: lcAnswer, members: upTo(80) })
+      const r = await run(h, stateNode(), withState('WA'))
+      expect(r.failure).toBeUndefined()
+      expect(h.posts.map((p) => p.url)).toEqual([`${LC}/dv1`])
+      expect(r.output).toMatchObject({ _route: 'sent', partner_lead_id: RUN_ID, route_name: 'DV1', url_source: 'profile', counted: true, over_cap: 'no_enabled_profile', daily_lead_cap: null })
+      expect(h.claims).toHaveLength(1)
+      expect(h.alerts).toEqual([])
+      expect(h.logs.some((l) => l.event === 'buyer_click_send_no_enabled_profile')).toBe(true)
+    })
+
+    it('a switched off profile sold on the offer is still refused as not_sold_on_click', async () => {
+      const h = harness({ cap: async () => ({ found: true, enabled: false, cap: null, soldOn: 'offer', clickDelivery: null }) })
+      const r = await run(h, stateNode(), withState('WA'))
+      expect(r.failure).toMatchObject({ reason: 'not_sold_on_click' })
+      expect(h.posts).toEqual([])
     })
   })
 
@@ -816,5 +850,45 @@ describe('classifyClickAnswer', () => {
   it('a 4xx buyer error is refused, a 408 is unknown', () => {
     expect(classifyClickAnswer(answer(409, 'duplicate'), pattern).kind).toBe('refused')
     expect(classifyClickAnswer(answer(408, 'timeout'), pattern).kind).toBe('unknown')
+  })
+})
+
+/**
+ * The profile the node reads (Dan, 2026-09-30): the enabled profile from the one
+ * cached snapshot, as buyer_select and buyer_click_check read it, and only when the
+ * buyer is not in it, the buyer's own profile row, for a profile switched off after
+ * its offers went out. Both reads live in buyer-profile-loader.ts.
+ */
+describe('readClickProfile', () => {
+  const DELIVERY: ClickDelivery = { routes: [{ name: 'ALL', url: 'https://a.example/x', states: [] }], successPattern: '(?<id>\\w+)' }
+  const enabledBuyer = { partner: { id: PARTNER_ID }, profile: { dailyLeadCap: 50, soldOn: 'click' as const, clickDelivery: DELIVERY } }
+
+  it('an enabled buyer is answered from the snapshot, and the row is never read', async () => {
+    const row = vi.fn()
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [enabledBuyer] }), row)
+    expect(r).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: DELIVERY })
+    expect(row).not.toHaveBeenCalled()
+  })
+
+  it('a buyer the snapshot does not hold is read from its row: switched off, with its delivery, and no cap', async () => {
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async (id) => {
+      expect(id).toBe(PARTNER_ID)
+      return { soldOn: 'click', isEnabled: false, clickDelivery: DELIVERY }
+    })
+    expect(r).toEqual({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: DELIVERY })
+  })
+
+  it('a buyer with no row at all is not found', async () => {
+    expect(await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => null)).toEqual({ found: false })
+  })
+
+  it('a row read that fails throws, so the click is refused as profile_unreadable rather than guessed', async () => {
+    await expect(readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => { throw new Error('buyer_profiles: timeout') })).rejects.toThrow(/timeout/)
+  })
+
+  it('a snapshot read that fails throws without falling back to the row', async () => {
+    const row = vi.fn()
+    await expect(readClickProfile(PARTNER_ID, async () => { throw new Error('kv and database both down') }, row)).rejects.toThrow(/down/)
+    expect(row).not.toHaveBeenCalled()
   })
 })

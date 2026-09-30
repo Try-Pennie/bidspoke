@@ -13,9 +13,11 @@ In a click workflow, after a code node has built the request body for the buyer 
 3. **Looks up the partner** by its id, for its current slug. The slug names the buyer in the output, the logs, the pages and the post's error messages, and nothing else. The lookup is the organization's cached partner list, the same one the Constants node reads. A partner id this organization does not hold fails the step as `partner_not_found` (permanent); a lookup that cannot be read fails it as `partner_unreadable` (transient). Either way nothing is claimed or sent. A Test Runner run looks the partner up too, so a missing partner shows before launch.
 4. **Reads the buyer profile** once, through the one profile reader, within 5 seconds (#1639). Its click delivery says where the click goes and which reply counts as sold (see below), and its clicks per day judges the over cap notice later. The profile is the only place the address and the success line come from (#1671), so every way of not having them fails the step by name before anything is claimed or sent, and the node never guesses:
    - `profile_unreadable` (transient): the profile could not be read at all.
-   - `no_enabled_profile` (permanent): the buyer has no enabled profile, for instance one switched off while offers were still out.
+   - `no_profile` (permanent): the buyer has no buyer profile at all.
    - `not_sold_on_click` (permanent): the enabled profile is sold on the offer, and an offer buyer holds no click delivery.
-   - `click_delivery_unset` (permanent): the enabled click profile's **Click delivery** is empty. The fix is to fill it on the partner page.
+   - `click_delivery_unset` (permanent): the click profile's **Click delivery** is empty. The fix is to fill it on the partner page.
+
+   **A profile switched off is still sent to** (Dan, 2026-09-30). Switching a click buyer's profile off stops new offers only; a click on an offer already shown goes out through that profile's Click delivery and is claimed and counted as usual. The enabled profiles come from the one cached snapshot buyer_select and Buyer Click Check read; only for a buyer that snapshot does not hold does the node read the buyer's own profile row (`readBuyerClickDelivery` in `buyer-profile-loader.ts`, shaped by the same `clickDeliveryFromDocument`). A failure of either read is `profile_unreadable`.
    - `click_delivery_invalid` or `state_template_unset` (permanent): the delivery does not pass the shared rules, or it routes by state and the node has no `state` template.
 5. **Claims the prospect** for this buyer, in a claim object named `sale:click:{partner_id}:{prospect_id}`. The claim answers one of:
    - taken: the node carries on.
@@ -95,7 +97,7 @@ A count that fails after a confirmed send pages `count_failed`; the route is sti
 The node posts to the org's Slack connection for two things:
 
 - **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. Buyer Click Check pages through the same path as `partner_not_click`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
-- **The over cap notice** when the count after an add reaches the profile's clicks per day times `alert_over_percent / 100`, once per buyer per Pacific day. The profile is the one read made before the claim (step 4), so the address and the cap come from the same snapshot. An enabled click profile holding no clicks per day (or a cap that is not a whole number above zero) pages `cap_unreadable`. A buyer with no enabled profile, or one sold on the offer, never reaches the count: step 4 refused the click.
+- **The over cap notice** when the count after an add reaches the profile's clicks per day times `alert_over_percent / 100`, once per buyer per Pacific day. The profile is the one read made before the claim (step 4), so the address and the cap come from the same snapshot. An enabled click profile holding no clicks per day (or a cap that is not a whole number above zero) pages `cap_unreadable`. A profile switched off while offers were still out is recorded as `no_enabled_profile` and pages nothing, because no more offers are being made. A buyer with no profile, or one sold on the offer, never reaches the count: step 4 refused the click.
 
 Both are decided by the alert claim object, so two clicks that page together post once. A Slack failure is logged and recorded on the step (`pages[].outcome`, `over_cap`), and never fails the node, because the click it reports on has already happened.
 
@@ -137,7 +139,7 @@ Each is a compare and set on the claim's generation, so a page read before the c
 }
 ```
 
-`partner_slug` is the slug the partner had when the node ran (null when the partner could not be looked up). `status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable` or `not_counted`. `daily_lead_cap` is the profile cap the notice was judged against (null when it was not read). The request body is never written to the step row.
+`partner_slug` is the slug the partner had when the node ran (null when the partner could not be looked up). `status` is the buyer's HTTP status (null when no answer arrived). `counted` is false when the prospect was already in today's count or the add failed. `over_cap` is `not_due`, `posted`, `claimed_elsewhere` (already posted today), `no_slack`, `post_failed`, `cap_unreadable`, `no_enabled_profile` or `not_counted`. `daily_lead_cap` is the profile cap the notice was judged against (null when it was not read). The request body is never written to the step row.
 
 ## Timing
 

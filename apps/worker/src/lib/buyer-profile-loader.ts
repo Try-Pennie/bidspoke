@@ -30,7 +30,7 @@
  * (L692).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
+import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
@@ -407,18 +407,41 @@ export async function readBuyerSoldOn(supabase: SupabaseClient, orgId: string, p
  * vocabulary or an enabled flag that is not a boolean throws (L10).
  */
 export async function readBuyerSale(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ soldOn: SoldOn; isEnabled: boolean } | null> {
+  const row = await readSaleRow(supabase, orgId, partnerId, 'sold_on, is_enabled')
+  return row ? { soldOn: row.soldOn, isEnabled: row.isEnabled } : null
+}
+
+/**
+ * One buyer's profile row whether or not it is switched on, with its click
+ * delivery (Dan, 2026-09-30): switching a click buyer off stops new offers only,
+ * so buyer_click_send still sends a click on an offer already shown through the
+ * profile's delivery. The node reads this only for a buyer the enabled snapshot
+ * does not hold; the delivery is shaped by the snapshot's own shaper
+ * (clickDeliveryFromDocument), so the two reads cannot disagree on it. Null
+ * means no profile; a failed read or a malformed row throws (L10).
+ */
+export async function readBuyerClickDelivery(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ soldOn: SoldOn; isEnabled: boolean; clickDelivery: ClickDelivery | null } | null> {
+  const row = await readSaleRow(supabase, orgId, partnerId, 'sold_on, is_enabled, click_delivery')
+  if (!row) return null
+  const doc = row.data.click_delivery as ClickDeliveryDocument | null | undefined
+  return { soldOn: row.soldOn, isEnabled: row.isEnabled, clickDelivery: doc ? clickDeliveryFromDocument(doc) : null }
+}
+
+/** The one row read behind readBuyerSale and readBuyerClickDelivery, with the kind and flag checks both need. */
+async function readSaleRow(supabase: SupabaseClient, orgId: string, partnerId: string, select: string): Promise<{ soldOn: SoldOn; isEnabled: boolean; data: Record<string, unknown> } | null> {
   const { data, error } = await supabase
     .from('buyer_profiles')
-    .select('sold_on, is_enabled')
+    .select(select)
     .eq('partner_id', partnerId)
     .eq('organization_id', orgId)
     .maybeSingle()
   if (error) throw new Error(`buyer_profiles: ${error.message}`)
   if (!data) return null
-  const { sold_on: soldOn, is_enabled: isEnabled } = data as { sold_on: unknown; is_enabled: unknown }
+  const row = data as unknown as Record<string, unknown>
+  const { sold_on: soldOn, is_enabled: isEnabled } = row
   if (typeof soldOn !== 'string' || !(SOLD_ON as readonly string[]).includes(soldOn)) {
     throw new Error(`buyer_profiles: sold_on ${String(soldOn)} is not one of ${SOLD_ON.join(', ')}`)
   }
   if (typeof isEnabled !== 'boolean') throw new Error(`buyer_profiles: is_enabled ${String(isEnabled)} is not a boolean`)
-  return { soldOn: soldOn as SoldOn, isEnabled }
+  return { soldOn: soldOn as SoldOn, isEnabled, data: row }
 }

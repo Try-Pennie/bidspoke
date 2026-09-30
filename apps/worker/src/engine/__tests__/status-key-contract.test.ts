@@ -219,7 +219,7 @@ describe('status output key contract', () => {
       }),
       ctx,
       {
-        readProfile: async () => ({ found: true, cap: 50, soldOn: 'click', clickDelivery: { routes: [{ name: 'ALL', url: 'https://buyer.example/lead', states: [] }], successPattern: 'created (?<id>\\w+)' } }),
+        readProfile: async () => ({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: { routes: [{ name: 'ALL', url: 'https://buyer.example/lead', states: [] }], successPattern: 'created (?<id>\\w+)' } }),
         resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),

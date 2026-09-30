@@ -53,9 +53,15 @@
  * before then that still carries them is ignored. So every way of having no
  * delivery is refused by name before the claim, never guessed at (L75): a
  * profile that cannot be read (profile_unreadable, transient, Dan's decision of
- * 2026-09-30), no enabled profile (no_enabled_profile), a profile sold on the
- * offer (not_sold_on_click), and an enabled click profile whose Click delivery
- * is empty (click_delivery_unset).
+ * 2026-09-30), no profile at all (no_profile), a profile sold on the offer
+ * (not_sold_on_click), and a click profile whose Click delivery is empty
+ * (click_delivery_unset).
+ *
+ * Switching a click buyer's profile OFF stops new offers only (Dan, 2026-09-30):
+ * a click on an offer already shown is still sent through that profile's click
+ * delivery, read from the buyer's own row when the enabled snapshot does not
+ * hold it (readClickProfile), and recorded as no_enabled_profile for the over
+ * cap notice, which pages nothing because nothing more is offered.
  *
  * The partner is stored by its partner_configs id (#1553, L15), and the claim,
  * the counter and the alert cooldowns are all keyed on that id, so renaming a
@@ -73,7 +79,7 @@ import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
 import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
-import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
+import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
@@ -146,14 +152,14 @@ export type BuyerClickSendFailureReason =
   | 'claim_unavailable'
   | 'buyer_click_send_handle_unwired'
   | 'profile_unreadable'
-  | 'no_enabled_profile'
+  | 'no_profile'
   | 'not_sold_on_click'
   | 'click_delivery_unset'
   | 'click_delivery_invalid'
   | 'state_template_unset'
 
 /** Whether the over cap notice went out on this click. */
-export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'not_counted'
+export type OverCapState = ClickAlertOutcome | 'not_due' | 'cap_unreadable' | 'no_enabled_profile' | 'not_counted'
 
 // ── Config and output ─────────────────────────────────────────────────────────
 
@@ -269,14 +275,45 @@ export interface ClickCounterApi {
 }
 
 /**
- * The enabled profile as the node reads it: its cap and how the buyer is sold,
- * so an offer buyer is never sent a click (#1557), and its click delivery, null
- * when it holds none (#1639).
+ * The buyer's profile as the node reads it: how the buyer is sold, so an offer
+ * buyer is never sent a click (#1557), its click delivery, null when it holds
+ * none (#1639), and whether it is in the enabled snapshot with the cap that
+ * snapshot holds. A profile switched off after its offers went out is found with
+ * enabled false and no cap: its clicks are still sent (Dan, 2026-09-30).
  */
-export type ProfileRead = { found: false } | { found: true; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
+export type ProfileRead =
+  | { found: false }
+  | { found: true; enabled: boolean; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
+
+/** The enabled snapshot as readClickProfile needs it: the shape loadBuyerProfiles answers. */
+interface EnabledBuyersLike {
+  buyers: ReadonlyArray<{ partner: { id: string }; profile: { dailyLeadCap: number | null; soldOn: SoldOn | null; clickDelivery?: ClickDelivery | null } }>
+}
+
+/**
+ * The profile for one click: the enabled profile from the one cached snapshot
+ * that buyer_select and buyer_click_check read, and only when the buyer is not
+ * in it, the buyer's own row (readBuyerClickDelivery), for a profile switched
+ * off after its offers went out. Both reads live in buyer-profile-loader.ts.
+ * Either read failing throws, so the click is refused as profile_unreadable.
+ */
+export async function readClickProfile(
+  partnerId: string,
+  enabledSnapshot: () => Promise<EnabledBuyersLike>,
+  profileRow: (partnerId: string) => Promise<{ soldOn: SoldOn; isEnabled: boolean; clickDelivery: ClickDelivery | null } | null>,
+): Promise<ProfileRead> {
+  const snapshot = await enabledSnapshot()
+  const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
+  // A snapshot cached before #1639 carries no clickDelivery: read as none, which refuses the click by name.
+  if (buyer) return { found: true, enabled: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null }
+  const row = await profileRow(partnerId)
+  // Not in the enabled snapshot: switched off (or enabled since the snapshot was cached),
+  // so there is no cap in force to judge an overshoot against.
+  return row ? { found: true, enabled: false, cap: null, soldOn: row.soldOn, clickDelivery: row.clickDelivery } : { found: false }
+}
 
 export interface BuyerClickSendDeps {
-  /** The buyer's enabled profile, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
+  /** The buyer's profile (readClickProfile); found false when the buyer has no profile at all. Throws when it cannot be read. */
   readProfile: (partnerId: string) => Promise<ProfileRead>
   /** The org's partner by id, for its slug; null when the org holds no such partner. Throws when it cannot be read. */
   resolvePartner: (partnerId: string) => Promise<{ slug: string } | null>
@@ -297,12 +334,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   // Fire and forget, as buyer_select does: the walk is still inside the request, and the rebuild never rejects.
   const background = (work: Promise<unknown>) => { void work }
   return {
-    readProfile: async (partnerId) => {
-      const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })
-      const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
-      // A snapshot cached before #1639 carries no clickDelivery: read as none, which refuses the click by name.
-      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null } : { found: false }
-    },
+    readProfile: (partnerId) => readClickProfile(
+      partnerId,
+      () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
+      (id) => readBuyerClickDelivery(supabase, orgId, id),
+    ),
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
     resolvePartner: async (partnerId) => {
@@ -405,6 +441,8 @@ interface Target {
 
 interface Validated extends Checked, Target {
   slug: string
+  /** False for a profile switched off after its offers went out: its click is sent, and no cap is in force. */
+  enabled: boolean
   /** The enabled click profile's daily cap, from the one read made before the claim. */
   cap: number | null
 }
@@ -487,17 +525,17 @@ class Run {
     // The profile is the only place a click can go (#1671): every way of it holding
     // no delivery is refused here, by name, before anything is claimed.
     if (!profile.found) {
-      return this.fail('no_enabled_profile', 'permanent', `there is no enabled buyer profile for ${partner.slug}, so there is no Click delivery to send to and nothing was sent; enable the buyer profile on the partner page, with its Click delivery filled, if clicks should still go out`)
+      return this.fail('no_profile', 'permanent', `there is no buyer profile for ${partner.slug}, so there is no Click delivery to send to and nothing was sent; give the buyer a profile sold on the click, with its Click delivery filled, on the partner page`)
     }
     if (profile.soldOn !== 'click') {
-      return this.fail('not_sold_on_click', 'permanent', `the enabled buyer profile for ${partner.slug} is sold on the ${String(profile.soldOn)}, not the click, so it holds no Click delivery and nothing was sent; set the profile to be sold on the click and fill its Click delivery, or take this node off the workflow`)
+      return this.fail('not_sold_on_click', 'permanent', `the buyer profile for ${partner.slug} is sold on the ${String(profile.soldOn)}, not the click, so it holds no Click delivery and nothing was sent; set the profile to be sold on the click and fill its Click delivery, or take this node off the workflow`)
     }
     if (!profile.clickDelivery) {
       return this.fail('click_delivery_unset', 'permanent', `the buyer profile for ${partner.slug} holds no Click delivery, so where this click goes is not known and nothing was sent; fill the buyer profile's Click delivery (routes and success reply) on the partner page`)
     }
     const target = this.fromProfile(profile.clickDelivery)
     if ('output' in target) return target
-    const v: Validated = { ...checked, ...target, slug: partner.slug, cap: profile.cap }
+    const v: Validated = { ...checked, ...target, slug: partner.slug, enabled: profile.enabled, cap: profile.cap }
 
     if (this.out.mode_effective === 'report_only') {
       this.out.would_send_body_sha256 = await canonicalBodySha256(v.body)
@@ -588,7 +626,14 @@ class Run {
     this.out.counted = added.added
 
     // The same read the address came from (#1639), so the route and the cap are one
-    // snapshot. It is an enabled click profile: anything else was refused before the claim.
+    // snapshot. It is a click profile: anything else was refused before the claim.
+    if (!v.enabled) {
+      // Switched off while offers were out (Dan, 2026-09-30): the click is sent, and
+      // nothing more is offered, so there is no overshoot to warn about.
+      this.out.over_cap = 'no_enabled_profile'
+      this.deps.log({ event: 'buyer_click_send_no_enabled_profile', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug })
+      return
+    }
     const cap = v.cap
     // The one cap rule (isCap), shared with save validation and buyer_click_check.
     if (!isCap(cap)) {
