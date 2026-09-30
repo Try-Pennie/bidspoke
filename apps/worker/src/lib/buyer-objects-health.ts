@@ -6,8 +6,9 @@
  * under names nothing real uses, and reports each answer with its latency.
  *
  * The drill WRITES: under the rehearsal kind against a throwaway buyer it runs
- * the two lead race, the in_doubt race and a kill after reserve, the three
- * shapes the Workers suite proves, and records the p50 and p99 of every object
+ * the two lead race, the in_doubt race, a kill after reserve and a kill after
+ * commit that the next attempt heals from the ledger (#1643), the four shapes
+ * the Workers suite proves, and records the p50 and p99 of every object
  * call. The p99 is what OBJECT_CALL_DEADLINE_MS is set from. It touches no
  * buyer and no Postgres row: the buyer call is a stub and the mirror is a no-op.
  */

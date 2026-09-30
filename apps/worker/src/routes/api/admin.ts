@@ -543,7 +543,8 @@ admin.get('/buyer-objects/health', async (c) => {
 /**
  * The drill WRITES, so it is a POST and is named a drill (L206): under the
  * rehearsal kind against a throwaway buyer it runs the two lead race, the
- * in_doubt race and a kill after reserve, and records the p50 and p99 of every
+ * in_doubt race, a kill after reserve and a kill after commit that the next
+ * attempt heals from the ledger (#1643), and records the p50 and p99 of every
  * object call. The p99 sets OBJECT_CALL_DEADLINE_MS. It calls no buyer and
  * writes no Postgres row. Bounded as a whole (L110); a failed scenario is a 500
  * carrying the report. The same drill also runs once a day from the 13:00 UTC

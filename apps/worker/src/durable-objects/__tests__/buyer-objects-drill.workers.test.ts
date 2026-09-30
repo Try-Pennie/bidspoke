@@ -2,8 +2,8 @@
  * The buyer objects drill against the REAL objects in workerd (#1410).
  *
  * This is the same code the POST /api/admin/buyer-objects/drill route runs in
- * production after deploy: the two lead race, the in_doubt race and a kill
- * after reserve, under the rehearsal kind against a throwaway buyer, with the
+ * production after deploy: the two lead race, the in_doubt race, a kill after
+ * reserve and a kill after commit healed from the ledger, under the rehearsal kind against a throwaway buyer, with the
  * p50 and p99 of every object call recorded. Here it proves the drill itself
  * passes against real storage, so a red in production is about production.
  */
