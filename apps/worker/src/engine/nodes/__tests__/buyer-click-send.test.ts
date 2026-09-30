@@ -229,6 +229,20 @@ describe('a confirmed send', () => {
     expect(r.output).toMatchObject({ _route: 'sent', counted: true, count: 1 })
     expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['sold_mark_failed'])
   })
+
+  // The success line proves only that the buyer answered with an id: for Liberty1's
+  // LeadConnector that is a run id for a queued trigger, not a created record (#1547).
+  it('says a confirmed answer is receipt with an id, never that the buyer created a record, in the detail and both pages', async () => {
+    const sent = await run(harness())
+    expect(sent.output.detail).toBe(`the buyer confirmed receipt with id ${SF_ID}`)
+    for (const opts of [{ addFails: true }, { soldFails: true }]) {
+      const h = harness(opts)
+      await run(h)
+      const page = h.alerts[0]
+      expect(page.kind === 'page' && page.detail).toMatch(new RegExp(`^the buyer confirmed receipt with id ${SF_ID}, and `))
+      expect(page.kind === 'page' && page.detail).not.toMatch(/created/)
+    }
+  })
 })
 
 describe('the over cap notice', () => {

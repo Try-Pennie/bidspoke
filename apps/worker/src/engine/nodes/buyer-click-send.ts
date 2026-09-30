@@ -213,7 +213,7 @@ export interface HeldClickRecord {
   prospect_id: string
   reason: HeldClickReason
   detail: string
-  /** The buyer's lead id when the buyer confirmed the record; null when it is not known. */
+  /** The id the buyer answered with when it confirmed receipt; null when it is not known. */
   partner_lead_id: string | null
   workflow_id: string
   execution_id: string
@@ -488,11 +488,11 @@ class Run {
     try {
       await sale.sold(generation, { buyer_reference: verdict.partnerLeadId, result_code: 'created', http_status: res.status, payout_cents: 0 })
     } catch (err) {
-      const detail = `the buyer created ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
+      const detail = `the buyer confirmed receipt with id ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
       await this.holdAndPage(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
     }
     await this.count(v)
-    return this.done('sent', 'sent', `the buyer created ${verdict.partnerLeadId}`)
+    return this.done('sent', 'sent', `the buyer confirmed receipt with id ${verdict.partnerLeadId}`)
   }
 
   /** Adds the prospect to today's distinct count, then judges the over cap notice. */
@@ -506,7 +506,7 @@ class Run {
       added = await counter.addMember(v.prospectId)
     } catch (err) {
       this.out.over_cap = 'not_counted'
-      await this.page(v, 'count_failed', `the buyer created ${this.out.partner_lead_id}, and adding it to the day's count failed: ${messageOf(err)}`, null)
+      await this.page(v, 'count_failed', `the buyer confirmed receipt with id ${this.out.partner_lead_id}, and adding it to the day's count failed: ${messageOf(err)}`, null)
       return
     }
     this.out.count = added.count

@@ -21,7 +21,7 @@ In a click workflow, after a code node has built the request for the buyer (whic
 6. **Reads the answer** three ways:
    - **Confirmed**: a 2xx whose whole body (trimmed, and unquoted when the buyer returns it as a JSON string) matches the partner's success line. The claim is marked sold with the partner lead id and a payout of 0, then the prospect is added to today's count. Routes `sent`.
    - **Refused**: a 4xx carrying the buyer's own error, meaning not an HTML page, not empty, and not 408 or 429. The claim is freed, so a later click on the same prospect can try again. Routes `refused`.
-   - **Unknown**: everything else. A timeout, a network error, a 5xx, an HTML page (something in front of the buyer answered), a 2xx that is not the success line, an empty 4xx, a 408 or 429. The claim is kept held, the node pages, and it routes `unknown`. Whether the buyer created the record is not known, so no later click on this prospect sends until a person has checked with the buyer and released the claim.
+   - **Unknown**: everything else. A timeout, a network error, a 5xx, an HTML page (something in front of the buyer answered), a 2xx that is not the success line, an empty 4xx, a 408 or 429. The claim is kept held, the node pages, and it routes `unknown`. Whether the buyer received the lead is not known, so no later click on this prospect sends until a person has checked with the buyer and released the claim.
 
 Every route carries a `reason`, and a `detail` where there is more to say.
 
@@ -29,7 +29,7 @@ Every route carries a `reason`, and a `detail` where there is more to say.
 
 | Handle | `reason` | Meaning |
 |--------|----------|---------|
-| `sent` | `sent` | The buyer confirmed it created the record. |
+| `sent` | `sent` | The buyer confirmed receipt with an id. The success line proves no more than that: what the id names, and whether a record was created, depends on the buyer. |
 | `refused` | `refused_by_buyer` | The buyer refused the prospect; the claim is free again. |
 | `unknown` | `outcome_unknown` | No readable answer; the claim is held and a person was paged. |
 | `already_sent` | `already_sent` | An earlier click sent this prospect to this buyer. |
@@ -102,7 +102,7 @@ Each is a compare and set on the claim's generation, so a page read before the c
 {
   "_route": "sent",
   "reason": "sent",
-  "detail": "the buyer created a0B5f00000XyZ12AAB",
+  "detail": "the buyer confirmed receipt with id a0B5f00000XyZ12AAB",
   "mode_effective": "live",
   "partner_id": "3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70",
   "partner_slug": "liberty1",

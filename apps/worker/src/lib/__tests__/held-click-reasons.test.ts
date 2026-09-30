@@ -18,4 +18,10 @@ describe('held click reasons', () => {
     expect(Object.keys(HELD_CLICK_REASON_LABELS).sort()).toEqual([...HELD_CLICK_REASONS].sort())
     expect(new Set(Object.values(HELD_CLICK_REASON_LABELS)).size).toBe(HELD_CLICK_REASONS.length)
   })
+
+  it('claims only what a success line proves, receipt with an id, never that the buyer created a record (#1547)', () => {
+    // Liberty1's LeadConnector success is a queued trigger with a run id.
+    for (const label of Object.values(HELD_CLICK_REASON_LABELS)) expect(label).not.toMatch(/\bcreated\b/)
+    expect(HELD_CLICK_REASON_LABELS.sold_mark_failed).toBe('The buyer confirmed receipt of the lead, and recording that failed.')
+  })
 })

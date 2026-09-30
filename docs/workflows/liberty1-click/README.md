@@ -22,7 +22,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
    ^\s*\{(?=[\s\S]*"status"\s*:\s*"Success)[\s\S]*?"id"\s*:\s*"(?<id>[A-Za-z0-9]{15,20})"[\s\S]*\}\s*$
    ```
 
-   **What that reply means.** It says LeadConnector queued the lead to Liberty1's LeadConnector workflow, not that a Liberty1 record was created: whatever that workflow does afterwards, a refusal included, is not reported back. The `id` is LeadConnector's run id for the trigger, not a Liberty1 or Salesforce record id, and it is what `click_patch` writes as the partner lead id on Completed. Every other answer (an error body, an empty body, an HTML page, the Salesforce site's "Records created successfully") routes `unknown`. See [the node's page](../../nodes/buyer-click-send.md).
+   **What that reply means.** It says LeadConnector queued the lead to Liberty1's LeadConnector workflow, not that a Liberty1 record was created: whatever that workflow does afterwards, a refusal included, is not reported back. The `id` is LeadConnector's run id for the trigger, not a Liberty1 or Salesforce record id, and it is what `click_patch` writes as the partner lead id on Completed. The step's detail reads "the buyer confirmed receipt with id" followed by that run id, and the pages for a failed sold mark or count say the same, because receipt is all the success line proves. Every other answer (an error body, an empty body, an HTML page, the Salesforce site's "Records created successfully") routes `unknown`. See [the node's page](../../nodes/buyer-click-send.md).
 7. **Answers the portal**, then **writes Salesforce** (sent and refused only): the Prospect when there is one, then the Submission and its Lead when the click came with a Submission id (the portal always sends one).
 
 ## Every outcome
@@ -50,7 +50,7 @@ The Salesforce writes are Brian's three bodies, field for field: exchange status
 **When the portal is answered.** As soon as the send's outcome is known: after Liberty1 answers (up to the node's 20 second timeout), before the Salesforce writes. Brian's flow answered at the same point. Whether the portal waits on the answer at all is not known; if it does not, nothing is lost.
 
 **Changes from Brian's flow, on purpose.**
-- A 2xx that is not the success reply was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have created the record.
+- A 2xx that is not the success reply was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have received it.
 - A prospect without the Liberty1 offer is refused. Brian's flow sent any prospect it was given. A submission with no prospect is still sent without one, as his flow does, because nothing records an offer there.
 - Failures page through Bidspoke, not the hard coded Slack webhook.
 - `consentsToTcpa` is always true. Brian's flow copied the earlier form's `TCPAConsentFlag__c`, which reads false for most leads; the person reaches this workflow only by pressing the button under Liberty1's own TCPA disclosure, so the press is the consent (Dan, 2026-09-29). The flag is still queried and mapped, now unused by the send.

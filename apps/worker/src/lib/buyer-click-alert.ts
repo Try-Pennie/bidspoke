@@ -106,19 +106,19 @@ export function clickAlertKey(alert: ClickAlert): { key: string; ttlSeconds: num
 const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = {
   outcome_unknown: {
     header: 'sent a click with no readable answer',
-    held: 'Whether the buyer created the record is not known. The claim on this prospect is held, so no later click on it sends until a person checks with the buyer and releases it.',
+    held: 'Whether the buyer received the lead is not known. The claim on this prospect is held, so no later click on it sends until a person checks with the buyer and releases it.',
   },
   claim_in_doubt: {
     header: 'has a click claim in doubt',
     held: 'An earlier send on this prospect never recorded its outcome. The claim is held, so this click was not sent; a person has to check with the buyer and release it.',
   },
   sold_mark_failed: {
-    header: 'created a record but the claim could not be marked sold',
-    held: 'The buyer confirmed the record. The claim is still held in flight, so a later click on this prospect will not send; the count below says whether the click was counted.',
+    header: 'confirmed receipt of a click but the claim could not be marked sold',
+    held: 'The buyer confirmed receipt of the lead. The claim is still held in flight, so a later click on this prospect will not send; the count below says whether the click was counted.',
   },
   count_failed: {
     header: 'sent a click that could not be counted',
-    held: "The buyer confirmed the record, but today's click count did not take it, so the count reads low by this click until it is added.",
+    held: "The buyer confirmed receipt of the lead, but today's click count did not take it, so the count reads low by this click until it is added.",
   },
   free_failed: {
     header: 'refused a click, and the claim could not be released',
