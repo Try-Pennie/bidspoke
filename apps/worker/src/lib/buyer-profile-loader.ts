@@ -216,7 +216,8 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
   console.log(`[buyer-profiles] cache miss org=${orgId} kv_get_ms=${kvGetMs} db_read_ms=${now() - readStarted}`)
 
   // The lead needs the rows, not the cache writes: with a background hook the
-  // three KV calls run after it is answered (#1632), and a failed write costs
+  // KV calls (up to five: the save marker and held copy reads, the cache put,
+  // and the last good read and put) run after it is answered (#1632), and a failed write costs
   // the next lead a cold read rather than costing this one its answer.
   if (opts.background) {
     opts.background(writeSnapshot(orgId, kv, snapshot, now, readStarted).catch((err: unknown) => {
