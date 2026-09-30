@@ -24,4 +24,4 @@ A file here is exactly what is pasted into the node's script box, byte for byte,
 
 ## Drift
 
-The hourly `engine-script-drift` check watches this folder as the Liberty1 click workflow in `KEPT_CANVAS_WORKFLOWS` (`apps/worker/src/lib/engine-script-drift.ts`). Its id is in `LIBERTY1_CLICK_WORKFLOW_ID` since the first save (#1547), so a canvas script that differs from its file pages as a drift. These scripts were written here first. `build_request` carries the hash of the version 14 canvas script as its baseline since #1671 edited it here first, so until that paste it reads awaiting_paste rather than paging.
+The hourly `engine-script-drift` check watches this folder as the Liberty1 click workflow in `KEPT_CANVAS_WORKFLOWS` (`apps/worker/src/lib/engine-script-drift.ts`). Its id is in `LIBERTY1_CLICK_WORKFLOW_ID` since the first save (#1547), so a canvas script that differs from its file pages as a drift. These scripts were written here first, and the canvas holds all four as kept (the #1671 `build_request` was pasted as version 15 on 2026-09-30), so none has a baseline: any difference is a drift.

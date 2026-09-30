@@ -74,14 +74,24 @@ describe('judgeKeptConfig', () => {
     expect(v).toMatchObject({ state: 'config_drift', field: 'state', committed: '"{{s}}"', canvas: '(not set)' })
   })
 
-  // #1671 removed the node's own address and success line. A canvas saved before then
-  // still holds both until someone clears them, the node ignores them, and the check
-  // must not page for them either, whatever they hold, while that happens.
-  it('a request_url or success_pattern left on the canvas never pages, whatever it holds', () => {
-    for (const stale of [{ request_url: '{{u}}', success_pattern: 'OK (?<id>\\d+)' }, { request_url: 'http://x', success_pattern: '(' }, { request_url: '' }]) {
-      const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', { ...SEND, ...stale })] }, 'W')
-      expect(verdicts.map((v) => v.state), JSON.stringify(stale)).toEqual(['agree'])
+  // #1671 removed the node's own address and success line, and the live canvas was
+  // cleared of both at version 15 (2026-09-30). The node never reads them, so one
+  // reappearing means somebody expects it to do something: it is reported, by name.
+  it('a request_url or success_pattern reappearing on the canvas is a retired setting finding naming it', () => {
+    for (const [field, value] of [['request_url', '{{u}}'], ['success_pattern', 'OK (?<id>\\d+)'], ['request_url', '']] as const) {
+      const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', { ...SEND, [field]: value })] }, 'W')
+      expect(verdicts, field).toMatchObject([{ workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'retired_setting', field, canvas: JSON.stringify(value) }])
+      expect(verdicts, field).toHaveLength(1)
+      const line = describeConfigVerdict(verdicts[0])
+      expect(line).toContain(field)
+      expect(line).toContain('no longer reads')
+      expect(line).toContain('Click delivery')
     }
+  })
+
+  it('both retired settings on the canvas are two findings, one each', () => {
+    const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', { ...SEND, request_url: '{{u}}', success_pattern: 'x' })] }, 'W')
+    expect(verdicts.map((v) => (v.state === 'retired_setting' ? v.field : v.state)).sort()).toEqual(['request_url', 'success_pattern'])
   })
 
   it('names the first differing path inside a nested setting rather than the whole object', () => {
@@ -122,7 +132,7 @@ describe('judgeKeptConfig', () => {
   })
 
   it('an unwatched setting (an alert threshold, retries the node ignores) never pages, whatever it holds', () => {
-    const canvas = { ...SEND, alert_over_percent: 150, retries: 3, daily_lead_cap: 10, request_url: '{{u}}', success_pattern: 'OK (?<id>\\d+)' }
+    const canvas = { ...SEND, alert_over_percent: 150, retries: 3, daily_lead_cap: 10 }
     expect(judgeKeptConfig([source([node('c', 'buyer_click_send', SEND)])], { nodes: [node('c', 'buyer_click_send', canvas)] }, 'W').map((v) => v.state)).toEqual(['agree'])
   })
 
