@@ -2,7 +2,7 @@ import { easternParts, isOpen, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
 import { parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
-import type { OutReason, SoldOn } from './vocab'
+import type { OutReason, SoldOn, UsState } from './vocab'
 
 /** The buyer profile as the node reads it: the partner's row plus its child rows, in one object. */
 export interface BuyerProfile {
@@ -18,7 +18,7 @@ export interface BuyerProfile {
   debtMin: number | null
   /** Dollars, inclusive. Null means no limit. */
   debtMax: number | null
-  /** Dollars, inclusive. Null means the loan amount is not read at all. */
+  /** Dollars, inclusive. Null means the loan amount is not judged at all. */
   loanAmountMin: number | null
   hourlyLeadCap: number | null
   dailyLeadCap: number | null
@@ -37,14 +37,71 @@ export interface LeadInput {
   loanAmount: unknown
 }
 
+/**
+ * The lead as the box parsed it (#1654): the values its comparisons used, null
+ * where a field is not a US state or a positive amount. The loan amount is
+ * parsed even when the profile sets no minimum, so it is always recorded, but
+ * the box compares it only against a minimum that is set.
+ */
+export interface JudgedLead {
+  state: UsState | null
+  debt: number | null
+  loan_amount: number | null
+}
+
+/**
+ * One buyer's limits as the box compared them (#1654). A null limit is the
+ * profile's own null, which means no limit. state_allowed is null when the
+ * lead's state did not parse, because then it was never looked up.
+ */
+export interface JudgedLimits {
+  debt_min: number | null
+  debt_max: number | null
+  loan_amount_min: number | null
+  state_allowed: boolean | null
+  allowed_state_count: number
+  daily_lead_cap: number | null
+}
+
+/** The one parse of the lead's fields the box and every recorder share (#1654). */
+export function parseLead(lead: LeadInput): JudgedLead {
+  return {
+    state: parseUsState(lead.state),
+    debt: parsePositiveAmount(lead.debt),
+    loan_amount: parsePositiveAmount(lead.loanAmount),
+  }
+}
+
+/** The one allowed state rule, read by the box and by judgedLimits alike. */
+function stateAllowed(profile: BuyerProfile, state: UsState): boolean {
+  return profile.allowedStates.includes(state)
+}
+
+/** The limits in force from a profile, against a lead parsed by parseLead (#1654). */
+export function judgedLimits(profile: BuyerProfile, lead: JudgedLead): JudgedLimits {
+  return {
+    debt_min: profile.debtMin,
+    debt_max: profile.debtMax,
+    loan_amount_min: profile.loanAmountMin,
+    state_allowed: lead.state === null ? null : stateAllowed(profile, lead.state),
+    allowed_state_count: profile.allowedStates.length,
+    daily_lead_cap: profile.dailyLeadCap,
+  }
+}
+
 export type Eligibility =
   | { eligible: true; debtCents: number; price: Price }
   | { eligible: false; reason: OutReason }
 
-/** A click sold buyer's answer (#1541): the box without a price, because the offer quotes the Engine bid. */
-export type ClickEligibility =
+/**
+ * A click sold buyer's answer (#1541): the box without a price, because the
+ * offer quotes the Engine bid. It carries the lead as the box parsed it on
+ * every answer (#1654), so the node records what it judged without parsing again.
+ */
+export type ClickEligibility = (
   | { eligible: true; debtCents: number }
   | { eligible: false; reason: OutReason }
+) & { lead: JudgedLead }
 
 type Out = { eligible: false; reason: OutReason }
 const out = (reason: OutReason): Out => ({ eligible: false, reason })
@@ -56,15 +113,13 @@ const out = (reason: OutReason): Out => ({ eligible: false, reason })
  * click buyer can never be judged by two drifting copies of the same rule
  * (L613, L370); the source guard in eligibility.test.ts counts the checks.
  */
-function evaluateBox(profile: BuyerProfile, lead: LeadInput, instantMs: number): { inside: true; debtCents: number } | Out {
-  const state = parseUsState(lead.state)
+function evaluateBox(profile: BuyerProfile, lead: JudgedLead, instantMs: number): { inside: true; debtCents: number } | Out {
+  const { state, debt, loan_amount: loanAmount } = lead
   if (state === null) return out('missing_lead_field')
-  const debt = parsePositiveAmount(lead.debt)
   if (debt === null) return out('missing_lead_field')
-  const loanAmount = profile.loanAmountMin === null ? null : parsePositiveAmount(lead.loanAmount)
   if (profile.loanAmountMin !== null && loanAmount === null) return out('missing_lead_field')
 
-  if (!profile.allowedStates.includes(state)) return out('state_not_allowed')
+  if (!stateAllowed(profile, state)) return out('state_not_allowed')
   if (profile.blackoutDates.includes(easternParts(instantMs).date)) return out('blackout')
   if (!isOpen(profile.windows, [], instantMs)) return out('closed')
 
@@ -93,7 +148,7 @@ export function evaluateEligibility(
   if (!profile.isEnabled) return out('profile_disabled')
   if (!profile.tiers.some((t) => t.population === population)) return out('no_pricing_for_population')
 
-  const box = evaluateBox(profile, lead, instantMs)
+  const box = evaluateBox(profile, parseLead(lead), instantMs)
   if (!('inside' in box)) return box
 
   const price = priceForDebt(profile.tiers, population, box.debtCents)
@@ -108,10 +163,11 @@ export function evaluateEligibility(
  * runtime state the caller checks after this, like the offer caps.
  */
 export function evaluateClickEligibility(profile: BuyerProfile, lead: LeadInput, instantMs: number): ClickEligibility {
-  if (!profile.isEnabled) return out('profile_disabled')
-  const box = evaluateBox(profile, lead, instantMs)
-  if (!('inside' in box)) return box
-  return { eligible: true, debtCents: box.debtCents }
+  const judged = parseLead(lead)
+  if (!profile.isEnabled) return { ...out('profile_disabled'), lead: judged }
+  const box = evaluateBox(profile, judged, instantMs)
+  if (!('inside' in box)) return { ...box, lead: judged }
+  return { eligible: true, debtCents: box.debtCents, lead: judged }
 }
 
 export interface RankedBuyer {

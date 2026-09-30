@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { evaluateClickEligibility, evaluateEligibility, rankBuyers, type BuyerProfile, type LeadInput } from '../eligibility'
+import { evaluateClickEligibility, evaluateEligibility, judgedLimits, parseLead, rankBuyers, type BuyerProfile, type LeadInput } from '../eligibility'
 import { OUT_REASONS } from '../vocab'
 
 // Sam's Liberty One buy box (Slack, 2026-09-20): daily cap 50, 10 an hour 8am to 6pm Pacific
@@ -192,7 +192,17 @@ describe('evaluateClickEligibility', () => {
   }
 
   it('accepts a lead inside every bound with no pricing step, carrying the debt it judged', () => {
-    expect(evaluateClickEligibility(libertyClick, goodLead, noon)).toEqual({ eligible: true, debtCents: 2500000 })
+    expect(evaluateClickEligibility(libertyClick, goodLead, noon)).toEqual({ eligible: true, debtCents: 2500000, lead: { state: 'ND', debt: 25000, loan_amount: 5000 } })
+  })
+
+  // #1654: the lead as the box parsed it rides on every answer, so a caller
+  // records the values the decision compared rather than parsing them again.
+  it('carries the lead exactly as the box parsed it on every answer, refusals included', () => {
+    const lead: LeadInput = { state: ' north dakota ', debt: '$19,999.50', loanAmount: '3,000' }
+    const r = evaluateClickEligibility(libertyClick, lead, noon)
+    expect(r).toEqual({ eligible: false, reason: 'debt_below_min', lead: { state: 'ND', debt: 19999.5, loan_amount: 3000 } })
+    expect(evaluateClickEligibility({ ...libertyClick, isEnabled: false }, goodLead, noon).lead).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000 })
+    expect(evaluateClickEligibility(libertyClick, { state: undefined, debt: 0, loanAmount: 'n/a' }, noon)).toEqual({ eligible: false, reason: 'missing_lead_field', lead: { state: null, debt: null, loan_amount: null } })
   })
 
   it('refuses for the same reasons, in the same order, as the offer evaluator up to pricing', () => {
@@ -220,6 +230,37 @@ describe('evaluateClickEligibility', () => {
   it('a click buyer falls out of the offer evaluator as no_pricing_for_population, so buyer selection can never sell it', () => {
     expect(evaluateEligibility(libertyClick, goodLead, 'engine', noon)).toEqual({ eligible: false, reason: 'no_pricing_for_population' })
     expect(evaluateClickEligibility(libertyClick, goodLead, noon).eligible).toBe(true)
+  })
+})
+
+// #1654: the values a buyer check judged, recorded on its output.
+describe('parseLead and judgedLimits', () => {
+  it('parses each field with the evaluator\'s own parsers, null where a field is not a state or a positive amount', () => {
+    expect(parseLead({ state: 'n.d.', debt: '25,000', loanAmount: 5000 })).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000 })
+    expect(parseLead({ state: 'PR', debt: -1, loanAmount: undefined })).toEqual({ state: null, debt: null, loan_amount: null })
+  })
+
+  it('records the limits in force and whether the parsed state is in the allowed list', () => {
+    expect(judgedLimits(libertyOne, parseLead(goodLead))).toEqual({
+      debt_min: 20000, debt_max: 60000, loan_amount_min: 2500, state_allowed: true, allowed_state_count: 3, daily_lead_cap: 50,
+    })
+    expect(judgedLimits(libertyOne, parseLead({ ...goodLead, state: 'NY' })).state_allowed).toBe(false)
+  })
+
+  it('an unparsed state is neither in nor out of the list, so state_allowed is null rather than false', () => {
+    expect(judgedLimits(libertyOne, parseLead({ ...goodLead, state: '' })).state_allowed).toBeNull()
+  })
+
+  it('a limit the profile does not set is recorded as null, which the profile reads as no limit', () => {
+    const open: BuyerProfile = { ...libertyOne, debtMin: null, debtMax: null, loanAmountMin: null, dailyLeadCap: null }
+    expect(judgedLimits(open, parseLead(goodLead))).toMatchObject({ debt_min: null, debt_max: null, loan_amount_min: null, daily_lead_cap: null })
+  })
+
+  it('state_allowed agrees with the box on every state the box can see', () => {
+    for (const state of ['ND', 'SD', 'WY', 'NY', 'CA', 'wyoming']) {
+      const refused = reasonOf(libertyOne, { ...goodLead, state }) === 'state_not_allowed'
+      expect(judgedLimits(libertyOne, parseLead({ ...goodLead, state })).state_allowed, state).toBe(!refused)
+    }
   })
 })
 

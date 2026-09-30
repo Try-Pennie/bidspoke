@@ -37,13 +37,16 @@
  *
  * The output carries the partner's id, slug, name, click URL and Salesforce
  * routing code, so the scripts that build the offer hold no partner literal
- * (EvaFi follows Liberty1), plus the count and the cap it judged (L11).
+ * (EvaFi follows Liberty1), plus the count and the cap it judged (L11), and
+ * `judged` (#1654): the lead's state, debt and loan amount as the box parsed
+ * them and the profile's limits they were compared with, so one decision can be
+ * checked from this step alone.
  *
  * Walker only (NODE_TRAITS): engine/index.ts runs it once, never through
  * executeNode's retry loop, so the budget is the only bound on it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, partnerIdOf, POPULATIONS, withDeadline, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, judgedLimits, parseLead, partnerIdOf, POPULATIONS, withDeadline, type JudgedLead, type JudgedLimits, type LeadInput, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
@@ -103,6 +106,18 @@ export interface BuyerClickCheckOutput {
   /** Where the count came from: its saved copy, the counter object, or null when none was read. */
   count_source: 'copy' | 'counter' | null
   profile_served_from: BuyerProfilesSnapshot['served_from'] | null
+  /**
+   * What the decision was made on (#1654). `lead` is the state, debt and loan
+   * amount exactly as the box parsed them, null where a template resolved to
+   * nothing or to a value that is not a state or a positive amount. `limits` is
+   * the profile's limits and whether the state is in its list, null when the
+   * eligibility box never compared the lead with them: no profile found or
+   * read, a stale copy, a buyer refused before the box (offer sold, disabled,
+   * switched off, a click URL with no placeholder), a budget that ended first,
+   * or a failed step. Otherwise it is set on every answer from the box on.
+   * Present on every output, a failed step included.
+   */
+  judged: { lead: JudgedLead; limits: JudgedLimits | null }
   duration_ms: number
 }
 
@@ -162,11 +177,13 @@ type PartnerFacts = Pick<BuyerClickCheckOutput, 'partner_slug' | 'partner_name' 
 
 /** What the budgeted part decided, as a value, so nothing it does after the budget ends can reach the output. */
 type Decision =
-  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; countSource?: 'copy' | 'counter'; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: ClickPageReason }
+  | { kind: 'route'; route: BuyerClickCheckRoute; reason: 'eligible' | OutReason; detail?: string; facts?: PartnerFacts; cap?: number | null; count?: number; countDate?: string; countSource?: 'copy' | 'counter'; servedFrom?: BuyerProfilesSnapshot['served_from']; page?: ClickPageReason; judgedLead?: JudgedLead; limits?: JudgedLimits }
 
 export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: ExecutionContext, deps: BuyerClickCheckDeps): Promise<BuyerClickCheckResult> {
   const startedAt = deps.clock()
   const config = node.config as unknown as Partial<BuyerClickCheckConfig>
+  // Resolved once, before anything can fail, so every output records what was read.
+  const lead: LeadInput = { state: resolve(config.state, ctx), debt: resolve(config.debt, ctx), loanAmount: resolve(config.loan_amount, ctx) }
   const output: BuyerClickCheckOutput = {
     _route: 'not_eligible',
     reason: 'cap_check_error',
@@ -181,6 +198,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
     count_date: null,
     count_source: null,
     profile_served_from: null,
+    judged: { lead: parseLead(lead), limits: null },
     duration_ms: 0,
   }
   const finish = (): void => { output.duration_ms = deps.clock() - startedAt }
@@ -198,7 +216,6 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
     return fail('population_invalid', `population ${JSON.stringify(config.population ?? null)} is not one of ${POPULATIONS.join(', ')}`)
   }
 
-  const lead = { state: resolve(config.state, ctx), debt: resolve(config.debt, ctx), loanAmount: resolve(config.loan_amount, ctx) }
   let decision: Decision
   try {
     decision = await withDeadline(decide(partnerId.id, lead, startedAt, deps), CLICK_CHECK_BUDGET_MS, 'buyer click check', deps.timers)
@@ -215,6 +232,9 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
   if (decision.countDate !== undefined) output.count_date = decision.countDate
   if (decision.countSource !== undefined) output.count_source = decision.countSource
   if (decision.servedFrom !== undefined) output.profile_served_from = decision.servedFrom
+  // The evaluator's own parse when it ran, so the record is what the box compared.
+  if (decision.judgedLead !== undefined) output.judged.lead = decision.judgedLead
+  if (decision.limits !== undefined) output.judged.limits = decision.limits
   finish()
   if (decision.page) page(node, ctx, deps, output, decision.page)
   deps.log({ event: 'buyer_click_check_reason', step_namespace: node.namespace, partner_id: output.partner_id, partner_slug: output.partner_slug, route: output._route, reason: output.reason, count: output.count, daily_lead_cap: output.daily_lead_cap, detail: output.detail })
@@ -226,7 +246,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
  * here, except the budget itself, which the caller turns into the same reason.
  * Once the profile has been read, a failure keeps the partner facts it found.
  */
-async function decide(partnerId: string, lead: { state: unknown; debt: unknown; loanAmount: unknown }, instantMs: number, deps: BuyerClickCheckDeps): Promise<Decision> {
+async function decide(partnerId: string, lead: LeadInput, instantMs: number, deps: BuyerClickCheckDeps): Promise<Decision> {
   let snapshot: BuyerProfilesSnapshot
   try {
     snapshot = await deps.loadProfiles()
@@ -265,14 +285,18 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
   }
 
   const verdict = evaluateClickEligibility(buyer.profile, lead, instantMs)
-  if (!verdict.eligible) return { ...base, route: 'not_eligible', reason: verdict.reason }
+  // Limits are recorded only where the box compared the lead with them; a
+  // disabled profile is refused before the box, so it records none (#1654).
+  const compared = verdict.eligible || verdict.reason !== 'profile_disabled'
+  const judged = { ...base, judgedLead: verdict.lead, ...(compared ? { limits: judgedLimits(buyer.profile, verdict.lead) } : {}) }
+  if (!verdict.eligible) return { ...judged, route: 'not_eligible', reason: verdict.reason }
 
   if (cap === null) {
-    return { ...base, route: 'not_eligible', reason: 'no_daily_cap', detail: 'the profile holds no clicks per day, so the buyer is not offered' }
+    return { ...judged, route: 'not_eligible', reason: 'no_daily_cap', detail: 'the profile holds no clicks per day, so the buyer is not offered' }
   }
   // The one cap rule (isCap), shared with save validation and buyer_click_send.
   if (!isCap(cap)) {
-    return { ...base, cap: null, route: 'not_eligible', reason: 'cap_check_error', detail: `the profile holds clicks per day ${JSON.stringify(cap)}, not a whole number above zero, so the buyer is not offered` }
+    return { ...judged, cap: null, route: 'not_eligible', reason: 'cap_check_error', detail: `the profile holds clicks per day ${JSON.stringify(cap)}, not a whole number above zero, so the buyer is not offered` }
   }
   let counter: ClickCountApi
   let count: number
@@ -295,9 +319,9 @@ async function decide(partnerId: string, lead: { state: unknown; debt: unknown; 
       void counter.seedCopy(count)
     }
   } catch (err) {
-    return { ...base, route: 'not_eligible', reason: 'cap_check_error', detail: `today's click count could not be read, so the buyer is not offered: ${messageOf(err)}` }
+    return { ...judged, route: 'not_eligible', reason: 'cap_check_error', detail: `today's click count could not be read, so the buyer is not offered: ${messageOf(err)}` }
   }
-  const counted = { ...base, count, countDate: counter.date, countSource }
+  const counted = { ...judged, count, countDate: counter.date, countSource }
   if (count >= cap) return { ...counted, route: 'not_eligible', reason: 'daily_click_cap', detail: `${count} clicks on ${counter.date} (Pacific) of a cap of ${cap}` }
   return { ...counted, route: 'eligible', reason: 'eligible' }
 }
