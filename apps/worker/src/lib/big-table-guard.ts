@@ -46,6 +46,9 @@ export const KNOWN_BIG_TABLES = new Set([
   // One row per buyer sale, about 825 in the first day of Stage A and never
   // pruned; the daily growth check flagged it on 2026-09-24.
   'buyer_sales',
+  // Every saved version of every workflow, never pruned: 548 rows on 2026-09-30,
+  // when the daily growth check flagged it.
+  'workflow_versions',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads

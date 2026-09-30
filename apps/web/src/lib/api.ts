@@ -500,7 +500,7 @@ export const api = {
     // Server-side clone — carries the full version history (and the latest saved
     // definition), unlike a name+definition copy which restarts at v1.
     duplicate: (id: string) =>
-      req<Workflow>(`/api/workflows/${id}/duplicate`, { method: 'POST' }),
+      req<Workflow & { history_copied?: boolean }>(`/api/workflows/${id}/duplicate`, { method: 'POST' }),
     // Batched per-node timeout suggestions for canvas badges — one call per
     // workflow instead of a step-duration-stats round-trip per node.
     timeoutSuggestions: (id: string) =>

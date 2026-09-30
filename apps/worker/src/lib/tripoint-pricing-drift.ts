@@ -13,7 +13,10 @@
  *
  * THE PARSER READS ONE SHAPE AND REFUSES EVERY OTHER. The formula is a nested IF
  * with two paid bands and a floor below them, and that is the only shape it has
- * ever had (2025-10-10 and 2026-06-11 versions both). A parser that guessed at a
+ * ever had (2025-10-10, 2026-06-11 and 2026-09-29 versions). The 2026-09-29
+ * rewrite changed only its spelling: the debt became EngineDebt__c when present,
+ * and the low edge `< 12500` rather than `<= 12499` (#1640). Those spellings are
+ * accepted and read as the same rule; anything else is not. A parser that guessed at a
  * third band, or read a rewritten formula as "no Tripoint branch, nothing to
  * compare", would report agreement about a rule it never read (L98, L11). So an
  * unfamiliar shape is `null`, and the caller treats null as its own finding.
@@ -99,7 +102,9 @@ export function parseTripointRevenueFormula(formula: string): TripointRule | nul
   const [floor, edge, low, from, high] = [floorText, edgeText, lowText, fromText, highText].map(Number)
   if ([floor, edge, low, from, high].some((n) => !Number.isFinite(n))) return null
   // Debts are whole dollars, so `< 12500` is the same band as `<= 12499`; the
-  // comparison below reasons in the inclusive form.
+  // comparison below reasons in the inclusive form. A strict edge with cents has
+  // no such form, so it is an unfamiliar shape rather than a guess.
+  if (edgeOp === '<' && !Number.isInteger(edge)) return null
   const upTo = edgeOp === '<' ? edge - 1 : edge
   return {
     floor,

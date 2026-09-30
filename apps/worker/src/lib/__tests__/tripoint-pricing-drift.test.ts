@@ -146,6 +146,12 @@ describe('parseTripointRevenueFormula', () => {
     })
   })
 
+  it('refuses a strict edge that is not a whole dollar, which has no inclusive whole dollar form (#1640)', () => {
+    const cents = LEAD_FORMULA_2026_09_29.replace('ExternalDebtAmount__c) < 12500)', 'ExternalDebtAmount__c) < 12500.5)')
+    expect(cents).not.toBe(LEAD_FORMULA_2026_09_29)
+    expect(parseTripointRevenueFormula(cents)).toBeNull()
+  })
+
   it('refuses a Tripoint branch that prices its bands on two different debt figures (#1640)', () => {
     const mixed = LEAD_FORMULA.replace(
       'IF(ExternalDebtAmount__c >= 12500, ExternalDebtAmount__c * 0.0012, 0)',

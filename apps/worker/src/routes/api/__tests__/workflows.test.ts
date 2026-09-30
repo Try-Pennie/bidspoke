@@ -457,6 +457,59 @@ describe('POST /workflows/:id/duplicate', () => {
     )
   })
 
+  it('copies every version when the history runs past one 1,000 row page', async () => {
+    const source = { name: 'Long', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
+    const clone = { id: 'wf-long', name: 'Long (copy)', organization_id: USER_ORG }
+    const version = (n: number) => ({ version_number: n, definition: { nodes: [] }, message: null })
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: clone }],
+      workflow_versions: [
+        { list: Array.from({ length: 1000 }, (_, i) => version(i + 1)) },
+        { list: [version(1001), version(1002)] },
+        { insertResult: {} },
+      ],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    const inserts = (sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')
+    expect(inserts).toHaveLength(1)
+    const rows = inserts[0][1][0] as Array<{ version_number: number }>
+    expect(rows.map((r) => r.version_number)).toEqual(Array.from({ length: 1002 }, (_, i) => i + 1))
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(true)
+  })
+
+  it('does not invent a v1 when the source history could not be read', async () => {
+    const source = { name: 'Real', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
+    const clone = { id: 'wf-copy4', name: 'Real (copy)', organization_id: USER_ORG }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: clone }],
+      workflow_versions: [{ listError: { message: 'statement timeout' } }, { insertResult: {} }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')).toEqual([])
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
+  })
+
+  it('reports the history as not copied when writing the copied versions fails', async () => {
+    const source = { name: 'Real', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
+    const clone = { id: 'wf-copy5', name: 'Real (copy)', organization_id: USER_ORG }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: source }, { insertResult: clone }],
+        workflow_versions: [{ list: [{ version_number: 1, definition: { nodes: [] } }] }, { insertError: { message: 'insert failed' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
+  })
+
   it('seeds a baseline v1 when the source has no saved versions', async () => {
     const source = { name: 'Fresh', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
     const clone = { id: 'wf-copy2', name: 'Fresh (copy)', organization_id: USER_ORG }
@@ -796,6 +849,37 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
   it('PATCH /:id returns 5xx when the ownership lookup errors (not 404)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/versions returns every version when the history runs past one 1,000 row page', async () => {
+    const row = (n: number) => ({ id: `v${n}`, version_number: n })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: { id: 'wf-1' } },
+        workflow_versions: [
+          { list: Array.from({ length: 1000 }, (_, i) => row(1003 - i)) },
+          { list: [row(3), row(2), row(1)] },
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/workflows/wf-1/versions')
+    expect(res.status).toBe(200)
+    const body = await res.json() as Array<{ version_number: number }>
+    expect(body).toHaveLength(1003)
+    expect(body[body.length - 1].version_number).toBe(1)
+  })
+
+  it('GET /:id/versions returns 5xx when the version read errors, never a short list', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: { id: 'wf-1' } },
+        workflow_versions: { listError: { message: 'statement timeout' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/workflows/wf-1/versions')
     expect(res.status).toBe(500)
   })
 
