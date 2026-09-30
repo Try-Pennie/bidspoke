@@ -110,7 +110,7 @@ Need: record real Pipedream traffic, run the Bidspoke version quietly against it
 Need: compare a fresh Pipedream export with the previous one, so anything changed on Pipedream since a port was built gets caught.
 
 ### 17. Cutover and rollback checklist per workflow
-Need: each workflow's steps to switch over, and to switch back if something's wrong.
+Need: each workflow's steps to collect what it needs from Pipedream (its settings, secrets and data store contents, item 19), to switch over, and to switch back if something's wrong.
 
 ### 18. A new fallback for engine bidding (#1675)
 Today: the recovery plan says to fall back to the Pipedream copy of engine bidding. That disappears on 2027-03-31.
@@ -126,7 +126,7 @@ Decided (decision 19, recorded at https://github.com/Try-Pennie/bidspoke/discuss
 2. Its passwords and keys. You try Pipedream first, then existing copies, then the partner (decision 3).
 3. The contents of every data store it uses. A store shared by several workflows is copied in full with the first workflow that uses it.
 
-Anything a workflow still needs that could only be read by running it on Pipedream is lost if its port is not done by 2027-03-31.
+Two dates bound this. From 2027-03-31 no Pipedream workflow runs, so anything that could only be read by running one is lost if its port is not done by then. On 2027-04-30 Pipedream deletes the rest, including settings and data store contents that could still be read without running anything until that day.
 
 ### 20. SFTP file transfers and fixed IP addresses (12 workflows)
 Cloudflare can do neither. Decided (decision 8): this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day, as Dan reported in that session (decision 8 in the record linked above). The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
