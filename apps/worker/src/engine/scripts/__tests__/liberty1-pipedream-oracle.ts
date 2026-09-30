@@ -22,6 +22,10 @@
  * Liberty1 Salesforce site below ("until later in the week"), and added
  * Submission-only leads: a click whose Submission has no Prospect is sent from
  * the Submission's own *_SO__c fields and its Lead (submissionAsProspect).
+ *
+ * The canvas does not post to his Salesforce site: since 2026-09-30 (Dan) it
+ * posts to Liberty1's LeadConnector triggers, CANVAS_ROUTES at the end of this
+ * file. His pickRoute still decides DV1 or DI4.
  */
 
 type Rec = Record<string, unknown>
@@ -216,3 +220,15 @@ export function updateBodies(l1: { ok: boolean; text: string }, now: string, ins
     }),
   };
 }
+
+// ---- the routes the canvas posts to, which are NOT Brian's -----------------
+// Dan decided on 2026-09-30 that Liberty1 clicks go to Liberty1's LeadConnector
+// webhook triggers, as the canvas has run them since version 11 (saved
+// 2026-09-30 15:46:50 UTC). Brian's routes above stay his, so ROUTES is the
+// oracle for which route a state takes and these are the URLs each route is.
+// Written out in full rather than derived from the kept script, so the test is
+// not the script agreeing with itself (L70).
+export const CANVAS_ROUTES = {
+  DV1: "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/CTTs3WKFFvjTUTQOlrHF",
+  DI4: "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/AYAF77n9lUw8WbZ4kaRM",
+} as const;

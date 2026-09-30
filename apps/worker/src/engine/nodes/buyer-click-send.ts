@@ -306,6 +306,14 @@ export type ClickAnswer =
 const UNJUDGED_4XX = new Set([408, 429])
 
 /**
+ * A buyer's success line as the node runs it: matched against the WHOLE answer.
+ * Exported so a test of one buyer's line compiles it exactly this way.
+ */
+export function compileSuccessPattern(successPattern: string): RegExp {
+  return new RegExp(`^(?:${successPattern})$`)
+}
+
+/**
  * The buyer's answer, three ways. `pattern` is the partner's success line,
  * already anchored. A body Salesforce returns as a JSON string is read as that
  * string, because an Apex REST method returning a String is serialised quoted.
@@ -608,7 +616,7 @@ class Run {
     let pattern: RegExp
     try {
       if (typeof c.success_pattern !== 'string' || c.success_pattern.trim() === '') throw new Error('it is unset, and there is no default')
-      pattern = new RegExp(`^(?:${c.success_pattern})$`)
+      pattern = compileSuccessPattern(c.success_pattern)
       if (!/\(\?<id>/.test(c.success_pattern)) throw new Error('it has no (?<id>...) group to capture the partner lead id')
     } catch (err) {
       return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${messageOf(err)}`)

@@ -8,12 +8,13 @@ A file here is exactly what is pasted into the node's script box, byte for byte,
 | --- | --- | --- |
 | `resolve_click_input.js` | `resolve_input` | Queries the prospect from `Prospect__c`, else the submission from `Submission__c` with its Lead and its prospect's fields through `Prospect__r`. Refuses anything that is not a 15 or 18 character id, because the id goes into SOQL. |
 | `pick_click_record.js` | `pick_record` | Which record the click sends and whether it may: a prospect judged on its Liberty1 offer, or a submission with no prospect trusted and mapped with Brian's `submissionAsProspect` (2026-09-29). Names the claim key and the records to write. |
-| `build_liberty1_request.js` | `build_request` | Brian's `buildPayload` and his DV1 or DI4 route, unchanged, over the picked record. Pure: `click_send` posts it. |
+| `build_liberty1_request.js` | `build_request` | Brian's `buildPayload` and his DV1 or DI4 route over the picked record, `consentsToTcpa` always true, posted to Liberty1's LeadConnector trigger for that route (Dan, 2026-09-30). Pure: `click_send` posts it. |
 | `liberty1_click_patch.js` | `click_patch` | Brian's Prospect, Submission and Lead update bodies. Completed only on `sent`, Fail only on `refused`, nothing on any other route. |
 
 ## Tests
 
-- `../__tests__/liberty1-click-scripts.test.ts` runs each script the way the sandbox does and compares it with Brian's own functions (`../__tests__/liberty1-pipedream-oracle.ts`) over invented prospect records (`../__tests__/fixtures/liberty1-prospects.json`) and invented submissions with no prospect (`../__tests__/fixtures/liberty1-submissions.json`). The request body and route are compared with his verbatim code; the update bodies with a transcription of his update step, which reached us summarised rather than as code.
+- `../__tests__/liberty1-click-scripts.test.ts` runs each script the way the sandbox does and compares it with Brian's own functions (`../__tests__/liberty1-pipedream-oracle.ts`) over invented prospect records (`../__tests__/fixtures/liberty1-prospects.json`) and invented submissions with no prospect (`../__tests__/fixtures/liberty1-submissions.json`). The request body and route are compared with his verbatim code, and the URL with the LeadConnector triggers the canvas posts to (`CANVAS_ROUTES`, which are not his); the update bodies with a transcription of his update step, which reached us summarised rather than as code.
+- `engine/__tests__/liberty1-click-success-pattern.test.ts` runs LeadConnector's real success reply and the answers that must never count (`../__tests__/fixtures/liberty1-leadconnector-replies.json`) through the node's response reader and classifier with the success line from `definition.json`.
 - `engine/__tests__/liberty1-click-workflow.test.ts` walks `definition.json` through the engine with the real branch and response nodes and these scripts.
 - `apps/web/src/lib/__tests__/liberty1-click-definition.test.ts` runs the canvas's save checks over the definition.
 

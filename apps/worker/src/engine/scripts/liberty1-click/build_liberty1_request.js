@@ -7,13 +7,13 @@
 // "until later in the week"; the LeadConnector routes it used from 2026-09-25
 // return when Liberty1 moves again.
 const LIBERTY1_BASE =
-  "https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks";
+  "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger";
 
 const DV1_STATES = new Set(["DE", "HI", "IA", "MN", "OR", "RI", "VT", "WA", "WI", "WY"]);
 
 const ROUTES = {
-  DV1: `${LIBERTY1_BASE}/DV1`,
-  DI4: `${LIBERTY1_BASE}/DI4`, // all other states
+  DV1: `${LIBERTY1_BASE}/CTTs3WKFFvjTUTQOlrHF`,
+  DI4: `${LIBERTY1_BASE}/AYAF77n9lUw8WbZ4kaRM`, // all other states
 };
 
 const clean = (v) => {

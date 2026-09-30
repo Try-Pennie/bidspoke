@@ -54,13 +54,13 @@ All seven handles must be wired before a live workflow saves, because the node c
 
 There is no cap on the node. The daily cap is the buyer profile's clicks per day, the one number [Buyer Click Check](buyer-click-check.md) stops offering at (#1543). A `daily_lead_cap` still stored on an older node is ignored and reported as `daily_lead_cap_ignored`.
 
-For Liberty1 the success line is:
+For Liberty1, whose clicks go to its LeadConnector webhook triggers since 2026-09-30, the success line is:
 
 ```
-Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)
+^\s*\{(?=[\s\S]*"status"\s*:\s*"Success)[\s\S]*?"id"\s*:\s*"(?<id>[A-Za-z0-9]{15,20})"[\s\S]*\}\s*$
 ```
 
-The id group captures the 15 or 18 character Salesforce id Liberty1 returns.
+LeadConnector answers HTTP 200 with `{"status":"Success: request sent to trigger execution server","id":"w5Rjej9mohRyKpeG3la6"}`. That means the lead was queued to Liberty1's LeadConnector workflow, not that a record was created, and the id group captures LeadConnector's run id, not a Salesforce id. (Before that, on the Liberty1 Salesforce site, the line was `Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)`.)
 
 ### Why the partner is stored by id
 

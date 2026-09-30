@@ -15,8 +15,14 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
    - A submission that names a prospect Salesforce does not return is refused as not found, never sent from the submission instead.
 5. **Builds the request** (`build_request`): Brian's body, byte for byte except `consentsToTcpa`, which is always true because the button the person pressed sits under Liberty1's own TCPA disclosure (Dan, 2026-09-29; his flow copied the earlier form's flag, which reads false for most leads). It goes to the DV1 URL for DE, HI, IA, MN, OR, RI, VT, WA, WI and WY, and to DI4 for every other state.
 
-   **The routes are the Liberty1 Salesforce site again** (`https://liberty1financial.my.salesforce-sites.com/L1F/services/apexrest/inbound/webhooks/DV1` and `/DI4`), where Brian's flow posts since 2026-09-29 "until later in the week". From 2026-09-25 they were LeadConnector webhook triggers (Brian's version 4); when Liberty1 moves back to LeadConnector, two things must be settled first: whether the doubled slash in those URLs is intended, and what LeadConnector answers on success, because `click_send` counts a click only on "Records created successfully" and every other answer routes `unknown`.
-6. **Sends it** (`click_send`, a Buyer Click Send node). The node claims the click so two cannot both send it, keyed on the prospect, or on the submission when there is no prospect, posts, and counts it only when Liberty1 answers "Records created successfully". See [the node's page](../../nodes/buyer-click-send.md).
+   **The routes are Liberty1's LeadConnector webhook triggers** (Dan, 2026-09-30, as the canvas has run them since version 11): `https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/CTTs3WKFFvjTUTQOlrHF` for DV1 and `.../webhook-trigger/AYAF77n9lUw8WbZ4kaRM` for DI4. The base does not end in a slash and each route adds exactly one, so the doubled slash in Brian's earlier LeadConnector URLs is gone; a test fails if one comes back. From 2026-09-29 to 2026-09-30 the canvas posted to the Liberty1 Salesforce site instead. The script's own opening comment still says it is "back on the Liberty1 Salesforce site": that comment is on the canvas, and the kept file is the canvas text byte for byte, so it changes only with the next paste.
+6. **Sends it** (`click_send`, a Buyer Click Send node). The node claims the click so two cannot both send it, keyed on the prospect, or on the submission when there is no prospect, posts, and counts it only when LeadConnector answers its success reply, HTTP 200 with `{"status":"Success: request sent to trigger execution server","id":"w5Rjej9mohRyKpeG3la6"}`. The node's success line is
+
+   ```
+   ^\s*\{(?=[\s\S]*"status"\s*:\s*"Success)[\s\S]*?"id"\s*:\s*"(?<id>[A-Za-z0-9]{15,20})"[\s\S]*\}\s*$
+   ```
+
+   **What that reply means.** It says LeadConnector queued the lead to Liberty1's LeadConnector workflow, not that a Liberty1 record was created: whatever that workflow does afterwards, a refusal included, is not reported back. The `id` is LeadConnector's run id for the trigger, not a Liberty1 or Salesforce record id, and it is what `click_patch` writes as the partner lead id on Completed. Every other answer (an error body, an empty body, an HTML page, the Salesforce site's "Records created successfully") routes `unknown`. See [the node's page](../../nodes/buyer-click-send.md).
 7. **Answers the portal**, then **writes Salesforce** (sent and refused only): the Prospect when there is one, then the Submission and its Lead when the click came with a Submission id (the portal always sends one).
 
 ## Every outcome
@@ -31,7 +37,7 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 | Prospect without the Liberty1 offer (any routing code but 4, or a status other than Bid or Completed), or a submission with no prospect already Completed for another buyer | 200, outcome `no_liberty1_offer` | nothing written |
 | Liberty1 offer already Completed (on the prospect, or on a submission with no prospect) | 200 `{"success": true, "outcome": "already_sent"}` | nothing written, nothing sent |
 | A submission with no prospect, not yet Completed for Liberty1 | sent with no offer check, then as the rows below | the Submission and its Lead only |
-| `sent`: Liberty1 created the record | 200 `{"success": true, "outcome": "sent"}` | Completed, with Liberty1's lead id |
+| `sent`: LeadConnector queued the lead to Liberty1's workflow | 200 `{"success": true, "outcome": "sent"}` | Completed, with LeadConnector's run id as the partner lead id |
 | `refused`: Liberty1 turned it down with its own error | 200 `{"success": false, "outcome": "refused"}` | Fail, no partner lead id |
 | `already_sent`: an earlier click already sent this prospect | 200 `{"success": true, "outcome": "already_sent"}` | nothing written |
 | `unknown`: no readable answer (timeout, 5xx, an HTML page) | 200 `{"success": false, "outcome": "unknown"}` | nothing written; the node pages and holds the claim until a person checks with Liberty1 |
@@ -39,12 +45,12 @@ Replaces Brian's Pipedream flow `eoltut7tgps3yat` (issue #1545, milestone "Click
 | `in_progress`: another click is sending it right now | 200, outcome `in_progress` | nothing written |
 | `not_sent`: a Test Runner or shadow run | 200, outcome `not_sent` | nothing written, nothing sent |
 
-The Salesforce writes are Brian's three bodies, field for field: exchange status, Liberty1's lead id (sent only), partner name `Liberty1`, routing code 4 (a Number on the Prospect, text on the Submission and Lead), the Liberty1 TCPA text, the time of the write, lead sale type `Form`, and on the Prospect and Submission `PDFlow_3__c`, which now holds this run's Bidspoke execution link where Brian's held the Pipedream inspect URL. Nothing is written as blank.
+The Salesforce writes are Brian's three bodies, field for field: exchange status, the partner lead id (sent only; LeadConnector's run id since 2026-09-30), partner name `Liberty1`, routing code 4 (a Number on the Prospect, text on the Submission and Lead), the Liberty1 TCPA text, the time of the write, lead sale type `Form`, and on the Prospect and Submission `PDFlow_3__c`, which now holds this run's Bidspoke execution link where Brian's held the Pipedream inspect URL. Nothing is written as blank.
 
 **When the portal is answered.** As soon as the send's outcome is known: after Liberty1 answers (up to the node's 20 second timeout), before the Salesforce writes. Brian's flow answered at the same point. Whether the portal waits on the answer at all is not known; if it does not, nothing is lost.
 
 **Changes from Brian's flow, on purpose.**
-- A 2xx from Liberty1 that is not the success line was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have created the record.
+- A 2xx that is not the success reply was written as Fail. It is now `unknown`: nothing is written and a person is paged, because Liberty1 may have created the record.
 - A prospect without the Liberty1 offer is refused. Brian's flow sent any prospect it was given. A submission with no prospect is still sent without one, as his flow does, because nothing records an offer there.
 - Failures page through Bidspoke, not the hard coded Slack webhook.
 - `consentsToTcpa` is always true. Brian's flow copied the earlier form's `TCPAConsentFlag__c`, which reads false for most leads; the person reaches this workflow only by pressing the button under Liberty1's own TCPA disclosure, so the press is the consent (Dan, 2026-09-29). The flag is still queried and mapped, now unused by the send.
@@ -68,7 +74,9 @@ Then, either:
 2. Run it from the Test Runner with `{"Prospect__c": "<a real Liberty1 Bid prospect>"}`. A test run checks everything and routes `not_sent`: nothing is claimed, sent, counted or written.
 3. The workflow's id is in `LIBERTY1_CLICK_WORKFLOW_ID` (`apps/worker/src/lib/engine-script-drift.ts`, #1547), so the hourly drift check compares the canvas with the kept scripts.
 
-**The 2026-09-29 change on the canvas** was saved as version 7 the same day through the workflow API, applied onto version 6 so the picked partner and the layout stayed; its four code scripts are these files byte for byte, and the drift check holds no baseline for any of them.
+**The 2026-09-29 change on the canvas** was saved as version 7 the same day through the workflow API, applied onto version 6 so the picked partner and the layout stayed.
+
+**The 2026-09-30 change** was made on the canvas: version 11 (15:46:50 UTC) moved `build_request` back to the LeadConnector routes and version 12 (15:57:59 UTC) set `click_send`'s success line to LeadConnector's reply. The kept files and `definition.json` were brought to version 12 afterwards, so its four code scripts are these files byte for byte, and the drift check holds no baseline for any of them.
 
 ## What Brian changes
 
