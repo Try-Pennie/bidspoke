@@ -491,13 +491,13 @@ describe('the values it judged (#1654)', () => {
     ['no clicks per day', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: null })) }), ctx(), 'no_daily_cap', { lead: LEAD, limits: { ...LIMITS, daily_lead_cap: null } }],
     ['a cap of zero', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: 0 })) }), ctx(), 'cap_check_error', { lead: LEAD, limits: { ...LIMITS, daily_lead_cap: 0 } }],
     ['a failed count read', () => harness({ count: async () => { throw new Error('object down') } }), ctx(), 'cap_check_error', { lead: LEAD, limits: LIMITS }],
-    ['an offer sold buyer', () => harness({ profiles: snapshot(clickBuyer({ soldOn: 'offer' })) }), ctx(), 'partner_not_click', { lead: LEAD, limits: LIMITS }],
+    ['an offer sold buyer', () => harness({ profiles: snapshot(clickBuyer({ soldOn: 'offer' })) }), ctx(), 'partner_not_click', { lead: LEAD, limits: null }],
     ['no enabled profile, so no limits were in force', () => harness({ profiles: snapshot() }), ctx(), 'profile_disabled', { lead: LEAD, limits: null }],
     ['a failed profile load', () => harness({ profiles: async () => { throw new Error('down') } }), ctx(), 'cap_check_error', { lead: LEAD, limits: null }],
     ['a last good copy past the bound', () => harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: new Date(NOW - CLICK_CHECK_LAST_GOOD_MAX_AGE_MS - 1).toISOString() } }), ctx(), 'profile_copy_stale', { lead: LEAD, limits: null }],
-    ['a disabled profile', () => harness({ profiles: snapshot(clickBuyer({ isEnabled: false })) }), ctx(), 'profile_disabled', { lead: LEAD, limits: LIMITS }],
-    ['a switched off partner', () => harness({ profiles: snapshot(clickBuyer({}, { is_active: false })) }), ctx(), 'inactive', { lead: LEAD, limits: LIMITS }],
-    ['a click URL with no placeholder', () => harness({ profiles: snapshot(clickBuyer({}, { click_url: 'https://trypennie.com/portal/libertyone/' })) }), ctx(), 'click_url_has_no_prospect_id', { lead: LEAD, limits: LIMITS }],
+    ['a disabled profile, refused before the box', () => harness({ profiles: snapshot(clickBuyer({ isEnabled: false })) }), ctx(), 'profile_disabled', { lead: LEAD, limits: null }],
+    ['a switched off partner', () => harness({ profiles: snapshot(clickBuyer({}, { is_active: false })) }), ctx(), 'inactive', { lead: LEAD, limits: null }],
+    ['a click URL with no placeholder', () => harness({ profiles: snapshot(clickBuyer({}, { click_url: 'https://trypennie.com/portal/libertyone/' })) }), ctx(), 'click_url_has_no_prospect_id', { lead: LEAD, limits: null }],
     ['a state not in the list', () => harness(), ctx({ state: 'north dakota' }), 'state_not_allowed', { lead: { ...LEAD, state: 'ND' }, limits: { ...LIMITS, state_allowed: false } }],
     ['a blackout day', () => harness({ profiles: snapshot(clickBuyer({ blackoutDates: ['2027-09-21'] })) }), ctx(), 'blackout', { lead: LEAD, limits: LIMITS }],
     ['outside the hours', () => harness({ clockMs: Date.UTC(2027, 8, 25, 18, 0) }), ctx(), 'closed', { lead: LEAD, limits: LIMITS }],
@@ -515,6 +515,17 @@ describe('the values it judged (#1654)', () => {
       expect(r.output.judged).toEqual(judged)
     })
   }
+
+  it('limits are recorded only on the answers the box compared the lead on', async () => {
+    // Every case above whose limits are null stopped before the box: no profile,
+    // or a refusal of the buyer itself (offer sold, disabled, switched off, no
+    // placeholder). Every case whose limits are set reached the box.
+    const boxReasons: ReadonlySet<string> = new Set(['eligible', 'daily_click_cap', 'no_daily_cap', 'state_not_allowed', 'blackout', 'closed', 'debt_below_min', 'debt_above_max', 'loan_amount_below_min', 'missing_lead_field'])
+    for (const [what, , , reason, judged] of cases) {
+      if (reason === 'cap_check_error') continue
+      expect(judged?.limits !== null, what).toBe(boxReasons.has(reason))
+    }
+  })
 
   it('covers every reason the routed table produces', () => {
     const judgedReasons = new Set(cases.map(([, , , reason]) => reason))

@@ -110,9 +110,12 @@ export interface BuyerClickCheckOutput {
    * What the decision was made on (#1654). `lead` is the state, debt and loan
    * amount exactly as the box parsed them, null where a template resolved to
    * nothing or to a value that is not a state or a positive amount. `limits` is
-   * the profile's limits and whether the state is in its list, null when no
-   * profile was compared with (none found, not read, a stale copy, or a budget
-   * that ended first). Present on every output, a failed step included.
+   * the profile's limits and whether the state is in its list, null when the
+   * eligibility box never compared the lead with them: no profile found or
+   * read, a stale copy, a buyer refused before the box (offer sold, disabled,
+   * switched off, a click URL with no placeholder), a budget that ended first,
+   * or a failed step. Otherwise it is set on every answer from the box on.
+   * Present on every output, a failed step included.
    */
   judged: { lead: JudgedLead; limits: JudgedLimits | null }
   duration_ms: number
@@ -264,12 +267,11 @@ async function decide(partnerId: string, lead: LeadInput, instantMs: number, dep
     return { kind: 'route', route: 'not_eligible', reason: 'profile_disabled', detail: `partner ${partnerId} has no enabled buyer profile in this organization`, servedFrom }
   }
   const facts = factsOf(buyer)
-  const limits = judgedLimits(buyer.profile, parseLead(lead))
   if (buyer.profile.soldOn !== 'click') {
-    return { kind: 'route', route: 'not_eligible', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this check never offers it`, facts, servedFrom, limits, page: 'partner_not_click' }
+    return { kind: 'route', route: 'not_eligible', reason: 'partner_not_click', detail: `${buyer.partner.slug} is sold on the ${String(buyer.profile.soldOn)}, not the click, so buyer_select sells it and this check never offers it`, facts, servedFrom, page: 'partner_not_click' }
   }
   const cap = buyer.profile.dailyLeadCap
-  const base = { kind: 'route' as const, facts, servedFrom, cap, limits }
+  const base = { kind: 'route' as const, facts, servedFrom, cap }
   if (!buyer.partner.is_active) return { ...base, route: 'not_eligible', reason: 'inactive' }
   // #1546: the offer lands on the click URL with the placeholder replaced by the
   // created prospect's id, and build_response_body refuses a URL without it. A
@@ -283,7 +285,10 @@ async function decide(partnerId: string, lead: LeadInput, instantMs: number, dep
   }
 
   const verdict = evaluateClickEligibility(buyer.profile, lead, instantMs)
-  const judged = { ...base, judgedLead: verdict.lead, limits: judgedLimits(buyer.profile, verdict.lead) }
+  // Limits are recorded only where the box compared the lead with them; a
+  // disabled profile is refused before the box, so it records none (#1654).
+  const compared = verdict.eligible || verdict.reason !== 'profile_disabled'
+  const judged = { ...base, judgedLead: verdict.lead, ...(compared ? { limits: judgedLimits(buyer.profile, verdict.lead) } : {}) }
   if (!verdict.eligible) return { ...judged, route: 'not_eligible', reason: verdict.reason }
 
   if (cap === null) {
