@@ -527,6 +527,18 @@ export default {
           if (r.alerted) console.error(`[tripoint-pricing] ${r.differences.length} differences`)
         })().catch((e) => console.error('[tripoint-pricing] failed:', e)),
       )
+      // Does the Tripoint partner record still class the same result codes as
+      // Duplicate as the code list does (#1647)? buyer_select reads the record,
+      // which anyone can edit on the partner page, while the sightings and the
+      // Salesforce scripts read the code. Beside the pricing check, under its own
+      // failure boundary and alert state (L71).
+      track(
+        (async () => {
+          const { checkTripointDuplicateCodes } = await import('./lib/tripoint-duplicate-codes-check')
+          const r = await checkTripointDuplicateCodes(env, supabase)
+          if (r.alerted) console.error(`[tripoint-duplicate-codes] ${r.outcome}: ${r.findings.length} findings`)
+        })().catch((e) => console.error('[tripoint-duplicate-codes] failed:', e)),
+      )
       // Do the Snowflake tables the nightly exports write to still accept what
       // those exports send (#428)? The export column lists and the Snowflake DDL
       // are maintained by hand in two places, and on 2026-06-27 a NOT NULL the

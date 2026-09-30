@@ -512,7 +512,9 @@ const CLASSIFIERS: Record<string, Classifier> = {
  * this classifier (the sightings and Snowflake, through bid-log.ts), the tripoint_ping
  * and build_response_body canvas scripts (Salesforce's Tripoint_Response__c), which
  * run in a sandbox and so carry it as a literal, and the Tripoint partner record's
- * duplicate_signals, whose value is TRIPOINT_DUPLICATE_SIGNALS below.
+ * duplicate_signals, whose value is TRIPOINT_DUPLICATE_SIGNALS below. That record is
+ * edited by hand on the partner page, so a test cannot hold it: the live value is
+ * compared with this list daily by lib/tripoint-duplicate-codes-check.ts (#1647).
  */
 export const TRIPOINT_DUPLICATE_RESULT_CODES: readonly number[] = [1002, 1003, 1004, 1005, 1020]
 
