@@ -22,6 +22,7 @@ import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../.
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 import { asJson } from '../../lib/json'
+import { fetchAllPaged } from '../../lib/paginate'
 import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
@@ -152,13 +153,29 @@ workflows.post('/:id/duplicate', async (c) => {
   // Copy the full version history. Preserve version_number, created_at, message,
   // commit_sha, and created_by so the timeline is identical and the next save
   // increments from the source's latest version.
-  const { data: versions } = await supabase
-    .from('workflow_versions')
-    .select('version_number, definition, commit_sha, created_by, created_at, message')
-    .eq('workflow_id', id)
-    .order('version_number', { ascending: true })
+  // Paged, so a history past PostgREST's 1,000 row cap is copied whole rather
+  // than silently cut short. A read that fails copies nothing and seeds nothing:
+  // inventing a v1 there would present a lost history as a workflow never saved.
+  type VersionCopy = Pick<Database['public']['Tables']['workflow_versions']['Row'], 'version_number' | 'definition' | 'commit_sha' | 'created_by' | 'created_at' | 'message'>
+  let versions: VersionCopy[] | null
+  try {
+    versions = await fetchAllPaged<VersionCopy>(
+      (from, to) => supabase
+        .from('workflow_versions')
+        .select('version_number, definition, commit_sha, created_by, created_at, message')
+        .eq('workflow_id', id)
+        .order('version_number', { ascending: true })
+        .range(from, to),
+      'duplicate version history read',
+    )
+  } catch (err) {
+    console.error('[duplicate] version history read failed, clone has no history:', formatErr(err))
+    versions = null
+  }
 
-  if (versions && versions.length > 0) {
+  if (versions === null) {
+    // Logged above; nothing to copy and nothing honest to seed.
+  } else if (versions.length > 0) {
     const rows = versions.map((v) => ({
       workflow_id: clone.id,
       version_number: v.version_number,
@@ -691,13 +708,21 @@ workflows.get('/:id/versions', async (c) => {
   if (ownerBlocked) return ownerBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
-  const { data, error } = await supabase
-    .from('workflow_versions')
-    .select('id, version_number, commit_sha, created_by, created_at, message')
-    .eq('workflow_id', id)
-    .order('version_number', { ascending: false })
-
-  if (error) return dbError(c, error)
+  // Paged, so a history past PostgREST's 1,000 row cap is listed whole.
+  let data: unknown[]
+  try {
+    data = await fetchAllPaged(
+      (from, to) => supabase
+        .from('workflow_versions')
+        .select('id, version_number, commit_sha, created_by, created_at, message')
+        .eq('workflow_id', id)
+        .order('version_number', { ascending: false })
+        .range(from, to),
+      'version history read',
+    )
+  } catch (err) {
+    return dbError(c, err)
+  }
   return c.json(data)
 })
 

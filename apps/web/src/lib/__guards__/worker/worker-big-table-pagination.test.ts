@@ -55,6 +55,10 @@ const BIG_TABLES = [
   // pruned. The daily growth check flagged it on 2026-09-24. Its one bounded
   // by batch read is the drain looking up earlier copies, 200 ids at a time.
   'buyer_sales',
+  // Every saved version of every workflow, never pruned: 548 rows on 2026-09-30,
+  // when the daily growth check flagged it. Its two list reads (the history
+  // panel and Duplicate) are per workflow, 168 at most that day, and page anyway.
+  'workflow_versions',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
