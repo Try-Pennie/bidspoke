@@ -211,11 +211,18 @@ describe('HeldClicksPanel Salesforce updates after Mark sent (#1659)', () => {
     expect(screen.getByRole('button', { name: 'Retry the Salesforce updates' })).toBeInTheDocument()
   })
 
-  it('complete updates, or none recorded, offer no retry', () => {
+  it('complete updates offer no retry', () => {
     const complete: SaleWrites = { ...oneFailed, complete: true, writes: oneFailed.writes.map((w) => ({ ...w, outcome: 'written' as const })) as SaleWrites['writes'] }
-    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } }), row({ id: 'held-2', claim: sold, salesforce: { status: 'none' } })], total: 2 } })
+    panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } })], total: 1 } })
     expect(screen.queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('a sold entry with no update recorded (a mark that stopped before its updates were audited) is offered them', () => {
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'none' } })], total: 1 } })
+    expect(screen.getByRole('alert')).toHaveTextContent('No Salesforce update is recorded for this sale.')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry the Salesforce updates' }))
+    expect(h.onRetrySalesforce).toHaveBeenCalled()
   })
 
   it('a last update that could not be read is an alert with a retry', () => {

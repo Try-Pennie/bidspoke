@@ -57,9 +57,13 @@ function writeLine(w: SaleWrite): string {
   }
 }
 
-/** Whether a row's last Salesforce updates leave something for the person to do. */
+/**
+ * Whether a row's last Salesforce updates leave something for the person to do.
+ * A sold entry with NO recorded updates is one whose mark stopped before its
+ * updates were audited (a crash between the two), so it is offered them too.
+ */
 function needsRetry(view: SalesforceWritesView | null): boolean {
-  return view !== null && (view.status === 'unreadable' || (view.status === 'recorded' && !view.writes.complete))
+  return view !== null && (view.status !== 'recorded' || !view.writes.complete)
 }
 
 /** The one reason every record went unattempted for, when there is exactly one. */
@@ -78,8 +82,10 @@ function SalesforceUpdates({ view, busy, onRetry }: { view: SalesforceWritesView
   let body
   if (view.status === 'unreadable') {
     body = <p className="text-red-700">{view.message}</p>
+  } else if (view.status === 'none') {
+    body = <p className="text-red-700">No Salesforce update is recorded for this sale.</p>
   } else {
-    const writes = view.status === 'recorded' ? view.writes.writes : []
+    const writes = view.writes.writes
     const reason = sharedReason(writes)
     // Nothing was attempted, for one reason: say it once (L605).
     body = reason !== null ? (
