@@ -4,7 +4,7 @@ Written 2026-09-30 from the Pipedream export of that day (346 workflows, 320 swi
 
 Pipedream Workflows stops on 2027-03-31 and deletes everything, logins included, by 2027-04-30.
 
-Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). Every "Decided" line below summarises one of Dan's decisions of 2026-09-30 in plain words and names its number in the record, which holds the exact wording: https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18687008. The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
+Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). Every "Decided" line below summarises one of Dan's decisions of 2026-09-30 in plain words and names its number in the record, which holds the exact wording (decision 19 was recorded later the same day, in its own comment, linked at item 19): https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18687008. The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
 
 ---
 
@@ -53,7 +53,7 @@ Need: one connection per org. The export uses trypennie (47 workflows), pennie (
 ### 7. Data stores (104 workflows)
 Today: Bidspoke has one shared store that can only save, read and delete, and code steps can't reach it.
 Need: separate named stores, "get it or create it" (17), listing what's inside, expiry times, and access from inside code steps.
-Also: Pipedream's store contents are NOT in the export and must be copied out before 2027-04-30. Some hold live state, such as phone line assignments and partner tokens.
+Also: Pipedream's store contents are NOT in the export. Each store is copied with the first workflow that uses it (item 19). Some hold live state, such as phone line assignments and partner tokens.
 
 ### 8. Triggers other than a web address
 Today: none.
@@ -110,7 +110,7 @@ Need: record real Pipedream traffic, run the Bidspoke version quietly against it
 Need: compare a fresh Pipedream export with the previous one, so anything changed on Pipedream since a port was built gets caught.
 
 ### 17. Cutover and rollback checklist per workflow
-Need: each workflow's steps to switch over, and to switch back if something's wrong.
+Need: each workflow's steps to collect what it needs from Pipedream (its settings, secrets and data store contents, item 19), to switch over, and to switch back if something's wrong.
 
 ### 18. A new fallback for engine bidding (#1675)
 Today: the recovery plan says to fall back to the Pipedream copy of engine bidding. That disappears on 2027-03-31.
@@ -120,11 +120,13 @@ Need: a fallback that doesn't depend on Pipedream.
 
 ## C. Things to figure out (not software)
 
-### 19. Copying out what Pipedream will delete
-Decided (decisions 1 to 3): I build and run the tooling, and you approve each step. It covers:
-1. Data store contents.
-2. About 90 passwords and keys. You'll try Pipedream first, then existing copies, then the partner.
-3. The step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels, about 174 workflow files), read from your browser, read only, if Pipedream offers no better way.
+### 19. Collecting what Pipedream will delete, one workflow at a time
+Decided (decision 19, recorded at https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18688050): there is no upfront copy-out. Each workflow's settings, secrets and data store contents are collected while it is ported, as part of its cutover checklist in #1697.
+1. Its step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels). Values that are credentials go straight into Bidspoke's encrypted settings, never through a browser session.
+2. Its passwords and keys. You try Pipedream first, then existing copies, then the partner (decision 3).
+3. The contents of every data store it uses. A store shared by several workflows is copied in full with the first workflow that uses it.
+
+Two dates bound this. From 2027-03-31 no Pipedream workflow runs, so anything that could only be read by running one is lost if its port is not done by then. On 2027-04-30 Pipedream deletes the rest, including settings and data store contents that could still be read without running anything until that day.
 
 ### 20. SFTP file transfers and fixed IP addresses (12 workflows)
 Cloudflare can do neither. Decided (decision 8): this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day, as Dan reported in that session (decision 8 in the record linked above). The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
