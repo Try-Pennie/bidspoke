@@ -8,7 +8,7 @@
  * value the script sends, and every affected script contains backticks.
  */
 import { describe, it, expect } from 'vitest'
-import { sanitizeCodeNodeScripts, stripTrailingWhitespace } from './index'
+import { lineStartsInsideTemplate, sanitizeCodeNodeScripts, stripTrailingWhitespace } from './index'
 
 describe('stripTrailingWhitespace', () => {
   it('strips trailing spaces and tabs from ordinary code lines', () => {
@@ -89,5 +89,34 @@ describe('sanitizeCodeNodeScripts', () => {
 
   it('accepts a definition with no nodes', () => {
     expect(sanitizeCodeNodeScripts({})).toEqual({})
+  })
+})
+
+describe('lineStartsInsideTemplate (#1636)', () => {
+  it('marks the lines that begin inside a template, one entry per \\n separated line', () => {
+    const script = 'const a = 1\nconst t = `x\n  y\nz`\nreturn t'
+    expect(lineStartsInsideTemplate(script)).toEqual([false, false, true, true, false])
+  })
+
+  it('does not count a backtick inside a quoted string or a comment as a template', () => {
+    const script = "const a = '`'\n// a ` in a comment\n/* and ` here */\nreturn a"
+    expect(lineStartsInsideTemplate(script)).toEqual([false, false, false, false])
+  })
+
+  it('follows a ${} holding a nested backtick string back into the outer template', () => {
+    const script = 'const t = `a\n${x ? `b` : `c`}\nd`\ne'
+    expect(lineStartsInsideTemplate(script)).toEqual([false, true, true, false])
+  })
+
+  it('treats a line break inside a multi-line ${} as code, and the one after it as template', () => {
+    const script = 'const t = `a${f({\n  k: 1,\n})}\nb`\nc'
+    expect(lineStartsInsideTemplate(script)).toEqual([false, false, false, true, false])
+  })
+
+  it('counts a CRLF break once, so the result still lines up with split on \\n', () => {
+    const script = 'const t = `x\r\n  y`\r\nreturn t'
+    const marks = lineStartsInsideTemplate(script)
+    expect(marks).toHaveLength(script.split('\n').length)
+    expect(marks).toEqual([false, true, false])
   })
 })

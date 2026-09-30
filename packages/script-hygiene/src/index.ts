@@ -15,23 +15,26 @@
  * It errs towards NOT stripping: an unrecognised construct that looks like a template opening
  * (a backtick inside a regex literal, say) leaves the rest of the script untrimmed, which is
  * the harmless direction. It never invents a template close, so it cannot strip a real one.
+ *
+ * The same scanner tells the code step packager which lines BEGIN inside a template, so it
+ * does not indent them (#1636): leading whitespace there is value for the same reason.
  */
 
 type State = 'code' | 'single' | 'double' | 'template' | 'line' | 'block'
-
-function trimLineEnd(out: string, lineStart: number): string {
-  let end = out.length
-  while (end > lineStart && (out[end - 1] === ' ' || out[end - 1] === '\t')) end--
-  return end === out.length ? out : out.slice(0, end)
-}
 
 function isNewline(ch: string | undefined): boolean {
   return ch === '\n' || ch === '\r'
 }
 
-export function stripTrailingWhitespace(script: string): string {
-  let out = ''
-  let lineStart = 0
+/**
+ * Where each line break of a script falls. `inTemplate[k]` is true when the k-th break (a
+ * `\n` or a `\r\n`, so exactly one entry per `\n` in the script) sits inside a template
+ * literal's text, and `endsInTemplate` says the same of the end of the script. A break inside a
+ * template is part of the string's value, so the line before it keeps its trailing whitespace
+ * and the line after it keeps its leading whitespace. Both rules read this one scanner.
+ */
+export function scanLineBreaks(script: string): { inTemplate: boolean[]; endsInTemplate: boolean } {
+  const inTemplate: boolean[] = []
   let state: State = 'code'
   // One entry per open `${ }` expression: the brace depth of the expression around it, so a
   // closing brace can tell "end of this expression" from "end of an object literal inside it".
@@ -43,17 +46,11 @@ export function stripTrailingWhitespace(script: string): string {
     const next = script[i + 1]
 
     if (ch === '\n' || (ch === '\r' && next === '\n')) {
-      if (state !== 'template') out = trimLineEnd(out, lineStart)
+      inTemplate.push(state === 'template')
       // A quoted string or a line comment cannot continue past a line end. Resetting here
       // means an unterminated quote does not leave the rest of the script untrimmed.
       if (state === 'single' || state === 'double' || state === 'line') state = 'code'
-      if (ch === '\r') {
-        out += '\r\n'
-        i++
-      } else {
-        out += '\n'
-      }
-      lineStart = out.length
+      if (ch === '\r') i++
       continue
     }
 
@@ -61,13 +58,11 @@ export function stripTrailingWhitespace(script: string): string {
       case 'code':
         if (ch === '/' && next === '/') {
           state = 'line'
-          out += '//'
           i++
           continue
         }
         if (ch === '/' && next === '*') {
           state = 'block'
-          out += '/*'
           i++
           continue
         }
@@ -89,7 +84,6 @@ export function stripTrailingWhitespace(script: string): string {
       case 'single':
       case 'double':
         if (ch === '\\' && next !== undefined && !isNewline(next)) {
-          out += ch + next
           i++
           continue
         }
@@ -97,7 +91,6 @@ export function stripTrailingWhitespace(script: string): string {
         break
       case 'template':
         if (ch === '\\' && next !== undefined && !isNewline(next)) {
-          out += ch + next
           i++
           continue
         }
@@ -106,7 +99,6 @@ export function stripTrailingWhitespace(script: string): string {
           enclosingDepths.push(braceDepth)
           braceDepth = 0
           state = 'code'
-          out += '${'
           i++
           continue
         }
@@ -116,16 +108,43 @@ export function stripTrailingWhitespace(script: string): string {
       case 'block':
         if (ch === '*' && next === '/') {
           state = 'code'
-          out += '*/'
           i++
           continue
         }
         break
     }
-    out += ch
   }
 
-  if (state !== 'template') out = trimLineEnd(out, lineStart)
+  return { inTemplate, endsInTemplate: state === 'template' }
+}
+
+/**
+ * One entry per line of `script.split('\n')`: true when that line BEGINS inside a template
+ * literal's text, so its leading whitespace is part of a string value and indenting it would
+ * change what the script computes (#1636). The first line never does.
+ */
+export function lineStartsInsideTemplate(script: string): boolean[] {
+  return [false, ...scanLineBreaks(script).inTemplate]
+}
+
+function trimLineEnd(line: string): string {
+  let end = line.length
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--
+  return end === line.length ? line : line.slice(0, end)
+}
+
+export function stripTrailingWhitespace(script: string): string {
+  const { inTemplate, endsInTemplate } = scanLineBreaks(script)
+  // Even entries are lines and odd entries their separators, so a CRLF script keeps its CRLFs.
+  // The split matches exactly the breaks the scanner counts: every `\n`, with a `\r` before it.
+  const parts = script.split(/(\r?\n)/)
+  let out = ''
+  for (let k = 0; k * 2 < parts.length; k++) {
+    const line = parts[k * 2]
+    const keep = k < inTemplate.length ? inTemplate[k] : endsInTemplate
+    out += keep ? line : trimLineEnd(line)
+    if (k * 2 + 1 < parts.length) out += parts[k * 2 + 1]
+  }
   return out
 }
 
