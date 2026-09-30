@@ -4,8 +4,7 @@
 //
 // Completed only on `sent` (Liberty1 confirmed it created the record) and Fail
 // only on `refused` (Liberty1 turned it down with its own error). Every other
-// route writes NOTHING: `unknown` means nobody knows whether Liberty1 created
-// the record, and the rest never sent. write false is what the check_write
+// route writes NOTHING: `unknown` means nobody knows whether Liberty1 created the record, and the rest never sent. write false is what the check_write
 // branch reads to skip every update node.
 //
 // Undefined values are dropped so nothing is blanked. PDFlow_3__c, where his
