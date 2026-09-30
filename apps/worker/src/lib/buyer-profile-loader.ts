@@ -280,12 +280,13 @@ async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProf
     const savedAtRaw = await kv.get(savedAtKey(orgId))
     const savedAt = savedAtRaw === null ? null : Number(savedAtRaw)
     if (savedAt !== null && !Number.isFinite(savedAt)) {
-      // Unreadable is not "no save": yield, as for a newer one. The marker's
-      // TTL ends this, and the next prewarm after that writes (L50).
-      console.error(`[buyer-profiles] skipped the cache write for org ${orgId}: the save marker for org ${orgId} is not a time (${JSON.stringify(savedAtRaw)})`)
-      return
-    }
-    if (savedAt !== null && savedAt >= readStartedAt) {
+      // Only this module writes the marker, as String(Date.now()), so an
+      // unreadable one is damage, not a save. Blocking on it would stop every
+      // refresh for the marker's whole hour and cold read every lead after the
+      // cache expires, so say so loudly, drop it, and write (L50).
+      console.error(`[buyer-profiles] the save marker for org ${orgId} is not a time (${JSON.stringify(savedAtRaw)}); deleting it and writing`)
+      await kv.delete(savedAtKey(orgId))
+    } else if (savedAt !== null && savedAt >= readStartedAt) {
       console.log(`[buyer-profiles] skipped the cache write for org ${orgId}: a save at ${new Date(savedAt).toISOString()} came after this read began at ${new Date(readStartedAt).toISOString()}`)
       return
     }
