@@ -149,36 +149,38 @@ heldClicks.get('/', async (c) => {
   return c.json({ entries, total: count ?? rows.length })
 })
 
-/** How many audit entries one list read looks through for the sold entries' last Salesforce writes. */
-const AUDIT_LOOKBACK_PER_ENTRY = 10
-
 function isSaleWrites(v: unknown): v is SaleWrites {
   return v !== null && typeof v === 'object' && Array.isArray((v as SaleWrites).writes) && typeof (v as SaleWrites).complete === 'boolean'
 }
 
-/** The latest audited Salesforce writes of each sold entry, read from the audit entries the releases write. */
-async function lastSalesforceWrites(c: Ctx, orgId: string, ids: string[]): Promise<(id: string) => SalesforceWritesView> {
-  if (ids.length === 0) return () => ({ status: 'none' })
+/** One entry's latest audited Salesforce writes. */
+async function latestSalesforceWrites(c: Ctx, orgId: string, id: string): Promise<SalesforceWritesView> {
   const supabase = createSupabaseClient(c.env)
+  // Its OWN newest row that carries salesforce_writes, so other audit rows (this
+  // entry's or another's) can never push it out of the read and make it read as none.
   const { data, error } = await supabase
     .from('audit_log')
-    .select('entity_id, changed_at, changes')
+    .select('changed_at, changes')
     .eq('organization_id', orgId)
     .eq('entity_type', 'held_click')
-    .in('entity_id', ids)
+    .eq('entity_id', id)
+    .not('changes->salesforce_writes', 'is', null)
     .order('changed_at', { ascending: false })
-    .limit(ids.length * AUDIT_LOOKBACK_PER_ENTRY)
-  if (error) {
-    const message = `The last Salesforce update could not be read: ${error.message}`
-    return () => ({ status: 'unreadable', message })
-  }
-  const latest = new Map<string, SalesforceWritesView>()
-  for (const r of (data ?? []) as Array<{ entity_id: string; changed_at: string; changes: unknown }>) {
-    if (latest.has(r.entity_id)) continue
-    const writes = (r.changes as { salesforce_writes?: { new?: unknown } } | null)?.salesforce_writes?.new
-    if (isSaleWrites(writes)) latest.set(r.entity_id, { status: 'recorded', at: r.changed_at, writes })
-  }
-  return (id) => latest.get(id) ?? { status: 'none' }
+    .limit(1)
+  if (error) return { status: 'unreadable', message: `The last Salesforce update could not be read: ${error.message}` }
+  const r = ((data ?? []) as Array<{ changed_at: string; changes: unknown }>)[0]
+  if (!r) return { status: 'none' }
+  const writes = (r.changes as { salesforce_writes?: { new?: unknown } } | null)?.salesforce_writes?.new
+  return isSaleWrites(writes)
+    ? { status: 'recorded', at: r.changed_at, writes }
+    : { status: 'unreadable', message: 'The last Salesforce update was recorded in a shape this page cannot read.' }
+}
+
+/** The latest audited Salesforce writes of each sold entry, one bounded read per entry (at most HELD_CLICKS_LIMIT). */
+async function lastSalesforceWrites(c: Ctx, orgId: string, ids: string[]): Promise<(id: string) => SalesforceWritesView> {
+  const views = await Promise.all(ids.map((id) => latestSalesforceWrites(c, orgId, id)))
+  const byId = new Map(ids.map((id, i) => [id, views[i]]))
+  return (id) => byId.get(id) ?? { status: 'none' }
 }
 
 // ── Releases ──────────────────────────────────────────────────────────────────

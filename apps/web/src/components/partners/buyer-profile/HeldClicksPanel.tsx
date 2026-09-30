@@ -111,7 +111,7 @@ function SalesforceUpdates({ sold, view, busy, onRetry }: { sold: boolean; view:
   )
 }
 
-type Pending ={ id: string; action: 'sent'; leadId: string } | { id: string; action: 'free' }
+type Pending ={ id: string; action: 'sent'; leadId: string } | { id: string; action: 'free' } | { id: string; action: 'remove' }
 
 interface Props {
   partnerName: string
@@ -193,7 +193,24 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                             : `No longer held: already marked sent${row.claim.partner_lead_id ? ` as ${row.claim.partner_lead_id}` : ''}.`}
                         </p>
                         <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
-                        <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onClear(row)}>Remove from the list</Button>
+                        {row.claim.status === 'sold' && needsRetry(row.salesforce) ? (
+                          // This row is the only place the retry lives, so removing it says what is lost and asks first (L9).
+                          mine?.action === 'remove' ? (
+                            <div className="space-y-1">
+                              <p className="text-graphite">
+                                Removing this entry also removes its retry. The Salesforce updates that did not land will not be written from Bidspoke, so fix those records in Salesforce by hand. The sale stays marked sent.
+                              </p>
+                              <div className="flex gap-1.5">
+                                <Button variant="danger" className="btn-sm" busy={busy} onClick={() => { setPending(null); void onClear(row) }}>Remove it</Button>
+                                <Button variant="secondary" className="btn-sm" onClick={() => setPending(null)}>Cancel</Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setPending({ id: row.id, action: 'remove' })}>Remove from the list</Button>
+                          )
+                        ) : (
+                          <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onClear(row)}>Remove from the list</Button>
+                        )}
                         <Outcome state={outcome} />
                       </div>
                     ) : generation === null ? null : mine?.action === 'sent' ? (

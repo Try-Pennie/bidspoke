@@ -495,6 +495,31 @@ describe('GET /held-clicks: the last Salesforce outcome of a sold entry', () => 
     expect(body.entries[0].salesforce).toEqual({ status: 'recorded', at: '2027-09-22T18:01:00Z', writes: submissionFailed })
   })
 
+  it('each sold entry reads its OWN newest Salesforce row, so another entry\'s many audit rows cannot push it out and make it read as none', async () => {
+    const ROW_B = '55555555-5555-4555-8555-555555555502'
+    const sb = supabaseWith({
+      held_click_claims: { list: [heldRow, { ...heldRow, id: ROW_B, prospect_id: 'a0B000000000002AAA' }], count: 2 },
+      audit_log: [
+        { list: [{ changed_at: '2027-09-22T18:01:00Z', changes: { salesforce_writes: { old: null, new: submissionFailed } } }] },
+        { list: [{ changed_at: '2027-09-20T10:00:00Z', changes: { salesforce_writes: { old: null, new: allWritten } } }] },
+      ],
+    })
+    saleStub.read.mockResolvedValue(soldAs(LEAD_ID))
+    const body = await (await request(app, 'GET', `/held-clicks?partner_id=${PARTNER}`)).json() as { entries: Array<Record<string, unknown>> }
+    expect(body.entries.map((e) => e.salesforce)).toEqual([
+      { status: 'recorded', at: '2027-09-22T18:01:00Z', writes: submissionFailed },
+      { status: 'recorded', at: '2027-09-20T10:00:00Z', writes: allWritten },
+    ])
+    // One read per entry, scoped to it, to rows carrying salesforce_writes, newest one only.
+    expect(sb.calls.audit_log).toEqual(expect.arrayContaining([
+      ['eq', ['entity_id', ROW_ID]],
+      ['eq', ['entity_id', ROW_B]],
+      ['not', ['changes->salesforce_writes', 'is', null]],
+      ['limit', [1]],
+    ]))
+    expect(sb.calls.audit_log.filter(([m]) => m === 'in')).toHaveLength(0)
+  })
+
   it('a sold entry with no recorded writes says none, a held entry carries nothing, and an audit read that fails is its own state', async () => {
     supabaseWith({ held_click_claims: { list: [heldRow], count: 1 }, audit_log: { list: [] } })
     saleStub.read.mockResolvedValue(soldAs(LEAD_ID))

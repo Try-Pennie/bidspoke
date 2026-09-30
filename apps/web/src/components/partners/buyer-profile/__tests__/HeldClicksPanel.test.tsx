@@ -183,6 +183,27 @@ describe('HeldClicksPanel Salesforce updates after Mark sent (#1659)', () => {
     expect(screen.getByRole('button', { name: 'Remove from the list' })).toBeInTheDocument()
   })
 
+  it('removing an entry whose updates did not land looks destructive, says the retry goes with it, and asks first', () => {
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: oneFailed } })], total: 1 } })
+    const remove = screen.getByRole('button', { name: 'Remove from the list' })
+    expect(remove.className).toMatch(/btn-danger/)
+    fireEvent.click(remove)
+    expect(h.onClear).not.toHaveBeenCalled()
+    expect(screen.getByText(/Removing this entry also removes its retry\. The Salesforce updates that did not land will not be written from Bidspoke/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(h.onClear).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from the list' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    expect(h.onClear).toHaveBeenCalledWith(expect.objectContaining({ id: 'held-1' }))
+  })
+
+  it('removing an entry whose updates all landed, or a freed one, needs no confirmation', () => {
+    const complete: SaleWrites = { ...oneFailed, complete: true, writes: oneFailed.writes.map((w) => ({ ...w, outcome: 'written' as const })) as SaleWrites['writes'] }
+    const h = panel({ held: { entries: [row({ claim: sold, salesforce: { status: 'recorded', at: 'x', writes: complete } })], total: 1 } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from the list' }))
+    expect(h.onClear).toHaveBeenCalledTimes(1)
+  })
+
   it('updates that were never attempted for one reason state it once, not once per record', () => {
     const reason = 'the run exec-1 is in neither the step log nor the execution archive, so which records the click was for is not known'
     const none: SaleWrites = { complete: false, records_from: null, writes: (['prospect', 'submission', 'lead'] as const).map((record) => ({ record, object: record, id: null, outcome: 'not_attempted' as const, message: reason })) }
