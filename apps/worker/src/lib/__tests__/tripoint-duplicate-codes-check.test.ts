@@ -22,7 +22,7 @@ import {
   TRIPOINT_DUPLICATE_CODES_REMEDY,
 } from '../tripoint-duplicate-codes-check'
 import { notifyExportFailure } from '../export-alerts'
-import { TRIPOINT_DUPLICATE_SIGNALS } from '../../engine/bid-resolver'
+import { TRIPOINT_DUPLICATE_RESULT_CODES, TRIPOINT_DUPLICATE_SIGNALS } from '../../engine/bid-resolver'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -187,5 +187,10 @@ describe('checkTripointDuplicateCodes', () => {
     expect(remedy).toBe(TRIPOINT_DUPLICATE_CODES_REMEDY)
     expect(TRIPOINT_DUPLICATE_CODES_REMEDY.fixHint).toMatch(/Partners, Tripoint/)
     expect(TRIPOINT_DUPLICATE_CODES_REMEDY.consequence).not.toMatch(/exported/i)
+  })
+
+  it('names exactly the code list in its fix, derived rather than a second copy that can go stale (L679)', () => {
+    const named = [...TRIPOINT_DUPLICATE_CODES_REMEDY.fixHint.matchAll(/\b\d{3,5}\b/g)].map((m) => Number(m[0]))
+    expect(named.sort((a, b) => a - b)).toEqual([...TRIPOINT_DUPLICATE_RESULT_CODES].sort((a, b) => a - b))
   })
 })

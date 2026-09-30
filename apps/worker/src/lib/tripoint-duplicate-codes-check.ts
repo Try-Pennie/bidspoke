@@ -32,13 +32,19 @@ import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { duplicateSignalsOf } from './buyer-profile-loader'
-import { TRIPOINT_DUPLICATE_SIGNALS } from '../engine/bid-resolver'
+import { TRIPOINT_DUPLICATE_RESULT_CODES, TRIPOINT_DUPLICATE_SIGNALS } from '../engine/bid-resolver'
 import type { Env } from '../index'
 
 export const TRIPOINT_DUPLICATE_CODES_JOB = 'tripoint-duplicate-codes'
 
 /** Every documented Tripoint code and well past them on both sides, as the #1549 test scans. */
 const SCANNED_CODES: readonly number[] = Array.from({ length: 1101 - 990 }, (_, i) => 990 + i)
+
+/** "1002, 1003 and 1020": the code list in words, derived so the fix never names a stale copy of it (L679). */
+function inWords(codes: readonly number[]): string {
+  const sorted = [...codes].sort((a, b) => a - b).map(String)
+  return sorted.length <= 1 ? sorted.join('') : `${sorted.slice(0, -1).join(', ')} and ${sorted[sorted.length - 1]}`
+}
 
 export const TRIPOINT_DUPLICATE_CODES_REMEDY: AlertRemedy = {
   consequence:
@@ -48,8 +54,8 @@ export const TRIPOINT_DUPLICATE_CODES_REMEDY: AlertRemedy = {
     'While they disagree, Salesforce is told a different class for the listed codes depending on which path sold ' +
     'the lead. The lines below say which case this is:',
   fixHint:
-    'Codes that disagree: open Partners, Tripoint, and set the duplicate codes back to 1002, 1003, 1004, 1005 and ' +
-    '1020 on data.createLead.resultCode, or, if Tripoint really changed its codes, change TRIPOINT_DUPLICATE_RESULT_CODES ' +
+    `Codes that disagree: open Partners, Tripoint, and set the duplicate codes back to ${inWords(TRIPOINT_DUPLICATE_RESULT_CODES)} ` +
+    'on data.createLead.resultCode, or, if Tripoint really changed its codes, change TRIPOINT_DUPLICATE_RESULT_CODES ' +
     'in the worker and the partner record together. A record that could not be read or is missing: the check itself ' +
     'needs attention (the database connection, or the Tripoint partner row). It runs again at 13:00 UTC.',
   headlineVerb: 'has findings',
