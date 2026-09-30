@@ -319,9 +319,9 @@ describe('runEngineScriptDriftAndPage', () => {
   it('pages the findings and clears a standing page with an empty list on a clean run', async () => {
     const notify = vi.fn(async () => {})
     await runEngineScriptDriftAndPage(run(summary({ findings: ['x drifted'] })), notify)
-    expect(notify).toHaveBeenCalledWith(['x drifted'])
+    expect(notify).toHaveBeenCalledWith(['x drifted'], expect.objectContaining({ fixHint: expect.any(String) }))
     await runEngineScriptDriftAndPage(run(summary({})), notify)
-    expect(notify).toHaveBeenLastCalledWith([])
+    expect(notify).toHaveBeenLastCalledWith([], expect.anything())
   })
 
   it('does not speak for the job when the run was skipped, so a skip neither pages nor clears (L11)', async () => {
@@ -477,5 +477,62 @@ describe('the Liberty1 click workflow (#1545)', () => {
     expect(s.findings).toHaveLength(1)
     expect(s.findings[0]).toContain('B flow')
     expect(s.unreadable).toContain('500')
+  })
+})
+
+/**
+ * The page's How to fix line is derived from the kinds of finding the run made
+ * (#1671, L111): a retired setting is fixed only by removing it from the canvas
+ * node, since the node ignores it and the buyer profile's Click delivery holds
+ * it, so a page holding only that finding must never tell anyone to copy the
+ * canvas value into the repo or set it back on the node.
+ */
+describe('the remedy follows the kind of finding', () => {
+  const liberty1 = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'liberty1-click')!
+  type N = { namespace: string; type: string; config: Record<string, unknown> }
+  const canvas = (edit: (n: N) => N): N[] =>
+    (liberty1File.definition.nodes as N[]).map((n) => {
+      const kept = liberty1.scripts.find((k) => k.namespace === n.namespace)
+      return edit(kept ? { ...n, config: { ...n.config, script: kept.script } } : n)
+    })
+  async function page(nodes: N[]) {
+    const fetchImpl = async () => new Response(JSON.stringify({ id: LIBERTY1_CLICK_WORKFLOW_ID, definition: { nodes } }), { status: 200 })
+    const calls: Array<{ lines: string[]; remedy: { consequence: string; fixHint: string } }> = []
+    await runEngineScriptDriftAndPage(
+      () => runEngineScriptDrift({ repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', workflows: [liberty1], fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {} }),
+      async (lines, remedy) => { calls.push({ lines, remedy }) },
+    )
+    expect(calls).toHaveLength(1)
+    return calls[0]
+  }
+  const withRetired = (n: N): N => (n.type === 'buyer_click_send' ? { ...n, config: { ...n.config, success_pattern: 'OK (?<id>\\d+)' } } : n)
+  const withDrift = (n: N): N => (n.type === 'buyer_click_send' ? { ...n, config: { ...n.config, state: '{{trigger.payload.state}}' } } : n)
+
+  it('a page holding only a retired setting says to remove it from the node and save, and never to commit it or set it back', async () => {
+    const { lines, remedy } = await page(canvas(withRetired))
+    expect(lines).toHaveLength(1)
+    const text = `${lines.join(' ')} ${remedy.consequence} ${remedy.fixHint}`
+    expect(lines[0]).toContain('Remove the old address and success line')
+    expect(remedy.fixHint).toMatch(/remove it from the node/i)
+    expect(remedy.fixHint).toContain('save')
+    for (const wrong of ['in a PR', 'copy it into', 'set it back', 'canvasBaselineSha256', 'kept file']) expect(text, wrong).not.toContain(wrong)
+  })
+
+  it('a page holding only a setting drift keeps the copy or set back remedy, with nothing about retired settings', async () => {
+    const { remedy } = await page(canvas(withDrift))
+    expect(remedy.fixHint).toContain('copy it into the committed file')
+    expect(remedy.fixHint).not.toMatch(/remove it from the node/i)
+  })
+
+  it('a page holding both carries both remedies, each once', async () => {
+    const { lines, remedy } = await page(canvas((n) => withDrift(withRetired(n))))
+    expect(lines).toHaveLength(2)
+    expect(remedy.fixHint).toContain('copy it into the committed file')
+    expect(remedy.fixHint.match(/remove it from the node/gi)).toHaveLength(1)
+  })
+
+  it('a clean run carries the full remedy with its clear, which no page shows', async () => {
+    const { lines } = await page(canvas((n) => n))
+    expect(lines).toEqual([])
   })
 })
