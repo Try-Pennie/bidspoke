@@ -1,27 +1,29 @@
 /**
- * The Liberty1 click send's success line (#1547), as the canvas runs it.
+ * The Liberty1 click send's success line (#1547), as the node runs it.
  *
  * Since 2026-09-30 (Dan) the click posts to Liberty1's LeadConnector webhook
  * triggers, which answer HTTP 200 with
  * `{"status":"Success: request sent to trigger execution server","id":"..."}`.
  * That means queued to Liberty1's LeadConnector workflow, not a record created,
- * and the id is LeadConnector's run id. The pattern is read from
- * docs/workflows/liberty1-click/definition.json, compiled the way the node
+ * and the id is LeadConnector's run id. The pattern is compiled the way the node
  * compiles it, and each answer goes through the real response reader
  * (postToPartner) and the node's own classifier, so the HTML rule and the JSON
  * handling are the ones that run in production.
+ *
+ * Since #1671 the line is the buyer profile's success reply, not a node
+ * setting, so it is read from the snapshot of Liberty1's click delivery taken
+ * from its profile on 2026-09-30 (fixtures/liberty1-click-delivery.json).
  */
 import { describe, expect, it } from 'vitest'
 import type { Env } from '../../index'
-import workflowFile from '../../../../../docs/workflows/liberty1-click/definition.json'
+import liberty1Delivery from '../scripts/__tests__/fixtures/liberty1-click-delivery.json'
 import replies from '../scripts/__tests__/fixtures/liberty1-leadconnector-replies.json'
 import { classifyClickAnswer, compileSuccessPattern } from '../nodes/buyer-click-send'
 import { postToPartner } from '../../lib/post-to-partner'
 
 type Reply = { status: number; body: string }
 
-const send = (workflowFile.definition.nodes as Array<{ type: string; config: Record<string, unknown> }>).find((n) => n.type === 'buyer_click_send')
-const PATTERN = compileSuccessPattern(String(send?.config.success_pattern))
+const PATTERN = compileSuccessPattern(liberty1Delivery.click_delivery.success_pattern)
 
 async function answer(reply: Reply) {
   const res = await postToPartner(

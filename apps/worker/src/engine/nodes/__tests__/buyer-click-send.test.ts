@@ -29,12 +29,16 @@ import {
 } from '../buyer-click-send'
 import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
 
-// The Liberty1 matcher lives in the node's CONFIG, never in the node's code.
+// A buyer's success line lives on its buyer PROFILE (#1639, #1671), never in the node's code or config.
 const LIBERTY1_PATTERN = 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)'
 const SF_ID = 'a0B5f00000XyZ12AAB'
 /** Liberty1's partner_configs id: the claim and the count are keyed on this, never the slug (#1553). */
 const PARTNER_ID = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const NOW = Date.UTC(2027, 8, 20, 18, 0) // 11:00 Pacific
+const BUYER_URL = 'https://example.my.salesforce-sites.com/services/apexrest/lead'
+
+/** The click delivery every harness profile holds unless a test says otherwise: one catch-all route. */
+const DEFAULT_DELIVERY: ClickDelivery = { routes: [{ name: 'ALL', url: BUYER_URL, states: [] }], successPattern: LIBERTY1_PATTERN }
 
 const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
   id: 'n-click',
@@ -43,16 +47,14 @@ const node = (over: Record<string, unknown> = {}): NodeDefinition => ({
   config: {
     partner_id: PARTNER_ID,
     prospect_id: '{{trigger.payload.prospect}}',
-    request_url: '{{steps.build.output.url}}',
     request_body: '{{steps.build.output.body}}',
-    success_pattern: LIBERTY1_PATTERN,
     ...over,
   },
 })
 
 function ctx(over: Partial<ExecutionContext> = {}): ExecutionContext {
   const c = buildContext({ prospect: 'a0B000000000001AAA' }, 'liberty-proxy', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1')
-  c.steps.build = { output: { url: 'https://example.my.salesforce-sites.com/services/apexrest/lead', body: { FirstName: 'Test' } } } as never
+  c.steps.build = { output: { body: { FirstName: 'Test' } } } as never
   return Object.assign(c, over)
 }
 
@@ -101,8 +103,8 @@ function harness(opts: {
   cap?: number | null | 'none' | (() => Promise<ProfileRead>)
   /** The held click record write throws (#1552). */
   holdFails?: boolean
-  /** The enabled profile's click delivery (#1639); absent means none. */
-  delivery?: ClickDelivery
+  /** The enabled profile's click delivery (#1639); absent means DEFAULT_DELIVERY, null means the profile holds none. */
+  delivery?: ClickDelivery | null
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
   const h: Harness = {
@@ -115,7 +117,7 @@ function harness(opts: {
       h.profileReads++
       const c = opts.cap === undefined ? 50 : opts.cap
       if (typeof c === 'function') return c()
-      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click', clickDelivery: opts.delivery ?? null }
+      return c === 'none' ? { found: false } : { found: true, cap: c, soldOn: 'click', clickDelivery: opts.delivery === undefined ? DEFAULT_DELIVERY : opts.delivery }
     },
     resolvePartner: async (partnerId) => {
       h.resolved.push(partnerId)
@@ -201,7 +203,7 @@ describe('a confirmed send', () => {
     const r = await run(h)
     expect(r.failure).toBeUndefined()
     expect(h.claims).toEqual([{ partner_id: PARTNER_ID, execution_id: 'exec-1', deadline_ms: CLICK_CLAIM_DEADLINE_MS }])
-    expect(h.posts).toEqual([{ url: 'https://example.my.salesforce-sites.com/services/apexrest/lead', body: { FirstName: 'Test' }, timeoutMs: CLICK_POST_TIMEOUT_MS }])
+    expect(h.posts).toEqual([{ url: BUYER_URL, body: { FirstName: 'Test' }, timeoutMs: CLICK_POST_TIMEOUT_MS }])
     expect(h.sold).toEqual([{ generation: 1, outcome: { buyer_reference: SF_ID, result_code: 'created', http_status: 200, payout_cents: 0 } }])
     expect([...h.members]).toEqual(['a0B000000000001AAA'])
     expect(r.output).toMatchObject({ _route: 'sent', reason: 'sent', partner_lead_id: SF_ID, status: 200, count: 1, counted: true, count_date: '2027-09-20' })
@@ -332,21 +334,6 @@ describe('the over cap notice', () => {
     expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
   })
 
-  it('a profile sold on the offer is an unreadable cap: its leads cap is never judged against clicks (#1557)', async () => {
-    const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer', clickDelivery: null }), members: upTo(80) })
-    const r = await run(h)
-    expect(r.output).toMatchObject({ _route: 'sent', over_cap: 'cap_unreadable', daily_lead_cap: null })
-    expect(h.alerts.map((a) => (a.kind === 'page' ? a.reason : a.kind))).toEqual(['cap_unreadable'])
-    const page = h.alerts[0]
-    expect(page.kind === 'page' && page.detail).toMatch(/sold on the offer/)
-  })
-
-  it('no enabled profile (switched off while offers were out) is recorded as no_enabled_profile and pages nothing', async () => {
-    const h = harness({ cap: 'none', members: upTo(80) })
-    const r = await run(h)
-    expect(r.output).toMatchObject({ _route: 'sent', counted: true, over_cap: 'no_enabled_profile', daily_lead_cap: null })
-    expect(h.alerts).toEqual([])
-  })
 })
 
 describe('the address and the success line from the buyer profile (#1639)', () => {
@@ -391,38 +378,37 @@ describe('the address and the success line from the buyer profile (#1639)', () =
     expect(r.output).toMatchObject({ route_name: 'DI4', route_matched: 'no_state', route_state: null })
   })
 
-  it('the profile wins over the node: the node url is not posted to, and a different node success line is noted as superseded', async () => {
+  // #1671: the node's own address and success line are gone. A canvas saved before
+  // that still carries both until someone clears them, and the node must ignore
+  // them, so deploying the executor before the canvas is cleaned changes nothing.
+  const STALE_URL = 'https://stale.example/services/apexrest/lead'
+  const withStaleNodeAddress = (state: unknown) => {
+    const c = withState(state)
+    ;(c.steps.build as { output: Record<string, unknown> }).output.url = STALE_URL
+    return c
+  }
+  const staleNode = (over: Record<string, unknown> = {}) => stateNode({ request_url: '{{steps.build.output.url}}', success_pattern: LIBERTY1_PATTERN, ...over })
+
+  it('a node still carrying request_url and success_pattern is posted to the profile route, never the node address, and nothing notes the stale values', async () => {
     const h = harness({ delivery, post: lcAnswer })
-    const r = await run(h, stateNode(), withState('OR'))
-    expect(h.posts.map((p) => p.url)).not.toContain('https://example.my.salesforce-sites.com/services/apexrest/lead')
-    expect(r.output.node_success_pattern_superseded).toBe(true)
-    // Superseded is a note on the step, never a page.
+    const r = await run(h, staleNode(), withStaleNodeAddress('OR'))
+    expect(h.posts.map((p) => p.url)).toEqual([`${LC}/dv1`])
+    expect(r.output).toMatchObject({ _route: 'sent', partner_lead_id: RUN_ID, url_source: 'profile', pattern_source: 'profile' })
+    expect(r.output).not.toHaveProperty('node_success_pattern_superseded')
     expect(h.alerts).toEqual([])
   })
 
-  it('a node success line that matches the profile is not noted', async () => {
-    const h = harness({ delivery, post: lcAnswer })
-    const r = await run(h, stateNode({ success_pattern: LC_PATTERN }), withState('OR'))
-    expect(r.output.node_success_pattern_superseded).toBeUndefined()
-  })
-
-  it('judges the answer with the profile line, so the node line cannot confirm a click', async () => {
+  it('judges the answer with the profile line, so a success line left on the node cannot confirm a click', async () => {
     const h = harness({ delivery, post: answer(200, `Records created successfully : ${SF_ID}`) })
-    const r = await run(h, stateNode(), withState('WA'))
+    const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
     expect(r.output).toMatchObject({ _route: 'unknown', pattern_source: 'profile' })
   })
 
-  it('a profile with no delivery leaves the node settings in force, exactly as before', async () => {
-    const h = harness()
-    const r = await run(h, stateNode(), withState('WA'))
-    expect(h.posts.map((p) => p.url)).toEqual(['https://example.my.salesforce-sites.com/services/apexrest/lead'])
-    expect(r.output).toMatchObject({ _route: 'sent', partner_lead_id: SF_ID, route_name: null, url_source: 'node', pattern_source: 'node' })
-  })
-
-  it('no enabled profile leaves the node settings in force too', async () => {
-    const h = harness({ cap: 'none' })
-    const r = await run(h)
-    expect(r.output).toMatchObject({ _route: 'sent', url_source: 'node', pattern_source: 'node' })
+  it('a malformed request_url or success_pattern left on the node fails nothing: neither is read', async () => {
+    const h = harness({ delivery, post: lcAnswer })
+    const r = await run(h, staleNode({ request_url: 'http://not-https.example', success_pattern: '(' }), withState('WA'))
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'sent', route_name: 'DV1' })
   })
 
   it('refuses by name, before any claim, a delivery with state routes on a node with no state template, rather than send every state to the catch-all', async () => {
@@ -454,6 +440,65 @@ describe('the address and the success line from the buyer profile (#1639)', () =
       expect(h.posts).toEqual([])
     })
   }
+
+  // #1671: with the node's own address gone, the profile's click delivery is the only
+  // place a click can go. Every way of not having one is refused by name before the
+  // claim, so nothing is held, sent or counted, and the message names the fix (L111).
+  describe('no click delivery to send to', () => {
+    const refusedBeforeAnything = (h: Harness) => {
+      expect(h.claims).toEqual([])
+      expect(h.posts).toEqual([])
+      expect(h.members.size).toBe(0)
+      expect(h.holds).toEqual([])
+    }
+
+    it('an enabled click profile holding no delivery is refused as click_delivery_unset, permanently, naming the profile setting to fill', async () => {
+      const h = harness({ delivery: null })
+      const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'click_delivery_unset' })
+      expect(r.failure?.message).toMatch(/Click delivery/)
+      expect(r.failure?.message).toMatch(/buyer profile/)
+      expect(r.failure?.message).toMatch(/nothing was sent/)
+      refusedBeforeAnything(h)
+    })
+
+    it('with no delivery the node address is not a fallback, even when the node still carries a good one', async () => {
+      const h = harness({ delivery: null })
+      await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(h.posts.map((p) => p.url)).not.toContain(STALE_URL)
+    })
+
+    it('no enabled profile (switched off while offers were out) is refused as no_enabled_profile, naming the fix', async () => {
+      const h = harness({ cap: 'none' })
+      const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'no_enabled_profile' })
+      expect(r.failure?.message).toMatch(/no enabled buyer profile/)
+      refusedBeforeAnything(h)
+    })
+
+    it('a profile sold on the offer is refused as not_sold_on_click: an offer buyer holds no click delivery (#1557)', async () => {
+      const h = harness({ cap: async () => ({ found: true, cap: 50, soldOn: 'offer', clickDelivery: null }) })
+      const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(r.failure).toMatchObject({ errorType: 'permanent', reason: 'not_sold_on_click' })
+      expect(r.failure?.message).toMatch(/sold on the offer/)
+      refusedBeforeAnything(h)
+    })
+
+    it('a profile that cannot be read is still refused as profile_unreadable, never sent to the node address (Dan, 2026-09-30)', async () => {
+      const h = harness({ cap: async () => { throw new Error('kv and database both down') } })
+      const r = await run(h, staleNode(), withStaleNodeAddress('WA'))
+      expect(r.failure).toMatchObject({ errorType: 'transient', reason: 'profile_unreadable' })
+      refusedBeforeAnything(h)
+    })
+
+    it('a test run shows the same refusal, so a canvas test finds a missing delivery before launch', async () => {
+      const h = harness({ delivery: null })
+      const c = withState('WA')
+      c.isTest = true
+      const r = await run(h, stateNode(), c)
+      expect(r.failure).toMatchObject({ reason: 'click_delivery_unset' })
+    })
+  })
 
   it('a test run shows the route it would use, and sends nothing', async () => {
     const h = harness({ delivery })
@@ -671,15 +716,11 @@ describe('refusals before any claim', () => {
     ['no partner id', { partner_id: '' }, undefined, 'partner_id_invalid'],
     ['a slug where the partner id belongs', { partner_id: 'liberty1' }, undefined, 'partner_id_invalid'],
     ['a config from before #1553 that names the partner by slug only', { partner_id: undefined, partner_slug: 'liberty1' }, undefined, 'partner_id_invalid'],
-    ['no success pattern', { success_pattern: '' }, undefined, 'success_pattern_invalid'],
-    ['a success pattern that does not compile', { success_pattern: '(' }, undefined, 'success_pattern_invalid'],
-    ['a success pattern with no id group', { success_pattern: 'Records created' }, undefined, 'success_pattern_invalid'],
     ['an alert percent of zero', { alert_over_percent: 0 }, undefined, 'alert_over_percent_invalid'],
     ['an alert percent past 1000', { alert_over_percent: 1001 }, undefined, 'alert_over_percent_invalid'],
     ['an alert percent that is a fraction', { alert_over_percent: 1.5 }, undefined, 'alert_over_percent_invalid'],
     ['an alert percent that is a numeric string', { alert_over_percent: '120' }, undefined, 'alert_over_percent_invalid'],
     ['an empty prospect id', { prospect_id: '{{trigger.payload.missing}}' }, undefined, 'prospect_id_empty'],
-    ['a url that is not https', { request_url: 'http://example.com/x' }, undefined, 'request_url_invalid'],
     ['a body that is not an object', { request_body: 'plain text' }, undefined, 'request_body_invalid'],
   ]
   for (const [name, config, c, reason] of bad) {

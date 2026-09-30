@@ -1,20 +1,11 @@
-// The Liberty1 request for one click (#1545): Brian's buildPayload and his DV1
-// or DI4 route, unchanged but for consentsToTcpa (see below), over the record
-// pick_record chose (a prospect, or a submission mapped onto prospect field
-// names). Pure: buyer_click_send posts it, this only builds it.
+// The Liberty1 request for one click (#1545): Brian's buildPayload, unchanged
+// but for consentsToTcpa (see below), over the record pick_record chose (a
+// prospect, or a submission mapped onto prospect field names). Pure:
+// buyer_click_send posts it, this only builds it.
 //
-// Back on the Liberty1 Salesforce site on 2026-09-29, where Brian's flow posts
-// "until later in the week"; the LeadConnector routes it used from 2026-09-25
-// return when Liberty1 moves again.
-const LIBERTY1_BASE =
-  "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger";
-
-const DV1_STATES = new Set(["DE", "HI", "IA", "MN", "OR", "RI", "VT", "WA", "WI", "WY"]);
-
-const ROUTES = {
-  DV1: `${LIBERTY1_BASE}/CTTs3WKFFvjTUTQOlrHF`,
-  DI4: `${LIBERTY1_BASE}/AYAF77n9lUw8WbZ4kaRM`, // all other states
-};
+// Where it is posted is not decided here (#1671): buyer_click_send picks the
+// route from the Liberty1 buyer profile's Click delivery by the state returned
+// below, so an endpoint Liberty1 moves is a profile edit, not a script paste.
 
 const clean = (v) => {
   if (v === null || v === undefined) return null;
@@ -68,8 +59,6 @@ function buildPayload(p) {
   };
 }
 
-const pickRoute = (state) => (state && DV1_STATES.has(state) ? "DV1" : "DI4");
-
 // The offer check before this node routes only an open click here, so an
 // absent record is a wiring fault: refuse by name rather than post a body of nulls.
 const record = steps.pick_record?.output?.record;
@@ -78,11 +67,9 @@ if (!record || !record.Id) {
 }
 
 const body = buildPayload(record);
-const route = pickRoute(body.state);
 
 return {
-  url: ROUTES[route],
   body,
-  route,
+  // Upper cased by buildPayload; click_send's state template reads it to pick the route.
   state: body.state,
 };

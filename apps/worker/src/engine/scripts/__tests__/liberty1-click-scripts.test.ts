@@ -3,9 +3,11 @@
  * flow they replace.
  *
  * build_liberty1_request must post byte for byte the body his buildPayload
- * built, on the DV1 or DI4 route his pickRoute chose (posted to Liberty1's
- * LeadConnector trigger for that route, Dan 2026-09-30), for the same prospect
- * record, and for a Submission with no Prospect the body his
+ * built, for the same prospect record, and hand on the state that picks the
+ * route. Since #1671 the route itself is the buyer profile's click delivery,
+ * so these prove the state it returns lands, through the node's own route
+ * choice (pickClickRoute) over the profile as read on 2026-09-30, on the DV1
+ * or DI4 LeadConnector trigger his pickRoute chose, and for a Submission with no Prospect the body his
  * submissionAsProspect then buildPayload built (2026-09-29), with one
  * deliberate difference: consentsToTcpa is true on every click, because the
  * button the person pressed sits under Liberty1's own TCPA disclosure (Dan,
@@ -21,8 +23,10 @@
  * invented (fixtures/liberty1-prospects.json).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { clickDeliveryFromDocument, pickClickRoute } from '@bidspoke/buyer-profile'
 import fixtures from './fixtures/liberty1-prospects.json'
 import submissionFixtures from './fixtures/liberty1-submissions.json'
+import liberty1Delivery from './fixtures/liberty1-click-delivery.json'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../../lib/engine-script-drift'
 import { runCanvasScript } from './canvas-script'
 import { codeSentinel } from '../../nodes/code'
@@ -60,7 +64,17 @@ async function pick(source: 'prospect' | 'submission' | null, row: Rec | null): 
 }
 
 async function build(record: Rec) {
-  return (await runCanvasScript(BUILD, { payload: {}, steps: { pick_record: { output: { record } } } })) as { url: string; body: Rec; route: string; state: string | null }
+  return (await runCanvasScript(BUILD, { payload: {}, steps: { pick_record: { output: { record } } } })) as { body: Rec; state: string | null }
+}
+
+/** Liberty1's click delivery as its buyer profile held it on 2026-09-30 (#1639), a snapshot for tests. */
+const DELIVERY = clickDeliveryFromDocument(liberty1Delivery.click_delivery)
+
+/** The route buyer_click_send picks for the state the script hands on, the node's own rule. */
+function routeFor(state: unknown): { name: string; url: string } {
+  const picked = pickClickRoute(DELIVERY, state)
+  if (!picked) throw new Error('the Liberty1 delivery snapshot has no catch-all')
+  return { name: picked.route.name, url: picked.route.url }
 }
 
 /** His body with the one field the port sets differently: the click is the TCPA consent. */
@@ -79,13 +93,12 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
   })
 
   for (const [name, record] of Object.entries(RECORDS)) {
-    it(`${name}: the body is exactly what his flow sent, to the route the canvas now names`, async () => {
+    it(`${name}: the body is exactly what his flow sent, and its state takes the profile to his route`, async () => {
       const out = await build(record)
       const theirs = clicked(buildPayload(record))
       // Byte for byte: key order and every null included, as JSON on the wire.
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
-      expect(out.url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
-      expect(out.route).toBe(pickRoute(theirs.state))
+      expect(routeFor(out.state)).toEqual({ name: pickRoute(theirs.state), url: CANVAS_ROUTES[pickRoute(theirs.state)] })
     })
   }
 
@@ -95,38 +108,35 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
       const out = await build(picked.record as Rec)
       const theirs = clicked(buildPayload(submissionAsProspect(row)))
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
-      expect(out.url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
+      expect(routeFor(out.state).url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
     })
   }
 
   it('the Submission fixtures cover both routes, the Lead mobile over the Lead phone and the home phone, a name from the Lead, and income as text', async () => {
     const mobile = await build((await pick('submission', SUBMISSIONS.di4_lead_mobile)).record as Rec)
-    expect(mobile.route).toBe('DI4')
+    expect(routeFor(mobile.state).name).toBe('DI4')
     expect(mobile.body).toMatchObject({ leadId1: 'a04Ui00000TestS1AA', firstName: 'Casey', lastName: 'Example', primaryPhone: '4155550133', annualIncome: 65000, state: 'CA', leadId2: 'trypennie.com' })
     const home = await build((await pick('submission', SUBMISSIONS.dv1_home_phone_no_lead)).record as Rec)
-    expect(home.route).toBe('DV1')
+    expect(routeFor(home.state).name).toBe('DV1')
     expect(home.body).toMatchObject({ primaryPhone: '2065550144', annualIncome: null, consentsToFcra: false, leadId2: 'Website' })
   })
 
-  it("posts to Liberty1's LeadConnector triggers (Dan, 2026-09-30), one per state group, never the Salesforce site", async () => {
-    const dv1 = await build(RECORDS.dv1_state_plain)
-    const di4 = await build(RECORDS.missing_optionals)
-    expect([dv1.route, dv1.url]).toEqual(['DV1', CANVAS_ROUTES.DV1])
-    expect([di4.route, di4.url]).toEqual(['DI4', CANVAS_ROUTES.DI4])
-    expect(BUILD).not.toContain('salesforce-sites')
+  // #1671: the route is the buyer profile's, so the script names no address and no
+  // route. A second copy here would be the one that goes stale when Liberty1 moves.
+  it('returns the body and the state only, and holds no address or route of its own', async () => {
+    for (const record of Object.values(RECORDS)) expect(Object.keys(await build(record)).sort()).toEqual(['body', 'state'])
+    for (const literal of ['leadconnectorhq', 'salesforce-sites', 'https://', 'DV1', 'DI4', 'pickRoute', 'ROUTES']) expect(BUILD, literal).not.toContain(literal)
   })
 
-  it('builds no URL with a doubled slash: the base does not end in one and each route adds exactly one', async () => {
-    // Brian's earlier LeadConnector URLs carried "//" before the trigger id.
-    for (const record of Object.values(RECORDS)) {
-      const { url } = await build(record)
-      expect(url.replace(/^https:\/\//, ''), url).not.toContain('//')
-      expect(new URL(url).pathname.split('/').filter((p) => p === '')).toHaveLength(1)
-    }
+  it("the profile snapshot is Brian's routing: his DV1 states and the LeadConnector trigger of each route (Dan, 2026-09-30)", () => {
+    const dv1 = DELIVERY.routes.find((r) => r.name === 'DV1')!
+    expect(dv1).toEqual({ name: 'DV1', url: CANVAS_ROUTES.DV1, states: ['DE', 'HI', 'IA', 'MN', 'OR', 'RI', 'VT', 'WA', 'WI', 'WY'] })
+    expect(DELIVERY.routes.find((r) => r.name === 'DI4')).toEqual({ name: 'DI4', url: CANVAS_ROUTES.DI4, states: [] })
+    for (const state of dv1.states) expect(pickRoute(state), state).toBe('DV1')
   })
 
   it('the fixtures cover both routes, every apartment form, an 11 digit phone and blanks', async () => {
-    const routes = await Promise.all(Object.values(RECORDS).map(async (r) => (await build(r)).route))
+    const routes = await Promise.all(Object.values(RECORDS).map(async (r) => routeFor((await build(r)).state).name))
     expect(new Set(routes)).toEqual(new Set(['DV1', 'DI4']))
     expect((await build(RECORDS.eleven_digit_phone_dv1)).body.primaryPhone).toBe('5035550199')
     expect((await build(RECORDS.di4_state_apt_bare)).body.address1).toBe('45 Sample Rd Apt 4B')
@@ -134,8 +144,8 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     expect((await build(RECORDS.apt_with_hash)).body.address1).toBe('77 Fake Way #12')
     expect((await build(RECORDS.missing_optionals)).body.address1).toBe('Apt 3')
     expect((await build(RECORDS.apt_with_suite_prefix)).body.providedCreditRating).toBe('excellent')
-    expect((await build(RECORDS.lowercase_dv1_state)).url).toBe(CANVAS_ROUTES.DV1)
-    expect((await build(RECORDS.missing_optionals)).url).toBe(CANVAS_ROUTES.DI4)
+    expect(routeFor((await build(RECORDS.lowercase_dv1_state)).state).url).toBe(CANVAS_ROUTES.DV1)
+    expect(routeFor((await build(RECORDS.missing_optionals)).state).url).toBe(CANVAS_ROUTES.DI4)
   })
 
   it('refuses by name when no record was picked, rather than posting a body of nulls', async () => {

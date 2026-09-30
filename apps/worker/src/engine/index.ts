@@ -1497,7 +1497,8 @@ export async function walkGraph(
       const clickConfig = node.config as Record<string, unknown>
       const clickInput: ResolvedStepInput = {
         // Never the body: it carries the prospect's identity (L222).
-        template: { partner_id: clickConfig.partner_id, prospect_id: clickConfig.prospect_id, request_url: clickConfig.request_url },
+        // The route is the buyer profile's (#1671), picked by the state template.
+        template: { partner_id: clickConfig.partner_id, prospect_id: clickConfig.prospect_id, state: clickConfig.state },
         resolved: { partner_id: clickOutput.partner_id, partner_slug: clickOutput.partner_slug, prospect_id: clickOutput.prospect_id, mode_effective: clickOutput.mode_effective },
       }
       logStep(stepLogQueue, executionId, executionStartedAt, node, clickStatus, clickInput, clickOutput, clickFailure?.message, clickErrorType, 0, clickStartedAt, stepOrder)

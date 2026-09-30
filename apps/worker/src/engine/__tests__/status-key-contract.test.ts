@@ -212,15 +212,14 @@ describe('status output key contract', () => {
   })
 
   it('buyer_click_send node emits output.status', async () => {
-    const ctx = makeCtx({ prospect: 'p-1', url: 'https://buyer.example/lead', body: { a: 1 } })
+    const ctx = makeCtx({ prospect: 'p-1', body: { a: 1 } })
     const result = await executeBuyerClickSendNode(
       makeNode('buyer_click_send', {
-        partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', prospect_id: '{{trigger.payload.prospect}}', request_url: '{{trigger.payload.url}}', request_body: '{{trigger.payload.body}}',
-        success_pattern: 'created (?<id>\\w+)',
+        partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', prospect_id: '{{trigger.payload.prospect}}', request_body: '{{trigger.payload.body}}',
       }),
       ctx,
       {
-        readProfile: async () => ({ found: true, cap: 50, soldOn: 'click', clickDelivery: null }),
+        readProfile: async () => ({ found: true, cap: 50, soldOn: 'click', clickDelivery: { routes: [{ name: 'ALL', url: 'https://buyer.example/lead', states: [] }], successPattern: 'created (?<id>\\w+)' } }),
         resolvePartner: async () => ({ slug: 'buyer' }),
         saleClient: () => ({ claim: async () => ({ state: 'claimed', generation: 1 }), sold: async () => 2, free: async () => 2 }),
         counter: () => ({ date: '2027-09-20', addMember: async () => ({ added: true, count: 1 }) }),

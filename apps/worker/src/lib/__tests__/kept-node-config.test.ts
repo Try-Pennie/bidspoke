@@ -45,33 +45,43 @@ const source = (nodes: NodeLike[], file = 'docs/x/definition.json'): CommittedSo
 const node = (namespace: string, type: string, config: Record<string, unknown>): NodeLike => ({ namespace, type, config })
 
 describe('judgeKeptConfig', () => {
-  const SEND = { partner_id: 'p-1', prospect_id: '{{a}}', request_url: '{{u}}', request_body: '{{b}}', success_pattern: 'OK (?<id>\\d+)', alert_over_percent: 120, retries: 0 }
+  const SEND = { partner_id: 'p-1', prospect_id: '{{a}}', request_body: '{{b}}', state: '{{s}}', alert_over_percent: 120, retries: 0 }
 
   it('agrees when the canvas holds every watched setting the committed file holds', () => {
     const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', clone(SEND))] }, 'W')
     expect(verdicts).toEqual([{ workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'agree' }])
   })
 
-  // #1639: the canvas gains the click send state template by a guarded save before the committed file
-  // does, and that save must not page; the follow-up moves state to the watched list with its committed value.
-  it('the click send state template on the canvas alone does not page', () => {
-    const canvas = { ...SEND, state: '{{steps.build_request.output.state}}' }
-    const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', canvas)] }, 'W')
-    expect(verdicts.map((v) => v.state)).toEqual(['agree'])
-  })
-
-  it('a canvas differing only in success_pattern is a config drift naming the setting and both values', () => {
-    const canvas = { ...SEND, success_pattern: 'Created (?<id>\\w+)' }
+  // #1671: the state template now picks the buyer profile's route on every click, so it is watched.
+  it('a canvas differing only in the click send state template is a config drift naming the setting and both values', () => {
+    const canvas = { ...SEND, state: '{{steps.other.output.state}}' }
     const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', canvas)] }, 'W')
     expect(verdicts).toEqual([
-      { workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'config_drift', field: 'success_pattern', path: 'success_pattern', committed: '"OK (?<id>\\\\d+)"', canvas: '"Created (?<id>\\\\w+)"' },
+      { workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'config_drift', field: 'state', path: 'state', committed: '"{{s}}"', canvas: '"{{steps.other.output.state}}"' },
     ])
     const line = describeConfigVerdict(verdicts[0])
-    expect(line).toContain('success_pattern')
+    expect(line).toContain('state')
     expect(line).toContain('click_send')
     expect(line).toContain('docs/x/definition.json')
-    expect(line).toContain('OK (?<id>')
-    expect(line).toContain('Created (?<id>')
+    expect(line).toContain('{{s}}')
+    expect(line).toContain('{{steps.other.output.state}}')
+  })
+
+  it('a click send state template removed from the canvas is a drift to (not set)', () => {
+    const { state: _omit, ...canvas } = SEND
+    void _omit
+    const [v] = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', canvas)] }, 'W')
+    expect(v).toMatchObject({ state: 'config_drift', field: 'state', committed: '"{{s}}"', canvas: '(not set)' })
+  })
+
+  // #1671 removed the node's own address and success line. A canvas saved before then
+  // still holds both until someone clears them, the node ignores them, and the check
+  // must not page for them either, whatever they hold, while that happens.
+  it('a request_url or success_pattern left on the canvas never pages, whatever it holds', () => {
+    for (const stale of [{ request_url: '{{u}}', success_pattern: 'OK (?<id>\\d+)' }, { request_url: 'http://x', success_pattern: '(' }, { request_url: '' }]) {
+      const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', SEND)])], { nodes: [node('click_send', 'buyer_click_send', { ...SEND, ...stale })] }, 'W')
+      expect(verdicts.map((v) => v.state), JSON.stringify(stale)).toEqual(['agree'])
+    }
   })
 
   it('names the first differing path inside a nested setting rather than the whole object', () => {
@@ -89,11 +99,11 @@ describe('judgeKeptConfig', () => {
   })
 
   it('a watched setting the canvas holds and the committed file lacks is its own finding, never an agreement', () => {
-    const { success_pattern: _omit, ...committed } = SEND
+    const { state: _omit, ...committed } = SEND
     void _omit
     const verdicts = judgeKeptConfig([source([node('click_send', 'buyer_click_send', committed)])], { nodes: [node('click_send', 'buyer_click_send', clone(SEND))] }, 'W')
     expect(verdicts).toEqual([
-      { workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'not_committed', field: 'success_pattern', canvas: '"OK (?<id>\\\\d+)"' },
+      { workflow: 'W', namespace: 'click_send', file: 'docs/x/definition.json', state: 'not_committed', field: 'state', canvas: '"{{s}}"' },
     ])
     expect(describeConfigVerdict(verdicts[0])).toContain('not in docs/x/definition.json')
   })
@@ -112,7 +122,7 @@ describe('judgeKeptConfig', () => {
   })
 
   it('an unwatched setting (an alert threshold, retries the node ignores) never pages, whatever it holds', () => {
-    const canvas = { ...SEND, alert_over_percent: 150, retries: 3, daily_lead_cap: 10 }
+    const canvas = { ...SEND, alert_over_percent: 150, retries: 3, daily_lead_cap: 10, request_url: '{{u}}', success_pattern: 'OK (?<id>\\d+)' }
     expect(judgeKeptConfig([source([node('c', 'buyer_click_send', SEND)])], { nodes: [node('c', 'buyer_click_send', canvas)] }, 'W').map((v) => v.state)).toEqual(['agree'])
   })
 
@@ -133,9 +143,9 @@ describe('judgeKeptConfig', () => {
   })
 
   it('reports every differing setting on a node, one verdict each', () => {
-    const canvas = { ...SEND, partner_id: 'p-2', success_pattern: 'x' }
+    const canvas = { ...SEND, partner_id: 'p-2', state: 'x' }
     const verdicts = judgeKeptConfig([source([node('c', 'buyer_click_send', SEND)])], { nodes: [node('c', 'buyer_click_send', canvas)] }, 'W')
-    expect(verdicts.map((v) => (v.state === 'config_drift' ? v.field : v.state)).sort()).toEqual(['partner_id', 'success_pattern'])
+    expect(verdicts.map((v) => (v.state === 'config_drift' ? v.field : v.state)).sort()).toEqual(['partner_id', 'state'])
   })
 
   it('a committed node the canvas lacks is a missing node, and one of another type is a type change', () => {
@@ -195,7 +205,10 @@ describe('the field list is a decision for every setting a kept node holds', () 
 
   it('watches the settings #1662 names', () => {
     const fields = (type: string) => (WATCHED_CONFIG_FIELDS[type] ?? []).map((r) => r.field)
-    expect(fields('buyer_click_send')).toEqual(expect.arrayContaining(['success_pattern', 'partner_id', 'prospect_id', 'request_url', 'request_body']))
+    expect(fields('buyer_click_send')).toEqual(expect.arrayContaining(['partner_id', 'prospect_id', 'request_body', 'state']))
+    // #1671: the address and the success line are the buyer profile's, so the node's old copies decide nothing.
+    expect(fields('buyer_click_send')).not.toContain('request_url')
+    expect(fields('buyer_click_send')).not.toContain('success_pattern')
     expect(fields('buyer_click_check')).toEqual(expect.arrayContaining(['partner_id', 'population', 'state', 'debt', 'loan_amount']))
     expect(fields('buyer_select')).toEqual(expect.arrayContaining(['mode', 'population', 'live_percent_env', 'sale_payload', 'lead_key', 'sell_off_when', 'bid_when_positive', 'state', 'debt']))
     expect(WATCHED_CONFIG_FIELDS.buyer_select.find((r) => r.field === 'mode')?.allowed).toEqual([...BUYER_SELECT_MODES])
@@ -333,18 +346,24 @@ describe('config findings travel in the script check run and its one alert', () 
     expect(endingOf(s)).toMatchObject({ outcome: 'ok', summary: { config: { 'Liberty1 click workflow/click_send': 'agree' } } })
   })
 
-  it('the same canvas with only click_send.success_pattern changed pages once, naming the setting and both values', async () => {
+  it('the committed click_send holds the state template the live canvas gained at version 14 (#1671)', () => {
+    const send = LIBERTY1_NODES.find((n) => n.namespace === 'click_send')!
+    expect(send.config.state).toBe('{{steps.build_request.output.state}}')
+    expect(send.config).not.toHaveProperty('request_url')
+    expect(send.config).not.toHaveProperty('success_pattern')
+  })
+
+  it('the same canvas with only click_send.state changed pages once, naming the setting and both values', async () => {
     const canvas = canvasFromCommitted(LIBERTY1_NODES, liberty1.scripts)
     const send = canvas.find((n) => n.namespace === 'click_send')!
-    const committedPattern = send.config.success_pattern as string
-    send.config.success_pattern = 'Queued (?<id>\\w+)'
+    send.config.state = '{{trigger.payload.state}}'
     const s = await run(liberty1, canvas)
     expect(s.verdicts.every((v) => v.state === 'agree')).toBe(true)
     expect(s.findings).toHaveLength(1)
     expect(s.findings[0]).toContain('Liberty1 click workflow, click_send')
-    expect(s.findings[0]).toContain('success_pattern')
-    expect(s.findings[0]).toContain(JSON.stringify(committedPattern).slice(1, 30))
-    expect(s.findings[0]).toContain('Queued (?<id>')
+    expect(s.findings[0]).toContain('state')
+    expect(s.findings[0]).toContain('{{steps.build_request.output.state}}')
+    expect(s.findings[0]).toContain('{{trigger.payload.state}}')
     expect(endingOf(s)).toMatchObject({ outcome: 'findings', summary: { config: { 'Liberty1 click workflow/click_send': 'config_drift' } } })
   })
 

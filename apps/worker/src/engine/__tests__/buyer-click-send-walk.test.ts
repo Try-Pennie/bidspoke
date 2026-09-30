@@ -47,7 +47,7 @@ function definition(wired: readonly BuyerClickSendRoute[]) {
 function output(route: BuyerClickSendRoute): BuyerClickSendOutput {
   return {
     _route: route, reason: route === 'sent' ? 'sent' : 'outcome_unknown', mode_effective: 'live', partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', partner_slug: 'liberty1', prospect_id: 'p-1',
-    status: 200, partner_lead_id: null, count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], route_name: null, url_source: 'node', pattern_source: 'node', duration_ms: 5,
+    status: 200, partner_lead_id: null, count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], route_name: null, url_source: 'profile', pattern_source: 'profile', duration_ms: 5,
   }
 }
 

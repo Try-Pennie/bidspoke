@@ -53,6 +53,10 @@ import LIBERTY1_CLICK_PATCH_RAW from '../../engine/scripts/liberty1-click/libert
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import PICK_CLICK_RECORD_RAW from '../../engine/scripts/liberty1-click/pick_click_record.js?raw'
 import liberty1File from '../../../../../docs/workflows/liberty1-click/definition.json'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_REQUEST_V14_RAW from './fixtures/build_liberty1_request.canvas-v14.txt?raw'
+/** The build_request script on the Liberty1 Click Handler canvas at version 14, before #1671 took its routes out. */
+const CANVAS_BUILD_REQUEST_V14 = (BUILD_REQUEST_V14_RAW as string).replace(/[\r\n]+$/, '')
 const LIBERTY1_ON_DISK: Record<string, string> = {
   'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
   'pick_click_record.js': PICK_CLICK_RECORD_RAW as string,
@@ -359,14 +363,47 @@ describe('endingOf', () => {
 describe('the Liberty1 click workflow (#1545)', () => {
   const liberty1 = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'liberty1-click')
 
-  it('is watched with its four kept scripts, each the file on disk, with no canvas baseline: the canvas holds all four since version 7 (2026-09-29)', () => {
+  it('is watched with its four kept scripts, each the file on disk, and none but build_request carries a canvas baseline: the canvas holds the other three', () => {
     expect(liberty1?.scripts.map((k) => k.namespace)).toEqual(['resolve_input', 'pick_record', 'build_request', 'click_patch'])
     for (const kept of liberty1?.scripts ?? []) {
       expect(kept.script, kept.file).toBe(LIBERTY1_ON_DISK[kept.file])
       expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
-      expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.newNodeSince, kept.file).toBeUndefined()
+      if (kept.namespace !== 'build_request') expect(kept.canvasBaselineSha256, kept.file).toBeNull()
     }
+  })
+
+  // #1671 took the routes out of build_request here first; the canvas keeps the
+  // version 14 script until Dan pastes the new one, which must read as a paste
+  // awaited, never a drift, and the paste itself must then read as agree.
+  it('build_request carries the version 14 canvas script as its baseline, so the unpasted #1671 edit reads awaiting_paste and the paste reads agree', async () => {
+    const build = liberty1!.scripts.find((k) => k.namespace === 'build_request')!
+    // sha256 of build_request in the live Liberty1 Click Handler (version 14), read from workflows on 2026-09-30.
+    expect(build.canvasBaselineSha256).toBe('1d5edfc41eac997641a745d9c674333feb9860dd1e3b90b2a84d6fed30e98929')
+    expect(build.baselineReadOn).toBe('2026-09-30')
+    expect(await sha256Hex(CANVAS_BUILD_REQUEST_V14)).toBe(build.canvasBaselineSha256)
+    const before = await judgeKeptScripts([build], { nodes: [{ type: 'code', namespace: 'build_request', config: { script: CANVAS_BUILD_REQUEST_V14 } }] }, 'Liberty1 click workflow')
+    expect(before.map((v) => v.state)).toEqual(['awaiting_paste'])
+    const after = await judgeKeptScripts([build], { nodes: [{ type: 'code', namespace: 'build_request', config: { script: build.script.replace(/[\r\n]+$/, '') } }] }, 'Liberty1 click workflow')
+    expect(after.map((v) => v.state)).toEqual(['agree'])
+    const edited = await judgeKeptScripts([build], { nodes: [{ type: 'code', namespace: 'build_request', config: { script: `${CANVAS_BUILD_REQUEST_V14}\n// edited` } }] }, 'Liberty1 click workflow')
+    expect(edited.map((v) => v.state)).toEqual(['drift'])
+  })
+
+  it('the live canvas as merged (version 14: the old build_request, and click_send still holding request_url and success_pattern) pages nothing', async () => {
+    const nodes = (liberty1File.definition.nodes as Array<{ namespace: string; type: string; config: Record<string, unknown> }>).map((n) => {
+      if (n.namespace === 'build_request') return { ...n, config: { ...n.config, script: CANVAS_BUILD_REQUEST_V14 } }
+      if (n.type === 'buyer_click_send') return { ...n, config: { ...n.config, request_url: '{{steps.build_request.output.url}}', success_pattern: '^\\s*\\{(?<id>x)\\}$' } }
+      const kept = liberty1?.scripts.find((k) => k.namespace === n.namespace)
+      return kept ? { ...n, config: { ...n.config, script: kept.script } } : n
+    })
+    const fetchImpl = async () => new Response(JSON.stringify({ id: LIBERTY1_CLICK_WORKFLOW_ID, definition: { nodes } }), { status: 200 })
+    const s = await runEngineScriptDrift({
+      repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', workflows: [liberty1!], fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
+    })
+    expect(s.findings).toEqual([])
+    expect(s.verdicts.map((v) => [v.namespace, v.state])).toEqual([['resolve_input', 'agree'], ['pick_record', 'agree'], ['build_request', 'awaiting_paste'], ['click_patch', 'agree']])
+    expect(new Set(s.configVerdicts.map((v) => v.state))).toEqual(new Set(['agree']))
   })
 
   it('a canvas missing pick_record pages as a missing node, never an awaited paste', async () => {
