@@ -469,7 +469,7 @@ DECLARE
   bad text[] := '{}';
   fn text;
 BEGIN
-  FOREACH fn IN ARRAY ARRAY['auth_user_with_allowlist', 'pg_cron_health', 'bid_recording_coverage', 'bid_recording_coverage_v2', 'user_org_id'] LOOP
+  FOREACH fn IN ARRAY ARRAY['auth_user_with_allowlist', 'pg_cron_health', 'bid_recording_coverage_v2', 'user_org_id'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = fn AND provolatile IN ('s','i')) THEN
       bad := array_append(bad, fn);
     END IF;

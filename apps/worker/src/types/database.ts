@@ -2617,17 +2617,6 @@ export type Database = {
           organization_id: string
         }[]
       }
-      bid_recording_coverage: {
-        Args: { p_org_id: string; p_since: string }
-        Returns: {
-          bid_rows: number
-          is_active: boolean
-          sightings: number
-          winners: number
-          workflow_id: string
-          workflow_name: string
-        }[]
-      }
       bid_recording_coverage_v2: {
         Args: { p_org_id: string; p_since: string }
         Returns: {

@@ -1,0 +1,26 @@
+-- The contract half of expand/contract: drop the first bid recording coverage
+-- function (#1466).
+--
+-- `20260922210000` added bid_recording_coverage_v2 (the same comparison plus
+-- attempt_rows, #1413) and moved both the daily bid recording check and the too
+-- few bids monitor onto it. The original was left in place for one release per
+-- ADR 0007, so a rollback to the old reader stayed possible until the v2 monitor
+-- had a baseline of its own.
+--
+-- VERIFIED BEFORE DROPPING, 2026-09-30:
+--   the KV history bid-ratio-history-v2 holds 8 v2 readings for each of the four
+--   real workflows (a fifth, very low volume workflow has 4), past the seven run
+--   baseline, so no rollback to the old reader is wanted
+--   no .rpc() call in apps/ or packages/ names the original; the worker calls v2
+--   on production: no other function body, view, materialized view or cron job
+--   references it, and nothing depends on it in pg_depend
+--   edge logs over the last 24 hours: every call to the original was the anon
+--   probe of supabase/required-live-objects.json from CI, refused 401 as
+--   expected; the worker's only service_role call was to v2
+--
+-- The manifest entry for the original now expects it ABSENT, so a copy recreated
+-- by hand in production is reported by the deploy's live object check.
+--
+-- Signature from 20260904200000: (p_org_id uuid, p_since timestamptz).
+
+DROP FUNCTION IF EXISTS public.bid_recording_coverage(uuid, timestamptz);
