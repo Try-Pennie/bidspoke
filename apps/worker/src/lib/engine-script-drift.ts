@@ -51,6 +51,7 @@ import { describeConfigVerdict, judgeKeptConfig, type CommittedSource, type Conf
 import LIBERTY1_CLICK_DEFINITION from '../../../../docs/workflows/liberty1-click/definition.json'
 import ENGINE_LIBERTY1_WIRING from '../../../../docs/workflows/engine-bidding/liberty1-wiring.json'
 import ENGINE_BUYER_SELECT from '../../../../docs/workflows/engine-bidding/buyer-select.json'
+import ENGINE_SALESFORCE_NODES from '../../../../docs/workflows/engine-bidding/salesforce-nodes.json'
 
 /** The heartbeat, job_runs and alert name. */
 export const ENGINE_SCRIPT_DRIFT_JOB = 'engine-script-drift'
@@ -186,12 +187,15 @@ export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
 /**
  * The committed settings of the Engine Bidding Workflow (#1662). No full
  * definition of it is committed: the #1544 wiring holds the nodes it added
- * (route_known_no and buyer_click_check are judged), and buyer-select.json holds
- * buyer_select as the canvas ran it on 2026-09-30, the first committed copy.
+ * (route_known_no and buyer_click_check are judged), buyer-select.json holds
+ * buyer_select as the canvas ran it on 2026-09-30, the first committed copy, and
+ * salesforce-nodes.json holds every salesforce node as version 104 ran them
+ * (create_prospect, prospect_trades, patch_prospect, patch_prospect_reject, #1666).
  */
 export const ENGINE_CONFIG_SOURCES: readonly CommittedSource[] = [
   { file: 'docs/workflows/engine-bidding/liberty1-wiring.json', nodes: ENGINE_LIBERTY1_WIRING.add_nodes },
   { file: 'docs/workflows/engine-bidding/buyer-select.json', nodes: ENGINE_BUYER_SELECT.nodes },
+  { file: 'docs/workflows/engine-bidding/salesforce-nodes.json', nodes: ENGINE_SALESFORCE_NODES.nodes },
 ]
 
 /** The Liberty1 click workflow's committed settings: the definition it was built from, every node of it. */

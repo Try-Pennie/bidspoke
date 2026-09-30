@@ -106,11 +106,17 @@ export const WATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly FieldRule[]
     { field: 'operation', why: 'whether the condition continues or stops a lead' },
   ],
   salesforce: [
-    { field: 'operation', why: 'query or update, so whether Salesforce is written at all' },
+    { field: 'operation', why: 'create (when absent), update, upsert, query or apex, so whether and how Salesforce is written' },
     { field: 'object', why: 'the Salesforce object written' },
     { field: 'record_id', why: 'the template for the record written' },
     { field: 'body', why: 'the template for what is written' },
     { field: 'soql', why: 'the template for the query that finds the record' },
+    { field: 'apex_path', why: 'the Apex endpoint called, so which Salesforce logic prices or writes the lead' },
+    { field: 'apex_method', why: 'GET or POST to the Apex endpoint, so whether the body is sent at all' },
+    { field: 'external_id_field', why: 'the field an upsert matches on, so which record is written' },
+    { field: 'external_id_value', why: 'the template for the value an upsert matches on' },
+    { field: 'expected_errors', why: 'the Salesforce rejections that end a lead as rejected rather than failed, and what the caller is told when they do' },
+    { field: 'injected_fields', why: 'fields merged into what is written, overriding the body on a collision' },
   ],
   response: [
     { field: 'status_code', why: 'the status the caller is answered with' },
