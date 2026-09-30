@@ -48,7 +48,7 @@ Borrowed from Automatisch:
 
 ### 6. More than one Salesforce org
 Today: Bidspoke logs into one Salesforce org.
-Need: one connection per org. The export uses trypennie (47 workflows), pennie (3), tpl2 (2), Liberty1's (1) and Achieve's.
+Need: one connection per org. The export uses trypennie (47 workflows), pennie (3), tpl2 (2), Liberty1's (1) and Achieve's (1, `Import Tradelines`, through its own `ACHIEVE_SF_*` settings).
 
 ### 7. Data stores (104 workflows)
 Today: Bidspoke has one shared store that can only save, read and delete, and code steps can't reach it.
@@ -144,4 +144,4 @@ Both live Main Flows still call two Salesforce workflows that run on Pipedream. 
 Not built now. They move to Slate and get ported last.
 
 ### 24. Which workflows to port
-Every workflow that's switched on in the fresh export. Your team is switching more off this week.
+Every workflow that's switched on in the fresh export, except the Marcia and Zoe booking bots in item 23. As of 2026-09-30 the team was switching more workflows off, so the fresh export, not this snapshot, decides the list.
