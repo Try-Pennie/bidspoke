@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import { salesforceUpdate, SalesforceUpdateError } from '../salesforce-write'
+import { salesforceTokenCacheKey } from '../../engine/nodes/salesforce'
 
 const CREDS = { instanceUrl: 'https://pennie.my.salesforce.com', clientId: 'cid', clientSecret: 'sec' }
 const supabase = {} as SupabaseClient
@@ -56,6 +57,14 @@ describe('salesforceUpdate', () => {
     expect(evictToken).toHaveBeenCalledWith(expect.anything(), 'org-1')
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(fetch.mock.calls[1][1]).toEqual(expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer fresh' }) }))
+  })
+
+  it('the 401 clears the very key the engine caches the token under', async () => {
+    const answers = [new Response('', { status: 401 }), new Response(null, { status: 204 })]
+    const deleted: string[] = []
+    const env = { WORKFLOW_CACHE: { delete: async (k: string) => { deleted.push(k) } } } as unknown as Env
+    await salesforceUpdate(env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', { fetch: vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => answers.shift() as Response), creds: vi.fn(async () => CREDS), token: vi.fn(async () => 'tok') })
+    expect(deleted).toEqual([salesforceTokenCacheKey('org-1')])
   })
 
   it('a second 401 after a fresh token is a refusal, not a loop', async () => {

@@ -15,7 +15,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
-import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { getSalesforceToken, salesforceTokenCacheKey } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, type SalesforceCreds } from './salesforce-creds'
 import { SALESFORCE_API_VERSION } from './salesforce-read'
 
@@ -40,7 +40,7 @@ export interface SalesforceUpdateDeps {
   evictToken?: (env: Env, orgId: string) => Promise<void>
 }
 
-const evictCachedToken = (env: Env, orgId: string): Promise<void> => env.WORKFLOW_CACHE.delete(`sf-token-${orgId}`)
+const evictCachedToken = (env: Env, orgId: string): Promise<void> => env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(orgId))
 
 export async function salesforceUpdate(
   env: Env,
