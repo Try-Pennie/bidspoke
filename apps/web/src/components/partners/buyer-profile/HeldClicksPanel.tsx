@@ -127,8 +127,6 @@ interface Props {
 
 export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
-  // Rows removed from the list here: their Salesforce retry went with them, so a finished row never offers it again.
-  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set())
 
   if (error) return <p role="alert" className="text-xs text-red-700">The held clicks could not be read: {error}</p>
   if (!held) return <p role="status" className="text-xs text-gray-600">Reading the held clicks…</p>
@@ -136,7 +134,6 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
 
   function remove(row: HeldClick) {
     setPending(null)
-    setRemoved((r) => new Set(r).add(row.id))
     void onClear(row)
   }
 
@@ -187,7 +184,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                     {outcome.kind === 'done' ? (
                       <div className="space-y-1">
                         <Outcome state={outcome} />
-                        {removed.has(row.id) ? null : <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
+                        {row.cleared ? null : <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
                       </div>
                     ) :row.claim.status === 'unreadable' ? (
                       <p role="alert" className="text-red-700">{row.claim.message}</p>

@@ -259,6 +259,7 @@ export function BuyerProfileSection(props: Props) {
   const clear = (row: HeldClick) =>
     release(row.id, 'Removing it', async () => {
       const r = await api.heldClicks.clear(row.id)
+      if (r.list_cleared) patchHeld(row.id, { cleared: true })
       return r.list_cleared ? 'Removed from the list.' : LIST_NOT_CLEARED.trim()
     })
 

@@ -47,6 +47,26 @@ describe('salesforceUpdate', () => {
     await expect(salesforceUpdate({} as Env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', d)).rejects.toThrow('Salesforce refused the Lead update (502): <html>502 Bad Gateway</html>')
   })
 
+  it('a 401 clears the cached token and tries once more with a fresh one, as the engine step does', async () => {
+    const answers = [new Response('[{"errorCode":"INVALID_SESSION_ID","message":"Session expired or invalid"}]', { status: 401 }), new Response(null, { status: 204 })]
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => answers.shift() as Response)
+    const token = vi.fn().mockResolvedValueOnce('stale').mockResolvedValueOnce('fresh')
+    const evictToken = vi.fn(async () => undefined)
+    await salesforceUpdate({} as Env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', { fetch, creds: vi.fn(async () => CREDS), token, evictToken })
+    expect(evictToken).toHaveBeenCalledWith(expect.anything(), 'org-1')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls[1][1]).toEqual(expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer fresh' }) }))
+  })
+
+  it('a second 401 after a fresh token is a refusal, not a loop', async () => {
+    const fetch = vi.fn(async () => new Response('[{"errorCode":"INVALID_SESSION_ID","message":"Session expired or invalid"}]', { status: 401 }))
+    const evictToken = vi.fn(async () => undefined)
+    const err = await salesforceUpdate({} as Env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', { fetch, creds: vi.fn(async () => CREDS), token: vi.fn(async () => 'tok'), evictToken }).catch((e: unknown) => e)
+    expect((err as SalesforceUpdateError).status).toBe(401)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(evictToken).toHaveBeenCalledTimes(2)
+  })
+
   it('a network failure throws by name', async () => {
     const d = deps(new TypeError('fetch failed'))
     await expect(salesforceUpdate({} as Env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', d)).rejects.toThrow(/fetch failed/)

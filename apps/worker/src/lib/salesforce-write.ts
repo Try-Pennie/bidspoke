@@ -36,7 +36,11 @@ export interface SalesforceUpdateDeps {
   fetch?: typeof fetch
   creds?: (env: Env, supabase: SupabaseClient, orgId: string, purpose: string) => Promise<SalesforceCreds>
   token?: (env: Env, orgId: string, instanceUrl: string, clientId: string, clientSecret: string) => Promise<string>
+  /** Clears the cached token, as the engine step does on a 401, so the next token read fetches a fresh one. */
+  evictToken?: (env: Env, orgId: string) => Promise<void>
 }
+
+const evictCachedToken = (env: Env, orgId: string): Promise<void> => env.WORKFLOW_CACHE.delete(`sf-token-${orgId}`)
 
 export async function salesforceUpdate(
   env: Env,
@@ -56,14 +60,24 @@ export async function salesforceUpdate(
     )
   }
   const creds = await (deps.creds ?? requireSalesforceCreds)(env, supabase, orgId, purpose)
-  const token = await (deps.token ?? getSalesforceToken)(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
+  const readToken = () => (deps.token ?? getSalesforceToken)(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
   const doFetch = deps.fetch ?? fetch
-  const res = await doFetch(`${creds.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/${object}/${recordId}`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(SALESFORCE_UPDATE_TIMEOUT_MS),
-  })
+  const patch = async (token: string) =>
+    doFetch(`${creds.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/${object}/${recordId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SALESFORCE_UPDATE_TIMEOUT_MS),
+    })
+  let res = await patch(await readToken())
+  // A cached token Salesforce has expired or revoked answers 401 until the cache
+  // ages out, so every Retry would repeat it. Clear it and try once with a fresh one.
+  if (res.status === 401) {
+    const evict = deps.evictToken ?? evictCachedToken
+    await evict(env, orgId)
+    res = await patch(await readToken())
+    if (res.status === 401) await evict(env, orgId)
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new SalesforceUpdateError(`Salesforce refused the ${object} update (${res.status}): ${refusalText(text)}`, res.status)

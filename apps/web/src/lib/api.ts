@@ -92,6 +92,8 @@ export interface HeldClick {
   claim: HeldClaim
   /** A sold entry's last Salesforce updates (#1659); null while the claim is not sold. */
   salesforce: SalesforceWritesView | null
+  /** Set on the page only, once the server confirmed the entry left the list; its Salesforce retry went with it. */
+  cleared?: boolean
 }
 
 export type MarkSentResult =
