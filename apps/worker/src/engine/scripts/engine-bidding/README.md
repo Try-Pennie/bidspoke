@@ -26,7 +26,7 @@ the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 | `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape, carrying Tripoint's own name, click URL, routing code 2 and Success, Duplicate or Fail class, because this script IS Tripoint, #1416) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). Two more added last on every return by #1540: `tripoint_answer` (accepted, declined, in_progress for 1009, invalid_data and null_id_fault for the two known 502 answers, skipped, or unknown) and `unknown_reason`. Unknown is anything not positively recognised (any other 5xx, any 4xx, a 2xx that does not parse, is not ok or has no result code, a fetch that throws, and a call aborted after 15 s); it no longer throws, it returns a no sale that `build_response_body` rejects normally. |
 | `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, completes an older Tripoint Ping's sale with Tripoint's values (transitional, removed at Stage C), and publishes the normalised sale on its output. A sold lead lands on the sale's click URL, never on a constant (#1416); a sell off lead nobody bought takes the Pennie pages. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` with the sale's class when Tripoint declined with one; a rejection with no class carries the two fields alone. |
 | `patch_prospect_body.js` | Patch Prospect Body | Reads the sale from `build_response_body`'s output. The four External fields (partner name, debt, routing code, exchange status) come from the sale on every accepted sale, whichever buyer; `TripointLeadID__c` and `Tripoint_Response__c` are written only when Tripoint is the buyer, because Salesforce has no field for another buyer's reference or class yet. |
-| `known_no_gate.js` | Known No Gate (new, #1544) | Written here first, for a node the canvas does not have yet. Says whether the node that decided the lead gave a KNOWN no (tripoint_ping's `tripoint_answer` declined, invalid_data or null_id_fault; buyer_select no_sale declined_by_buyer), read by the same precedence `build_response_body` reads its sale by. The Branch after it sends a known no to the buyer_click_check node. Recorded in `KEPT_ENGINE_SCRIPTS` with `newNodeSince` instead of a baseline, so until the node is added the drift check reports awaiting_paste, not a missing node. |
+| `known_no_gate.js` | Known No Gate (new, #1544) | Written here first, for a node the canvas did not have; on the canvas since version 101 (2026-09-29). Says whether the node that decided the lead gave a KNOWN no (tripoint_ping's `tripoint_answer` declined, invalid_data or null_id_fault; buyer_select no_sale declined_by_buyer), read by the same precedence `build_response_body` reads its sale by. The Branch after it sends a known no to the buyer_click_check node. It carried `newNodeSince` in `KEPT_ENGINE_SCRIPTS` until that paste; now it has neither that nor a baseline, so the drift check judges it like the others and a missing node pages. |
 
 **#1544 (a click sold buyer on a known Tripoint no)** changed `build_response_body` (a
 known no the buyer_click_check node found eligible is offered to that buyer: the
@@ -55,14 +55,14 @@ older Tripoint Ping beside the new pair changes nothing. One save covers all
 three nodes and leaves no partial state; the hourly drift check confirms each
 one afterwards.
 
-The #1540 `tripoint_ping` can be pasted on its own, and only after the Worker
-carrying #1540 is deployed. It changes no field the other two read (an unknown
-answer is a sale with no class, which both already reject), and once it is on
-the canvas a Tripoint outage no longer fails runs: the aggregated Tripoint
-outage page then counts `tripoint_ping` steps answered `unknown`
-(`lib/upstream-outage.ts`), which only the deployed Worker does. The drift
-check reports it `awaiting_paste` until then, because the canvas baseline in
-`KEPT_ENGINE_SCRIPTS` is still the version 100 script.
+The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
+#1540 was deployed. It changes no field the other two read (an unknown answer is
+a sale with no class, which both already reject), and with it on the canvas a
+Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
+`tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
+on the canvas since version 101, and none of the kept Engine scripts carries a
+baseline now (version 103 holds all four), so any difference from the canvas is
+a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce
