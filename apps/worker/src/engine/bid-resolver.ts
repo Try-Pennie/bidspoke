@@ -502,11 +502,28 @@ const CLASSIFIERS: Record<string, Classifier> = {
   tripoint_result: tripointResult,
 }
 
-// Tripoint result-code classification (single source of truth, shared with the
-// code-node bid-log derivation in bid-log.ts). Approved 1000-1001 and 1013-1017;
-// 1002-1005 and 1020 are Duplicate; everything else is a rejection.
+/**
+ * The Tripoint result codes that mean Duplicate (#1549): the one list. Tripoint's
+ * own notes on the captured answers say so for 1002, 1003 and 1005 ("Duplicate
+ * Lead", "Duplicate Lead Detected"), in packages/buyer-profile/fixtures/tripoint.
+ * 1009 is not here: it is a submission still in progress, not a lead Tripoint holds.
+ *
+ * Every consumer is held to it by scripts/__tests__/tripoint-duplicate-codes.test.ts:
+ * this classifier (the sightings and Snowflake, through bid-log.ts), the tripoint_ping
+ * and build_response_body canvas scripts (Salesforce's Tripoint_Response__c), which
+ * run in a sandbox and so carry it as a literal, and the Tripoint partner record's
+ * duplicate_signals, whose value is TRIPOINT_DUPLICATE_SIGNALS below.
+ */
+export const TRIPOINT_DUPLICATE_RESULT_CODES: readonly number[] = [1002, 1003, 1004, 1005, 1020]
+
+/** partner_configs.duplicate_signals for Tripoint, the rule the buyer_select node reads. */
+export const TRIPOINT_DUPLICATE_SIGNALS = [{ field: 'data.createLead.resultCode', in: [...TRIPOINT_DUPLICATE_RESULT_CODES] }]
+
+// Tripoint result-code classification, shared with the code-node bid-log
+// derivation in bid-log.ts. Approved 1000-1001 and 1013-1017; the codes in
+// TRIPOINT_DUPLICATE_RESULT_CODES are Duplicate; everything else is a rejection.
 export function classifyTripointResultCode(code: number): 'Success' | 'Duplicate' | 'Fail' {
-  if ((code >= 1002 && code <= 1005) || code === 1020) return 'Duplicate'
+  if (TRIPOINT_DUPLICATE_RESULT_CODES.includes(code)) return 'Duplicate'
   if (code === 1000 || code === 1001 || (code >= 1013 && code <= 1017)) return 'Success'
   return 'Fail'
 }

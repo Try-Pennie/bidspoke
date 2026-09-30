@@ -43,10 +43,12 @@
 // The class is the one the node computes from the buyer's rules: Success on an
 // accept, Duplicate on a code in Tripoint's duplicate set, Fail on any other code,
 // and none when Tripoint gave no code (the two 502 faults).
+// The duplicate codes are the one list, TRIPOINT_DUPLICATE_RESULT_CODES in the Worker's
+// bid-resolver.ts (#1549); a test holds this copy to it, because a script cannot import.
 const tripointSale = (accepted, buyerReference, resultCode) => {
   let response_class = null;
   if (accepted) response_class = 'Success';
-  else if (resultCode != null) response_class = [1003, 1004, 1020].includes(Number(resultCode)) ? 'Duplicate' : 'Fail';
+  else if (resultCode != null) response_class = [1002, 1003, 1004, 1005, 1020].includes(Number(resultCode)) ? 'Duplicate' : 'Fail';
   return {
     skipped: false,
     accepted,

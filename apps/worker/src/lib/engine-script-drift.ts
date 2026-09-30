@@ -105,21 +105,27 @@ export interface KeptWorkflow {
  * difference from the canvas is a drift, and a missing node pages as missing.
  * To edit one here before its paste again, record the live canvas script's hash
  * as its baseline in the same change.
+ *
+ * #1549 edited tripoint_ping and build_response_body (the duplicate result codes
+ * became 1002 to 1005 and 1020), so both carry version 101's hash again until
+ * they are pasted; clear both baselines in the change after the check reads agree.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
     namespace: 'tripoint_ping',
     file: 'tripoint_ping.js',
     script: TRIPOINT_PING,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    // Version 101's script, before #1549 moved 1002 and 1005 into the duplicate codes.
+    canvasBaselineSha256: 'fccee3d5a423222b246bcf46e05ac8660ffeb4208bfdc03d672794e213e0586a',
+    baselineReadOn: '2026-09-30',
   },
   {
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    // Version 101's script, before #1549 moved 1002 and 1005 into the duplicate codes.
+    canvasBaselineSha256: 'f551e90acc68d26fdb27bb81be85f4b995dce707520395a73e5c4c553b6e4b43',
+    baselineReadOn: '2026-09-30',
   },
   {
     namespace: 'patch_prospect_body',
