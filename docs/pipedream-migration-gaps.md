@@ -4,7 +4,7 @@ Written 2026-09-30 from the Pipedream export of that day (346 workflows, 320 swi
 
 Pipedream Workflows stops on 2027-03-31 and deletes everything, logins included, by 2027-04-30.
 
-Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
+Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). Every "Decided" line below is quoted from Dan's decisions of 2026-09-30, recorded at https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18687008. The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
 
 ---
 
@@ -127,7 +127,7 @@ I build and run the tooling, and you approve each step. It covers:
 3. The step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels, about 174 workflow files), read from your browser, read only, if Pipedream offers no better way.
 
 ### 20. SFTP file transfers and fixed IP addresses (12 workflows)
-Cloudflare can do neither. Decided 2026-09-30: this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day. The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
+Cloudflare can do neither. Decided 2026-09-30: this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day, as Dan reported in that session (decision 8 in the record linked above). The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
 
 ### 21. Repointing every caller
 Every Pipedream workflow has its own web address, configured somewhere else. Each one needs changing, by us or by the owner:
