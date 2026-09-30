@@ -53,18 +53,29 @@ export interface PricingComparison {
 
 /** The partner field is spelled two ways across objects (Lead against Submission). */
 const PARTNER_FIELD = '(?:ExternalPartnerName__c|External_Partner_Name__c)'
-const DEBT = 'ExternalDebtAmount__c'
+/**
+ * The debt a band is priced on, in each spelling the org has used: the old
+ * ExternalDebtAmount__c alone, EngineDebt__c alone (Prospect, 2026-09-29), and
+ * EngineDebt__c when present else ExternalDebtAmount__c (Lead and Submission,
+ * 2026-09-29, #1640). The first use is captured and every later use must repeat
+ * it, so a branch pricing its bands on two different figures is refused.
+ */
+const DEBT_FIRST =
+  '(?<debt>ExternalDebtAmount__c|EngineDebt__c|' +
+  'IF\\(NULLVALUE\\(EngineDebt__c, 0\\) > 0, EngineDebt__c, ExternalDebtAmount__c\\))'
+const DEBT = '\\k<debt>'
 const NUM = '(\\d+(?:\\.\\d+)?)'
 
 /**
  * The Tripoint branch, whitespace normalised:
  *   <partner> = "Tripoint", IF(AND(<debt> >= FLOOR, <debt> <= UPTO), <debt> * LOW,
  *     IF(<debt> >= FROM, <debt> * HIGH, 0))
- * Anchored on the partner comparison so the Engine and AmOne branches around it
- * cannot answer for it (L135).
+ * The low band's edge may also be written `< UPTO + 1` (#1640). Anchored on the
+ * partner comparison so the Engine, Liberty1 and AmOne branches around it cannot
+ * answer for it (L135).
  */
 const TRIPOINT_BRANCH = new RegExp(
-  `${PARTNER_FIELD} = "Tripoint", IF\\(AND\\(${DEBT} >= ${NUM}, ${DEBT} <= ${NUM}\\), ` +
+  `${PARTNER_FIELD} = "Tripoint", IF\\(AND\\(${DEBT_FIRST} >= ${NUM}, ${DEBT} (<=|<) ${NUM}\\), ` +
     `${DEBT} \\* ${NUM}, IF\\(${DEBT} >= ${NUM}, ${DEBT} \\* ${NUM}, 0\\)\\)`,
 )
 
@@ -84,8 +95,12 @@ function normalise(formula: string): string {
 export function parseTripointRevenueFormula(formula: string): TripointRule | null {
   const m = TRIPOINT_BRANCH.exec(normalise(formula))
   if (!m) return null
-  const [, floor, upTo, low, from, high] = m.map(Number)
-  if ([floor, upTo, low, from, high].some((n) => !Number.isFinite(n))) return null
+  const [, , floorText, edgeOp, edgeText, lowText, fromText, highText] = m
+  const [floor, edge, low, from, high] = [floorText, edgeText, lowText, fromText, highText].map(Number)
+  if ([floor, edge, low, from, high].some((n) => !Number.isFinite(n))) return null
+  // Debts are whole dollars, so `< 12500` is the same band as `<= 12499`; the
+  // comparison below reasons in the inclusive form.
+  const upTo = edgeOp === '<' ? edge - 1 : edge
   return {
     floor,
     lowBand: { upTo, multiplier: low },

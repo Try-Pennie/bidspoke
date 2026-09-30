@@ -47,6 +47,51 @@ const PROSPECT_FORMULA = `IF(
     )
 )`
 
+/**
+ * Lead.ExternalRevenue__c, verbatim from the Tooling API on 2026-09-30, as Brian
+ * Nelms saved it 2026-09-29 18:30 UTC: a Liberty1 branch added, and the Tripoint
+ * debt read as EngineDebt__c when present, else ExternalDebtAmount__c.
+ */
+const LEAD_FORMULA_2026_09_29 = `IF(ISPICKVAL(External_Exchange_Status__c, "Completed"),
+  IF(ExternalPartnerName__c = "Engine",
+    TotalPayout__c,
+    IF(ExternalPartnerName__c = "Liberty 1",
+      IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) * 0.001275,
+      IF(ExternalPartnerName__c = "Tripoint",
+        IF(AND(IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) >= 10000,
+               IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) < 12500),
+          IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) * 0.0009,
+          IF(IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) >= 12500,
+            IF(NULLVALUE(EngineDebt__c, 0) > 0, EngineDebt__c, ExternalDebtAmount__c) * 0.0012,
+            0)),
+        IF(ExternalPartnerName__c = "AmOne",
+          AmOneBid__c,
+          0)))),
+  0)`
+
+/** Prospect__c.ExternalExchangeRevenue__c, verbatim from the Tooling API on 2026-09-30. */
+const PROSPECT_FORMULA_2026_09_29 = `IF(
+  ExternalPartnerName__c = "Engine",
+  0,
+  IF(
+    ExternalPartnerName__c = "Liberty 1",
+    EngineDebt__c * 0.001275,
+    IF(
+      ExternalPartnerName__c = "Tripoint",
+      IF(
+        AND(EngineDebt__c >= 10000, EngineDebt__c <= 12499),
+        EngineDebt__c * 0.0009,
+        IF(
+          EngineDebt__c >= 12500,
+          EngineDebt__c * 0.0013,
+          0
+        )
+      ),
+      0
+    )
+  )
+)`
+
 /** Bidspoke's config as it stood when #1166 was filed. */
 const BIDSPOKE_0013 = {
   pricing_mode: 'tiered_multiplier',
@@ -81,6 +126,33 @@ describe('parseTripointRevenueFormula', () => {
 
   it('refuses a formula with no Tripoint branch rather than inventing a rule', () => {
     expect(parseTripointRevenueFormula('IF(ExternalPartnerName__c = "Engine", TotalPayout__c, 0)')).toBeNull()
+  })
+
+  it('reads the Lead formula as Brian rewrote it on 2026-09-29 into the same rule as before (#1640)', () => {
+    // Debt now prefers EngineDebt__c and the low edge is written `< 12500`;
+    // neither changes what a whole dollar debt is worth, so the rule is unchanged.
+    expect(parseTripointRevenueFormula(LEAD_FORMULA_2026_09_29)).toEqual<TripointRule>({
+      floor: 10000,
+      lowBand: { upTo: 12499, multiplier: 0.0009 },
+      highBand: { from: 12500, multiplier: 0.0012 },
+    })
+  })
+
+  it('reads the Prospect formula as rewritten on 2026-09-29, whose debt is EngineDebt__c alone (#1640)', () => {
+    expect(parseTripointRevenueFormula(PROSPECT_FORMULA_2026_09_29)).toEqual<TripointRule>({
+      floor: 10000,
+      lowBand: { upTo: 12499, multiplier: 0.0009 },
+      highBand: { from: 12500, multiplier: 0.0013 },
+    })
+  })
+
+  it('refuses a Tripoint branch that prices its bands on two different debt figures (#1640)', () => {
+    const mixed = LEAD_FORMULA.replace(
+      'IF(ExternalDebtAmount__c >= 12500, ExternalDebtAmount__c * 0.0012, 0)',
+      'IF(EngineDebt__c >= 12500, EngineDebt__c * 0.0012, 0)',
+    )
+    expect(mixed).not.toBe(LEAD_FORMULA)
+    expect(parseTripointRevenueFormula(mixed)).toBeNull()
   })
 
   it('refuses a Tripoint branch of a shape it has not seen', () => {
