@@ -24,6 +24,10 @@
  *                   the node and the repo has no copy of what runs. Paged, with
  *                   the node, the file and the first differing line.
  *
+ * The same run compares each kept workflow's outcome deciding node settings
+ * with the committed definition it was built from (#1662, kept-node-config.ts),
+ * and a difference pages in the same alert naming the setting and both values.
+ *
  * A missing node and an unreadable mirror are findings in their own words, and
  * an unreadable mirror judges nothing rather than reading as an empty canvas
  * (L215). Runs hourly on the `0 * * * *` cron; heartbeat and job_runs name
@@ -43,6 +47,10 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { fetchGitHubFileText } from './github'
 import { withJobRun, type JobRunEnding } from './job-run-record'
+import { describeConfigVerdict, judgeKeptConfig, type CommittedSource, type ConfigVerdict } from './kept-node-config'
+import LIBERTY1_CLICK_DEFINITION from '../../../../docs/workflows/liberty1-click/definition.json'
+import ENGINE_LIBERTY1_WIRING from '../../../../docs/workflows/engine-bidding/liberty1-wiring.json'
+import ENGINE_BUYER_SELECT from '../../../../docs/workflows/engine-bidding/buyer-select.json'
 
 /** The heartbeat, job_runs and alert name. */
 export const ENGINE_SCRIPT_DRIFT_JOB = 'engine-script-drift'
@@ -92,6 +100,11 @@ export interface KeptWorkflow {
   /** The folder under engine/scripts/. */
   folder: string
   scripts: readonly KeptScript[]
+  /**
+   * The committed files whose nodes' outcome deciding settings are compared
+   * with the canvas (#1662, kept-node-config.ts). Empty judges no settings.
+   */
+  configSources: readonly CommittedSource[]
 }
 
 /**
@@ -170,10 +183,26 @@ export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
   { namespace: 'click_patch', file: 'liberty1_click_patch.js', script: LIBERTY1_CLICK_PATCH, canvasBaselineSha256: null, baselineReadOn: null },
 ]
 
-/** Every workflow the check watches, each with its folder of kept scripts. */
+/**
+ * The committed settings of the Engine Bidding Workflow (#1662). No full
+ * definition of it is committed: the #1544 wiring holds the nodes it added
+ * (route_known_no and buyer_click_check are judged), and buyer-select.json holds
+ * buyer_select as the canvas ran it on 2026-09-30, the first committed copy.
+ */
+export const ENGINE_CONFIG_SOURCES: readonly CommittedSource[] = [
+  { file: 'docs/workflows/engine-bidding/liberty1-wiring.json', nodes: ENGINE_LIBERTY1_WIRING.add_nodes },
+  { file: 'docs/workflows/engine-bidding/buyer-select.json', nodes: ENGINE_BUYER_SELECT.nodes },
+]
+
+/** The Liberty1 click workflow's committed settings: the definition it was built from, every node of it. */
+export const LIBERTY1_CLICK_CONFIG_SOURCES: readonly CommittedSource[] = [
+  { file: 'docs/workflows/liberty1-click/definition.json', nodes: LIBERTY1_CLICK_DEFINITION.definition.nodes },
+]
+
+/** Every workflow the check watches, each with its folder of kept scripts and its committed settings. */
 export const KEPT_CANVAS_WORKFLOWS: readonly KeptWorkflow[] = [
-  { name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: KEPT_ENGINE_SCRIPTS },
-  { name: 'Liberty1 click workflow', workflowId: LIBERTY1_CLICK_WORKFLOW_ID, folder: 'liberty1-click', scripts: KEPT_LIBERTY1_CLICK_SCRIPTS },
+  { name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: KEPT_ENGINE_SCRIPTS, configSources: ENGINE_CONFIG_SOURCES },
+  { name: 'Liberty1 click workflow', workflowId: LIBERTY1_CLICK_WORKFLOW_ID, folder: 'liberty1-click', scripts: KEPT_LIBERTY1_CLICK_SCRIPTS, configSources: LIBERTY1_CLICK_CONFIG_SOURCES },
 ]
 
 type VerdictBase = { workflow: string; namespace: string; file: string }
@@ -295,6 +324,8 @@ export interface DriftDeps {
 export interface DriftSummary {
   skipped?: 'local_dev' | 'no_repo'
   verdicts: ScriptVerdict[]
+  /** The committed node settings against the canvas (#1662), judged in the same run. */
+  configVerdicts: ConfigVerdict[]
   /** The lines that page. Empty means the canvas and the repo agree, or the paste is still awaited. */
   findings: string[]
   /** Why nothing could be judged, when the mirror could not be read. */
@@ -304,17 +335,18 @@ export interface DriftSummary {
 export async function runEngineScriptDrift(deps: DriftDeps): Promise<DriftSummary> {
   if (deps.localDev) {
     deps.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', verdicts: [], findings: [] }
+    return { skipped: 'local_dev', verdicts: [], configVerdicts: [], findings: [] }
   }
   // No repo means the backup is switched off, so there is no mirror to read.
   // A repo with no token is the backup's own misconfiguration (#240) and is
   // reported the same way the backup reports it.
-  if (!deps.repo) return { skipped: 'no_repo', verdicts: [], findings: [] }
+  if (!deps.repo) return { skipped: 'no_repo', verdicts: [], configVerdicts: [], findings: [] }
   if (!deps.token) {
     const reason = 'GITHUB_TOKEN is not set while GITHUB_REPO is configured, so the mirror cannot be read'
-    return { verdicts: [], findings: [`could not read the canvas mirror: ${reason}`], unreadable: reason }
+    return { verdicts: [], configVerdicts: [], findings: [`could not read the canvas mirror: ${reason}`], unreadable: reason }
   }
   const verdicts: ScriptVerdict[] = []
+  const configVerdicts: ConfigVerdict[] = []
   const unreadableFindings: string[] = []
   const unreadable: string[] = []
   for (const w of deps.workflows) {
@@ -331,22 +363,34 @@ export async function runEngineScriptDrift(deps: DriftDeps): Promise<DriftSummar
       continue
     }
     verdicts.push(...(await judgeKeptScripts(w.scripts, mirror.definition, w.name)))
+    configVerdicts.push(...judgeKeptConfig(w.configSources, mirror.definition, w.name))
   }
   for (const v of verdicts) deps.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] ${describeVerdict(v)}`)
-  const findings = [...unreadableFindings, ...verdicts.filter((v) => v.state === 'drift' || v.state === 'missing_node').map(describeVerdict)]
-  return { verdicts, findings, ...(unreadable.length > 0 ? { unreadable: unreadable.join('; ') } : {}) }
+  for (const v of configVerdicts) deps.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] ${describeConfigVerdict(v)}`)
+  const findings = [
+    ...unreadableFindings,
+    ...verdicts.filter((v) => v.state === 'drift' || v.state === 'missing_node').map(describeVerdict),
+    ...configVerdicts.filter((v) => v.state !== 'agree').map(describeConfigVerdict),
+  ]
+  return { verdicts, configVerdicts, findings, ...(unreadable.length > 0 ? { unreadable: unreadable.join('; ') } : {}) }
 }
 
 export function endingOf(summary: DriftSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped }
-  const judged = summary.verdicts.filter((v) => v.state !== 'not_built')
+  const judged = [...summary.verdicts.filter((v) => v.state !== 'not_built'), ...summary.configVerdicts]
   if (summary.unreadable && judged.length === 0) return { outcome: 'unmeasured', detail: summary.unreadable }
-  const key = (v: ScriptVerdict) => `${v.workflow}/${v.namespace}`
+  const key = (v: { workflow: string; namespace: string }) => `${v.workflow}/${v.namespace}`
   const scripts = Object.fromEntries(summary.verdicts.map((v) => [key(v), v.state]))
   const awaiting = summary.verdicts.filter((v) => v.state === 'awaiting_paste').map(key)
   const notBuilt = summary.verdicts.filter((v) => v.state === 'not_built').map(key)
+  // One state per node: agree only when every watched setting agrees, else the first finding's.
+  const config: Record<string, ConfigVerdict['state']> = {}
+  for (const v of summary.configVerdicts) {
+    const k = key(v)
+    if (config[k] === undefined || config[k] === 'agree') config[k] = v.state
+  }
   const outcome = summary.findings.length > 0 ? 'findings' : awaiting.length > 0 ? 'awaiting_paste' : 'ok'
-  return { outcome, summary: { scripts, awaiting, not_built: notBuilt, findings: summary.findings.length } }
+  return { outcome, summary: { scripts, config, awaiting, not_built: notBuilt, findings: summary.findings.length } }
 }
 
 /**
@@ -361,15 +405,19 @@ export async function runEngineScriptDriftAndPage(run: () => Promise<DriftSummar
 
 export const ENGINE_SCRIPT_DRIFT_REMEDY: AlertRemedy = {
   consequence:
-    'A code node on a kept workflow holds a script that is neither the kept copy in apps/worker/src/engine/scripts/<folder> ' +
-    'nor the canvas script that copy was derived from, so the repo has no copy of what is running and the tests are proving a ' +
-    'script the canvas no longer runs. The workflow itself is unaffected. Each line names the workflow, the node and the first line that differs:',
+    'A kept workflow on the canvas holds a code node script, or an outcome deciding node setting, that the repo does not hold: ' +
+    'a script that is neither the kept copy in apps/worker/src/engine/scripts/<folder> nor the canvas script that copy was derived from, ' +
+    'or a setting that differs from the committed definition under docs/workflows. The repo then has no copy of what is running and the ' +
+    'tests are proving something the canvas no longer runs. The workflow itself is unaffected. Each line names the workflow, the node, ' +
+    'and the first line or the setting that differs, with both values:',
   fixHint:
     'Open the node named on the workflow named and compare its script with the kept file. If the canvas edit is the one ' +
     'that should stand, copy the canvas script into the kept file in a PR, update its canvasBaselineSha256 in ' +
     'apps/worker/src/lib/engine-script-drift.ts, and rerun the script tests. If the kept file is right, paste it into the node and ' +
-    'save. The check runs hourly and goes quiet once the two agree; a mirror it could not read is reported in its own words.',
-  headlineVerb: 'found a canvas script the repo does not hold',
+    'save. For a setting, if the canvas value is the one that should stand, copy it into the committed file the line names in a PR; ' +
+    'if the file is right, set it back on the node and save. The check runs hourly and goes quiet once the two agree; a mirror it ' +
+    'could not read is reported in its own words.',
+  headlineVerb: 'found a canvas script or node setting the repo does not hold',
   itemNoun: { one: 'difference', many: 'differences' },
 }
 
