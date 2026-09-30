@@ -153,6 +153,24 @@ describe('postClickAlert', () => {
   })
 })
 
+describe('a page claims only what the success line proves (#1547)', () => {
+  // A success line proves the buyer answered with an id: for Liberty1's
+  // LeadConnector that is a run id for a queued trigger, not a created record.
+  it('no page, on any reason, says the buyer created or confirmed a record', () => {
+    for (const reason of CLICK_PAGE_REASONS) {
+      const m = clickAlertMessage({ ...page, reason } as ClickAlert, 'https://app.example')
+      expect(`${m.header} ${m.body}`, reason).not.toMatch(/\bcreated\b|confirmed the record/i)
+    }
+  })
+
+  it('sold_mark_failed and count_failed say the buyer confirmed receipt of the lead', () => {
+    for (const reason of ['sold_mark_failed', 'count_failed'] as const) {
+      expect(clickAlertMessage({ ...page, reason } as ClickAlert, 'https://app.example').body, reason).toMatch(/The buyer confirmed receipt of the lead/)
+    }
+    expect(clickAlertMessage({ ...page, reason: 'sold_mark_failed' } as ClickAlert, 'https://app.example').header).toMatch(/confirmed receipt of a click but the claim could not be marked sold/)
+  })
+})
+
 describe('a page about a held claim says where a person releases it (#1552)', () => {
   it('every held reason whose hold was recorded points at the held clicks on the partner page, and no other reason does', () => {
     for (const reason of CLICK_PAGE_REASONS) {

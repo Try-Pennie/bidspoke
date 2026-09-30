@@ -213,7 +213,7 @@ export interface HeldClickRecord {
   prospect_id: string
   reason: HeldClickReason
   detail: string
-  /** The buyer's lead id when the buyer confirmed the record; null when it is not known. */
+  /** The id the buyer answered with when it confirmed receipt; null when it is not known. */
   partner_lead_id: string | null
   workflow_id: string
   execution_id: string

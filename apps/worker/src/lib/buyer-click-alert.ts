@@ -113,12 +113,12 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
     held: 'An earlier send on this prospect never recorded its outcome. The claim is held, so this click was not sent; a person has to check with the buyer and release it.',
   },
   sold_mark_failed: {
-    header: 'created a record but the claim could not be marked sold',
-    held: 'The buyer confirmed the record. The claim is still held in flight, so a later click on this prospect will not send; the count below says whether the click was counted.',
+    header: 'confirmed receipt of a click but the claim could not be marked sold',
+    held: 'The buyer confirmed receipt of the lead. The claim is still held in flight, so a later click on this prospect will not send; the count below says whether the click was counted.',
   },
   count_failed: {
     header: 'sent a click that could not be counted',
-    held: "The buyer confirmed the record, but today's click count did not take it, so the count reads low by this click until it is added.",
+    held: "The buyer confirmed receipt of the lead, but today's click count did not take it, so the count reads low by this click until it is added.",
   },
   free_failed: {
     header: 'refused a click, and the claim could not be released',
