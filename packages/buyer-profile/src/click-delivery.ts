@@ -33,10 +33,28 @@ export interface ClickDeliveryDocument {
   success_pattern: string
 }
 
-export const clickDeliveryFromDocument = (d: ClickDeliveryDocument): ClickDelivery => ({
-  routes: d.routes.map((r) => ({ name: r.name, url: r.url, states: [...r.states] })),
-  successPattern: d.success_pattern,
-})
+/**
+ * The evaluator's shape from a stored or sent delivery. It never throws: a value
+ * written around save_buyer_profile could be malformed, and one buyer's bad row
+ * must not fail the read every buyer shares. What is malformed is carried as
+ * something the shared rules refuse (no routes, an unset reply, a state list of
+ * nothing), so buyer_click_send fails that buyer by name instead.
+ */
+export function clickDeliveryFromDocument(d: ClickDeliveryDocument): ClickDelivery {
+  const raw = d as unknown as { routes?: unknown; success_pattern?: unknown }
+  const routes = Array.isArray(raw.routes) ? raw.routes : []
+  return {
+    routes: routes.map((r) => {
+      const row = (r ?? {}) as { name?: unknown; url?: unknown; states?: unknown }
+      return {
+        name: typeof row.name === 'string' ? row.name : '',
+        url: typeof row.url === 'string' ? row.url : '',
+        states: Array.isArray(row.states) ? row.states.filter((s): s is string => typeof s === 'string') : [],
+      }
+    }),
+    successPattern: typeof raw.success_pattern === 'string' ? raw.success_pattern : '',
+  }
+}
 
 // ── The success line ─────────────────────────────────────────────────────────
 

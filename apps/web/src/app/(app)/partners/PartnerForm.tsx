@@ -213,6 +213,9 @@ export default function PartnerForm({
    * for a yes before anything is written; null when nothing is waiting on it.
    */
   const [deliveryConfirm, setDeliveryConfirm] = useState<string[] | null>(null)
+  // The confirmation describes the profile as it was when Save was pressed; any
+  // later edit makes it describe something else, so it is withdrawn and Save asks again.
+  useEffect(() => { setDeliveryConfirm(null) }, [profile])
   // What the profile looked like when it loaded or was last saved, so an edit to
   // it counts as dirty and a load does not.
   const profileBaseline = useRef<string | null>(null)

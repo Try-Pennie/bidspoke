@@ -796,7 +796,8 @@ BEGIN
     '{"routes": [{"name": "A", "url": "http://a.example/a", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
     '{"routes": [{"name": "A", "url": "https://a.example/a", "states": ["ZZ"]}, {"name": "B", "url": "https://a.example/b", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
     '{"routes": [{"name": "A", "url": "https://a.example/a", "states": []}], "success_pattern": ""}'::jsonb,
-    '{"routes": "A", "success_pattern": "(?<id>x)"}'::jsonb
+    '{"routes": "A", "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A ", "url": "https://a.example/a", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb
   ] LOOP
     BEGIN
       PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
@@ -807,6 +808,13 @@ BEGIN
       IF msg IS DISTINCT FROM 'click_delivery_invalid' THEN RAISE EXCEPTION 'wrong refusal for %: %', bad, msg; END IF;
     END;
   END LOOP;
+  -- A write around the save function is refused by the table itself (review of #1673).
+  BEGIN
+    UPDATE public.buyer_profiles SET click_delivery = '{"routes": "A", "success_pattern": "(?<id>x)"}'::jsonb WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+    RAISE EXCEPTION 'the table accepted a malformed delivery written directly';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  IF (SELECT provolatile FROM pg_proc WHERE proname = 'click_delivery_problem') IS DISTINCT FROM 'i' THEN RAISE EXCEPTION 'click_delivery_problem is not immutable'; END IF;
   INSERT INTO suite_cases(name) VALUES ('click delivery refused on an offer buyer and when malformed');
 END
 $do$;

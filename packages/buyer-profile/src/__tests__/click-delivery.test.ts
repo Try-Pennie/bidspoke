@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
-import { compileSuccessPattern, pickClickRoute, successPatternOf, type ClickDelivery } from '../click-delivery'
+import { clickDeliveryFromDocument, compileSuccessPattern, pickClickRoute, successPatternOf, type ClickDelivery, type ClickDeliveryDocument } from '../click-delivery'
 import { validateProfile, type PartnerRulesForValidation } from '../validate'
 
 const LEADCONNECTOR = 'https://services.leadconnectorhq.com/hooks/abc/webhook-trigger'
@@ -114,6 +114,9 @@ describe('validateProfile: click delivery', () => {
     expect(codes({ ...delivery, routes: [{ ...delivery.routes[0], name: ' ' }, delivery.routes[1]] })).toEqual(['click_route_name_invalid'])
     expect(codes({ ...delivery, routes: [{ ...delivery.routes[0], name: 'DI4' }, delivery.routes[1]] })).toEqual(['click_route_name_invalid'])
   })
+  it('refuses a name with spaces around it, because the history keys a route by its name exactly as stored', () => {
+    expect(codes({ ...delivery, routes: [{ ...delivery.routes[0], name: 'DV1 ' }, delivery.routes[1]] })).toEqual(['click_route_name_invalid'])
+  })
   it('refuses a state outside the vocabulary', () => {
     expect(codes({ ...delivery, routes: [{ ...delivery.routes[0], states: ['ZZ'] }, delivery.routes[1]] })).toEqual(['click_route_unknown_state'])
   })
@@ -143,5 +146,16 @@ describe('pickClickRoute', () => {
   })
   it('answers null when there is no catch-all, rather than guessing a route', () => {
     expect(pickClickRoute({ ...delivery, routes: [delivery.routes[0]] }, 'TX')).toBeNull()
+  })
+})
+
+describe('clickDeliveryFromDocument never throws on a malformed stored value', () => {
+  it('carries what is malformed as something the shared rules refuse', () => {
+    for (const bad of [{}, { routes: 'x', success_pattern: 5 }, { routes: [null, { name: 1, url: null, states: 'WA' }], success_pattern: '(?<id>x)' }]) {
+      const d = clickDeliveryFromDocument(bad as unknown as ClickDeliveryDocument)
+      const route = pickClickRoute(d, 'WA')
+      const refused = !successPatternOf(d.successPattern).ok || route === null || !/^https:/.test(route.route.url)
+      expect(refused, JSON.stringify(bad)).toBe(true)
+    }
   })
 })

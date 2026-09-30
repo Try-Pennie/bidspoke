@@ -599,6 +599,18 @@ describe('click delivery', () => {
     expect(onSave).toHaveBeenCalledTimes(1)
   })
 
+  it('an edit made while the confirmation shows withdraws it, so what is saved is always what was confirmed', async () => {
+    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-other` } })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(onSave).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    expect(await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })).toHaveTextContent(`${LC}/dv1-other instead of ${LC}/dv1.`)
+  })
+
   it('keep editing leaves everything unsaved and the edit in the form', async () => {
     const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
     fireEvent.change(screen.getByLabelText('Route 2 address'), { target: { value: `${LC}/di4-new` } })

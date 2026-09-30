@@ -226,8 +226,11 @@ function checkClickDelivery(delivery: ClickDelivery, err: Err): void {
   let catchAlls = 0
   delivery.routes.forEach((route, i) => {
     const name = route.name.trim()
-    if (name === '' || names.has(name)) {
-      err('click_route_name_invalid', `clickDelivery.routes[${i}].name`, name === '' ? 'Name this route.' : `Two routes are named ${name}.`)
+    // The history and the diff key a route by its name as stored, so a name with
+    // spaces around it would read as a different route from its trimmed self.
+    if (name === '' || names.has(name) || name !== route.name) {
+      const why = name === '' ? 'Name this route.' : name !== route.name ? 'Remove the spaces around the route name.' : `Two routes are named ${name}.`
+      err('click_route_name_invalid', `clickDelivery.routes[${i}].name`, why)
     }
     names.add(name)
     if (!isHttpsUrl(route.url)) err('click_route_url_invalid', `clickDelivery.routes[${i}].url`, 'Enter an https address.')
