@@ -55,6 +55,10 @@ export interface LoadOptions {
 
 const cacheKey = (orgId: string) => `buyer-profiles:${orgId}`
 const lastGoodKey = (orgId: string) => `buyer-profiles:${orgId}:lastgood`
+/** When a save route last rebuilt this org's profiles; a refresh or prewarm whose read began before it never writes (review of #1646). */
+const savedAtKey = (orgId: string) => `buyer-profiles:${orgId}:saved_at`
+/** Far above the cache TTL and any read's duration, so the marker outlives every refresh that could race the save. */
+export const BUYER_PROFILES_SAVED_AT_TTL_SECONDS = 3600
 
 export interface LoadedBuyerPartner {
   id: string
@@ -271,6 +275,14 @@ async function readAndCache(orgId: string, kv: KVNamespace, supabase: SupabaseCl
  */
 async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProfilesSnapshot, now: () => number, readStartedAt?: number): Promise<void> {
   if (readStartedAt !== undefined) {
+    // The save's own marker comes first: a save whose rebuild failed deletes the
+    // cached copy, so the held copy alone would show nothing newer.
+    const savedAtRaw = await kv.get(savedAtKey(orgId))
+    const savedAt = savedAtRaw === null ? Number.NaN : Number(savedAtRaw)
+    if (Number.isFinite(savedAt) && savedAt >= readStartedAt) {
+      console.log(`[buyer-profiles] skipped the cache write for org ${orgId}: a save at ${new Date(savedAt).toISOString()} came after this read began at ${new Date(readStartedAt).toISOString()}`)
+      return
+    }
     const held = await kv.get<BuyerProfilesSnapshot>(cacheKey(orgId), 'json')
     const heldLoadedAt = held ? Date.parse(held.loaded_at) : Number.NaN
     if (Number.isFinite(heldLoadedAt) && heldLoadedAt >= readStartedAt) {
@@ -326,6 +338,13 @@ async function contentHash(buyers: readonly LoadedBuyer[]): Promise<string> {
  * answers null rather than throwing: the save itself has already landed.
  */
 export async function refreshBuyerProfilesCache(orgId: string, kv: KVNamespace, supabase: SupabaseClient): Promise<BuyerProfilesSnapshot | null> {
+  // The marker is written BEFORE the rebuild, so it stands whether or not the
+  // rebuild succeeds: every other writer whose read began before it yields.
+  try {
+    await kv.put(savedAtKey(orgId), String(Date.now()), { expirationTtl: BUYER_PROFILES_SAVED_AT_TTL_SECONDS })
+  } catch (err) {
+    console.error(`[buyer-profiles] save marker write failed for org ${orgId}, a refresh already under way may still write older rows: ${err instanceof Error ? err.message : 'unknown error'}`)
+  }
   try {
     return await readAndCache(orgId, kv, supabase, Date.now, false)
   } catch (err) {

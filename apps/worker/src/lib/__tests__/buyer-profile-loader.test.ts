@@ -385,6 +385,57 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
     expect((JSON.parse(store.get('buyer-profiles:org-1')!.value) as { buyers: Array<{ version: number }> }).buyers[0].version).toBe(9)
   })
 
+  // A save whose rebuild fails deletes the cached copy, so a guard that only
+  // compared against the held copy saw nothing newer and wrote the pre-save
+  // profiles back. The save's marker is what the guard reads now.
+  it('a save whose rebuild fails, landing between the prewarm read and its write, leaves no copy written by the prewarm', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const failedSave = fakeSupabase({ data: null, error: { message: 'connection reset' } })
+    const racing = {
+      from() {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          async then(resolve: (v: unknown) => unknown) {
+            await refreshBuyerProfilesCache('org-1', kv, failedSave.supabase)
+            return resolve({ data: [{ ...ROW, version: 3 }], error: null })
+          },
+        }
+        return builder
+      },
+    } as never
+    const lastGoodBefore = store.get('buyer-profiles:org-1:lastgood')!.value
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await keepBuyerProfilesWarm('org-1', kv, racing)
+      expect(logs.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/skipped the cache write for org org-1: a save at/)
+    } finally {
+      logs.mockRestore()
+      errors.mockRestore()
+    }
+    expect(store.has('buyer-profiles:org-1')).toBe(false)
+    expect(store.get('buyer-profiles:org-1:lastgood')!.value).toBe(lastGoodBefore)
+  })
+
+  it('every save leaves its marker, with a TTL comfortably above the cache TTL, whether or not its rebuild succeeds', async () => {
+    for (const result of [{ data: [ROW], error: null }, { data: null, error: { message: 'connection reset' } }]) {
+      const { kv, store } = fakeKv()
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      const before = Date.now()
+      try {
+        await refreshBuyerProfilesCache('org-1', kv, fakeSupabase(result).supabase)
+      } finally {
+        errors.mockRestore()
+      }
+      const marker = store.get('buyer-profiles:org-1:saved_at')
+      expect(marker, JSON.stringify(result.error)).toBeDefined()
+      expect(Number(marker!.value)).toBeGreaterThanOrEqual(before)
+      expect(marker!.ttl).toBeGreaterThanOrEqual(BUYER_PROFILES_CACHE_TTL_SECONDS * 4)
+    }
+  })
+
   it('with no save in between, the prewarm still writes over its own older copy', async () => {
     const { kv, store } = fakeKv()
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => Date.now() - 30_000 })
