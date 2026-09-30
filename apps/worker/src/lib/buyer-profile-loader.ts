@@ -278,8 +278,14 @@ async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProf
     // The save's own marker comes first: a save whose rebuild failed deletes the
     // cached copy, so the held copy alone would show nothing newer.
     const savedAtRaw = await kv.get(savedAtKey(orgId))
-    const savedAt = savedAtRaw === null ? Number.NaN : Number(savedAtRaw)
-    if (Number.isFinite(savedAt) && savedAt >= readStartedAt) {
+    const savedAt = savedAtRaw === null ? null : Number(savedAtRaw)
+    if (savedAt !== null && !Number.isFinite(savedAt)) {
+      // Unreadable is not "no save": yield, as for a newer one. The marker's
+      // TTL ends this, and the next prewarm after that writes (L50).
+      console.error(`[buyer-profiles] skipped the cache write for org ${orgId}: the save marker for org ${orgId} is not a time (${JSON.stringify(savedAtRaw)})`)
+      return
+    }
+    if (savedAt !== null && savedAt >= readStartedAt) {
       console.log(`[buyer-profiles] skipped the cache write for org ${orgId}: a save at ${new Date(savedAt).toISOString()} came after this read began at ${new Date(readStartedAt).toISOString()}`)
       return
     }

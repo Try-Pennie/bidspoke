@@ -436,6 +436,20 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
     }
   })
 
+  it('a save marker that cannot be read as a time blocks the write rather than letting older rows through (L50)', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    store.set('buyer-profiles:org-1:saved_at', { value: 'garbled', ttl: 3600 })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await keepBuyerProfilesWarm('org-1', kv, fakeSupabase({ data: [{ ...ROW, version: 5 }], error: null }).supabase)
+      expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/save marker for org org-1 is not a time/)
+    } finally {
+      errors.mockRestore()
+    }
+    expect((JSON.parse(store.get('buyer-profiles:org-1')!.value) as { buyers: Array<{ version: number }> }).buyers[0].version).toBe(3)
+  })
+
   it('with no save in between, the prewarm still writes over its own older copy', async () => {
     const { kv, store } = fakeKv()
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => Date.now() - 30_000 })
