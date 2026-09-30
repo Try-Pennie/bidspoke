@@ -90,7 +90,7 @@ export function decideBidRecordingAlert(
 
   for (const r of rows) {
     // winners counts sightings, so it can never exceed them. A row that says
-    // otherwise is a bad aggregation in bid_recording_coverage, not a workflow
+    // otherwise is a bad aggregation in bid_recording_coverage_v2, not a workflow
     // problem, and rendering it into an alert would misdirect the reader.
     if (!isCount(r.sightings) || !isCount(r.bid_rows) || !isCount(r.winners) || r.winners > r.sightings) {
       unusable.push(r.workflow_name)

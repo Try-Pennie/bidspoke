@@ -19,8 +19,8 @@
       "p_org_id": "00000000-0000-0000-0000-000000000000",
       "p_since": "2026-01-01T00:00:00Z"
     },
-    "anon": "denied",
-    "note": "Compares sightings against recorded bids per workflow (#1157), read by the daily bid-recording check in the Worker as service_role. Takes the organization as a parameter and is SECURITY DEFINER, so anon must never reach it. Probed with both args because an empty body returns PGRST202, which is indistinguishable from the function being absent."
+    "anon": "absent",
+    "note": "DROPPED by migration 20260930120000, and this entry is now the guard that it stays dropped (#1466). It was the first per workflow bid recording comparison (#1157); bid_recording_coverage_v2 replaced it for both the daily bid-recording check and the too few bids monitor, and the original was kept one release for rollback per ADR 0007. Probed with both args so the shape still matches the signature that existed, because a probe with the wrong args answers PGRST202 too and would report absence it never measured."
   },
   {
     "name": "bid_recording_coverage_v2",
