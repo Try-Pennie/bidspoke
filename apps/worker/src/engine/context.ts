@@ -2,6 +2,16 @@ import type { ExecutionContext, StepOutput, StepLogEntry } from '../types'
 import { coerceString } from '../lib/coerce'
 import { stripOutputWrapper } from '@bidspoke/references'
 
+/**
+ * The Bidspoke page for one run, as every path that writes it outward spells it:
+ * the engine's execution.bidspoke_link (PDFlow_3__c on a live click) and a held
+ * click marked sent by hand (#1659). Null when any part is missing.
+ */
+export function bidspokeRunLink(appUrl: string | null | undefined, workflowId: string | null | undefined, executionId: string | null | undefined): string | null {
+  const trimmedAppUrl = (appUrl ?? '').replace(/\/$/, '')
+  return trimmedAppUrl && workflowId && executionId ? `${trimmedAppUrl}/workflows/${workflowId}?execution=${executionId}` : null
+}
+
 export function buildContext(
   triggerPayload: unknown,
   source: string,
@@ -13,10 +23,7 @@ export function buildContext(
   appUrl?: string,
   sightingId?: string
 ): ExecutionContext {
-  const trimmedAppUrl = (appUrl ?? '').replace(/\/$/, '')
-  const bidspokeLink = trimmedAppUrl && executionId
-    ? `${trimmedAppUrl}/workflows/${workflowId}?execution=${executionId}`
-    : undefined
+  const bidspokeLink = bidspokeRunLink(appUrl, workflowId, executionId) ?? undefined
   return {
     trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId, org_id: orgId, execution_id: executionId, sighting_id: sightingId },
     steps: {},

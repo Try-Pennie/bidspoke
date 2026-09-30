@@ -18,6 +18,10 @@ A file here is exactly what is pasted into the node's script box, byte for byte,
 - `engine/__tests__/liberty1-click-workflow.test.ts` walks `definition.json` through the engine with the real branch and response nodes and these scripts.
 - `apps/web/src/lib/__tests__/liberty1-click-definition.test.ts` runs the canvas's save checks over the definition.
 
+## Read outside the canvas
+
+`liberty1_click_patch.js` is also what a held click marked sent on the partner page writes (#1659). `lib/click-sale-updates.ts` builds the same three bodies in TypeScript and reads the consent text and lead sale type out of this file (the constants its Prospect body names for `TCPA_Consent__c` and `LeadSaleType__c`), and `lib/__tests__/click-sale-updates.test.ts` runs this script and requires the builder's bodies byte for byte. So keep the consent one plain template literal and the sale type one double quoted string; anything else is refused by name and the hand path writes nothing.
+
 ## Drift
 
 The hourly `engine-script-drift` check watches this folder as the Liberty1 click workflow in `KEPT_CANVAS_WORKFLOWS` (`apps/worker/src/lib/engine-script-drift.ts`). Its id is in `LIBERTY1_CLICK_WORKFLOW_ID` since the first save (#1547), so a canvas script that differs from its file pages as a drift. These scripts were written here first, so there is no older canvas script to call a paste awaited.
