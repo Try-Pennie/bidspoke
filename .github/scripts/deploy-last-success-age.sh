@@ -68,8 +68,13 @@ answer() {
 ERR_FILE=$(mktemp)
 trap 'rm -f "$ERR_FILE"' EXIT
 
-if ! RUNS_JSON=$("$GH_BIN" run list --workflow="$DEPLOY_WORKFLOW" --branch "$DEPLOY_BRANCH" \
-  --limit "$RUN_WINDOW" --json databaseId,status 2>"$ERR_FILE"); then
+# ONE filter on the query, the workflow, with the branch judged below (#1650).
+# GitHub answers a run list filtered on two fields at once from an index that can
+# lag a run that has just changed (LESSONS L1014), which on 2026-09-30 hid a
+# running Deploy from the in-flight gate beside this one. Here the same lag would
+# hide the newest completed run and measure the grace from an older upload.
+if ! RUNS_JSON=$("$GH_BIN" run list --workflow="$DEPLOY_WORKFLOW" \
+  --limit "$RUN_WINDOW" --json databaseId,status,headBranch 2>"$ERR_FILE"); then
   # Judged by the EXIT CODE, never by whether it printed something (L184).
   WHY=$(tr '\n' ' ' <"$ERR_FILE" | cut -c1-300)
   answer unavailable "listing recent Deploy runs failed, so the age of the last Pages upload is unknown: ${WHY:-no error text}"
@@ -77,13 +82,14 @@ fi
 
 # Completed runs only, newest first (gh lists newest first). A run still in
 # flight belongs to the in-flight gate, which judges it before this is consulted.
-if ! RUN_IDS=$(printf '%s' "$RUNS_JSON" | jq -r '.[] | select(.status == "completed") | .databaseId' 2>"$ERR_FILE"); then
+if ! RUN_IDS=$(printf '%s' "$RUNS_JSON" | jq -r --arg branch "$DEPLOY_BRANCH" \
+  '.[] | select(.headBranch == $branch and .status == "completed") | .databaseId' 2>"$ERR_FILE"); then
   WHY=$(tr '\n' ' ' <"$ERR_FILE" | cut -c1-300)
   answer unavailable "the run list could not be parsed: ${WHY:-no error text}"
 fi
 
 if [ -z "$RUN_IDS" ]; then
-  answer '' "the query succeeded and no completed Deploy run was found among the last ${RUN_WINDOW} on ${DEPLOY_BRANCH}"
+  answer '' "the query succeeded and no completed Deploy run on ${DEPLOY_BRANCH} was found among the last ${RUN_WINDOW} Deploy runs"
 fi
 
 for RUN_ID in $RUN_IDS; do
@@ -126,4 +132,4 @@ for RUN_ID in $RUN_IDS; do
   answer "$AGE" "the newest Pages upload, Deploy run ${RUN_ID}, finished ${AGE}s ago"
 done
 
-answer '' "the query succeeded and none of the last ${RUN_WINDOW} completed Deploy runs on ${DEPLOY_BRANCH} attempted a Pages deploy"
+answer '' "the query succeeded and none of the completed Deploy runs on ${DEPLOY_BRANCH} among the last ${RUN_WINDOW} Deploy runs attempted a Pages deploy"

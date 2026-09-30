@@ -127,3 +127,113 @@ describe('deploy-inflight-age: the query answered something unusable', () => {
     expect(askWith('96\n', 0, 'gh: a new release is available').age).toBe('96')
   })
 })
+
+/**
+ * GitHub answers a run list filtered on two fields at once from an index that can
+ * lag the run itself (#1650, LESSONS L1014). On 2026-09-30 Deploy Drift run
+ * 36731631369 asked `gh run list --workflow <Deploy> --branch main` a minute
+ * after Deploy run 36731518395 started, was told nothing was running, and paged
+ * a stranded worker that was mid deploy. The site and tail jobs asked the same
+ * question a minute later and saw the run at 126s and 131s.
+ *
+ * So the script lists the workflow's recent runs by the workflow alone and
+ * applies the branch and status predicate itself. The stub below behaves like
+ * that stale index: asked with `--branch` it omits the run that has just
+ * started, asked without it the run is there. It also honours `--json` and
+ * `--jq` for real, so the script's own filter runs over the fixture and a field
+ * the script forgets to request is absent, as it would be from gh.
+ */
+type ListedRun = {
+  status: string
+  headBranch: string
+  createdAgo: number
+  staleUnderBranchFilter?: boolean
+}
+
+const askLikeGitHub = (runs: ListedRun[]): { age: string; reason: string; calls: string } => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'inflight-index-'))
+  const now = Math.floor(Date.now() / 1000)
+  const asJson = (rs: ListedRun[]): string =>
+    JSON.stringify(
+      rs.map((r) => ({
+        status: r.status,
+        headBranch: r.headBranch,
+        createdAt: new Date((now - r.createdAgo) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        databaseId: 1,
+      })),
+    )
+  writeFileSync(path.join(dir, 'full.json'), asJson(runs))
+  writeFileSync(path.join(dir, 'stale.json'), asJson(runs.filter((r) => !r.staleUnderBranchFilter)))
+  const gh = path.join(dir, 'gh')
+  writeFileSync(
+    gh,
+    [
+      '#!/usr/bin/env bash',
+      `DIR=${JSON.stringify(dir)}`,
+      'printf \'%s\\n\' "$*" >>"$DIR/calls.txt"',
+      // Asked with a branch, answer as gh would (only that branch) but from the
+      // stale index, which has not yet seen the run that just started.
+      'FILE="$DIR/full.json"; BRANCH=""; FIELDS=""; FILTER="."',
+      'while [ $# -gt 0 ]; do',
+      '  case "$1" in',
+      '    --branch|-b) FILE="$DIR/stale.json"; BRANCH="$2"; shift ;;',
+      '    --branch=*) FILE="$DIR/stale.json"; BRANCH="${1#--branch=}" ;;',
+      '    --json) FIELDS="$2"; shift ;;',
+      '    --jq) FILTER="$2"; shift ;;',
+      '  esac',
+      '  shift',
+      'done',
+      'jq -c --arg b "$BRANCH" --arg f "$FIELDS" \'map(select($b == "" or .headBranch == $b)) | ($f | split(",")) as $k | map(with_entries(select(.key as $x | $k | index($x))))\' "$FILE" | jq -r "$FILTER"',
+      '',
+    ].join('\n'),
+  )
+  chmodSync(gh, 0o755)
+  const errFile = path.join(dir, 'stderr.txt')
+  const age = execFileSync('bash', ['-c', `bash "$0" 2>"$1"`, SCRIPT, errFile], {
+    encoding: 'utf8',
+    env: { ...process.env, GH_BIN: gh },
+  }).trim()
+  return {
+    age,
+    reason: readFileSync(errFile, 'utf8'),
+    calls: readFileSync(path.join(dir, 'calls.txt'), 'utf8'),
+  }
+}
+
+describe('deploy-inflight-age: a run the branch filtered index has not caught up with (#1650)', () => {
+  it('still sees the Deploy run that has just started on main', () => {
+    const { age } = askLikeGitHub([
+      { status: 'in_progress', headBranch: 'main', createdAgo: 70, staleUnderBranchFilter: true },
+      { status: 'completed', headBranch: 'main', createdAgo: 3600 },
+    ])
+    expect(age).toMatch(/^\d+$/)
+    expect(Number(age)).toBeGreaterThanOrEqual(65)
+    expect(Number(age)).toBeLessThan(200)
+  })
+
+  it('asks by the workflow alone, never with a branch filter', () => {
+    const { calls } = askLikeGitHub([{ status: 'completed', headBranch: 'main', createdAgo: 3600 }])
+    expect(calls).toMatch(/run list/)
+    expect(calls).not.toMatch(/--branch|(^|\s)-b(\s|$)/)
+  })
+
+  it('ignores a run in flight on another branch, and says the answer is about main', () => {
+    const { age, reason } = askLikeGitHub([
+      { status: 'in_progress', headBranch: 'some-feature', createdAgo: 40 },
+      { status: 'completed', headBranch: 'main', createdAgo: 3600 },
+    ])
+    expect(age).toBe('')
+    expect(reason).toMatch(/none/)
+    expect(reason).toMatch(/main/)
+  })
+
+  it('measures the oldest in-flight run on main, not a newer queued one or another branch', () => {
+    const { age } = askLikeGitHub([
+      { status: 'queued', headBranch: 'main', createdAgo: 20 },
+      { status: 'in_progress', headBranch: 'other', createdAgo: 5000 },
+      { status: 'in_progress', headBranch: 'main', createdAgo: 400, staleUnderBranchFilter: true },
+    ])
+    expect(Number(age)).toBeGreaterThanOrEqual(395)
+    expect(Number(age)).toBeLessThan(600)
+  })
+})
