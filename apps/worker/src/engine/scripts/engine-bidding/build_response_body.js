@@ -13,6 +13,7 @@ const engineBid = pt.engineBid;
 // facts (the Stage A script). Both are Tripoint, so they are completed with Tripoint's own
 // values here, and Tripoint's result code classes are mapped here for them, the only copy
 // of that mapping outside tripoint_ping itself.
+// Its duplicate codes are TRIPOINT_DUPLICATE_RESULT_CODES in bid-resolver.ts (#1549).
 const readSale = () => {
   const tp = steps.tripoint_ping?.output;
   let sale = tp?.sale ?? steps.buyer_select?.output?.sale ?? null;
@@ -30,7 +31,7 @@ const readSale = () => {
     const rc = sale.result_code != null ? Number(sale.result_code) : null;
     let response_class = null;
     if (sale.accepted) response_class = 'Success';
-    else if (rc != null) response_class = [1003, 1004, 1020].includes(rc) ? 'Duplicate' : 'Fail';
+    else if (rc != null) response_class = [1002, 1003, 1004, 1005, 1020].includes(rc) ? 'Duplicate' : 'Fail';
     sale = {
       ...sale,
       partner_name: 'Tripoint',

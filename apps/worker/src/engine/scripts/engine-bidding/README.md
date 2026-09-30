@@ -38,6 +38,15 @@ output. The paste order and the canvas wiring are in
 [`docs/workflows/engine-bidding/liberty1-wiring.md`](../../../../../../docs/workflows/engine-bidding/liberty1-wiring.md);
 the gate and the check go on the canvas BEFORE the two scripts are pasted.
 
+**#1549 (one list of Tripoint duplicate result codes)** changed `tripoint_ping` and
+`build_response_body`: a declined Tripoint answer is Duplicate on 1002, 1003, 1004,
+1005 and 1020, the list `TRIPOINT_DUPLICATE_RESULT_CODES` in `bid-resolver.ts` that
+the sightings already used. Before it the two scripts said 1003, 1004 and 1020, so a
+1002 or 1005 reached Salesforce's `Tripoint_Response__c` as Fail. The scripts cannot
+import, so `../__tests__/tripoint-duplicate-codes.test.ts` holds both literals to the
+list on every code from 990 to 1100. Paste the two in one save; either alone is also
+safe, since each only classes its own path.
+
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
 `build_response_body`; and both read an older `tripoint_ping` (with or without
