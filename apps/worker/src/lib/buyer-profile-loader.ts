@@ -135,6 +135,16 @@ interface ProfileRow {
 
 const num = (v: number | string | null): number | null => (v === null ? null : Number(v))
 
+/**
+ * partner_configs.duplicate_signals as the buyer_select node reads it: a stored
+ * value that is not a list is no duplicate rules at all, so every decline is
+ * Fail. Exported so the daily Tripoint duplicate codes check (#1647) judges the
+ * record by this same reading rather than a copy of it (L370).
+ */
+export function duplicateSignalsOf(raw: unknown): Signal[] {
+  return Array.isArray(raw) ? (raw as Signal[]) : []
+}
+
 function shape(row: ProfileRow): LoadedBuyer {
   const p = row.partner_configs
   return {
@@ -151,7 +161,7 @@ function shape(row: ProfileRow): LoadedBuyer {
       name: p.name,
       click_url: p.click_url,
       external_routing_code: p.external_routing_code,
-      duplicate_signals: Array.isArray(p.duplicate_signals) ? (p.duplicate_signals as Signal[]) : [],
+      duplicate_signals: duplicateSignalsOf(p.duplicate_signals),
       circuit_enabled: p.circuit_enabled,
       circuit_error_threshold: p.circuit_error_threshold,
       circuit_window_seconds: p.circuit_window_seconds,
