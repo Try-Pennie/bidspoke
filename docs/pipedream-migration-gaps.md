@@ -4,7 +4,7 @@ Written 2026-09-30 from the Pipedream export of that day (346 workflows, 320 swi
 
 Pipedream Workflows stops on 2027-03-31 and deletes everything, logins included, by 2027-04-30.
 
-Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). Every "Decided" line below summarises one of Dan's decisions of 2026-09-30 in plain words and names its number in the record, which holds the exact wording: https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18687008. The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
+Tracked in milestone 56, "Move every Pipedream workflow to Bidspoke" (https://github.com/Try-Pennie/bidspoke/milestone/56). The plan that builds these lives in Discussion #1684 (https://github.com/Try-Pennie/bidspoke/discussions/1684). Every "Decided" line below summarises one of Dan's decisions of 2026-09-30 in plain words and names its number in the record, which holds the exact wording (decision 19 was recorded later the same day, in its own comment, linked at item 19): https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18687008. The counts come from the 2026-09-30 snapshot and will be refreshed from the fresh export taken before porting starts.
 
 ---
 
@@ -53,7 +53,7 @@ Need: one connection per org. The export uses trypennie (47 workflows), pennie (
 ### 7. Data stores (104 workflows)
 Today: Bidspoke has one shared store that can only save, read and delete, and code steps can't reach it.
 Need: separate named stores, "get it or create it" (17), listing what's inside, expiry times, and access from inside code steps.
-Also: Pipedream's store contents are NOT in the export and must be copied out before 2027-04-30. Some hold live state, such as phone line assignments and partner tokens.
+Also: Pipedream's store contents are NOT in the export. Each store is copied with the first workflow that uses it (item 19). Some hold live state, such as phone line assignments and partner tokens.
 
 ### 8. Triggers other than a web address
 Today: none.
