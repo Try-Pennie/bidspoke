@@ -3,14 +3,7 @@ import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
-import { alertOverPercentOf, partnerIdOf, POPULATIONS, successPatternOf, type SuccessPatternProblem } from '@bidspoke/buyer-profile'
-
-/** The canvas words for each way a buyer_click_send success line is refused. */
-const SUCCESS_LINE_PROBLEMS: Record<SuccessPatternProblem, string> = {
-  success_pattern_unset: 'No success line set',
-  success_pattern_invalid: 'The success line is not a valid pattern',
-  success_pattern_no_id_group: 'The success line needs an (?<id>...) group',
-}
+import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
 
 export interface ValidationError {
   nodeId: string
@@ -114,19 +107,14 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       return null
     }
     case 'buyer_click_send': {
-      // Everything the node needs before it may claim a click (#1542). The success
-      // line is the partner's own, with no default: without it no answer can be
-      // confirmed, so every send would hold its claim and page (L72).
+      // Everything the node needs before it may claim a click (#1542). Where the
+      // click goes and which reply counts as sold are the buyer profile's click
+      // delivery (#1671), checked when the profile is saved, so nothing here reads
+      // a request_url or success_pattern a node saved before then still holds.
       const partnerProblem = clickPartnerProblem(config.partner_id)
       if (partnerProblem) return partnerProblem
       if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
-      if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
       if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'
-      // The one success line rule the executor and the buyer profile validator share (#1639).
-      // Still required on the node while the profile's click delivery is being introduced:
-      // with none stored, the node's line is the one in force.
-      const rule = successPatternOf(config.success_pattern)
-      if (!rule.ok) return SUCCESS_LINE_PROBLEMS[rule.code]
       // No cap on the node (#1543, L83): the over cap notice reads the buyer profile's.
       // The executor's own rule (#1553): a value it refuses fails every run, so it is refused here first.
       if (!alertOverPercentOf(config.alert_over_percent).ok) return 'The notify percent must be a whole number from 1 to 1000'

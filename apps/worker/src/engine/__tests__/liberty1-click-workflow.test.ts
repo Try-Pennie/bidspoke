@@ -12,7 +12,8 @@
  * unusable body is refused and nothing is read
  * or sent; a prospect without the Liberty1 offer on record is refused and never
  * sent; a Completed one is answered already sent and never sent; the request
- * posted is Brian's body on his route, at Liberty1's LeadConnector trigger; Completed is written only on `sent`
+ * posted is Brian's body, and the state it hands click_send takes Liberty1's
+ * buyer profile (#1671) to his route's LeadConnector trigger; Completed is written only on `sent`
  * and Fail only on `refused`, to exactly the records the click resolves to; and
  * every other route answers and writes nothing. A Submission with no Prospect
  * (2026-09-29) is sent from the submission with no offer check, keyed on the
@@ -30,6 +31,8 @@ import submissionFixtures from '../scripts/__tests__/fixtures/liberty1-submissio
 import { runCanvasScript } from '../scripts/__tests__/canvas-script'
 import { buildPayload, CANVAS_ROUTES, pickRoute, submissionAsProspect, updateBodies } from '../scripts/__tests__/liberty1-pipedream-oracle'
 import { KEPT_LIBERTY1_CLICK_SCRIPTS } from '../../lib/engine-script-drift'
+import { clickDeliveryFromDocument, pickClickRoute } from '@bidspoke/buyer-profile'
+import liberty1Delivery from '../scripts/__tests__/fixtures/liberty1-click-delivery.json'
 
 vi.mock('../step-logger', () => ({
   createExecutionRecord: vi.fn().mockResolvedValue(undefined),
@@ -82,7 +85,10 @@ const SUBMISSION_ROW: Rec = { ...(submissionFixtures.records.di4_lead_mobile as 
 /** What the fake org holds; tests change it. */
 let org: { prospect: Rec | null; submission: Rec | null; submissionProspect: string | null; submissionLead: string | null }
 let clickRoute: BuyerClickSendRoute
-let clickInputs: Array<{ prospect_id: unknown; request_url: unknown; request_body: unknown; partner: unknown }>
+let clickInputs: Array<{ prospect_id: unknown; state: unknown; request_body: unknown; partner: unknown }>
+
+/** The URL buyer_click_send posts to: the route Liberty1's profile (snapshot of 2026-09-30) picks for the state template's value. */
+const profileUrlFor = (state: unknown) => pickClickRoute(clickDeliveryFromDocument(liberty1Delivery.click_delivery), state)?.route.url
 
 function fakeSoql(soql: string): Rec[] {
   const direct = soql.match(/FROM Prospect__c WHERE Id = '([A-Za-z0-9]+)'$/)
@@ -136,14 +142,14 @@ beforeEach(() => {
     const c = node.config as Rec
     clickInputs.push({
       prospect_id: resolveValue(c.prospect_id, ctx),
-      request_url: resolveValue(c.request_url, ctx),
+      state: resolveValue(c.state, ctx),
       request_body: resolveValue(c.request_body, ctx),
       partner: c.partner_id,
     })
     const output: BuyerClickSendOutput = {
       _route: clickRoute, reason: REASON[clickRoute], mode_effective: 'live', partner_id: LIBERTY1_PARTNER_ID, partner_slug: 'liberty1', prospect_id: PROSPECT_ID,
       status: clickRoute === 'sent' ? 200 : 400, partner_lead_id: clickRoute === 'sent' ? L1_LEAD : null,
-      count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], route_name: null, url_source: 'node', pattern_source: 'node', duration_ms: 5,
+      count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], route_name: null, url_source: 'profile', pattern_source: 'profile', duration_ms: 5,
     }
     return { output }
   })
@@ -260,12 +266,13 @@ describe('the offer check', () => {
 })
 
 describe('a Liberty1 offer that is still open', () => {
-  it("posts Brian's body to the route the canvas names, keyed by the prospect, for the Liberty1 partner the canvas picked", async () => {
+  it("posts Brian's body to his route through the profile, keyed by the prospect, for the Liberty1 partner the canvas picked", async () => {
     await click({ Prospect__c: PROSPECT_ID })
     const body = buildPayload(RECORD)
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
-    expect(clickInputs[0].request_url).toBe(CANVAS_ROUTES[pickRoute(body.state)])
+    expect(clickInputs[0].state).toBe(body.state)
+    expect(profileUrlFor(clickInputs[0].state)).toBe(CANVAS_ROUTES[pickRoute(body.state)])
     expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
     expect(clickInputs[0].partner).toBe('4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3')
   })
@@ -351,7 +358,7 @@ describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
     const body = buildPayload(submissionAsProspect({ ...SUBMISSION_ROW, Lead__c: LEAD_ID, Prospect__c: null }))
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(SUBMISSION_ID)
-    expect(clickInputs[0].request_url).toBe(CANVAS_ROUTES[pickRoute(body.state)])
+    expect(profileUrlFor(clickInputs[0].state)).toBe(CANVAS_ROUTES[pickRoute(body.state)])
     expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
   })
 

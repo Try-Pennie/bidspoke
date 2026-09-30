@@ -1,0 +1,29 @@
+{
+  "source": "buyer_profiles.click_delivery of the Liberty1 partner 4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3, profile version 10, read 2026-09-30 after Dan filled it at 19:00 UTC. A snapshot for tests only: the live copy is the profile, edited on the partner page.",
+  "click_delivery": {
+    "routes": [
+      {
+        "name": "DV1",
+        "url": "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/CTTs3WKFFvjTUTQOlrHF",
+        "states": [
+          "DE",
+          "HI",
+          "IA",
+          "MN",
+          "OR",
+          "RI",
+          "VT",
+          "WA",
+          "WI",
+          "WY"
+        ]
+      },
+      {
+        "name": "DI4",
+        "url": "https://services.leadconnectorhq.com/hooks/1TkhxxyKTddL2rZ7wHI2/webhook-trigger/AYAF77n9lUw8WbZ4kaRM",
+        "states": []
+      }
+    ],
+    "success_pattern": "^\\s*\\{(?=[\\s\\S]*\"status\"\\s*:\\s*\"Success)[\\s\\S]*?\"id\"\\s*:\\s*\"(?<id>[A-Za-z0-9]{15,20})\"[\\s\\S]*\\}\\s*$"
+  }
+}

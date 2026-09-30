@@ -79,7 +79,7 @@ const CASES: { type: string; marker: RegExp | null }[] = [
   { type: 'latency_gate', marker: /Correlation key/ },
   { type: 'achieve_offers', marker: /Hold for inline offers/ },
   { type: 'parallel', marker: /First to succeed/ },
-  { type: 'buyer_click_send', marker: /Success line/ },
+  { type: 'buyer_click_send', marker: /Notify at percent of the cap/ },
   { type: 'buyer_click_check', marker: /Loan amount/ },
   { type: 'parallel_end', marker: /join point for the parallel/ },
   { type: 'branch_end', marker: /Convergence point for the branch/ },
@@ -573,6 +573,34 @@ describe('ConfigPanel: buyer_click_send holds no cap of its own (#1543, L83)', (
     renderPanel(nodeOf('buyer_click_send', {}))
     expect(screen.queryByText('Daily lead cap')).not.toBeInTheDocument()
     expect(screen.getByText('Notify at percent of the cap')).toBeInTheDocument()
+  })
+})
+
+describe('ConfigPanel: buyer_click_send holds no address or success line of its own (#1671)', () => {
+  it('has no Request URL or Success line field: both are the buyer profile\'s click delivery', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_send', {}))
+    expect(screen.queryByText('Request URL')).toBeNull()
+    expect(screen.queryByText('Success line')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Remove the old address and success line/ })).toBeNull()
+  })
+
+  it('a node still holding them says so, and one press removes both and nothing else', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    const { onUpdate } = renderPanel(nodeOf('buyer_click_send', { request_url: '{{steps.build_request.output.url}}', success_pattern: 'OK (?<id>\\d+)', request_body: '{{b}}', state: '{{s}}' }))
+    expect(screen.getByText(/no longer used/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Remove the old address and success line/ }))
+    const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(config.request_url).toBeUndefined()
+    expect(config.success_pattern).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(config))).not.toHaveProperty('request_url')
+    expect(config).toMatchObject({ request_body: '{{b}}', state: '{{s}}' })
+  })
+
+  it('a node holding only one of them offers the same removal', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf('buyer_click_send', { success_pattern: 'OK (?<id>\\d+)' }))
+    expect(screen.getByRole('button', { name: /Remove the old address and success line/ })).toBeInTheDocument()
   })
 })
 

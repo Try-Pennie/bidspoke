@@ -70,9 +70,8 @@ export const WATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly FieldRule[]
   buyer_click_send: [
     { field: 'partner_id', why: 'the buyer the click is claimed, counted and sold for' },
     { field: 'prospect_id', why: 'the template for the sale key, so which record a click is claimed and stamped on' },
-    { field: 'request_url', why: 'the template for where the lead is posted' },
     { field: 'request_body', why: 'the template for what is posted to the buyer' },
-    { field: 'success_pattern', why: 'the reply that counts as sold; anything else is refused or unknown and pages' },
+    { field: 'state', why: "the template for the lead's state, which picks the buyer profile's route, so where the lead is posted (#1671)" },
   ],
   buyer_click_check: [
     { field: 'partner_id', why: 'the buyer whose profile decides whether the offer is made' },
@@ -132,12 +131,13 @@ export const UNWATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly Unwatched
     { field: 'alert_over_percent', why: 'when the over cap notice pages, an alert threshold an operator tunes; it decides no sale' },
     { field: 'retries', why: RETRIES_IGNORED },
     { field: 'daily_lead_cap', why: 'ignored by the node and reported as such; the cap lives on the buyer profile' },
-    // #1639: the state template picks the buyer profile's route once the profile
-    // holds click delivery. It is not in the committed file until the canvas
-    // carries it, and watching it before then would page not_committed from the
-    // canvas save until the repo followed. #1671 commits it to the file and moves it to
-    // the watched list in the same change that removes the node's own address.
-    { field: 'state', why: 'not yet on the canvas or in the committed file; it moves to the watched list with its committed value in #1671, which removes the node address so the template then always picks the route' },
+    // #1671: the address and the success line are the buyer profile's click
+    // delivery, and the node never reads these two again. A canvas saved before
+    // then still holds both until someone clears them, so they are listed here
+    // rather than dropped, which would read the same to the check but hide the
+    // decision (L96). Remove both entries once no kept canvas carries them.
+    { field: 'request_url', why: "removed by #1671 and never read by the node: where a click goes is the buyer profile's click delivery, so a leftover value decides nothing" },
+    { field: 'success_pattern', why: "removed by #1671 and never read by the node: the reply that counts as sold is the buyer profile's success reply, so a leftover value decides nothing" },
   ],
   buyer_select: [{ field: 'retries', why: RETRIES_IGNORED }],
   branch: [

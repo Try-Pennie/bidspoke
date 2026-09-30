@@ -1,9 +1,10 @@
 /**
  * Save time validation for the buyer_click_send node (#1542).
  *
- * The node cannot run without a partner, a prospect id, a request url and body
- * and the partner's success line, so a live workflow must not save
- * without them. Every one of its seven handles can be taken at run time, and
+ * The node cannot run without a partner, a prospect id and a request body, so
+ * a live workflow must not save without them. Where the click goes and which
+ * reply counts as sold are the buyer profile's click delivery since #1671, so
+ * the node holds no address or success line to check. Every one of its seven handles can be taken at run time, and
  * an unwired handle the node takes is a named step failure, so all seven must
  * be wired before a live workflow saves (L72).
  */
@@ -16,9 +17,8 @@ import type { EdgeDef, NodeDef, NodeType } from '@/types/workflow'
 const COMPLETE = {
   partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70',
   prospect_id: '{{steps.resolve.output.prospect_id}}',
-  request_url: '{{steps.build.output.url}}',
   request_body: '{{steps.build.output.body}}',
-  success_pattern: 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)',
+  state: '{{steps.build.output.state}}',
 }
 
 function click(config: Record<string, unknown>): NodeDef {
@@ -36,13 +36,7 @@ describe('buyer_click_send config validation', () => {
     ['partner', { partner_id: undefined }, 'No partner selected'],
     ['partner named by slug only, from before #1553', { partner_id: undefined, partner_slug: 'liberty1' }, 'No partner selected'],
     ['prospect id', { prospect_id: '  ' }, 'No prospect id template set'],
-    ['request url', { request_url: undefined }, 'No request URL template set'],
     ['request body', { request_body: '' }, 'No request body template set'],
-    ['success line', { success_pattern: undefined }, 'No success line set'],
-    ['success line with no id group', { success_pattern: 'Records created' }, 'The success line needs an (?<id>...) group'],
-    ['success line that is not a pattern', { success_pattern: '(' }, 'The success line is not a valid pattern'],
-    // The shared rule (#1639) finds the group by matching, so the text (?<id> inside a character class is not one.
-    ['success line naming (?<id> only as text', { success_pattern: 'Records [(?<id>]+' }, 'The success line needs an (?<id>...) group'],
     ['partner stored as a slug', { partner_id: 'liberty1' }, 'The partner is not a partner id; pick the buyer again'],
   ]
   for (const [name, patch, message] of missing) {
@@ -50,6 +44,21 @@ describe('buyer_click_send config validation', () => {
       expect(messages(click({ ...COMPLETE, ...patch }))).toContain(message)
     })
   }
+
+  // #1671: a node saved before then still holds its old address and success line
+  // until someone clears them. The node never reads them, so a save must neither
+  // require them nor refuse a leftover value, however malformed.
+  it('needs no request url or success line: the buyer profile holds both', () => {
+    expect(messages(click(COMPLETE))).toEqual([])
+    expect(COMPLETE).not.toHaveProperty('request_url')
+    expect(COMPLETE).not.toHaveProperty('success_pattern')
+  })
+
+  it('a leftover request url or success line, however malformed, does not block a save', () => {
+    for (const leftover of [{ request_url: 'http://x', success_pattern: '(' }, { success_pattern: 'Records created' }, { request_url: '' }]) {
+      expect(messages(click({ ...COMPLETE, ...leftover })), JSON.stringify(leftover)).toEqual([])
+    }
+  })
 })
 
 describe('buyer_click_send notify percent (#1553): refused at save exactly where the executor refuses it', () => {

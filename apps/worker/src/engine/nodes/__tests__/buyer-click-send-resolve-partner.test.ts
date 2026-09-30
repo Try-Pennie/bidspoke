@@ -79,7 +79,7 @@ describe('productionDeps.readProfile (#1543, #1639)', () => {
   it('answers the enabled profile daily cap and how the buyer is sold from the cached snapshot', async () => {
     const org = 'org-cap-hit'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: buyerSnapshot(org, 50) })), failingSupabase())
-    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click', clickDelivery: null })
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: null })
   })
 
   it('carries the enabled profile click delivery from the same read, so the route and the cap come from one snapshot (#1639)', async () => {
@@ -88,13 +88,35 @@ describe('productionDeps.readProfile (#1543, #1639)', () => {
     const snapshot = buyerSnapshot(org, 50)
     const withDelivery = { ...snapshot, buyers: [{ ...snapshot.buyers[0], profile: { ...snapshot.buyers[0].profile, clickDelivery: delivery } }] }
     const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: withDelivery })), failingSupabase())
-    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, cap: 50, soldOn: 'click', clickDelivery: delivery })
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: delivery })
   })
 
-  it('answers found false when the org holds no enabled profile for the partner', async () => {
+  /** The buyer's own profile row, as readBuyerClickDelivery reads it through maybeSingle. */
+  function rowSupabase(result: { data: unknown; error: { message: string } | null }): SupabaseClient {
+    const builder = { select: () => builder, eq: () => builder, maybeSingle: async () => result }
+    return { from: () => builder } as unknown as SupabaseClient
+  }
+  const emptySnapshotKv = (org: string) => kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [] } })
+
+  // Dan, 2026-09-30: switching a profile off stops new offers only, so a click on an
+  // offer already shown is still sent through the switched off profile's delivery.
+  it('a buyer the enabled snapshot does not hold is read from its own row: switched off, with its delivery, and no cap', async () => {
+    const org = 'org-switched-off'
+    const doc = { routes: [{ name: 'All', url: 'https://a.example/all', states: [] }], success_pattern: '(?<id>\\w+)' }
+    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: { sold_on: 'click', is_enabled: false, click_delivery: doc }, error: null }))
+    expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: { routes: doc.routes, successPattern: doc.success_pattern } })
+  })
+
+  it('answers found false when the buyer has no profile at all', async () => {
     const org = 'org-cap-none'
-    const deps = productionDeps(ctxFor(org), envWith(kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [] } })), failingSupabase())
+    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: null, error: null }))
     expect(await deps.readProfile(LIBERTY1)).toEqual({ found: false })
+  })
+
+  it('throws when the row read fails, never answering no profile', async () => {
+    const org = 'org-row-fails'
+    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: null, error: { message: 'pool timeout' } }))
+    await expect(deps.readProfile(LIBERTY1)).rejects.toThrow(/pool timeout/)
   })
 
   it('throws when the profiles cannot be read and there is no copy, never answering no profile', async () => {

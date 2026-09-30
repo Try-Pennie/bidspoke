@@ -9,10 +9,11 @@
  *        sold       already_sent   an earlier click was confirmed; nothing sent
  *        in_flight  in_progress    another execution is sending it right now
  *        in_doubt   needs_review   an earlier send never recorded its outcome; pages
- *   2. POST the url and body a preceding code node built, with a 20 s timeout.
+ *   2. POST the body a preceding code node built to the buyer profile's route
+ *      for the lead's state, with a 20 s timeout.
  *   3. CLASSIFY the answer three ways:
  *        confirmed  a 2xx whose body is exactly the buyer's success line, the
- *                   partner's own `success_pattern` with an `id` group, matched
+ *                   buyer profile's success reply with an `id` group, matched
  *                   anchored. Mark the claim sold (payout 0, the partner lead id),
  *                   then add the prospect to today's distinct count. A mark or an
  *                   add that fails pages; the route is still `sent`.
@@ -37,23 +38,30 @@
  * entry and would post the click a second time. A Test Runner run, a shadow run
  * and local dev evaluate the config and touch nothing (report_only, L719).
  *
- * The partner is a SETTING (EvaFi follows Liberty1): the partner and the success
- * pattern are config, and no buyer's literal lives in this file. The daily cap
- * the over cap notice is judged against is the buyer PROFILE's (#1543, L83),
- * the same number buyer_click_check stops offering at, read through the one
- * profile reader after the click is counted. A profile that cannot be read, or
- * an enabled one holding no cap, pages cap_unreadable; no enabled profile at all
- * (switched off while offers were still out) is recorded and pages nothing.
+ * The partner is a SETTING (EvaFi follows Liberty1): the partner is config, and
+ * no buyer's literal lives in this file. The daily cap the over cap notice is
+ * judged against is the buyer PROFILE's (#1543, L83), the same number
+ * buyer_click_check stops offering at. An enabled profile holding no cap pages
+ * cap_unreadable.
  *
  * WHERE the click goes and WHICH reply counts as sold are the buyer profile's
- * click delivery when the profile holds one (#1639): the route whose states
- * list the lead's state (the node's `state` template), else the one catch-all
- * route, and the profile's success line. Both come from the same profile read
- * as the cap, made once before anything is claimed, so a profile that cannot
- * be read refuses the click rather than guess an address (L75). A profile with
- * no delivery leaves the node's own request_url and success_pattern in force,
- * which is how every buyer ran before #1639; the output says which source was
- * used, and notes a node success line the profile supersedes.
+ * click delivery (#1639): the route whose states list the lead's state (the
+ * node's `state` template), else the one catch-all route, and the profile's
+ * success line. Both come from the same profile read as the cap, made once
+ * before anything is claimed. Since #1671 the profile is the ONLY source: the
+ * node's own request_url and success_pattern are gone, and a canvas saved
+ * before then that still carries them is ignored. So every way of having no
+ * delivery is refused by name before the claim, never guessed at (L75): a
+ * profile that cannot be read (profile_unreadable, transient, Dan's decision of
+ * 2026-09-30), no profile at all (no_profile), a profile sold on the offer
+ * (not_sold_on_click), and a click profile whose Click delivery is empty
+ * (click_delivery_unset).
+ *
+ * Switching a click buyer's profile OFF stops new offers only (Dan, 2026-09-30):
+ * a click on an offer already shown is still sent through that profile's click
+ * delivery, read from the buyer's own row when the enabled snapshot does not
+ * hold it (readClickProfile), and recorded as no_enabled_profile for the over
+ * cap notice, which pages nothing because nothing more is offered.
  *
  * The partner is stored by its partner_configs id (#1553, L15), and the claim,
  * the counter and the alert cooldowns are all keyed on that id, so renaming a
@@ -71,7 +79,7 @@ import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
 import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
-import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
+import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
@@ -138,14 +146,15 @@ export type BuyerClickSendFailureReason =
   | 'partner_id_invalid'
   | 'partner_not_found'
   | 'partner_unreadable'
-  | 'success_pattern_invalid'
   | 'alert_over_percent_invalid'
   | 'prospect_id_empty'
-  | 'request_url_invalid'
   | 'request_body_invalid'
   | 'claim_unavailable'
   | 'buyer_click_send_handle_unwired'
   | 'profile_unreadable'
+  | 'no_profile'
+  | 'not_sold_on_click'
+  | 'click_delivery_unset'
   | 'click_delivery_invalid'
   | 'state_template_unset'
 
@@ -159,20 +168,18 @@ export interface BuyerClickSendConfig {
   partner_id: string
   /** Template resolving to the prospect id, the claim and count key. */
   prospect_id: string
-  /** Template resolving to the https URL the preceding code node picked. */
-  request_url: string
   /** Template resolving to the body object the preceding code node built. */
   request_body: string
   /**
-   * The buyer's success line as a regular expression with a named `id` group,
-   * matched against the WHOLE trimmed body. Per partner; no default (L72).
-   */
-  success_pattern: string
-  /**
-   * Template resolving to the lead's state (#1639), which picks the route when
-   * the buyer profile holds click delivery. Unused while it holds none.
+   * Template resolving to the lead's state (#1639), which picks the buyer
+   * profile's route. Required when the profile routes by state.
    */
   state?: string
+  /*
+   * No request_url or success_pattern (#1671): where the click goes and which
+   * reply counts as sold are the buyer profile's click delivery. A definition
+   * saved before #1671 may still carry both; they are never read.
+   */
   /**
    * Ignored and reported (#1543): the cap lives on the buyer profile, where
    * buyer_click_check reads it too, so there is one home for it (L83).
@@ -213,17 +220,19 @@ export interface BuyerClickSendOutput {
   /** Why the record failed, when hold_recorded is false: the page sends the person here for it. */
   hold_record_error?: string
   would_send_body_sha256?: string
-  /** The profile route posted to (#1639); null when the node's own request_url was used. */
+  /** The profile route posted to (#1639); null until a route was chosen. */
   route_name: string | null
   /** Why that route: it lists the lead's state, the state is in no route (catch_all), or the lead had no readable state. */
   route_matched?: PickedClickRoute['matched']
   /** The lead's state as the route choice read it. */
   route_state?: string | null
-  /** Where the address and the success line came from: the buyer profile's click delivery, or the node's own settings. */
-  url_source: 'profile' | 'node' | null
-  pattern_source: 'profile' | 'node' | null
-  /** Set when the profile's success line is used and the node still holds a different one, which is not in force. */
-  node_success_pattern_superseded?: true
+  /**
+   * Where the address and the success line came from: always the buyer profile's
+   * click delivery since #1671, null until it was read. Kept so step rows from
+   * before (#1639, which could read 'node') and after read in one vocabulary.
+   */
+  url_source: 'profile' | null
+  pattern_source: 'profile' | null
   retries_ignored?: number
   duration_ms: number
 }
@@ -266,14 +275,45 @@ export interface ClickCounterApi {
 }
 
 /**
- * The enabled profile as the node reads it: its cap and how the buyer is sold,
- * so an offer buyer's leads cap is never judged against clicks (#1557), and its
- * click delivery, null when it holds none (#1639).
+ * The buyer's profile as the node reads it: how the buyer is sold, so an offer
+ * buyer is never sent a click (#1557), its click delivery, null when it holds
+ * none (#1639), and whether it is in the enabled snapshot with the cap that
+ * snapshot holds. A profile switched off after its offers went out is found with
+ * enabled false and no cap: its clicks are still sent (Dan, 2026-09-30).
  */
-export type ProfileRead = { found: false } | { found: true; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
+export type ProfileRead =
+  | { found: false }
+  | { found: true; enabled: boolean; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
+
+/** The enabled snapshot as readClickProfile needs it: the shape loadBuyerProfiles answers. */
+interface EnabledBuyersLike {
+  buyers: ReadonlyArray<{ partner: { id: string }; profile: { dailyLeadCap: number | null; soldOn: SoldOn | null; clickDelivery?: ClickDelivery | null } }>
+}
+
+/**
+ * The profile for one click: the enabled profile from the one cached snapshot
+ * that buyer_select and buyer_click_check read, and only when the buyer is not
+ * in it, the buyer's own row (readBuyerClickDelivery), for a profile switched
+ * off after its offers went out. Both reads live in buyer-profile-loader.ts.
+ * Either read failing throws, so the click is refused as profile_unreadable.
+ */
+export async function readClickProfile(
+  partnerId: string,
+  enabledSnapshot: () => Promise<EnabledBuyersLike>,
+  profileRow: (partnerId: string) => Promise<{ soldOn: SoldOn; isEnabled: boolean; clickDelivery: ClickDelivery | null } | null>,
+): Promise<ProfileRead> {
+  const snapshot = await enabledSnapshot()
+  const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
+  // A snapshot cached before #1639 carries no clickDelivery: read as none, which refuses the click by name.
+  if (buyer) return { found: true, enabled: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null }
+  const row = await profileRow(partnerId)
+  // Not in the enabled snapshot: switched off (or enabled since the snapshot was cached),
+  // so there is no cap in force to judge an overshoot against.
+  return row ? { found: true, enabled: false, cap: null, soldOn: row.soldOn, clickDelivery: row.clickDelivery } : { found: false }
+}
 
 export interface BuyerClickSendDeps {
-  /** The buyer's enabled profile, through the one profile reader; found false when no enabled profile. Throws when it cannot be read. */
+  /** The buyer's profile (readClickProfile); found false when the buyer has no profile at all. Throws when it cannot be read. */
   readProfile: (partnerId: string) => Promise<ProfileRead>
   /** The org's partner by id, for its slug; null when the org holds no such partner. Throws when it cannot be read. */
   resolvePartner: (partnerId: string) => Promise<{ slug: string } | null>
@@ -294,12 +334,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   // Fire and forget, as buyer_select does: the walk is still inside the request, and the rebuild never rejects.
   const background = (work: Promise<unknown>) => { void work }
   return {
-    readProfile: async (partnerId) => {
-      const snapshot = await loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })
-      const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
-      // A snapshot cached before #1639 carries no clickDelivery: no delivery, so the node settings stay in force.
-      return buyer ? { found: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null } : { found: false }
-    },
+    readProfile: (partnerId) => readClickProfile(
+      partnerId,
+      () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
+      (id) => readBuyerClickDelivery(supabase, orgId, id),
+    ),
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
     resolvePartner: async (partnerId) => {
@@ -310,7 +349,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     },
     saleClient: (key) => new LeadSaleClient(env.LEAD_SALE, key),
     counter: (partnerId, nowMs) => new ClickCounterClient(env.DAILY_CAP, env.WORKFLOW_CACHE, partnerId, nowMs),
-    // The one outbound POST (L613): the URL is the node's, and a click buyer carries no stored credential.
+    // The one outbound POST (L613): the URL is the profile route's, and a click buyer carries no stored credential.
     post: (target, body, opts) => postToPartner({ slug: target.slug, api_endpoint: target.url, cf_secret_key: null }, body, env, opts),
     // The one production alert, shared with buyer_click_check (#1557).
     alert: productionClickAlert(orgId, env, supabase),
@@ -402,7 +441,10 @@ interface Target {
 
 interface Validated extends Checked, Target {
   slug: string
-  profile: ProfileRead
+  /** False for a profile switched off after its offers went out: its click is sent, and no cap is in force. */
+  enabled: boolean
+  /** The enabled click profile's daily cap, from the one read made before the claim. */
+  cap: number | null
 }
 
 class Run {
@@ -480,10 +522,20 @@ class Run {
     } catch (err) {
       return this.fail('profile_unreadable', 'transient', `the buyer profile could not be read, so where this click goes is not known and nothing was sent: ${messageOf(err)}`)
     }
-    const delivery = profile.found && profile.soldOn === 'click' ? profile.clickDelivery : null
-    const target = delivery ? this.fromProfile(delivery) : this.fromNode()
+    // The profile is the only place a click can go (#1671): every way of it holding
+    // no delivery is refused here, by name, before anything is claimed.
+    if (!profile.found) {
+      return this.fail('no_profile', 'permanent', `there is no buyer profile for ${partner.slug}, so there is no Click delivery to send to and nothing was sent; give the buyer a profile sold on the click, with its Click delivery filled, on the partner page`)
+    }
+    if (profile.soldOn !== 'click') {
+      return this.fail('not_sold_on_click', 'permanent', `the buyer profile for ${partner.slug} is sold on the ${String(profile.soldOn)}, not the click, so it holds no Click delivery and nothing was sent; set the profile to be sold on the click and fill its Click delivery, or take this node off the workflow`)
+    }
+    if (!profile.clickDelivery) {
+      return this.fail('click_delivery_unset', 'permanent', `the buyer profile for ${partner.slug} holds no Click delivery, so where this click goes is not known and nothing was sent; fill the buyer profile's Click delivery (routes and success reply) on the partner page`)
+    }
+    const target = this.fromProfile(profile.clickDelivery)
     if ('output' in target) return target
-    const v: Validated = { ...checked, ...target, slug: partner.slug, profile }
+    const v: Validated = { ...checked, ...target, slug: partner.slug, enabled: profile.enabled, cap: profile.cap }
 
     if (this.out.mode_effective === 'report_only') {
       this.out.would_send_body_sha256 = await canonicalBodySha256(v.body)
@@ -573,22 +625,16 @@ class Run {
     this.out.count = added.count
     this.out.counted = added.added
 
-    // The same read the address came from (#1639), so the route and the cap are one snapshot.
-    const profile = v.profile
-    if (!profile.found) {
-      // Switched off while offers were out: nothing more is offered, so there is no overshoot to warn about.
+    // The same read the address came from (#1639), so the route and the cap are one
+    // snapshot. It is a click profile: anything else was refused before the claim.
+    if (!v.enabled) {
+      // Switched off while offers were out (Dan, 2026-09-30): the click is sent, and
+      // nothing more is offered, so there is no overshoot to warn about.
       this.out.over_cap = 'no_enabled_profile'
       this.deps.log({ event: 'buyer_click_send_no_enabled_profile', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug })
       return
     }
-    // An offer buyer's daily cap counts leads sold through buyer_select, so it is
-    // no cap on clicks: judging clicks against it would be a wrong notice (#1557).
-    if (profile.soldOn !== 'click') {
-      this.out.over_cap = 'cap_unreadable'
-      await this.page(v, 'cap_unreadable', `the enabled buyer profile is sold on the ${String(profile.soldOn)}, not the click, so its daily cap counts leads rather than clicks`, null)
-      return
-    }
-    const cap = profile.cap
+    const cap = v.cap
     // The one cap rule (isCap), shared with save validation and buyer_click_check.
     if (!isCap(cap)) {
       this.out.over_cap = 'cap_unreadable'
@@ -683,25 +729,6 @@ class Run {
     return { partnerId, percent, prospectId, body: body as Record<string, unknown> }
   }
 
-  /** The node's own address and success line: how every buyer ran before #1639, and still does while its profile holds no delivery. */
-  private fromNode(): Target | BuyerClickSendResult {
-    const c = this.config
-    // The one success line rule, shared with the profile validator and canvas save validation (#1639).
-    const rule = successPatternOf(c.success_pattern)
-    if (!rule.ok) return this.fail('success_pattern_invalid', 'permanent', `success_pattern: ${rule.reason}`)
-    const url = this.resolve(c.request_url)
-    let parsed: URL | null
-    try {
-      parsed = typeof url === 'string' ? new URL(url) : null
-    } catch {
-      parsed = null
-    }
-    if (!parsed || parsed.protocol !== 'https:') return this.fail('request_url_invalid', 'permanent', `request_url ${JSON.stringify(c.request_url ?? null)} did not resolve to an https URL`)
-    this.out.url_source = 'node'
-    this.out.pattern_source = 'node'
-    return { pattern: rule.pattern, url: parsed.toString() }
-  }
-
   /**
    * The profile's click delivery (#1639): the route for the lead's state and the
    * profile's success line. Re-checked with the shared rules, which save
@@ -726,9 +753,6 @@ class Run {
     this.out.route_state = picked.state
     this.out.url_source = 'profile'
     this.out.pattern_source = 'profile'
-    if (typeof this.config.success_pattern === 'string' && this.config.success_pattern.trim() !== '' && this.config.success_pattern !== delivery.successPattern) {
-      this.out.node_success_pattern_superseded = true
-    }
     return { pattern: rule.pattern, url: new URL(picked.route.url).toString() }
   }
 
