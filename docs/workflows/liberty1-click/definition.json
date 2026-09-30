@@ -270,7 +270,7 @@
           "y": 1760
         },
         "config": {
-          "partner_id": "",
+          "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
           "prospect_id": "{{steps.pick_record.output.sale_key}}",
           "request_url": "{{steps.build_request.output.url}}",
           "request_body": "{{steps.build_request.output.body}}",

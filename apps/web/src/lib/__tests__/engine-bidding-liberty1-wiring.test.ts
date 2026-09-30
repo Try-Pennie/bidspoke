@@ -2,7 +2,7 @@
  * The #1544 canvas change passes the canvas's own save checks, so applying
  * docs/workflows/engine-bidding/liberty1-wiring.json to the live Engine Bidding
  * Workflow cannot land on a canvas that refuses to save it: the new nodes are
- * configured once the buyer is picked, both buyer_click_check handles are
+ * configured with the click buyer the canvas picked, both buyer_click_check handles are
  * wired, no cycle, no output forked to two places, and build_response_body is
  * still reached on every path into it. Checked against the live tail excerpt
  * the engine walk test uses (read from the mirror, version 100); the engine
@@ -25,7 +25,6 @@ const removed = new Set(wiring.remove_edges.map((e) => e.id))
 // The tail's code nodes carry no script (the tests supply the kept ones), so give them one for the save check.
 const nodes: NodeDef[] = [...tail.nodes, ...wiring.add_nodes].map((n) => (n.type === 'code' && !n.config.script ? { ...n, config: { ...n.config, script: 'return {}' } } : n))
 const edges: EdgeDef[] = [...tail.edges.filter((e) => !removed.has(e.id)), ...wiring.add_edges]
-const picked = nodes.map((n) => (n.type === 'buyer_click_check' ? { ...n, config: { ...n.config, partner_id: '0192a4f0-0000-7000-8000-00000000a1b1' } } : n))
 
 const flowNodes: Node[] = nodes.map((n) => ({ id: n.id, type: n.type, position: n.position ?? { x: 0, y: 0 }, data: { namespace: n.namespace, label: n.label, config: n.config } }))
 const flowEdges: Edge[] = edges.map((e) => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.source_handle }))
@@ -36,13 +35,10 @@ describe('the #1544 wiring on the live Engine Bidding tail', () => {
     for (const e of wiring.remove_edges) expect(tail.edges.find((x) => x.id === e.id), e.was).toMatchObject({ source: e.source, target: e.target, source_handle: e.source_handle })
   })
 
-  it('leaves the buyer empty, so a save is refused until the click buyer is picked on the node', () => {
-    expect(byNs('buyer_click_check').config).toMatchObject({ partner_id: '' })
-    expect(validateWorkflowDef(nodes, edges).map((e) => e.namespace)).toEqual(['buyer_click_check'])
-  })
-
-  it('has every node configured once the buyer is picked', () => {
-    expect(validateWorkflowDef(picked, edges)).toEqual([])
+  it('names the Liberty1 partner the canvas picked, so every node is configured as it stands (#1662)', () => {
+    // Left empty until the partner existed; the hourly drift check now compares this node with the canvas.
+    expect(byNs('buyer_click_check').config).toMatchObject({ partner_id: '4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3' })
+    expect(validateWorkflowDef(nodes, edges)).toEqual([])
   })
 
   it('wires both buyer_click_check handles and every buyer_select handle', () => {

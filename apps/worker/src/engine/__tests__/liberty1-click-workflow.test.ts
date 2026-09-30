@@ -64,7 +64,7 @@ const SUBMISSION_ID = 'a0S5f00000TestZAAA'
 const LEAD_ID = '00Q5f00000TestLAAA'
 const L1_LEAD = '00QUy00000gtlZBMAY'
 const NOW = '2026-09-29T16:04:05.000Z'
-/** A stand in for the Liberty1 partner row, which does not exist yet. */
+/** A stand in for the id of the Liberty1 partner row this test's partner double answers with. */
 const LIBERTY1_PARTNER_ID = '0192a4f0-0000-7000-8000-00000000a1b1'
 const LINK = 'https://app.test/workflows/wf-l1/executions/exec-1'
 
@@ -260,14 +260,14 @@ describe('the offer check', () => {
 })
 
 describe('a Liberty1 offer that is still open', () => {
-  it("posts Brian's body to the route the canvas names, keyed by the prospect, with the partner left for Dan to pick", async () => {
+  it("posts Brian's body to the route the canvas names, keyed by the prospect, for the Liberty1 partner the canvas picked", async () => {
     await click({ Prospect__c: PROSPECT_ID })
     const body = buildPayload(RECORD)
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
     expect(clickInputs[0].request_url).toBe(CANVAS_ROUTES[pickRoute(body.state)])
     expect(JSON.stringify(clickInputs[0].request_body)).toBe(JSON.stringify(body))
-    expect(clickInputs[0].partner).toBe('')
+    expect(clickInputs[0].partner).toBe('4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3')
   })
 
   it('sent, from a Prospect__c: answers success, then writes Completed to the prospect alone (no submission to tie a lead to)', async () => {

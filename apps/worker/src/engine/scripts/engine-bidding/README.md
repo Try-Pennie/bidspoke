@@ -15,7 +15,13 @@ compares each file with the code node of the same namespace. Per script it
 records one of three states in `job_runs`: `agree`, `awaiting_paste` (the canvas
 still holds the script the file was derived from, whose hash is recorded beside
 the file in `KEPT_ENGINE_SCRIPTS`) or `drift` (the canvas matches neither), and
-pages only on a drift or a missing node. Its first `agree` after a paste is the
+pages only on a drift or a missing node. The same run (#1662) compares the
+outcome deciding settings of `buyer_click_check` and `route_known_no`
+(`docs/workflows/engine-bidding/liberty1-wiring.json`) and of `buyer_select`
+(`docs/workflows/engine-bidding/buyer-select.json`) with the canvas, and pages a
+difference naming the setting and both values; `buyer_select`'s mode is judged
+against the modes the node accepts, so moving it between decide_only and live is
+not a finding. Its first `agree` after a paste is the
 confirmation the paste landed. When a kept file is re-derived from a newer
 canvas, update its `canvasBaselineSha256` and `baselineReadOn` in the same
 change. The worker bundles these files as text (a wrangler `[[rules]]` entry and

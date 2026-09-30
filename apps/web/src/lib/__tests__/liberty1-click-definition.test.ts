@@ -30,16 +30,12 @@ describe('the Liberty1 click definition', () => {
     expect(edges.filter((e) => e.source === 'trigger')).toHaveLength(1)
   })
 
-  it('leaves the partner empty, so a live save is refused until Liberty1 is picked on the node', () => {
+  it('names the Liberty1 partner the canvas picked, so the file is the live settings and saves live as it stands (#1662)', () => {
+    // Left empty until the partner existed; the hourly drift check now compares this file with the canvas,
+    // which holds Liberty1's partner row (slug liberty1, read 2026-09-30).
     const send = nodes.find((n) => n.type === 'buyer_click_send')
-    expect(send?.config).toMatchObject({ partner_id: '' })
-    expect(validateWorkflowDef(nodes, edges).map((e) => [e.namespace, e.message])).toEqual([['click_send', 'No partner selected']])
-  })
-
-  it('has every node configured once the partner is picked, as a live save requires', () => {
-    // Before #1553 the node named its buyer by slug, after it by id: either picked value clears the check.
-    const picked = nodes.map((n) => (n.type === 'buyer_click_send' ? { ...n, config: { ...n.config, partner_id: '0192a4f0-0000-7000-8000-00000000a1b1', partner_slug: 'liberty1' } } : n))
-    expect(validateWorkflowDef(picked, edges)).toEqual([])
+    expect(send?.config).toMatchObject({ partner_id: '4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3' })
+    expect(validateWorkflowDef(nodes, edges)).toEqual([])
   })
 
   it('wires every handle buyer_click_send can take', () => {

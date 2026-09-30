@@ -1,0 +1,58 @@
+{
+  "_about": "The Engine Bidding Workflow's buyer_select node (da82a183-1a4a-417e-b0b8-5f3fe5e14840) as the canvas runs it, read from the bidspoke-workflows mirror on 2026-09-30 (#1662). No committed copy of this node existed before: engine-bidding-tail-v100.json under the script tests holds version 100's, which is test input and stays as it was. The hourly drift check (apps/worker/src/lib/kept-node-config.ts) compares this node's outcome deciding settings on the canvas with this file and pages on a difference, so an intended canvas edit to one of them is copied here in a PR. mode is judged against the allowed modes rather than this value, because moving between decide_only and live is an operational switch.",
+  "read_on": "2026-09-30",
+  "nodes": [
+    {
+      "id": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+      "namespace": "buyer_select",
+      "label": "Buyer Select",
+      "type": "buyer_select",
+      "config": {
+        "debt": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}",
+        "mode": "live",
+        "state": "{{trigger.payload.personalInformation.state}}",
+        "retries": 0,
+        "lead_key": "{{trigger.payload.leadUuid}}",
+        "population": "engine",
+        "sale_payload": {
+          "set": [
+            {
+              "path": "unsecuredDebt",
+              "template": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}"
+            },
+            {
+              "path": "maxUnsecuredDebt",
+              "template": "{{steps.prospect_trades.output.body.tradeCalculations.enrollableDebt}}"
+            },
+            {
+              "path": "workflowId",
+              "template": "engine-bidding"
+            },
+            {
+              "path": "pennieLeadId",
+              "template": "{{steps.create_prospect.output.body.id}}"
+            },
+            {
+              "path": "executionId",
+              "template": "{{execution.trace_id}}"
+            },
+            {
+              "path": "leadType",
+              "template": "prospect"
+            }
+          ],
+          "base": "{{trigger.payload}}",
+          "normalise": [
+            {
+              "path": "personalInformation.ssn",
+              "normaliser": "ssn_digits_9"
+            }
+          ]
+        },
+        "sell_off_when": "{{steps.prospect_trades.output.body.sellOff}}",
+        "live_percent_env": "BUYER_SELECT_ENGINE_PERCENT",
+        "bid_when_positive": "{{steps.prospect_trades.output.body.engineBid}}"
+      }
+    }
+  ]
+}

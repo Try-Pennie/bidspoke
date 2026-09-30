@@ -36,7 +36,7 @@ Every step below is safe to save on its own: until both scripts are pasted the o
 
    | Field | Value |
    |---|---|
-   | Partner | Liberty1 (pick it; the canvas refuses to save the workflow live while it is empty) |
+   | Partner | Liberty1 (pick it; the canvas refuses to save the workflow live while it is empty). Since #1662 the json holds the id the canvas picked, `4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3`, and the hourly drift check compares it with the canvas |
    | Population | `engine` |
    | State | `{{trigger.payload.personalInformation.state}}` |
    | Debt | `{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}` |

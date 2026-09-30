@@ -52,6 +52,7 @@ import BUILD_LIBERTY1_REQUEST_RAW from '../../engine/scripts/liberty1-click/buil
 import LIBERTY1_CLICK_PATCH_RAW from '../../engine/scripts/liberty1-click/liberty1_click_patch.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import PICK_CLICK_RECORD_RAW from '../../engine/scripts/liberty1-click/pick_click_record.js?raw'
+import liberty1File from '../../../../../docs/workflows/liberty1-click/definition.json'
 const LIBERTY1_ON_DISK: Record<string, string> = {
   'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
   'pick_click_record.js': PICK_CLICK_RECORD_RAW as string,
@@ -255,7 +256,7 @@ describe('runEngineScriptDrift', () => {
     return {
       repo: 'Try-Pennie/bidspoke-workflows',
       token: 'tok',
-      workflows: [{ name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: [await keptFor(KEPT, BASELINE)] }],
+      workflows: [{ name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: [await keptFor(KEPT, BASELINE)], configSources: [] }],
       fetch: (async () => new Response(mirror(canvas), { status: 200 })) as unknown as typeof fetch,
       localDev: false,
       log: () => {},
@@ -265,7 +266,7 @@ describe('runEngineScriptDrift', () => {
 
   it('is skipped with no repo configured, because then there is no mirror to compare against (the backup is off)', async () => {
     const s = await runEngineScriptDrift(await deps({ repo: undefined }))
-    expect(s).toEqual({ skipped: 'no_repo', verdicts: [], findings: [] })
+    expect(s).toEqual({ skipped: 'no_repo', verdicts: [], configVerdicts: [], findings: [] })
   })
 
   it('is skipped in local dev, which has no backup token and would page production Slack', async () => {
@@ -308,7 +309,7 @@ describe('runEngineScriptDrift', () => {
 })
 
 describe('runEngineScriptDriftAndPage', () => {
-  const summary = (over: Partial<DriftSummary>): DriftSummary => ({ verdicts: [], findings: [], ...over })
+  const summary = (over: Partial<DriftSummary>): DriftSummary => ({ verdicts: [], configVerdicts: [], findings: [], ...over })
   const run = (s: DriftSummary) => async () => s
 
   it('pages the findings and clears a standing page with an empty list on a clean run', async () => {
@@ -333,24 +334,24 @@ describe('endingOf', () => {
   const notBuilt = { workflow: 'L', namespace: 'd', file: 'd.js', state: 'not_built' as const }
 
   it('records skipped, unmeasured, findings, awaiting_paste and ok as distinct outcomes', () => {
-    expect(endingOf({ skipped: 'no_repo', verdicts: [], findings: [] }).outcome).toBe('skipped')
-    expect(endingOf({ verdicts: [], findings: ['could not read'], unreadable: '500' }).outcome).toBe('unmeasured')
-    expect(endingOf({ verdicts: [agree, drift], findings: ['c drifted'] }).outcome).toBe('findings')
-    expect(endingOf({ verdicts: [agree, awaiting], findings: [] })).toMatchObject({ outcome: 'awaiting_paste', summary: { awaiting: ['W/b'] } })
-    expect(endingOf({ verdicts: [agree, agree], findings: [] }).outcome).toBe('ok')
+    expect(endingOf({ skipped: 'no_repo', verdicts: [], configVerdicts: [], findings: [] }).outcome).toBe('skipped')
+    expect(endingOf({ verdicts: [], configVerdicts: [], findings: ['could not read'], unreadable: '500' }).outcome).toBe('unmeasured')
+    expect(endingOf({ verdicts: [agree, drift], configVerdicts: [], findings: ['c drifted'] }).outcome).toBe('findings')
+    expect(endingOf({ verdicts: [agree, awaiting], configVerdicts: [], findings: [] })).toMatchObject({ outcome: 'awaiting_paste', summary: { awaiting: ['W/b'] } })
+    expect(endingOf({ verdicts: [agree, agree], configVerdicts: [], findings: [] }).outcome).toBe('ok')
   })
 
   it('a workflow not built yet is listed as not_built and does not stop the run reading ok', () => {
-    expect(endingOf({ verdicts: [agree, notBuilt], findings: [] })).toMatchObject({ outcome: 'ok', summary: { not_built: ['L/d'] } })
+    expect(endingOf({ verdicts: [agree, notBuilt], configVerdicts: [], findings: [] })).toMatchObject({ outcome: 'ok', summary: { not_built: ['L/d'] } })
   })
 
   it('one unreadable mirror beside a judged workflow still records what was judged, as findings', () => {
-    expect(endingOf({ verdicts: [agree], findings: ['could not read'], unreadable: 'L: 500' }).outcome).toBe('findings')
-    expect(endingOf({ verdicts: [notBuilt], findings: ['could not read'], unreadable: 'W: 500' }).outcome).toBe('unmeasured')
+    expect(endingOf({ verdicts: [agree], configVerdicts: [], findings: ['could not read'], unreadable: 'L: 500' }).outcome).toBe('findings')
+    expect(endingOf({ verdicts: [notBuilt], configVerdicts: [], findings: ['could not read'], unreadable: 'W: 500' }).outcome).toBe('unmeasured')
   })
 
   it('lists every script and its state in the summary, so job_runs shows which paste landed', () => {
-    const ending = endingOf({ verdicts: [agree, awaiting], findings: [] })
+    const ending = endingOf({ verdicts: [agree, awaiting], configVerdicts: [], findings: [] })
     expect(ending.summary).toMatchObject({ scripts: { 'W/a': 'agree', 'W/b': 'awaiting_paste' } })
   })
 })
@@ -379,7 +380,11 @@ describe('the Liberty1 click workflow (#1545)', () => {
     const urls: string[] = []
     const fetchImpl = vi.fn(async (url: string) => {
       urls.push(url)
-      const nodes = (liberty1?.scripts ?? []).map((k) => codeNode(k.namespace, k.script))
+      // The committed definition with the kept scripts in its code nodes, so its node settings agree too (#1662).
+      const nodes = (liberty1File.definition.nodes as Array<{ namespace: string; type: string; config: Record<string, unknown> }>).map((n) => {
+        const kept = liberty1?.scripts.find((k) => k.namespace === n.namespace)
+        return kept ? { ...n, config: { ...n.config, script: kept.script } } : n
+      })
       return new Response(JSON.stringify({ id: LIBERTY1_CLICK_WORKFLOW_ID, definition: { nodes } }), { status: 200 })
     })
     const s = await runEngineScriptDrift({
@@ -417,8 +422,8 @@ describe('the Liberty1 click workflow (#1545)', () => {
     const s = await runEngineScriptDrift({
       repo: 'Try-Pennie/bidspoke-workflows', token: 'tok', fetch: fetchImpl as unknown as typeof fetch, localDev: false, log: () => {},
       workflows: [
-        { name: 'A flow', workflowId: 'wf-a', folder: 'a', scripts: [script('a')] },
-        { name: 'B flow', workflowId: 'wf-b', folder: 'b', scripts: [script('b')] },
+        { name: 'A flow', workflowId: 'wf-a', folder: 'a', scripts: [script('a')], configSources: [] },
+        { name: 'B flow', workflowId: 'wf-b', folder: 'b', scripts: [script('b')], configSources: [] },
       ],
     })
     expect(urls.map((u) => u.split('/').pop())).toEqual(['wf-a.json', 'wf-b.json'])

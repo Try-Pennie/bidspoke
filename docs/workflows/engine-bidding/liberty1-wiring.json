@@ -67,7 +67,7 @@
         "y": 2100
       },
       "config": {
-        "partner_id": "",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "population": "engine",
         "state": "{{trigger.payload.personalInformation.state}}",
         "debt": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}",
