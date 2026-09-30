@@ -159,10 +159,17 @@ export const UNWATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly Unwatched
  * empty one, is a finding. The live Liberty1 canvas was cleared of both at
  * version 15 (2026-09-30).
  */
-export const RETIRED_CONFIG_FIELDS: Readonly<Record<string, readonly UnwatchedField[]>> = {
+export interface RetiredField extends UnwatchedField {
+  /** How to take it off the node on the canvas: the only fix, since the node ignores it (L111). */
+  remove: string
+}
+
+const REMOVE_CLICK_SEND_LEFTOVER = 'open the step, press Remove the old address and success line, and save the workflow'
+
+export const RETIRED_CONFIG_FIELDS: Readonly<Record<string, readonly RetiredField[]>> = {
   buyer_click_send: [
-    { field: 'request_url', why: "where a click goes is the buyer profile's Click delivery since #1671" },
-    { field: 'success_pattern', why: "the reply that counts as sold is the buyer profile's Click delivery success reply since #1671" },
+    { field: 'request_url', why: "where a click goes is the buyer profile's Click delivery since #1671", remove: REMOVE_CLICK_SEND_LEFTOVER },
+    { field: 'success_pattern', why: "the reply that counts as sold is the buyer profile's Click delivery success reply since #1671", remove: REMOVE_CLICK_SEND_LEFTOVER },
   ],
 }
 
@@ -172,7 +179,7 @@ export type ConfigVerdict =
   | (VerdictBase & { state: 'config_drift'; field: string; path: string; committed: string; canvas: string })
   | (VerdictBase & { state: 'not_committed'; field: string; canvas: string })
   | (VerdictBase & { state: 'outside_allowed'; field: string; canvas: string; allowed: readonly string[] })
-  | (VerdictBase & { state: 'retired_setting'; field: string; canvas: string; why: string })
+  | (VerdictBase & { state: 'retired_setting'; field: string; canvas: string; why: string; remove: string })
   | (VerdictBase & { state: 'missing_node'; nodeType: string })
   | (VerdictBase & { state: 'type_changed'; committedType: string; canvasType: string })
 
@@ -249,7 +256,7 @@ export function judgeKeptConfig(sources: readonly CommittedSource[], definition:
         if (d) found.push({ ...base, state: 'config_drift', field: rule.field, path: d.path, committed: render(d.a), canvas: render(d.b) })
       }
       for (const retired of RETIRED_CONFIG_FIELDS[committed.type] ?? []) {
-        if (canvasConfig[retired.field] !== undefined) found.push({ ...base, state: 'retired_setting', field: retired.field, canvas: render(canvasConfig[retired.field]), why: retired.why })
+        if (canvasConfig[retired.field] !== undefined) found.push({ ...base, state: 'retired_setting', field: retired.field, canvas: render(canvasConfig[retired.field]), why: retired.why, remove: retired.remove })
       }
       out.push(...(found.length > 0 ? found : [{ ...base, state: 'agree' as const }]))
     }
@@ -266,7 +273,7 @@ export function describeConfigVerdict(v: ConfigVerdict): string {
     case 'outside_allowed':
       return `${v.workflow}, ${v.namespace}: ${v.field} on the canvas is ${v.canvas}, which is none of ${v.allowed.join(', ')}.`
     case 'retired_setting':
-      return `${v.workflow}, ${v.namespace}: the canvas holds ${v.field} ${v.canvas}, a setting the node no longer reads: ${v.why}. Remove it from the step.`
+      return `${v.workflow}, ${v.namespace}: the canvas holds ${v.field} ${v.canvas}, a setting the node no longer reads: ${v.why}. To remove it, ${v.remove}.`
     case 'missing_node':
       return `${v.workflow}, ${v.namespace}: the workflow has no node with this namespace, while ${v.file} holds a ${v.nodeType} node of that name.`
     case 'type_changed':

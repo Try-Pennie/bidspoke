@@ -405,28 +405,60 @@ export function endingOf(summary: DriftSummary): JobRunEnding {
  * Only a run that judged speaks for the job: a skipped run measured nothing, so
  * it neither pages nor clears a standing page (L11).
  */
-export async function runEngineScriptDriftAndPage(run: () => Promise<DriftSummary>, notify: (lines: string[]) => Promise<void>): Promise<DriftSummary> {
+export async function runEngineScriptDriftAndPage(run: () => Promise<DriftSummary>, notify: (lines: string[], remedy: AlertRemedy) => Promise<void>): Promise<DriftSummary> {
   const summary = await run()
-  if (!summary.skipped) await notify(summary.findings)
+  if (!summary.skipped) await notify(summary.findings, driftRemedyFor(summary))
   return summary
 }
 
+/** The How to fix sentence for each kind of finding, joined for the kinds a run made (L111). */
+const FIX_SCRIPT =
+  'Open the node named on the workflow named and compare its script with the kept file. If the canvas edit is the one ' +
+  'that should stand, copy the canvas script into the kept file in a PR, update its canvasBaselineSha256 in ' +
+  'apps/worker/src/lib/engine-script-drift.ts, and rerun the script tests. If the kept file is right, paste it into the node and save.'
+const FIX_SETTING =
+  'For a setting, if the canvas value is the one that should stand, copy it into the committed file the line names in a PR; ' +
+  'if the file is right, set it back on the node and save.'
+// A retired setting decides nothing, so the repo is right by construction and the
+// only change that clears it is taking it off the node (#1671).
+const FIX_RETIRED =
+  'For a setting the node no longer reads, remove it from the node on the canvas as its line says, then save the workflow; ' +
+  'the repo already holds the right thing.'
+const FIX_CLOSE = 'The check runs hourly and goes quiet once the two agree; a mirror it could not read is reported in its own words.'
+
+type FixKind = 'script' | 'setting' | 'retired'
+const FIX_FOR: Record<FixKind, string> = { script: FIX_SCRIPT, setting: FIX_SETTING, retired: FIX_RETIRED }
+
+function fixHintFor(kinds: readonly FixKind[]): string {
+  return [...(['script', 'setting', 'retired'] as const).filter((k) => kinds.includes(k)).map((k) => FIX_FOR[k]), FIX_CLOSE].join(' ')
+}
+
+/** Every kind, for the reviewed remedy list and for a run whose findings name no kind (an unreadable mirror). */
 export const ENGINE_SCRIPT_DRIFT_REMEDY: AlertRemedy = {
   consequence:
     'A kept workflow on the canvas holds a code node script, or an outcome deciding node setting, that the repo does not hold: ' +
     'a script that is neither the kept copy in apps/worker/src/engine/scripts/<folder> nor the canvas script that copy was derived from, ' +
-    'or a setting that differs from the committed definition under docs/workflows. The repo then has no copy of what is running and the ' +
-    'tests are proving something the canvas no longer runs. The workflow itself is unaffected. Each line names the workflow, the node, ' +
-    'and the first line or the setting that differs, with both values:',
-  fixHint:
-    'Open the node named on the workflow named and compare its script with the kept file. If the canvas edit is the one ' +
-    'that should stand, copy the canvas script into the kept file in a PR, update its canvasBaselineSha256 in ' +
-    'apps/worker/src/lib/engine-script-drift.ts, and rerun the script tests. If the kept file is right, paste it into the node and ' +
-    'save. For a setting, if the canvas value is the one that should stand, copy it into the committed file the line names in a PR; ' +
-    'if the file is right, set it back on the node and save. The check runs hourly and goes quiet once the two agree; a mirror it ' +
-    'could not read is reported in its own words.',
+    'a setting that differs from the committed definition under docs/workflows, or a setting the node no longer reads. The repo then ' +
+    'does not describe what is running. The workflow itself is unaffected. Each line names the workflow, the node, ' +
+    'and the first line or the setting that differs, with the values:',
+  fixHint: fixHintFor(['script', 'setting', 'retired']),
   headlineVerb: 'found a canvas script or node setting the repo does not hold',
   itemNoun: { one: 'difference', many: 'differences' },
+}
+
+/**
+ * The remedy for one run, its How to fix line built from the kinds of finding
+ * the run made, so a page holding only a retired setting never tells anyone to
+ * copy the canvas value into the repo or set it back on the node (L111).
+ */
+export function driftRemedyFor(summary: DriftSummary): AlertRemedy {
+  const kinds = new Set<FixKind>()
+  for (const v of summary.verdicts) if (v.state === 'drift' || v.state === 'missing_node') kinds.add('script')
+  for (const v of summary.configVerdicts) {
+    if (v.state === 'retired_setting') kinds.add('retired')
+    else if (v.state !== 'agree') kinds.add('setting')
+  }
+  return kinds.size === 0 ? ENGINE_SCRIPT_DRIFT_REMEDY : { ...ENGINE_SCRIPT_DRIFT_REMEDY, fixHint: fixHintFor([...kinds]) }
 }
 
 export function productionDriftDeps(env: Env): DriftDeps {
@@ -447,7 +479,7 @@ export function runEngineScriptDriftForEnv(supabase: SupabaseClient, env: Env): 
     () =>
       runEngineScriptDriftAndPage(
         () => runEngineScriptDrift(productionDriftDeps(env)),
-        (lines) => notifyExportFailure(supabase, ENGINE_SCRIPT_DRIFT_JOB, lines, env.IDEMPOTENCY, ENGINE_SCRIPT_DRIFT_REMEDY),
+        (lines, remedy) => notifyExportFailure(supabase, ENGINE_SCRIPT_DRIFT_JOB, lines, env.IDEMPOTENCY, remedy),
       ),
     endingOf,
   )
