@@ -1,10 +1,12 @@
 // Scheduled cache pre-warm — keeps KV hot for all active workflows so cold-path
 // execution latency stays low even when no traffic has arrived for a while.
-// Runs every 4 minutes (under the 5-min TTL on all three caches) via the
-// scheduled handler in src/index.ts.
+// Runs every minute (the '* * * * *' cron, well under the 5 minute TTLs) via the
+// scheduled handler in src/index.ts. The buyer profile copy is rebuilt outright
+// rather than read, because a read of a held copy extends nothing (#1632).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadWorkflowDefinition } from '../engine/definition-loader'
+import { keepBuyerProfilesWarm } from './buyer-profile-loader'
 import { loadEnvVars } from './env-loader'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { loadPartnerConstants } from './partner-constants-loader'
@@ -38,6 +40,8 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
     const tasks: Promise<unknown>[] = [
       loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env)).catch(() => undefined),
       loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+      // Never throws; a failure is logged inside and the held copy is kept.
+      keepBuyerProfilesWarm(orgId, env.WORKFLOW_CACHE, supabase),
     ]
     // Declines quietly for an organization with no credentials: a prewarm is an
     // optimisation and must not fail the run, and the jobs that NEED them report
