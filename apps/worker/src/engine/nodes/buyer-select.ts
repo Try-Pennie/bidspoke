@@ -60,7 +60,7 @@ import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
 import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
-import { runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
+import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
 import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
@@ -192,6 +192,17 @@ export interface BuyerSelectOutput {
   mirrored?: boolean
   replay?: boolean
   retries_ignored?: number
+  /**
+   * How many of this execution's lead sale claims found the holder past its
+   * deadline and moved it to in_doubt, and how many in_doubt claims its attempts
+   * healed from the ledger (#1643). The parity reader sums both per day. Written,
+   * as 0 when nothing happened, whenever at least one claim answered; left out
+   * when none did (not for sale, no eligible buyer, a claim that never answered),
+   * because such a lead measured nothing. The names are the parity reader's: in
+   * live the same facts are recorded under them, about the live claim namespace.
+   */
+  rehearsal_expired_in_flight?: number
+  rehearsal_in_doubt_heals?: number
   duration_ms: number
 }
 
@@ -304,6 +315,8 @@ class Run {
   private leadKey: string | null = null
   /** Set the moment a live buyer call starts: from then on the pre-call budget no longer applies (#1508). */
   private buyerCallStarted = false
+  /** Every claim answer and heal across this execution's attempts (#1643). */
+  private readonly claims = new ClaimTally()
 
   constructor(private readonly node: NodeDefinition, private readonly ctx: ExecutionContext, private readonly deps: BuyerSelectDeps) {
     this.config = node.config as unknown as BuyerSelectConfig
@@ -328,6 +341,10 @@ class Run {
 
   finish(): void {
     this.out.duration_ms = this.deps.clock() - this.startedAt
+    if (this.claims.measured) {
+      this.out.rehearsal_expired_in_flight = this.claims.expiredInFlight
+      this.out.rehearsal_in_doubt_heals = this.claims.inDoubtHeals
+    }
     if (this.modeEffective === 'decide_only') {
       this.deps.log({ event: 'buyer_select_decide_only_latency', mode: 'decide_only', duration_ms: this.out.duration_ms, route: this.out._route, reason: this.out.reason, step_namespace: this.node.namespace })
     }
@@ -677,6 +694,7 @@ class Run {
           budgetLeftMs: live ? undefined : () => this.remaining(),
           preCallBudgetLeftMs: live ? () => this.remaining() : undefined,
           background: live ? undefined : this.deps.background,
+          onClaimEvent: this.claims.observe,
         }
       )
     } catch (err) {

@@ -135,6 +135,39 @@ export interface AttemptDeps {
    * them. The work never rejects.
    */
   background?: (work: Promise<void>) => void
+  /**
+   * Told what the lead sale claim did, for the node's record of heals and
+   * expiries (#1643): every claim that ANSWERED, whatever it said, and every
+   * in_doubt claim this attempt healed from the ledger. A claim call that threw
+   * is not reported, because nothing is known about what the object did. It
+   * only observes: a throw from it is swallowed, so it cannot change a sale.
+   */
+  onClaimEvent?: (event: ClaimEvent) => void
+}
+
+export type ClaimEvent =
+  | { kind: 'claim_answered'; result: ClaimResult }
+  | { kind: 'in_doubt_healed' }
+
+/**
+ * Counts what `onClaimEvent` reports, the one tally both the buyer_select node
+ * and the buyer objects drill keep (#1643). `measured` is false until a claim
+ * answered at least once: an attempt whose claim never answered, or a lead
+ * that never reached a claim, says nothing about either count, and the parity
+ * reader treats a missing count as unmeasured rather than as zero (L90).
+ */
+export class ClaimTally {
+  measured = false
+  expiredInFlight = 0
+  inDoubtHeals = 0
+  readonly observe = (event: ClaimEvent): void => {
+    if (event.kind === 'in_doubt_healed') {
+      this.inDoubtHeals += 1
+      return
+    }
+    this.measured = true
+    if (event.result.state === 'in_doubt' && event.result.expired_in_flight === true) this.expiredInFlight += 1
+  }
 }
 
 /** The attempt's reasons: every out reason, plus the rehearsal budget ending (a node reason, never recorded as an out reason). */
@@ -271,6 +304,7 @@ async function acquireClaim(input: AttemptInput, deps: AttemptDeps, startedAt: n
     } catch (err) {
       return { kind: 'done', result: objectFailure(deps, err) }
     }
+    observe(deps, { kind: 'claim_answered', result: claim })
     switch (claim.state) {
       case 'claimed':
         return { kind: 'claimed', generation: claim.generation }
@@ -322,6 +356,8 @@ async function waitForHolder(deps: AttemptDeps, body: ClaimBody, startedAt: numb
     } catch (err) {
       return { kind: 'done', result: objectFailure(deps, err) }
     }
+    // The waiter's re-read is a claim too, and can be the one that finds the holder expired.
+    observe(deps, { kind: 'claim_answered', result: current })
   }
   if (current.state === 'claimed') return { kind: 'claimed', generation: current.generation }
   if (current.state === 'sold') return { kind: 'done', result: { result: 'sold', outcome: current.outcome, replay: true, mirrored: false } }
@@ -351,6 +387,7 @@ async function resolveInDoubt(input: AttemptInput, deps: AttemptDeps, claim: Ext
       if (err instanceof GenerationMovedError || err instanceof WrongStateError) return { kind: 'retry' }
       return { kind: 'done', result: objectFailure(deps, err) }
     }
+    observe(deps, { kind: 'in_doubt_healed' })
     return { kind: 'done', result: { result: 'sold', outcome, replay: true, mirrored: false } }
   }
   if (found.found && (found.entry.status === 'reserved' || found.entry.status === 'unresolved')) {
@@ -397,6 +434,15 @@ async function handleRepeat(input: AttemptInput, deps: AttemptDeps, generation: 
 }
 
 // ── Small helpers ──────────────────────────────────────────────────────────────
+
+/** Reports a claim event to the observer, if any. An observer that throws is ignored: it records, it never decides. */
+function observe(deps: AttemptDeps, event: ClaimEvent): void {
+  try {
+    deps.onClaimEvent?.(event)
+  } catch {
+    // Deliberately swallowed: a bookkeeping fault must not change what was sold.
+  }
+}
 
 /** Under a budget, is it spent? Without one, never. */
 function budgetSpent(deps: AttemptDeps): boolean {
