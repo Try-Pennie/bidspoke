@@ -120,11 +120,13 @@ Need: a fallback that doesn't depend on Pipedream.
 
 ## C. Things to figure out (not software)
 
-### 19. Copying out what Pipedream will delete
-Decided (decisions 1 to 3): I build and run the tooling, and you approve each step. It covers:
-1. Data store contents.
-2. About 90 passwords and keys. You'll try Pipedream first, then existing copies, then the partner.
-3. The step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels, about 174 workflow files), read from your browser, read only, if Pipedream offers no better way.
+### 19. Collecting what Pipedream will delete, one workflow at a time
+Decided (decision 19, recorded at https://github.com/Try-Pennie/bidspoke/discussions/1684#discussioncomment-18688050): there is no upfront copy-out. Each workflow's settings, secrets and data store contents are collected while it is ported, as part of its cutover checklist in #1697.
+1. Its step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels). Values that are credentials go straight into Bidspoke's encrypted settings, never through a browser session.
+2. Its passwords and keys. You try Pipedream first, then existing copies, then the partner (decision 3).
+3. The contents of every data store it uses. A store shared by several workflows is copied in full with the first workflow that uses it.
+
+Anything a workflow still needs that could only be read by running it on Pipedream is lost if its port is not done by 2027-03-31.
 
 ### 20. SFTP file transfers and fixed IP addresses (12 workflows)
 Cloudflare can do neither. Decided (decision 8): this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day, as Dan reported in that session (decision 8 in the record linked above). The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
