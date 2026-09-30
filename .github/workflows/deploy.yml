@@ -43,8 +43,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -67,8 +65,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -104,8 +100,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -125,8 +119,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -258,8 +250,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -339,9 +329,13 @@ jobs:
           ref: ${{ steps.live.outputs.sha }}
           path: live
 
+      # The version comes from package.json `packageManager` (#1677). This job
+      # has no checkout at the workspace root, so point at HEAD's copy. HEAD, not
+      # live: a live commit may predate the declaration, and both builds should
+      # be made by the same pnpm so the comparison measures the code.
       - uses: pnpm/action-setup@v6
         with:
-          version: 9
+          package_json_file: head/package.json
 
       # Deliberately no `cache: 'pnpm'`: a cache shared between the two installs
       # is the contamination route #725 flagged as unproven, and correctness here
@@ -428,8 +422,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:
@@ -466,8 +458,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 9
 
       - uses: actions/setup-node@v7
         with:

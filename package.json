@@ -1,6 +1,7 @@
 {
   "name": "bidspoke",
   "private": true,
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev:web": "pnpm --filter web dev",
     "dev:worker": "pnpm --filter worker dev",

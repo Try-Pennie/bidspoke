@@ -402,6 +402,21 @@ export function readWorkflow(relativePath: string): string {
   return text
 }
 
+/**
+ * The pnpm version the root package.json declares in `packageManager`, the one
+ * place the repo's pnpm version lives (#1677). CI's `pnpm/action-setup`, a
+ * developer's local pnpm and Dependabot all read it. Returns undefined when the
+ * field is absent or names another package manager, so a caller can say which.
+ */
+export function declaredPnpmVersion(): string | undefined {
+  const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')) as {
+    packageManager?: unknown
+  }
+  const field = manifest.packageManager
+  if (typeof field !== 'string' || !field.startsWith('pnpm@')) return undefined
+  return field.slice('pnpm@'.length)
+}
+
 /** Every `.github/workflows/*.yml` path, relative to the repo root, in name order. */
 export function workflowFiles(): string[] {
   const dir = path.join(REPO_ROOT, '.github/workflows')
