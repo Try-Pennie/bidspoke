@@ -6,17 +6,22 @@
  * under names nothing real uses, and reports each answer with its latency.
  *
  * The drill WRITES: under the rehearsal kind against a throwaway buyer it runs
- * the two lead race, the in_doubt race and a kill after reserve, the three
- * shapes the Workers suite proves, and records the p50 and p99 of every object
+ * the two lead race, the in_doubt race, a kill after reserve and a kill after
+ * commit that the next attempt heals from the ledger (#1643), the four shapes
+ * the Workers suite proves, and records the p50 and p99 of every object
  * call. The p99 is what OBJECT_CALL_DEADLINE_MS is set from. It touches no
  * buyer and no Postgres row: the buyer call is a stub and the mirror is a no-op.
  */
-import type { Timers } from '@bidspoke/buyer-profile'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
 import type { EntryKey, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../durable-objects/buyer-ledger'
 import type { ClaimBody, ClaimResult } from '../durable-objects/lead-sale'
 import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from './buyer-object-clients'
-import { runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type LedgerApi, type SaleApi } from './buyer-sale-attempt'
+import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type LedgerApi, type SaleApi } from './buyer-sale-attempt'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { formatErr } from './format-error'
+import { withJobRun, type JobRunEnding } from './job-run-record'
 
 type Bindings = Pick<Env, 'BUYER_LEDGER' | 'LEAD_SALE'>
 
@@ -83,6 +88,12 @@ export interface BuyerObjectsDrill {
   partner_id: string
   scenarios: DrillScenario[]
   latency: Record<string, Percentiles>
+  /**
+   * The claims the drill's own attempts found expired, and the in_doubt claims
+   * they healed (#1643): the drill's line, reported beside the organic counts
+   * on the node output and never summed into them (L528).
+   */
+  claim_events: { expired_in_flight: number; in_doubt_heals: number }
 }
 
 export interface DrillOptions {
@@ -155,12 +166,13 @@ export async function runBuyerObjectsDrill(env: Bindings, opts: DrillOptions = {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const holdMs = opts.holdMs ?? 50
   const ran_at = new Date(clock()).toISOString()
-  const partner_id = opts.partnerId ?? `drill-${ran_at}`
+  const partner_id = opts.partnerId ?? `${DRILL_PARTNER_PREFIX}${ran_at}`
   const run = `${partner_id}-${clock()}`
   const rec = new Recorder(clock)
   const clientOpts = { timers: opts.timers, deadlineMs: OBJECT_CALL_DEADLINE_MS }
   const ledger = measuredLedger(new BuyerLedgerClient(env.BUYER_LEDGER, partner_id, clientOpts), rec)
   const usedKeys: EntryKey[] = []
+  const claims = new ClaimTally()
 
   const attempt = (leadKey: string, executionId: string, extra: { killAfter?: AttemptStep; buyerTimeoutMs?: number; limits?: ReserveBody['limits']; buyerCalls: { n: number } }): Promise<AttemptResult> => {
     const key: EntryKey = { lead_key: leadKey, population: 'engine', kind: 'rehearsal' }
@@ -183,6 +195,7 @@ export async function runBuyerObjectsDrill(env: Bindings, opts: DrillOptions = {
         onStep: (step) => {
           if (extra.killAfter === step) throw new Error(`killed after ${step}`)
         },
+        onClaimEvent: claims.observe,
       }
     )
   }
@@ -249,10 +262,132 @@ export async function runBuyerObjectsDrill(env: Bindings, opts: DrillOptions = {
     return null
   })
 
+  await record('an attempt killed after its commit is healed from the ledger', async () => {
+    const lead = `${run}-commit`
+    const killed = { n: 0 }
+    await attempt(lead, `${run}-e0`, { killAfter: 'committed', buyerTimeoutMs: holdMs, buyerCalls: killed }).catch(() => undefined)
+    await sleep(holdMs + 10)
+    const healsBefore = claims.inDoubtHeals
+    const calls = { n: 0 }
+    const next = await attempt(lead, `${run}-e1`, { buyerCalls: calls })
+    if (next.result !== 'sold' || !next.replay) return `expected the committed sale to be replayed, got ${describe(next)}`
+    if (claims.inDoubtHeals !== healsBefore + 1) return `expected one heal, got ${claims.inDoubtHeals - healsBefore}`
+    if (calls.n !== 0) return `expected no buyer call, got ${calls.n}`
+    return null
+  })
+
   // The drill's entries are its own: mark them mirrored so retention can prune them (L5).
   await ledger.markMirrored(usedKeys).catch(() => undefined)
 
-  return { ok: summarizeDrill(scenarios), ran_at, partner_id, scenarios, latency: rec.report() }
+  return {
+    ok: summarizeDrill(scenarios),
+    ran_at,
+    partner_id,
+    scenarios,
+    latency: rec.report(),
+    claim_events: { expired_in_flight: claims.expiredInFlight, in_doubt_heals: claims.inDoubtHeals },
+  }
+}
+
+// ── The daily run (#1643) ──────────────────────────────────────────────────────
+
+/** The job_runs and alerter name. */
+export const BUYER_OBJECTS_DRILL_JOB = 'buyer-objects-drill'
+/** The whole drill, bounded as the admin route bounds it (L110). */
+export const SCHEDULED_DRILL_DEADLINE_MS = 30_000
+/** Every drill buyer id starts with this, so its ledger is never a real buyer's. */
+export const DRILL_PARTNER_PREFIX = 'drill-'
+
+export const BUYER_OBJECTS_DRILL_REMEDY: AlertRemedy = {
+  consequence:
+    'The daily drill of the lead sale claim and the buyer ledger failed. It runs against a throwaway drill buyer under the ' +
+    'rehearsal kind, so no lead and no real buyer count was touched, but the objects the buyer_select node sells through did ' +
+    'not behave the way the Workers suite proves they do. Each line names the scenario and what it saw:',
+  fixHint:
+    'Run POST /api/admin/buyer-objects/drill to see the full report, then read the latest buyer-objects-drill row in job_runs ' +
+    'for the latency of every object call. A scenario that fails on a deploy is the change in that deploy; one that did not ' +
+    'finish is an object not answering, so check GET /api/admin/buyer-objects/health.',
+  headlineVerb: 'failed a scenario',
+  itemNoun: { one: 'failed scenario', many: 'failed scenarios' },
+}
+
+export interface ScheduledDrillDeps {
+  supabase: SupabaseClient
+  drill: () => Promise<BuyerObjectsDrill>
+  /** The shared alerter: a non empty list pages, an empty one clears. */
+  notify: (lines: string[]) => Promise<void>
+  log: (line: string) => void
+  timers?: Timers
+}
+
+type DrillRun = { kind: 'report'; report: BuyerObjectsDrill } | { kind: 'did_not_finish'; detail: string }
+
+export interface ScheduledDrillResult {
+  run: DrillRun
+  /** One per failed scenario, or one saying the drill did not finish; empty on a pass. */
+  lines: string[]
+}
+
+/**
+ * Runs the drill once under a job_runs row and pages on a failed scenario
+ * (#1643). The row's summary carries each scenario, the latency and the
+ * drill's own claim events. The work never throws: a drill that threw or ran
+ * past the deadline is an outcome of its own, recorded and paged, never a pass.
+ */
+export async function runScheduledBuyerObjectsDrill(deps: ScheduledDrillDeps): Promise<ScheduledDrillResult> {
+  const run = await withJobRun<DrillRun>(
+    deps.supabase,
+    BUYER_OBJECTS_DRILL_JOB,
+    async () => {
+      try {
+        return { kind: 'report', report: await withDeadline(deps.drill(), SCHEDULED_DRILL_DEADLINE_MS, 'buyer objects drill', deps.timers) }
+      } catch (err) {
+        return { kind: 'did_not_finish', detail: err instanceof Error ? err.message : formatErr(err) }
+      }
+    },
+    drillEnding,
+  )
+  const lines = failureLines(run)
+  deps.log(`[${BUYER_OBJECTS_DRILL_JOB}] ${lines.length === 0 ? 'passed' : `failed: ${lines.join(' | ')}`}`)
+  await deps.notify(lines)
+  return { run, lines }
+}
+
+function failureLines(run: DrillRun): string[] {
+  if (run.kind === 'did_not_finish') return [`the drill did not finish: ${run.detail}`]
+  const lines = run.report.scenarios.filter((s) => !s.ok).map((s) => `${s.name}: ${s.detail ?? 'failed with no detail'}`)
+  if (!run.report.partner_id.startsWith(DRILL_PARTNER_PREFIX)) {
+    lines.push(`the drill ran against ${run.report.partner_id}, which is not a throwaway ${DRILL_PARTNER_PREFIX} buyer`)
+  }
+  if (run.report.scenarios.length === 0) lines.push('the drill ran no scenarios')
+  return lines
+}
+
+function drillEnding(run: DrillRun): JobRunEnding {
+  if (run.kind === 'did_not_finish') return { outcome: 'did_not_finish', detail: run.detail }
+  const failed = failureLines(run)
+  const r = run.report
+  return {
+    outcome: failed.length === 0 ? 'passed' : 'scenario_failed',
+    detail: failed.length === 0 ? `${r.scenarios.length} scenarios passed` : failed.join(' | '),
+    summary: {
+      ran_at: r.ran_at,
+      partner_id: r.partner_id,
+      scenarios: r.scenarios,
+      latency: r.latency,
+      drill_claim_events: r.claim_events,
+    },
+  }
+}
+
+/** What the scheduled handler calls. */
+export function runScheduledBuyerObjectsDrillForEnv(supabase: SupabaseClient, env: Bindings & Pick<Env, 'IDEMPOTENCY'>): Promise<ScheduledDrillResult> {
+  return runScheduledBuyerObjectsDrill({
+    supabase,
+    drill: () => runBuyerObjectsDrill(env),
+    notify: (lines) => notifyExportFailure(supabase, BUYER_OBJECTS_DRILL_JOB, lines, env.IDEMPOTENCY, BUYER_OBJECTS_DRILL_REMEDY),
+    log: (line) => (line.includes('failed') ? console.error(line) : console.log(line)),
+  })
 }
 
 function describe(r: AttemptResult): string {

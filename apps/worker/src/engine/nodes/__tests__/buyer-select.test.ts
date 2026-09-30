@@ -15,6 +15,7 @@ import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
+import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
 import { BUYER_CALL_TIMEOUT_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
@@ -761,5 +762,122 @@ describe('the live pre-call budget (#1508)', () => {
     expect(out(r).considered[0]).toMatchObject({ partner: 'tripoint', outcome: 'skipped', reason: 'breaker_unreadable', detail: 'circuit check tripoint did not answer within 206 ms' })
     expect(out(r)).toMatchObject({ _route: 'sold', sale: { partner_slug: 'liberty' } })
     expect(h.buyerCalls.map((c) => c.slug)).toEqual(['liberty'])
+  })
+})
+
+// ── Claim heals and expirations on the output (#1643) ─────────────────────────
+
+/**
+ * A lead sale claim scripted by the test: each claim answers the next result in
+ * the queue (the last one repeats), and heal and free move the generation on.
+ */
+class ScriptedSale implements SaleApi {
+  calls: string[] = []
+  generation = 10
+  constructor(private readonly answers: Array<ClaimResult | Error>) {}
+  async claim(body: ClaimBody): Promise<ClaimResult> {
+    this.calls.push(`claim:${body.execution_id}`)
+    const next = this.answers.length > 1 ? this.answers.shift()! : this.answers[0]
+    if (next instanceof Error) throw next
+    return next
+  }
+  async sold(generation: number): Promise<number> { this.calls.push(`sold:${generation}`); return ++this.generation }
+  async free(generation: number): Promise<number> { this.calls.push(`free:${generation}`); return ++this.generation }
+  async heal(generation: number): Promise<number> { this.calls.push(`heal:${generation}`); return ++this.generation }
+}
+
+/** The claim's answer when THIS claim found the holder past its deadline and moved it to in_doubt. */
+const EXPIRED_NOW: ClaimResult = { state: 'in_doubt', partner_id: 'p-1', generation: 2, expired_in_flight: true }
+/** The claim's answer when it was already in doubt before this execution arrived. */
+const ALREADY_IN_DOUBT: ClaimResult = { state: 'in_doubt', partner_id: 'p-1', generation: 2 }
+
+function withSale(h: Harness, sale: ScriptedSale): Harness {
+  h.deps.saleClient = () => sale
+  return h
+}
+
+/** Seeds an entry on buyer p-1's ledger for lead-1, as an earlier attempt that died would have left it. */
+function seedEntry(h: Harness, status: LedgerEntry['status']) {
+  const ledger = new FakeLedger('p-1')
+  ledger.entries.set('lead-1|engine|rehearsal', {
+    lead_key: 'lead-1', population: 'engine', kind: 'rehearsal', payout_cents: 2190, status, et_day: '2027-09-20', hour_bucket: 0, reserved_at: NOW - 60_000,
+    resolved_at: status === 'reserved' ? null : NOW - 59_000, mirrored: false, execution_id: 'exec-0',
+    outcome: status === 'accepted' ? { buyer_reference: 'L-0', result_code: '1000', http_status: 200, payout_cents: 2190 } : null,
+    resolution_source: null, resolved_by: null,
+  })
+  h.ledgers.set('p-1', ledger)
+}
+
+describe('the claim heals and expirations the parity reader sums (#1643)', () => {
+  it('a claim that finds an expired in_flight claim and heals it from the ledger records one of each', async () => {
+    const sale = new ScriptedSale([EXPIRED_NOW])
+    const h = withSale(harness(), sale)
+    seedEntry(h, 'accepted')
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'decide_only', replay: true })
+    expect(sale.calls).toEqual(['claim:exec-1', 'heal:2'])
+    expect(out(r).rehearsal_expired_in_flight).toBe(1)
+    expect(out(r).rehearsal_in_doubt_heals).toBe(1)
+  })
+
+  it('an expired claim whose ledger holds nothing is freed and claimed again: one expiration, no heal', async () => {
+    const sale = new ScriptedSale([EXPIRED_NOW, { state: 'claimed', generation: 12 }])
+    const h = withSale(harness(), sale)
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'decide_only' })
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:2', 'claim:exec-1', 'sold:12'])
+    expect(out(r).rehearsal_expired_in_flight).toBe(1)
+    expect(out(r).rehearsal_in_doubt_heals).toBe(0)
+  })
+
+  it('a claim already in doubt before this execution arrived is healed without counting an expiration it did not cause', async () => {
+    const h = withSale(harness(), new ScriptedSale([ALREADY_IN_DOUBT]))
+    seedEntry(h, 'accepted')
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r).rehearsal_expired_in_flight).toBe(0)
+    expect(out(r).rehearsal_in_doubt_heals).toBe(1)
+  })
+
+  it('an expiration found by the waiter, whose holder died while it waited, is counted once', async () => {
+    const holder: ClaimResult = { state: 'in_flight', holder_execution_id: 'exec-0', since: NOW, generation: 1 }
+    const sale = new ScriptedSale([holder, EXPIRED_NOW, ALREADY_IN_DOUBT, { state: 'claimed', generation: 12 }])
+    const h = withSale(harness(), sale)
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'sold' })
+    expect(out(r).rehearsal_expired_in_flight).toBe(1)
+    expect(out(r).rehearsal_in_doubt_heals).toBe(0)
+  })
+
+  it('an ordinary claim records a measured zero for both, in decide only and in live', async () => {
+    const rehearsal = await run(harness(), ctx(), node({ mode: 'decide_only' }))
+    expect(out(rehearsal)).toMatchObject({ rehearsal_expired_in_flight: 0, rehearsal_in_doubt_heals: 0 })
+    const live = await run(harness())
+    expect(out(live)).toMatchObject({ _route: 'sold', rehearsal_expired_in_flight: 0, rehearsal_in_doubt_heals: 0 })
+  })
+
+  it('a lead that never reached a claim leaves both unrecorded, so it is not counted as measured', async () => {
+    const notForSale = await run(harness(), ctx({ sellOff: false }), node({ mode: 'decide_only' }))
+    expect(out(notForSale)).not.toHaveProperty('rehearsal_in_doubt_heals')
+    expect(out(notForSale)).not.toHaveProperty('rehearsal_expired_in_flight')
+    // A claim call that never answered measured nothing either: the object may or may not have moved.
+    const unanswered = await run(withSale(harness(), new ScriptedSale([new Error('lead sale claim answered 500: boom')])), ctx(), node({ mode: 'decide_only' }))
+    expect(out(unanswered)).toMatchObject({ _route: 'deferred', reason: 'cap_check_error' })
+    expect(out(unanswered)).not.toHaveProperty('rehearsal_in_doubt_heals')
+    expect(out(unanswered)).not.toHaveProperty('rehearsal_expired_in_flight')
+  })
+
+  it('the parity reader sums what the node wrote and no longer lists either as unmeasured', async () => {
+    const healed = withSale(harness(), new ScriptedSale([EXPIRED_NOW]))
+    seedEntry(healed, 'accepted')
+    const a = out(await run(healed, ctx(), node({ mode: 'decide_only' })))
+    const b = out(await run(harness(), ctx(), node({ mode: 'decide_only' })))
+    const counts = summariseParityDay(
+      [a, b].map((o, i) => ({ execution_id: `e${i}`, started_at: new Date(NOW).toISOString(), node: o, node_duration_ms: o.duration_ms, incumbent: null })),
+      { accept: [], decline: [] },
+    )
+    expect(counts.rehearsal_in_doubt_heals).toBe(1)
+    expect(counts.rehearsal_expired_in_flight).toBe(1)
+    expect(counts.unmeasured).not.toContain('rehearsal_in_doubt_heals')
+    expect(counts.unmeasured).not.toContain('rehearsal_expired_in_flight')
   })
 })

@@ -82,8 +82,11 @@ describe('LeadSaleObject claim', () => {
     await setClock(stub, NOW)
     await claim(stub, 'exec-1')
     await setClock(stub, NOW + DEADLINE_MS)
-    expect(await claim(stub, 'exec-2')).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2 })
+    // Only the claim that moved it says so (#1643): the node counts that answer as one expiry.
+    expect(await claim(stub, 'exec-2')).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2, expired_in_flight: true })
     expect(await read(stub)).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2 })
+    // A later claim finds it already in doubt and did not cause the expiry, so it carries nothing.
+    expect(await claim(stub, 'exec-3')).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2 })
   })
 
   it('the same execution claiming again while it holds the lead is not a rival', async () => {
@@ -126,8 +129,10 @@ describe('LeadSaleObject in_doubt resolution', () => {
     await claim(stub, 'exec-1')
     await setClock(stub, NOW + DEADLINE_MS)
     const [a, b] = await Promise.all([claim(stub, 'exec-2'), claim(stub, 'exec-3')])
-    expect(a).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2 })
-    expect(b).toEqual(a)
+    // The object serialises the two: exactly one of them caused the expiry and says so (#1643).
+    expect([a, b].filter((r) => r.state === 'in_doubt' && r.expired_in_flight === true)).toHaveLength(1)
+    expect({ ...a, expired_in_flight: undefined }).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2, expired_in_flight: undefined })
+    expect({ ...b, expired_in_flight: undefined }).toEqual({ state: 'in_doubt', partner_id: 'partner-1', generation: 2, expired_in_flight: undefined })
     // Both read generation 2 and both try to free it.
     const [freeA, freeB] = await Promise.all([post(stub, '/free', { generation: 2 }), post(stub, '/free', { generation: 2 })])
     const statuses = [freeA.status, freeB.status].sort()

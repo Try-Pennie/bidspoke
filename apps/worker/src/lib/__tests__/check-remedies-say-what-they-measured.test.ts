@@ -44,6 +44,7 @@ import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
+import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
 import { ENGINE_SCRIPT_DRIFT_REMEDY } from '../engine-script-drift'
 import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
 
@@ -78,6 +79,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
   ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
+  ['buyer objects drill', BUYER_OBJECTS_DRILL_REMEDY],
   ['engine script drift', ENGINE_SCRIPT_DRIFT_REMEDY],
   ['click check errors', CLICK_CHECK_ERRORS_REMEDY],
   ['click path quiet', CLICK_PATH_QUIET_REMEDY],

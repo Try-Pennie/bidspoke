@@ -550,6 +550,16 @@ export default {
           if (r.alerted) console.error(`[lead-status] ${r.findings.length} findings`)
         })().catch((e) => console.error('[lead-status] failed:', e)),
       )
+      // The Phase 3 buyer objects drill, once a day (#1643). It ran only by hand and
+      // kept nothing, so the Stage A record could not show it ran on days 3 to 7. Under
+      // a job_runs row with every scenario, the latency and its own claim expiries and
+      // heals; a failed scenario pages. Rehearsal kind, throwaway drill- buyer only.
+      track(
+        (async () => {
+          const { runScheduledBuyerObjectsDrillForEnv } = await import('./lib/buyer-objects-health')
+          await runScheduledBuyerObjectsDrillForEnv(supabase, env)
+        })().catch((e) => console.error('[buyer-objects-drill] failed:', e)),
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still

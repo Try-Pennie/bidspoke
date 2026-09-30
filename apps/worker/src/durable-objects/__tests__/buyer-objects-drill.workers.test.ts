@@ -2,8 +2,8 @@
  * The buyer objects drill against the REAL objects in workerd (#1410).
  *
  * This is the same code the POST /api/admin/buyer-objects/drill route runs in
- * production after deploy: the two lead race, the in_doubt race and a kill
- * after reserve, under the rehearsal kind against a throwaway buyer, with the
+ * production after deploy: the two lead race, the in_doubt race, a kill after
+ * reserve and a kill after commit healed from the ledger, under the rehearsal kind against a throwaway buyer, with the
  * p50 and p99 of every object call recorded. Here it proves the drill itself
  * passes against real storage, so a red in production is about production.
  */
@@ -30,9 +30,14 @@ describe('buyer objects drill', () => {
       'two leads race for one slot: ok',
       'two executions race on an in_doubt claim: ok',
       'an attempt killed after its reserve: ok',
+      'an attempt killed after its commit is healed from the ledger: ok',
     ])
     expect(report.ok).toBe(true)
-    for (const op of ['lead sale claim', 'buyer ledger reserve', 'buyer ledger commit', 'lead sale sold', 'buyer ledger entry', 'lead sale free', 'buyer ledger release']) {
+    // The drill's own claim events (#1643): the in_doubt race, the kill after reserve and the kill
+    // after commit each expire one claim, and the kill after commit is healed from the ledger.
+    expect(report.claim_events).toEqual({ expired_in_flight: 3, in_doubt_heals: 1 })
+    expect(report.partner_id).toBe('drill-test')
+    for (const op of ['lead sale claim', 'buyer ledger reserve', 'buyer ledger commit', 'lead sale sold', 'buyer ledger entry', 'lead sale free', 'buyer ledger release', 'lead sale heal']) {
       expect(report.latency[op], op).toMatchObject({ calls: expect.any(Number), p50_ms: expect.any(Number), p99_ms: expect.any(Number) })
       expect(report.latency[op].calls).toBeGreaterThan(0)
     }

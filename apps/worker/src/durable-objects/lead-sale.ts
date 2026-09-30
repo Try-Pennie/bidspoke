@@ -40,7 +40,13 @@ export interface ClaimBody {
 export type ClaimResult =
   | { state: 'claimed'; generation: number }
   | { state: 'sold'; partner_id: string; outcome: SaleOutcomeRecord; generation: number }
-  | { state: 'in_doubt'; partner_id: string; generation: number }
+  /**
+   * `expired_in_flight` is present, and true, only on the answer to the claim
+   * that found the holder past its deadline and moved it to in_doubt (#1643).
+   * A claim that finds it already in doubt did not cause the expiry and carries
+   * nothing, so each expiry is counted by exactly one claimer.
+   */
+  | { state: 'in_doubt'; partner_id: string; generation: number; expired_in_flight?: true }
   | { state: 'in_flight'; holder_execution_id: string; since: number; generation: number }
 
 type Row = Record<string, SqlStorageValue>
@@ -114,7 +120,7 @@ export class LeadSaleObject implements DurableObject {
         if (since + (current.deadline_ms ?? 0) <= now) {
           const next: Stored = { ...current, state: 'in_doubt', execution_id: null, since: null, deadline_ms: null, generation: current.generation + 1 }
           this.save(next)
-          return jsonResponse<ClaimResult>({ state: 'in_doubt', partner_id: String(current.partner_id), generation: next.generation })
+          return jsonResponse<ClaimResult>({ state: 'in_doubt', partner_id: String(current.partner_id), generation: next.generation, expired_in_flight: true })
         }
         return jsonResponse<ClaimResult>({ state: 'in_flight', holder_execution_id: String(current.execution_id), since, generation: current.generation })
       }

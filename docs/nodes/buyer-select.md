@@ -77,9 +77,13 @@ A cap refusal, an open breaker or a ledger that cannot be read skips the buyer b
   ],
   "live_percent_in_force": 100,
   "caps_in_force": [{ "partner": "tripoint", "hourly_lead_cap": null, "daily_lead_cap": 500, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null }],
+  "rehearsal_expired_in_flight": 0,
+  "rehearsal_in_doubt_heals": 0,
   "duration_ms": 412
 }
 ```
+
+`rehearsal_expired_in_flight` counts the lead sale claims this execution made that found an earlier holder past its deadline and moved the claim to in doubt; `rehearsal_in_doubt_heals` counts the in doubt claims its attempts settled as sold from the buyer ledger (#1643). Both are present, as 0 when nothing happened, whenever at least one claim answered, and absent when none did (a lead not for sale, no eligible buyer, a claim call that never answered), so the daily parity row reads a lead that never claimed as unmeasured rather than as zero. The names are the parity row's; a live node records the same facts under them. The Phase 3 drill runs once a day in the 13:00 UTC batch under a `buyer-objects-drill` row in `job_runs`, whose summary carries its own expiries and heals separately from these organic counts.
 
 `sale` carries the winner's own facts so the Engine response and the Salesforce patch derive everything buyer specific from it and a second buyer needs no script change: the partner's name, the click URL a sold lead lands on, the Salesforce routing code the prospect patch carries, and the class Salesforce records (`Success` on an accept, `Duplicate` when a decline matches one of the partner's duplicate rules, `Fail` on any other decline, none when the buyer gave no answer to classify). A decline names the declining buyer, its code and its class and carries no click URL or routing code; a skipped sale carries nothing. `considered` carries every buyer with an enabled profile sold on the offer and why it was in or out (a buyer sold on the click is offered by [buyer_click_check](./buyer-click-check.md), never by this node, so it is not listed), in plain vocabulary the execution view labels. `reason` names why the node routed where it did. The output is deliberately not shaped like a Tripoint response, so nothing downstream mistakes it for the replaced script's output.
 
