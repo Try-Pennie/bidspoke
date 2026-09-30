@@ -25,6 +25,7 @@ import { KEPT_CANVAS_WORKFLOWS, runEngineScriptDrift, endingOf } from '../engine
 import liberty1File from '../../../../../docs/workflows/liberty1-click/definition.json'
 import wiringFile from '../../../../../docs/workflows/engine-bidding/liberty1-wiring.json'
 import buyerSelectFile from '../../../../../docs/workflows/engine-bidding/buyer-select.json'
+import salesforceNodesFile from '../../../../../docs/workflows/engine-bidding/salesforce-nodes.json'
 
 type NodeLike = { namespace: string; type: string; config: Record<string, unknown> }
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
@@ -199,12 +200,61 @@ describe('the committed sources the check reads', () => {
     expect(liberty1.configSources[0].nodes).toEqual(LIBERTY1_NODES)
   })
 
-  it('Engine Bidding is judged against the #1544 wiring nodes and the committed buyer_select', () => {
-    expect(engine.configSources.map((s) => s.file)).toEqual(['docs/workflows/engine-bidding/liberty1-wiring.json', 'docs/workflows/engine-bidding/buyer-select.json'])
+  it('Engine Bidding is judged against the #1544 wiring nodes, the committed buyer_select and its Salesforce nodes', () => {
+    expect(engine.configSources.map((s) => s.file)).toEqual([
+      'docs/workflows/engine-bidding/liberty1-wiring.json',
+      'docs/workflows/engine-bidding/buyer-select.json',
+      'docs/workflows/engine-bidding/salesforce-nodes.json',
+    ])
     expect(engine.configSources[0].nodes).toEqual(wiringFile.add_nodes)
     expect(engine.configSources[1].nodes).toEqual(buyerSelectFile.nodes)
+    expect(engine.configSources[2].nodes).toEqual(salesforceNodesFile.nodes)
     const namespaces = engine.configSources.flatMap((s) => s.nodes).filter((n) => (WATCHED_CONFIG_FIELDS[n.type] ?? []).length > 0).map((n) => n.namespace)
-    expect(namespaces).toEqual(['route_known_no', 'buyer_click_check', 'buyer_select'])
+    expect(namespaces).toEqual(['route_known_no', 'buyer_click_check', 'buyer_select', 'create_prospect', 'prospect_trades', 'patch_prospect', 'patch_prospect_reject'])
+  })
+
+  it('the committed Salesforce nodes are every salesforce node of version 104, as the canvas holds them (#1666)', () => {
+    expect(salesforceNodesFile.version).toBe(104)
+    expect(salesforceNodesFile.nodes.map((n) => n.type)).toEqual(['salesforce', 'salesforce', 'salesforce', 'salesforce'])
+    const patch = salesforceNodesFile.nodes.find((n) => n.namespace === 'patch_prospect')!
+    expect(patch.config).toMatchObject({ operation: 'update', object: 'Prospect__c', record_id: '{{steps.generate_trades_body.output.prospectId}}', body: '{{steps.patch_prospect_body.output}}' })
+  })
+
+  describe('a Salesforce write changed on the Engine canvas pages (#1666)', () => {
+    const sfSource = engine.configSources.find((s) => s.file.endsWith('salesforce-nodes.json'))!
+    const sfNodes = () => clone(sfSource.nodes) as NodeLike[]
+    const judge = (nodes: NodeLike[]) => judgeKeptConfig([sfSource], { nodes }, 'Engine Bidding Workflow')
+
+    it('agrees when the canvas holds the committed Salesforce nodes', () => {
+      expect(judge(sfNodes()).map((v) => [v.namespace, v.state])).toEqual([
+        ['create_prospect', 'agree'], ['prospect_trades', 'agree'], ['patch_prospect', 'agree'], ['patch_prospect_reject', 'agree'],
+      ])
+    })
+
+    const cases: [string, string, unknown][] = [
+      ['patch_prospect', 'record_id', '{{steps.other.output.id}}'],
+      ['patch_prospect', 'object', 'Lead'],
+      ['patch_prospect', 'body', '{{steps.build_response_body.output}}'],
+      ['patch_prospect_reject', 'operation', 'upsert'],
+      ['create_prospect', 'injected_fields', { ProspectTraceId__c: '{{execution.trace_id}}' }],
+      ['create_prospect', 'expected_errors', []],
+      ['prospect_trades', 'apex_path', '/services/apexrest/prospect-trades-v2'],
+    ]
+    for (const [namespace, field, value] of cases) {
+      it(`${namespace}.${field} changed on the canvas is a config drift naming it`, () => {
+        const canvas = sfNodes()
+        canvas.find((n) => n.namespace === namespace)!.config[field] = value
+        const found = judge(canvas).filter((v) => v.state !== 'agree')
+        expect(found).toHaveLength(1)
+        expect(found[0]).toMatchObject({ namespace, state: 'config_drift', field, file: 'docs/workflows/engine-bidding/salesforce-nodes.json' })
+      })
+    }
+
+    it('a timeout or retry tuned on the canvas is not a finding', () => {
+      const canvas = sfNodes()
+      for (const n of canvas) Object.assign(n.config, { timeout_ms: 99, retries: 5, transient_errors: [] })
+      expect(judge(canvas).every((v) => v.state === 'agree')).toBe(true)
+    })
   })
 
   it('both committed files name the Liberty1 partner the canvas picked (partner_configs 4ed89cc6..., slug liberty1, read 2026-09-30)', () => {
@@ -247,7 +297,7 @@ describe('config findings travel in the script check run and its one alert', () 
     for (const mode of BUYER_SELECT_MODES) {
       const canvas = canvasFromCommitted(committed, engine.scripts).map((n) => (n.type === 'buyer_select' ? { ...n, config: { ...n.config, mode } } : n))
       const s = await run(engine, canvas)
-      expect(s.configVerdicts.map((v: ConfigVerdict) => v.state), mode).toEqual(['agree', 'agree', 'agree'])
+      expect(s.configVerdicts.map((v: ConfigVerdict) => v.state), mode).toEqual(Array(7).fill('agree'))
     }
   })
 

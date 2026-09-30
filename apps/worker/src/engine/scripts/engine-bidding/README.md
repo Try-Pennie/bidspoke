@@ -17,8 +17,11 @@ still holds the script the file was derived from, whose hash is recorded beside
 the file in `KEPT_ENGINE_SCRIPTS`) or `drift` (the canvas matches neither), and
 pages only on a drift or a missing node. The same run (#1662) compares the
 outcome deciding settings of `buyer_click_check` and `route_known_no`
-(`docs/workflows/engine-bidding/liberty1-wiring.json`) and of `buyer_select`
-(`docs/workflows/engine-bidding/buyer-select.json`) with the canvas, and pages a
+(`docs/workflows/engine-bidding/liberty1-wiring.json`), of `buyer_select`
+(`docs/workflows/engine-bidding/buyer-select.json`) and of the four Salesforce
+nodes `create_prospect`, `prospect_trades`, `patch_prospect` and
+`patch_prospect_reject` (`docs/workflows/engine-bidding/salesforce-nodes.json`,
+version 104, #1666) with the canvas, and pages a
 difference naming the setting and both values; `buyer_select`'s mode is judged
 against the modes the node accepts, so moving it between decide_only and live is
 not a finding. Its first `agree` after a paste is the
