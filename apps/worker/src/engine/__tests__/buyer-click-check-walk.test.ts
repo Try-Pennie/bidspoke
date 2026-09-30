@@ -46,7 +46,8 @@ function definition(wired: readonly BuyerClickCheckRoute[]) {
 function output(route: BuyerClickCheckRoute): BuyerClickCheckOutput {
   return {
     _route: route, reason: route === 'eligible' ? 'eligible' : 'daily_lead_cap', population: 'engine', partner_id: PARTNER_ID, partner_slug: 'liberty1', partner_name: 'Liberty1',
-    click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}', external_routing_code: 4, count: 12, daily_lead_cap: 50, count_date: '2027-09-21', count_source: 'counter', profile_served_from: 'cache', duration_ms: 4,
+    click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}', external_routing_code: 4, count: 12, daily_lead_cap: 50, count_date: '2027-09-21', count_source: 'counter', profile_served_from: 'cache',
+    judged: { lead: { state: 'TX', debt: 25000, loan_amount: 5000 }, limits: null }, duration_ms: 4,
   }
 }
 

@@ -10,7 +10,7 @@
  * injected, so nothing waits and nothing leaves the process.
  */
 import { describe, expect, it } from 'vitest'
-import { CLICK_CHECK_BUDGET_MS as PACKAGE_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, OUT_REASONS, OUT_REASON_LABELS, type OutReason, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS as PACKAGE_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, OUT_REASONS, OUT_REASON_LABELS, type JudgedLead, type JudgedLimits, type OutReason, type Timers } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@bidspoke/node-types'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
@@ -472,5 +472,85 @@ describe('the saved copy of the count (#1632)', () => {
     expect((await run(h)).output).toMatchObject({ reason: 'no_daily_cap', count_source: null })
     expect(h.copyReads).toBe(0)
     expect(h.objectReads).toBe(0)
+  })
+})
+
+// #1654: every output records the lead as the decision parsed it and the limits
+// it was compared with, so one decision can be checked from the step alone,
+// without joining prospect_trades and the trigger payload.
+describe('the values it judged (#1654)', () => {
+  /** The default lead of ctx(), as parsed. */
+  const LEAD: JudgedLead = { state: 'TX', debt: 25000, loan_amount: 5000 }
+  /** clickBuyer()'s limits, as recorded. */
+  const LIMITS: JudgedLimits = { debt_min: 20000, debt_max: null, loan_amount_min: 2500, state_allowed: true, allowed_state_count: 2, daily_lead_cap: 50 }
+
+  const cases: Array<[string, () => Harness, ExecutionContext, BuyerClickCheckOutput['reason'], BuyerClickCheckOutput['judged']]> = [
+    ['room under the cap', () => harness({ count: 12 }), ctx(), 'eligible', { lead: LEAD, limits: LIMITS }],
+    ['at the cap', () => harness({ count: 50 }), ctx(), 'daily_click_cap', { lead: LEAD, limits: LIMITS }],
+    ['a copy at the cap', () => harness({ copy: 50 }), ctx(), 'daily_click_cap', { lead: LEAD, limits: LIMITS }],
+    ['no clicks per day', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: null })) }), ctx(), 'no_daily_cap', { lead: LEAD, limits: { ...LIMITS, daily_lead_cap: null } }],
+    ['a cap of zero', () => harness({ profiles: snapshot(clickBuyer({ dailyLeadCap: 0 })) }), ctx(), 'cap_check_error', { lead: LEAD, limits: { ...LIMITS, daily_lead_cap: 0 } }],
+    ['a failed count read', () => harness({ count: async () => { throw new Error('object down') } }), ctx(), 'cap_check_error', { lead: LEAD, limits: LIMITS }],
+    ['an offer sold buyer', () => harness({ profiles: snapshot(clickBuyer({ soldOn: 'offer' })) }), ctx(), 'partner_not_click', { lead: LEAD, limits: LIMITS }],
+    ['no enabled profile, so no limits were in force', () => harness({ profiles: snapshot() }), ctx(), 'profile_disabled', { lead: LEAD, limits: null }],
+    ['a failed profile load', () => harness({ profiles: async () => { throw new Error('down') } }), ctx(), 'cap_check_error', { lead: LEAD, limits: null }],
+    ['a last good copy past the bound', () => harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: new Date(NOW - CLICK_CHECK_LAST_GOOD_MAX_AGE_MS - 1).toISOString() } }), ctx(), 'profile_copy_stale', { lead: LEAD, limits: null }],
+    ['a disabled profile', () => harness({ profiles: snapshot(clickBuyer({ isEnabled: false })) }), ctx(), 'profile_disabled', { lead: LEAD, limits: LIMITS }],
+    ['a switched off partner', () => harness({ profiles: snapshot(clickBuyer({}, { is_active: false })) }), ctx(), 'inactive', { lead: LEAD, limits: LIMITS }],
+    ['a click URL with no placeholder', () => harness({ profiles: snapshot(clickBuyer({}, { click_url: 'https://trypennie.com/portal/libertyone/' })) }), ctx(), 'click_url_has_no_prospect_id', { lead: LEAD, limits: LIMITS }],
+    ['a state not in the list', () => harness(), ctx({ state: 'north dakota' }), 'state_not_allowed', { lead: { ...LEAD, state: 'ND' }, limits: { ...LIMITS, state_allowed: false } }],
+    ['a blackout day', () => harness({ profiles: snapshot(clickBuyer({ blackoutDates: ['2027-09-21'] })) }), ctx(), 'blackout', { lead: LEAD, limits: LIMITS }],
+    ['outside the hours', () => harness({ clockMs: Date.UTC(2027, 8, 25, 18, 0) }), ctx(), 'closed', { lead: LEAD, limits: LIMITS }],
+    ['debt below the minimum', () => harness(), ctx({ engineDebt: '$19,999' }), 'debt_below_min', { lead: { ...LEAD, debt: 19999 }, limits: LIMITS }],
+    ['debt above the maximum', () => harness({ profiles: snapshot(clickBuyer({ debtMax: 30000 })) }), ctx({ engineDebt: 30001 }), 'debt_above_max', { lead: { ...LEAD, debt: 30001 }, limits: { ...LIMITS, debt_max: 30000 } }],
+    ['loan amount below the minimum', () => harness(), ctx({ loanAmount: '2,499' }), 'loan_amount_below_min', { lead: { ...LEAD, loan_amount: 2499 }, limits: LIMITS }],
+    ['a debt of zero, which is not an amount the box can judge', () => harness(), ctx({ engineDebt: 0 }), 'missing_lead_field', { lead: { ...LEAD, debt: null }, limits: LIMITS }],
+    ['a missing loan amount', () => harness(), ctx({ loanAmount: null }), 'missing_lead_field', { lead: { ...LEAD, loan_amount: null }, limits: LIMITS }],
+    ['a state that is not a state, so it was never looked up in the list', () => harness(), ctx({ state: 'PR' }), 'missing_lead_field', { lead: { ...LEAD, state: null }, limits: { ...LIMITS, state_allowed: null } }],
+  ]
+  for (const [what, make, c, reason, judged] of cases) {
+    it(`${what}: ${reason}, recording the values that decided it`, async () => {
+      const r = await run(make(), node(), c)
+      expect(r.output.reason).toBe(reason)
+      expect(r.output.judged).toEqual(judged)
+    })
+  }
+
+  it('covers every reason the routed table produces', () => {
+    const judgedReasons = new Set(cases.map(([, , , reason]) => reason))
+    for (const [, , , reason] of ROUTED) expect(judgedReasons.has(reason), reason).toBe(true)
+  })
+
+  it('a template that resolves to nothing is recorded as null, and is why the lead is out', async () => {
+    const r = await run(harness(), node({ debt: '{{trigger.payload.noSuchField}}' }))
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'missing_lead_field' })
+    expect(r.output.judged).toEqual({ lead: { ...LEAD, debt: null }, limits: LIMITS })
+  })
+
+  it('an empty template is recorded as null too', async () => {
+    const r = await run(harness(), node({ state: '' }))
+    expect(r.output.judged?.lead.state).toBeNull()
+  })
+
+  it('the loan amount is recorded even when the profile sets no minimum, and decides nothing then', async () => {
+    const r = await run(harness({ profiles: snapshot(clickBuyer({ loanAmountMin: null })) }), node(), ctx({ loanAmount: 1 }))
+    expect(r.output.reason).toBe('eligible')
+    expect(r.output.judged).toEqual({ lead: { ...LEAD, loan_amount: 1 }, limits: { ...LIMITS, loan_amount_min: null } })
+  })
+
+  it('a budget that ends before an answer records the lead, and no limits, since nothing was compared with them', async () => {
+    const h = harness({ manualTimers: true, count: () => new Promise<number>(() => undefined) })
+    const p = run(h)
+    await new Promise((resolve) => setImmediate(resolve))
+    h.fire()
+    const r = await p
+    expect(r.output.reason).toBe('cap_check_error')
+    expect(r.output.judged).toEqual({ lead: LEAD, limits: null })
+  })
+
+  it('a step that fails on its configuration still records the lead it read', async () => {
+    const r = await run(harness(), node({ partner_id: 'liberty1' }))
+    expect(r.failure?.reason).toBe('partner_id_invalid')
+    expect(r.output.judged).toEqual({ lead: LEAD, limits: null })
   })
 })
