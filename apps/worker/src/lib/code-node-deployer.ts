@@ -12,6 +12,7 @@
 // which keeps unmigrated workflows working until the migration endpoint has
 // been run for every active workflow. A cleanup job can delete orphans later.
 
+import { lineStartsInsideTemplate } from '@bidspoke/script-hygiene'
 import type { WorkflowDefinition, NodeDefinition } from '../types'
 
 const NAMESPACE = 'bidspoke-code-nodes'
@@ -70,7 +71,11 @@ export function buildBundledWorkerScript(scripts: Array<{ namespace: string; scr
     }
   }
   const entries = scripts.map(({ namespace, script }) => {
-    const indented = script.split('\n').map((l) => `      ${l}`).join('\n')
+    // A line that begins inside a template literal is part of the string's value, so it is
+    // left exactly as written: indenting it put six spaces into every multi-line template,
+    // the Liberty1 TCPA consent text written to Salesforce among them (#1636).
+    const insideTemplate = lineStartsInsideTemplate(script)
+    const indented = script.split('\n').map((l, i) => (insideTemplate[i] ? l : `      ${l}`)).join('\n')
     // `fetch` is a per-invocation parameter, like `console`: it shadows the global inside
     // the script, so every non-2xx response the script fetches is recorded for THIS
     // invocation only (#1265). A wrapper on the global would be shared by every lead the
