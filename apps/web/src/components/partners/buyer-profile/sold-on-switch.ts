@@ -8,7 +8,8 @@ import type { BuyerProfileDocument, SoldOn } from '@bidspoke/buyer-profile'
  * reach here: the switch is locked while they exist.
  */
 export function soldOnPatch(next: SoldOn): Partial<BuyerProfileDocument> {
-  if (next === 'offer') return { sold_on: 'offer' }
+  // A click delivery (#1639) is click only and hidden on an offer buyer, so the same reasoning clears it.
+  if (next === 'offer') return { sold_on: 'offer', click_delivery: null }
   return {
     sold_on: 'click',
     hourly_lead_cap: null,

@@ -441,6 +441,7 @@ export type Database = {
       buyer_profiles: {
         Row: {
           allowed_states: string[]
+          click_delivery: Json | null
           created_at: string
           daily_lead_cap: number | null
           daily_spend_cap_cents: number | null
@@ -462,6 +463,7 @@ export type Database = {
         }
         Insert: {
           allowed_states?: string[]
+          click_delivery?: Json | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null
@@ -483,6 +485,7 @@ export type Database = {
         }
         Update: {
           allowed_states?: string[]
+          click_delivery?: Json | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null
@@ -2638,6 +2641,7 @@ export type Database = {
         }[]
       }
       buyer_sale_status_rank: { Args: { p_status: string }; Returns: number }
+      click_delivery_problem: { Args: { p_delivery: Json }; Returns: string }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
       create_upcoming_daily_partitions: {

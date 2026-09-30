@@ -3,7 +3,14 @@ import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { NODE_TRAITS, assertNever, isNodeType } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
 import { filterHasCondition } from './filter-condition'
-import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, partnerIdOf, POPULATIONS, successPatternOf, type SuccessPatternProblem } from '@bidspoke/buyer-profile'
+
+/** The canvas words for each way a buyer_click_send success line is refused. */
+const SUCCESS_LINE_PROBLEMS: Record<SuccessPatternProblem, string> = {
+  success_pattern_unset: 'No success line set',
+  success_pattern_invalid: 'The success line is not a valid pattern',
+  success_pattern_no_id_group: 'The success line needs an (?<id>...) group',
+}
 
 export interface ValidationError {
   nodeId: string
@@ -115,14 +122,11 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!(config.prospect_id as string | undefined)?.trim()) return 'No prospect id template set'
       if (!(config.request_url as string | undefined)?.trim()) return 'No request URL template set'
       if (!(config.request_body as string | undefined)?.trim()) return 'No request body template set'
-      const pattern = config.success_pattern as string | undefined
-      if (!pattern?.trim()) return 'No success line set'
-      try {
-        new RegExp(pattern)
-      } catch {
-        return 'The success line is not a valid pattern'
-      }
-      if (!pattern.includes('(?<id>')) return 'The success line needs an (?<id>...) group'
+      // The one success line rule the executor and the buyer profile validator share (#1639).
+      // Still required on the node while the profile's click delivery is being introduced:
+      // with none stored, the node's line is the one in force.
+      const rule = successPatternOf(config.success_pattern)
+      if (!rule.ok) return SUCCESS_LINE_PROBLEMS[rule.code]
       // No cap on the node (#1543, L83): the over cap notice reads the buyer profile's.
       // The executor's own rule (#1553): a value it refuses fails every run, so it is refused here first.
       if (!alertOverPercentOf(config.alert_over_percent).ok) return 'The notify percent must be a whole number from 1 to 1000'

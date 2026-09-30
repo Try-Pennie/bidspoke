@@ -132,6 +132,12 @@ export const UNWATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly Unwatched
     { field: 'alert_over_percent', why: 'when the over cap notice pages, an alert threshold an operator tunes; it decides no sale' },
     { field: 'retries', why: RETRIES_IGNORED },
     { field: 'daily_lead_cap', why: 'ignored by the node and reported as such; the cap lives on the buyer profile' },
+    // #1639: the state template picks the buyer profile's route once the profile
+    // holds click delivery. It is not in the committed file until the canvas
+    // carries it, and watching it before then would page not_committed from the
+    // canvas save until the repo followed. #1671 commits it to the file and moves it to
+    // the watched list in the same change that removes the node's own address.
+    { field: 'state', why: 'not yet on the canvas or in the committed file; it moves to the watched list with its committed value in #1671, which removes the node address so the template then always picks the route' },
   ],
   buyer_select: [{ field: 'retries', why: RETRIES_IGNORED }],
   branch: [

@@ -89,3 +89,22 @@ describe('describeProfileErrors', () => {
     expect(text).toBe('Pricing: Two price tiers cover the same debt. The price tiers leave part of the accepted debt range without a price.')
   })
 })
+
+describe('click delivery words (#1639)', () => {
+  it('names the validator paths as the section names its controls', () => {
+    expect(profileErrorLabel('clickDelivery')).toBe('Click delivery')
+    expect(profileErrorLabel('clickDelivery.routes')).toBe('Routes')
+    expect(profileErrorLabel('clickDelivery.routes[1].url')).toBe('Route 2 address')
+    expect(profileErrorLabel('clickDelivery.routes[0].name')).toBe('Route 1 name')
+    expect(profileErrorLabel('clickDelivery.routes[0].states')).toBe('Route 1 states')
+    expect(profileErrorLabel('clickDelivery.successPattern')).toBe('Success reply')
+  })
+
+  it('names the history paths and shows a route by its address and states', () => {
+    expect(profileFieldLabel('click_delivery.success_pattern')).toBe('Success reply')
+    expect(profileFieldLabel('click_delivery.routes[DV1]')).toBe('Route DV1')
+    expect(formatProfileValue('click_delivery.routes[DV1]', { url: 'https://a.example/dv1', states: ['WA', 'OR'] })).toBe('https://a.example/dv1 for OR, WA')
+    expect(formatProfileValue('click_delivery.routes[DI4]', { url: 'https://a.example/di4', states: [] })).toBe('https://a.example/di4 for every state no other route lists')
+    expect(formatProfileValue('click_delivery.routes[DI4]', null)).toBe('none')
+  })
+})

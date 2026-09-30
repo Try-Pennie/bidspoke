@@ -32,3 +32,17 @@ describe('BuyerProfileHistory', () => {
     expect(screen.getByText(/never been saved/i)).toBeInTheDocument()
   })
 })
+
+describe('click delivery in the history (#1639)', () => {
+  it('shows a moved route and a changed success reply with old and new values, keyed as save_buyer_profile writes them', () => {
+    render(<BuyerProfileHistory entries={[{
+      changed_at: '2027-09-29T20:00:00.000Z', changed_by: 'Dan', action: 'updated',
+      changes: {
+        'click_delivery.routes[DV1]': { old: { url: 'https://a.example/dv1', states: ['OR', 'WA'] }, new: { url: 'https://b.example/dv1', states: ['OR', 'WA'] } },
+        'click_delivery.success_pattern': { old: null, new: '(?<id>\\w+)' },
+      },
+    }]} />)
+    expect(screen.getByText('Route DV1: https://a.example/dv1 for OR, WA to https://b.example/dv1 for OR, WA')).toBeInTheDocument()
+    expect(screen.getByText('Success reply: none to (?<id>\\w+)')).toBeInTheDocument()
+  })
+})

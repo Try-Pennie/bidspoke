@@ -41,6 +41,8 @@ describe('buyer_click_send config validation', () => {
     ['success line', { success_pattern: undefined }, 'No success line set'],
     ['success line with no id group', { success_pattern: 'Records created' }, 'The success line needs an (?<id>...) group'],
     ['success line that is not a pattern', { success_pattern: '(' }, 'The success line is not a valid pattern'],
+    // The shared rule (#1639) finds the group by matching, so the text (?<id> inside a character class is not one.
+    ['success line naming (?<id> only as text', { success_pattern: 'Records [(?<id>]+' }, 'The success line needs an (?<id>...) group'],
     ['partner stored as a slug', { partner_id: 'liberty1' }, 'The partner is not a partner id; pick the buyer again'],
   ]
   for (const [name, patch, message] of missing) {

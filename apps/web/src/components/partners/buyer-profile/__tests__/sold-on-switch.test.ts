@@ -12,7 +12,7 @@ describe('soldOnPatch', () => {
     })
   })
 
-  it('changes only the kind when switching to an offer buyer, whose fields are all shown', () => {
-    expect(soldOnPatch('offer')).toEqual({ sold_on: 'offer' })
+  it('switching to an offer buyer changes the kind and clears the click delivery, which only a click buyer shows or may hold (#1639)', () => {
+    expect(soldOnPatch('offer')).toEqual({ sold_on: 'offer', click_delivery: null })
   })
 })

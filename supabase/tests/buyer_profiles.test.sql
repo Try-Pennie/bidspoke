@@ -721,13 +721,103 @@ BEGIN
 END
 $do$;
 
+-- ── 26. click_delivery: a click buyer saves one, the document carries it, the audit row names each part (#1639) ──
+DO $do$
+DECLARE
+  v int;
+  doc jsonb;
+  changes jsonb;
+  delivery jsonb := '{"routes": [{"name": "DV1", "url": "https://a.example/dv1", "states": ["WA", "OR"]}, {"name": "DI4", "url": "https://a.example/di4", "states": []}], "success_pattern": "(?<id>\\w+)"}'::jsonb;
+BEGIN
+  SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
+  IF NOT (doc ? 'click_delivery') OR doc->'click_delivery' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'a profile without delivery does not say null: %', doc; END IF;
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', delivery), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->'click_delivery' IS DISTINCT FROM delivery THEN RAISE EXCEPTION 'the document does not carry the delivery: %', doc->'click_delivery'; END IF;
+  IF (doc->>'version')::int IS DISTINCT FROM v + 1 THEN RAISE EXCEPTION 'the version did not move: %', doc->>'version'; END IF;
+  SELECT a.changes INTO changes FROM public.audit_log a WHERE a.entity_type = 'buyer_profile' AND a.entity_id = '33333333-3333-3333-3333-333333330003' ORDER BY a.changed_at DESC LIMIT 1;
+  IF changes->'click_delivery.routes[DV1]'->'new' IS DISTINCT FROM '{"url": "https://a.example/dv1", "states": ["OR", "WA"]}'::jsonb THEN RAISE EXCEPTION 'audit row lacks the DV1 route: %', changes; END IF;
+  IF changes->'click_delivery.success_pattern'->>'new' IS DISTINCT FROM '(?<id>\w+)' THEN RAISE EXCEPTION 'audit row lacks the success line: %', changes; END IF;
+  IF changes ? 'click_delivery' THEN RAISE EXCEPTION 'audit row carries the whole delivery as one value: %', changes; END IF;
+  INSERT INTO suite_cases(name) VALUES ('click delivery saves, reads back and is audited per part');
+END
+$do$;
+
+-- ── 27. click_delivery: a save without the key keeps it; an explicit null clears it ──
+DO $do$
+DECLARE
+  doc jsonb;
+  kept jsonb;
+BEGIN
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
+  kept := doc->'click_delivery';
+  -- A Worker or form from before #1639 sends no click_delivery: the stored one must survive.
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    (doc - 'partner_id' - 'version' - 'click_delivery') || '{"daily_lead_cap": 70}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->'click_delivery' IS DISTINCT FROM kept THEN RAISE EXCEPTION 'a save without the key blanked the delivery: %', doc->'click_delivery'; END IF;
+  IF (doc->>'daily_lead_cap')::int IS DISTINCT FROM 70 THEN RAISE EXCEPTION 'the rest of that save did not land: %', doc; END IF;
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    (doc - 'partner_id' - 'version') || '{"click_delivery": null}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  IF doc->'click_delivery' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'an explicit null did not clear it: %', doc->'click_delivery'; END IF;
+  -- Put it back for case 28.
+  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', kept), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  INSERT INTO suite_cases(name) VALUES ('click delivery kept when absent, cleared by null');
+END
+$do$;
+
+-- ── 28. click_delivery: refused on an offer buyer by name and by the table, and a malformed one by name ──
+DO $do$
+DECLARE
+  msg text;
+  doc jsonb;
+  bad jsonb;
+BEGIN
+  doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
+  -- Switching to offer while a delivery is stored, even by a caller that omits the key.
+  BEGIN
+    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+      (doc - 'partner_id' - 'version' - 'click_delivery') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    RAISE EXCEPTION 'an offer buyer kept a click delivery';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'click_delivery_on_offer_buyer' THEN RAISE EXCEPTION 'wrong refusal for delivery on an offer buyer: %', msg; END IF;
+  END;
+  BEGIN
+    UPDATE public.buyer_profiles SET click_delivery = doc->'click_delivery' WHERE partner_id = '33333333-3333-3333-3333-333333330001';
+    RAISE EXCEPTION 'the table accepted a delivery on an offer buyer';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  FOREACH bad IN ARRAY ARRAY[
+    '{"routes": [{"name": "A", "url": "https://a.example/a", "states": ["WA"]}], "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A", "url": "https://a.example/a", "states": []}, {"name": "B", "url": "https://a.example/b", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A", "url": "https://a.example/a", "states": ["WA"]}, {"name": "B", "url": "https://a.example/b", "states": ["WA"]}, {"name": "C", "url": "https://a.example/c", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A", "url": "http://a.example/a", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A", "url": "https://a.example/a", "states": ["ZZ"]}, {"name": "B", "url": "https://a.example/b", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb,
+    '{"routes": [{"name": "A", "url": "https://a.example/a", "states": []}], "success_pattern": ""}'::jsonb,
+    '{"routes": "A", "success_pattern": "(?<id>x)"}'::jsonb
+  ] LOOP
+    BEGIN
+      PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+        (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', bad), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+      RAISE EXCEPTION 'a malformed delivery was saved: %', bad;
+    EXCEPTION WHEN SQLSTATE 'BP422' THEN
+      GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+      IF msg IS DISTINCT FROM 'click_delivery_invalid' THEN RAISE EXCEPTION 'wrong refusal for %: %', bad, msg; END IF;
+    END;
+  END LOOP;
+  INSERT INTO suite_cases(name) VALUES ('click delivery refused on an offer buyer and when malformed');
+END
+$do$;
+
 -- ── The count. Every case above inserts its name; this is the number of blocks. ──
 DO $do$
 DECLARE
   n int;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 25 THEN RAISE EXCEPTION 'ran % of 25 cases', n; END IF;
-  RAISE NOTICE 'buyer_profiles.test.sql: % of 25 cases passed', n;
+  IF n IS DISTINCT FROM 28 THEN RAISE EXCEPTION 'ran % of 28 cases', n; END IF;
+  RAISE NOTICE 'buyer_profiles.test.sql: % of 28 cases passed', n;
 END
 $do$;

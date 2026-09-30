@@ -143,7 +143,7 @@ beforeEach(() => {
     const output: BuyerClickSendOutput = {
       _route: clickRoute, reason: REASON[clickRoute], mode_effective: 'live', partner_id: LIBERTY1_PARTNER_ID, partner_slug: 'liberty1', prospect_id: PROSPECT_ID,
       status: clickRoute === 'sent' ? 200 : 400, partner_lead_id: clickRoute === 'sent' ? L1_LEAD : null,
-      count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], duration_ms: 5,
+      count: null, counted: false, count_date: null, over_cap: null, daily_lead_cap: null, pages: [], route_name: null, url_source: 'node', pattern_source: 'node', duration_ms: 5,
     }
     return { output }
   })

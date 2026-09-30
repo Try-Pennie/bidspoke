@@ -62,3 +62,36 @@ describe('diffProfileDocuments names the sold_on kind (#1541)', () => {
     expect(diffProfileDocuments(base, { ...base, sold_on: 'click' })).toEqual([{ path: 'sold_on', mine: 'offer', theirs: 'click' }])
   })
 })
+
+describe('click delivery in the diff (#1639)', () => {
+  const delivery = {
+    routes: [{ name: 'DV1', url: 'https://a.example/dv1', states: ['WA', 'OR'] }, { name: 'DI4', url: 'https://a.example/di4', states: [] }],
+    success_pattern: '(?<id>\\w+)',
+  }
+  const click: BuyerProfileDocument = { ...base, sold_on: 'click', priority: null, tiers: [], click_delivery: delivery }
+
+  it('keys a route by its name, with its address and its states, order free', () => {
+    const moved: BuyerProfileDocument = {
+      ...click,
+      click_delivery: { ...delivery, routes: [{ name: 'DV1', url: 'https://b.example/dv1', states: ['OR', 'WA'] }, delivery.routes[1]] },
+    }
+    expect(diffProfileDocuments(click, moved)).toEqual([
+      { path: 'click_delivery.routes[DV1]', mine: { url: 'https://a.example/dv1', states: ['OR', 'WA'] }, theirs: { url: 'https://b.example/dv1', states: ['OR', 'WA'] } },
+    ])
+  })
+
+  it('names the success line on its own path', () => {
+    const next = { ...click, click_delivery: { ...delivery, success_pattern: '(?<id>\\d+)' } }
+    expect(diffProfileDocuments(click, next)).toEqual([{ path: 'click_delivery.success_pattern', mine: '(?<id>\\w+)', theirs: '(?<id>\\d+)' }])
+  })
+
+  it('reads a delivery added to a profile that had none as every part new', () => {
+    const paths = diffProfileDocuments({ ...click, click_delivery: null }, click).map((d) => d.path).sort()
+    expect(paths).toEqual(['click_delivery.routes[DI4]', 'click_delivery.routes[DV1]', 'click_delivery.success_pattern'])
+  })
+
+  it('treats an absent delivery and a null one as the same', () => {
+    const { click_delivery: _c, ...absent } = click
+    expect(diffProfileDocuments(absent, { ...click, click_delivery: null })).toEqual([])
+  })
+})

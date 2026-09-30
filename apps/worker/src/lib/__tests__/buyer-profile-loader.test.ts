@@ -28,6 +28,7 @@ const ROW = {
   daily_lead_cap: null,
   hourly_spend_cap_cents: null,
   daily_spend_cap_cents: 500000,
+  click_delivery: null,
   updated_at: '2026-09-22T10:00:00.000Z',
   partner_configs: {
     id: 'p-1', slug: 'tripoint', name: 'Tripoint', is_active: true, api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create',
@@ -98,11 +99,21 @@ describe('loadBuyerProfiles', () => {
       windows: [{ dayOfWeek: 1, opensMinute: 540, closesMinute: 1080 }],
       blackoutDates: ['2026-11-26'],
       tiers: [{ population: 'engine', debtFrom: 15000, debtTo: null, multiplier: 0.0012 }],
+      clickDelivery: null,
     })
     expect(b.version).toBe(3)
     // Cached for the hot path, with the TTL the plan set, and kept as the last good copy.
     expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
     expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+
+  it('reads a click buyer delivery in the same query and shapes it for buyer_click_send (#1639)', async () => {
+    const delivery = { routes: [{ name: 'DV1', url: 'https://a.example/dv1', states: ['WA'] }, { name: 'DI4', url: 'https://a.example/di4', states: [] }], success_pattern: '(?<id>\\w+)' }
+    const { supabase, calls } = fakeSupabase({ data: [{ ...ROW, sold_on: 'click', click_delivery: delivery }], error: null })
+    const { kv } = fakeKv()
+    const snapshot = await loadBuyerProfiles('org-1', kv, supabase)
+    expect(calls[0].select).toMatch(/(^|, )click_delivery,/)
+    expect(snapshot.buyers[0].profile.clickDelivery).toEqual({ routes: delivery.routes, successPattern: delivery.success_pattern })
   })
 
   it('a cache hit skips the database', async () => {

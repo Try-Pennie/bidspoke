@@ -10,6 +10,7 @@
  * at once (L688): the type is erased at the boundary, so a typed object built
  * from JSON without this would fail far away from the cause.
  */
+import { clickDeliveryFromDocument, type ClickDeliveryDocument, type ClickRoute } from './click-delivery'
 import type { BuyerProfile } from './eligibility'
 import { SOLD_ON, type SoldOn } from './vocab'
 
@@ -55,6 +56,12 @@ export interface BuyerProfileDocument {
   windows: ProfileWindowDocument[]
   blackout_dates: ProfileBlackoutDocument[]
   tiers: ProfileTierDocument[]
+  /**
+   * A click buyer's delivery (#1639). Null clears it. ABSENT means the sender
+   * did not speak about it (a form or Worker from before it existed), and
+   * save_buyer_profile keeps what is stored, so it is never blanked by omission.
+   */
+  click_delivery?: ClickDeliveryDocument | null
 }
 
 export interface DocumentFieldError {
@@ -170,6 +177,13 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     })
   }
 
+  let click_delivery: ClickDeliveryDocument | null | undefined
+  if (raw.click_delivery === null) {
+    click_delivery = null
+  } else if (raw.click_delivery !== undefined) {
+    click_delivery = parseClickDelivery(raw.click_delivery, err)
+  }
+
   if (raw.partner_id !== undefined && typeof raw.partner_id !== 'string') err('partner_id', 'partner_id must be a string.')
   if (raw.version !== undefined && integer(raw.version) === undefined) err('version', 'version must be a whole number.')
 
@@ -190,9 +204,41 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     blackout_dates,
     tiers,
   }
+  if (click_delivery !== undefined) document.click_delivery = click_delivery
   if (typeof raw.partner_id === 'string') document.partner_id = raw.partner_id
   if (raw.version !== undefined) document.version = integer(raw.version) as number
   return { ok: true, document }
+}
+
+/** The delivery's shape, every malformed part named; undefined when any part is malformed. */
+function parseClickDelivery(input: unknown, err: (path: string, message: string) => void): ClickDeliveryDocument | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    err('click_delivery', 'click_delivery must be an object or null.')
+    return undefined
+  }
+  const raw = input as Record<string, unknown>
+  let ok = true
+  const routes: ClickRoute[] = []
+  if (!Array.isArray(raw.routes)) {
+    err('click_delivery.routes', 'routes must be a list.')
+    ok = false
+  } else {
+    raw.routes.forEach((r, i) => {
+      const row = (r ?? {}) as Record<string, unknown>
+      const path = `click_delivery.routes[${i}]`
+      let rowOk = true
+      if (typeof row.name !== 'string') { err(`${path}.name`, 'name must be text.'); rowOk = false }
+      if (typeof row.url !== 'string') { err(`${path}.url`, 'url must be text.'); rowOk = false }
+      if (!Array.isArray(row.states) || row.states.some((s) => typeof s !== 'string')) { err(`${path}.states`, 'states must be a list of state codes.'); rowOk = false }
+      if (rowOk) routes.push({ name: row.name as string, url: row.url as string, states: [...(row.states as string[])] })
+      else ok = false
+    })
+  }
+  if (typeof raw.success_pattern !== 'string') {
+    err('click_delivery.success_pattern', 'success_pattern must be text.')
+    ok = false
+  }
+  return ok ? { routes, success_pattern: raw.success_pattern as string } : undefined
 }
 
 /** The evaluator's shape from a document. Numeric strings from Postgres become numbers; notes are dropped. */
@@ -217,5 +263,7 @@ export function documentToProfile(doc: BuyerProfileDocument): BuyerProfile {
     windows: doc.windows.map((w) => ({ dayOfWeek: w.day_of_week, opensMinute: w.opens_minute, closesMinute: w.closes_minute })),
     blackoutDates: doc.blackout_dates.map((b) => b.date),
     tiers: doc.tiers.map((t) => ({ population: t.population, debtFrom: n(t.debt_from) ?? 0, debtTo: n(t.debt_to), multiplier: n(t.multiplier) ?? 0 })),
+    // Only when the document speaks about it, so a document from before #1639 maps as it always did.
+    ...(doc.click_delivery === undefined ? {} : { clickDelivery: doc.click_delivery === null ? null : clickDeliveryFromDocument(doc.click_delivery) }),
   }
 }

@@ -2,6 +2,7 @@ import { easternParts, isOpen, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
 import { parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
+import type { ClickDelivery } from './click-delivery'
 import type { OutReason, SoldOn, UsState } from './vocab'
 
 /** The buyer profile as the node reads it: the partner's row plus its child rows, in one object. */
@@ -28,6 +29,12 @@ export interface BuyerProfile {
   /** YYYY-MM-DD, Eastern. */
   blackoutDates: readonly string[]
   tiers: readonly PricingTier[]
+  /**
+   * A click buyer's delivery (#1639): where buyer_click_send posts a click and
+   * the reply that counts as sold. Null or absent means the node's own
+   * request_url and success_pattern are still in force.
+   */
+  clickDelivery?: ClickDelivery | null
 }
 
 /** The lead as the node resolved it from its templates, before any parsing. */

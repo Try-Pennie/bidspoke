@@ -576,6 +576,16 @@ describe('ConfigPanel: buyer_click_send holds no cap of its own (#1543, L83)', (
   })
 })
 
+describe('ConfigPanel: buyer_click_send state template (#1639)', () => {
+  it('writes the state template that picks the buyer profile route', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    const { onUpdate } = renderPanel(nodeOf('buyer_click_send', {}))
+    fireEvent.change(screen.getByRole('textbox', { name: 'State' }), { target: { value: '{{steps.build_request.output.state}}' } })
+    const config = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(config.state).toBe('{{steps.build_request.output.state}}')
+  })
+})
+
 describe('ConfigPanel: buyer_click_check (#1543)', () => {
   it('picks the population from the vocabulary and writes the lead templates', () => {
     vi.mocked(api.partners.list).mockResolvedValue([])

@@ -30,6 +30,7 @@ import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
 import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
+import { ClickDeliveryEditor } from './ClickDeliveryEditor'
 import { HeldClicksPanel } from './HeldClicksPanel'
 import { PricingTiersEditor } from './PricingTiersEditor'
 import { ProfileConflictView } from './ProfileConflictView'
@@ -411,6 +412,14 @@ export function BuyerProfileSection(props: Props) {
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
               <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} />
+            </div>
+          )}
+
+          {/* Where a click buyer's clicks are posted and the reply that counts as sold (#1639). */}
+          {click && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Click delivery</h4>
+              <ClickDeliveryEditor value={profile.click_delivery} onChange={(click_delivery) => patch({ click_delivery })} errors={byPath} />
             </div>
           )}
 
