@@ -43,7 +43,17 @@ const NOW = 1_800_000_000
 const iso = (secondsAgo: number): string =>
   new Date((NOW - secondsAgo) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
 
-type Run = { id: number; status: 'completed' | 'in_progress' | 'queued' }
+type Run = {
+  id: number
+  status: 'completed' | 'in_progress' | 'queued'
+  /** Defaults to main. */
+  branch?: string
+  /**
+   * Absent from a list filtered by branch as well as workflow, the way GitHub's
+   * two field index lags a run that has just changed (#1650, LESSONS L1014).
+   */
+  staleUnderBranchFilter?: boolean
+}
 type PagesJob =
   | { kind: 'skipped' }
   | { kind: 'failed' }
@@ -98,7 +108,13 @@ type Stub = {
 /** Writes a fake `gh` answering `run list` and `api .../jobs`, and runs the script. */
 const askWith = (stub: Stub): { age: string; reason: string } => {
   const dir = mkdtempSync(path.join(tmpdir(), 'last-success-'))
-  const list = JSON.stringify((stub.runs ?? []).map((r) => ({ databaseId: r.id, status: r.status })))
+  const listed = (runs: Run[]): string =>
+    JSON.stringify(runs.map((r) => ({ databaseId: r.id, status: r.status, headBranch: r.branch ?? 'main' })))
+  const list = listed(stub.runs ?? [])
+  // What a branch filtered query would answer: main only, from the lagging index.
+  const staleMainList = listed(
+    (stub.runs ?? []).filter((r) => (r.branch ?? 'main') === 'main' && !r.staleUnderBranchFilter),
+  )
   for (const [id, job] of Object.entries(stub.jobs ?? {})) {
     if (job.kind !== 'unreadable') writeFileSync(path.join(dir, `jobs-${id}.json`), jobsJson(job))
   }
@@ -113,7 +129,7 @@ const askWith = (stub: Stub): { age: string; reason: string } => {
       `    printf '%s' ${JSON.stringify(stub.listStderr ?? '')} >&2`,
       stub.listFails !== undefined
         ? `    printf '%s' ${JSON.stringify(stub.listFails)} >&2; exit 1`
-        : `    printf '%s' ${JSON.stringify(list)}`,
+        : `    case " $* " in *" --branch"*|*" -b "*) printf '%s' ${JSON.stringify(staleMainList)} ;; *) printf '%s' ${JSON.stringify(list)} ;; esac`,
       '    ;;',
       '  api*)',
       '    ID=$(printf \'%s\' "$2" | sed -E \'s#.*/runs/([0-9]+)/jobs.*#\\1#\')',
@@ -265,6 +281,32 @@ describe('deploy-last-success-age: the query could not be answered', () => {
       listStderr: 'gh: a new release is available',
     })
     expect(age).toBe('30')
+  })
+})
+
+describe('deploy-last-success-age: a run the branch filtered index has not caught up with (#1650)', () => {
+  it('reads the newest completed run even when a branch filtered list would omit it', () => {
+    // A branch filtered list would fall back to run 2's older upload, so the
+    // grace would be measured from the wrong deploy.
+    const { age } = askWith({
+      runs: [
+        { id: 3, status: 'completed', staleUnderBranchFilter: true },
+        { id: 2, status: 'completed' },
+      ],
+      jobs: { 3: { kind: 'succeeded', completedAgo: 30 }, 2: { kind: 'succeeded', completedAgo: 900 } },
+    })
+    expect(age).toBe('30')
+  })
+
+  it('ignores a completed run on another branch', () => {
+    const { age } = askWith({
+      runs: [
+        { id: 5, status: 'completed', branch: 'some-feature' },
+        { id: 2, status: 'completed' },
+      ],
+      jobs: { 5: { kind: 'succeeded', completedAgo: 10 }, 2: { kind: 'succeeded', completedAgo: 200 } },
+    })
+    expect(age).toBe('200')
   })
 })
 

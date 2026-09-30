@@ -48,11 +48,25 @@ GH_BIN="${GH_BIN:-gh}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-deploy.yml}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 
+# How many of the workflow's newest runs to read. Deploy runs only on pushes to
+# main today, so every listed run is normally a main run; the branch is still
+# judged below rather than assumed, and 20 is far more than can be in flight.
+RUN_LIMIT="${RUN_LIMIT:-20}"
+
+# ONE filter on the query, the workflow, and the branch and status judged here
+# (#1650). GitHub answers a run list filtered on two fields at once from an index
+# that can lag a run that has just started (LESSONS L1014): on 2026-09-30 Deploy
+# Drift run 36731631369 asked with `--branch main` about a minute after Deploy run
+# 36731518395 started, was told nothing was running, and paged a stranded worker
+# that was mid deploy, while the same query a minute later saw it at 126s.
+#
 # jq does the clock arithmetic so this does not depend on GNU date, which the
 # macOS `date` does not provide.
-JQ_FILTER='[.[] | select(.status == "in_progress" or .status == "queued")]
+JQ_FILTER='[.[] | select(.headBranch == $ENV.DEPLOY_BRANCH)
+    | select(.status == "in_progress" or .status == "queued")]
   | sort_by(.createdAt) | (.[0].createdAt // empty)
   | (now - fromdateiso8601 | floor)'
+export DEPLOY_BRANCH
 
 answer() {
   # $1 is the answer, which is EMPTY for a definite "no deploy is running". A
@@ -70,8 +84,8 @@ answer() {
 ERR_FILE=$(mktemp)
 trap 'rm -f "$ERR_FILE"' EXIT
 
-if ! OUT=$("$GH_BIN" run list --workflow="$DEPLOY_WORKFLOW" --branch "$DEPLOY_BRANCH" \
-  --limit 20 --json status,createdAt --jq "$JQ_FILTER" 2>"$ERR_FILE"); then
+if ! OUT=$("$GH_BIN" run list --workflow="$DEPLOY_WORKFLOW" \
+  --limit "$RUN_LIMIT" --json status,createdAt,headBranch --jq "$JQ_FILTER" 2>"$ERR_FILE"); then
   # Judged by the EXIT CODE, never by whether it happened to print something
   # (L184). A failing gh can still write to stdout, and that output is its
   # complaint rather than an answer.
