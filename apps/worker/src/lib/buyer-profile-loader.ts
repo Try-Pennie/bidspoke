@@ -189,7 +189,7 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
     if (opts.background && ageMs > BUYER_PROFILES_REFRESH_AFTER_SECONDS * 1000) {
       // Serve this lead from the copy and rebuild for the next ones. A failed
       // rebuild leaves the copy as it was; the TTL is still the bound on it.
-      opts.background(readAndCache(orgId, kv, supabase, now).catch((err: unknown) => {
+      opts.background(readAndCache(orgId, kv, supabase, now, true).catch((err: unknown) => {
         console.error(`[buyer-profiles] background refresh failed for org ${orgId}: ${err instanceof Error ? err.message : 'unknown error'}`)
       }))
     }
@@ -215,13 +215,13 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
   // three KV calls run after it is answered (#1632), and a failed write costs
   // the next lead a cold read rather than costing this one its answer.
   if (opts.background) {
-    opts.background(writeSnapshot(orgId, kv, snapshot, now).catch((err: unknown) => {
+    opts.background(writeSnapshot(orgId, kv, snapshot, now, readStarted).catch((err: unknown) => {
       console.error(`[buyer-profiles] cache write failed for org ${orgId}: ${err instanceof Error ? err.message : 'unknown error'}`)
     }))
     return snapshot
   }
   try {
-    await writeSnapshot(orgId, kv, snapshot, now)
+    await writeSnapshot(orgId, kv, snapshot, now, readStarted)
   } catch (err) {
     console.error(`[buyer-profiles] cache write failed for org ${orgId}: ${err instanceof Error ? err.message : 'unknown error'}`)
   }
@@ -243,15 +243,41 @@ async function readSnapshot(orgId: string, supabase: SupabaseClient, now: () => 
   return { org_id: orgId, loaded_at: new Date(now()).toISOString(), content_hash, served_from: 'database', buyers }
 }
 
-/** Read the profiles and write the cache and last good copy. Throws on a failed read or write. */
-async function readAndCache(orgId: string, kv: KVNamespace, supabase: SupabaseClient, now: () => number): Promise<BuyerProfilesSnapshot> {
+/**
+ * Read the profiles and write the cache and last good copy. Throws on a failed
+ * read or write. `yieldToNewer` is for every writer that is not a save: the
+ * prewarm, the background refresh on a hit and a miss. Only the save routes
+ * (refreshBuyerProfilesCache) write unconditionally, because theirs is the
+ * newest truth by construction.
+ */
+async function readAndCache(orgId: string, kv: KVNamespace, supabase: SupabaseClient, now: () => number, yieldToNewer: boolean): Promise<BuyerProfilesSnapshot> {
+  const readStartedAt = now()
   const snapshot = await readSnapshot(orgId, supabase, now)
-  await writeSnapshot(orgId, kv, snapshot, now)
+  await writeSnapshot(orgId, kv, snapshot, now, yieldToNewer ? readStartedAt : undefined)
   return snapshot
 }
 
-/** Write the cache, and the last good copy when its content changed or it has aged. Throws on a failed KV call. */
-async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProfilesSnapshot, now: () => number): Promise<void> {
+/**
+ * Write the cache, and the last good copy when its content changed or it has
+ * aged. Throws on a failed KV call.
+ *
+ * With `readStartedAt`, the write first re-reads the held copy and skips both
+ * writes when that copy was loaded at or after this read began: a save rebuilt
+ * it meanwhile, and writing these older rows over it would put a buyer the save
+ * just disabled back on sale (review of #1646). KV has no compare and swap, so
+ * this narrows the race to the gap between that re-read and the put rather than
+ * closing it, and the re-read can itself be served from KV's edge cache; the
+ * 300 s TTL and the next prewarm remain the bound on what slips through.
+ */
+async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProfilesSnapshot, now: () => number, readStartedAt?: number): Promise<void> {
+  if (readStartedAt !== undefined) {
+    const held = await kv.get<BuyerProfilesSnapshot>(cacheKey(orgId), 'json')
+    const heldLoadedAt = held ? Date.parse(held.loaded_at) : Number.NaN
+    if (Number.isFinite(heldLoadedAt) && heldLoadedAt >= readStartedAt) {
+      console.log(`[buyer-profiles] skipped the cache write for org ${orgId}: the held copy was loaded at ${held?.loaded_at}, after this read began at ${new Date(readStartedAt).toISOString()}`)
+      return
+    }
+  }
   const content_hash = snapshot.content_hash
   const serialized = JSON.stringify(snapshot)
   await kv.put(cacheKey(orgId), serialized, { expirationTtl: BUYER_PROFILES_CACHE_TTL_SECONDS })
@@ -273,7 +299,7 @@ async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProf
  */
 export async function keepBuyerProfilesWarm(orgId: string, kv: KVNamespace, supabase: SupabaseClient, opts: Pick<LoadOptions, 'now'> = {}): Promise<BuyerProfilesSnapshot | null> {
   try {
-    return await readAndCache(orgId, kv, supabase, opts.now ?? Date.now)
+    return await readAndCache(orgId, kv, supabase, opts.now ?? Date.now, true)
   } catch (err) {
     console.error(`[buyer-profiles] keep warm failed for org ${orgId}: ${err instanceof Error ? err.message : 'unknown error'}`)
     return null
@@ -301,7 +327,7 @@ async function contentHash(buyers: readonly LoadedBuyer[]): Promise<string> {
  */
 export async function refreshBuyerProfilesCache(orgId: string, kv: KVNamespace, supabase: SupabaseClient): Promise<BuyerProfilesSnapshot | null> {
   try {
-    return await readAndCache(orgId, kv, supabase, Date.now)
+    return await readAndCache(orgId, kv, supabase, Date.now, false)
   } catch (err) {
     console.error(`[buyer-profiles] refresh after save failed for org ${orgId}, dropping the cached copy: ${err instanceof Error ? err.message : 'unknown error'}`)
     await invalidateBuyerProfilesCache(orgId, kv)

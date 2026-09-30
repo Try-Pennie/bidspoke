@@ -323,6 +323,75 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
     expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
   })
 
+  // Review of #1646: a prewarm whose read began before a profile save could land
+  // its write after the save's rebuild and put the old profiles back, so a buyer
+  // just disabled could still be sold to.
+  it('a save refresh that lands between the prewarm read and its write survives', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
+    const saved = fakeSupabase({ data: [{ ...ROW, version: 9 }], error: null })
+    const racing = {
+      from() {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          async then(resolve: (v: unknown) => unknown) {
+            await refreshBuyerProfilesCache('org-1', kv, saved.supabase)
+            return resolve({ data: [{ ...ROW, version: 3 }], error: null })
+          },
+        }
+        return builder
+      },
+    } as never
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      await keepBuyerProfilesWarm('org-1', kv, racing)
+      expect(logs.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/skipped the cache write for org org-1/)
+    } finally {
+      logs.mockRestore()
+    }
+    const held = (key: string) => (JSON.parse(store.get(key)!.value) as { buyers: Array<{ version: number }> }).buyers[0].version
+    expect(held('buyer-profiles:org-1')).toBe(9)
+    expect(held('buyer-profiles:org-1:lastgood')).toBe(9)
+  })
+
+  it('the background refresh on an ageing hit has the same guard (#1492 shape)', async () => {
+    const { kv, store } = fakeKv()
+    const t0 = Date.now() - (BUYER_PROFILES_REFRESH_AFTER_SECONDS + 5) * 1000
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 })
+    const saved = fakeSupabase({ data: [{ ...ROW, version: 9 }], error: null })
+    const racing = {
+      from() {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          async then(resolve: (v: unknown) => unknown) {
+            await refreshBuyerProfilesCache('org-1', kv, saved.supabase)
+            return resolve({ data: [{ ...ROW, version: 3 }], error: null })
+          },
+        }
+        return builder
+      },
+    } as never
+    const handed: Promise<unknown>[] = []
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const served = await loadBuyerProfiles('org-1', kv, racing, { background: (work) => { handed.push(work) } })
+      expect(served.served_from).toBe('cache')
+      await Promise.all(handed)
+    } finally {
+      logs.mockRestore()
+    }
+    expect((JSON.parse(store.get('buyer-profiles:org-1')!.value) as { buyers: Array<{ version: number }> }).buyers[0].version).toBe(9)
+  })
+
+  it('with no save in between, the prewarm still writes over its own older copy', async () => {
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => Date.now() - 30_000 })
+    await keepBuyerProfilesWarm('org-1', kv, fakeSupabase({ data: [{ ...ROW, version: 5 }], error: null }).supabase)
+    expect((JSON.parse(store.get('buyer-profiles:org-1')!.value) as { buyers: Array<{ version: number }> }).buyers[0].version).toBe(5)
+  })
+
   it('a failed rebuild keeps the copy that is there, answers null, never throws, and says so', async () => {
     const { kv, store } = fakeKv()
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase)
