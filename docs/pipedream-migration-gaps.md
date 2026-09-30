@@ -127,7 +127,7 @@ I build and run the tooling, and you approve each step. It covers:
 3. The step settings the export blanked (sheet IDs, Salesforce objects, filter rules, Slack channels, about 174 workflow files), read from your browser, read only, if Pipedream offers no better way.
 
 ### 20. SFTP file transfers and fixed IP addresses (12 workflows)
-Cloudflare can do neither. Likely answer: Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. It's a maybe until you ask Brian. Fallback: a small server of our own with a fixed IP address.
+Cloudflare can do neither. Decided 2026-09-30: this work runs on Brian's AWS box, which has a fixed IP address and is already allowlisted with Achieve. Brian agreed the same day. The box fetches each file and hands it to Bidspoke, which does everything else, and Bidspoke alerts when an expected file does not arrive, because the box is a single machine one person looks after.
 
 ### 21. Repointing every caller
 Every Pipedream workflow has its own web address, configured somewhere else. Each one needs changing, by us or by the owner:
