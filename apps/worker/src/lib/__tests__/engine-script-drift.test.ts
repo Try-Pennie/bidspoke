@@ -84,24 +84,11 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no new node allowance, and a baseline only on the two scripts #1549 edited: Engine Bidding version 101 (2026-09-29) holds the other two', async () => {
-    // #1549 moved 1002 and 1005 into the duplicate codes in tripoint_ping and
-    // build_response_body, so each carries version 101's hash until pasted; the
-    // baseline must differ from the kept file, or a paste would never be awaited.
-    const edited: Record<string, string> = {
-      'tripoint_ping.js': 'fccee3d5a423222b246bcf46e05ac8660ffeb4208bfdc03d672794e213e0586a',
-      'build_response_body.js': 'f551e90acc68d26fdb27bb81be85f4b995dce707520395a73e5c4c553b6e4b43',
-    }
+  it('carry no canvas baseline and no new node allowance: Engine Bidding version 103 (2026-09-30) holds all four, #1549 included, so any difference is a drift or a missing node', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) {
+      expect(kept.canvasBaselineSha256, kept.file).toBeNull()
+      expect(kept.baselineReadOn, kept.file).toBeNull()
       expect(kept.newNodeSince, kept.file).toBeUndefined()
-      if (edited[kept.file]) {
-        expect(kept.canvasBaselineSha256, kept.file).toBe(edited[kept.file])
-        expect(kept.baselineReadOn, kept.file).toBe('2026-09-30')
-        expect(await sha256Hex(kept.script), kept.file).not.toBe(edited[kept.file])
-      } else {
-        expect(kept.canvasBaselineSha256, kept.file).toBeNull()
-        expect(kept.baselineReadOn, kept.file).toBeNull()
-      }
     }
   })
 

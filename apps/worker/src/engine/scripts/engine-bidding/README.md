@@ -44,8 +44,8 @@ the gate and the check go on the canvas BEFORE the two scripts are pasted.
 the sightings already used. Before it the two scripts said 1003, 1004 and 1020, so a
 1002 or 1005 reached Salesforce's `Tripoint_Response__c` as Fail. The scripts cannot
 import, so `../__tests__/tripoint-duplicate-codes.test.ts` holds both literals to the
-list on every code from 990 to 1100. Paste the two in one save; either alone is also
-safe, since each only classes its own path.
+list on every code from 990 to 1100. Both were pasted in one save, Engine Bidding
+version 103 (2026-09-30 14:43 UTC), and their drift baselines cleared after.
 
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
