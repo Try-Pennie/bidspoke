@@ -200,6 +200,54 @@ describe('the committed sources the check reads', () => {
     expect(liberty1.configSources[0].nodes).toEqual(LIBERTY1_NODES)
   })
 
+  describe('a Salesforce setting changed on the Liberty1 click canvas pages (#1666)', () => {
+    const judge = (nodes: NodeLike[]) => judgeKeptConfig(liberty1.configSources, { nodes }, 'Liberty1 click workflow')
+    const SF_NAMESPACES = ['query_record', 'update_prospect', 'update_submission', 'update_lead']
+
+    it('the committed Liberty1 Salesforce nodes are the four writes and the lookup, and a canvas holding them agrees', () => {
+      expect(LIBERTY1_NODES.filter((n) => n.type === 'salesforce').map((n) => n.namespace)).toEqual(SF_NAMESPACES)
+      const verdicts = judge(clone(LIBERTY1_NODES)).filter((v) => SF_NAMESPACES.includes(v.namespace))
+      expect(verdicts.map((v) => [v.namespace, v.state])).toEqual(SF_NAMESPACES.map((n) => [n, 'agree']))
+    })
+
+    const added: [string, string, unknown][] = [
+      ['update_prospect', 'expected_errors', [{ code: 'DUPLICATE_VALUE', response_status: 200 }]],
+      ['update_submission', 'injected_fields', { Note__c: '{{execution.trace_id}}' }],
+      ['update_lead', 'external_id_field', 'LeadUUID__c'],
+      ['update_lead', 'external_id_value', '{{trigger.payload.leadUuid}}'],
+      ['query_record', 'apex_path', '/services/apexrest/click'],
+      ['query_record', 'apex_method', 'GET'],
+    ]
+    for (const [namespace, field, value] of added) {
+      it(`${namespace} gaining ${field} on the canvas is a finding naming it, since the committed definition has none`, () => {
+        const canvas = clone(LIBERTY1_NODES)
+        const target = canvas.find((n) => n.namespace === namespace)!
+        expect(target.config[field]).toBeUndefined()
+        target.config[field] = value
+        const found = judge(canvas).filter((v) => v.state !== 'agree')
+        expect(found).toEqual([
+          { workflow: 'Liberty1 click workflow', namespace, file: 'docs/workflows/liberty1-click/definition.json', state: 'not_committed', field, canvas: JSON.stringify(value) },
+        ])
+      })
+    }
+
+    const changed: [string, string, unknown][] = [
+      ['update_prospect', 'record_id', '{{steps.pick_record.output.lead_id}}'],
+      ['update_submission', 'object', 'Lead'],
+      ['update_lead', 'body', '{{steps.click_patch.output.prospect}}'],
+      ['query_record', 'soql', 'SELECT Id FROM Lead'],
+    ]
+    for (const [namespace, field, value] of changed) {
+      it(`${namespace}.${field} changed on the canvas is a config drift naming it`, () => {
+        const canvas = clone(LIBERTY1_NODES)
+        canvas.find((n) => n.namespace === namespace)!.config[field] = value
+        const found = judge(canvas).filter((v) => v.state !== 'agree')
+        expect(found).toHaveLength(1)
+        expect(found[0]).toMatchObject({ namespace, state: 'config_drift', field, path: field, canvas: JSON.stringify(value) })
+      })
+    }
+  })
+
   it('Engine Bidding is judged against the #1544 wiring nodes, the committed buyer_select and its Salesforce nodes', () => {
     expect(engine.configSources.map((s) => s.file)).toEqual([
       'docs/workflows/engine-bidding/liberty1-wiring.json',
