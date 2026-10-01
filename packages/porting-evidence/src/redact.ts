@@ -214,7 +214,8 @@ async function replaceMatches(s: string, pattern: RegExp, replace: Replacer): Pr
   return splices
 }
 
-interface KeyBefore { name: string; quoted: boolean }
+/** `depth` is the backslashes escaping a quoted key's quotes: 0 in plain JSON, 1 in doubly encoded JSON. */
+interface KeyBefore { name: string; quoted: boolean; depth: number }
 
 /** The key ending just before the separator at `sep`, read backwards, or null. */
 function keyBefore(s: string, sep: number): KeyBefore | null {
@@ -235,7 +236,7 @@ function keyBefore(s: string, sep: number): KeyBefore | null {
         // The opening quote's own escape, if any, sits before it and belongs
         // to the text around the key.
         const start = j + 1
-        return start < end ? { name: s.slice(start, end), quoted: true } : null
+        return start < end ? { name: s.slice(start, end), quoted: true, depth: i - end } : null
       }
       if (c === 10 || c === 13) return null
     }
@@ -244,10 +245,67 @@ function keyBefore(s: string, sep: number): KeyBefore | null {
   const limit = Math.max(0, i + 1 - MAX_KEY_CHARS)
   let j = i
   while (j >= limit && isKeyCode(s.charCodeAt(j))) j--
-  return j === i ? null : { name: s.slice(j + 1, i + 1), quoted: false }
+  return j === i ? null : { name: s.slice(j + 1, i + 1), quoted: false, depth: 0 }
 }
 
-interface ValueSpan { start: number; end: number; kind: 'text' | 'number' | 'skip' }
+interface ValueSpan { start: number; end: number; kind: 'text' | 'number' | 'skip' | 'container'; parts?: Part[] }
+
+/** One string or number inside a JSON object or list. */
+interface Part { start: number; end: number; kind: 'text' | 'number' }
+
+/**
+ * The object or list opening at `open`, in JSON whose strings are quoted at
+ * escaping `depth`. Returns where it ends (the text's end when it never closes,
+ * since everything after its opening belongs to it) and every string value and
+ * number inside it, at any nesting. Object keys and the literals null, true and
+ * false are kept, so the structure stays readable and the JSON stays valid.
+ * One pass over the span, so it stays linear.
+ */
+function scanContainer(s: string, open: number, depth: number): { end: number; parts: Part[] } {
+  const period = 2 * (depth + 1)
+  const parts: Part[] = []
+  let level = 0
+  let run = 0
+  let stringStart = -1
+  for (let j = open; j < s.length; j++) {
+    const c = s.charCodeAt(j)
+    if (c === BACKSLASH) {
+      run++
+      continue
+    }
+    const delimiter = c === 34 && run % period === depth
+    run = 0
+    if (stringStart !== -1) {
+      if (!delimiter) continue
+      const end = j - depth
+      // A string followed by a colon is an object key: kept.
+      let k = j + 1
+      const ceiling = Math.min(s.length, k + MAX_PADDING)
+      while (k < ceiling && isPadding(s.charCodeAt(k))) k++
+      if (s.charCodeAt(k) !== COLON && end > stringStart) parts.push({ start: stringStart, end, kind: 'text' })
+      stringStart = -1
+      continue
+    }
+    if (delimiter) {
+      stringStart = j + 1
+      continue
+    }
+    if (c === 123 || c === 91) level++
+    else if (c === 125 || c === 93) {
+      level--
+      if (level === 0) return { end: j + 1, parts }
+    } else if ((c === 45 || (c >= 48 && c <= 57)) && !isKeyCode(s.charCodeAt(j - 1))) {
+      JSON_NUMBER.lastIndex = j
+      const m = JSON_NUMBER.exec(s)
+      if (m) {
+        parts.push({ start: j, end: j + m[0].length, kind: 'number' })
+        j += m[0].length - 1
+      }
+    }
+  }
+  if (stringStart !== -1 && stringStart < s.length) parts.push({ start: stringStart, end: s.length, kind: 'text' })
+  return { end: s.length, parts }
+}
 
 /** True when `s` holds `word` at `at`, not followed by another key character. */
 const wordAt = (s: string, at: number, word: string) =>
@@ -291,10 +349,13 @@ function valueAfter(s: string, sep: number, key: KeyBefore): ValueSpan | null {
   }
 
   if (LITERALS.some((word) => wordAt(s, i, word))) return null
-  // An object or a list is not one value to scramble: its own keys and strings
-  // are reached by the rest of the scan, and replacing its opening bracket would
-  // break the JSON.
-  if (s.charCodeAt(i) === 123 || s.charCodeAt(i) === 91) return null
+  // An object or a list under a quoted JSON key: every string and number in it
+  // is scrambled where it sits, so the structure and the JSON survive. Under a
+  // form or prose key a bracket is just text and the value is taken whole below.
+  if (key.quoted && (s.charCodeAt(i) === 123 || s.charCodeAt(i) === 91)) {
+    const { end, parts } = scanContainer(s, i, key.depth)
+    return { start: i, end, kind: 'container', parts }
+  }
 
   if (key.quoted) {
     JSON_NUMBER.lastIndex = i
@@ -335,8 +396,11 @@ async function replaceKeyed(s: string, replaceText: Replacer, replaceNumber: (va
       i = value.end - 1
       continue
     }
-    const raw = s.slice(value.start, value.end)
-    splices.push({ start: value.start, end: value.end, text: value.kind === 'number' ? await replaceNumber(raw) : await replaceText(raw, '') })
+    const parts: Part[] = value.kind === 'container' ? (value.parts ?? []) : [{ start: value.start, end: value.end, kind: value.kind === 'number' ? 'number' : 'text' }]
+    for (const part of parts) {
+      const raw = s.slice(part.start, part.end)
+      splices.push({ start: part.start, end: part.end, text: part.kind === 'number' ? await replaceNumber(raw) : await replaceText(raw, '') })
+    }
     i = value.end - 1
   }
   return splices

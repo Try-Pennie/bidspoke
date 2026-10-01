@@ -380,4 +380,62 @@ describe('redactCapture: a sensitive key holding an object or a list', () => {
     expect(() => JSON.parse(out) as unknown).not.toThrow()
     expect((JSON.parse(out) as { city: string }).city).toBe('Austin')
   })
+
+  const bodyOf = async (body: string) => ((await redactCapture({ body }, KEY)).value as { body: string }).body
+
+  it('scrambles every string and number inside an object, keeping its keys, literals and shape', async () => {
+    const out = await bodyOf(JSON.stringify({ ssn: { last4: '6789', verified: true, n: 12345, gone: null }, city: 'Austin' }))
+    expect(out).not.toMatch(/6789|12345/)
+    const parsed = JSON.parse(out) as { ssn: { last4: string; verified: boolean; n: number; gone: null }; city: string }
+    expect(Object.keys(parsed.ssn)).toEqual(['last4', 'verified', 'n', 'gone'])
+    expect(parsed.ssn.last4).toHaveLength(4)
+    expect(parsed.ssn.verified).toBe(true)
+    expect(parsed.ssn.gone).toBeNull()
+    expect(String(parsed.ssn.n)).toHaveLength(5)
+    expect(parsed.city).toBe('Austin')
+  })
+
+  it('scrambles every item inside a list, nested ones included', async () => {
+    const out = await bodyOf(JSON.stringify({ dob: ['1990', '04', 12, ['x1990', { y: '1990' }]], city: 'Austin' }))
+    expect(out).not.toContain('1990')
+    const parsed = JSON.parse(out) as { dob: [string, string, number, [string, { y: string }]]; city: string }
+    expect(parsed.dob).toHaveLength(4)
+    expect(parsed.dob[0]).toHaveLength(4)
+    expect(typeof parsed.dob[2]).toBe('number')
+    expect(parsed.dob[3][1].y).toHaveLength(4)
+    expect(parsed.city).toBe('Austin')
+  })
+
+  it('is not fooled by brackets and escaped quotes inside a string in the object', async () => {
+    const out = await bodyOf(JSON.stringify({ ssn: { note: 'a } ] { "q" 6789' }, city: 'Austin' }))
+    expect(out).not.toContain('6789')
+    expect((JSON.parse(out) as { city: string }).city).toBe('Austin')
+  })
+
+  it('scrambles an object inside doubly encoded JSON and keeps both levels valid', async () => {
+    const out = await bodyOf(JSON.stringify({ payload: JSON.stringify({ ssn: { last4: '6789' }, zip: '73301' }) }))
+    expect(out).not.toContain('6789')
+    const inner = JSON.parse((JSON.parse(out) as { payload: string }).payload) as { ssn: { last4: string }; zip: string }
+    expect(inner.ssn.last4).toHaveLength(4)
+    expect(inner.zip).toBe('73301')
+  })
+
+  it.each([
+    ['a form value', 'ssn=[123456789]&zip=73301', '123456789'],
+    ['prose', 'note dob: {1990-04-12}; zip 73301', '1990-04-12'],
+  ])('still scrambles a bracketed %s whole', async (_label, body, secret) => {
+    const out = await bodyOf(body)
+    expect(out).not.toContain(secret)
+    expect(out).toContain('73301')
+  })
+
+  it.each([
+    ['unclosed objects', '{"ssn":{'.repeat(Math.floor((1024 * 1024) / 8))],
+    ['unclosed strings in lists', '{"dob":["a'.repeat(Math.floor((1024 * 1024) / 10))],
+    ['deep nesting', '{"ssn":' + '['.repeat(1024 * 1024) ],
+  ])('stays linear on 1 MiB of %s', async (_label, body) => {
+    const started = performance.now()
+    await redactCapture({ body }, KEY)
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
 })

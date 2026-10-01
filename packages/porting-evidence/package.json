@@ -10,7 +10,7 @@
     "./instrument": "./src/instrument/index.ts"
   },
   "scripts": {
-    "lint": "eslint \"src/**/*.ts\"",
+    "lint": "eslint \"src/**/*.ts\" && cd ../.. && eslint --config packages/porting-evidence/eslint.config.mjs \"scripts/porting/**/*.ts\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
