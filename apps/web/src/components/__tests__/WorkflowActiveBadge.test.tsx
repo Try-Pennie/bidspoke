@@ -10,8 +10,24 @@ import WorkflowActiveBadge from '../WorkflowActiveBadge'
 describe('WorkflowActiveBadge', () => {
   it('says Inactive, and that it takes no traffic, when the workflow is off', () => {
     render(<WorkflowActiveBadge isActive={false} />)
-    const badge = screen.getByText('Inactive')
+    const badge = screen.getByText('Inactive', { exact: false }).closest('span[title]')!
     expect(badge.getAttribute('title')).toBe('Takes no traffic until it is enabled from the Workflows list')
+  })
+
+  // gray-500 on gray-100 is 4.39:1, under the 4.5:1 small text needs (L149);
+  // gray-700 on gray-100 is 9.37:1.
+  it('draws Inactive in a colour that clears text contrast on its background', () => {
+    render(<WorkflowActiveBadge isActive={false} />)
+    const badge = screen.getByText('Inactive', { exact: false }).closest('span[class]')!
+    expect(badge.className).toContain('bg-gray-100')
+    expect(badge.className).toContain('text-gray-700')
+    expect(badge.className).not.toContain('text-gray-500')
+  })
+
+  // A title is a mouse only tooltip; the explanation must reach a screen reader too (L20).
+  it('gives screen readers the explanation, not only a hover tooltip', () => {
+    render(<WorkflowActiveBadge isActive={false} />)
+    expect(screen.getByText(/takes no traffic until it is enabled from the Workflows list/i, { selector: '.sr-only' })).toBeTruthy()
   })
 
   it('says Active when the workflow is on', () => {
