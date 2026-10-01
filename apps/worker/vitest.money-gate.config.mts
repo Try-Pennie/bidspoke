@@ -1,0 +1,50 @@
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { cloudflareTest } from '@cloudflare/vitest-plugin'
+import { defineConfig } from 'vitest/config'
+import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
+import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
+
+/**
+ * The money gate replay (#1704). Runs the harness in this checkout against the
+ * bidding engine of the checkout named by MONEY_GATE_ENGINE_ROOT (a repository
+ * root; this one by default), so the merge base and the head are driven by the
+ * same fixtures, stubs and recorder and differ only in the engine under test.
+ *
+ *   MONEY_GATE_ENGINE_ROOT  repository root of the side under test
+ *   MONEY_GATE_OUT          where the transcript is written
+ *   MONEY_GATE_SIDE         base or head, recorded in the transcript
+ *
+ * .github/scripts/money-gate.sh runs it twice and compares; see money-gate/README.md.
+ */
+const here = fileURLToPath(new URL('.', import.meta.url))
+const repoRoot = resolve(here, '..', '..')
+const engineRoot = resolve(process.env.MONEY_GATE_ENGINE_ROOT ?? repoRoot)
+const engineWorker = resolve(engineRoot, 'apps', 'worker')
+
+const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS })
+
+export default defineConfig({
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: resolve(engineWorker, 'wrangler.toml') },
+      miniflare: {
+        outboundService: refuseRunnerOutbound,
+        serviceBindings: { GATE_IO: io.handler },
+      },
+    }),
+  ],
+  resolve: {
+    alias: { '@money-gate-engine': resolve(engineWorker, 'src') },
+  },
+  define: {
+    'import.meta.env.MONEY_GATE_SIDE': JSON.stringify(process.env.MONEY_GATE_SIDE ?? 'head'),
+  },
+  server: { fs: { allow: [repoRoot, engineRoot] } },
+  test: {
+    include: ['money-gate/harness/*.workers.test.ts'],
+    testTimeout: 900_000,
+    hookTimeout: 120_000,
+    env: { TZ: 'UTC', LANG: 'en_US.UTF-8' },
+  },
+})

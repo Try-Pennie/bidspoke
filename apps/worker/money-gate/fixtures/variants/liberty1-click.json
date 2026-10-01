@@ -1,0 +1,23 @@
+{
+  "workflow_id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+  "workflow_name": "Liberty1 Click Handler",
+  "common": { "source": "liberty1" },
+  "variants": [
+    { "name": "prospect_sent", "purpose": "an open Liberty1 offer on a prospect: click_send sent, the patches", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" } },
+    { "name": "prospect_refused", "purpose": "Liberty1 refuses the click: refused, the patches", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "refused" } },
+    { "name": "prospect_unreadable", "purpose": "an answer no rule reads: unknown, unresolved response", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "unreadable" } },
+    { "name": "prospect_outage", "purpose": "a 503 from the webhook", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "outage" } },
+    { "name": "prospect_repeat_click_after_sent", "purpose": "a second click after a confirmed send: already_sent, nothing posted", "unset": ["Submission__c"], "prior_runs": 1, "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" } },
+    { "name": "prospect_repeat_click_after_unknown", "purpose": "a second click after a send nobody could read: the claim is in doubt", "unset": ["Submission__c"], "prior_runs": 1, "prior_stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "unreadable" }, "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" } },
+    { "name": "prospect_repeat_click_after_refused", "purpose": "a second click after the buyer refused", "unset": ["Submission__c"], "prior_runs": 1, "prior_stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "refused" }, "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" } },
+    { "name": "prospect_completed", "purpose": "already sold to Liberty1: already sent response", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_completed" } },
+    { "name": "prospect_other_buyer", "purpose": "a prospect routed to another buyer: no offer", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_other_buyer" } },
+    { "name": "prospect_not_found", "purpose": "the query returns nothing: not found", "unset": ["Submission__c"], "stubs": { "salesforce_query": "empty" } },
+    { "name": "submission_trusted", "purpose": "a submission with no prospect is trusted and sent", "unset": ["Prospect__c"], "stubs": { "salesforce_query": "submission_trusted", "liberty1_click": "success" } },
+    { "name": "submission_sold_elsewhere", "purpose": "a submission completed for another buyer: no offer", "unset": ["Prospect__c"], "stubs": { "salesforce_query": "submission_sold_elsewhere" } },
+    { "name": "submission_with_prospect", "purpose": "both ids, agreeing: sent from the prospect", "set": { "Prospect__c": "a0GPROSPECTGATE001" }, "stubs": { "salesforce_query": "submission_with_prospect", "liberty1_click": "success" } },
+    { "name": "submission_not_for_prospect", "purpose": "both ids, disagreeing: refused, nothing sent", "set": { "Prospect__c": "a0GOTHERPROSPECT01" }, "stubs": { "salesforce_query": "submission_with_prospect" } },
+    { "name": "invalid_id", "purpose": "a Prospect__c that is not an id: refused before any query", "set": { "Prospect__c": "not an id" } },
+    { "name": "no_id", "purpose": "no id at all", "unset": ["Prospect__c", "Submission__c"] }
+  ]
+}

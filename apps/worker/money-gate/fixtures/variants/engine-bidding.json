@@ -1,0 +1,42 @@
+{
+  "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+  "workflow_name": "Engine Bidding Workflow",
+  "common": {
+    "source": "engine",
+    "set": {
+      "subAccountUuid": "189b30c2-b93c-42dd-945a-e88246d0362a",
+      "personalInformation.state": "TX",
+      "personalInformation.firstName": "Synthia",
+      "personalInformation.lastName": "Gatekeeper",
+      "loanInformation.loanAmount": 20000,
+      "financialInformation.annualIncome": 85000,
+      "financialInformation.employmentStatus": "employed_full_time",
+      "creditInformation.providedCreditRating": "good"
+    }
+  },
+  "variants": [
+    { "name": "offer_no_sell_off", "purpose": "prospect_trades bids without a sell off: tripoint_ping skips, route_response offer" },
+    { "name": "offer_alt_landing", "purpose": "the alternate landing page and test offer language", "stubs": { "salesforce_prospect_trades": "bid_alt_landing" } },
+    { "name": "offer_unmapped_sub_account", "purpose": "a sub account no partner maps, the default offer", "set": { "subAccountUuid": "00000000-0000-4000-8000-00000000c0de" } },
+    { "name": "tripoint_accepted", "purpose": "sell off sold to Tripoint: offer with Tripoint's facts on the prospect patch", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "accepted" } },
+    { "name": "tripoint_declined", "purpose": "a known no from Tripoint: route_known_no known_no, buyer_click_check", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "declined" } },
+    { "name": "tripoint_declined_click_state", "purpose": "a known no in a state the click buyer takes, with debt in its range", "set": { "personalInformation.state": "FL" }, "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "declined" } },
+    { "name": "tripoint_declined_click_eligible", "purpose": "a known no on a lead inside the click buyer's synthetic debt range: buyer_click_check eligible, the click offer", "set": { "personalInformation.state": "FL", "loanInformation.loanAmount": 10000 }, "stubs": { "salesforce_prospect_trades": "sell_off_debt_10k", "tripoint_create": "declined" } },
+    { "name": "buyer_select_live_sold", "purpose": "buyer_select live at 100 percent: sold through the node, tripoint_ping bypassed", "env": { "BUYER_SELECT_ENGINE_PERCENT": "100" }, "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "accepted" } },
+    { "name": "buyer_select_live_declined", "purpose": "buyer_select live, the buyer declines: no_sale, the known no gate reads the node", "env": { "BUYER_SELECT_ENGINE_PERCENT": "100" }, "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "declined" } },
+    { "name": "buyer_select_live_outage", "purpose": "buyer_select live, the buyer's endpoint fails", "env": { "BUYER_SELECT_ENGINE_PERCENT": "100" }, "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "outage" } },
+    { "name": "tripoint_duplicate", "purpose": "Tripoint answers a duplicate code", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "duplicate" } },
+    { "name": "tripoint_in_progress", "purpose": "1009, not a known no", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "in_progress" } },
+    { "name": "tripoint_null_id_fault", "purpose": "the known 502 glitch, a known no", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "null_id_fault" } },
+    { "name": "tripoint_invalid_data", "purpose": "the 502 invalid data refusal", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "invalid_data" } },
+    { "name": "tripoint_outage", "purpose": "an unknown answer: rejected, never offered to a click buyer", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "outage" } },
+    { "name": "no_bid", "purpose": "engineBid 0: route_response reject", "stubs": { "salesforce_prospect_trades": "no_bid" } },
+    { "name": "equifax_no_trades", "purpose": "a credit report with no trades: missing_credit_check", "stubs": { "equifax_report": "no_trades" } },
+    { "name": "equifax_fraud_alert", "purpose": "fraud alert code L: unqualified_lead", "stubs": { "equifax_report": "fraud_alert_l" } },
+    { "name": "equifax_outage", "purpose": "an Equifax 503: equifax_api_error", "stubs": { "equifax_report": "outage" } },
+    { "name": "no_ssn", "purpose": "a lead without an SSN: the Equifax pull on name and phone", "unset": ["personalInformation.ssn"] },
+    { "name": "ineligible_state", "purpose": "a state outside the constant list: rejected before Salesforce", "set": { "personalInformation.state": "CO" } },
+    { "name": "invalid_name", "purpose": "a name with no letters: rejected", "set": { "personalInformation.firstName": "1", "personalInformation.lastName": "2" } },
+    { "name": "duplicate_prospect", "purpose": "Salesforce refuses the prospect as a duplicate: the expected error response", "stubs": { "salesforce_create": "duplicate_lead" } }
+  ]
+}

@@ -59,6 +59,12 @@
 - All DB access goes through Supabase client, never raw SQL from the Worker
 - RLS is enforced at the DB level — don't replicate org scoping in application code
 - Secrets are injected via Cloudflare Worker secrets, never committed
+- The money gate (`apps/worker/money-gate/`, #1704) replays synthetic leads through the
+  bidding engine at the merge base and the head of every pull request touching it, and
+  fails on any difference in what is sent or decided. A red gate on an intended change
+  must be acknowledged in `apps/worker/money-gate/expected-changes.json` in the same pull
+  request, or both the pull request and the deploy fail. How to read it and refresh its fixtures is
+  in `apps/worker/money-gate/README.md`.
 
 ## Code Standards
 - Prefer TypeScript over JavaScript for all new code

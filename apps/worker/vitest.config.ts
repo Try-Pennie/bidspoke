@@ -24,10 +24,14 @@ function keptCanvasScriptsAsText(): Plugin {
 export default defineConfig({
   plugins: [keptCanvasScriptsAsText()],
   test: {
-    include: ['src/**/*.test.ts'],
+    // money-gate/lib holds the money gate's pure parts and their tests (#1704).
+    include: ['src/**/*.test.ts', 'money-gate/**/*.test.ts'],
     // The Workers test project (vitest.do.config.mts, `pnpm run test:do`) owns
-    // these: they import cloudflare:test and cannot run on Node (#1410).
-    exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts'],
+    // these: they import cloudflare:test and cannot run on Node (#1410). The
+    // money gate's replay (*.workers.test.ts) and verdict (*.gate.test.ts) run only
+    // through .github/scripts/money-gate.sh, which gives them the two engines and
+    // the two transcripts they need.
+    exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts', 'money-gate/**/*.workers.test.ts', 'money-gate/**/*.gate.test.ts'],
     environment: 'node',
     // Worker threads rather than forked child processes (#973). Measured on this
     // suite: 4.14 to 5.45s on forks, 3.16 to 3.36s on threads, over three runs

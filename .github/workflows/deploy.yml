@@ -60,7 +60,8 @@ jobs:
   verify-worker:
     name: Verify (worker tests)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 before the money gate (#1704) added a second install and two replays.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -92,6 +93,16 @@ jobs:
       # in workerd. See the same step in ci.yml.
       - name: Test worker Durable Objects
         run: pnpm --filter worker test:do
+
+      # The money gate (#1704) as a second line: the engine main was at before
+      # this push against the engine it is at now, on every push, whatever the
+      # pull request's own run did. Not keyed on the worker_artifact decision,
+      # which fails open and would also make a needs cycle with verify. See the
+      # money-gate job in ci.yml and apps/worker/money-gate/README.md.
+      - name: Money gate
+        env:
+          MONEY_GATE_BASE: ${{ github.event.before }}
+        run: bash .github/scripts/money-gate.sh "$MONEY_GATE_BASE"
 
   verify-web:
     name: Verify (web tests)

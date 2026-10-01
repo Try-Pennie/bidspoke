@@ -1,0 +1,51 @@
+{
+  "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+  "name": "Delegate Gmail Access for Offboarded Agents",
+  "definition": {
+    "trigger": {
+      "type": "http_webhook",
+      "config": {
+        "method": "POST",
+        "auth_method": "none"
+      }
+    },
+    "nodes": [
+      {
+        "id": "185e9e7f-802a-4b13-ac97-e1688c9e5bdf",
+        "namespace": "delegate_access",
+        "label": "Delegate Access",
+        "type": "code",
+        "position": {
+          "x": 60,
+          "y": 213
+        },
+        "config": {
+          "script": "const agentEmail = payload.agent_email\nconst managerEmail = payload.manager_email\nconst serviceAccountJson = env.GOOGLE_DELEGATION_SA_JSON\n\n// No manager assignment is a valid, expected case. Treat it as success.\nif (!managerEmail) {\n  return {\n    status: 'success',\n    skipped: true,\n    reason: 'no_manager_assignment',\n    agent_email: agentEmail ?? null,\n    manager_email: null,\n    delegation_state: null,\n    timestamp: new Date().toISOString(),\n  }\n}\n\n// Genuinely missing config we can't proceed without. Return instead of throwing.\nif (!agentEmail || !serviceAccountJson) {\n  return {\n    status: 'skipped',\n    skipped: true,\n    reason: 'missing_required_inputs',\n    detail: 'Missing required inputs: payload.agent_email or env.GOOGLE_DELEGATION_SA_JSON',\n    agent_email: agentEmail ?? null,\n    manager_email: managerEmail,\n    delegation_state: null,\n    timestamp: new Date().toISOString(),\n  }\n}\n\nconst sa = JSON.parse(serviceAccountJson)\n\n// --- Build and sign a JWT assertion for domain-wide delegation ---\nconst now = Math.floor(Date.now() / 1000)\nconst header = { alg: 'RS256', typ: 'JWT', kid: sa.private_key_id }\nconst claims = {\n  iss: sa.client_email,\n  sub: agentEmail,\n  scope: 'https://www.googleapis.com/auth/gmail.settings.sharing',\n  aud: 'https://oauth2.googleapis.com/token',\n  iat: now,\n  exp: now + 3600,\n}\n\nconst b64url = (buf) => {\n  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new TextEncoder().encode(buf)\n  let bin = ''\n  for (const b of bytes) bin += String.fromCharCode(b)\n  return btoa(bin).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_')\n}\n\nconst signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`\n\n// Import the SA's PEM-encoded PKCS#8 private key\nconst pem = sa.private_key.replace(/-----(BEGIN|END) PRIVATE KEY-----|\\s/g, '')\nconst keyDer = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0))\nconst key = await crypto.subtle.importKey(\n  'pkcs8',\n  keyDer,\n  { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },\n  false,\n  ['sign'],\n)\n\nconst sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signingInput))\nconst assertion = `${signingInput}.${b64url(sig)}`\n\n// --- Exchange JWT for access token ---\nconst tokenRes = await fetch('https://oauth2.googleapis.com/token', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n  body: new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }),\n})\n\nif (!tokenRes.ok) {\n  return {\n    status: 'error',\n    reason: 'token_exchange_failed',\n    detail: `Token exchange failed ${tokenRes.status}: ${await tokenRes.text()}`,\n    agent_email: agentEmail,\n    manager_email: managerEmail,\n    delegation_state: null,\n    timestamp: new Date().toISOString(),\n  }\n}\nconst { access_token } = await tokenRes.json()\n\n// --- Add the delegate ---\nconst res = await fetch(\n  `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(agentEmail)}/settings/delegates`,\n  {\n    method: 'POST',\n    headers: {\n      Authorization: `Bearer ${access_token}`,\n      'Content-Type': 'application/json',\n    },\n    body: JSON.stringify({ delegateEmail: managerEmail }),\n  },\n)\n\nif (!res.ok) {\n  const errorText = await res.text()\n\n  // 409 \"alreadyExists\" means the delegate is already in place. That's the\n  // desired end state, so treat it as success and keep the workflow going.\n  if (res.status === 409 || errorText.includes('alreadyExists')) {\n    return {\n      status: 'success',\n      skipped: true,\n      reason: 'delegate_already_exists',\n      agent_email: agentEmail,\n      manager_email: managerEmail,\n      delegation_state: 'accepted',\n      timestamp: new Date().toISOString(),\n    }\n  }\n\n  return {\n    status: 'error',\n    reason: 'gmail_api_error',\n    detail: `Gmail API error ${res.status}: ${errorText}`,\n    agent_email: agentEmail,\n    manager_email: managerEmail,\n    delegation_state: null,\n    timestamp: new Date().toISOString(),\n  }\n}\n\nconst result = await res.json()\n\nreturn {\n  status: 'success',\n  skipped: false,\n  agent_email: agentEmail,\n  manager_email: managerEmail,\n  delegation_state: result.verificationStatus,\n  timestamp: new Date().toISOString(),\n}\n"
+        },
+        "variables": {}
+      },
+      {
+        "id": "cb23fa31-0509-40f1-9004-f1a8f4525258",
+        "namespace": "undelegate_access",
+        "label": "Un-delegate access",
+        "type": "code",
+        "position": {
+          "x": 440,
+          "y": 51
+        },
+        "config": {
+          "script": "const agentEmail = payload.agent_email\nconst managerEmail = payload.manager_email\nconst serviceAccountJson = env.GOOGLE_DELEGATION_SA_JSON\n\nif (!agentEmail || !managerEmail || !serviceAccountJson) {\n  throw new Error('Missing required inputs: payload.agent_email, payload.manager_email, env.GOOGLE_DELEGATION_SA_JSON')\n}\n\nconst sa = JSON.parse(serviceAccountJson)\n\nconst now = Math.floor(Date.now() / 1000)\nconst header = { alg: 'RS256', typ: 'JWT', kid: sa.private_key_id }\nconst claims = {\n  iss: sa.client_email,\n  sub: agentEmail,\n  scope: 'https://www.googleapis.com/auth/gmail.settings.sharing',\n  aud: 'https://oauth2.googleapis.com/token',\n  iat: now,\n  exp: now + 3600,\n}\n\nconst b64url = (buf) => {\n  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new TextEncoder().encode(buf)\n  let bin = ''\n  for (const b of bytes) bin += String.fromCharCode(b)\n  return btoa(bin).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_')\n}\n\nconst signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`\n\nconst pem = sa.private_key.replace(/-----(BEGIN|END) PRIVATE KEY-----|\\s/g, '')\nconst keyDer = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0))\nconst key = await crypto.subtle.importKey(\n  'pkcs8',\n  keyDer,\n  { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },\n  false,\n  ['sign'],\n)\n\nconst sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signingInput))\nconst assertion = `${signingInput}.${b64url(sig)}`\n\nconst tokenRes = await fetch('https://oauth2.googleapis.com/token', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n  body: new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }),\n})\n\nif (!tokenRes.ok) {\n  throw new Error(`Token exchange failed ${tokenRes.status}: ${await tokenRes.text()}`)\n}\nconst { access_token } = await tokenRes.json()\n\nconst res = await fetch(\n  `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(agentEmail)}/settings/delegates/${encodeURIComponent(managerEmail)}`,\n  {\n    method: 'DELETE',\n    headers: { Authorization: `Bearer ${access_token}` },\n  },\n)\n\n// Gmail returns 204 No Content on success; 404 if delegate isn't set.\nif (res.status !== 204 && res.status !== 404) {\n  throw new Error(`Gmail API error ${res.status}: ${await res.text()}`)\n}\n\nreturn {\n  agent_email: agentEmail,\n  manager_email: managerEmail,\n  removed: res.status === 204,\n  was_already_absent: res.status === 404,\n  timestamp: new Date().toISOString(),\n}\n"
+        },
+        "variables": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "8e3d0495-c509-4ed0-b98c-56a8d4635b60",
+        "source": "trigger",
+        "target": "185e9e7f-802a-4b13-ac97-e1688c9e5bdf",
+        "source_handle": "output"
+      }
+    ]
+  }
+}
