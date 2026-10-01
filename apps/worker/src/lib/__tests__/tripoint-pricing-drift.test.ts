@@ -228,6 +228,11 @@ describe('tripointPricingDifferences', () => {
   it('refuses a Bidspoke config that is not a single tier, as its own difference', () => {
     const d = tripointPricingDifferences(lead, { pricing_mode: 'custom' })
     expect(d.differences.map((x) => x.code)).toEqual(['config-unreadable'])
+    // Not only a second cutoff refuses: any shape other than one cutoff and two
+    // rates does, so the sentence must not name one cause.
+    expect(d.differences[0].message).toBe(
+      "Bidspoke's Tripoint rates aren't set up as one cutoff with two rates, so this check can't compare them with Salesforce.",
+    )
     const two = tripointPricingDifferences(lead, {
       ...BIDSPOKE_0013,
       tiers: [{ above: 12499, multiplier: 0.0012 }, { above: 30000, multiplier: 0.002 }],

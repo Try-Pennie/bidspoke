@@ -178,7 +178,7 @@ export function tripointPricingDifferences(
   if (cfg === null) {
     differences.push({
       code: 'config-unreadable',
-      message: "Bidspoke's Tripoint rates have more than one cutoff, which this check can't compare with Salesforce.",
+      message: "Bidspoke's Tripoint rates aren't set up as one cutoff with two rates, so this check can't compare them with Salesforce.",
     })
     return { differences, notes }
   }

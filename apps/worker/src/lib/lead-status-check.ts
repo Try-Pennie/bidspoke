@@ -243,13 +243,6 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
 /** A Salesforce id, 15 or 18 characters; the first 15 are the record. */
 const SALESFORCE_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/
 
-/**
- * Splits backlog rows into sales whose Lead still names them (left behind) and
- * sales whose Lead names a later Submission (a returning customer). A Lead
- * naming nothing counts as left behind: nothing shows it moved on. Throws on a
- * row with no readable id, so a changed answer is a refusal, never a smaller
- * backlog (L90).
- */
 export interface BacklogSplit {
   own: number
   returning: number
@@ -260,6 +253,13 @@ export interface BacklogSplit {
   ownLeadStatuses: string[]
 }
 
+/**
+ * Splits backlog rows into sales whose Lead still names them (left behind) and
+ * sales whose Lead names a later Submission (a returning customer). A Lead
+ * naming nothing counts as left behind: nothing shows it moved on. Throws on a
+ * row with no readable id, so a changed answer is a refusal, never a smaller
+ * backlog (L90).
+ */
 export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSplit {
   let own = 0
   let returning = 0
