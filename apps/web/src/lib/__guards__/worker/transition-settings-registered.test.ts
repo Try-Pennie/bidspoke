@@ -21,7 +21,7 @@ import { isRegisteredTransitionSetting } from '../../../../../worker/src/lib/tra
 const REGISTRY_FILE = path.join(WORKER_SRC, 'lib', 'transition-settings.ts')
 
 const PREFIX = /^(porting|rollout|validation)\./
-const FULL_KEY = /^(porting|rollout|validation)\.[a-z0-9_]+$/
+const FULL_KEY = /^(porting|rollout|validation)\.[A-Za-z0-9_.-]+$/
 
 // ── The scanner ───────────────────────────────────────────────────────────────
 
@@ -106,6 +106,11 @@ describe('settingKeyLiterals (the scanner itself)', () => {
 
   it('does not report a joined prefix that is prose, not a key', () => {
     expect(settingKeyLiterals("log('porting. starting ' + n)")).toEqual([])
+  })
+
+  it('finds a key spelled with capitals, hyphens or a second dot', () => {
+    const found = settingKeyLiterals("a('porting.Tee-Enabled'); b('rollout.new.lane')")
+    expect(found.map((f) => f.text)).toEqual(['porting.Tee-Enabled', 'rollout.new.lane'])
   })
 
   it('does not report a key named in a comment', () => {
