@@ -92,7 +92,7 @@ describe('checkTripointPricing', () => {
 
     const remedy = sentRemedy()
     expect(remedy).toBeDefined()
-    expect(remedy?.title).toBe('Tripoint rate mismatch')
+    expect(remedy?.title).toBe("Tripoint rates don't match Salesforce")
     expect(remedy?.fixHint).toMatch(/Partners/)
     expect(remedy?.fixHint).toMatch(/Tripoint/)
     expect(remedy?.fixHint).not.toMatch(/Snowflake availability|export credentials/i)
@@ -120,7 +120,7 @@ describe('checkTripointPricing', () => {
 
     expect(r.differences.map((d) => d.code)).toEqual(['high-multiplier-disagrees'])
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual(['$12,500+ debt: Bidspoke 0.13%, Salesforce 0.12%'])
+    expect(alerted()).toEqual(['For Main Flow leads with $12,500 or more of debt, Bidspoke pays Tripoint 0.13% of the debt, but Salesforce books 0.12%.'])
   })
 
   it('says who last changed the Salesforce formula and when, in Eastern time', async () => {
@@ -132,7 +132,7 @@ describe('checkTripointPricing', () => {
       readFormulaChange: async () => ({ at: '2026-10-01T00:30:00.000+0000', by: 'Daniel Wright' }),
     }))
 
-    expect(sentRemedy()?.context).toBe('Salesforce changed Sep 30 by Daniel Wright.')
+    expect(sentRemedy()?.context).toBe('The Salesforce formula was last changed Sep 30 by Daniel Wright.')
   })
 
   it('still alerts the mismatch when who changed the formula cannot be read, saying only what it knows', async () => {
@@ -141,7 +141,7 @@ describe('checkTripointPricing', () => {
     await checkTripointPricing(env, db.client, seams({
       readFormulaChange: async () => ({ at: '2026-09-30T17:32:20.000+0000', by: null }),
     }))
-    expect(sentRemedy()?.context).toBe('Salesforce changed Sep 30.')
+    expect(sentRemedy()?.context).toBe('The Salesforce formula was last changed Sep 30.')
 
     vi.mocked(notifyExportFailure).mockClear()
     await checkTripointPricing(env, db.client, seams({
@@ -149,7 +149,7 @@ describe('checkTripointPricing', () => {
         throw new Error('Tooling 500')
       },
     }))
-    expect(alerted()).toEqual(['$12,500+ debt: Bidspoke 0.13%, Salesforce 0.12%'])
+    expect(alerted()).toEqual(['For Main Flow leads with $12,500 or more of debt, Bidspoke pays Tripoint 0.13% of the debt, but Salesforce books 0.12%.'])
     expect(sentRemedy()?.context).toBeUndefined()
   })
 
@@ -176,7 +176,7 @@ describe('checkTripointPricing', () => {
     }))
 
     expect(r.differences.map((d) => d.code)).toEqual(['formula-unreadable'])
-    expect(alerted()).toEqual(["Couldn't read the Salesforce formula: Tooling API answered 403 INSUFFICIENT_ACCESS"])
+    expect(alerted()).toEqual(["The check couldn't read the Salesforce formula: Tooling API answered 403 INSUFFICIENT_ACCESS"])
   })
 
   it('treats a formula of an unfamiliar shape as its own finding, quoting what it saw', async () => {
@@ -243,6 +243,6 @@ describe('checkTripointPricing', () => {
     expect(r.differences.map((d) => d.code)).toEqual(['engine-tiers-unreadable'])
     expect(r.engine_tiers).toBeNull()
     expect(r.notes.map((n) => n.code)).not.toContain('engine-tiers-none')
-    expect(alerted()).toEqual(["Couldn't read Tripoint's Engine rates: buyer profiles read failed for org x: timeout"])
+    expect(alerted()).toEqual(["The check couldn't read Tripoint's Engine rates: buyer profiles read failed for org x: timeout"])
   })
 })
