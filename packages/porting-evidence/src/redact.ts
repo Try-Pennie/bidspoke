@@ -291,6 +291,10 @@ function valueAfter(s: string, sep: number, key: KeyBefore): ValueSpan | null {
   }
 
   if (LITERALS.some((word) => wordAt(s, i, word))) return null
+  // An object or a list is not one value to scramble: its own keys and strings
+  // are reached by the rest of the scan, and replacing its opening bracket would
+  // break the JSON.
+  if (s.charCodeAt(i) === 123 || s.charCodeAt(i) === 91) return null
 
   if (key.quoted) {
     JSON_NUMBER.lastIndex = i

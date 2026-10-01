@@ -367,3 +367,17 @@ describe('redactCapture: time is linear in the size of serialised text', () => {
     expect(performance.now() - started).toBeLessThan(1000)
   })
 })
+
+describe('redactCapture: a sensitive key holding an object or a list', () => {
+  it.each([
+    ['an object', { ssn: { last4: '6789', verified: true }, city: 'Austin' }],
+    ['a list', { dob: ['1990', '04', '12'], city: 'Austin' }],
+    ['an empty object', { account_number: {}, city: 'Austin' }],
+  ])('keeps a serialised body that holds %s valid JSON', async (_label, inner) => {
+    const body = JSON.stringify(inner)
+    const { value } = await redactCapture({ body }, KEY)
+    const out = (value as { body: string }).body
+    expect(() => JSON.parse(out) as unknown).not.toThrow()
+    expect((JSON.parse(out) as { city: string }).city).toBe('Austin')
+  })
+})

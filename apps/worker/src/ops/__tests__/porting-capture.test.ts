@@ -199,6 +199,20 @@ describe('storing a capture', () => {
       await bothRead
       return exists ? { key } : null
     })
+    // And both writes arrive before either is applied, so only the store's own
+    // conditional write can keep the first: a handler that writes without onlyIf
+    // overwrites here, whether or not it read first.
+    const realPut = bucket.put.getMockImplementation()!
+    let puts = 0
+    let releasePuts: () => void = () => {}
+    const bothWriting = new Promise<void>((resolve) => { releasePuts = resolve })
+    bucket.put.mockImplementation(async (...args: Parameters<typeof realPut>) => {
+      const turn = ++puts
+      if (turn === 2) releasePuts()
+      await bothWriting
+      if (turn === 2) await Promise.resolve()
+      return realPut(...args)
+    })
     const [a, b] = await Promise.all([
       call(await signedRequest(envelope({ payload: { first: true } }))),
       call(await signedRequest(envelope({ payload: { second: true } }))),
