@@ -204,6 +204,35 @@ describe('custom endpoint cache + gate handling (#316)', () => {
     expect(res.status).toBe(401)
     expect(executeWorkflow).not.toHaveBeenCalled()
   })
+
+  // #1702: the key map is a plain object, so a bracket lookup also finds the
+  // members every object inherits. Each of these names passed auth on a live
+  // partner endpoint and ran its workflow without any real key.
+  describe('a key that only exists on Object.prototype is refused (#1702)', () => {
+    const apiKeyEndpoint = JSON.stringify({ id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true, auth_method: 'api_key' })
+    function envWithKeys(): Env {
+      return { ...envWithCache(apiKeyEndpoint), API_KEY_MAP: JSON.stringify({ sk_real_key: 'tripoint' }) } as unknown as Env
+    }
+
+    it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'isPrototypeOf'])(
+      'answers 401 and runs nothing for X-API-Key: %s',
+      async (name) => {
+        const res = await postTo(envWithKeys(), { 'X-API-Key': name })
+        expect(res.status).toBe(401)
+        expect(await res.json()).toEqual({ error: 'Invalid API key' })
+        expect(executeWorkflow).not.toHaveBeenCalled()
+      }
+    )
+
+    it('still accepts a key the map really holds', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue({
+        executionId: 'x', response: { ok: true }, status: 200, traceId: 't', idempotentReplay: false,
+      } as Awaited<ReturnType<typeof executeWorkflow>>)
+      const res = await postTo(envWithKeys(), { 'X-API-Key': 'sk_real_key' })
+      expect(res.status).toBe(200)
+      expect(executeWorkflow).toHaveBeenCalledTimes(1)
+    })
+  })
 })
 
 // A database outage must not refuse leads whose endpoint record we have already
