@@ -12,6 +12,10 @@
  *   (password, client_secret, api_key, access_token, ...) with a keyed hash;
  * - replaces any string whose SHAPE is a credential (a JWT, a bearer value, a
  *   Stripe, Slack, GitHub or AWS key), whatever the field is called;
+ * - replaces SSN, date of birth and account or routing numbers the same way,
+ *   by field name, plus any formatted SSN in free text and an SSN keyed inside
+ *   serialised text (Dan, 2026-10-01: those three are scrambled; name, address,
+ *   phone and email stay readable for debugging);
  * - treats the ambiguous name `token` (and `key`, `auth`, `signature`) by its
  *   value: a credential shaped value is replaced, a real non credential field
  *   such as a campaign token is kept.
@@ -41,6 +45,17 @@ const CREDENTIAL_EXACT = new Set([
 ])
 const CREDENTIAL_SUFFIXES = ['password', 'secret', 'apikey', 'accesstoken', 'refreshtoken', 'privatekey']
 
+/** The most sensitive personal fields, scrambled like credentials (Dan, 2026-10-01). */
+const SENSITIVE_PERSONAL_EXACT = new Set([
+  'ssn', 'socialsecuritynumber', 'socialsecurity', 'dob', 'dateofbirth', 'birthdate', 'birthday',
+])
+const SENSITIVE_PERSONAL_SUFFIXES = ['accountnumber', 'routingnumber', 'ssn', 'dateofbirth']
+
+/** A formatted SSN anywhere in text. */
+const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
+/** An SSN keyed by name inside serialised text, such as a JSON or form body. */
+const SSN_KEYED = /((?:ssn|social_?security_?number)["']?\s*[:=]\s*["']?)(\d{3}-?\d{2}-?\d{4})/gi
+
 /** Names that are sometimes credentials and sometimes not: judged by value. */
 const AMBIGUOUS = new Set(['token', 'key', 'auth', 'signature', 'sig', 'credential', 'credentials'])
 
@@ -68,6 +83,9 @@ const normalise = (name: string) => name.toLowerCase().replace(/[-_\s]/g, '')
 
 const isCredentialName = (n: string) =>
   CREDENTIAL_EXACT.has(n) || CREDENTIAL_SUFFIXES.some((suffix) => n.endsWith(suffix))
+
+const isSensitivePersonalName = (n: string) =>
+  SENSITIVE_PERSONAL_EXACT.has(n) || SENSITIVE_PERSONAL_SUFFIXES.some((suffix) => n.endsWith(suffix))
 
 const encoder = new TextEncoder()
 
@@ -103,6 +121,14 @@ async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> 
       out = out.replace(m[0], await replaceValue(key, m[0], m[1]))
     }
   }
+  for (const m of [...out.matchAll(SSN_KEYED)]) {
+    changed = true
+    out = out.replace(m[0], m[1] + (await replaceValue(key, m[2], '')))
+  }
+  for (const m of [...out.matchAll(SSN_FORMATTED)]) {
+    changed = true
+    out = out.replace(m[0], await replaceValue(key, m[0], ''))
+  }
   return changed ? out : null
 }
 
@@ -118,7 +144,7 @@ export async function redactCapture(input: unknown, keyHex: string): Promise<Red
   const walk = async (value: unknown, name: string | null): Promise<unknown> => {
     const n = name === null ? null : normalise(name)
 
-    if (n !== null && isCredentialName(n) && value !== null && value !== undefined && value !== '') {
+    if (n !== null && (isCredentialName(n) || isSensitivePersonalName(n)) && value !== null && value !== undefined && value !== '') {
       redactedCount++
       return replaceWhole(key, value)
     }

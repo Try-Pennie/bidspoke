@@ -118,3 +118,53 @@ describe('redactCapture: leaves ordinary data alone', () => {
     await expect(redactCapture({ password: 'x' }, 'not-hex')).rejects.toThrow(/redaction key/)
   })
 })
+
+// Dan, 2026-10-01: SSN, date of birth and account numbers are scrambled like
+// credentials; name, address, phone and email stay readable for debugging.
+describe('redactCapture: the most sensitive personal fields', () => {
+  it.each(['ssn', 'SSN', 'social_security_number', 'socialSecurityNumber', 'dob', 'date_of_birth', 'dateOfBirth', 'birthDate', 'account_number', 'accountNumber', 'bank_account_number', 'routing_number'])(
+    'scrambles the value of %s, keeping its length',
+    async (name) => {
+      const raw = '123-45-6789'
+      const { value, redactedCount } = await redactCapture({ [name]: raw }, KEY)
+      const out = (value as Record<string, string>)[name]
+      expect(out).not.toBe(raw)
+      expect(out).toHaveLength(raw.length)
+      expect(out).not.toContain('6789')
+      expect(redactedCount).toBe(1)
+    },
+  )
+
+  it('scrambles a formatted SSN inside free text, whatever the field is called', async () => {
+    const { value, redactedCount } = await redactCapture({ note: 'applicant 123-45-6789 called' }, KEY)
+    const out = (value as { note: string }).note
+    expect(out).not.toContain('123-45-6789')
+    expect(out.startsWith('applicant ')).toBe(true)
+    expect(out.endsWith(' called')).toBe(true)
+    expect(redactedCount).toBe(1)
+  })
+
+  it('scrambles an unformatted SSN inside a serialised request body', async () => {
+    const body = JSON.stringify({ ssn: '123456789', firstName: 'Ada' })
+    const { value } = await redactCapture({ body }, KEY)
+    const out = (value as { body: string }).body
+    expect(out).not.toContain('123456789')
+    expect(out).toContain('"firstName":"Ada"')
+  })
+
+  it('scrambles the same SSN the same way on both halves of a comparison', async () => {
+    const a = await redactCapture({ ssn: '123456789' }, KEY)
+    const b = await redactCapture({ lead: { SSN: '123456789' } }, KEY)
+    expect((a.value as { ssn: string }).ssn).toBe((b.value as { lead: { SSN: string } }).lead.SSN)
+  })
+
+  it('keeps name, address, phone and email readable', async () => {
+    const input = {
+      firstName: 'Ada', lastName: 'Lovelace', address: '12 Main St', city: 'Austin',
+      state: 'TX', zip: '73301', phone: '512-555-0142', email: 'ada@example.com',
+    }
+    const { value, redactedCount } = await redactCapture(input, KEY)
+    expect(value).toEqual(input)
+    expect(redactedCount).toBe(0)
+  })
+})
