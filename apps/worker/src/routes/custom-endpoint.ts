@@ -27,6 +27,7 @@ import { executeWorkflow } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 import { isNotFoundError } from '../lib/api-error'
+import { sourceForApiKey } from '../lib/api-key-map'
 
 const HOOK_HOST = 'hook.trypennie.dev'
 const CACHE_TTL = 60 // seconds
@@ -162,7 +163,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     } catch {
       return c.json({ error: 'Internal configuration error' }, 500)
     }
-    if (!keyMap[apiKey]) {
+    if (!sourceForApiKey(keyMap, apiKey)) {
       return c.json({ error: 'Invalid API key' }, 401)
     }
   }

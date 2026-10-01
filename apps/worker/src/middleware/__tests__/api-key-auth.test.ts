@@ -51,6 +51,20 @@ describe('apiKeyAuth middleware', () => {
     })
   })
 
+  // #1702: a bracket lookup on the parsed map also finds inherited members,
+  // which are truthy, so these names passed auth and became the run's source.
+  describe('a key that only exists on Object.prototype', () => {
+    it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'isPrototypeOf'])(
+      'returns 401 for X-API-Key: %s and never reaches the handler',
+      async (name) => {
+        const { request } = makeApp(keyMap)
+        const res = await request({ 'X-API-Key': name })
+        expect(res.status).toBe(401)
+        expect(await res.json()).toEqual({ error: 'Invalid API key' })
+      }
+    )
+  })
+
   describe('missing key', () => {
     it('returns 401 when X-API-Key header is absent', async () => {
       const { request } = makeApp(keyMap)

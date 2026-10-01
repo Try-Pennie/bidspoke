@@ -1,6 +1,7 @@
 import type { Context, Next } from 'hono'
 import type { Env } from '../index'
 import { formatErr } from '../lib/format-error'
+import { sourceForApiKey } from '../lib/api-key-map'
 
 export type Variables = { source: string }
 
@@ -23,7 +24,7 @@ export async function apiKeyAuth(c: Context<{ Bindings: Env; Variables: Variable
     return c.json({ error: 'Internal configuration error' }, 500)
   }
 
-  const source = keyMap[apiKey]
+  const source = sourceForApiKey(keyMap, apiKey)
   if (!source) {
     return c.json({ error: 'Invalid API key' }, 401)
   }
