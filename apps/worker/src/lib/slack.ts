@@ -1564,6 +1564,43 @@ export async function sendMatrixSyncFailureAlert(
 }
 
 /**
+ * A titled alert: the title, the findings, an optional context line and an
+ * optional fix, nothing else (Dan, 2026-10-01). The failing since, intermittent
+ * and reminder lines are kept, because they say whether this is a new incident.
+ */
+async function sendTitledAlert(
+  connection: { bot_token: string; default_channel: string },
+  channelOverride: string | null,
+  payload: {
+    title: string
+    errors: string[]
+    context?: string
+    fixHint?: string
+    failingSince?: string
+    intermittentSince?: string
+    repeat?: string
+  },
+): Promise<boolean> {
+  const shown = payload.errors.slice(0, 20)
+  const findings = shown.length === 1 ? shown[0] : shown.map((line) => `• ${line}`).join('\n')
+  const title = payload.repeat ? `${payload.title} (still)` : payload.title
+  const section = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text } })
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    section(payload.context ? `${findings}\n${payload.context}` : findings),
+  ]
+  if (payload.failingSince) blocks.push(section(`*Failing since:* ${easternInstant(payload.failingSince)}.`))
+  else if (payload.intermittentSince) blocks.push(section(`*Last seen:* ${easternInstant(payload.intermittentSince)}, with clean runs since.`))
+  if (payload.fixHint) blocks.push(section(`*Fix:* ${payload.fixHint}`))
+  if (payload.repeat) blocks.push(section(payload.repeat))
+  const channel = channelOverride || connection.default_channel
+  return (await postMessage(connection.bot_token, channel, blocks, title)) !== null
+}
+
+const easternInstant = (iso: string) =>
+  new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(iso))
+
+/**
  * Alert that a Snowflake export reported errors (#412). The export jobs
  * accumulate failures into a returned summary rather than throwing, so a Snowflake
  * outage was previously only console-logged. Rows stay in Supabase (not purged)
@@ -1602,11 +1639,16 @@ export async function sendExportFailureAlert(
     headlineVerb?: string
     /** What the listed items ARE, when "error" is untrue (a finding, a difference). */
     itemNoun?: { one: string; many: string }
+    /** A plain header in place of the job name. With it the alert carries no framing sentence (TitledRemedy). */
+    title?: string
+    /** One line under the findings of a titled alert. */
+    context?: string
   },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
+  if (payload.title) return sendTitledAlert(connection, channelOverride, payload as typeof payload & { title: string })
 
   const lines = payload.errors.slice(0, 20).map((line) => `• ${line}`).join('\n')
   // A failed purge means the rows are ALREADY in Snowflake and only the Supabase
@@ -1640,8 +1682,6 @@ export async function sendExportFailureAlert(
       },
     },
   ]
-  const easternInstant = (iso: string) =>
-    new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(iso))
   if (payload.failingSince) {
     blocks.push({
       type: 'section',

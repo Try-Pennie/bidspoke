@@ -178,8 +178,9 @@ describe('tripointPricingDifferences', () => {
   it('names the one figure that differed for three months, and only that one', () => {
     const d = tripointPricingDifferences(lead, BIDSPOKE_0013)
     expect(d.differences.map((x) => x.code)).toEqual(['high-multiplier-disagrees'])
-    expect(d.differences[0].message).toContain('0.0013')
-    expect(d.differences[0].message).toContain('0.0012')
+    // One line a person can read at a glance (Dan, 2026-10-01): the band, then
+    // the two rates as percentages, Bidspoke first.
+    expect(d.differences[0].message).toBe('$12,500+ debt: Bidspoke 0.13%, Salesforce 0.12%')
   })
 
   it('is silent once Bidspoke prices the high band at 0.0012', () => {
@@ -194,6 +195,15 @@ describe('tripointPricingDifferences', () => {
       default_multiplier: 0.001,
     })
     expect(d.differences.map((x) => x.code).sort()).toEqual(['boundary-disagrees', 'low-multiplier-disagrees'])
+    expect(d.differences.map((x) => x.message).sort()).toEqual([
+      '$10,000 to $12,499 debt: Bidspoke 0.1%, Salesforce 0.09%',
+      'Higher rate starts at: Bidspoke $15,000, Salesforce $12,500',
+    ])
+  })
+
+  it('writes a rate with more digits than two as itself, never rounded into agreement', () => {
+    const d = tripointPricingDifferences(lead, { ...BIDSPOKE_0013, tiers: [{ above: 12499, multiplier: 0.001275 }] })
+    expect(d.differences[0].message).toBe('$12,500+ debt: Bidspoke 0.1275%, Salesforce 0.12%')
   })
 
   it('reports the external partner rule as different on every count, so the two formulas cannot be confused', () => {

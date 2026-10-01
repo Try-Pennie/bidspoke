@@ -113,6 +113,19 @@ describe('notifyExportFailure', () => {
     expect(payload.fixHint).not.toContain('Snowflake')
   })
 
+  it('passes a titled remedy through as its title, context and fix, with no export wording', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const remedy = { title: 'Tripoint rate mismatch', context: 'Salesforce changed Sep 30.', fixHint: 'update whichever is wrong.' }
+
+    await notifyExportFailure(makeSupabase(['org-1']), 'tripoint-pricing-drift', ['x'], undefined, remedy)
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.title).toBe(remedy.title)
+    expect(payload.context).toBe(remedy.context)
+    expect(payload.fixHint).toBe(remedy.fixHint)
+    expect(payload.consequence ?? '').not.toMatch(/exported|Snowflake/i)
+  })
+
   it('does nothing (no Slack lookup) when there are no errors', async () => {
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings export', [], undefined, 'export-job')

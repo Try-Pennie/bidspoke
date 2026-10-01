@@ -509,6 +509,46 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(text).toContain('not exported')
   })
 
+  it('a titled alert is the title, the findings, an optional context line and a short fix, nothing else', async () => {
+    // Dan, 2026-10-01, on the Tripoint pricing alert: "It's so hard to understand
+    // right now". A check that names itself and explains itself buries the one
+    // line that matters under a job slug and two sentences of framing.
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'tripoint-pricing-drift',
+      errors: ['$12,500+ debt: Bidspoke 0.12%, Salesforce 0.13%'],
+      title: 'Tripoint rate mismatch',
+      context: 'Salesforce changed Sep 30 by Daniel Wright.',
+      fixHint: 'update whichever is wrong.',
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch')
+    const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
+    expect(rest).toEqual([
+      '$12,500+ debt: Bidspoke 0.12%, Salesforce 0.13%\nSalesforce changed Sep 30 by Daniel Wright.',
+      '*Fix:* update whichever is wrong.',
+    ])
+    expect(body.text).toBe('Tripoint rate mismatch')
+  })
+
+  it('a titled alert with several findings bullets them, and one with no fix hint has no fix line', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'tripoint-pricing-drift',
+      errors: ['one', 'two'],
+      title: "Tripoint rate check couldn't run",
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
+    expect(rest).toEqual(['• one\n• two'])
+  })
+
+  it('a titled reminder says still in its title', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'tripoint-pricing-drift', errors: ['x'], title: 'Tripoint rate mismatch', repeat: 'Reminder 2.',
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch (still)')
+  })
+
   it('does not call the export nightly (lead sightings runs every 2 hours)', async () => {
     // The header said "Nightly export failed" long after the sightings export
     // moved to a 2-hourly cron (2026-06-29). On 2026-07-09 that made a blip

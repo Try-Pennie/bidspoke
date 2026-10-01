@@ -30,7 +30,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { salesforceGet } from './salesforce-read'
 import { resolveSalesforceCredentialOrg } from './salesforce-creds'
 import {
@@ -48,32 +48,44 @@ import { loadBuyerProfiles } from './buyer-profile-loader'
 export const TRIPOINT_PRICING_JOB = 'tripoint-pricing-drift'
 
 /**
- * What the alert says, in the vocabulary of the place the reader will act
- * (L399). The shared alerter's default sentences are about exported rows and
- * Snowflake, and this check has neither: it compares two settings. True for
- * every line this check can send, because each line names which case it is.
+ * What the alert says (Dan, 2026-10-01: "It's so hard to understand right
+ * now"). A plain title and one line per finding, nothing else. Two titles,
+ * because a mismatch and a check that never compared need different things
+ * done, and a title claiming a mismatch over a refusal would say something the
+ * check did not measure (L11).
  */
-export const TRIPOINT_PRICING_REMEDY: AlertRemedy = {
-  consequence:
-    "Bidspoke's Tripoint price and the Salesforce revenue formula were compared and either disagree or " +
-    'could not be compared. This is about two settings, not data: nothing was sent anywhere and nothing is missing. ' +
-    'The lines below say which case this is:',
-  fixHint:
-    'A multiplier or boundary that disagrees: open Partners, Tripoint, and set the tier-based multiplier to what ' +
-    'the Salesforce formula books, or have the formula changed, whichever is the wrong one. A formula that could ' +
-    'not be read or recognised: the check itself needs attention (the Worker\'s Salesforce credentials, its Tooling ' +
-    'API access, or a rewritten formula); run POST /api/admin/tripoint-pricing-check to see the current answer.',
-  /**
-   * A comparison of two settings that RAN has not failed (#1210), and this one
-   * says so itself, in the words 'nothing was sent anywhere and nothing is
-   * missing'.
-   *
-   * Deliberately not 'found a price that disagrees': this alert also carries the
-   * case where the two could not be compared at all, and a verb claiming a
-   * disagreement would be a statement the check did not measure (L11).
-   */
-  headlineVerb: 'has findings',
-  itemNoun: { one: 'finding', many: 'findings' },
+export const TRIPOINT_PRICING_MISMATCH_REMEDY: TitledRemedy = {
+  title: 'Tripoint rate mismatch',
+  fixHint: 'update whichever is wrong (Partners > Tripoint, or the Salesforce Lead External Revenue formula).',
+}
+
+/** No fix line: the finding itself says what could not be read, and that is where to look. */
+export const TRIPOINT_PRICING_UNREADABLE_REMEDY: TitledRemedy = {
+  title: "Tripoint rate check couldn't run",
+}
+
+/** The differences that are a disagreement between two rules that were both read. Everything else is a refusal. */
+const MISMATCH_CODES = new Set([
+  'boundary-disagrees',
+  'low-multiplier-disagrees',
+  'high-multiplier-disagrees',
+  'floor-disagrees',
+])
+
+/** Who last changed the Salesforce formula, as the alert's context line. */
+export interface FormulaChange {
+  /** Salesforce's LastModifiedDate. */
+  at: string
+  /** The editor's name, or null when it could not be read. */
+  by: string | null
+}
+
+function changedLine(change: FormulaChange | null): string | undefined {
+  if (!change) return undefined
+  const when = new Date(change.at.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'))
+  if (Number.isNaN(when.getTime())) return undefined
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(when)
+  return change.by ? `Salesforce changed ${day} by ${change.by}.` : `Salesforce changed ${day}.`
 }
 
 /** The Salesforce field whose formula books Main Flow Tripoint revenue. */
@@ -100,6 +112,8 @@ export interface TripointPricingDeps {
   readFormula?: () => Promise<string>
   /** Tripoint's enabled profile tiers, or null when no enabled profile exists. Injected for the same reason. */
   readEngineTiers?: () => Promise<PricingTier[] | null>
+  /** When and by whom the formula last changed, for the alert's context line. Injected for the same reason. */
+  readFormulaChange?: () => Promise<FormulaChange | null>
 }
 
 /**
@@ -117,11 +131,12 @@ export async function checkTripointPricing(
       supabase,
       deps.readFormula ?? salesforceFormulaReader(env, supabase),
       deps.readEngineTiers ?? engineTiersReader(env, supabase),
+      deps.readFormulaChange ?? formulaChangeReader(env, supabase),
     )
   } catch (err) {
-    const detail = `the Tripoint pricing check itself failed: ${formatErr(err)}`
+    const detail = `The check itself failed: ${formatErr(err)}`
     console.error(`[tripoint-pricing] ${detail}`)
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], TRIPOINT_PRICING_UNREADABLE_REMEDY)
     return { salesforce: null, engine_tiers: null, differences: [{ code: 'failed', message: detail }], notes: [], alerted: true }
   }
 }
@@ -131,9 +146,9 @@ export async function checkTripointPricing(
  * AN EMPTY LIST IS STILL SENT: `notifyExportFailure` reads no errors as the
  * recovery signal and clears its alert state with it.
  */
-async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
+async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[], remedy: TitledRemedy): Promise<void> {
   try {
-    await notifyExportFailure(supabase, TRIPOINT_PRICING_JOB, messages, env.IDEMPOTENCY, TRIPOINT_PRICING_REMEDY)
+    await notifyExportFailure(supabase, TRIPOINT_PRICING_JOB, messages, env.IDEMPOTENCY, remedy)
   } catch (err) {
     console.error('[tripoint-pricing] could not send its alert:', formatErr(err))
   }
@@ -143,8 +158,9 @@ async function finish(
   supabase: SupabaseClient,
   env: Env,
   result: Omit<TripointPricingCheckResult, 'alerted'>,
+  readFormulaChange: () => Promise<FormulaChange | null>,
 ): Promise<TripointPricingCheckResult> {
-  await alertQuietly(supabase, env, result.differences.map((d) => d.message))
+  await alertQuietly(supabase, env, result.differences.map((d) => d.message), await remedyFor(result.differences, readFormulaChange))
   // Logged on every run including a clean one, so a working check is visible
   // from the outside rather than only heard from when it complains.
   const sf = result.salesforce
@@ -159,8 +175,31 @@ async function finish(
 }
 
 /**
- * The Main Flow half: the legacy config against the Lead formula. Every line it
- * returns is labelled Main Flow, because the Engine half's lines sit beside them.
+ * The mismatch title when every difference is one, with who changed the
+ * formula; the could not run title otherwise. A failed lookup of who changed it
+ * drops only that line, never the alert.
+ */
+async function remedyFor(
+  differences: PricingDifference[],
+  readFormulaChange: () => Promise<FormulaChange | null>,
+): Promise<TitledRemedy> {
+  if (differences.length === 0 || !differences.every((d) => MISMATCH_CODES.has(d.code))) {
+    return TRIPOINT_PRICING_UNREADABLE_REMEDY
+  }
+  let change: FormulaChange | null = null
+  try {
+    change = await readFormulaChange()
+  } catch (err) {
+    console.error('[tripoint-pricing] could not read who last changed the formula:', formatErr(err))
+  }
+  const context = changedLine(change)
+  return context ? { ...TRIPOINT_PRICING_MISMATCH_REMEDY, context } : TRIPOINT_PRICING_MISMATCH_REMEDY
+}
+
+/**
+ * The Main Flow half: the legacy config against the Lead formula. Its notes are
+ * labelled Main Flow, because the Engine notes sit beside them. Its differences
+ * are not: only this rule is ever compared, and they are the alert's lines.
  */
 async function compareMainFlow(
   supabase: SupabaseClient,
@@ -177,7 +216,7 @@ async function compareMainFlow(
     return {
       salesforce: null,
       notes: [],
-      differences: [mf({ code: 'config-unreadable', message: `the Tripoint partner config could not be read: ${formatErr(error)}` })],
+      differences: [{ code: 'config-unreadable', message: `Couldn't read Bidspoke's Tripoint rates: ${formatErr(error)}` }],
     }
   }
   const cfg = (data as { bid_resolver_config?: unknown } | null)?.bid_resolver_config
@@ -186,10 +225,7 @@ async function compareMainFlow(
       salesforce: null,
       notes: [],
       differences: [
-        mf({
-          code: 'config-missing',
-          message: 'no partner_configs row has slug tripoint with a bid_resolver_config, so there is no Bidspoke price to compare',
-        }),
+        { code: 'config-missing', message: 'Bidspoke has no Tripoint rates set' },
       ],
     }
   }
@@ -202,10 +238,7 @@ async function compareMainFlow(
       salesforce: null,
       notes: [],
       differences: [
-        mf({
-          code: 'formula-unreadable',
-          message: `the Salesforce formula behind ${LEAD_REVENUE_FIELD.object}.${LEAD_REVENUE_FIELD.developerName}__c could not be read: ${formatErr(err)}`,
-        }),
+        { code: 'formula-unreadable', message: `Couldn't read the Salesforce formula: ${formatErr(err)}` },
       ],
     }
   }
@@ -216,18 +249,16 @@ async function compareMainFlow(
       salesforce: null,
       notes: [],
       differences: [
-        mf({
+        {
           code: 'formula-unrecognised',
-          message:
-            `the Salesforce formula behind ${LEAD_REVENUE_FIELD.object}.${LEAD_REVENUE_FIELD.developerName}__c no longer has ` +
-            `the two-band shape this check reads, so Bidspoke's price was NOT compared. It reads: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
-        }),
+          message: `The Salesforce formula changed shape and can't be read: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
+        },
       ],
     }
   }
 
   const compared = tripointPricingDifferences(rule, cfg as Record<string, unknown>)
-  return { salesforce: rule, differences: compared.differences.map(mf), notes: compared.notes.map(mf) }
+  return { salesforce: rule, differences: compared.differences, notes: compared.notes.map(mf) }
 }
 
 /** The Engine half: the buyer profile tiers, reported. A failed read is a difference, never an empty note. */
@@ -243,10 +274,7 @@ async function reportEngine(
       engine_tiers: null,
       notes: [],
       differences: [
-        underPopulation('engine', {
-          code: 'engine-tiers-unreadable',
-          message: `Tripoint's buyer profile tiers could not be read, so the Engine rule is not known: ${formatErr(err)}`,
-        }),
+        { code: 'engine-tiers-unreadable', message: `Couldn't read Tripoint's Engine rates: ${formatErr(err)}` },
       ],
     }
   }
@@ -257,6 +285,7 @@ async function runCheck(
   supabase: SupabaseClient,
   readFormula: () => Promise<string>,
   readEngineTiers: () => Promise<PricingTier[] | null>,
+  readFormulaChange: () => Promise<FormulaChange | null>,
 ): Promise<TripointPricingCheckResult> {
   const mainFlow = await compareMainFlow(supabase, readFormula)
   const engine = await reportEngine(readEngineTiers)
@@ -265,7 +294,7 @@ async function runCheck(
     engine_tiers: engine.engine_tiers,
     differences: [...mainFlow.differences, ...engine.differences],
     notes: [...mainFlow.notes, ...engine.notes],
-  })
+  }, readFormulaChange)
 }
 
 /**
@@ -311,5 +340,45 @@ export function salesforceFormulaReader(env: Env, supabase: SupabaseClient): () 
       )
     }
     return formula
+  }
+}
+
+/**
+ * When the Lead formula last changed and who changed it, for the alert. Two
+ * reads: Tooling for the field's LastModifiedById, the data API for that user's
+ * name, since a Tooling CustomField cannot follow the LastModifiedBy
+ * relationship. A name that cannot be read is null, so the line still gives the
+ * day.
+ */
+export function formulaChangeReader(env: Env, supabase: SupabaseClient): () => Promise<FormulaChange | null> {
+  return async () => {
+    const soql =
+      `SELECT LastModifiedDate, LastModifiedById FROM CustomField WHERE TableEnumOrId='${LEAD_REVENUE_FIELD.object}' ` +
+      `AND DeveloperName='${LEAD_REVENUE_FIELD.developerName}'`
+    const body = await salesforceGet<{ records?: Array<{ LastModifiedDate?: unknown; LastModifiedById?: unknown }> }>(
+      env,
+      supabase,
+      `tooling/query?q=${encodeURIComponent(soql)}`,
+      'the Tripoint pricing check',
+    )
+    const record = body.records?.[0]
+    if (typeof record?.LastModifiedDate !== 'string') return null
+    const userId = record.LastModifiedById
+    let by: string | null = null
+    if (typeof userId === 'string' && /^[A-Za-z0-9]{15,18}$/.test(userId)) {
+      try {
+        const user = await salesforceGet<{ records?: Array<{ Name?: unknown }> }>(
+          env,
+          supabase,
+          `query?q=${encodeURIComponent(`SELECT Name FROM User WHERE Id='${userId}'`)}`,
+          'the Tripoint pricing check',
+        )
+        const name = user.records?.[0]?.Name
+        by = typeof name === 'string' && name.trim() ? name : null
+      } catch (err) {
+        console.error('[tripoint-pricing] could not read the name of whoever changed the formula:', formatErr(err))
+      }
+    }
+    return { at: record.LastModifiedDate, by }
   }
 }
