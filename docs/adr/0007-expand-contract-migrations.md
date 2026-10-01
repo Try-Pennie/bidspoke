@@ -10,7 +10,7 @@ Schema and code deploy as two separately-timed actions with no transactional lin
 
 The deploy is two pipelines (`.github/workflows/`):
 
-- **ci.yml** — lint, typecheck, test, and the types-drift guard (the `DB types regenerated with schema migrations` step of the Security scans job, fails a schema-changing migration that didn't regenerate `apps/worker/src/types/database.ts`, #364).
+- **ci.yml**: lint, typecheck, test, and the types-drift guard (the `DB types regenerated with schema migrations` step of the Security scans job, fails a schema-changing migration that didn't regenerate `apps/worker/src/types/database.ts`, #364).
 - **deploy.yml** — a `Verify` job (typecheck/lint/test/docs + a **migration check**) gating path-filtered `Deploy Worker / Pages / Worker Tail` jobs.
 
 The migration check (`Check for unapplied migrations`) runs `supabase migration list --linked` and FAILS if any local migration is unapplied on prod. It has the access token to *list* but not the DB password to *apply*, so the developer applies migrations by hand with `supabase db push`, then re-runs the deploy. That manual ordering is the friction; the correctness risk is the **disagreement window** — the seconds-to-minutes where prod code and prod schema are out of step.
