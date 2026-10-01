@@ -1,0 +1,45 @@
+# bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R).
+#
+# One route, POST /porting/capture/:hashid, receiving the porting recorder's
+# captures from Pipedream. It shares this package's source and dependencies but
+# is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
+# none of the money Worker's (no Supabase key, no partner credentials, no KV, no
+# Durable Objects). The full ops Worker grows from this in plan 0.E.
+#
+# NOT DEPLOYED by anything yet. No CI job deploys it, the bucket below does not
+# exist yet and the master secret is not set. The go-live list is in the pull
+# request for #1705 and in docs/disaster-recovery.md's secret inventory.
+#
+# Deploy by hand, from apps/worker, once the go-live list is done:
+#   npx wrangler deploy --config wrangler.ops.toml
+name = "bidspoke-worker-ops"
+main = "src/ops/index.ts"
+compatibility_date = "2024-09-23"
+account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
+
+# No workers.dev address: the only way in is the route below, once it exists.
+workers_dev = false
+
+# The route is added at go-live, after confirming no webhook_endpoints row uses
+# the `ops` subdomain and adding `ops` to RESERVED_SUBDOMAINS
+# (routes/api/endpoints.ts), because the main Worker's `*.trypennie.dev/*`
+# custom endpoint route would otherwise also claim it. A more specific route
+# wins over the wildcard.
+# routes = [{ pattern = "ops.trypennie.dev/porting/*", zone_name = "trypennie.dev" }]
+
+# Captures, redacted before they are written. A bucket lifecycle rule deletes
+# every object 90 days after it was written (the retention ceiling, plan 0.R);
+# the rule is set on the bucket, not here.
+[[r2_buckets]]
+binding = "PORTING_TEE"
+bucket_name = "bidspoke-porting-tee"
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+# Secrets (set via `wrangler secret put <NAME> --config wrangler.ops.toml`):
+#   PORTING_CAPTURE_MASTER  derives each workflow's capture key (HMAC of the
+#                           hashid) and the redaction key. Cannot be re derived
+#                           if lost: escrow it with the other recovery keys.

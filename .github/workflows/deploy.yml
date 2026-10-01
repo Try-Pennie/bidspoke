@@ -80,6 +80,7 @@ jobs:
           pnpm --filter @bidspoke/script-hygiene test
           pnpm --filter @bidspoke/buyer-profile test
           pnpm --filter @bidspoke/node-types test
+          pnpm --filter @bidspoke/porting-evidence test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the worker guards, which the web leg below

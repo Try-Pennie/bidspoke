@@ -18,6 +18,7 @@
     "@bidspoke/script-hygiene": "workspace:*",
     "@bidspoke/buyer-profile": "workspace:*",
     "@bidspoke/node-types": "workspace:*",
+    "@bidspoke/porting-evidence": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "hono": "^4.13.9"
   },
