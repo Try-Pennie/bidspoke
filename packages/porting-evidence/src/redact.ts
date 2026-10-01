@@ -111,6 +111,13 @@ const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
  *   stays valid and a literal is not mistaken for data;
  * - a JSON number becomes a keyed number of the same length, so the body still
  *   parses;
+ * - an object or list under a quoted JSON key is walked to its matching close
+ *   bracket (strings and escapes respected, at the key's escaping depth; an
+ *   unclosed one runs to the end), and every string value and number inside
+ *   it, at any nesting, is replaced where it sits as above, while its object
+ *   keys, literals and brackets are kept, so its shape stays readable and the
+ *   JSON stays valid. Under a form or prose key a bracket is ordinary text and
+ *   the value is taken whole by the two rules below;
  * - an unquoted form value runs to the next `&` (or the end, or a quote,
  *   backslash or line break, which close the string that holds it);
  * - prose (`ssn: 123456789`, a bare key and a colon) runs to the next comma or
@@ -142,7 +149,6 @@ const AMBIGUOUS = new Set(['token', 'key', 'auth', 'signature', 'sig', 'credenti
  * that is kept. Ordered so the more specific pattern wins.
  */
 const SHAPES: RegExp[] = [
-  /(?<![A-Za-z0-9_-])(eyJ)[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g,
   /(Bearer )[A-Za-z0-9._~+/=-]{8,}/g,
   /(sk_live_|sk_test_|rk_live_|pk_live_)[A-Za-z0-9]{8,}/g,
   /(xox[abprs]-)[A-Za-z0-9-]{10,}/g,
@@ -429,6 +435,41 @@ async function keyedNumber(key: CryptoKey, value: string): Promise<string> {
   return out
 }
 
+/**
+ * Three dot separated runs of token characters, each run taken whole. A run may
+ * only START where the previous character cannot belong to one, and the
+ * lookahead plus backreference takes each run without backtracking into it, so
+ * finding these is linear in the text.
+ */
+const DOTTED_TRIPLE = /(?<![A-Za-z0-9_-])(?=([A-Za-z0-9_-]+))\1\.(?=([A-Za-z0-9_-]{5,}))\2\.(?=([A-Za-z0-9_-]{5,}))\3/g
+
+/**
+ * JWTs, wherever they start: `eyJ` with at least five token characters after
+ * it in the first run, then two more runs of at least five. The `eyJ` may be
+ * glued to the text before it (`tok_eyJ...`, `id-eyJ...`), which a pattern
+ * anchored on the character before `eyJ` misses and a pattern free to start at
+ * any `eyJ` scans quadratically. So whole dotted triples are found linearly and
+ * `eyJ` is looked for inside the first run; the text before it is kept. When a
+ * triple is not a JWT the search resumes at its second run, which may begin
+ * one.
+ */
+async function replaceJwts(s: string, replace: Replacer): Promise<Splice[]> {
+  const splices: Splice[] = []
+  const pattern = new RegExp(DOTTED_TRIPLE.source, 'g')
+  for (let m = pattern.exec(s); m !== null; m = pattern.exec(s)) {
+    const first = m[1]
+    const at = first.indexOf('eyJ')
+    if (at !== -1 && first.length - at - 3 >= 5) {
+      const start = m.index + at
+      const end = m.index + m[0].length
+      splices.push({ start, end, text: await replace(s.slice(start, end), 'eyJ') })
+    } else {
+      pattern.lastIndex = m.index + first.length + 1
+    }
+  }
+  return splices
+}
+
 async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> {
   // One keyed hash per distinct value within a call: a body repeating a value
   // pays for it once.
@@ -450,6 +491,7 @@ async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> 
     changed = true
     out = applySplices(out, splices)
   }
+  pass(await replaceJwts(out, replace))
   for (const shape of SHAPES) pass(await replaceMatches(out, shape, replace))
   pass(await replaceKeyed(out, replace, async (value) => {
     const id = JSON.stringify(['number', value])

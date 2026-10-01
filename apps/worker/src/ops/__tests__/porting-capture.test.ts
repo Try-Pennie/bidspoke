@@ -114,16 +114,20 @@ describe('refusals by name, before any signature work', () => {
 })
 
 describe('signature first', () => {
-  it('refuses an unsigned body and reads, redacts and stores nothing', async () => {
+  it('refuses an unsigned body and parses, redacts and stores nothing', async () => {
     const redact = vi.fn()
-    const { call, bucket } = setup({}, { redact })
+    const { call, bucket, objects } = setup({}, { redact })
     const req = new Request(`https://ops.test/porting/capture/${HASHID}`, { method: 'POST', body: JSON.stringify(envelope()) })
+    const parse = vi.spyOn(JSON, 'parse')
     const res = await call(req)
+    // Read before res.json() below, which parses the refusal itself.
+    expect(parse).not.toHaveBeenCalled()
+    parse.mockRestore()
     expect(res.status).toBe(401)
     expect(await errorOf(res)).toBe('bad_signature')
     expect(redact).not.toHaveBeenCalled()
-    expect(bucket.head).not.toHaveBeenCalled()
     expect(bucket.put).not.toHaveBeenCalled()
+    expect(objects.size).toBe(0)
   })
 
   it("refuses a body signed with another workflow's key", async () => {

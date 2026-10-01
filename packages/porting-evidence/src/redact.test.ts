@@ -75,6 +75,21 @@ describe('redactCapture: credential shapes anywhere', () => {
   })
 })
 
+// Review of #1711: anchoring the JWT shape on what precedes `eyJ` (to keep it
+// linear) stopped catching a JWT glued to a word, an underscore or a hyphen.
+describe('redactCapture: a JWT glued to the text before it', () => {
+  const jwt = fake('eyJhbGciOiJIUzI1NiJ9', '.', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', '.', 'dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+  it.each([['tok_'], ['id-'], ['access_token'], ['x.y.'], ['abcde.fghij.']])('replaces a JWT after %s, keeping what precedes it', async (glue) => {
+    const { value, redactedCount } = await redactCapture({ note: `${glue}${jwt} end` }, KEY)
+    const out = (value as { note: string }).note
+    expect(out.startsWith(`${glue}eyJ`)).toBe(true)
+    expect(out).not.toContain('eyJzdWIiOiIxMjM0NTY3ODkwIn0')
+    expect(out).not.toContain('dozjgNryP4J3')
+    expect(out).toHaveLength(glue.length + jwt.length + 4)
+    expect(redactedCount).toBe(1)
+  })
+})
+
 describe('redactCapture: the ambiguous name token', () => {
   it('preserves a real non credential field named token', async () => {
     const input = { token: 'promo-spring-2026', body: { token: 42 } }
@@ -355,6 +370,8 @@ describe('redactCapture: time is linear in the size of serialised text', () => {
     ['letters', 'a'.repeat(MIB)],
     ['a repeated sensitive word', 'ssn'.repeat(MIB / 4)],
     ['a repeated JWT opening', 'eyJ'.repeat(MIB / 3)],
+    ['dotted runs of JWT openings', ('eyJabcde'.repeat(100) + '.').repeat(Math.floor(MIB / 801))],
+    ['glued JWT openings', 'x_eyJ'.repeat(Math.floor(MIB / 5))],
     ['many sensitive key value pairs', 'ssn=123456789&'.repeat(Math.floor(MIB / 14))],
     ['separators', ':='.repeat(MIB / 2)],
     ['quoted keys with no values', '"date of birth":'.repeat(MIB / 16)],
