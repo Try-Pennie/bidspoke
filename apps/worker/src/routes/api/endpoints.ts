@@ -32,6 +32,9 @@ const PATH_RE = /^\/[a-z0-9\-_/]*$/
 const RESERVED_SUBDOMAINS = new Set([
   'bidspoke', 'worker', 'api', 'app', 'www', 'mail', 'admin',
   'staging', 'dev', 'localhost', 'smtp', 'pop', 'imap', 'ftp',
+  // The ops Worker's host, ops.trypennie.dev (#1706). No endpoint used it when
+  // it was reserved (read only check, 0 of 9 rows on 2026-10-01).
+  'ops',
 ])
 
 function validateSubdomain(sub: string): string | null {

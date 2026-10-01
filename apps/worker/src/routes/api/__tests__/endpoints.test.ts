@@ -250,3 +250,25 @@ describe('PUT /endpoints/:id: zero-row 404, duplicate 409, real DB error 500 (#5
     expect(await res.json()).toEqual(updated)
   })
 })
+
+// ops.trypennie.dev is the ops Worker's host (#1706, plan 0.B and 0.E), so no
+// custom endpoint may claim it. Checked read only before reserving it: no
+// webhook_endpoints row used the subdomain (0 of 9 on 2026-10-01).
+describe('POST /endpoints: the ops subdomain is reserved (#1706)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('refuses ops by name and writes nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: ownWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/endpoints', { subdomain: 'ops', source_name: 'x', workflow_id: 'wf-mine' })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('"ops" is reserved')
+    expect((sb.calls.webhook_endpoints ?? []).filter(([m]) => m === 'insert')).toEqual([])
+  })
+})

@@ -88,7 +88,10 @@ workflows.post('/', async (c) => {
       name: body.name,
       description: body.description ?? null,
       definition: asJson(sanitizeDefinition(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } })),
-      is_active: true,
+      // A new workflow starts switched off (#1706): nothing a caller sends can create
+      // one that takes traffic before a person has switched it on through PATCH,
+      // which is where the unconfigured node and partner safeguards live.
+      is_active: false,
       folder_id: body.folder_id ?? null,
       created_by: userId,
       updated_by: userId,
@@ -120,7 +123,7 @@ workflows.post('/:id/duplicate', async (c) => {
   // Load source (org-scoped)
   const { data: source, error: sourceErr } = await supabase
     .from('workflows')
-    .select('name, description, definition, folder_id, is_active')
+    .select('name, description, definition, folder_id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -128,9 +131,9 @@ workflows.post('/:id/duplicate', async (c) => {
 
   if (sourceErr || !source) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Create the clone. is_active mirrors the source — a clone has no source
-  // assignments or custom endpoints pointing at it, so it can't receive live
-  // traffic regardless until the user wires routing.
+  // Create the clone, always switched off (#1706), whatever the source's state.
+  // A copy of a live workflow is a second definition that could take traffic the
+  // moment anything routes to it, so a person switches it on deliberately.
   const { data: clone, error: createErr } = await supabase
     .from('workflows')
     .insert({
@@ -138,7 +141,7 @@ workflows.post('/:id/duplicate', async (c) => {
       name: `${source.name} (copy)`,
       description: source.description ?? null,
       definition: sanitizeDefinition(source.definition),
-      is_active: source.is_active,
+      is_active: false,
       folder_id: source.folder_id ?? null,
       created_by: userId,
       updated_by: userId,
