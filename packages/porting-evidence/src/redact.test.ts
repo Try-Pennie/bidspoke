@@ -360,6 +360,7 @@ describe('redactCapture: time is linear in the size of serialised text', () => {
     ['quoted keys with no values', '"date of birth":'.repeat(MIB / 16)],
     ['escaped quoted sensitive pairs', '\\"ssn\\":\\"1 2\\",'.repeat(Math.floor(MIB / 16))],
     ['long keys before separators', ('k'.repeat(200) + '=').repeat(Math.floor(MIB / 201))],
+    ['prose keys whose values are rejected', 'dob: unknown '.repeat(Math.floor(MIB / 13))],
   ])('redacts 1 MiB of %s in well under a second', async (_label, body) => {
     const started = performance.now()
     await redactCapture({ body }, KEY)

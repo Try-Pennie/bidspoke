@@ -247,7 +247,7 @@ function keyBefore(s: string, sep: number): KeyBefore | null {
   return j === i ? null : { name: s.slice(j + 1, i + 1), quoted: false }
 }
 
-interface ValueSpan { start: number; end: number; kind: 'text' | 'number' }
+interface ValueSpan { start: number; end: number; kind: 'text' | 'number' | 'skip' }
 
 /** True when `s` holds `word` at `at`, not followed by another key character. */
 const wordAt = (s: string, at: number, word: string) =>
@@ -308,8 +308,12 @@ function valueAfter(s: string, sep: number, key: KeyBefore): ValueSpan | null {
     if (prose && (c === 44 || c === 59)) break
     if (c >= 48 && c <= 57) digit = true
   }
+  const scanned = end
   while (end > i && isPadding(s.charCodeAt(end - 1))) end--
-  if (end === i || (prose && !digit)) return null
+  if (end === i) return null
+  // A prose value with no digit (`dob: unknown`) is kept, and the scan resumes
+  // after it rather than reading the same run again from every later separator.
+  if (prose && !digit) return { start: i, end: scanned, kind: 'skip' }
   return { start: i, end, kind: 'text' }
 }
 
@@ -323,6 +327,10 @@ async function replaceKeyed(s: string, replaceText: Replacer, replaceNumber: (va
     if (key === null || !isSensitivePersonalName(key.name)) continue
     const value = valueAfter(s, i, key)
     if (value === null) continue
+    if (value.kind === 'skip') {
+      i = value.end - 1
+      continue
+    }
     const raw = s.slice(value.start, value.end)
     splices.push({ start: value.start, end: value.end, text: value.kind === 'number' ? await replaceNumber(raw) : await replaceText(raw, '') })
     i = value.end - 1
