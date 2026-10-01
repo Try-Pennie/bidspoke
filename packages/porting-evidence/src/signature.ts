@@ -6,10 +6,15 @@
  * anything. Verification goes through `crypto.subtle.verify`, which compares in
  * constant time, so no caller hand rolls a string comparison of two MACs.
  *
- * Each workflow's key is DERIVED, never stored: HMAC(master, hashid). Pipedream
- * environment variables are workspace wide, so a stored per workflow secret
- * would isolate nothing; deriving lets the receiver hold one master secret and
- * still refuse a signature made with another workflow's key.
+ * Each workflow's key is DERIVED on the receiver: HMAC(master, hashid), so the
+ * receiver holds one master secret rather than a list of keys. What that does
+ * and does not give:
+ * - a key that leaks OUTSIDE Pipedream signs captures for its one workflow
+ *   only, and the receiver refuses it for any other;
+ * - INSIDE the Pipedream workspace there is no isolation. Each derived key is
+ *   stored as a Pipedream environment variable (`PORTING_KEY_<hashid>`), and
+ *   Pipedream environment variables are workspace wide, so any workflow in the
+ *   workspace can read every key and sign as any enrolled workflow.
  */
 
 export const SIGNATURE_HEADER = 'x-porting-signature'

@@ -22,7 +22,11 @@ function fakeBucket() {
   const objects = new Map<string, { body: string; customMetadata?: Record<string, string> }>()
   const bucket = {
     head: vi.fn(async (key: string) => (objects.has(key) ? { key } : null)),
-    put: vi.fn(async (key: string, body: string, opts?: { customMetadata?: Record<string, string> }) => {
+    // Honours R2's conditional write: with onlyIf etagDoesNotMatch '*', an
+    // existing key is left alone and the put answers null.
+    put: vi.fn(async (key: string, body: string, opts?: { customMetadata?: Record<string, string>; onlyIf?: { etagDoesNotMatch?: string } }) => {
+      await Promise.resolve()
+      if (opts?.onlyIf?.etagDoesNotMatch === '*' && objects.has(key)) return null
       objects.set(key, { body, customMetadata: opts?.customMetadata })
       return { key }
     }),
@@ -91,6 +95,14 @@ describe('refusals by name, before any signature work', () => {
     const res = await call(await signedRequest(envelope({ hashid: 'p_STRANGER' }), { hashid: 'p_STRANGER', keyFor: 'p_STRANGER' }))
     expect(res.status).toBe(404)
     expect(await errorOf(res)).toBe('unknown_workflow')
+    expect(objects.size).toBe(0)
+  })
+
+  it('refuses a path segment that is not valid percent encoding, by name', async () => {
+    const { call, objects } = setup()
+    const res = await call(new Request('https://ops.test/porting/capture/p_%E0%A4%A', { method: 'POST', body: '{}' }))
+    expect(res.status).toBe(400)
+    expect(await errorOf(res)).toBe('malformed_hashid')
     expect(objects.size).toBe(0)
   })
 
@@ -163,12 +175,46 @@ describe('storing a capture', () => {
   })
 
   it('never overwrites a capture already stored under the same key', async () => {
-    const { call, bucket } = setup()
+    const { call, objects } = setup()
     expect((await call(await signedRequest(envelope()))).status).toBe(202)
+    const first = [...objects.values()][0].body
     const second = await call(await signedRequest(envelope({ payload: { different: true } })))
     expect(second.status).toBe(200)
     expect(((await second.json()) as { duplicate?: boolean }).duplicate).toBe(true)
-    expect(bucket.put).toHaveBeenCalledTimes(1)
+    expect(objects.size).toBe(1)
+    expect([...objects.values()][0].body).toBe(first)
+  })
+
+  it('keeps the first of two concurrent captures under one key', async () => {
+    const { call, objects, bucket } = setup()
+    // The race a read then write has: both requests read before either writes.
+    // A head call here waits until both have been made; a handler that never
+    // reads first is unaffected.
+    let heads = 0
+    let release: () => void = () => {}
+    const bothRead = new Promise<void>((resolve) => { release = resolve })
+    bucket.head.mockImplementation(async (key: string) => {
+      const exists = objects.has(key)
+      if (++heads === 2) release()
+      await bothRead
+      return exists ? { key } : null
+    })
+    const [a, b] = await Promise.all([
+      call(await signedRequest(envelope({ payload: { first: true } }))),
+      call(await signedRequest(envelope({ payload: { second: true } }))),
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 202])
+    const duplicate = a.status === 200 ? a : b
+    expect(((await duplicate.json()) as { duplicate?: boolean }).duplicate).toBe(true)
+    expect(objects.size).toBe(1)
+    const stored = JSON.parse([...objects.values()][0].body) as { payload: Record<string, boolean> }
+    expect(stored.payload).toEqual(a.status === 202 ? { first: true } : { second: true })
+  })
+
+  it('writes with onlyIf etagDoesNotMatch, so the store refuses an overwrite rather than a prior read', async () => {
+    const { call, bucket } = setup()
+    await call(await signedRequest(envelope()))
+    expect(bucket.put.mock.calls[0][2]).toMatchObject({ onlyIf: { etagDoesNotMatch: '*' } })
   })
 
   it('quarantines an unknown capture version: stored and flagged, never dropped', async () => {

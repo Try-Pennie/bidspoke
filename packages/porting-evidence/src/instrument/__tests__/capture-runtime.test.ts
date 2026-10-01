@@ -190,6 +190,21 @@ describe('what a capture sends', () => {
     expect(envelope(sent[0])).toMatchObject({ kind: 'start', site: 'main/start', event_id: 'evt_123', payload: { body: { score: 1 } } })
   })
 
+  // Review of #1711: the cap compared the text's UTF-16 length with a byte
+  // limit, so text of three byte characters went out at up to three times it,
+  // past the receiver's 1 MiB refusal.
+  it('caps the body in UTF-8 bytes, so multibyte text never exceeds the limit', async () => {
+    const sent = capturing()
+    const maxBytes = 1000
+    const start = await loadStep(instrumentWorkflow(workflow(), { receiverBaseUrl: 'https://ops.test', maxBytes }).workflow.steps[0].uses.code!)
+    const name = '€'.repeat(400)
+    await start.run({ steps: stepsFor({ name }), $: fakeDollar().$ })
+    expect(sent[0].body.byteLength).toBeLessThanOrEqual(maxBytes)
+    const payload = envelope(sent[0]).payload as { truncated?: boolean; bytes?: number }
+    expect(payload.truncated).toBe(true)
+    expect(payload.bytes).toBeGreaterThan(name.length * 3)
+  })
+
   it("runs the error listener: captures this workflow's failed run under its id and ignores other workflows", async () => {
     const sent = capturing()
     const listener = await loadStep(instrumentWorkflow(workflow(), { receiverBaseUrl: 'https://ops.test' }).errorListener.code)

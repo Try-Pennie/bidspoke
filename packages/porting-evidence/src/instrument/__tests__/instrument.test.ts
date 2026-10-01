@@ -140,6 +140,19 @@ describe('instrumentWorkflow: code sites', () => {
     expect(refused).toContainEqual(expect.objectContaining({ step: 'stored', reason: 'exit_alias', line: 2 }))
   })
 
+  // Review of #1711: with a plain identifier for the run's parameter, a respond
+  // reached through it (`ctx.$.respond`) was neither captured nor refused.
+  it('captures a respond reached through a run parameter that is a plain identifier', () => {
+    const wf = fixtureWorkflow()
+    wf.steps = [
+      codeStep('ctxstep', 'export default defineComponent({ async run(ctx) {\n  await ctx.$.respond({ status: 200 })\n  return 1\n} })'),
+    ]
+    const { sites, refused, workflow } = instrumentWorkflow(wf, OPTS)
+    expect(sites).toContainEqual(expect.objectContaining({ step: 'ctxstep', kind: 'responded', how: 'code_call' }))
+    expect(refused.filter((r) => r.step === 'ctxstep')).toEqual([])
+    expect(workflow.steps.find((s) => s.namespace === 'ctxstep')!.uses.code).toMatch(/__portingCapture\(\s*ctx\.steps,\s*["']responded["']/)
+  })
+
   it('skips disabled steps, whose code never runs', () => {
     const wf = fixtureWorkflow()
     wf.steps.push(codeStep('off', 'export default defineComponent({ async run({ $ }) { return $.flow.exit("x") } })', { disabled: true }))
