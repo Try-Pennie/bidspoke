@@ -168,3 +168,33 @@ describe('redactCapture: the most sensitive personal fields', () => {
     expect(redactedCount).toBe(0)
   })
 })
+
+describe('redactCapture: sensitive personal fields inside serialised text', () => {
+  it('scrambles date of birth and account numbers inside a body held as a string', async () => {
+    const body = JSON.stringify({ dob: '1990-04-12', account_number: '000123456789', routingNumber: '021000021', city: 'Austin' })
+    const { value } = await redactCapture({ body }, KEY)
+    const out = (value as { body: string }).body
+    expect(out).not.toContain('1990-04-12')
+    expect(out).not.toContain('000123456789')
+    expect(out).not.toContain('021000021')
+    expect(out).toContain('"city":"Austin"')
+  })
+
+  it('scrambles an SSN and date of birth in doubly encoded JSON', async () => {
+    const inner = JSON.stringify({ ssn: '123456789', date_of_birth: '04/12/1990' })
+    const body = JSON.stringify({ payload: inner })
+    const { value } = await redactCapture({ body }, KEY)
+    const out = (value as { body: string }).body
+    expect(out).not.toContain('123456789')
+    expect(out).not.toContain('04/12/1990')
+  })
+
+  it('scrambles a form encoded body', async () => {
+    const { value } = await redactCapture({ body: 'first=Ada&ssn=123-45-6789&dob=1990-04-12&zip=73301' }, KEY)
+    const out = (value as { body: string }).body
+    expect(out).not.toContain('6789')
+    expect(out).not.toContain('1990-04-12')
+    expect(out).toContain('first=Ada')
+    expect(out).toContain('zip=73301')
+  })
+})

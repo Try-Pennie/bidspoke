@@ -13,8 +13,9 @@
  * - replaces any string whose SHAPE is a credential (a JWT, a bearer value, a
  *   Stripe, Slack, GitHub or AWS key), whatever the field is called;
  * - replaces SSN, date of birth and account or routing numbers the same way,
- *   by field name, plus any formatted SSN in free text and an SSN keyed inside
- *   serialised text (Dan, 2026-10-01: those three are scrambled; name, address,
+ *   by field name, plus any formatted SSN in free text and any of them keyed
+ *   inside serialised text (JSON held as a string, doubly encoded JSON, form
+ *   bodies) (Dan, 2026-10-01: those three are scrambled; name, address,
  *   phone and email stay readable for debugging);
  * - treats the ambiguous name `token` (and `key`, `auth`, `signature`) by its
  *   value: a credential shaped value is replaced, a real non credential field
@@ -53,8 +54,14 @@ const SENSITIVE_PERSONAL_SUFFIXES = ['accountnumber', 'routingnumber', 'ssn', 'd
 
 /** A formatted SSN anywhere in text. */
 const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
-/** An SSN keyed by name inside serialised text, such as a JSON or form body. */
-const SSN_KEYED = /((?:ssn|social_?security_?number)["']?\s*[:=]\s*["']?)(\d{3}-?\d{2}-?\d{4})/gi
+/**
+ * A sensitive personal field keyed by name inside serialised text: a JSON body
+ * held as a string (escaped quotes included, so doubly encoded JSON is caught),
+ * or a form or query string. The key and its separator are kept; the value, up
+ * to the next quote, backslash, ampersand, comma, brace or space, is replaced.
+ */
+const SENSITIVE_KEYED =
+  /((?:ssn|social_?security_?number|social_?security|dob|date_?of_?birth|birth_?date|birthday|(?:bank_?)?account_?number|routing_?number)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)([^"'\\&,}\s]+)/gi
 
 /** Names that are sometimes credentials and sometimes not: judged by value. */
 const AMBIGUOUS = new Set(['token', 'key', 'auth', 'signature', 'sig', 'credential', 'credentials'])
@@ -121,7 +128,7 @@ async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> 
       out = out.replace(m[0], await replaceValue(key, m[0], m[1]))
     }
   }
-  for (const m of [...out.matchAll(SSN_KEYED)]) {
+  for (const m of [...out.matchAll(SENSITIVE_KEYED)]) {
     changed = true
     out = out.replace(m[0], m[1] + (await replaceValue(key, m[2], '')))
   }
