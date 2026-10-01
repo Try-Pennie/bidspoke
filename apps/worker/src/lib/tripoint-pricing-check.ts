@@ -55,8 +55,10 @@ export const TRIPOINT_PRICING_JOB = 'tripoint-pricing-drift'
  * check did not measure (L11).
  */
 export const TRIPOINT_PRICING_MISMATCH_REMEDY: TitledRemedy = {
-  title: 'Tripoint rate mismatch',
-  fixHint: 'update whichever is wrong (Partners > Tripoint, or the Salesforce Lead External Revenue formula).',
+  title: "Tripoint rates don't match Salesforce",
+  fixHint:
+    "Decide which rate is right. If it's Salesforce, change the rate in Bidspoke under Partners > Tripoint. " +
+    "If it's Bidspoke, change the External Revenue formula on the Salesforce Lead.",
 }
 
 /** No fix line: the finding itself says what could not be read, and that is where to look. */
@@ -85,7 +87,9 @@ function changedLine(change: FormulaChange | null): string | undefined {
   const when = new Date(change.at.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'))
   if (Number.isNaN(when.getTime())) return undefined
   const day = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(when)
-  return change.by ? `Salesforce changed ${day} by ${change.by}.` : `Salesforce changed ${day}.`
+  return change.by
+    ? `The Salesforce formula was last changed ${day} by ${change.by}.`
+    : `The Salesforce formula was last changed ${day}.`
 }
 
 /** The Salesforce field whose formula books Main Flow Tripoint revenue. */
@@ -216,7 +220,7 @@ async function compareMainFlow(
     return {
       salesforce: null,
       notes: [],
-      differences: [{ code: 'config-unreadable', message: `Couldn't read Bidspoke's Tripoint rates: ${formatErr(error)}` }],
+      differences: [{ code: 'config-unreadable', message: `The check couldn't read Bidspoke's Tripoint rates: ${formatErr(error)}` }],
     }
   }
   const cfg = (data as { bid_resolver_config?: unknown } | null)?.bid_resolver_config
@@ -225,7 +229,7 @@ async function compareMainFlow(
       salesforce: null,
       notes: [],
       differences: [
-        { code: 'config-missing', message: 'Bidspoke has no Tripoint rates set' },
+        { code: 'config-missing', message: "Bidspoke has no Tripoint rates set, so there's nothing to compare." },
       ],
     }
   }
@@ -238,7 +242,7 @@ async function compareMainFlow(
       salesforce: null,
       notes: [],
       differences: [
-        { code: 'formula-unreadable', message: `Couldn't read the Salesforce formula: ${formatErr(err)}` },
+        { code: 'formula-unreadable', message: `The check couldn't read the Salesforce formula: ${formatErr(err)}` },
       ],
     }
   }
@@ -251,7 +255,7 @@ async function compareMainFlow(
       differences: [
         {
           code: 'formula-unrecognised',
-          message: `The Salesforce formula changed shape and can't be read: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
+          message: `The Salesforce formula has been rewritten in a form the check can't read. It now says: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
         },
       ],
     }
@@ -274,7 +278,7 @@ async function reportEngine(
       engine_tiers: null,
       notes: [],
       differences: [
-        { code: 'engine-tiers-unreadable', message: `Couldn't read Tripoint's Engine rates: ${formatErr(err)}` },
+        { code: 'engine-tiers-unreadable', message: `The check couldn't read Tripoint's Engine rates: ${formatErr(err)}` },
       ],
     }
   }

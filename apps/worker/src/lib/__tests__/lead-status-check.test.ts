@@ -20,7 +20,9 @@ import {
   checkLeadStatus,
   leadStatusQueries,
   LEAD_STATUS_JOB,
-  LEAD_STATUS_REMEDY,
+  LEAD_STATUS_BACKLOG_REMEDY,
+  LEAD_STATUS_BROKEN_REMEDY,
+  LEAD_STATUS_UNCHECKED_REMEDY,
   LEAD_STATUS_PARTNERS,
   type LeadStatusDeps,
 } from '../lead-status-check'
@@ -93,6 +95,13 @@ function deps(answers: Record<string, PartnerAnswers>, extra: Partial<LeadStatus
   return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, ...extra }
 }
 
+type SentRemedy = { title?: string; context?: string; fixHint?: string }
+
+function sentRemedy(): SentRemedy | undefined {
+  const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === LEAD_STATUS_JOB)
+  return call?.[4] as SentRemedy | undefined
+}
+
 function alerted(): string[] {
   return vi
     .mocked(notifyExportFailure)
@@ -129,8 +138,10 @@ describe('leadStatusQueries', () => {
   })
 
   it('covers every partner a Lead can be sold to, and judges only those with a healthy share on record', () => {
-    expect(LEAD_STATUS_PARTNERS.map((p) => p.partner).sort()).toEqual(['AmOne', 'Engine', 'Tripoint'])
-    expect(LEAD_STATUS_PARTNERS.filter((p) => p.judged).map((p) => p.partner).sort()).toEqual(['AmOne', 'Tripoint'])
+    // Liberty1 went live 2026-09-30 and 43 of 43 of that day's sales reached
+    // their Lead, which is the healthy share it is judged by.
+    expect(LEAD_STATUS_PARTNERS.map((p) => p.partner).sort()).toEqual(['AmOne', 'Engine', 'Liberty1', 'Tripoint'])
+    expect(LEAD_STATUS_PARTNERS.filter((p) => p.judged).map((p) => p.partner).sort()).toEqual(['AmOne', 'Liberty1', 'Tripoint'])
   })
 })
 
@@ -146,8 +157,11 @@ describe('checkLeadStatus', () => {
     expect(r.alerted).toBe(true)
     const lines = alerted()
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatch(/^AmOne: 0 of 63/)
-    expect(lines[0]).toContain('4,259')
+    expect(lines[0]).toBe(
+      'Only 0 of 63 AmOne sales on Sep 24 reached their Lead (0%). Normally 97% do, so new sales aren\'t syncing. ' +
+        '4,259 older AmOne sales are also waiting.',
+    )
+    expect(sentRemedy()?.title).toBe(LEAD_STATUS_BROKEN_REMEDY.title)
     expect(r.partners.find((p) => p.partner === 'Engine')).toMatchObject({ submissions_completed: 696, leads_completed: 1, backlog: 73000 })
   })
 
@@ -163,7 +177,9 @@ describe('checkLeadStatus', () => {
     const r = await checkLeadStatus(env, supabase, deps({ Engine: { submissions: new Error('query failed (500)'), leads: 1, backlog: 0 } }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual([expect.stringMatching(/^Engine: .*could not be counted.*500/)])
+    expect(alerted()).toEqual(["The check couldn't count Engine sales in Salesforce: query failed (500)"])
+    expect(sentRemedy()?.title).toBe(LEAD_STATUS_UNCHECKED_REMEDY.title)
+    expect(sentRemedy()?.fixHint).toBeUndefined()
   })
 
   it('sends an empty list when every judged partner is healthy, which is what clears a standing alert', async () => {
@@ -185,14 +201,15 @@ describe('checkLeadStatus', () => {
     const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1035, leads: 1033, backlog: 32 } }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual([expect.stringMatching(/^Tripoint: 32 Completed sales since 2026-07-08/)])
+    expect(alerted()).toEqual(['32 Tripoint sales are marked Completed on their Submission, but their Lead still says something else.'])
+    expect(sentRemedy()).toMatchObject(LEAD_STATUS_BACKLOG_REMEDY)
   })
 
   it('says so when a judged partner had nothing to compare, rather than reading it as agreement', async () => {
     const r = await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()[0]).toMatch(/^AmOne: no .*created on 2026-09-24 reads Completed/)
+    expect(alerted()).toEqual(['Salesforce has no Completed AmOne sales from Sep 24, so there was nothing to compare.'])
   })
 
   it('does not judge a share on too few sales', async () => {
@@ -208,14 +225,14 @@ describe('checkLeadStatus', () => {
     expect(r.partners.find((p) => p.partner === 'Tripoint')?.submissions_completed).toBeNull()
     const lines = alerted()
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatch(/^Tripoint: .*could not be counted.*INVALID_SESSION_ID/)
+    expect(lines[0]).toBe("The check couldn't count Tripoint sales in Salesforce: query failed (401): INVALID_SESSION_ID")
   })
 
   it('still judges the day when only the backlog count fails, and says the backlog is unknown', async () => {
     const r = await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 600, leads: 590, backlog: new Error('timeout') } }))
 
     expect(r.partners.find((p) => p.partner === 'AmOne')?.backlog).toBeNull()
-    expect(alerted()).toEqual([expect.stringMatching(/^AmOne: .*backlog/)])
+    expect(alerted()).toEqual(["The check couldn't count older AmOne sales waiting on their Lead: timeout"])
   })
 
   it('never throws, even when the alerter itself fails', async () => {
@@ -230,11 +247,11 @@ describe('checkLeadStatus', () => {
     const r = await checkLeadStatus(env, supabase, deps({}, { listPartners: async () => [
         { partner: 'Tripoint', n: 1035 },
         { partner: 'Engine', n: 696 },
-        { partner: 'Liberty1', n: 12 },
+        { partner: 'Acme', n: 12 },
       ] }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual([expect.stringMatching(/^Liberty1: 12 sales created on 2026-09-24 read Completed, and this check does not cover/)])
+    expect(alerted()).toEqual(["Salesforce had 12 Acme sales on Sep 24, but this check doesn't cover Acme yet, so their Leads weren't checked."])
   })
 
   it('does not report sales with no partner, which have no Lead partner to compare', async () => {
@@ -249,7 +266,7 @@ describe('checkLeadStatus', () => {
       } }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual([expect.stringMatching(/partners .*could not be listed.*503/)])
+    expect(alerted()).toEqual(["The check couldn't list which partners had sales on Sep 24, so a new partner would go unnoticed: query failed (503)"])
   })
 
   it('asks for the partners sold to over the same UTC day it judges', async () => {
@@ -265,14 +282,16 @@ describe('checkLeadStatus', () => {
   // Measured 2026-09-29: of Tripoint's 56 backlog sales, 53 have a Lead whose
   // current Submission is a later visit by the same customer, so no backfill of
   // this sale can change that Lead (#1525). Only the other 3 were left behind.
-  it('leaves out a sale whose Lead has moved on to a later Submission, and says how many were left out', async () => {
+  it('leaves out a sale whose Lead has moved on to a later Submission', async () => {
     const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1046, leads: 1046, backlog: { own: 3, returning: 53 } } }))
 
     expect(r.partners.find((p) => p.partner === 'Tripoint')).toMatchObject({ backlog: 3, backlog_returning: 53 })
     const lines = alerted()
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatch(/^Tripoint: 3 Completed sales since 2026-07-08/)
-    expect(lines[0]).toMatch(/53 more .*later Submission/)
+    expect(lines[0]).toMatch(/^3 Tripoint sales are marked Completed/)
+    // Returning customers never change, so naming them in the alert only adds a
+    // number nobody can act on; the result still carries it.
+    expect(lines[0]).not.toContain('53')
   })
 
   it('clears when the only sales left are returning customers, since no backfill can change them', async () => {
@@ -309,35 +328,63 @@ describe('checkLeadStatus', () => {
     }))
 
     expect(r.partners.find((p) => p.partner === 'AmOne')?.backlog).toBeNull()
-    expect(alerted()).toEqual([expect.stringMatching(/^AmOne: the backlog .*could not be counted/)])
+    expect(alerted()).toEqual([expect.stringMatching(/^The check couldn't count older AmOne sales waiting on their Lead: /)])
   })
 
-  // The 2026-09-29 alert said Tripoint's sales created on 09-28 "are carrying
-  // over" on a day that synced 1,046 of 1,046. A healthy day says so instead.
-  it('on a healthy day, says the day synced and that the backlog is older sales for a backfill', async () => {
+  it('names when the waiting sales were made and what their Leads say instead, from the rows themselves', async () => {
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+        ? [
+            { Id: 'a04Ui00000MnrZZIAZ', CreatedDate: '2026-09-21T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: 'a04Ui00000MnrZZIAZ', External_Exchange_Status__c: 'Pending' } },
+            { Id: 'a04Ui00000MzB6jIAF', CreatedDate: '2026-09-25T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: 'a04Ui00000MzB6jIAF', External_Exchange_Status__c: 'Fail' } },
+            { Id: 'a04Ui00000N55GLIAZ', CreatedDate: '2026-09-28T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: 'a04Ui00000N55GLIAZ', External_Exchange_Status__c: 'Pending' } },
+          ]
+        : []),
+    }))
+
+    expect(alerted()).toEqual([
+      '3 Tripoint sales from Sep 21 to Sep 28 are marked Completed on their Submission, but their Lead still says Pending or Fail.',
+    ])
+  })
+
+  it('writes one waiting sale in the singular, on its one day', async () => {
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY).backlog
+        ? [{ Id: 'a04Ui00000MnrZZIAZ', CreatedDate: '2026-09-21T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: null, External_Exchange_Status__c: 'Pending' } }]
+        : []),
+    }))
+
+    expect(alerted()).toEqual(['1 AmOne sale from Sep 21 is marked Completed on its Submission, but its Lead still says Pending.'])
+  })
+
+  it('asks for the date and the Lead status of each waiting sale', () => {
+    const q = leadStatusQueries('Tripoint', DAY).backlog
+    expect(q).toMatch(/^SELECT Id, CreatedDate, Lead__r\.Submission_Object_ID__c, Lead__r\.External_Exchange_Status__c FROM/)
+  })
+
+  it('says what a Lead that disagrees costs, once, beside the findings', async () => {
     await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1046, leads: 1046, backlog: 3 } }))
 
-    const [line] = alerted()
-    expect(line).not.toMatch(/carrying over/)
-    expect(line).toMatch(/1,046 of 1,046 sales created on 2026-09-24 did reach the Lead/)
-    expect(line).toMatch(/backfill/)
+    expect(sentRemedy()?.context).toBe('Until a Lead says Completed, its External Revenue shows $0 for that sale.')
   })
 
-  // AmOne on 2026-09-28: 0 of 55. That is the ongoing copy broken, which no
-  // backfill fixes, and the alert has to say which of the two it is.
-  it('on a failing day, says new sales are not reaching the Lead, which a backfill alone does not fix', async () => {
-    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 55, leads: 0, backlog: 248 } }))
-
-    const [line] = alerted()
-    expect(line).toMatch(/^AmOne: 0 of 55 sales created on 2026-09-24 have a Lead reading Completed \(0%\)/)
-    expect(line).toMatch(/new sales are not reaching the Lead/)
-    expect(line).toMatch(/248/)
+  it('a backlog alone asks for each sale to be checked; a broken day asks for the Salesforce copy to be fixed', async () => {
+    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/real sale/)
+    expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/Salesforce/)
+    expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/backfill/)
+    for (const r of [LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY]) {
+      expect(`${r.title} ${r.fixHint ?? ''}`).not.toMatch(/Snowflake|exported|__c|#\d|apps\//)
+    }
   })
 
-  it('tells the reader this is Salesforce and that Submission based reporting is right', () => {
-    expect(LEAD_STATUS_REMEDY.consequence).toMatch(/ExternalRevenue__c/)
-    expect(LEAD_STATUS_REMEDY.consequence).toMatch(/Submission__c/)
-    expect(LEAD_STATUS_REMEDY.consequence).not.toMatch(/Snowflake|exported/i)
-    expect(LEAD_STATUS_REMEDY.fixHint).toMatch(/lead-status-check/)
+  it('a broken day outranks a backlog elsewhere in the same run, so the fix names the copy', async () => {
+    await checkLeadStatus(env, supabase, deps({
+      AmOne: { submissions: 55, leads: 0, backlog: 248 },
+      Tripoint: { submissions: 1046, leads: 1046, backlog: 3 },
+    }))
+
+    expect(sentRemedy()?.title).toBe(LEAD_STATUS_BROKEN_REMEDY.title)
+    expect(sentRemedy()?.fixHint).toBe(LEAD_STATUS_BROKEN_REMEDY.fixHint)
+    expect(alerted()).toHaveLength(2)
   })
 })

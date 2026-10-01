@@ -40,7 +40,7 @@ import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
 import { TRIPOINT_PRICING_MISMATCH_REMEDY, TRIPOINT_PRICING_UNREADABLE_REMEDY } from '../tripoint-pricing-check'
 import { TRIPOINT_DUPLICATE_CODES_REMEDY } from '../tripoint-duplicate-codes-check'
-import { LEAD_STATUS_REMEDY } from '../lead-status-check'
+import { LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY } from '../lead-status-check'
 import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export-schema-check'
 import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
@@ -72,7 +72,6 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
   ['tripoint duplicate codes', TRIPOINT_DUPLICATE_CODES_REMEDY],
-  ['lead status', LEAD_STATUS_REMEDY],
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
   ['export schema unreadable', EXPORT_SCHEMA_UNREADABLE_REMEDY],
   ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
@@ -101,6 +100,9 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
 const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
   ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
+  ['lead status backlog', LEAD_STATUS_BACKLOG_REMEDY],
+  ['lead status broken', LEAD_STATUS_BROKEN_REMEDY],
+  ['lead status unchecked', LEAD_STATUS_UNCHECKED_REMEDY],
 ]
 
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']

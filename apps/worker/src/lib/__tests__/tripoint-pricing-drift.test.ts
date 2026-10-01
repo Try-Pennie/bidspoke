@@ -178,9 +178,9 @@ describe('tripointPricingDifferences', () => {
   it('names the one figure that differed for three months, and only that one', () => {
     const d = tripointPricingDifferences(lead, BIDSPOKE_0013)
     expect(d.differences.map((x) => x.code)).toEqual(['high-multiplier-disagrees'])
-    // One line a person can read at a glance (Dan, 2026-10-01): the band, then
-    // the two rates as percentages, Bidspoke first.
-    expect(d.differences[0].message).toBe('$12,500+ debt: Bidspoke 0.13%, Salesforce 0.12%')
+    // A full sentence a person can read at a glance (Dan, 2026-10-01): which
+    // leads, then the two rates as percentages, Bidspoke first.
+    expect(d.differences[0].message).toBe('For Main Flow leads with $12,500 or more of debt, Bidspoke pays Tripoint 0.13% of the debt, but Salesforce books 0.12%.')
   })
 
   it('is silent once Bidspoke prices the high band at 0.0012', () => {
@@ -196,14 +196,14 @@ describe('tripointPricingDifferences', () => {
     })
     expect(d.differences.map((x) => x.code).sort()).toEqual(['boundary-disagrees', 'low-multiplier-disagrees'])
     expect(d.differences.map((x) => x.message).sort()).toEqual([
-      '$10,000 to $12,499 debt: Bidspoke 0.1%, Salesforce 0.09%',
-      'Higher rate starts at: Bidspoke $15,000, Salesforce $12,500',
+      'Bidspoke starts paying Tripoint the higher rate at $15,000 of debt, but Salesforce starts at $12,500.',
+      'For Main Flow leads with $10,000 to $12,499 of debt, Bidspoke pays Tripoint 0.1% of the debt, but Salesforce books 0.09%.',
     ])
   })
 
   it('writes a rate with more digits than two as itself, never rounded into agreement', () => {
     const d = tripointPricingDifferences(lead, { ...BIDSPOKE_0013, tiers: [{ above: 12499, multiplier: 0.001275 }] })
-    expect(d.differences[0].message).toBe('$12,500+ debt: Bidspoke 0.1275%, Salesforce 0.12%')
+    expect(d.differences[0].message).toBe('For Main Flow leads with $12,500 or more of debt, Bidspoke pays Tripoint 0.1275% of the debt, but Salesforce books 0.12%.')
   })
 
   it('reports the external partner rule as different on every count, so the two formulas cannot be confused', () => {
