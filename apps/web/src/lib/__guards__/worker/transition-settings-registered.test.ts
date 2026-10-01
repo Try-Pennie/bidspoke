@@ -45,7 +45,13 @@ function settingKeyLiterals(src: string, fileName = 'source.ts'): KeyRead[] {
   const lineOf = (node: ts.Node) => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
   const visit = (node: ts.Node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-      if (FULL_KEY.test(node.text)) out.push({ line: lineOf(node), text: node.text, dynamic: false })
+      // `'porting.' + lane`: the literal is the left of a join, so the key it
+      // starts is built at run time, and no registry can vouch for it (#1715 review).
+      const parent = node.parent
+      const joinedOn = ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken && parent.left === node
+      if (joinedOn && /^(porting|rollout|validation)\.[a-z0-9_]*$/.test(node.text)) {
+        out.push({ line: lineOf(node), text: `${node.text}\${}`, dynamic: true })
+      } else if (FULL_KEY.test(node.text)) out.push({ line: lineOf(node), text: node.text, dynamic: false })
     } else if (ts.isTemplateExpression(node)) {
       // The head is the text before the first substitution: `porting.${x}` has
       // head "porting.", which no registry can resolve.
@@ -88,6 +94,18 @@ describe('settingKeyLiterals (the scanner itself)', () => {
     const found = settingKeyLiterals('read(`porting.${lane}_enabled`)')
     expect(found).toHaveLength(1)
     expect(found[0].dynamic).toBe(true)
+  })
+
+  it('reports a key built by joining a prefix to a variable as dynamic', () => {
+    for (const src of ["read('porting.' + lane)", "read('rollout.' + lane + '_enabled')", 'read("validation.money_" + mode)']) {
+      const found = settingKeyLiterals(src)
+      expect(found, src).toHaveLength(1)
+      expect(found[0].dynamic, src).toBe(true)
+    }
+  })
+
+  it('does not report a joined prefix that is prose, not a key', () => {
+    expect(settingKeyLiterals("log('porting. starting ' + n)")).toEqual([])
   })
 
   it('does not report a key named in a comment', () => {
