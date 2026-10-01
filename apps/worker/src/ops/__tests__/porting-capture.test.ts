@@ -1,0 +1,229 @@
+/**
+ * POST /porting/capture/:hashid on the ops Worker (#1705).
+ *
+ * Caller: Pipedream capture steps only, each signing with its workflow's
+ * derived key. The order is the contract: refuse an unset master or unknown
+ * workflow by name, verify the signature before anything else is read or
+ * counted, quarantine an unknown capture version rather than drop it, redact
+ * before any write and refuse the write if redaction throws, never log a body
+ * or an error message, and never overwrite a stored capture.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deriveWorkflowKey, signBody } from '@bidspoke/porting-evidence'
+import { createOpsHandler, type OpsEnv } from '../index'
+import type { PortingRegistry } from '../porting-registry'
+
+const MASTER = 'ops-test-master-secret'
+const HASHID = 'p_ENROLLED'
+const NOW = Date.UTC(2026, 9, 1, 12, 0, 0)
+
+/** An in memory stand in for the R2 bucket, recording every write. */
+function fakeBucket() {
+  const objects = new Map<string, { body: string; customMetadata?: Record<string, string> }>()
+  const bucket = {
+    head: vi.fn(async (key: string) => (objects.has(key) ? { key } : null)),
+    put: vi.fn(async (key: string, body: string, opts?: { customMetadata?: Record<string, string> }) => {
+      objects.set(key, { body, customMetadata: opts?.customMetadata })
+      return { key }
+    }),
+  }
+  return { bucket, objects }
+}
+
+const registry: PortingRegistry = {
+  enrolled: { [HASHID]: { name: 'Fixture flow', enrolledOn: '2026-10-01' } },
+  currentCaptureVersions: [1],
+}
+
+const envelope = (over: Record<string, unknown> = {}) => ({
+  v: 1,
+  hashid: HASHID,
+  event_id: 'evt_abc123',
+  kind: 'terminal',
+  site: 'main/end',
+  seq: '1759320000000.0.k3j2h1',
+  sent_at: new Date(NOW).toISOString(),
+  prior_failures: 0,
+  payload: { lead: { email: 'a@example.test' }, headers: { Authorization: 'Bearer sekrit-value-123456' }, password: 'hunter2hunter2' },
+  ...over,
+})
+
+async function signedRequest(body: unknown, opts: { hashid?: string; keyFor?: string; rawBody?: string } = {}) {
+  const text = opts.rawBody ?? JSON.stringify(body)
+  const bytes = new TextEncoder().encode(text)
+  const key = await deriveWorkflowKey(MASTER, opts.keyFor ?? HASHID)
+  return new Request(`https://ops.test/porting/capture/${opts.hashid ?? HASHID}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-porting-signature': await signBody(key, bytes) },
+    body: bytes,
+  })
+}
+
+let logs: string[] = []
+beforeEach(() => {
+  logs = []
+  vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void logs.push(a.map((x) => JSON.stringify(x)).join(' ')))
+  vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void logs.push(a.map((x) => JSON.stringify(x)).join(' ')))
+  vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => void logs.push(a.map((x) => JSON.stringify(x)).join(' ')))
+})
+afterEach(() => vi.restoreAllMocks())
+
+function setup(over: Partial<OpsEnv> = {}, deps: Parameters<typeof createOpsHandler>[0] extends infer D ? Partial<D> : never = {}) {
+  const { bucket, objects } = fakeBucket()
+  const env = { PORTING_CAPTURE_MASTER: MASTER, PORTING_TEE: bucket as unknown as R2Bucket, ...over } as OpsEnv
+  const handler = createOpsHandler({ registry, now: () => NOW, ...deps })
+  return { env, bucket, objects, call: (req: Request) => handler(req, env) }
+}
+
+const errorOf = async (res: Response) => ((await res.json()) as { error?: string }).error
+
+describe('refusals by name, before any signature work', () => {
+  it('refuses when the master secret is unset', async () => {
+    const { call, objects } = setup({ PORTING_CAPTURE_MASTER: undefined })
+    const res = await call(await signedRequest(envelope()))
+    expect(res.status).toBe(503)
+    expect(await errorOf(res)).toBe('master_secret_unset')
+    expect(objects.size).toBe(0)
+  })
+
+  it('refuses a workflow that is not enrolled', async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope({ hashid: 'p_STRANGER' }), { hashid: 'p_STRANGER', keyFor: 'p_STRANGER' }))
+    expect(res.status).toBe(404)
+    expect(await errorOf(res)).toBe('unknown_workflow')
+    expect(objects.size).toBe(0)
+  })
+
+  it('answers 404 for any other path and 405 for any other method', async () => {
+    const { call } = setup()
+    expect((await call(new Request('https://ops.test/porting/other', { method: 'POST' }))).status).toBe(404)
+    expect((await call(new Request(`https://ops.test/porting/capture/${HASHID}`, { method: 'GET' }))).status).toBe(405)
+  })
+})
+
+describe('signature first', () => {
+  it('refuses an unsigned body and reads, redacts and stores nothing', async () => {
+    const redact = vi.fn()
+    const { call, bucket } = setup({}, { redact })
+    const req = new Request(`https://ops.test/porting/capture/${HASHID}`, { method: 'POST', body: JSON.stringify(envelope()) })
+    const res = await call(req)
+    expect(res.status).toBe(401)
+    expect(await errorOf(res)).toBe('bad_signature')
+    expect(redact).not.toHaveBeenCalled()
+    expect(bucket.head).not.toHaveBeenCalled()
+    expect(bucket.put).not.toHaveBeenCalled()
+  })
+
+  it("refuses a body signed with another workflow's key", async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope(), { keyFor: 'p_OTHER' }))
+    expect(res.status).toBe(401)
+    expect(objects.size).toBe(0)
+  })
+
+  it('refuses an oversized body by name, reading no further than the limit', async () => {
+    const { call, objects } = setup()
+    const big = 'x'.repeat(2 * 1024 * 1024)
+    const res = await call(await signedRequest(null, { rawBody: JSON.stringify(envelope({ payload: big })) }))
+    expect(res.status).toBe(413)
+    expect(await errorOf(res)).toBe('body_too_large')
+    expect(objects.size).toBe(0)
+  })
+
+  it('refuses a signed body that is not JSON, after the signature passed', async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(null, { rawBody: 'not json' }))
+    expect(res.status).toBe(400)
+    expect(await errorOf(res)).toBe('malformed_body')
+    expect(objects.size).toBe(0)
+  })
+
+  it('refuses a body naming a different workflow than its path', async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope({ hashid: 'p_OTHER' })))
+    expect(res.status).toBe(400)
+    expect(await errorOf(res)).toBe('hashid_mismatch')
+    expect(objects.size).toBe(0)
+  })
+})
+
+describe('storing a capture', () => {
+  it('writes the redacted capture at tee/<hashid>/<event_id>/<kind>/<seq>.json', async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope()))
+    expect(res.status).toBe(202)
+    const key = `tee/${HASHID}/evt_abc123/terminal/1759320000000.0.k3j2h1.json`
+    expect([...objects.keys()]).toEqual([key])
+    const stored = JSON.parse(objects.get(key)!.body) as Record<string, unknown>
+    expect(stored).toMatchObject({ event_id: 'evt_abc123', kind: 'terminal', site: 'main/end', v: 1, quarantined: false, received_at: new Date(NOW).toISOString() })
+    expect(stored.redacted_count).toBe(2)
+    expect(JSON.stringify(stored)).not.toContain('sekrit-value')
+    expect(JSON.stringify(stored)).not.toContain('hunter2')
+    expect((stored.payload as { lead: unknown }).lead).toEqual({ email: 'a@example.test' })
+  })
+
+  it('never overwrites a capture already stored under the same key', async () => {
+    const { call, bucket } = setup()
+    expect((await call(await signedRequest(envelope()))).status).toBe(202)
+    const second = await call(await signedRequest(envelope({ payload: { different: true } })))
+    expect(second.status).toBe(200)
+    expect(((await second.json()) as { duplicate?: boolean }).duplicate).toBe(true)
+    expect(bucket.put).toHaveBeenCalledTimes(1)
+  })
+
+  it('quarantines an unknown capture version: stored and flagged, never dropped', async () => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope({ v: 7 })))
+    expect(res.status).toBe(202)
+    const [key] = [...objects.keys()]
+    expect(key).toBe(`quarantine/${HASHID}/evt_abc123/terminal/1759320000000.0.k3j2h1.json`)
+    expect(objects.get(key)!.customMetadata).toMatchObject({ quarantined: 'unknown_capture_version' })
+    expect(JSON.stringify(objects.get(key)!.body)).not.toContain('hunter2')
+  })
+
+  it.each([
+    ['a missing event id', { event_id: null }],
+    ['an event id that is not a safe key segment', { event_id: '../../etc' }],
+    ['an unknown kind', { kind: 'finished' }],
+    ['an unsafe sequence', { seq: 'a/b' }],
+  ])('quarantines %s under a safe key rather than dropping it', async (_label, over) => {
+    const { call, objects } = setup()
+    const res = await call(await signedRequest(envelope(over)))
+    expect(res.status).toBe(202)
+    const [key] = [...objects.keys()]
+    expect(key).toMatch(new RegExp(`^quarantine/${HASHID}/[A-Za-z0-9_-]+/[a-z_]+/[A-Za-z0-9._-]+\\.json$`))
+  })
+
+  it('refuses the write, by name, when redaction throws', async () => {
+    const { call, objects } = setup({}, { redact: vi.fn(async () => { throw new Error('boom with hunter2 inside') }) })
+    const res = await call(await signedRequest(envelope()))
+    expect(res.status).toBe(500)
+    expect(await errorOf(res)).toBe('redaction_failed')
+    expect(objects.size).toBe(0)
+    expect(logs.join('\n')).toContain('redaction_failed')
+  })
+
+  it('refuses by name when the bucket write fails, and says nothing of the error', async () => {
+    const { call, bucket } = setup()
+    bucket.put.mockRejectedValueOnce(new Error('r2 down with hunter2'))
+    const res = await call(await signedRequest(envelope()))
+    expect(res.status).toBe(503)
+    expect(await errorOf(res)).toBe('store_failed')
+  })
+})
+
+describe('logging', () => {
+  it('never logs a body, a payload value or an error message', async () => {
+    const { call, bucket } = setup()
+    await call(await signedRequest(envelope()))
+    bucket.put.mockRejectedValueOnce(new Error('r2 down with hunter2'))
+    await call(await signedRequest(envelope({ seq: '2.0.x' })))
+    await call(await signedRequest(null, { rawBody: '{"password":"hunter2hunter2"' }))
+    const all = logs.join('\n')
+    expect(logs.length).toBeGreaterThan(0)
+    expect(all).not.toContain('hunter2')
+    expect(all).not.toContain('sekrit')
+    expect(all).not.toContain('a@example.test')
+    expect(all).not.toContain('r2 down')
+  })
+})
