@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { scanForPersonalData } from '../fixture-scan'
 import { generatePayload } from '../generate'
 import { RULES } from '../stub-rules'
+import { parseExpectedChanges } from '../expected-changes'
 import type { ShapesFile } from '../shape'
 import type { ConfigSnapshot } from '../snapshot'
 import { resolveVariant, type VariantFile } from '../../harness/replay-env'
@@ -46,6 +47,11 @@ describe('committed money gate fixtures', () => {
         expect({ id, findings: scanForPersonalData(generatePayload(shape, { seed: id, set: variant.set, unset: variant.unset })) }).toEqual({ id, findings: [] })
       }
     }
+  })
+
+  it('expected-changes.json parses, and every entry in it names a workflow, a check and a reason', () => {
+    const parsed = parseExpectedChanges(readFileSync(join(fixtures, '..', 'expected-changes.json'), 'utf8'))
+    expect(parsed.failures).toEqual([])
   })
 
   it('every live workflow in the shapes has a committed definition, and every definition a shape', () => {

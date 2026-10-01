@@ -84,8 +84,12 @@ export function createGateIo(opts: GateIoOptions) {
 
   async function hostBundles(bundles: Array<{ name: string; script: string }>): Promise<void> {
     if (mf) await mf.dispose()
-    const { Miniflare, convert } = await loadMiniflare()
+    mf = null
     names = new Set(bundles.map((b) => b.name))
+    // No code to host: the replay goes on, and the verdict fails by name if it
+    // turns out nothing was replayed at all, rather than this failing obliquely.
+    if (bundles.length === 0) return
+    const { Miniflare, convert } = await loadMiniflare()
     mf = new Miniflare(convert({
       workers: bundles.map((b) => ({
         name: b.name,

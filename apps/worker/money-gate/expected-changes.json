@@ -1,0 +1,4 @@
+{
+  "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over, excuses nothing, and should be deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
+  "entries": []
+}

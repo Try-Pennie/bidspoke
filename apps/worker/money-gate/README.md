@@ -65,9 +65,35 @@ environment or `.dev.vars`, and the `gh` CLI for the definitions backup.
 
 The first difference of each check is the place to start. A route difference
 names the node; an outbound difference names the node that sent the request (the
-code chain, or the engine step running at the time) and the body field. If the
-change was meant, say so in the pull request: the gate compares against the merge
-base, so it goes green on its own once the change is on main.
+code chain, or the engine step running at the time) and the body field.
+
+If the change is meant, the gate does NOT go green on its own: the pull request
+compares the merge base with the head, and the push to main compares the commit
+before with the one after, so the same difference fails both. Acknowledge it in
+`expected-changes.json`, in the same pull request:
+
+```json
+{ "entries": [
+  { "workflow": "Main Flow", "check": "outbound_request", "node": "bid_race",
+    "field": "* body.unsecuredDebt", "reason": "Tripoint no longer takes the debt field, agreed on the call of 2026-10-01" }
+] }
+```
+
+`workflow` is the name the fixtures carry, `check` one of the checks above,
+`node` and `field` are patterns where `*` matches anything (the node may be left
+out), and `reason` says in words why. The rules (`lib/expected-changes.ts`):
+
+* An entry excuses a difference only when it is new in this change: present at
+  the head and absent, in exactly that form, at the merge base. So it counts on
+  the pull request and again on the push to main, and never after.
+* Every excused difference still prints, marked excused with its reason.
+* A new entry that matches no difference fails the gate by name: an excuse for a
+  change that did not happen is a defect.
+* Once merged, an entry is carried over: it excuses nothing, the verdict lists it
+  as inert, and it can be deleted in any later pull request.
+
+The gate also fails, by name, when it checked nothing: a transcript with no
+workflow or no fixture, or a committed definition the head did not replay.
 
 ## Known limits
 

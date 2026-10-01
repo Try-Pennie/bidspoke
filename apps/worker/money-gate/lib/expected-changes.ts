@@ -1,0 +1,113 @@
+/**
+ * Acknowledged differences (#1704): how a pull request that MEANS to change what
+ * the bidding engine sends or decides gets through the money gate.
+ *
+ * apps/worker/money-gate/expected-changes.json lists each expected difference by
+ * workflow, check, node and field pattern, with a written reason. An entry excuses
+ * a difference only when it is NEW in this change: present at the head and absent,
+ * in exactly that form, at the merge base. So an excuse counts in the change that
+ * adds it (on the pull request, and again on the push to main, whose base is the
+ * commit before), and from then on it is carried over and excuses nothing, which
+ * means it can never mask a later pull request.
+ *
+ * A new entry that matches no difference fails the gate by name: an excuse for a
+ * change that did not happen is a defect (a typo in the pattern, or a change that
+ * was reverted). A carried over entry is inert and is listed so it can be deleted.
+ */
+import { CHECKS, type Check, type Difference } from './compare'
+
+export interface ExpectedChange {
+  /** Workflow name, as the fixture ids carry it (`Main Flow`). */
+  workflow: string
+  check: Check
+  /** Node pattern; absent matches any node. `*` matches any run of characters. */
+  node?: string
+  /** Field pattern, `*` for any run of characters, matched against the whole field. */
+  field: string
+  /** Why this difference is intended, in words. */
+  reason: string
+}
+
+const MIN_REASON = 10
+
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v)
+}
+
+function globToRegex(pattern: string): RegExp {
+  return new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`)
+}
+
+function describeEntry(e: ExpectedChange): string {
+  return `${e.workflow} ${e.check}${e.node !== undefined ? ` node ${e.node}` : ''} field ${JSON.stringify(e.field)}`
+}
+
+/** Parses the file, refusing malformed entries by name rather than skipping them. A missing file is no entries. */
+export function parseExpectedChanges(text: string | null): { entries: ExpectedChange[]; failures: string[] } {
+  if (text === null) return { entries: [], failures: [] }
+  let doc: unknown
+  try {
+    doc = JSON.parse(text)
+  } catch {
+    return { entries: [], failures: ['expected-changes.json does not parse as JSON'] }
+  }
+  const raw = (doc as { entries?: unknown })?.entries
+  if (!Array.isArray(raw)) return { entries: [], failures: ['expected-changes.json has no entries array'] }
+  const entries: ExpectedChange[] = []
+  const failures: string[] = []
+  raw.forEach((e: Partial<ExpectedChange>, i) => {
+    const problems: string[] = []
+    if (typeof e?.workflow !== 'string' || !e.workflow) problems.push('no workflow')
+    if (!(CHECKS as readonly string[]).includes(String(e?.check))) problems.push(`unknown check ${JSON.stringify(e?.check)}`)
+    if (typeof e?.field !== 'string' || !e.field) problems.push('no field pattern')
+    if (e?.node !== undefined && typeof e.node !== 'string') problems.push('a node that is not a string')
+    // A reason must start with a word and say something (L675).
+    if (typeof e?.reason !== 'string' || !/^[A-Za-z]/.test(e.reason) || e.reason.trim().length < MIN_REASON) problems.push('no written reason')
+    if (problems.length) failures.push(`expected-changes.json entry ${i}: ${problems.join(', ')}`)
+    else entries.push(e as ExpectedChange)
+  })
+  return { entries, failures }
+}
+
+function matches(e: ExpectedChange, d: Difference): boolean {
+  return d.fixture.startsWith(`${e.workflow}/`) &&
+    d.check === e.check &&
+    (e.node === undefined || (d.node !== undefined && globToRegex(e.node).test(d.node))) &&
+    globToRegex(e.field).test(d.field)
+}
+
+export function applyExpectedChanges(
+  diffs: Difference[],
+  headEntries: ExpectedChange[],
+  baseEntries: ExpectedChange[],
+): {
+  excused: Array<{ diff: Difference; entry: ExpectedChange }>
+  unexcused: Difference[]
+  carriedOver: ExpectedChange[]
+  failures: string[]
+} {
+  const atBase = new Set(baseEntries.map(canonical))
+  const fresh = headEntries.filter((e) => !atBase.has(canonical(e)))
+  const carriedOver = headEntries.filter((e) => atBase.has(canonical(e)))
+  const used = new Set<ExpectedChange>()
+  const excused: Array<{ diff: Difference; entry: ExpectedChange }> = []
+  const unexcused: Difference[] = []
+  for (const d of diffs) {
+    const e = fresh.find((x) => matches(x, d))
+    if (e) {
+      used.add(e)
+      excused.push({ diff: d, entry: e })
+    } else {
+      unexcused.push(d)
+    }
+  }
+  const failures = fresh.filter((e) => !used.has(e)).map((e) => `expected change for ${describeEntry(e)} matched no difference; remove it or fix its pattern`)
+  return { excused, unexcused, carriedOver, failures }
+}
+
+export { describeEntry }

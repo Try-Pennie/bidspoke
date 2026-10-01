@@ -26,6 +26,13 @@ if [ -z "$BASE" ]; then
   echo "::error::money gate: no base commit was given, so there is nothing to compare the head with"
   exit 1
 fi
+# github.event.before is all zeros on the first push of a branch and after some
+# forced pushes. There is no previous commit to compare with, so say so by name
+# rather than failing inside git fetch with a message about something else.
+if [[ "$BASE" =~ ^0+$ ]]; then
+  echo "::error::money gate: the base commit is all zeros (a first push or a forced push), so there is no previous engine to compare with; run the gate by hand against the commit main was at, .github/scripts/money-gate.sh <commit>"
+  exit 1
+fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 WORK="${RUNNER_TEMP:-$(mktemp -d)}/money-gate"
@@ -65,7 +72,10 @@ run_side base "$BASE_TREE"
 
 echo "money gate: comparing base with head"
 set +e
+# The merge base's expected-changes.json: an entry excuses a difference only when it
+# is new at the head, so the verdict needs the base's copy (absent there is fine).
 (cd "$ROOT/apps/worker" && MONEY_GATE_BASE="$WORK/base.json" MONEY_GATE_HEAD="$WORK/head.json" MONEY_GATE_VERDICT_OUT="$WORK/verdict.txt" \
+  MONEY_GATE_EXPECTED_BASE="$BASE_TREE/apps/worker/money-gate/expected-changes.json" \
   pnpm exec vitest run --config vitest.money-gate-verdict.config.mts > "$WORK/verdict-run.log" 2>&1)
 status=$?
 set -e
@@ -82,6 +92,8 @@ if grep -q '^warning: the fixture shapes are' "$WORK/verdict.txt"; then
   echo "::warning::$(grep -m1 '^warning: the fixture shapes are' "$WORK/verdict.txt")"
 fi
 if [ "$status" -ne 0 ]; then
-  echo "::error::money gate: $(grep -m1 '^money gate: [0-9]* difference\|executed no node' "$WORK/verdict.txt" || echo 'the verdict failed')"
+  # The first reason the verdict gave, of any kind, so the annotation names it.
+  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no)))' "$WORK/verdict.txt" || true)"
+  echo "::error::${reason:-money gate: the verdict failed}"
 fi
 exit "$status"

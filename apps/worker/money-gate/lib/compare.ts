@@ -60,9 +60,12 @@ export interface Transcript {
   unsupported_queries?: string[]
 }
 
-export type Check =
-  | 'fixture_set' | 'error' | 'golden_trigger' | 'route' | 'nodes_executed' | 'final_node' | 'response'
-  | 'outbound_request' | 'code_namespace' | 'supabase_write' | 'do_state' | 'kv_state'
+export const CHECKS = [
+  'fixture_set', 'error', 'golden_trigger', 'route', 'nodes_executed', 'final_node', 'response',
+  'outbound_request', 'code_namespace', 'supabase_write', 'do_state', 'kv_state',
+] as const
+
+export type Check = (typeof CHECKS)[number]
 
 export interface Difference {
   fixture: string
