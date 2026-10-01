@@ -10,7 +10,8 @@
  * check read this list, and the doc table in the plan describes it rather than
  * being the source (L41).
  *
- * The scan in __tests__/transition-settings.test.ts fails on any read of a
+ * The scan in apps/web/src/lib/__guards__/worker/transition-settings-registered.test.ts
+ * (with the other Worker source guards) fails on any read of a
  * `porting.*`, `rollout.*` or `validation.*` key in the Worker or a workspace
  * package that is not declared here, and on any such key built from a variable,
  * so a lane cannot be added outside this list (L96).

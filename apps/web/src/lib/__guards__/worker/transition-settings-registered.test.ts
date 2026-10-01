@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 import { REPO_ROOT, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
 import { isRegisteredTransitionSetting } from '../../../../../worker/src/lib/transition-settings'
 
@@ -28,67 +29,34 @@ interface KeyRead { line: number; text: string; dynamic: boolean }
 
 /**
  * Every string literal in a source file whose content starts with one of the
- * three prefixes. Comments are skipped, because a sentence ABOUT a key is not a
- * read of it (L103). A template literal that builds the key from a variable is
- * reported as dynamic, because no registry can vouch for a key it cannot see.
- * A literal that starts with a prefix but is prose (a message that begins with
- * the key and carries on) is not a key and is not reported.
+ * three prefixes. The file is parsed by the TypeScript compiler, so comments,
+ * regex literals and division are told apart from strings by the same grammar
+ * the build uses; a hand rolled character scan cannot, and a quote inside a
+ * regex once shifted every later literal in the file out of view (review of
+ * #1715). A comment is never a read, because a sentence ABOUT a key is not one
+ * (L103). A template literal that builds the key from a variable is reported as
+ * dynamic, because no registry can vouch for a key it cannot see. A literal that
+ * starts with a prefix but is prose (a message that begins with the key and
+ * carries on) is not a key and is not reported.
  */
-function settingKeyLiterals(src: string): KeyRead[] {
+function settingKeyLiterals(src: string, fileName = 'source.ts'): KeyRead[] {
   const out: KeyRead[] = []
-  let i = 0
-  let line = 1
-  const n = src.length
-  while (i < n) {
-    const ch = src[i]
-    if (ch === '\n') { line++; i++; continue }
-    if (ch === '/' && src[i + 1] === '/') {
-      while (i < n && src[i] !== '\n') i++
-      continue
-    }
-    if (ch === '/' && src[i + 1] === '*') {
-      i += 2
-      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { if (src[i] === '\n') line++; i++ }
-      i += 2
-      continue
-    }
-    if (ch === '\'' || ch === '"' || ch === '`') {
-      const quote = ch
-      const startLine = line
-      let text = ''
-      let dynamic = false
-      i++
-      while (i < n && src[i] !== quote) {
-        if (src[i] === '\\') { text += src[i + 1] ?? ''; i += 2; continue }
-        if (quote === '`' && src[i] === '$' && src[i + 1] === '{') {
-          dynamic = true
-          let depth = 1
-          i += 2
-          while (i < n && depth > 0) {
-            if (src[i] === '{') depth++
-            else if (src[i] === '}') depth--
-            else if (src[i] === '\n') line++
-            i++
-          }
-          text += '${}'
-          continue
-        }
-        if (src[i] === '\n') line++
-        text += src[i]
-        i++
+  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  const lineOf = (node: ts.Node) => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
+  const visit = (node: ts.Node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      if (FULL_KEY.test(node.text)) out.push({ line: lineOf(node), text: node.text, dynamic: false })
+    } else if (ts.isTemplateExpression(node)) {
+      // The head is the text before the first substitution: `porting.${x}` has
+      // head "porting.", which no registry can resolve.
+      const head = node.head.text
+      if (PREFIX.test(head) && /^(porting|rollout|validation)\.[a-z0-9_]*$/.test(head)) {
+        out.push({ line: lineOf(node), text: `${head}\${}${node.templateSpans.map((sp) => sp.literal.text).join('${}')}`, dynamic: true })
       }
-      i++
-      if (PREFIX.test(text)) {
-        if (dynamic && /^(porting|rollout|validation)\.[a-z0-9_]*\$\{\}/.test(text)) {
-          out.push({ line: startLine, text, dynamic: true })
-        } else if (FULL_KEY.test(text)) {
-          out.push({ line: startLine, text, dynamic: false })
-        }
-      }
-      continue
     }
-    i++
+    ts.forEachChild(node, visit)
   }
+  visit(sf)
   return out
 }
 
@@ -130,6 +98,24 @@ describe('settingKeyLiterals (the scanner itself)', () => {
     expect(settingKeyLiterals('throw new Error(`porting.recording_enabled has no value before ${t}`)')).toEqual([])
   })
 
+  // A quote inside a regex literal is not a string start. Read character by
+  // character it is, and everything after it on the file shifts: the key below
+  // was then read as code and the guard went silent on it (review of #1715).
+  it('still finds a key after a regex literal holding a quote', () => {
+    const found = settingKeyLiterals("const q = /'/g\nexport const k = read('porting.unregistered_lane')\n")
+    expect(found.map((f) => [f.line, f.text])).toEqual([[2, 'porting.unregistered_lane']])
+  })
+
+  it('still finds a key after a regex literal holding a backtick, and after a division', () => {
+    const src = 'const t = /`/\nconst half = total / 2\nconst k = "rollout.unregistered_lane"\n'
+    expect(settingKeyLiterals(src).map((f) => f.text)).toEqual(['rollout.unregistered_lane'])
+  })
+
+  it('finds a key used inside a template expression', () => {
+    const found = settingKeyLiterals('const m = `value ${read(\'validation.unregistered_lane\')}`')
+    expect(found.map((f) => f.text)).toEqual(['validation.unregistered_lane'])
+  })
+
   it('does not report an unrelated dotted string', () => {
     expect(settingKeyLiterals("import x from './porting-registry'; const k = 'validationErrors'")).toEqual([])
   })
@@ -148,7 +134,7 @@ describe('every setting key read is in the registry', () => {
     const offenders: string[] = []
     for (const file of scannedRoots().flatMap(sourceFiles)) {
       if (file === REGISTRY_FILE) continue
-      for (const read of settingKeyLiterals(readFileSync(file, 'utf8'))) {
+      for (const read of settingKeyLiterals(readFileSync(file, 'utf8'), file)) {
         const where = `${path.relative(REPO_ROOT, file)}:${read.line}`
         if (read.dynamic) offenders.push(`${where} builds a setting key from a variable: ${read.text}`)
         else if (!isRegisteredTransitionSetting(read.text)) offenders.push(`${where} reads ${read.text}, which is not in lib/transition-settings.ts`)
