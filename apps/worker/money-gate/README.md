@@ -86,6 +86,9 @@ out), and `reason` says in words why. The rules (`lib/expected-changes.ts`):
 * An entry excuses a difference only when it is new in this change: present at
   the head and absent, in exactly that form, at the merge base. So it counts on
   the pull request and again on the push to main, and never after.
+  The script hands the verdict the merge base's copy, or git's word that the file
+  does not exist there; a copy that was not handed over, cannot be read or does
+  not parse fails the gate by name rather than counting as empty.
 * Every excused difference still prints, marked excused with its reason.
 * A new entry that matches no difference fails the gate by name: an excuse for a
   change that did not happen is a defect.

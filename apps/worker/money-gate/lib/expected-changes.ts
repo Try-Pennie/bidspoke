@@ -14,7 +14,7 @@
  * change that did not happen is a defect (a typo in the pattern, or a change that
  * was reverted). A carried over entry is inert and is listed so it can be deleted.
  */
-import { CHECKS, type Check, type Difference } from './compare'
+import { CHECKS, canonical, type Check, type Difference } from './compare'
 
 export interface ExpectedChange {
   /** Workflow name, as the fixture ids carry it (`Main Flow`). */
@@ -29,15 +29,6 @@ export interface ExpectedChange {
 }
 
 const MIN_REASON = 10
-
-function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`
-  if (v && typeof v === 'object') {
-    return `{${Object.keys(v).sort().filter((k) => (v as Record<string, unknown>)[k] !== undefined)
-      .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}`
-  }
-  return JSON.stringify(v)
-}
 
 function globToRegex(pattern: string): RegExp {
   return new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`)
@@ -98,16 +89,32 @@ export function applyExpectedChanges(
   const excused: Array<{ diff: Difference; entry: ExpectedChange }> = []
   const unexcused: Difference[] = []
   for (const d of diffs) {
-    const e = fresh.find((x) => matches(x, d))
-    if (e) {
-      used.add(e)
-      excused.push({ diff: d, entry: e })
-    } else {
-      unexcused.push(d)
-    }
+    // Every matching entry is credited, so two overlapping entries both count as used.
+    const matching = fresh.filter((x) => matches(x, d))
+    for (const e of matching) used.add(e)
+    if (matching.length) excused.push({ diff: d, entry: matching[0] })
+    else unexcused.push(d)
   }
   const failures = fresh.filter((e) => !used.has(e)).map((e) => `expected change for ${describeEntry(e)} matched no difference; remove it or fix its pattern`)
   return { excused, unexcused, carriedOver, failures }
 }
 
 export { describeEntry }
+
+/**
+ * What money-gate.sh hands the verdict for the merge base's copy: the path of the
+ * file, or this marker when git confirmed the file does not exist at the base
+ * commit (the change that first adds it). Anything else fails by name, never as
+ * "the base had no entries", which would let every head entry excuse again (L42).
+ */
+export const ABSENT_AT_BASE = 'absent-at-base'
+
+export function resolveExpectedBase(
+  handedOver: string | undefined,
+  fs: { exists: (p: string) => boolean; read: (p: string) => string },
+): { text: string | null; failure: string | null } {
+  if (!handedOver) return { text: null, failure: "the merge base's expected-changes.json was not handed over (MONEY_GATE_EXPECTED_BASE), so which entries are new cannot be told" }
+  if (handedOver === ABSENT_AT_BASE) return { text: null, failure: null }
+  if (!fs.exists(handedOver)) return { text: null, failure: `the merge base's expected-changes.json at ${handedOver} cannot be read, so which entries are new cannot be told` }
+  return { text: fs.read(handedOver), failure: null }
+}

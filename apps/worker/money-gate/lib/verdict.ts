@@ -32,7 +32,11 @@ export interface VerdictInput {
   now: Date
   /** Workflow ids with a committed definition: the head must replay every one. */
   committedDefinitionIds: string[]
-  /** expected-changes.json at the head and at the merge base, or null where absent. */
+  /**
+   * expected-changes.json at the head, and at the merge base. For the base, null
+   * means git confirmed the file is absent at that commit (resolveExpectedBase); a
+   * path that was not handed over or could not be read never reaches here as null.
+   */
   expectedHead: string | null
   expectedBase: string | null
 }
@@ -64,7 +68,10 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
 
   const head = parseExpectedChanges(input.expectedHead)
   const base = parseExpectedChanges(input.expectedBase)
-  const applied = applyExpectedChanges(diffs, head.entries, base.entries)
+  // A merge base copy that cannot be read as entries is never taken for an empty
+  // one: that would make every head entry new and excuse again. Nothing is excused.
+  const baseUnreadable = base.failures.length > 0
+  const applied = baseUnreadable ? applyExpectedChanges(diffs, [], []) : applyExpectedChanges(diffs, head.entries, base.entries)
 
   const failures = [...new Set([
     ...emptinessFailures(input.head, 'head'),
@@ -73,6 +80,7 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
     ...headCov.failures,
     ...baseCov.failures,
     ...head.failures,
+    ...base.failures.map((f) => `the merge base's ${f}`),
     ...applied.failures,
   ])]
 

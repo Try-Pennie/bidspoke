@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyExpectedChanges, parseExpectedChanges, type ExpectedChange } from '../expected-changes'
+import { ABSENT_AT_BASE, applyExpectedChanges, parseExpectedChanges, resolveExpectedBase, type ExpectedChange } from '../expected-changes'
 import type { Difference } from '../compare'
 
 const diff = (over: Partial<Difference> = {}): Difference => ({
@@ -53,12 +53,42 @@ describe('applyExpectedChanges', () => {
     expect(r.failures).toEqual(['expected change for Engine Bidding Workflow outbound_request node bid_race field "* body.ssn" matched no difference; remove it or fix its pattern'])
   })
 
+  it('credits a difference to every new entry that matches it, so overlapping entries are not reported stale', () => {
+    const r = applyExpectedChanges([diff()], [entry(), entry({ field: '*unsecuredDebt', reason: 'Overlapping entry for the same field, written by a second author' })], [])
+    expect(r.unexcused).toEqual([])
+    expect(r.failures).toEqual([])
+  })
+
   it('matches on workflow, check, node and field pattern, all of them', () => {
     expect(applyExpectedChanges([diff()], [entry({ check: 'route' })], []).unexcused).toHaveLength(1)
     expect(applyExpectedChanges([diff()], [entry({ node: 'other' })], []).unexcused).toHaveLength(1)
     expect(applyExpectedChanges([diff()], [entry({ workflow: 'Main Flow (v2)' })], []).unexcused).toHaveLength(1)
     expect(applyExpectedChanges([diff()], [entry({ field: 'body.debt' })], []).unexcused).toHaveLength(1)
     expect(applyExpectedChanges([diff()], [entry({ node: undefined })], []).unexcused).toHaveLength(0)
+  })
+})
+
+describe('resolveExpectedBase', () => {
+  const fs = (files: Record<string, string>) => ({
+    exists: (p: string) => p in files,
+    read: (p: string) => files[p],
+  })
+
+  it('reads the base copy when one was handed over', () => {
+    expect(resolveExpectedBase('/base/expected-changes.json', fs({ '/base/expected-changes.json': '{"entries":[]}' }))).toEqual({ text: '{"entries":[]}', failure: null })
+  })
+
+  it('honours the marker git wrote for a file absent at the base as no entries', () => {
+    expect(resolveExpectedBase(ABSENT_AT_BASE, fs({}))).toEqual({ text: null, failure: null })
+  })
+
+  it('fails by name when nothing was handed over, rather than reading it as absent', () => {
+    expect(resolveExpectedBase(undefined, fs({})).failure).toMatch(/was not handed over/)
+    expect(resolveExpectedBase('', fs({})).failure).toMatch(/was not handed over/)
+  })
+
+  it('fails by name when the path handed over cannot be read, rather than reading it as absent', () => {
+    expect(resolveExpectedBase('/wrong/expected-changes.json', fs({})).failure).toMatch(/cannot be read/)
   })
 })
 

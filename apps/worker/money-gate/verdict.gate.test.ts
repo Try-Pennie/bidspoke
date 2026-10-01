@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { it, expect } from 'vitest'
 import type { Transcript } from './lib/compare'
 import { gateVerdict } from './lib/verdict'
+import { resolveExpectedBase } from './lib/expected-changes'
 
 const readIfPresent = (p: string | undefined): string | null => (p && existsSync(p) ? readFileSync(p, 'utf8') : null)
 
@@ -22,7 +23,12 @@ it('the head does what the merge base does with every fixture', () => {
   const basePath = process.env.MONEY_GATE_BASE
   const headPath = process.env.MONEY_GATE_HEAD
   expect(basePath && headPath, 'MONEY_GATE_BASE and MONEY_GATE_HEAD must name the two transcripts').toBeTruthy()
-  expect(process.env.MONEY_GATE_EXPECTED_BASE, 'MONEY_GATE_EXPECTED_BASE must name the merge base\'s expected-changes.json (absent there is fine)').toBeTruthy()
+  // The base copy, or git's word that it is absent there; anything else fails by name.
+  const expectedBase = resolveExpectedBase(process.env.MONEY_GATE_EXPECTED_BASE, { exists: existsSync, read: (p) => readFileSync(p, 'utf8') })
+  if (expectedBase.failure) {
+    if (process.env.MONEY_GATE_VERDICT_OUT) writeFileSync(process.env.MONEY_GATE_VERDICT_OUT, `money gate: ${expectedBase.failure}\n`)
+    expect.fail(`money gate: ${expectedBase.failure}`)
+  }
   const read = (p: string) => JSON.parse(readFileSync(resolve(p), 'utf8')) as Transcript
   const here = dirname(fileURLToPath(import.meta.url))
   const shapes = JSON.parse(readFileSync(join(here, 'fixtures', 'shapes.json'), 'utf8')) as { exported_at: string }
@@ -35,7 +41,7 @@ it('the head does what the merge base does with every fixture', () => {
     now: new Date(),
     committedDefinitionIds,
     expectedHead: readIfPresent(join(here, 'expected-changes.json')),
-    expectedBase: readIfPresent(process.env.MONEY_GATE_EXPECTED_BASE),
+    expectedBase: expectedBase.text,
   })
   // Written to a file as well, because a passing test's console output is not
   // printed: the coverage report must reach the log on a green run too.

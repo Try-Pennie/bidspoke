@@ -71,11 +71,28 @@ run_side head "$ROOT"
 run_side base "$BASE_TREE"
 
 echo "money gate: comparing base with head"
-set +e
+
 # The merge base's expected-changes.json: an entry excuses a difference only when it
-# is new at the head, so the verdict needs the base's copy (absent there is fine).
+# is new at the head, so the verdict needs the base's copy. Git decides which case
+# this is: the file at the base commit (its path in the base worktree), or git's
+# word that the path does not exist there (the change that first adds it). A git
+# error is neither, and stops here by name; the verdict also refuses an unreadable
+# path rather than reading it as empty, which would let old entries excuse again.
+EXPECTED_PATH="apps/worker/money-gate/expected-changes.json"
+if ! listed="$(git ls-tree --name-only "$BASE" -- "$EXPECTED_PATH")"; then
+  echo "::error::money gate: git could not list ${EXPECTED_PATH} at the merge base ${BASE}"
+  exit 1
+fi
+if [ -n "$listed" ]; then
+  EXPECTED_BASE="$BASE_TREE/$EXPECTED_PATH"
+else
+  EXPECTED_BASE="absent-at-base"
+  echo "money gate: the merge base has no ${EXPECTED_PATH}, so every entry at the head is new"
+fi
+
+set +e
 (cd "$ROOT/apps/worker" && MONEY_GATE_BASE="$WORK/base.json" MONEY_GATE_HEAD="$WORK/head.json" MONEY_GATE_VERDICT_OUT="$WORK/verdict.txt" \
-  MONEY_GATE_EXPECTED_BASE="$BASE_TREE/apps/worker/money-gate/expected-changes.json" \
+  MONEY_GATE_EXPECTED_BASE="$EXPECTED_BASE" \
   pnpm exec vitest run --config vitest.money-gate-verdict.config.mts > "$WORK/verdict-run.log" 2>&1)
 status=$?
 set -e
@@ -93,7 +110,7 @@ if grep -q '^warning: the fixture shapes are' "$WORK/verdict.txt"; then
 fi
 if [ "$status" -ne 0 ]; then
   # The first reason the verdict gave, of any kind, so the annotation names it.
-  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no)))' "$WORK/verdict.txt" || true)"
+  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
   echo "::error::${reason:-money gate: the verdict failed}"
 fi
 exit "$status"

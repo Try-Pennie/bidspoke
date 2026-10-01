@@ -89,6 +89,13 @@ describe('gateVerdict', () => {
     expect(v.output).toContain('expected-changes.json does not parse')
   })
 
+  it('fails by name on a malformed merge base file, rather than reading it as empty and letting old entries excuse again', () => {
+    const v = verdict(t('base', [fx('yes')]), t('head', [fx('else')]), { expectedHead: EXCUSE, expectedBase: '{ nope' })
+    expect(v.exitCode).toBe(1)
+    expect(v.output).toContain("money gate: the merge base's expected-changes.json does not parse as JSON")
+    expect(v.output).not.toContain('(excused:')
+  })
+
   it('fails when either transcript holds no workflow or no fixture, rather than passing on nothing', () => {
     const empty: Transcript = { ...t('head', []), workflows: [] }
     for (const [base, head, side] of [[t('base', [fx('yes')]), empty, 'head'], [empty, t('head', [fx('yes')]), 'base']] as const) {
