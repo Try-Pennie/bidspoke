@@ -198,3 +198,33 @@ describe('redactCapture: sensitive personal fields inside serialised text', () =
     expect(out).toContain('zip=73301')
   })
 })
+
+// Field names measured in the 2026-09-30 Pipedream export.
+describe('redactCapture: the field names the real workflows use', () => {
+  it.each([
+    'formattedSSN', 'formattedSsn', 'ssnRaw', 'socialNum', 'Applicant_SSN__c', 'SSN__c',
+    'SocialSecurityNumber__c', 'Social_Security_Number_SO__c', 'formattedDOB', 'formattedDob',
+    'DOB', 'BirthDate__c', 'Date_of_Birth_SO__c', 'birthdate',
+  ])('scrambles %s as an object field', async (name) => {
+    const raw = '1990-04-12'
+    const { value } = await redactCapture({ [name]: raw }, KEY)
+    expect((value as Record<string, string>)[name]).not.toBe(raw)
+  })
+
+  it.each(['SocialSecurityNumber__c', 'BirthDate__c', 'Applicant_SSN__c', 'formattedDOB'])(
+    'scrambles %s inside a body held as a string',
+    async (name) => {
+      const body = JSON.stringify({ [name]: '19900412', LastName: 'Lovelace' })
+      const { value } = await redactCapture({ body }, KEY)
+      const out = (value as { body: string }).body
+      expect(out).not.toContain('19900412')
+      expect(out).toContain('"LastName":"Lovelace"')
+    },
+  )
+
+  it('leaves routing names that are not bank routing numbers alone', async () => {
+    const input = { routingPartner: 'tripoint', External_Routing_Code__c: 'ENG-7', task_routing: 'main' }
+    const { value } = await redactCapture(input, KEY)
+    expect(value).toEqual(input)
+  })
+})

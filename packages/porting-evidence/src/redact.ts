@@ -46,11 +46,17 @@ const CREDENTIAL_EXACT = new Set([
 ])
 const CREDENTIAL_SUFFIXES = ['password', 'secret', 'apikey', 'accesstoken', 'refreshtoken', 'privatekey']
 
-/** The most sensitive personal fields, scrambled like credentials (Dan, 2026-10-01). */
-const SENSITIVE_PERSONAL_EXACT = new Set([
-  'ssn', 'socialsecuritynumber', 'socialsecurity', 'dob', 'dateofbirth', 'birthdate', 'birthday',
-])
-const SENSITIVE_PERSONAL_SUFFIXES = ['accountnumber', 'routingnumber', 'ssn', 'dateofbirth']
+/**
+ * The most sensitive personal fields, scrambled like credentials (Dan,
+ * 2026-10-01). Matched as a PART of the normalised name, because the real
+ * workflows wrap them: `formattedSSN`, `ssnRaw`, `Applicant_SSN__c`,
+ * `SocialSecurityNumber__c`, `formattedDOB`, `BirthDate__c` (measured in the
+ * 2026-09-30 export). Over matching a rare flag such as `no_ssn` only scrambles
+ * it identically on both sides, which costs a comparison nothing.
+ */
+const SENSITIVE_PERSONAL_PARTS = [
+  'ssn', 'socialsecurity', 'socialnum', 'dob', 'dateofbirth', 'birthdate', 'birthday', 'accountnumber', 'routingnumber',
+]
 
 /** A formatted SSN anywhere in text. */
 const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
@@ -61,7 +67,7 @@ const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
  * to the next quote, backslash, ampersand, comma, brace or space, is replaced.
  */
 const SENSITIVE_KEYED =
-  /((?:ssn|social_?security_?number|social_?security|dob|date_?of_?birth|birth_?date|birthday|(?:bank_?)?account_?number|routing_?number)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)([^"'\\&,}\s]+)/gi
+  /([A-Za-z_]*(?:ssn|social_?security|social_?num|dob|date_?of_?birth|birth_?date|birthday|account_?number|routing_?number)[A-Za-z_]*(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)([^"'\\&,}\s]+)/gi
 
 /** Names that are sometimes credentials and sometimes not: judged by value. */
 const AMBIGUOUS = new Set(['token', 'key', 'auth', 'signature', 'sig', 'credential', 'credentials'])
@@ -91,8 +97,7 @@ const normalise = (name: string) => name.toLowerCase().replace(/[-_\s]/g, '')
 const isCredentialName = (n: string) =>
   CREDENTIAL_EXACT.has(n) || CREDENTIAL_SUFFIXES.some((suffix) => n.endsWith(suffix))
 
-const isSensitivePersonalName = (n: string) =>
-  SENSITIVE_PERSONAL_EXACT.has(n) || SENSITIVE_PERSONAL_SUFFIXES.some((suffix) => n.endsWith(suffix))
+const isSensitivePersonalName = (n: string) => SENSITIVE_PERSONAL_PARTS.some((part) => n.includes(part))
 
 const encoder = new TextEncoder()
 
