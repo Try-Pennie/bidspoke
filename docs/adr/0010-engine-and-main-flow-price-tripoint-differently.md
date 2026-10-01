@@ -28,7 +28,10 @@ Revenue is booked on two different Salesforce fields as well, which is the same
 split seen from the other end:
 
 - Main Flow leads book through `Lead.ExternalRevenue__c`: 0.0009 of debt from
-  $10,000 to $12,499, 0.0012 from $12,500, and 0 below $10,000.
+  $10,000 to $12,499, 0.0013 from $12,500, and 0 below $10,000. The upper rate
+  was 0.0012 until 2026-09-30, when it moved to 0.0013; Bidspoke's Main Flow
+  Tripoint config followed on 2026-10-01, so both halves of the Main Flow rule
+  agree again.
 - External partner leads (Engine, AmOne, Lead Economy) book through
   `Prospect__c.ExternalExchangeRevenue__c`. Since 2026-09-23 the Tripoint part
   reads `EngineDebt__c`: 0.0009 from $10,000 to $12,499 and 0.0013 from $12,500,
