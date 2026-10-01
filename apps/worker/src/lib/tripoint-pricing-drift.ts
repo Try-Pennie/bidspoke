@@ -151,6 +151,12 @@ function readSingleTier(
 /** People read these, so no floating point tails and thousands separators on debts. */
 const rate = (n: number): string => String(n)
 const dollars = (n: number): string => n.toLocaleString('en-US')
+/**
+ * A multiplier as a percentage of debt, for the alert (Dan, 2026-10-01). Every
+ * digit kept, so two rates that differ never print as the same number: 0.001275
+ * is 0.1275%, not 0.13%. toPrecision strips the float noise of the times 100.
+ */
+const pct = (n: number): string => `${Number((n * 100).toPrecision(12))}%`
 
 /**
  * How Bidspoke's tiered multiplier differs from the Salesforce rule.
@@ -172,9 +178,7 @@ export function tripointPricingDifferences(
   if (cfg === null) {
     differences.push({
       code: 'config-unreadable',
-      message:
-        'the Tripoint partner config is not a single-tier tiered_multiplier, so it cannot be compared ' +
-        'against the Salesforce formula; the comparison assumes one boundary and two multipliers',
+      message: "Bidspoke's Tripoint rates aren't one cutoff and two rates, so they can't be compared",
     })
     return { differences, notes }
   }
@@ -182,25 +186,23 @@ export function tripointPricingDifferences(
   if (cfg.tier.above !== salesforce.lowBand.upTo || cfg.tier.above + 1 !== salesforce.highBand.from) {
     differences.push({
       code: 'boundary-disagrees',
-      message:
-        `Bidspoke switches to the high multiplier above $${dollars(cfg.tier.above)} of debt, Salesforce ` +
-        `at $${dollars(salesforce.highBand.from)} (low band up to $${dollars(salesforce.lowBand.upTo)})`,
+      message: `Higher rate starts at: Bidspoke $${dollars(cfg.tier.above + 1)}, Salesforce $${dollars(salesforce.highBand.from)}`,
     })
   }
   if (cfg.defaultMultiplier !== salesforce.lowBand.multiplier) {
     differences.push({
       code: 'low-multiplier-disagrees',
       message:
-        `Bidspoke prices the low band at ${rate(cfg.defaultMultiplier)} of debt, Salesforce books ` +
-        `${rate(salesforce.lowBand.multiplier)}`,
+        `$${dollars(salesforce.floor)} to $${dollars(salesforce.lowBand.upTo)} debt: ` +
+        `Bidspoke ${pct(cfg.defaultMultiplier)}, Salesforce ${pct(salesforce.lowBand.multiplier)}`,
     })
   }
   if (cfg.tier.multiplier !== salesforce.highBand.multiplier) {
     differences.push({
       code: 'high-multiplier-disagrees',
       message:
-        `Bidspoke prices the high band at ${rate(cfg.tier.multiplier)} of debt, Salesforce books ` +
-        `${rate(salesforce.highBand.multiplier)}`,
+        `$${dollars(salesforce.highBand.from)}+ debt: ` +
+        `Bidspoke ${pct(cfg.tier.multiplier)}, Salesforce ${pct(salesforce.highBand.multiplier)}`,
     })
   }
 
@@ -220,9 +222,7 @@ export function tripointPricingDifferences(
   } else if (cfg.floor !== salesforce.floor) {
     differences.push({
       code: 'floor-disagrees',
-      message:
-        `Bidspoke stops bidding Tripoint below $${dollars(cfg.floor)} of debt, Salesforce books nothing ` +
-        `below $${dollars(salesforce.floor)}`,
+      message: `Lowest debt bid on: Bidspoke $${dollars(cfg.floor)}, Salesforce $${dollars(salesforce.floor)}`,
     })
   }
 

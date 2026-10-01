@@ -129,6 +129,21 @@ export async function notifyExportRecovery(kv: KvLike | undefined, jobName: stri
  * both sentences itself; the classification is only for the export jobs whose
  * failures it was written from (#542).
  */
+/**
+ * A remedy that replaces the job name and its framing with a plain title
+ * (Dan, 2026-10-01: "It's so hard to understand right now"). The alert is the
+ * title, the findings, an optional context line and an optional fix, nothing
+ * else, so each finding has to read on its own.
+ */
+export interface TitledRemedy {
+  /** The header, in place of "<job name> <verb>". */
+  title: string
+  /** One line under the findings, such as who last changed the setting. */
+  context?: string
+  /** The "Fix" line. Absent means the alert carries no fix line at all. */
+  fixHint?: string
+}
+
 export interface AlertRemedy {
   /** The sentence between "reported N errors" and the list. */
   consequence: string
@@ -162,7 +177,7 @@ export async function notifyExportFailure(
   jobName: string,
   errors: string[],
   kv: KvLike | undefined,
-  remedy: AlertRemedy | ExportJobWording,
+  remedy: AlertRemedy | TitledRemedy | ExportJobWording,
   nowMs: number = Date.now(),
 ): Promise<void> {
   const pendingKey = `export-alert-pending:${jobName}`
@@ -228,8 +243,10 @@ export async function notifyExportFailure(
   // right for the export and purge jobs the classifier was built from and wrong
   // for everything else (#542, #1166).
   const own = remedy === 'export-job' ? undefined : remedy
-  const fixHint = own?.fixHint ?? buildFixHint(errors)
-  const consequence = own?.consequence ?? buildConsequence(errors)
+  const titled = own && 'title' in own ? own : undefined
+  const explained = own && !('title' in own) ? own : undefined
+  const fixHint = titled ? titled.fixHint : (explained?.fixHint ?? buildFixHint(errors))
+  const consequence = titled ? undefined : (explained?.consequence ?? buildConsequence(errors))
 
   let delivered = false
   for (const orgId of orgIds) {
@@ -242,8 +259,10 @@ export async function notifyExportFailure(
         failingSince,
         intermittentSince,
         repeat,
-        headlineVerb: own?.headlineVerb,
-        itemNoun: own?.itemNoun,
+        headlineVerb: explained?.headlineVerb,
+        itemNoun: explained?.itemNoun,
+        title: titled?.title,
+        context: titled?.context,
       })) delivered = true
     } catch (err) {
       console.error(`[export-alerts] alert failed for org ${orgId}:`, err)

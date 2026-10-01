@@ -34,7 +34,7 @@ function declaredRemedies(): string[] {
     for (const file of readdirSync(path.join(REPO_ROOT, dir))) {
       if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue
       const src = readFileSync(path.join(REPO_ROOT, dir, file), 'utf8')
-      for (const m of src.matchAll(/export const ([A-Z0-9_]*REMEDY)\s*:\s*AlertRemedy/g)) {
+      for (const m of src.matchAll(/export const ([A-Z0-9_]*REMEDY)\s*:\s*(?:AlertRemedy|TitledRemedy)\b/g)) {
         found.push(m[1])
       }
     }

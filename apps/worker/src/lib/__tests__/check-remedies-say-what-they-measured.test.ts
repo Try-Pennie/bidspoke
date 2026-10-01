@@ -15,7 +15,7 @@
  * opposite risk, and is covered by the compiler here rather than by a registry).
  */
 import { describe, it, expect } from 'vitest'
-import type { AlertRemedy } from '../export-alerts'
+import type { AlertRemedy, TitledRemedy } from '../export-alerts'
 import {
   ARCHIVE_INGEST_REMEDY,
   ARCHIVE_READ_FAILED_REMEDY,
@@ -38,7 +38,7 @@ import { LOGPUSH_CHECK_REMEDY } from '../logpush-check'
 import { RETENTION_CHECK_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
-import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
+import { TRIPOINT_PRICING_MISMATCH_REMEDY, TRIPOINT_PRICING_UNREADABLE_REMEDY } from '../tripoint-pricing-check'
 import { TRIPOINT_DUPLICATE_CODES_REMEDY } from '../tripoint-duplicate-codes-check'
 import { LEAD_STATUS_REMEDY } from '../lead-status-check'
 import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export-schema-check'
@@ -71,7 +71,6 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['execution retention', RETENTION_CHECK_REMEDY],
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
-  ['tripoint pricing', TRIPOINT_PRICING_REMEDY],
   ['tripoint duplicate codes', TRIPOINT_DUPLICATE_CODES_REMEDY],
   ['lead status', LEAD_STATUS_REMEDY],
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
@@ -95,6 +94,15 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
  * and banning the word there would push them into vaguer wording (L347: not
  * using a word is not the same as not making the claim).
  */
+/**
+ * Remedies that replace the job name with a plain title and carry no framing
+ * sentence, so the findings and the title must carry the meaning between them.
+ */
+const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
+  ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
+  ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
+]
+
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']
 
 describe('every check says what it measured', () => {
@@ -146,6 +154,18 @@ describe('every check says what it measured', () => {
     it(`${name} says something in both sentences`, () => {
       expect(remedy.consequence.trim().length).toBeGreaterThan(40)
       expect(remedy.fixHint.trim().length).toBeGreaterThan(40)
+    })
+  }
+
+  for (const [name, remedy] of TITLED) {
+    it(`${name} titles itself in words, not a job name`, () => {
+      expect(remedy.title).toMatch(/ /)
+      expect(remedy.title).not.toMatch(/^[a-z0-9-]+$/)
+    })
+
+    it(`${name} does not borrow the export wording`, () => {
+      const words = `${remedy.title} ${remedy.fixHint ?? ''}`.toLowerCase()
+      for (const wrong of EXPORT_ONLY) expect(words).not.toContain(wrong)
     })
   }
 })

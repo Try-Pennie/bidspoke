@@ -22,7 +22,7 @@ vi.mock('../../engine/nodes/salesforce', () => ({
   getSalesforceToken: vi.fn().mockResolvedValue('tok-123'),
 }))
 
-import { salesforceFormulaReader, LEAD_REVENUE_FIELD } from '../tripoint-pricing-check'
+import { salesforceFormulaReader, formulaChangeReader, LEAD_REVENUE_FIELD } from '../tripoint-pricing-check'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -77,5 +77,51 @@ describe('salesforceFormulaReader', () => {
     fetchAnswering(200, { records: [{ Metadata: { type: 'Currency' } }] })
 
     await expect(salesforceFormulaReader(env, supabase)()).rejects.toThrow(/no formula text/)
+  })
+})
+
+describe('formulaChangeReader', () => {
+  /** Answers the Tooling read, then the User read, in order. */
+  function fetchSequence(...answers: Array<{ status: number; body: unknown }>) {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      const a = answers[urls.length - 1]
+      return new Response(typeof a.body === 'string' ? a.body : JSON.stringify(a.body), { status: a.status })
+    }))
+    return urls
+  }
+
+  it('reads the field change from Tooling and the editor name from the data API', async () => {
+    const urls = fetchSequence(
+      { status: 200, body: { records: [{ LastModifiedDate: '2026-09-30T17:32:20.000+0000', LastModifiedById: '005Ul00000E92SLIAZ' }] } },
+      { status: 200, body: { records: [{ Name: 'Daniel Wright' }] } },
+    )
+
+    expect(await formulaChangeReader(env, supabase)()).toEqual({ at: '2026-09-30T17:32:20.000+0000', by: 'Daniel Wright' })
+    expect(new URL(urls[0]).pathname).toMatch(/\/tooling\/query$/)
+    expect(new URL(urls[1]).pathname).toMatch(/\/services\/data\/v\d+\.\d+\/query$/)
+    expect(new URL(urls[1]).searchParams.get('q')).toBe("SELECT Name FROM User WHERE Id='005Ul00000E92SLIAZ'")
+  })
+
+  it('keeps the day when the name cannot be read', async () => {
+    fetchSequence(
+      { status: 200, body: { records: [{ LastModifiedDate: '2026-09-30T17:32:20.000+0000', LastModifiedById: '005Ul00000E92SLIAZ' }] } },
+      { status: 403, body: '[{"errorCode":"INSUFFICIENT_ACCESS"}]' },
+    )
+
+    expect(await formulaChangeReader(env, supabase)()).toEqual({ at: '2026-09-30T17:32:20.000+0000', by: null })
+  })
+
+  it('never puts an id that is not a Salesforce id into a query', async () => {
+    const urls = fetchSequence({ status: 200, body: { records: [{ LastModifiedDate: '2026-09-30T17:32:20.000+0000', LastModifiedById: "x' OR Name!='" }] } })
+
+    expect(await formulaChangeReader(env, supabase)()).toEqual({ at: '2026-09-30T17:32:20.000+0000', by: null })
+    expect(urls).toHaveLength(1)
+  })
+
+  it('throws on a failed Tooling read, so the check drops the line rather than inventing a day', async () => {
+    fetchSequence({ status: 500, body: 'boom' })
+    await expect(formulaChangeReader(env, supabase)()).rejects.toThrow(/500/)
   })
 })
