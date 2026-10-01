@@ -1627,6 +1627,60 @@ describe('code node script hygiene on every definition write (#1117)', () => {
   })
 })
 
+// New and duplicated workflows start switched off (#1706). A workflow written by
+// the Pipedream converter or an API caller must not take traffic before a person
+// has looked at it and switched it on through PATCH, which keeps its safeguards.
+describe('new and duplicated workflows start inactive (#1706)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const activeFlagsInserted = (sb: ReturnType<typeof makeSupabase>) =>
+    (sb.calls.workflows ?? [])
+      .filter(([m]) => m === 'insert')
+      .map(([, args]) => (args[0] as { is_active?: unknown }).is_active)
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('POST creates the workflow with is_active false', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
+    expect(res.status).toBe(201)
+    expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+
+  it('POST ignores an is_active true sent in the body', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', is_active: true } })
+    expect(res.status).toBe(201)
+    expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+
+  it('duplicating an ACTIVE workflow creates an inactive copy', async () => {
+    const source = { name: 'Live Flow', description: null, definition: { nodes: [] }, folder_id: null, is_active: true }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Live Flow (copy)', organization_id: USER_ORG, is_active: false } }],
+      workflow_versions: [{ list: [] }, { insertResult: {} }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+})
+
 // The step id rename rewrites partner formulas through rename_partner_step_namespace
 // (#1409), so the actor, reason and workflow ride on the audit row the table trigger
 // writes. The route writes no audit row of its own any more.

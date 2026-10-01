@@ -81,6 +81,7 @@ import {
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
+import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 
 
 const edgeTypes = {
@@ -2932,6 +2933,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               </span>
             )}
           </div>
+          <WorkflowActiveBadge isActive={workflow.is_active} />
         </div>
 
         <div className="flex items-center gap-2">

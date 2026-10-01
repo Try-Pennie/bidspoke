@@ -14,6 +14,7 @@ import type { DragEndEvent, SearchInputHandle } from '@/components/folders/Folde
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
+import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 
 function HealthDot({ rate }: { rate: number | null }) {
   if (rate === null) {
@@ -692,13 +693,7 @@ export default function WorkflowsPage() {
                 {wf.name}
               </Link>
             )}
-            <span className={`inline-flex flex-shrink-0 items-center rounded px-2 py-0.5 text-xs font-medium ${
-              wf.is_active
-                ? 'bg-green-50 text-green-700'
-                : 'bg-gray-100 text-gray-500'
-            }`}>
-              {wf.is_active ? 'Active' : 'Inactive'}
-            </span>
+            <WorkflowActiveBadge isActive={wf.is_active} />
             {duplicating === wf.id && (
               <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-p-blue-dark" />
             )}
