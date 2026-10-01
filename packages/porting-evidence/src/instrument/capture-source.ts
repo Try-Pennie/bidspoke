@@ -87,15 +87,16 @@ async function ${CAPTURE_FUNCTION}(steps, kind, site, payloadFn) {
       prior_failures: __portingFailures,
       payload,
     }
-    let text = JSON.stringify(envelope)
-    if (text.length > __PORTING.maxBytes) {
-      envelope.payload = { truncated: true, bytes: text.length }
-      text = JSON.stringify(envelope)
+    // Measured in UTF-8 bytes, what the receiver counts: the string length is
+    // UTF-16 units and undercounts multibyte text up to three times.
+    let body = new TextEncoder().encode(JSON.stringify(envelope))
+    if (body.byteLength > __PORTING.maxBytes) {
+      envelope.payload = { truncated: true, bytes: body.byteLength }
+      body = new TextEncoder().encode(JSON.stringify(envelope))
     }
     const raw = new Uint8Array(32)
     for (let i = 0; i < 32; i++) raw[i] = parseInt(keyHex.slice(i * 2, i * 2 + 2), 16)
     const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
-    const body = new TextEncoder().encode(text)
     const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, body))
     const signature = "v1=" + Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")
     const res = await fetch(__PORTING.url, {

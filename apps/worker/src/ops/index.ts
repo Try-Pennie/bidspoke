@@ -6,7 +6,9 @@
  * Caller: the porting capture steps pasted into Pipedream workflows, and
  * nothing else. Each signs its body with its workflow's key, derived here as
  * HMAC(PORTING_CAPTURE_MASTER, hashid), so the Worker holds one secret and a
- * key leaked from one workflow cannot sign for another. Data reached: one R2
+ * key leaked outside Pipedream signs for its one workflow only. Inside the
+ * Pipedream workspace there is no isolation: every key is a workspace wide
+ * environment variable there (see signature.ts). Data reached: one R2
  * bucket, PORTING_TEE, written under this workflow's own prefix. No database,
  * no other binding, no other secret.
  *
@@ -106,7 +108,14 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
 
     const master = env.PORTING_CAPTURE_MASTER
     if (!master) return refuse(503, 'master_secret_unset')
-    const hashid = decodeURIComponent(match[1])
+    let hashid: string
+    try {
+      hashid = decodeURIComponent(match[1])
+    } catch {
+      // A malformed percent escape throws URIError; answer it by name rather
+      // than with an unhandled 500.
+      return refuse(400, 'malformed_hashid')
+    }
     if (!Object.prototype.hasOwnProperty.call(registry.enrolled, hashid)) return refuse(404, 'unknown_workflow')
 
     const bytes = await readCapped(req)
@@ -179,12 +188,14 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
       payload: redacted.value,
     }
 
+    // One conditional write, so the store itself refuses an overwrite. A read
+    // then a write let two concurrent deliveries of one key both see it free
+    // and the second replace the first. R2 answers null when the precondition
+    // fails, which here means the key already exists.
+    let written: R2Object | null
     try {
-      if (await env.PORTING_TEE.head(objectKey)) {
-        log('duplicate', { hashid })
-        return json(200, { stored: false, duplicate: true })
-      }
-      await env.PORTING_TEE.put(objectKey, JSON.stringify(stored), {
+      written = await env.PORTING_TEE.put(objectKey, JSON.stringify(stored), {
+        onlyIf: { etagDoesNotMatch: '*' },
         httpMetadata: { contentType: 'application/json' },
         customMetadata: {
           capture_version: String(version),
@@ -194,6 +205,10 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
       })
     } catch {
       return refuse(503, 'store_failed', { hashid })
+    }
+    if (written === null) {
+      log('duplicate', { hashid })
+      return json(200, { stored: false, duplicate: true })
     }
 
     log(quarantined ? 'quarantined' : 'stored', { hashid, kind: kindSeg, redacted_count: redacted.redactedCount })

@@ -75,6 +75,21 @@ describe('redactCapture: credential shapes anywhere', () => {
   })
 })
 
+// Review of #1711: anchoring the JWT shape on what precedes `eyJ` (to keep it
+// linear) stopped catching a JWT glued to a word, an underscore or a hyphen.
+describe('redactCapture: a JWT glued to the text before it', () => {
+  const jwt = fake('eyJhbGciOiJIUzI1NiJ9', '.', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', '.', 'dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')
+  it.each([['tok_'], ['id-'], ['access_token'], ['x.y.'], ['abcde.fghij.']])('replaces a JWT after %s, keeping what precedes it', async (glue) => {
+    const { value, redactedCount } = await redactCapture({ note: `${glue}${jwt} end` }, KEY)
+    const out = (value as { note: string }).note
+    expect(out.startsWith(`${glue}eyJ`)).toBe(true)
+    expect(out).not.toContain('eyJzdWIiOiIxMjM0NTY3ODkwIn0')
+    expect(out).not.toContain('dozjgNryP4J3')
+    expect(out).toHaveLength(glue.length + jwt.length + 4)
+    expect(redactedCount).toBe(1)
+  })
+})
+
 describe('redactCapture: the ambiguous name token', () => {
   it('preserves a real non credential field named token', async () => {
     const input = { token: 'promo-spring-2026', body: { token: 42 } }
@@ -204,7 +219,8 @@ describe('redactCapture: the field names the real workflows use', () => {
   it.each([
     'formattedSSN', 'formattedSsn', 'ssnRaw', 'socialNum', 'Applicant_SSN__c', 'SSN__c',
     'SocialSecurityNumber__c', 'Social_Security_Number_SO__c', 'formattedDOB', 'formattedDob',
-    'DOB', 'BirthDate__c', 'Date_of_Birth_SO__c', 'birthdate',
+    'DOB', 'BirthDate__c', 'Date_of_Birth_SO__c', 'birthdate', 'dateOfBirth', 'account_number',
+    'routing_number',
   ])('scrambles %s as an object field', async (name) => {
     const raw = '1990-04-12'
     const { value } = await redactCapture({ [name]: raw }, KEY)
@@ -226,5 +242,217 @@ describe('redactCapture: the field names the real workflows use', () => {
     const input = { routingPartner: 'tripoint', External_Routing_Code__c: 'ENG-7', task_routing: 'main' }
     const { value } = await redactCapture(input, KEY)
     expect(value).toEqual(input)
+  })
+})
+
+// Review of #1711: matching a sensitive word anywhere inside the normalised name
+// scrambled ordinary fields whose letters happen to contain it (business_name
+// holds "ssn" once the underscore is gone, adobe_id holds "dob"). Names are
+// matched on their TOKENS instead.
+describe('redactCapture: names that only contain a sensitive word by accident', () => {
+  const READABLE = ['business_name', 'class_name', 'address_number', 'adobe_id', 'cardobject', 'routingPartner', 'External_Routing_Code__c']
+
+  it.each(READABLE)('keeps %s readable as an object field', async (name) => {
+    const input = { [name]: 'ordinary-value-1990' }
+    const { value, redactedCount } = await redactCapture(input, KEY)
+    expect(value).toEqual(input)
+    expect(redactedCount).toBe(0)
+  })
+
+  it.each(READABLE)('keeps %s readable inside a body held as a string', async (name) => {
+    const body = JSON.stringify({ [name]: 'ordinaryvalue1990' })
+    const { value, redactedCount } = await redactCapture({ body }, KEY)
+    expect((value as { body: string }).body).toBe(body)
+    expect(redactedCount).toBe(0)
+  })
+
+  it('still scrambles a sensitive key that sits inside another value in a form body', async () => {
+    const { value } = await redactCapture({ body: 'note=ssn:123456789&zip=73301' }, KEY)
+    const out = (value as { body: string }).body
+    expect(out).not.toContain('123456789')
+    expect(out).toContain('zip=73301')
+  })
+})
+
+// Review of #1711, the serialised text pass: values cut short at a space or
+// comma, key spellings the object path scrambles but the text path missed, and
+// literals replaced inside JSON so the body no longer parsed.
+describe('redactCapture: whole values inside serialised text', () => {
+  const bodyOf = async (body: string) => ((await redactCapture({ body }, KEY)).value as { body: string }).body
+
+  it('takes the whole quoted value, spaces and commas included', async () => {
+    const out = await bodyOf(JSON.stringify({ dob: 'April 12, 1990', city: 'Austin' }))
+    expect(out).not.toMatch(/April|12|1990/)
+    expect(JSON.parse(out)).toMatchObject({ city: 'Austin' })
+    expect((JSON.parse(out) as { dob: string }).dob).toHaveLength('April 12, 1990'.length)
+  })
+
+  it('honours an escaped quote inside a quoted value', async () => {
+    const out = await bodyOf(JSON.stringify({ ssn: 'say "123" 456789', city: 'Austin' }))
+    expect(out).not.toMatch(/456789|123/)
+    expect(JSON.parse(out)).toMatchObject({ city: 'Austin' })
+  })
+
+  it('takes the whole quoted value in doubly encoded JSON', async () => {
+    const out = await bodyOf(JSON.stringify({ payload: JSON.stringify({ dob: 'April 12, 1990', zip: '73301' }) }))
+    expect(out).not.toMatch(/April|1990/)
+    expect(JSON.parse((JSON.parse(out) as { payload: string }).payload)).toMatchObject({ zip: '73301' })
+  })
+
+  it('runs an unquoted form value to the next ampersand', async () => {
+    const out = await bodyOf('dob=April 12 1990&zip=73301')
+    expect(out).not.toMatch(/April|1990/)
+    expect(out.endsWith('&zip=73301')).toBe(true)
+  })
+
+  it('runs an unquoted form value to the end of the text', async () => {
+    const out = await bodyOf('zip=73301&dob=April 12 1990')
+    expect(out).not.toMatch(/April|1990/)
+    expect(out.startsWith('zip=73301&dob=')).toBe(true)
+  })
+})
+
+describe('redactCapture: key spellings inside serialised text', () => {
+  it.each([
+    ['date-of-birth=1990-04-12&zip=73301', '1990-04-12'],
+    ['account-number=000123456789&zip=73301', '000123456789'],
+    ['X-SSN=123456789&zip=73301', '123456789'],
+    [JSON.stringify({ 'account number': '000123456789', zip: '73301' }), '000123456789'],
+    [JSON.stringify({ 'Date Of Birth': '04/12/1990', zip: '73301' }), '04/12/1990'],
+  ])('scrambles the value in %s', async (body, secret) => {
+    const out = ((await redactCapture({ body }, KEY)).value as { body: string }).body
+    expect(out).not.toContain(secret)
+    expect(out).toContain('73301')
+  })
+})
+
+describe('redactCapture: literals and numbers inside serialised JSON', () => {
+  it('leaves null, true and false alone and keeps the body valid JSON', async () => {
+    const input = { ssn: null, dob: false, routing_number: true, city: 'Austin' }
+    const body = JSON.stringify(input)
+    const { value, redactedCount } = await redactCapture({ body }, KEY)
+    expect((value as { body: string }).body).toBe(body)
+    expect(redactedCount).toBe(0)
+  })
+
+  it('replaces a number with a number of the same length, so the body still parses', async () => {
+    const body = JSON.stringify({ ssn: 123456789, account_number: -42, city: 'Austin' })
+    const out = ((await redactCapture({ body }, KEY)).value as { body: string }).body
+    const parsed = JSON.parse(out) as { ssn: number; account_number: number; city: string }
+    expect(typeof parsed.ssn).toBe('number')
+    expect(parsed.ssn).not.toBe(123456789)
+    expect(String(parsed.ssn)).toHaveLength(9)
+    expect(parsed.account_number).not.toBe(-42)
+    expect(String(parsed.account_number)).toHaveLength(3)
+    expect(parsed.city).toBe('Austin')
+  })
+
+  it('leaves prose such as "dob: unknown" alone, and still scrambles "ssn: 123456789" in prose', async () => {
+    const out = ((await redactCapture({ note: 'dob: unknown, ssn: 123456789' }, KEY)).value as { note: string }).note
+    expect(out).toContain('dob: unknown')
+    expect(out).not.toContain('123456789')
+  })
+
+  it('leaves undefined alone in a form body', async () => {
+    const { value, redactedCount } = await redactCapture({ body: 'dob=undefined&zip=73301' }, KEY)
+    expect((value as { body: string }).body).toBe('dob=undefined&zip=73301')
+    expect(redactedCount).toBe(0)
+  })
+})
+
+// Review of #1711: the serialised text pass opened with an unbounded letter run,
+// so a long run of letters cost time quadratic in its length, and a 1 MiB body
+// could burn the Worker's CPU. Each body here is 1 MiB; a linear scan finishes in
+// milliseconds, so a one second ceiling is generous headroom, not a tight budget.
+describe('redactCapture: time is linear in the size of serialised text', () => {
+  const MIB = 1024 * 1024
+  it.each([
+    ['letters', 'a'.repeat(MIB)],
+    ['a repeated sensitive word', 'ssn'.repeat(MIB / 4)],
+    ['a repeated JWT opening', 'eyJ'.repeat(MIB / 3)],
+    ['dotted runs of JWT openings', ('eyJabcde'.repeat(100) + '.').repeat(Math.floor(MIB / 801))],
+    ['glued JWT openings', 'x_eyJ'.repeat(Math.floor(MIB / 5))],
+    ['many sensitive key value pairs', 'ssn=123456789&'.repeat(Math.floor(MIB / 14))],
+    ['separators', ':='.repeat(MIB / 2)],
+    ['quoted keys with no values', '"date of birth":'.repeat(MIB / 16)],
+    ['escaped quoted sensitive pairs', '\\"ssn\\":\\"1 2\\",'.repeat(Math.floor(MIB / 16))],
+    ['long keys before separators', ('k'.repeat(200) + '=').repeat(Math.floor(MIB / 201))],
+    ['prose keys whose values are rejected', 'dob: unknown '.repeat(Math.floor(MIB / 13))],
+  ])('redacts 1 MiB of %s in well under a second', async (_label, body) => {
+    const started = performance.now()
+    await redactCapture({ body }, KEY)
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})
+
+describe('redactCapture: a sensitive key holding an object or a list', () => {
+  it.each([
+    ['an object', { ssn: { last4: '6789', verified: true }, city: 'Austin' }],
+    ['a list', { dob: ['1990', '04', '12'], city: 'Austin' }],
+    ['an empty object', { account_number: {}, city: 'Austin' }],
+  ])('keeps a serialised body that holds %s valid JSON', async (_label, inner) => {
+    const body = JSON.stringify(inner)
+    const { value } = await redactCapture({ body }, KEY)
+    const out = (value as { body: string }).body
+    expect(() => JSON.parse(out) as unknown).not.toThrow()
+    expect((JSON.parse(out) as { city: string }).city).toBe('Austin')
+  })
+
+  const bodyOf = async (body: string) => ((await redactCapture({ body }, KEY)).value as { body: string }).body
+
+  it('scrambles every string and number inside an object, keeping its keys, literals and shape', async () => {
+    const out = await bodyOf(JSON.stringify({ ssn: { last4: '6789', verified: true, n: 12345, gone: null }, city: 'Austin' }))
+    expect(out).not.toMatch(/6789|12345/)
+    const parsed = JSON.parse(out) as { ssn: { last4: string; verified: boolean; n: number; gone: null }; city: string }
+    expect(Object.keys(parsed.ssn)).toEqual(['last4', 'verified', 'n', 'gone'])
+    expect(parsed.ssn.last4).toHaveLength(4)
+    expect(parsed.ssn.verified).toBe(true)
+    expect(parsed.ssn.gone).toBeNull()
+    expect(String(parsed.ssn.n)).toHaveLength(5)
+    expect(parsed.city).toBe('Austin')
+  })
+
+  it('scrambles every item inside a list, nested ones included', async () => {
+    const out = await bodyOf(JSON.stringify({ dob: ['1990', '04', 12, ['x1990', { y: '1990' }]], city: 'Austin' }))
+    expect(out).not.toContain('1990')
+    const parsed = JSON.parse(out) as { dob: [string, string, number, [string, { y: string }]]; city: string }
+    expect(parsed.dob).toHaveLength(4)
+    expect(parsed.dob[0]).toHaveLength(4)
+    expect(typeof parsed.dob[2]).toBe('number')
+    expect(parsed.dob[3][1].y).toHaveLength(4)
+    expect(parsed.city).toBe('Austin')
+  })
+
+  it('is not fooled by brackets and escaped quotes inside a string in the object', async () => {
+    const out = await bodyOf(JSON.stringify({ ssn: { note: 'a } ] { "q" 6789' }, city: 'Austin' }))
+    expect(out).not.toContain('6789')
+    expect((JSON.parse(out) as { city: string }).city).toBe('Austin')
+  })
+
+  it('scrambles an object inside doubly encoded JSON and keeps both levels valid', async () => {
+    const out = await bodyOf(JSON.stringify({ payload: JSON.stringify({ ssn: { last4: '6789' }, zip: '73301' }) }))
+    expect(out).not.toContain('6789')
+    const inner = JSON.parse((JSON.parse(out) as { payload: string }).payload) as { ssn: { last4: string }; zip: string }
+    expect(inner.ssn.last4).toHaveLength(4)
+    expect(inner.zip).toBe('73301')
+  })
+
+  it.each([
+    ['a form value', 'ssn=[123456789]&zip=73301', '123456789'],
+    ['prose', 'note dob: {1990-04-12}; zip 73301', '1990-04-12'],
+  ])('still scrambles a bracketed %s whole', async (_label, body, secret) => {
+    const out = await bodyOf(body)
+    expect(out).not.toContain(secret)
+    expect(out).toContain('73301')
+  })
+
+  it.each([
+    ['unclosed objects', '{"ssn":{'.repeat(Math.floor((1024 * 1024) / 8))],
+    ['unclosed strings in lists', '{"dob":["a'.repeat(Math.floor((1024 * 1024) / 10))],
+    ['deep nesting', '{"ssn":' + '['.repeat(1024 * 1024) ],
+  ])('stays linear on 1 MiB of %s', async (_label, body) => {
+    const started = performance.now()
+    await redactCapture({ body }, KEY)
+    expect(performance.now() - started).toBeLessThan(1000)
   })
 })

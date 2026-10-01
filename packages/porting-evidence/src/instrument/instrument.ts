@@ -227,7 +227,19 @@ const escapesAsValue = (parent: Node, node: Node): boolean =>
   (n.ArrowFunctionExpression.check(parent) && parent.body === node) ||
   n.ArrayExpression.check(parent)
 
-function collectSites(ast: types.namedTypes.File, dollarNames: Set<string>): CodeSite[] {
+/**
+ * True when a node is the run's `$`: an identifier bound to it (`$`, or a
+ * destructured alias), or `<param>.$` where the run takes its context as a
+ * plain identifier (`run(ctx)` then `ctx.$.respond(...)`).
+ */
+const isDollar = (node: Node, dollarNames: Set<string>, runParamNames: Set<string>): boolean =>
+  (n.Identifier.check(node) && dollarNames.has(node.name)) ||
+  (n.MemberExpression.check(node) &&
+    memberProp(node) === '$' &&
+    n.Identifier.check(node.object) &&
+    runParamNames.has(node.object.name))
+
+function collectSites(ast: types.namedTypes.File, dollarNames: Set<string>, runParamNames: Set<string> = new Set()): CodeSite[] {
   const sites: CodeSite[] = []
   const loc = (node: Node) => ({ line: node.loc?.start.line ?? 0, column: node.loc?.start.column ?? 0 })
   visit(ast, {
@@ -241,7 +253,7 @@ function collectSites(ast: types.namedTypes.File, dollarNames: Set<string>): Cod
         else if (parent && escapesAsValue(parent, node)) sites.push({ path, kind: 'exit_alias', ...loc(node) })
         // Any other read (`if ($?.flow?.exit)`, `typeof $.flow.exit`) only tests
         // the function exists: it exits nothing and calls nothing.
-      } else if (memberProp(node) === 'respond' && n.Identifier.check(node.object) && dollarNames.has(node.object.name)) {
+      } else if (memberProp(node) === 'respond' && isDollar(node.object, dollarNames, runParamNames)) {
         if (isCallee) sites.push({ path: path.parent as NodePath, kind: 'respond', ...loc(parent) })
       }
       this.traverse(path)
@@ -320,7 +332,7 @@ function instrumentCode(code: string, pipeline: string, step: string, config: Ca
 
   const run = findRun(ast)
   const runFn = run as FunctionNode | null
-  const preview = collectSites(ast, new Set(['$', ...(runFn ? dollarAliases(runFn) : [])]))
+  const preview = collectSites(ast, new Set(['$', ...(runFn ? dollarAliases(runFn) : [])]), new Set(runFn ? runParamName(runFn) : []))
   if (preview.length === 0) return { code: null, sites: [], refused: [] }
   if (!runFn) return refuse('no_run_method', preview[0].line)
 
@@ -400,6 +412,12 @@ function instrumentCode(code: string, pipeline: string, step: string, config: Ca
   })
   body.splice(at, 0, ...helper)
   return { code: print(ast).code, sites: sites.reverse(), refused: refused.reverse() }
+}
+
+/** The run's parameter when it is a plain identifier (`run(ctx)`), so `ctx.$` is recognised. */
+function runParamName(run: FunctionNode): string[] {
+  const param = run.params[0]
+  return n.Identifier.check(param) ? [param.name] : []
 }
 
 function dollarAliases(run: FunctionNode): string[] {
