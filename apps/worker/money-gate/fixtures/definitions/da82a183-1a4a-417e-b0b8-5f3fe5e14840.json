@@ -1,0 +1,779 @@
+{
+  "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+  "name": "Engine Bidding Workflow",
+  "definition": {
+    "trigger": {
+      "type": "http_webhook",
+      "config": {
+        "method": "POST",
+        "auth_method": "api_key",
+        "custom_response": true,
+        "muted_failure_signals": [
+          {
+            "count": 10,
+            "match": "Exception occurred for ACRO_GATEWAY",
+            "window_minutes": 5
+          }
+        ],
+        "success_node_namespaces": [
+          "patch_prospect"
+        ]
+      }
+    },
+    "nodes": [
+      {
+        "id": "db720491-42a9-443e-bc47-7e7afa9348c8",
+        "namespace": "constants",
+        "label": "constants",
+        "type": "constants",
+        "position": {
+          "x": 972,
+          "y": 197
+        },
+        "config": {
+          "data": {
+            "states": [
+              "AL",
+              "AK",
+              "AZ",
+              "AR",
+              "CA",
+              "CT",
+              "DE",
+              "FL",
+              "GA",
+              "HI",
+              "IA",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "ME",
+              "MD",
+              "MA",
+              "MI",
+              "MN",
+              "MS",
+              "MO",
+              "NE",
+              "NV",
+              "NH",
+              "NJ",
+              "NM",
+              "NY",
+              "NC",
+              "ND",
+              "OH",
+              "OK",
+              "OR",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "VT",
+              "WA",
+              "WI",
+              "WY"
+            ],
+            "logoSrc": "https://pub-aaaeedacc51943d1a26b21aaf3aab284.r2.dev/Pennie%20Icon%20Square%20Graphite-3.png",
+            "offerName": "Pennie",
+            "productType": "installment_loan",
+            "mainOfferTitle": "Income-Focused Lending",
+            "pennieClickUrl": "https://www.trypennie.com/portal",
+            "mainOfferDetails": "<ul><li>Borrow up to $100,000 with terms and rates tailored to your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
+            "pennieExpLandingPage": "https://trypennie.com/offerportal",
+            "pennieAlternateClickUrl": "https://trypennie.com/offerhub"
+          },
+          "retries": 2,
+          "timeout_ms": 30000
+        },
+        "variables": {}
+      },
+      {
+        "id": "5786b44b-8be8-41a3-969f-e56bafc54da4",
+        "namespace": "parsed_name",
+        "label": "Parsed Name",
+        "type": "code",
+        "position": {
+          "x": 972,
+          "y": 350
+        },
+        "config": {
+          "script": "function sanitizeName(name, maxLength) {\n  if (name == null) return \"\";\n  return name.replace(/[^a-zA-Z]/g, \" \").substring(0, maxLength);\n}\n\nfunction extractMiddleName(fullName) {\n  if (!fullName) return '';\n  const nameParts = fullName.trim().split(' ');\n  if (nameParts.length > 2) {\n    return nameParts[1].charAt(0).toUpperCase();\n  }\n  return '';\n}\n\nconst firstName = steps.trigger.payload.personalInformation.firstName;\nconst lastName = steps.trigger.payload.personalInformation.lastName;\nconst middleName = extractMiddleName(firstName);\n\nreturn {\n  firstName: sanitizeName(firstName, 15),\n  lastName: sanitizeName(lastName, 25),\n  middleName: sanitizeName(middleName, 15),\n};\n",
+          "retries": 2,
+          "timeout_ms": 1000
+        },
+        "variables": {}
+      },
+      {
+        "id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+        "namespace": "validate_bidding_and_state",
+        "label": "Validate",
+        "type": "code",
+        "position": {
+          "x": 972,
+          "y": 503
+        },
+        "config": {
+          "script": "function isBlank(name) {\n  return !name || name.trim() === \"\" || !/[a-zA-Z]/.test(name);\n}\n\nconst allowedStates = steps.constants.output.states;\nconst state = steps.trigger.payload.personalInformation.state;\nconst validState = allowedStates.includes(state);\n\nconst firstName = steps.parsed_name.output.firstName;\nconst lastName = steps.parsed_name.output.lastName;\nconst validName = !isBlank(firstName) && !isBlank(lastName);\n\nconst source = steps.trigger.payload.subAccountUuid || \"\";\nconst sourceName = steps.constants.output.subAccountIdsMap[source] || \"\"\nconst biddingActive = !sourceName || steps.constants.output.activeBidding[sourceName] === true\n\nconsole.log(`Bidding status for ${sourceName}: ${biddingActive}`);\n\nif (biddingActive && validState && validName) return;\n\nif (!biddingActive) {\n  return { response: { status: 200, body: {\n    lead_id: steps.trigger.payload.leadUuid,\n    status: \"rejected\",\n    reason: \"bidding not active\",\n  }}};\n}\n\nif (!validState) {\n  return { response: { status: 200, body: {\n    lead_id: steps.trigger.payload.leadUuid,\n    status: \"rejected\",\n    reason: \"ineligible state\",\n  }}};\n}\n\nif (!validName) {\n  return { response: { status: 200, body: {\n    lead_id: steps.trigger.payload.leadUuid,\n    status: \"rejected\",\n    reason: \"invalid name\",\n  }}};\n}",
+          "retries": 2,
+          "timeout_ms": 150
+        },
+        "variables": {}
+      },
+      {
+        "id": "b8ea4a36-51d3-400f-bbfc-4a0a64954d70",
+        "namespace": "prospect_body",
+        "label": "Prospect Body",
+        "type": "code",
+        "position": {
+          "x": 972,
+          "y": 656
+        },
+        "config": {
+          "script": "function transformToSalesforceFormat(inputData, traceId, parsedName) {\n  const personal = inputData.personalInformation || {};\n  const loan = inputData.loanInformation || {};\n  const mortgage = inputData.mortgageInformation || {};\n  const credit = inputData.creditInformation || {};\n  const financial = inputData.financialInformation || {};\n  const education = inputData.educationInformation || {};\n  const legal = inputData.legalInformation || {};\n  const session = inputData.sessionInformation || {};\n\n  const mapEmploymentStatus = (status) => {\n    if (!status) return 'Other';\n    const statusMap = {\n      'employed': 'Employed', 'employed_full_time': 'employed_full_time',\n      'employed_part_time': 'employed_part_time', 'military': 'Military',\n      'not_employed': 'not_employed', 'self_employed': 'self_employed',\n      'retired': 'Retired', 'other': 'Other'\n    };\n    return statusMap[status.toLowerCase()] || 'Other';\n  };\n\n  const mapEducationLevel = (level) => {\n    if (!level) return 'Other';\n    const levelMap = {\n      'high_school': 'high_school', 'associate': 'Associate', 'bachelors': 'Bachelors',\n      'masters': 'Masters', 'doctorate': 'Doctorate', 'other_grad_degree': 'other_grad_degree',\n      'certificate': 'Certificate', 'did_not_graduate': 'did_not_graduate',\n      'still_enrolled': 'still_enrolled', 'other': 'Other'\n    };\n    return levelMap[level.toLowerCase()] || 'Other';\n  };\n\n  const mapLoanPurpose = (purpose) => {\n    if (!purpose) return 'Other';\n    const purposeMap = {\n      'auto': 'Auto', 'auto_purchase': 'auto_purchase', 'auto_refinance': 'auto_refinance',\n      'baby': 'Baby', 'boat': 'Boat', 'business': 'Business', 'car_repair': 'car_repair',\n      'cosmetic': 'Cosmetic', 'credit_card_refi': 'credit_card_refi',\n      'debt_consolidation': 'debt_consolidation', 'emergency': 'Emergency',\n      'engagement': 'Engagement', 'green': 'Green', 'home_improvement': 'home_improvement',\n      'home_purchase': 'home_purchase', 'home_refi': 'home_refi',\n      'household_expenses': 'household_expenses', 'large_purchases': 'large_purchases',\n      'life_event': 'life_event', 'medical_dental': 'medical_dental',\n      'motorcycle': 'Motorcycle', 'moving_relocation': 'moving_relocation', 'other': 'Other',\n      'rv': 'Rv', 'special_occasion': 'special_occasion', 'student_loan': 'student_loan',\n      'student_loan_refi': 'student_loan_refi', 'taxes': 'Taxes', 'unknown': 'Unknown',\n      'vacation': 'Vacation', 'wedding': 'Wedding'\n    };\n    return purposeMap[purpose.toLowerCase()] || 'Other';\n  };\n\n  const mapPaymentFrequency = (frequency) => {\n    if (!frequency) return 'Monthly';\n    const frequencyMap = {\n      'weekly': 'Weekly', 'biweekly': 'biweekly',\n      'twice_monthly': 'twice_monthly', 'monthly': 'Monthly'\n    };\n    return frequencyMap[frequency.toLowerCase()] || 'Monthly';\n  };\n\n  const mapCreditRating = (rating) => {\n    if (!rating) return 'Poor (<600)';\n    const ratingMap = {\n      'excellent': 'Excellent (720+)', 'good': 'Good (660-719)',\n      'fair': 'Fair (620-659)', 'poor': 'Poor (<600)',\n      'limited': 'Poor (<600)', 'unknown': 'Poor (<600)'\n    };\n    return ratingMap[rating.toLowerCase()] || 'Poor (<600)';\n  };\n\n  const mapPropertyStatus = (status) => {\n    if (!status) return 'Rent';\n    const statusMap = {\n      'own_outright': 'Own Outright', 'own_with_mortgage': 'Own with Mortgage', 'rent': 'Rent'\n    };\n    return statusMap[status.toLowerCase()] || 'Rent';\n  };\n\n  const formatPhoneNumber = (phone) => {\n    if (!phone) return '';\n    const digits = phone.replace(/\\D/g, '');\n    if (digits.length === 10) {\n      return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;\n    }\n    return phone;\n  };\n\n  const formatSSN = (ssn) => {\n    if (!ssn) return '';\n    return ssn.replace(/\\D/g, '');\n  };\n\n  const safeBirthDate = (dob) => {\n    if (!dob) return '1901-01-01';\n    const d = new Date(dob + 'T00:00:00Z');\n    if (isNaN(d.getTime())) return '1900-01-01';\n    if (d.getUTCFullYear() < 1900) return '1900-01-01';\n    return dob;\n  };\n\n  return {\n    \"Last_Name__c\": parsedName.lastName || '',\n    \"Middle_Name__c\": parsedName.middleName || '',\n    \"First_Name__c\": parsedName.firstName || '',\n    \"State__c\": personal.state || '',\n    \"City__c\": personal.city || '',\n    \"Zip__c\": personal.zipcode || '',\n    \"Email__c\": personal.email || '',\n    \"Phone__c\": formatPhoneNumber(personal.primaryPhone),\n    \"BirthDate__c\": safeBirthDate(personal.dateOfBirth),\n    \"Street__c\": personal.address1 || '',\n    \"AptSuite__c\": personal.address2 || '',\n    \"LoanAmount__c\": loan.loanAmount || 0,\n    \"LoanPurpose__c\": mapLoanPurpose(loan.purpose),\n    \"IncomePmtFrequency__c\": mapPaymentFrequency(financial.employmentPayFrequency),\n    \"AnnualIncomeBeforeTaxes__c\": financial.annualIncome || 0,\n    \"EmploymentStatus__c\": mapEmploymentStatus(financial.employmentStatus),\n    \"EducationLevel__c\": mapEducationLevel(education.educationLevel),\n    \"SocialSecurityNumber__c\": formatSSN(personal.ssn),\n    \"RentOrOwn__c\": mapPropertyStatus(mortgage.propertyStatus),\n    \"ApproximateCreditRating__c\": mapCreditRating(credit.providedCreditRating),\n    \"LeadUUID__c\": inputData.leadUuid,\n    \"SubaccountUUID__c\": inputData.subAccountUuid,\n    \"Source__c\": \"Engine\",\n    \"ProspectTraceId__c\": traceId,\n    \"TCPAConsentFlag__c\": legal.consentsToTcpa,\n    \"FCRAConsentFlag__c\": legal.consentsToFcra,\n    \"User_Agent__c\": (session.userAgent || '').slice(0, 255),\n    \"User_IP__c\": session.ipAddress,\n  };\n}\n\ntry {\n  return transformToSalesforceFormat(\n    steps.trigger.payload,\n    execution.trace_id,\n    steps.parsed_name.output\n  );\n} catch (error) {\n    console.error(`Error transforming data [${execution.trace_id}]:`, error?.message, error?.stack);\n    return { response: { status: 500, body: {\n      lead_id: steps.trigger.payload.leadUuid,\n      status: \"error\",\n      reason: \"prospect_body_transform_error\",\n      error_message: error?.message ?? String(error),\n      error_stack: error?.stack,\n    }}};\n  }",
+          "retries": 2,
+          "timeout_ms": 150
+        },
+        "variables": {}
+      },
+      {
+        "id": "a6839dbe-f2ac-4001-ae49-c33ddad26237",
+        "namespace": "create_prospect",
+        "label": "Create Prospect",
+        "type": "salesforce",
+        "position": {
+          "x": 972,
+          "y": 809
+        },
+        "config": {
+          "body": "{{steps.prospect_body.output}}",
+          "object": "Prospect__c",
+          "retries": 2,
+          "timeout_ms": 100000,
+          "expected_errors": [
+            {
+              "code": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+              "response_body": {
+                "reason": "duplicated lead",
+                "status": "rejected",
+                "lead_id": "{{trigger.payload.leadUuid}}"
+              },
+              "response_status": 200,
+              "message_contains": "Creation is blocked"
+            },
+            {
+              "code": "DUPLICATE_VALUE",
+              "response_body": {
+                "reason": "duplicated lead",
+                "status": "rejected",
+                "lead_id": "{{trigger.payload.leadUuid}}"
+              },
+              "response_status": 200,
+              "message_contains": "duplicate value found: LeadUUID__c duplicates value on record with id"
+            }
+          ],
+          "injected_fields": {
+            "ProspectTraceId__c": "{{execution.bidspoke_link}}"
+          },
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "9edf4e24-9e34-4b11-86b3-87964450d561",
+        "namespace": "equifax_credit_report",
+        "label": "Equifax",
+        "type": "code",
+        "position": {
+          "x": 972,
+          "y": 966
+        },
+        "config": {
+          "script": "async function getEquifaxToken(username, password) {\n  const params = 'grant_type=client_credentials&scope=https://api.equifax.com/business/oneview/consumer-credit/v1';\n  const res = await fetch('https://api.equifax.com/v2/oauth/token', {\n    method: 'POST',\n    headers: {\n      'Content-Type': 'application/x-www-form-urlencoded',\n      'Authorization': 'Basic ' + btoa(`${username}:${password}`),\n      'User-Agent': 'axios/1.7.0',\n      'Accept': 'application/json, text/plain, */*',\n    },\n    body: params,\n  });\n  if (!res.ok) {\n    const text = await res.text();\n    throw new Error(`Equifax Token Error: ${res.status} - ${text}`);\n  }\n  const data = await res.json();\n  if (!data.access_token) throw new Error('Access token not found in response');\n  return data.access_token;\n}\n\n// Returns a 9-digit SSN string, or null if the lead has no usable SSN.\n// Tolerates \"673-31-3292\", \"673 31 3292\", \"673313292_test78\", etc.\nfunction extractSSN(rawSsn) {\n  if (!rawSsn) return null;\n  const digits = String(rawSsn).replace(/[^0-9]/g, '').slice(0, 9);\n  return digits.length === 9 ? digits : null;\n}\n\nfunction formatRequestBody(body, firstName, lastName) {\n  if (!body.dateOfBirth) throw new Error('personalInformation.dateOfBirth missing from payload');\n\n  const formattedSSN = extractSSN(body.ssn);\n  if (body.ssn && !formattedSSN) {\n    console.log(`SSN present but unusable after stripping non-numerics (\"${body.ssn}\"); submitting without SSN`);\n  }\n  if (!formattedSSN) {\n    console.log('No SSN on lead \u2014 submitting Equifax pull on name + DOB + address');\n  }\n\n  const [year, month, day] = body.dateOfBirth.split('-');\n  const formattedDOB = `${month}${day}${year}`;\n\n  const consumers = {\n    name: [{\n      identifier: 'current',\n      firstName,\n      lastName,\n      middleName: '',\n      suffix: '',\n    }],\n    dateOfBirth: formattedDOB,\n    addresses: [{\n      identifier: 'current',\n      streetName: `${body.address1 ?? ''} ${body.address2 ?? ''}`.trim(),\n      city: body.city,\n      state: body.state,\n      zip: body.zipcode,\n    }],\n  };\n\n  // Only include socialNum when we actually have one \u2014 omit the key entirely,\n  // never send it empty.\n  if (formattedSSN) {\n    consumers.socialNum = [{\n      identifier: 'current',\n      number: formattedSSN,\n    }];\n  } else {\n    // No SSN: phone strengthens the name+DOB+address match when it's a clean 10 digits\n    let phone = String(body.primaryPhone ?? '').replace(/[^0-9]/g, '');\n    if (phone.length === 11 && phone.startsWith('1')) phone = phone.slice(1);\n    if (phone.length === 10) {\n      consumers.phoneNumbers = [{ identifier: 'current', number: phone }];\n    }\n  }\n\n  return {\n    consumers,\n    customerReferenceIdentifier: 'Pennie Management',\n    customerConfiguration: {\n      equifaxUSConsumerCreditReport: {\n        memberNumber: '402FZ14896',\n        securityCode: 'N2N',\n        pdfComboIndicator: 'N',\n        customerCode: 'ISTS',\n        multipleReportIndicator: '1',\n        ECOAInquiryType: 'Individual',\n        models: [{ identifier: '05402' }],\n        endUserInformation: {\n          endUsersName: '',\n          permissiblePurposeCode: 'Null',\n        },\n      },\n    },\n  };\n}\n\nasync function makeEquifaxRequest(token, body) {\n  const res = await fetch(\n    'https://api.equifax.com/business/oneview/consumer-credit/v1/reports/credit-report',\n    {\n      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        'Authorization': `Bearer ${token}`,\n        'User-Agent': 'axios/1.7.0',\n        'Accept': 'application/json, text/plain, */*',\n      },\n      body: JSON.stringify(body),\n    }\n  );\n  if (!res.ok) {\n    const text = await res.text();\n    return { error: true, statusCode: res.status, message: text };\n  }\n  const data = await res.json();\n  return { error: false, statusCode: 200, data };\n}\n\nasync function makeEquifaxRequestWithRetry(token, body) {\n  let result = await makeEquifaxRequest(token, body);\n  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {\n    console.log(`Equifax first attempt failed ${result.statusCode}, retrying after 250ms...`);\n    await new Promise(r => setTimeout(r, 250));\n    result = await makeEquifaxRequest(token, body);\n  }\n  return result;\n}\n\nconst personal = payload.personalInformation ?? {};\nconst body = { ...personal, leadUuid: payload.leadUuid };\nconst firstName = steps.parsed_name.output.firstName;\nconst lastName = steps.parsed_name.output.lastName;\n\ntry {\n  const accessToken = await getEquifaxToken(\n    process.env.EQUIFAX_USERNAME,\n    process.env.EQUIFAX_PASSWORD\n  );\n\n  const formattedBody = formatRequestBody(body, firstName, lastName);\n  const result = await makeEquifaxRequestWithRetry(accessToken, formattedBody);\n\n  if (result.error) {\n    console.error(`Equifax credit report error [${execution.trace_id}]: ${result.statusCode} - ${result.message}`);\n     return {\n        response: {\n          status: result.statusCode ?? 500,\n          body: {\n            lead_id: body.leadUuid,\n            status: 'error',\n            reason: 'equifax_api_error',\n            upstream_status: result.statusCode,\n            upstream_body: (() => { try { return JSON.parse(result.message); } catch { return result.message; } })(),\n          },\n        },\n      };\n  }\n\n  const fraudReports = result.data?.consumers?.equifaxUSConsumerCreditReport ?? [];\n  const hasFraudCodeL = fraudReports.some(r =>\n    (r?.fraudIDScanAlertCodes ?? []).some(c => c?.code === 'L')\n  );\n  if (hasFraudCodeL) {\n    console.log(`Fraud ID Scan alert code L [${execution.trace_id}]: rejecting lead ${body.leadUuid}`);\n    return {\n      ...result.data,\n      response: {\n        status: 200,\n        body: {\n          lead_id: body.leadUuid,\n          status: 'rejected',\n          reason: 'unqualified_lead',\n        },\n      },\n    };\n  }\n\n  return result.data;\n} catch (error) {\n  console.error(`Error in equifax_credit_report [${execution.trace_id}]:`, error.message, error.stack);\n   return {\n      response: {\n        status: 500,\n        body: {\n          lead_id: body.leadUuid,\n          status: 'error',\n          reason: 'equifax_script_error',\n          error_message: error?.message ?? String(error),\n        },\n      },\n    };\n}",
+          "retries": 2,
+          "timeout_ms": 7500
+        },
+        "variables": {}
+      },
+      {
+        "id": "e51beb1c-0418-4aad-9f74-1312d4dec98d",
+        "namespace": "generate_trades_body",
+        "label": "Generate Trades Body",
+        "type": "code",
+        "position": {
+          "x": 972,
+          "y": 1119
+        },
+        "config": {
+          "script": "// generate_trades_body\n// Translates: steps.equifax_credit_report.$return_value.data \u2192 steps.equifax_credit_report.output\n// Translates: steps.create_prospect.$return_value.id \u2192 steps.create_prospect.output.body.id\n//   (Salesforce node wraps response as { status, body: { id, success, errors } })\n// Translates: steps.trigger.event.body \u2192 payload\n// Translates: steps.trigger.context.trace_id \u2192 execution.trace_id\n// Translates: $.respond + $.flow.exit \u2192 return { response: {...} }\n// Removes: makeSalesforceRequest() call to Pipedream endpoint (patch_prospect is lower priority \u2014 TODO)\n// Removes: Slack axios call\n\ntry {\n  const eqxCreditReport = steps.equifax_credit_report.output;\n  const {\n    consumers: {\n      equifaxUSConsumerCreditReport: [creditReport = {}] = [],\n    } = {},\n  } = eqxCreditReport;\n  const trades = creditReport.trades || [];\n\n  console.log(`Credit Report: ${eqxCreditReport.status}, with ${trades.length} trades.`);\n\n  const prospectId = steps.create_prospect.output.body.id;\n\n  if (eqxCreditReport.status !== 'completed' || trades.length === 0) {\n    console.log(`Rejected: missing_credit_check for prospect ${prospectId} [${execution.trace_id}]`);\n    // TODO: PATCH Salesforce prospect BidStatus__c=Rejected, RejectionReason__c=\"No equifax match\"\n    return {\n      response: {\n        status: 200,\n        headers: { 'Content-Type': 'application/json' },\n        body: {\n          lead_id: payload.leadUuid,\n          status: 'rejected',\n          reason: 'missing_credit_check',\n        },\n      },\n    };\n  }\n\n  const score = creditReport.models?.find(m => m.modelNumber === '05402')?.score;\n  const removeNullValues = (obj) => Object.fromEntries(\n    Object.entries(obj).filter(([, value]) => value !== null)\n  );\n  const parsedTrades = trades.map(removeNullValues);\n\n  return {\n    prospectId,\n    tradesJson: JSON.stringify({ trades: parsedTrades }),\n    vantageScore: score,\n  };\n} catch (error) {\n    console.error(`Failed generating trades [${execution.trace_id}]:`, error?.message, error?.stack);\n    return {\n      response: {\n        status: 500,\n        body: {\n          lead_id: payload.leadUuid,\n          status: 'error',\n          reason: 'generate_trades_body_error',\n          error_message: error?.message ?? String(error),\n          error_stack: error?.stack,\n        },\n      },\n    };\n  }",
+          "retries": 2,
+          "timeout_ms": 150
+        },
+        "variables": {}
+      },
+      {
+        "id": "5f908a4c-6d09-46b9-88a6-70ca59be0050",
+        "namespace": "prospect_trades",
+        "label": "Prospect Trades",
+        "type": "salesforce",
+        "position": {
+          "x": 972,
+          "y": 1272
+        },
+        "config": {
+          "body": "{{steps.generate_trades_body.output}}",
+          "retries": 2,
+          "apex_path": "/services/apexrest/prospect-trades",
+          "operation": "apex",
+          "timeout_ms": 8000,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+        "namespace": "build_response_body",
+        "label": "Build Response Body",
+        "type": "code",
+        "position": {
+          "x": 60,
+          "y": 2497
+        },
+        "config": {
+          "script": "const pt = steps.prospect_trades.output.body;\nconst engineBid = pt.engineBid;\n\n// The sale, from whichever node decided it (#1414, Phase 7): tripoint_ping when it ran\n// (every lead today; the not_applicable and deferred routes after the cutover), else the\n// buyer_select node. It carries the winner's own facts (#1416): who bought, where the lead\n// lands, the Salesforce routing code and the Success, Duplicate or Fail class, so nothing\n// below holds a Tripoint literal. The sale is published on this step's output as `sale`,\n// and patch_prospect_body reads it from there: one normalised shape, read in one place.\n//\n// TRANSITIONAL, removed with tripoint_ping at Stage C: an older tripoint_ping on the canvas\n// carries either no `sale` (the script before 2026-09-22) or a `sale` without the winner\n// facts (the Stage A script). Both are Tripoint, so they are completed with Tripoint's own\n// values here, and Tripoint's result code classes are mapped here for them, the only copy\n// of that mapping outside tripoint_ping itself.\n// Its duplicate codes are TRIPOINT_DUPLICATE_RESULT_CODES in bid-resolver.ts (#1549).\nconst readSale = () => {\n  const tp = steps.tripoint_ping?.output;\n  let sale = tp?.sale ?? steps.buyer_select?.output?.sale ?? null;\n  if (!sale && tp) {\n    sale = {\n      skipped: tp.skipped === true,\n      accepted: tp.qualified === true,\n      buyer_reference: tp.createLead?.id ?? null,\n      result_code: tp.resultCode != null ? String(tp.resultCode) : null,\n      partner_slug: tp.skipped === true ? null : 'tripoint',\n    };\n  }\n  if (!sale) return null;\n  if (sale.partner_slug === 'tripoint' && sale.response_class === undefined) {\n    const rc = sale.result_code != null ? Number(sale.result_code) : null;\n    let response_class = null;\n    if (sale.accepted) response_class = 'Success';\n    else if (rc != null) response_class = [1002, 1003, 1004, 1005, 1020].includes(rc) ? 'Duplicate' : 'Fail';\n    sale = {\n      ...sale,\n      partner_name: 'Tripoint',\n      click_url: sale.accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,\n      routing_code: sale.accepted ? 2 : null,\n      response_class,\n    };\n  }\n  return sale;\n};\nconst sale = readSale();\n\n// What patch_prospect_reject writes on a rejection (#1471): the two fields it wrote by\n// template today, plus the class of a declined sale, so Salesforce can tell a duplicate the\n// buyer already holds from a lead nobody wanted. The class is the sale's own (#1416).\n// Tripoint_Response__c is Tripoint's field, so it is written only when Tripoint declined;\n// Salesforce has no field for another buyer's class yet. A rejection with no class (a zero\n// bid, a 502 fault, a buyer error) carries the two fields alone, which is why this is\n// built here and not by the node's body template: a template cannot leave a field out.\n// The node's body is {{steps.build_response_body.output.reject_patch}}.\nconst rejectPatch = (reason, s) => {\n  const patch = { BidStatus__c: 'Rejected', RejectionReason__c: reason };\n  if (s && s.partner_slug === 'tripoint' && s.response_class) patch.Tripoint_Response__c = s.response_class;\n  return patch;\n};\n\n// Early rejection: no bid\nif (engineBid === 0) {\n  return {\n    isRejected: true,\n    body: {\n      lead_id: payload.leadUuid,\n      status: 'rejected',\n      reason: 'unqualified_lead',\n    },\n    reject_patch: rejectPatch('unqualified_lead', null),\n    sale,\n  };\n}\n\n// A click sold buyer on a KNOWN no (#1544): when the known_no_gate node said the node\n// that decided this lead gave a known no, and the buyer_click_check node routed eligible,\n// the lead is offered to that buyer instead of rejected. The buyer is sold when the lead\n// clicks, not now. Every fact about the buyer (its slug, name, landing page and\n// Salesforce routing code) comes from the check's output, so no buyer is named here and\n// a second click buyer needs no script change. The check's click URL carries the\n// placeholder {prospect_id}, replaced by the created prospect's id.\n//\n// `click_offer` records the decision whenever the gate ran, offered or not, with the\n// reason; without the gate node on the canvas nothing here runs. A lead the deciding node\n// sold is never offered again, whatever the gate says.\nconst readClickOffer = () => {\n  const gate = steps.known_no_gate?.output;\n  if (!gate) return null;\n  const check = steps.buyer_click_check?.output ?? null;\n  const decision = { known_no: gate.known_no === true, check_route: check?._route ?? null, offered: false, reason: null };\n  const refuse = (reason) => ({ decision: { ...decision, reason }, sale: null });\n  if (!decision.known_no) return refuse('not_a_known_no');\n  if (sale && sale.accepted === true) return refuse('sold_by_deciding_node');\n  if (!check) return refuse('check_not_run');\n  if (check._route !== 'eligible') return refuse(check.reason ?? 'not_eligible');\n  if (typeof check.partner_slug !== 'string' || !check.partner_slug) return refuse('check_names_no_buyer');\n  if (typeof check.click_url !== 'string' || !check.click_url) return refuse('no_click_url');\n  if (!check.click_url.includes('{prospect_id}')) return refuse('click_url_has_no_prospect_id');\n  const prospectId = steps.create_prospect?.output?.body?.id;\n  if (!prospectId) return refuse('no_prospect_id');\n  return {\n    decision: { ...decision, offered: true, reason: 'offered' },\n    sale: {\n      skipped: false,\n      accepted: true,\n      buyer_reference: null,\n      result_code: null,\n      partner_slug: check.partner_slug,\n      partner_name: check.partner_name ?? null,\n      click_url: check.click_url.split('{prospect_id}').join(String(prospectId)),\n      routing_code: check.external_routing_code ?? null,\n      response_class: null,\n      sold_on: 'click',\n    },\n  };\n};\nconst clickOffer = readClickOffer();\nconst clickSale = clickOffer ? clickOffer.sale : null;\n// The deciding node's own decline, kept beside the click sale so the prospect patch still\n// records Tripoint's class (#1544).\nconst declinedSale = clickSale ? sale : null;\nconst offerSale = clickSale ?? sale;\nconst withClick = (out) => {\n  if (clickOffer) out.click_offer = clickOffer.decision;\n  if (declinedSale) out.declined_sale = declinedSale;\n  return out;\n};\n\n// A sale that was made and not accepted rejects the lead exactly as `qualified === false`\n// did before the node existed.\nconst declined = offerSale ? (!offerSale.skipped && offerSale.accepted === false) : false;\n  if (declined) {\n    return withClick({\n      isRejected: true,\n      body: {\n        lead_id: payload.leadUuid,\n        status: 'rejected',\n        reason: 'unqualified_lead',\n      },\n      reject_patch: rejectPatch('unqualified_lead', sale),\n      sale,\n    });\n  }\n\nconst sellOff           = pt.sellOff;\nconst altLandingPage    = pt.altLandingPage;\nconst testOfferLanguage = pt.testOfferLanguage;\nconst expLandingPage    = pt.expLandingPage;\n\nconst formatter    = new Intl.NumberFormat('en-US');\nconst maxLoanPmt   = formatter.format(pt.maxLoanPmt);\nconst maxLoanAmt   = formatter.format(pt.maxLoanAmt);\nconst firstName    = payload.personalInformation.firstName;\nconst formatedName = firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase();\nconst annualIncome = formatter.format(payload.financialInformation.annualIncome);\n\nconst constants = steps.constants.output;\n\n// A sold lead lands where the winner says (#1416); before this a sell off lead was sent to\n// Tripoint's constant whether or not Tripoint had taken it. A sell off lead nobody bought\n// now takes the Pennie pages below, which is where a lead with no sale belongs.\nconst getRedirectUrl = () => {\n  if (offerSale && offerSale.accepted && offerSale.click_url) return offerSale.click_url;\n  if (expLandingPage)  return constants.pennieExpLandingPage;\n  if (altLandingPage)  return constants.pennieAlternateClickUrl;\n  return constants.pennieClickUrl;\n};\nconst redirectUrl = getRedirectUrl();\n\nconst subAccountIdsMap  = constants.subAccountIdsMap ?? {};\nconst filteredAccountId = Object.keys(subAccountIdsMap).includes(payload.subAccountUuid);\n\nconst defaultOffer = {\n  offer_title:   constants.mainOfferTitle,\n  offer_details: constants.mainOfferDetails,\n};\nconst sofiSellOffOffer = {\n  offer_title:   constants.SofiSellOffOfferTitle,\n  offer_details: constants.SofiSellOffOfferDetails,\n};\nconst dynamicSofiOffer = {\n  offer_title:   `Good news, ${formatedName}! Based on your income of $${annualIncome}, you may be eligible for income-based financing. Get $${maxLoanAmt} starting at $${maxLoanPmt} - based on income, not just credit.`,\n  offer_details: '<ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>',\n};\nconst testOffer = {\n  offer_title:   `Good news, ${formatedName}! Based on your income of $${annualIncome}, you may be eligible for income-based financing. Get $${maxLoanAmt} starting at $${maxLoanPmt} - based on income, not just credit.`,\n  offer_details: '<ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>',\n};\n\nlet offer;\nif (!filteredAccountId && sellOff === false && testOfferLanguage === true) {\n  offer = testOffer;\n} else if (filteredAccountId && sellOff === false) {\n  offer = dynamicSofiOffer;\n} else if (filteredAccountId && sellOff === true) {\n  offer = sofiSellOffOffer;\n} else {\n  offer = defaultOffer;\n}\n\nreturn withClick({\n  isRejected: false,\n  body: {\n    requestId: execution.trace_id,\n    offers: [\n      {\n        name:         constants.offerName,\n        display_name: constants.offerName,\n        rate:         engineBid,\n        // A click sale's landing page already carries the prospect id (#1544).\n        click_url:    clickSale ? redirectUrl : redirectUrl + `/${steps.create_prospect.output.body.id}`,\n        product_type: constants.productType,\n        logo_src:     constants.logoSrc,\n        ...offer,\n      },\n    ],\n  },\n  sale: offerSale,\n});",
+          "retries": 2,
+          "timeout_ms": 250
+        },
+        "variables": {}
+      },
+      {
+        "id": "d6619618-7234-4d0a-aecc-32214e58f35b",
+        "namespace": "patch_prospect_body",
+        "label": "Patch Prospect Body",
+        "type": "code",
+        "position": {
+          "x": 212,
+          "y": 2984
+        },
+        "config": {
+          "script": "  const responseBody = steps.offer_response.output.body ?? {};\n  const responseOffers = responseBody.offers ?? [];\n\n  let requestBody = {};\n\n  if (responseOffers.length > 0 && responseOffers[0]) {\n    const offer = responseOffers[0];\n    const clickUrl = offer.click_url;\n\n    requestBody = {\n      BidAmount__c: offer.rate,\n      BidStatus__c: 'Bid',\n      OfferLandingPage__c: clickUrl,\n      Base_Bid__c: steps.prospect_trades.output.body?.baseBid,\n    };\n\n      // The sale as build_response_body normalised it (#1416): one shape whichever node\n      // decided the lead, carrying the winner's name, routing code and class. Nothing\n      // here holds a Tripoint literal; a second buyer is named by its own facts.\n      const sale = steps.build_response_body?.output?.sale ?? null;\n      const sold = !!sale && sale.accepted === true;\n\n      // Tripoint's own Salesforce fields, written only when Tripoint is the buyer:\n      // Salesforce has no field for another buyer's reference or class yet.\n      if (sold && sale.partner_slug === 'tripoint') {\n        if (sale.buyer_reference) requestBody.TripointLeadID__c = sale.buyer_reference;\n        if (sale.response_class) requestBody.Tripoint_Response__c = sale.response_class;\n      }\n\n      // A click sold buyer offered on a known Tripoint no (#1544): the sale is that buyer's,\n      // and Tripoint's decline travels beside it, so its class is still recorded.\n      const declinedSale = steps.build_response_body?.output?.declined_sale ?? null;\n      if (sold && declinedSale && declinedSale.partner_slug === 'tripoint' && declinedSale.response_class) {\n        requestBody.Tripoint_Response__c = declinedSale.response_class;\n      }\n\n    if (sold) {\n      requestBody.ExternalPartnerName__c = sale.partner_name;\n      requestBody.ExternalDebtAmount__c =\n  steps.prospect_trades.output.body?.tradeCalculations?.enrollableDebt;\n      requestBody.ExternalRoutingCode__c = sale.routing_code;\n      requestBody.ExternalExchangeStatus__c = 'Bid';\n    }\n    if (steps.prospect_trades.output.body?.discountApplied === true) {\n  requestBody.Collections_Bid_Discount__c = true;\n  }\n}\n\n  return requestBody;",
+          "retries": 2,
+          "timeout_ms": 150
+        },
+        "variables": {}
+      },
+      {
+        "id": "b84d79a0-a2dd-4cbd-a777-ef3a3298e2ea",
+        "namespace": "patch_prospect",
+        "label": "Patch Prospect",
+        "type": "salesforce",
+        "position": {
+          "x": 212,
+          "y": 3141
+        },
+        "config": {
+          "body": "{{steps.patch_prospect_body.output}}",
+          "object": "Prospect__c",
+          "retries": 2,
+          "operation": "update",
+          "record_id": "{{steps.generate_trades_body.output.prospectId}}",
+          "timeout_ms": 1750,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "1f4973f3-1ed2-4491-a319-c0774a5393a7",
+        "namespace": "route_response",
+        "label": "Route Response",
+        "type": "branch",
+        "position": {
+          "x": -92,
+          "y": 2650
+        },
+        "config": {
+          "retries": 2,
+          "branches": [
+            {
+              "label": "reject",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.build_response_body.output.isRejected",
+                        "value": "true",
+                        "operator": "is_true"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "label": "offer",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.build_response_body.output.isRejected",
+                        "value": "false",
+                        "operator": "is_false"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "use_else": false,
+          "timeout_ms": 100,
+          "else_behavior": "error"
+        },
+        "variables": {}
+      },
+      {
+        "id": "91d5945c-5848-4d39-80d8-b23ceb578346",
+        "namespace": "reject_response",
+        "label": "Reject Response",
+        "type": "response",
+        "position": {
+          "x": -92,
+          "y": 2831
+        },
+        "config": {
+          "body": {
+            "reason": "{{steps.build_response_body.output.body.reason}}",
+            "status": "{{steps.build_response_body.output.body.status}}",
+            "lead_id": "{{steps.build_response_body.output.body.lead_id}}"
+          },
+          "retries": 2,
+          "timeout_ms": 10,
+          "continue_after_response": true
+        },
+        "variables": {}
+      },
+      {
+        "id": "78c724df-65d6-440f-97b8-dc44cc287b87",
+        "namespace": "offer_response",
+        "label": "Offer Response",
+        "type": "response",
+        "position": {
+          "x": 212,
+          "y": 2831
+        },
+        "config": {
+          "body": "{{steps.build_response_body.output.body}}",
+          "retries": 2,
+          "timeout_ms": 10,
+          "continue_after_response": true
+        },
+        "variables": {}
+      },
+      {
+        "id": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+        "namespace": "tripoint_ping",
+        "label": "Tripoint Ping",
+        "type": "code",
+        "position": {
+          "x": 1428,
+          "y": 1620
+        },
+        "config": {
+          "script": "// tripoint_ping: engine bidding workflow\n// Updated 2026-05-08 to fail-fast on proxy timeouts/5xx and prevent duplicate /create sends.\n//\n// Changes from previous version:\n//   1. Removed the try/catch that swallowed network errors and returned qualified:false silently\n//   2. Throw on res.status >= 500 so proxy 504 (Tripoint upstream timeout) surfaces as a step failure\n//   3. Removed unused `upstreamError` variable + return field (errors now propagate, engine logs error_message automatically)\n//\n// Also set in Step settings panel:\n//   \u2022 Retries: 0   \u2190 critical, prevents duplicate /create sends to Tripoint on transient errors\n//\n// Updated 2026-09-22 for the buyer_select cutover (#1414, Phase 7). Two fields ADDED,\n// nothing removed or reordered, so every downstream reader of the old fields is unchanged:\n//   \u2022 sale: the outcome in the shape the buyer_select node emits, so build_response_body\n//     and patch_prospect_body read one shape whichever node decided the lead.\n//   \u2022 sent_body_sha256: the hash of exactly what was sent, computed the way the node\n//     computes would_send_body_sha256, so the Stage A parity report can compare them.\n//     Null when nothing was sent or the sandbox has no Web Crypto (unmeasured, never a\n//     wrong hash).\n// The kept copy and its tests: apps/worker/src/engine/scripts/engine-bidding/.\n//\n// Updated 2026-09-24 (#1540): every path names what Tripoint answered, and no path\n// throws any more. Two fields ADDED at the end of every return, nothing removed or\n// reordered:\n//   \u2022 tripoint_answer: accepted | declined | in_progress (1009) | invalid_data (the known\n//     502 refusal) | null_id_fault (the known 502 glitch) | skipped | unknown. Unknown is\n//     everything not positively recognised: any other 5xx, any 4xx (a firewall page\n//     included), a 2xx that does not parse, is not ok or has no result code, a fetch that\n//     throws, and a call still unanswered after 15 s, which is aborted (the node's own\n//     timeout is 20 s). A second buyer may act only on a KNOWN no, because an unknown can\n//     be a sale Tripoint made and never told us about.\n//   \u2022 unknown_reason: why the answer is unknown (http_504, timeout, network_error,\n//     unparseable_body, not_ok, no_result_code), null otherwise.\n// An unknown answer is a no sale (qualified false, a sale with no class), so\n// build_response_body rejects the lead with a normal response instead of the run failing.\n// The per run failure page that the old throw produced is replaced by the aggregated\n// Tripoint outage page, which counts these steps (lib/upstream-outage.ts).\n// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n// The sale in the buyer_select node's shape (#1416): this script IS Tripoint, so the\n// winner's facts are Tripoint's own, and build_response_body and patch_prospect_body\n// read them from here exactly as they read them from the node for any other buyer.\n// The class is the one the node computes from the buyer's rules: Success on an\n// accept, Duplicate on a code in Tripoint's duplicate set, Fail on any other code,\n// and none when Tripoint gave no code (the two 502 faults).\n// The duplicate codes are the one list, TRIPOINT_DUPLICATE_RESULT_CODES in the Worker's\n// bid-resolver.ts (#1549); a test holds this copy to it, because a script cannot import.\nconst tripointSale = (accepted, buyerReference, resultCode) => {\n  let response_class = null;\n  if (accepted) response_class = 'Success';\n  else if (resultCode != null) response_class = [1002, 1003, 1004, 1005, 1020].includes(Number(resultCode)) ? 'Duplicate' : 'Fail';\n  return {\n    skipped: false,\n    accepted,\n    buyer_reference: buyerReference ?? null,\n    result_code: resultCode != null ? String(resultCode) : null,\n    partner_slug: 'tripoint',\n    partner_name: 'Tripoint',\n    click_url: accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,\n    routing_code: accepted ? 2 : null,\n    response_class,\n  };\n};\nconst NO_SALE = tripointSale(false, null, null);\n\nconst pt = steps.prospect_trades.output.body;\n\n// No-op when not a Tripoint sell-off: bail fast so the rest of the workflow\n// behaves identically to the non-Tripoint path.\nif (!pt.sellOff || pt.engineBid === 0) {\n  return {\n    skipped: true, qualified: null, createLead: null, resultCode: null,\n    sale: {\n      skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null,\n      partner_name: null, click_url: null, routing_code: null, response_class: null,\n    },\n    sent_body_sha256: null,\n    tripoint_answer: 'skipped', unknown_reason: null,\n  };\n}\n\nconst proxyPayload = {\n  ...payload,\n  personalInformation: {\n    ...payload.personalInformation,\n    ssn: String(payload.personalInformation?.ssn || '').replace(/\\D/g, '').slice(0, 9),\n  },\n  unsecuredDebt: pt.tradeCalculations.engineDebt,\n  maxUnsecuredDebt: pt.tradeCalculations.enrollableDebt,\n  workflowId: 'engine-bidding',\n  pennieLeadId: steps.create_prospect.output.body.id,\n  executionId: execution.trace_id,\n  leadType: 'prospect',\n};\n\n// Same canonical form as packages/buyer-profile payload.ts canonicalBodySha256: object\n// keys sorted at every level, arrays kept in order, then JSON, then SHA-256 hex.\nlet sent_body_sha256 = null;\ntry {\n  const canonicalise = (v) => {\n    if (Array.isArray(v)) return v.map(canonicalise);\n    if (v !== null && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {\n      const out = {};\n      for (const k of Object.keys(v).sort()) out[k] = canonicalise(v[k]);\n      return out;\n    }\n    return v;\n  };\n  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonicalise(proxyPayload))));\n  sent_body_sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');\n} catch {\n  sent_body_sha256 = null;\n}\n\n// An answer nobody could read (#1540): a no sale in every field older readers key on, with\n// the reason it is unknown. Never a throw, so the lead gets a normal reject response.\nconst unknownAnswer = (reason, debug) => ({\n  skipped: false,\n  qualified: false,\n  createLead: null,\n  resultCode: null,\n  debug,\n  sale: NO_SALE,\n  sent_body_sha256,\n  tripoint_answer: 'unknown',\n  unknown_reason: reason,\n});\n\n// Below the node's 20 s timeout, so the script decides the answer rather than the engine\n// failing the step.\nconst TRIPOINT_TIMEOUT_MS = 15000;\n\nlet body = {};\nlet httpStatus = null;\nlet rawText = null;\n\nconst controller = new AbortController();\nlet timedOut = false;\nconst timer = setTimeout(() => { timedOut = true; controller.abort(); }, TRIPOINT_TIMEOUT_MS);\ntry {\n  const res = await fetch('https://tripoint-proxy.trypennie.dev/leads/create', {\n    method: 'POST',\n    headers: {\n      authorization: `Bearer ${env.TRIPOINT_PROXY_SECRET}`,\n      'content-type': 'application/json',\n    },\n    body: JSON.stringify(proxyPayload),\n    signal: controller.signal,\n  });\n  httpStatus = res.status;\n  rawText = await res.text();\n} catch (err) {\n  const reason = timedOut ? 'timeout' : 'network_error';\n  const message = err instanceof Error ? err.message : 'non Error thrown';\n  console.warn(`tripoint answer unknown (${reason}): ${message}`);\n  return unknownAnswer(reason, { httpStatus, rawText, parsed: null, error: message });\n} finally {\n  clearTimeout(timer);\n}\n\nif (httpStatus >= 500) {\n    // Brian's proxy returns 502 when Tripoint's upstream GraphQL has ok:false.\n    // The known intermittent fault is `createLead` returning null for a\n    // non-nullable id: Tripoint's own schema-contract violation, not anything\n    // we sent. Route those leads to the engine fallback (qualified=false) so\n    // Engine gets a proper response instead of a 5xx. Every other 5xx (a real\n    // proxy/network/timeout outage) is an unknown answer (#1540).\n    let proxyBody = null;\n    try { proxyBody = JSON.parse(rawText ?? ''); } catch {}\n    const isTripointNullIdFault =\n      proxyBody?.ok === false &&\n      Array.isArray(proxyBody?.details) &&\n      proxyBody.details.some((d) =>\n        typeof d?.message === 'string' &&\n        d.message.includes('Cannot return null for non-nullable field CreateLeadResponse.id')\n      );\n\n    if (isTripointNullIdFault) {\n      console.warn('tripoint createLead null id: known transient Tripoint fault, routing to fallback');\n      return {\n        skipped: false,\n        qualified: false,\n        createLead: null,\n        resultCode: null,\n        tripointTransientFault: true,\n        debug: { httpStatus, rawText, parsed: proxyBody },\n        sale: NO_SALE,\n        sent_body_sha256,\n        tripoint_answer: 'null_id_fault',\n        unknown_reason: null,\n      };\n    }\n\n    // Tripoint rejects malformed lead data (bad email, phone, etc.) with the same\n    // 502 wrapper the proxy uses for real outages. These are business rejections,\n    // not infra faults: the lead data is bad and a retry won't help: so route\n    // them to the engine fallback (qualified=false, \u2192 reject path in\n    // build_response_body) instead of failing the whole execution.\n    const rejectionDetail = Array.isArray(proxyBody?.details)\n      ? proxyBody.details.find((d) =>\n          typeof d?.message === 'string' && /^\\s*invalid\\b/i.test(d.message)\n        )\n      : null;\n    const isTripointLeadRejection = proxyBody?.ok === false && !!rejectionDetail;\n\n    if (isTripointLeadRejection) {\n      const reason = rejectionDetail.message;\n      console.warn(`tripoint lead rejected (${reason}): routing to reject path`);\n      return {\n        skipped: false,\n        qualified: false,\n        createLead: null,\n        resultCode: null,\n        tripointLeadRejected: true,\n        rejectReason: reason,\n        debug: { httpStatus, rawText, parsed: proxyBody },\n        sale: NO_SALE,\n        sent_body_sha256,\n        tripoint_answer: 'invalid_data',\n        unknown_reason: null,\n      };\n    }\n\n    console.warn(`tripoint answer unknown (http_${httpStatus})`);\n    return unknownAnswer(`http_${httpStatus}`, { httpStatus, rawText, parsed: proxyBody });\n  }\n\nlet parsedOk = true;\ntry {\n  body = rawText ? JSON.parse(rawText) : {};\n  if (!rawText) parsedOk = false;\n} catch {\n  body = {};\n  parsedOk = false;\n}\n\nconst createLead = body?.data?.createLead ?? null;\nconst resultCode = createLead?.resultCode != null ? Number(createLead.resultCode) : null;\n\n// Only a 2xx that parses, says ok and carries a numeric result code is an answer\n// (#1540); anything else is unknown, whatever it contains.\nlet unknownReason = null;\nif (httpStatus < 200 || httpStatus >= 300) unknownReason = `http_${httpStatus}`;\nelse if (!parsedOk || body === null || typeof body !== 'object') unknownReason = 'unparseable_body';\nelse if (body.ok !== true) unknownReason = 'not_ok';\nelse if (resultCode === null || !Number.isFinite(resultCode)) unknownReason = 'no_result_code';\n\nif (unknownReason) {\n  console.warn(`tripoint answer unknown (${unknownReason})`);\n  return unknownAnswer(unknownReason, { httpStatus, rawText: rawText ?? null, parsed: body });\n}\n\nconst qualified =\n  body.ok === true &&\n  (resultCode === 1000 || resultCode === 1001 ||\n   (resultCode >= 1013 && resultCode <= 1017));\n\nlet tripoint_answer = 'declined';\nif (qualified) tripoint_answer = 'accepted';\nelse if (resultCode === 1009) tripoint_answer = 'in_progress';\n\nreturn {\n  skipped: false,\n  qualified,\n  createLead,\n  resultCode,\n  debug: {\n    httpStatus,\n    rawText: rawText ?? null,\n    parsed: body,\n  },\n  sale: tripointSale(qualified, createLead?.id ?? null, resultCode),\n  sent_body_sha256,\n  tripoint_answer,\n  unknown_reason: null,\n};\n",
+          "retries": 0,
+          "timeout_ms": 20000
+        },
+        "variables": {}
+      },
+      {
+        "id": "cf701938-b95f-4042-99a3-8d6b9d6e533f",
+        "namespace": "route_response_end",
+        "type": "branch_end",
+        "position": {
+          "x": -92,
+          "y": 3346
+        },
+        "config": {},
+        "variables": {}
+      },
+      {
+        "id": "28a3f988-184f-47a1-ae95-6121369d4c8f",
+        "namespace": "patch_prospect_reject",
+        "label": "Patch Prospect (Reject)",
+        "type": "salesforce",
+        "position": {
+          "x": -92,
+          "y": 2984
+        },
+        "config": {
+          "body": "{{steps.build_response_body.output.reject_patch}}",
+          "object": "Prospect__c",
+          "retries": 2,
+          "operation": "update",
+          "record_id": "{{steps.generate_trades_body.output.prospectId}}",
+          "timeout_ms": 1500,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "variables": {}
+      },
+      {
+        "id": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "namespace": "buyer_select",
+        "label": "Buyer Select",
+        "type": "buyer_select",
+        "position": {
+          "x": 60,
+          "y": 1429
+        },
+        "config": {
+          "debt": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}",
+          "mode": "live",
+          "state": "{{trigger.payload.personalInformation.state}}",
+          "retries": 0,
+          "lead_key": "{{trigger.payload.leadUuid}}",
+          "population": "engine",
+          "sale_payload": {
+            "set": [
+              {
+                "path": "unsecuredDebt",
+                "template": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}"
+              },
+              {
+                "path": "maxUnsecuredDebt",
+                "template": "{{steps.prospect_trades.output.body.tradeCalculations.enrollableDebt}}"
+              },
+              {
+                "path": "workflowId",
+                "template": "engine-bidding"
+              },
+              {
+                "path": "pennieLeadId",
+                "template": "{{steps.create_prospect.output.body.id}}"
+              },
+              {
+                "path": "executionId",
+                "template": "{{execution.trace_id}}"
+              },
+              {
+                "path": "leadType",
+                "template": "prospect"
+              }
+            ],
+            "base": "{{trigger.payload}}",
+            "normalise": [
+              {
+                "path": "personalInformation.ssn",
+                "normaliser": "ssn_digits_9"
+              }
+            ]
+          },
+          "sell_off_when": "{{steps.prospect_trades.output.body.sellOff}}",
+          "live_percent_env": "BUYER_SELECT_ENGINE_PERCENT",
+          "bid_when_positive": "{{steps.prospect_trades.output.body.engineBid}}"
+        },
+        "variables": {}
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-000000000001",
+        "namespace": "known_no_gate",
+        "label": "Known No Gate",
+        "type": "code",
+        "position": {
+          "x": 516,
+          "y": 1773
+        },
+        "config": {
+          "script": "// Known no gate (#1544): may a click sold buyer be offered this lead?\n//\n// Only on a KNOWN no from the node that decided the lead. An unknown answer (a timeout,\n// a proxy 5xx, 1009 in progress, a buyer error, an outcome nobody could read) may be a\n// sale the buyer made and never told us about, so offering the lead again could sell it\n// twice (Dan, 2026-09-24). Anything this script does not recognise is not a known no.\n//\n// The deciding node is read by the same rule build_response_body reads its sale by:\n// tripoint_ping when it carries a sale, else buyer_select when it carries one, else\n// tripoint_ping. So the gate keeps working when buyer_select sells live at Stage B and\n// tripoint_ping no longer runs.\n//\n//   tripoint_ping: its tripoint_answer (#1540) is declined, invalid_data or null_id_fault.\n//                  An older script that names no answer is not a known no.\n//   buyer_select:  it routed no_sale because the buyer declined (declined_by_buyer).\n//\n// The Branch after this node sends known_no true to the buyer_click_check node.\nconst KNOWN_NO_ANSWERS = ['declined', 'invalid_data', 'null_id_fault'];\n\nconst tp = steps.tripoint_ping?.output ?? null;\nconst bs = steps.buyer_select?.output ?? null;\n\nlet decidedBy = null;\nif (tp && tp.sale) decidedBy = 'tripoint_ping';\nelse if (bs && bs.sale) decidedBy = 'buyer_select';\nelse if (tp) decidedBy = 'tripoint_ping';\n\nif (decidedBy === 'tripoint_ping') {\n  const answer = typeof tp.tripoint_answer === 'string' ? tp.tripoint_answer : null;\n  return { known_no: answer !== null && KNOWN_NO_ANSWERS.includes(answer), decided_by: decidedBy, answer };\n}\nif (decidedBy === 'buyer_select') {\n  const answer = typeof bs.reason === 'string' ? bs.reason : null;\n  return { known_no: bs._route === 'no_sale' && answer === 'declined_by_buyer', decided_by: decidedBy, answer };\n}\nreturn { known_no: false, decided_by: null, answer: null };",
+          "retries": 2,
+          "timeout_ms": 150
+        },
+        "variables": {}
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-000000000002",
+        "namespace": "route_known_no",
+        "label": "Route Known No",
+        "type": "branch",
+        "position": {
+          "x": 364,
+          "y": 1926
+        },
+        "config": {
+          "retries": 0,
+          "branches": [
+            {
+              "label": "known_no",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.known_no_gate.output.known_no",
+                        "value": "true",
+                        "operator": "is_true"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "timeout_ms": 100,
+          "else_behavior": "output"
+        },
+        "variables": {}
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-000000000003",
+        "namespace": "buyer_click_check",
+        "label": "Buyer Click Check",
+        "type": "buyer_click_check",
+        "position": {
+          "x": 364,
+          "y": 2107
+        },
+        "config": {
+          "debt": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}",
+          "state": "{{trigger.payload.personalInformation.state}}",
+          "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+          "population": "engine",
+          "loan_amount": "{{trigger.payload.loanInformation.loanAmount}}"
+        },
+        "variables": {}
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-000000000004",
+        "namespace": "route_known_no_end",
+        "type": "branch_end",
+        "position": {
+          "x": 364,
+          "y": 2344
+        },
+        "config": {},
+        "variables": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "0722ba8d-d49a-460d-a10c-012780bf4fc4",
+        "source": "trigger",
+        "target": "db720491-42a9-443e-bc47-7e7afa9348c8",
+        "source_handle": "output"
+      },
+      {
+        "id": "630a8888-cd2b-4593-b4db-10d385b5795d",
+        "source": "5786b44b-8be8-41a3-969f-e56bafc54da4",
+        "target": "a0f687ec-9672-495f-8573-931ae8052fa1",
+        "source_handle": "output"
+      },
+      {
+        "id": "5612dc8c-e750-4cfa-b0c0-242ef5048f64",
+        "source": "db720491-42a9-443e-bc47-7e7afa9348c8",
+        "target": "5786b44b-8be8-41a3-969f-e56bafc54da4",
+        "source_handle": "output"
+      },
+      {
+        "id": "02eb5e2d-05bb-4043-afa7-cddb75c25c16",
+        "source": "9edf4e24-9e34-4b11-86b3-87964450d561",
+        "target": "e51beb1c-0418-4aad-9f74-1312d4dec98d",
+        "source_handle": "output"
+      },
+      {
+        "id": "841165f6-2d54-40e3-927d-3a00cee4d967",
+        "source": "e51beb1c-0418-4aad-9f74-1312d4dec98d",
+        "target": "5f908a4c-6d09-46b9-88a6-70ca59be0050",
+        "source_handle": "output"
+      },
+      {
+        "id": "84f3c68a-014f-4edf-85f9-1e2a544175db",
+        "source": "a0f687ec-9672-495f-8573-931ae8052fa1",
+        "target": "b8ea4a36-51d3-400f-bbfc-4a0a64954d70",
+        "source_handle": "output"
+      },
+      {
+        "id": "81e159bf-5b63-4ef8-9c42-28a97fd5edef",
+        "source": "d6619618-7234-4d0a-aecc-32214e58f35b",
+        "target": "b84d79a0-a2dd-4cbd-a777-ef3a3298e2ea",
+        "source_handle": "output"
+      },
+      {
+        "id": "89fd5d98-72a7-4408-884b-16de42392d48",
+        "source": "b8ea4a36-51d3-400f-bbfc-4a0a64954d70",
+        "target": "a6839dbe-f2ac-4001-ae49-c33ddad26237",
+        "source_handle": "output"
+      },
+      {
+        "id": "043968bd-0790-4186-b5e5-e50580e0f44a",
+        "source": "a6839dbe-f2ac-4001-ae49-c33ddad26237",
+        "target": "9edf4e24-9e34-4b11-86b3-87964450d561",
+        "source_handle": "output"
+      },
+      {
+        "id": "b8cb6458-f9c2-41a5-bec4-81d2106f8c63",
+        "source": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+        "target": "1f4973f3-1ed2-4491-a319-c0774a5393a7",
+        "source_handle": "output"
+      },
+      {
+        "id": "4914d8cd-9a1c-42a0-9953-09b2bb22df61",
+        "source": "1f4973f3-1ed2-4491-a319-c0774a5393a7",
+        "target": "91d5945c-5848-4d39-80d8-b23ceb578346",
+        "source_handle": "reject"
+      },
+      {
+        "id": "72310089-575e-4913-8873-0e32e3aac19e",
+        "source": "1f4973f3-1ed2-4491-a319-c0774a5393a7",
+        "target": "78c724df-65d6-440f-97b8-dc44cc287b87",
+        "source_handle": "offer"
+      },
+      {
+        "id": "200bca27-74a5-4f7f-8101-9098d01748b0",
+        "source": "78c724df-65d6-440f-97b8-dc44cc287b87",
+        "target": "d6619618-7234-4d0a-aecc-32214e58f35b",
+        "source_handle": "output"
+      },
+      {
+        "id": "184d1561-7abd-4a55-a896-791b0688dbb4",
+        "source": "1f4973f3-1ed2-4491-a319-c0774a5393a7",
+        "target": "cf701938-b95f-4042-99a3-8d6b9d6e533f",
+        "source_handle": "output"
+      },
+      {
+        "id": "c20fa7cc-ada7-4e5b-ad11-6611d85246ce",
+        "source": "b84d79a0-a2dd-4cbd-a777-ef3a3298e2ea",
+        "target": "cf701938-b95f-4042-99a3-8d6b9d6e533f",
+        "source_handle": "output"
+      },
+      {
+        "id": "3400410f-c81a-4f3e-bc6f-51ea89b309fe",
+        "source": "91d5945c-5848-4d39-80d8-b23ceb578346",
+        "target": "28a3f988-184f-47a1-ae95-6121369d4c8f",
+        "source_handle": "output"
+      },
+      {
+        "id": "c253886c-68fe-4eca-b297-e310cd7b81bd",
+        "source": "28a3f988-184f-47a1-ae95-6121369d4c8f",
+        "target": "cf701938-b95f-4042-99a3-8d6b9d6e533f",
+        "source_handle": "output"
+      },
+      {
+        "id": "a82f8131-a8e7-4b28-a381-e675d70211ef",
+        "source": "5f908a4c-6d09-46b9-88a6-70ca59be0050",
+        "target": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "source_handle": "output"
+      },
+      {
+        "id": "c7ae4d6c-cac5-44fa-a508-55094b14f9c7",
+        "source": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "target": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+        "source_handle": "output"
+      },
+      {
+        "id": "78532545-a982-46d3-9da1-e3406dab3c70",
+        "source": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "target": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+        "source_handle": "not_applicable"
+      },
+      {
+        "id": "1e744945-328b-4202-a098-954911b99e7a",
+        "source": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "target": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+        "source_handle": "deferred"
+      },
+      {
+        "id": "7d3b1b9f-4821-456f-abbb-3d31f5100433",
+        "source": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "target": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+        "source_handle": "sold"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e1",
+        "source": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+        "target": "0192a4f0-1544-7000-8000-000000000001",
+        "source_handle": "output"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e2",
+        "source": "9a0435ac-fdf6-4c69-af18-40389ea0a926",
+        "target": "0192a4f0-1544-7000-8000-000000000001",
+        "source_handle": "no_sale"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e3",
+        "source": "0192a4f0-1544-7000-8000-000000000001",
+        "target": "0192a4f0-1544-7000-8000-000000000002",
+        "source_handle": "output"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e4",
+        "source": "0192a4f0-1544-7000-8000-000000000002",
+        "target": "0192a4f0-1544-7000-8000-000000000003",
+        "source_handle": "known_no"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e5",
+        "source": "0192a4f0-1544-7000-8000-000000000002",
+        "target": "0192a4f0-1544-7000-8000-000000000004",
+        "source_handle": "else"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e6",
+        "source": "0192a4f0-1544-7000-8000-000000000002",
+        "target": "0192a4f0-1544-7000-8000-000000000004",
+        "source_handle": "output"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e7",
+        "source": "0192a4f0-1544-7000-8000-000000000003",
+        "target": "0192a4f0-1544-7000-8000-000000000004",
+        "source_handle": "eligible"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e8",
+        "source": "0192a4f0-1544-7000-8000-000000000003",
+        "target": "0192a4f0-1544-7000-8000-000000000004",
+        "source_handle": "not_eligible"
+      },
+      {
+        "id": "0192a4f0-1544-7000-8000-0000000000e9",
+        "source": "0192a4f0-1544-7000-8000-000000000004",
+        "target": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+        "source_handle": "output"
+      }
+    ]
+  }
+}

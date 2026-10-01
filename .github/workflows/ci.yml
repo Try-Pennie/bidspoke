@@ -153,6 +153,76 @@ jobs:
       - name: Test web
         run: pnpm --filter web test
 
+  # THE MONEY GATE (#1704): synthetic leads through the bidding engine at the
+  # merge base and at the head of the pull request, with real code nodes, Durable
+  # Objects and KV, network off, and every outbound request, Supabase write,
+  # object mutation, route, final node, response and code namespace compared.
+  # Any difference fails, naming the fixture, the check, the node and the field.
+  # The design is the plan on #1687; how to read and maintain it is in
+  # apps/worker/money-gate/README.md.
+  #
+  # It starts on every pull request and decides from the changed files whether it
+  # has anything to do, for the reason the a11y job below explains: a job cannot
+  # carry its own paths filter. The decision fails closed, and the paths that wake
+  # it are derived from every input it reads, held by
+  # apps/worker/money-gate/lib/__tests__/inputs-changed.test.ts (L88).
+  #
+  # The same script runs on every push to main inside deploy.yml's verify-worker,
+  # as a second line that does not depend on this job having run.
+  money-gate:
+    name: Money gate
+    runs-on: ubuntu-latest
+    # Measured locally at about 25s for both replays and the verdict; the rest is
+    # checkout, two installs and workerd start. Bounds a hang (#885).
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    # The changed-files lookup needs pull-requests read; the default token lacks it.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # The pull request's merge commit, what would land, with history so the script
+      # can find its merge base with main (the base commit itself, its first parent).
+      # Not pinned to another ref: pnpm-version-declared.test.ts requires the pnpm
+      # setup to read the commit under test.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether an input of the money gate changed
+        id: inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            ok=true
+          else
+            ok=false
+            files=""
+          fi
+          changed=$(bash .github/scripts/money-gate-inputs-changed.sh "${PR}" "${ok}" "${files}")
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v6
+        if: steps.inputs.outputs.changed == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.inputs.outputs.changed == 'true'
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        if: steps.inputs.outputs.changed == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Money gate
+        if: steps.inputs.outputs.changed == 'true'
+        env:
+          MONEY_GATE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/scripts/money-gate.sh "$MONEY_GATE_BASE"
+
 
   # WHY THIS JOB STARTS AND THEN SKIPS ITS STEPS, RATHER THAN NOT STARTING (#894)
   #

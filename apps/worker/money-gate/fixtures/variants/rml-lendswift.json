@@ -1,0 +1,30 @@
+{
+  "workflow_id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+  "workflow_name": "RML - Bidding Workflow (LendSwift)",
+  "common": {
+    "source": "rml-lendswift",
+    "set": {
+      "subAccountUuid": "0d868153-1e04-4425-95f9-ce2320a030b0",
+      "personalInformation.state": "TX",
+      "personalInformation.firstName": "Synthia",
+      "personalInformation.lastName": "Gatekeeper",
+      "loanInformation.loanAmount": 1000,
+      "loanInformation.purpose": "debt_consolidation",
+      "financialInformation.annualIncome": 50000,
+      "financialInformation.employmentStatus": "employed_full_time"
+    }
+  },
+  "variants": [
+    { "name": "bid", "purpose": "LendSwift accepts above the sub account floor: offer, patch_applicant Bid" },
+    { "name": "bid_unfloored_sub_account", "purpose": "a sub account with no floor", "set": { "subAccountUuid": "00000000-0000-4000-8000-00000000c0de" } },
+    { "name": "below_floor", "purpose": "accepted under the sub account floor: bid_below_threshold, No Bid", "stubs": { "taktile_decide": "low_bid" } },
+    { "name": "rejected", "purpose": "LendSwift rejects: unqualified_lead, No Bid", "stubs": { "taktile_decide": "rejected" } },
+    { "name": "decide_outage", "purpose": "a 503 from decide: the error response", "stubs": { "taktile_decide": "outage" } },
+    { "name": "ineligible_state", "purpose": "a state LendSwift does not take", "set": { "personalInformation.state": "CA" } },
+    { "name": "loan_over_maximum", "purpose": "loan amount over the maximum", "set": { "loanInformation.loanAmount": 9000 } },
+    { "name": "military", "purpose": "the military exclusion (#926)", "set": { "financialInformation.employmentStatus": "military" } },
+    { "name": "employment_missing", "purpose": "no employment status: fails closed", "unset": ["financialInformation.employmentStatus"] },
+    { "name": "invalid_name", "purpose": "a name with no letters", "set": { "personalInformation.firstName": "1", "personalInformation.lastName": "2" } },
+    { "name": "applicant_create_blocked", "purpose": "Salesforce refuses the applicant", "stubs": { "salesforce_create": "blocked" } }
+  ]
+}
