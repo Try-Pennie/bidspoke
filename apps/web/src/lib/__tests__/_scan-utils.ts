@@ -394,6 +394,32 @@ export function workflowJobBody(yaml: string, jobId: string): string {
   return lines.slice(start, end).join('\n')
 }
 
+/**
+ * The steps of one job body (as `workflowJobBody` returns it), in file order,
+ * each with its `name:` (null for an unnamed step such as a bare `uses:`) and
+ * its own lines. A step starts at a `- ` six spaces deep and runs to the next.
+ */
+export function workflowSteps(jobBody: string): Array<{ name: string | null; body: string }> {
+  const lines = jobBody.split('\n')
+  const starts = lines.flatMap((line, i) => (/^ {6}- /.test(line) ? [i] : []))
+  return starts.map((start, n) => {
+    const body = lines.slice(start, starts[n + 1] ?? lines.length).join('\n')
+    const name = /^ {6}(?:- | {2})name:\s*(.+?)\s*$/m.exec(body)?.[1] ?? null
+    return { name, body }
+  })
+}
+
+/** The body of the one step in `jobBody` whose `name:` is `stepName`. */
+export function workflowStepBody(jobBody: string, stepName: string): string {
+  const steps = workflowSteps(jobBody)
+  const matches = steps.filter((s) => s.name === stepName)
+  if (matches.length !== 1) {
+    const found = steps.map((s) => s.name ?? '(unnamed)').join(', ')
+    throw new Error(`expected exactly one step named '${stepName}', found ${matches.length}. Steps: ${found}`)
+  }
+  return matches[0].body
+}
+
 /** Read a workflow file from the repo and return its text. */
 export function readWorkflow(relativePath: string): string {
   const file = path.join(REPO_ROOT, relativePath)

@@ -251,7 +251,7 @@ jobs:
     # pull-requests, so the changed-files lookup below needs this explicitly.
     # Without it the lookup fails, the job fails closed and scans everything,
     # and the scoping is silently inert while every run still reports success.
-    # direct-push-guard declares the same pair for the same reason.
+    # The security job declares the same pair for its direct push step.
     permissions:
       contents: read
       pull-requests: read
@@ -617,14 +617,34 @@ jobs:
         if: steps.web.outputs.changed == 'true'
         run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/gate-report.json" 23
 
-  db-types-fresh:
-    name: DB types regenerated with schema migrations
+  security:
+    name: Security scans
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    # The direct push step reads the pull request record, and the repo default
+    # token grants contents and packages read, not pull-requests.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # Node runs the coverage checks below. Pinned rather than relying on
+      # whatever the runner image happens to ship. No pnpm install: these scanners
+      # read the tree and the lockfile, not node_modules.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # THE SHORT GUARDS RUN HERE AS STEPS, NOT AS JOBS OF THEIR OWN. Each took
+      # under 15 seconds and was billed a full minute as a job, about 1,500
+      # billed minutes a month (measured 15 to 30 September 2026). Each step keeps
+      # the event condition its job had, and every check step in this job carries
+      # !cancelled(), because a job skips the steps after a failed one by default:
+      # without it a flaky scanner download would silently stop a guard running.
+      # Guarded by apps/web/src/lib/__tests__/ci-short-guards-folded.test.ts.
 
       # Fast reminder: if a migration changes table/column/type DDL but the
       # generated Supabase types weren't regenerated, the typed client drifts
@@ -646,7 +666,8 @@ jobs:
       # to main, so a PR-only gate never fires and drift was only caught hours
       # later by the nightly cron. The diff base differs by event: a PR diffs
       # against its base branch; a push diffs against the commit before it.
-      - name: Require a types regen when migrations change schema DDL
+      - name: DB types regenerated with schema migrations
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -677,134 +698,31 @@ jobs:
           fi
           echo "DB types freshness check passed."
 
-  security:
-    name: Security scans
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      # Node runs the coverage checks below. Pinned rather than relying on
-      # whatever the runner image happens to ship. No pnpm install: these scanners
-      # read the tree and the lockfile, not node_modules.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
+      # Push to main only. On a pull request the head commit legitimately has no
+      # merged PR yet, so running there would fail every single PR, and a guard
+      # that is always red is a guard nobody reads.
       #
-      # This job reported success on every run from 2026-07-27 to 2026-08-14 while
-      # auditing nothing at all: pnpm-lock.yaml carried a duplicated entry, Trivy
-      # could not parse it, so it skipped the file, found zero targets and exited 0.
-      # Its summary read `- | - | -`, where `-` means NOT SCANNED, not clean.
-      # Repairing the lockfile (#778) immediately surfaced a real HIGH that had been
-      # invisible for eighteen days, so the green was never evidence of anything.
+      # Server-side branch protection is unavailable here: both
+      # repos/Try-Pennie/bidspoke/rulesets and .../branches/main/protection return
+      # 403 "Upgrade to GitHub Pro or make this repository public" (#266 stays open
+      # on that billing decision). Merges to main deploy the production bidding
+      # engine, and the husky hooks that partially cover the gap are bypassable
+      # with --no-verify / SKIP_TEST_CHECK. So this reports a direct push after the
+      # fact rather than preventing it.
       #
-      # Each scanner therefore writes a machine-readable report and
-      # .github/scripts/scan-coverage.mjs owns both decisions: did you cover your
-      # subject, and did you find anything. Coverage is judged FIRST, because a scan
-      # that covered nothing has not earned the right to report clean (LESSONS L98).
-      # The checks are unit-tested in apps/web/src/lib/__tests__/scan-coverage.test.ts.
-
-      # Dependency vulnerabilities (#263). Fails on any NEW high/critical advisory
-      # in a PRODUCTION dependency. Pre-existing highs are patched via
-      # pnpm.overrides (real fixes) or baselined per-advisory in .trivyignore.
-      # See docs/security/dependency-audit-baseline.md.
+      # Two independent sources, because of LESSONS L119: GitHub's commit-to-PR
+      # association index can return empty for a genuinely reviewed, merged PR and
+      # can stay permanently incomplete rather than catch up. It did exactly that
+      # on another repo during an API incident and paged "review bypassed" about a
+      # squash merge of a green, reviewed PR. So an empty index is confirmed
+      # against the PR record before anything is reported.
       #
-      # Replaces `pnpm audit`, which broke permanently once npm retired the legacy
-      # audit endpoint (410 Gone). Trivy reads pnpm-lock.yaml directly against its
-      # own maintained DB (no npm endpoint) and excludes dev/test tooling by
-      # default. Binary invocation matches the gitleaks pattern below.
-      - name: Dependency audit (Trivy)
-        run: |
-          set -euo pipefail
-          VER=0.72.0
-          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin "v${VER}"
-          # A clean scan still emits a Results entry for the target with zero
-          # vulnerabilities, which is what makes clean distinguishable from
-          # never-scanned. An unparseable lockfile yields `Results: null`.
-          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 \
-            --ignorefile .trivyignore --no-progress \
-            --format json --output "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
-          node .github/scripts/scan-coverage.mjs trivy "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
-
-      # Secret scanning (#264). Scans the working tree for committed secrets.
-      # Binary invocation avoids the org-license requirement of the v2 action.
-      #
-      # Gitleaks emits NO coverage signal of any kind: an empty report is what a
-      # clean scan produces and also what a scan over nothing produces. So the run
-      # plants a canary secret its ruleset must catch and requires it back (#779).
-      # That proves more than a file count could, because an allowlist broad enough
-      # to suppress every finding would leave a healthy-looking count behind. The
-      # canary is generated here and never committed.
-      - name: Secret scan (gitleaks)
-        run: |
-          set -euo pipefail
-          VER=8.21.2
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
-          tar -xzf gitleaks.tgz gitleaks
-          CANARY=gitleaks-canary.tmp.txt
-          trap 'rm -f "$CANARY"' EXIT
-          printf 'ghp_%s\n' "$(openssl rand -hex 18)" > "$CANARY"
-          ./gitleaks detect --source . --no-git --redact --no-banner --exit-code 0 \
-            --report-format json --report-path "$RUNNER_TEMP/gitleaks-report.json"
-          node .github/scripts/scan-coverage.mjs gitleaks "$RUNNER_TEMP/gitleaks-report.json" "$CANARY"
-
-      # SAST (#264). Security-focused rulesets only (not style), ERROR severity, no
-      # account/token needed for public rulesets. Prioritizes injection / secret /
-      # node-security patterns over the Worker code-node sandbox + proxy paths.
-      #
-      # The required trees are named rather than counted (#779): an --exclude that
-      # grows until a whole tree is unaudited still leaves a healthy-looking file
-      # count behind. Measured 2026-08-14 at 576 files, 139 of them worker source.
-      - name: SAST (Semgrep)
-        run: |
-          set -euo pipefail
-          pip install --quiet semgrep
-          semgrep scan --severity ERROR \
-            --config p/security-audit --config p/secrets --config p/nodejs \
-            --metrics off --exclude 'graphify-out' --exclude '*.test.ts' \
-            --json --output "$RUNNER_TEMP/semgrep-report.json"
-          node .github/scripts/scan-coverage.mjs semgrep "$RUNNER_TEMP/semgrep-report.json" \
-            apps/worker/src/ apps/web/src/ apps/worker-tail/src/
-
-  direct-push-guard:
-    name: Main has no unreviewed direct push
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # Push to main only. On a pull request the head commit legitimately has no
-    # merged PR yet, so running there would fail every single PR, and a guard
-    # that is always red is a guard nobody reads.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      pull-requests: read
-    # Server-side branch protection is unavailable here: both
-    # repos/Try-Pennie/bidspoke/rulesets and .../branches/main/protection return
-    # 403 "Upgrade to GitHub Pro or make this repository public" (#266 stays open
-    # on that billing decision). Merges to main deploy the production bidding
-    # engine, and the husky hooks that partially cover the gap are bypassable
-    # with --no-verify / SKIP_TEST_CHECK. So this reports a direct push after the
-    # fact rather than preventing it.
-    #
-    # Two independent sources, because of LESSONS L119: GitHub's commit-to-PR
-    # association index can return empty for a genuinely reviewed, merged PR and
-    # can stay permanently incomplete rather than catch up. It did exactly that
-    # on another repo during an API incident and paged "review bypassed" about a
-    # squash merge of a green, reviewed PR. So an empty index is confirmed
-    # against the PR record before anything is reported.
-    #
-    # Calibrated against real history on 2026-08-14, both directions: of the last
-    # 20 commits on main, the 3 PR merges each resolved to a PR by
-    # mergeCommit.oid, and the 6 with no association also had no PR recording
-    # them, so those are true direct pushes rather than an index gap.
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Check the head commit came in through a pull request
+      # Calibrated against real history on 2026-08-14, both directions: of the last
+      # 20 commits on main, the 3 PR merges each resolved to a PR by
+      # mergeCommit.oid, and the 6 with no association also had no PR recording
+      # them, so those are true direct pushes rather than an index gap.
+      - name: Main has no unreviewed direct push
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
@@ -831,36 +749,27 @@ jobs:
           fi
           echo "OK: this commit reached main through a pull request."
 
-  # A pull request must actually CLOSE the issue its title names (#1134).
-  #
-  # This repo's convention names the issue in parentheses, `... (#1017)`, and 191
-  # of 360 merged pull requests do it. A parenthesised mention closes NOTHING:
-  # GitHub acts only on a keyword such as `Closes #1017`. Measured 2026-09-03
-  # across every merged pull request: 119 (34%) carry no keyword at all, and
-  # seven open issues are named in a merged pull request's title with nothing
-  # closing them. #986 and #1017 were two of those, both already shipped, and
-  # they made the "Verified backup before deletion" milestone read as 42 issues
-  # of outstanding work when part of it was done.
-  #
-  # This BLOCKS, unlike the direct-push guard below it, and the difference is
-  # deliberate: that one accuses after a merge so it must stay quiet when
-  # unsure, this one withholds a merge while the author is still here and the
-  # whole remedy is one line in the body. Escape hatch for a deliberate
-  # reference is `Refs only: #875`, honoured per issue rather than per PR.
-  #
-  # Title and body go through `env:` rather than `${{ }}` inside the script, so
-  # a pull request body can never be interpolated into the shell.
-  issue-closure-guard:
-    name: Pull request closes the issue it names
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Check the title's issues are actually closed
+      # A pull request must actually CLOSE the issue its title names (#1134).
+      #
+      # This repo's convention names the issue in parentheses, `... (#1017)`, and 191
+      # of 360 merged pull requests do it. A parenthesised mention closes NOTHING:
+      # GitHub acts only on a keyword such as `Closes #1017`. Measured 2026-09-03
+      # across every merged pull request: 119 (34%) carry no keyword at all, and
+      # seven open issues are named in a merged pull request's title with nothing
+      # closing them. #986 and #1017 were two of those, both already shipped, and
+      # they made the "Verified backup before deletion" milestone read as 42 issues
+      # of outstanding work when part of it was done.
+      #
+      # This BLOCKS, unlike the direct push step above it, and the difference is
+      # deliberate: that one accuses after a merge so it must stay quiet when
+      # unsure, this one withholds a merge while the author is still here and the
+      # whole remedy is one line in the body. Escape hatch for a deliberate
+      # reference is `Refs only: #875`, honoured per issue rather than per PR.
+      #
+      # Title and body go through `env:` rather than `${{ }}` inside the script, so
+      # a pull request body can never be interpolated into the shell.
+      - name: Pull request closes the issue it names
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -878,3 +787,84 @@ jobs:
               ;;
           esac
           echo "OK: every issue this title names is closed by a keyword or marked as a reference only."
+
+      # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
+      #
+      # This job reported success on every run from 2026-07-27 to 2026-08-14 while
+      # auditing nothing at all: pnpm-lock.yaml carried a duplicated entry, Trivy
+      # could not parse it, so it skipped the file, found zero targets and exited 0.
+      # Its summary read `- | - | -`, where `-` means NOT SCANNED, not clean.
+      # Repairing the lockfile (#778) immediately surfaced a real HIGH that had been
+      # invisible for eighteen days, so the green was never evidence of anything.
+      #
+      # Each scanner therefore writes a machine-readable report and
+      # .github/scripts/scan-coverage.mjs owns both decisions: did you cover your
+      # subject, and did you find anything. Coverage is judged FIRST, because a scan
+      # that covered nothing has not earned the right to report clean (LESSONS L98).
+      # The checks are unit-tested in apps/web/src/lib/__tests__/scan-coverage.test.ts.
+
+      # Dependency vulnerabilities (#263). Fails on any NEW high/critical advisory
+      # in a PRODUCTION dependency. Pre-existing highs are patched via
+      # pnpm.overrides (real fixes) or baselined per-advisory in .trivyignore.
+      # See docs/security/dependency-audit-baseline.md.
+      #
+      # Replaces `pnpm audit`, which broke permanently once npm retired the legacy
+      # audit endpoint (410 Gone). Trivy reads pnpm-lock.yaml directly against its
+      # own maintained DB (no npm endpoint) and excludes dev/test tooling by
+      # default. Binary invocation matches the gitleaks pattern below.
+      - name: Dependency audit (Trivy)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          VER=0.72.0
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin "v${VER}"
+          # A clean scan still emits a Results entry for the target with zero
+          # vulnerabilities, which is what makes clean distinguishable from
+          # never-scanned. An unparseable lockfile yields `Results: null`.
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 \
+            --ignorefile .trivyignore --no-progress \
+            --format json --output "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
+          node .github/scripts/scan-coverage.mjs trivy "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
+
+      # Secret scanning (#264). Scans the working tree for committed secrets.
+      # Binary invocation avoids the org-license requirement of the v2 action.
+      #
+      # Gitleaks emits NO coverage signal of any kind: an empty report is what a
+      # clean scan produces and also what a scan over nothing produces. So the run
+      # plants a canary secret its ruleset must catch and requires it back (#779).
+      # That proves more than a file count could, because an allowlist broad enough
+      # to suppress every finding would leave a healthy-looking count behind. The
+      # canary is generated here and never committed.
+      - name: Secret scan (gitleaks)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          VER=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
+          tar -xzf gitleaks.tgz gitleaks
+          CANARY=gitleaks-canary.tmp.txt
+          trap 'rm -f "$CANARY"' EXIT
+          printf 'ghp_%s\n' "$(openssl rand -hex 18)" > "$CANARY"
+          ./gitleaks detect --source . --no-git --redact --no-banner --exit-code 0 \
+            --report-format json --report-path "$RUNNER_TEMP/gitleaks-report.json"
+          node .github/scripts/scan-coverage.mjs gitleaks "$RUNNER_TEMP/gitleaks-report.json" "$CANARY"
+
+      # SAST (#264). Security-focused rulesets only (not style), ERROR severity, no
+      # account/token needed for public rulesets. Prioritizes injection / secret /
+      # node-security patterns over the Worker code-node sandbox + proxy paths.
+      #
+      # The required trees are named rather than counted (#779): an --exclude that
+      # grows until a whole tree is unaudited still leaves a healthy-looking file
+      # count behind. Measured 2026-08-14 at 576 files, 139 of them worker source.
+      - name: SAST (Semgrep)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          pip install --quiet semgrep
+          semgrep scan --severity ERROR \
+            --config p/security-audit --config p/secrets --config p/nodejs \
+            --metrics off --exclude 'graphify-out' --exclude '*.test.ts' \
+            --json --output "$RUNNER_TEMP/semgrep-report.json"
+          node .github/scripts/scan-coverage.mjs semgrep "$RUNNER_TEMP/semgrep-report.json" \
+            apps/worker/src/ apps/web/src/ apps/worker-tail/src/

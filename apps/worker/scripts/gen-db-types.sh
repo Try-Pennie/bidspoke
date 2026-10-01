@@ -52,7 +52,7 @@ fi
   # SUPABASE_DB_URL points the generator at a database by connection string
   # instead of at the hosted project (#1409): the SQL suite's throwaway Postgres
   # holds migrations that are not yet applied to production, and a PR that adds
-  # a table must commit the types for it in the same change (db-types-fresh).
+  # a table must commit the types for it in the same change (CI's DB types step).
   # The nightly drift check still regenerates from the hosted project, so a
   # difference between the two generators is noticed there, on purpose (L552).
   if [ -n "${SUPABASE_DB_URL:-}" ]; then

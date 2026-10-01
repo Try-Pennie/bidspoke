@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
+import { REPO_ROOT, readWorkflow, workflowJobBody, workflowStepBody } from './_scan-utils'
 
 /**
  * Issue #760, the free stand-in for #266.
@@ -127,29 +127,32 @@ describe('ci.yml wires the direct-push guard in (#760)', () => {
   }
 
   /**
-   * One job's body, comments blanked. Sliced by the shared helper (#1066) rather
-   * than by a seventh hand-rolled parser: comments are blanked AFTER the slice,
-   * because blanking first moves every offset the slicer would work from.
+   * The guard's step inside the Security scans job, comments blanked. It was a
+   * job of its own until the short guards were folded in to stop each billing a
+   * full minute. Comments are blanked AFTER the slice, because blanking first
+   * moves every offset the slicer would work from.
    */
-  function jobBlock(name: string): string {
-    return stripYamlComments(workflowJobBody(workflowText(), name))
+  function guardStep(): string {
+    return stripYamlComments(
+      workflowStepBody(workflowJobBody(workflowText(), 'security'), 'Main has no unreviewed direct push'),
+    )
   }
 
-  it('has a job that calls the decision script', () => {
-    expect(jobBlock('direct-push-guard')).toContain('main-push-decision.sh')
+  it('has a step that calls the decision script', () => {
+    expect(guardStep()).toContain('main-push-decision.sh')
   })
 
   it('runs only on a push to main, never on a pull request', () => {
     // On a PR the head commit legitimately has no merged PR yet, so running there
     // would fail every single PR: a guard that is always red is a guard nobody reads.
-    const job = jobBlock('direct-push-guard')
+    const job = guardStep()
     expect(job).toMatch(/github\.event_name\s*==\s*'push'/)
     expect(job).toMatch(/github\.ref\s*==\s*'refs\/heads\/main'/)
   })
 
   it('consults the PR record as well as the association index', () => {
     // Both sources, or the L119 false accusation is reintroduced.
-    const job = jobBlock('direct-push-guard')
+    const job = guardStep()
     expect(job).toContain('/pulls')
     // The --json flag must actually REQUEST mergeCommit, not merely mention it.
     // Found by mutation-checking: swapping `--json mergeCommit` for
@@ -162,6 +165,6 @@ describe('ci.yml wires the direct-push guard in (#760)', () => {
   })
 
   it('fails the build on a violation, so the report is not merely a log line', () => {
-    expect(jobBlock('direct-push-guard')).toMatch(/exit 1/)
+    expect(guardStep()).toMatch(/exit 1/)
   })
 })

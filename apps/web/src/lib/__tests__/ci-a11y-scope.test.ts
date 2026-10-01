@@ -85,7 +85,7 @@ describe('accessibility scan scoping', () => {
     // (L90, L98). Measured 2026-08-19 on #885, which emitted "Could not
     // determine the changed files, so the accessibility scan runs."
     //
-    // direct-push-guard already declares exactly this for the same reason.
+    // The security job declares exactly this for its direct push step.
     const section = a11ySection()
     const beforeSteps = section.slice(0, section.indexOf('steps:'))
 
