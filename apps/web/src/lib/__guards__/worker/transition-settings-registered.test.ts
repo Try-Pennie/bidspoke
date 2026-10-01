@@ -21,7 +21,11 @@ import { isRegisteredTransitionSetting } from '../../../../../worker/src/lib/tra
 const REGISTRY_FILE = path.join(WORKER_SRC, 'lib', 'transition-settings.ts')
 
 const PREFIX = /^(porting|rollout|validation)\./
-const FULL_KEY = /^(porting|rollout|validation)\.[A-Za-z0-9_.-]+$/
+// One character rule for every check: a whole key, and the known part of a key
+// built at run time, so the three cannot drift apart (review of #1715).
+const KEY_CHARS = '[A-Za-z0-9_.-]'
+const FULL_KEY = new RegExp(`^(porting|rollout|validation)\\.${KEY_CHARS}+$`)
+const KEY_HEAD = new RegExp(`^(porting|rollout|validation)\\.${KEY_CHARS}*$`)
 
 // ── The scanner ───────────────────────────────────────────────────────────────
 
@@ -49,14 +53,14 @@ function settingKeyLiterals(src: string, fileName = 'source.ts'): KeyRead[] {
       // starts is built at run time, and no registry can vouch for it (#1715 review).
       const parent = node.parent
       const joinedOn = ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken && parent.left === node
-      if (joinedOn && /^(porting|rollout|validation)\.[a-z0-9_]*$/.test(node.text)) {
+      if (joinedOn && KEY_HEAD.test(node.text)) {
         out.push({ line: lineOf(node), text: `${node.text}\${}`, dynamic: true })
       } else if (FULL_KEY.test(node.text)) out.push({ line: lineOf(node), text: node.text, dynamic: false })
     } else if (ts.isTemplateExpression(node)) {
       // The head is the text before the first substitution: `porting.${x}` has
       // head "porting.", which no registry can resolve.
       const head = node.head.text
-      if (PREFIX.test(head) && /^(porting|rollout|validation)\.[a-z0-9_]*$/.test(head)) {
+      if (PREFIX.test(head) && KEY_HEAD.test(head)) {
         out.push({ line: lineOf(node), text: `${head}\${}${node.templateSpans.map((sp) => sp.literal.text).join('${}')}`, dynamic: true })
       }
     }
@@ -111,6 +115,14 @@ describe('settingKeyLiterals (the scanner itself)', () => {
   it('finds a key spelled with capitals, hyphens or a second dot', () => {
     const found = settingKeyLiterals("a('porting.Tee-Enabled'); b('rollout.new.lane')")
     expect(found.map((f) => f.text)).toEqual(['porting.Tee-Enabled', 'rollout.new.lane'])
+  })
+
+  it('reports a built key as dynamic whatever characters its known part uses', () => {
+    for (const src of ["read('rollout.new.' + lane)", "read('porting.Tee-' + lane)", 'read(`porting.Tee-${x}`)', 'read(`rollout.new.${x}`)']) {
+      const found = settingKeyLiterals(src)
+      expect(found, src).toHaveLength(1)
+      expect(found[0].dynamic, src).toBe(true)
+    }
   })
 
   it('does not report a key named in a comment', () => {
