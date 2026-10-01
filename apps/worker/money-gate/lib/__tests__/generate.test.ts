@@ -34,6 +34,14 @@ describe('generatePayload', () => {
     expect((generatePayload(s, { seed: 'x' }) as { Prospect__c: string }).Prospect__c).toMatch(/^[A-Za-z0-9]{18}$/)
   })
 
+  it('gives a date of birth sent as a date and time the synthetic first of January, which the scanner accepts', () => {
+    const s = buildWorkflowShape({ workflow_id: 'w', workflow_name: 'w', payloads: [{ dateOfBirth: '1984-07-19T00:00:00.000Z', birth_ts: '1990-03-02T12:00:00Z' }, { dateOfBirth: '1979-11-23T00:00:00.000Z', birth_ts: '1991-03-02T12:00:00Z' }] })
+    const p = generatePayload(s, { seed: 'x' }) as { dateOfBirth: string; birth_ts: string }
+    expect(p.dateOfBirth).toBe('1980-01-01T00:00:00.000Z')
+    expect(p.birth_ts).toBe('1980-01-01T00:00:00.000Z')
+    expect(scanForPersonalData(p)).toEqual([])
+  })
+
   it('leaves out a path present in under half the samples', () => {
     const p = generatePayload(shape, { seed: 'a' }) as Record<string, unknown>
     expect('optional' in p).toBe(false)

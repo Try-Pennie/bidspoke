@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-01T20:42:41.605Z",
+  "exported_at": "2026-10-01T20:59:50.385Z",
   "tables": {
     "workflows": [
       {
@@ -103,11 +103,19 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "AmOne",
         "slug": "amone",
+        "partner_type": "buyer",
+        "is_active": true,
+        "bid_mode": "ping_only",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {
+          "bid_path": "data.bid"
+        },
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
         "api_endpoint": "https://am-one-proxy.trypennie.dev/leads/ping",
         "cf_secret_key": "AMONE_PROXY_SECRET",
         "daily_cap": null,
         "min_bid": null,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": null,
         "alert_config": {
@@ -118,88 +126,40 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-05-14T17:56:31.378301+00:00",
-        "updated_at": "2026-06-08T13:30:19.8208+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "buyer",
         "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {
-          "bid_path": "data.bid"
-        },
         "outbound_field_mapping": null,
-        "bid_mode": "ping_only",
-        "bid_comparison_source": "auto",
         "extra_extraction": {
           "clickUrl": "data.ClickThrough_url"
         },
         "confirmation_window_ms": null,
         "sub_account_min_bids": null,
         "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
+        "duplicate_signals": [],
+        "external_routing_code": null
       },
       {
         "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "Liberty1",
         "slug": "liberty1",
-        "api_endpoint": null,
-        "cf_secret_key": null,
-        "daily_cap": null,
-        "min_bid": null,
-        "bid_formula": null,
-        "dedup_endpoint": null,
-        "response_classification": null,
-        "alert_config": {
-          "permanent_errors": {
-            "alert": true
-          },
-          "transient_errors": {
-            "alert": true
-          }
-        },
-        "circuit_error_threshold": 1,
-        "circuit_window_seconds": 10,
-        "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
-        "priority": 0,
-        "created_at": "2026-09-25T14:14:11.258801+00:00",
-        "updated_at": "2026-09-30T19:00:34.232471+00:00",
-        "sell_off_offer_title": null,
-        "sell_off_offer_details": null,
         "partner_type": "buyer",
-        "click_url": "https://trypennie.com/portal/liberty/{prospect_id}",
+        "is_active": true,
+        "bid_mode": "commit",
         "bid_resolver_type": "api",
         "bid_resolver_config": {},
-        "outbound_field_mapping": null,
-        "bid_mode": "commit",
         "bid_comparison_source": "auto",
-        "extra_extraction": null,
-        "confirmation_window_ms": null,
-        "sub_account_min_bids": null,
-        "accept_signals": [],
-        "external_routing_code": 4,
-        "duplicate_signals": []
-      },
-      {
-        "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "name": "Sofi",
-        "slug": "sofi",
+        "bid_formula": null,
         "api_endpoint": null,
         "cf_secret_key": null,
         "daily_cap": null,
         "min_bid": null,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": null,
         "alert_config": {
@@ -210,84 +170,38 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-04-21T19:25:01.985728+00:00",
-        "updated_at": "2026-04-21T19:34:31.662822+00:00",
-        "sell_off_offer_title": "Denied a personal loan? Need an income-based financing solution?",
-        "sell_off_offer_details": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>\"",
-        "partner_type": "source",
-        "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
-        "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
-        "extra_extraction": null,
-        "confirmation_window_ms": null,
-        "sub_account_min_bids": null,
-        "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
-      },
-      {
-        "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "name": "NerdWallet",
-        "slug": "nerdwallet",
-        "api_endpoint": null,
-        "cf_secret_key": null,
-        "daily_cap": null,
-        "min_bid": null,
-        "bid_formula": null,
-        "dedup_endpoint": null,
-        "response_classification": null,
-        "alert_config": {
-          "permanent_errors": {
-            "alert": true
-          },
-          "transient_errors": {
-            "alert": true
-          }
-        },
-        "circuit_error_threshold": 1,
-        "circuit_window_seconds": 10,
-        "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
-        "priority": 0,
-        "created_at": "2026-04-21T19:46:34.124358+00:00",
-        "updated_at": "2026-04-21T19:46:34.124358+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "source",
-        "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
+        "click_url": "https://trypennie.com/portal/liberty/{prospect_id}",
         "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
         "extra_extraction": null,
         "confirmation_window_ms": null,
         "sub_account_min_bids": null,
         "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
+        "duplicate_signals": [],
+        "external_routing_code": 4
       },
       {
         "id": "205785c3-09cf-4993-8765-4edd81c62af8",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "Dot818",
         "slug": "dot818",
+        "partner_type": "source",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
         "api_endpoint": null,
         "cf_secret_key": null,
         "daily_cap": null,
         "min_bid": null,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": null,
         "alert_config": {
@@ -298,84 +212,38 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-04-21T19:48:15.321221+00:00",
-        "updated_at": "2026-04-21T19:48:15.321221+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "source",
         "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
         "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
         "extra_extraction": null,
         "confirmation_window_ms": null,
         "sub_account_min_bids": null,
         "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
-      },
-      {
-        "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "name": "Brainsome",
-        "slug": "brainsome",
-        "api_endpoint": null,
-        "cf_secret_key": null,
-        "daily_cap": null,
-        "min_bid": null,
-        "bid_formula": null,
-        "dedup_endpoint": null,
-        "response_classification": null,
-        "alert_config": {
-          "permanent_errors": {
-            "alert": true
-          },
-          "transient_errors": {
-            "alert": true
-          }
-        },
-        "circuit_error_threshold": 1,
-        "circuit_window_seconds": 10,
-        "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
-        "priority": 0,
-        "created_at": "2026-04-21T19:48:30.396372+00:00",
-        "updated_at": "2026-04-21T19:48:30.396372+00:00",
-        "sell_off_offer_title": null,
-        "sell_off_offer_details": null,
-        "partner_type": "source",
-        "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
-        "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
-        "extra_extraction": null,
-        "confirmation_window_ms": null,
-        "sub_account_min_bids": null,
-        "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
+        "duplicate_signals": [],
+        "external_routing_code": null
       },
       {
         "id": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "LendSwift",
         "slug": "lendswift",
+        "partner_type": "buyer",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
         "api_endpoint": null,
         "cf_secret_key": null,
         "daily_cap": null,
         "min_bid": 1,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": null,
         "alert_config": {
@@ -386,23 +254,15 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-05-29T19:19:39.185639+00:00",
-        "updated_at": "2026-05-29T19:19:39.185639+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "buyer",
         "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
         "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
         "extra_extraction": null,
         "confirmation_window_ms": null,
         "sub_account_min_bids": {
@@ -416,19 +276,151 @@
           "f7d57eb6-4c87-437b-8686-fdf088a29846": 1
         },
         "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
+        "duplicate_signals": [],
+        "external_routing_code": null
+      },
+      {
+        "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "name": "NerdWallet",
+        "slug": "nerdwallet",
+        "partner_type": "source",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
+        "api_endpoint": null,
+        "cf_secret_key": null,
+        "daily_cap": null,
+        "min_bid": null,
+        "dedup_endpoint": null,
+        "response_classification": null,
+        "alert_config": {
+          "permanent_errors": {
+            "alert": true
+          },
+          "transient_errors": {
+            "alert": true
+          }
+        },
+        "circuit_enabled": true,
+        "circuit_error_threshold": 1,
+        "circuit_window_seconds": 10,
+        "circuit_cooldown_seconds": 100,
+        "priority": 0,
+        "sell_off_offer_title": null,
+        "sell_off_offer_details": null,
+        "click_url": null,
+        "outbound_field_mapping": null,
+        "extra_extraction": null,
+        "confirmation_window_ms": null,
+        "sub_account_min_bids": null,
+        "accept_signals": [],
+        "duplicate_signals": [],
+        "external_routing_code": null
+      },
+      {
+        "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "name": "Brainsome",
+        "slug": "brainsome",
+        "partner_type": "source",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
+        "api_endpoint": null,
+        "cf_secret_key": null,
+        "daily_cap": null,
+        "min_bid": null,
+        "dedup_endpoint": null,
+        "response_classification": null,
+        "alert_config": {
+          "permanent_errors": {
+            "alert": true
+          },
+          "transient_errors": {
+            "alert": true
+          }
+        },
+        "circuit_enabled": true,
+        "circuit_error_threshold": 1,
+        "circuit_window_seconds": 10,
+        "circuit_cooldown_seconds": 100,
+        "priority": 0,
+        "sell_off_offer_title": null,
+        "sell_off_offer_details": null,
+        "click_url": null,
+        "outbound_field_mapping": null,
+        "extra_extraction": null,
+        "confirmation_window_ms": null,
+        "sub_account_min_bids": null,
+        "accept_signals": [],
+        "duplicate_signals": [],
+        "external_routing_code": null
+      },
+      {
+        "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "name": "Sofi",
+        "slug": "sofi",
+        "partner_type": "source",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
+        "api_endpoint": null,
+        "cf_secret_key": null,
+        "daily_cap": null,
+        "min_bid": null,
+        "dedup_endpoint": null,
+        "response_classification": null,
+        "alert_config": {
+          "permanent_errors": {
+            "alert": true
+          },
+          "transient_errors": {
+            "alert": true
+          }
+        },
+        "circuit_enabled": true,
+        "circuit_error_threshold": 1,
+        "circuit_window_seconds": 10,
+        "circuit_cooldown_seconds": 100,
+        "priority": 0,
+        "sell_off_offer_title": "Denied a personal loan? Need an income-based financing solution?",
+        "sell_off_offer_details": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>\"",
+        "click_url": null,
+        "outbound_field_mapping": null,
+        "extra_extraction": null,
+        "confirmation_window_ms": null,
+        "sub_account_min_bids": null,
+        "accept_signals": [],
+        "duplicate_signals": [],
+        "external_routing_code": null
       },
       {
         "id": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "GigFi",
         "slug": "gigfi",
+        "partner_type": "buyer",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
         "api_endpoint": null,
         "cf_secret_key": null,
         "daily_cap": null,
         "min_bid": null,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": null,
         "alert_config": {
@@ -439,23 +431,15 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-06-09T15:04:37.115371+00:00",
-        "updated_at": "2026-06-09T15:04:37.115371+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "buyer",
         "click_url": null,
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {},
         "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "auto",
         "extra_extraction": null,
         "confirmation_window_ms": null,
         "sub_account_min_bids": {
@@ -469,19 +453,36 @@
           "f7d57eb6-4c87-437b-8686-fdf088a29846": 1
         },
         "accept_signals": [],
-        "external_routing_code": null,
-        "duplicate_signals": []
+        "duplicate_signals": [],
+        "external_routing_code": null
       },
       {
         "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "name": "Tripoint",
         "slug": "tripoint",
+        "partner_type": "buyer",
+        "is_active": true,
+        "bid_mode": "commit",
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {
+          "tiers": [
+            {
+              "above": 10000,
+              "multiplier": 0.001
+            }
+          ],
+          "pricing_mode": "tiered_multiplier",
+          "source_field": "context.finalDebt",
+          "min_source_value": 10000,
+          "default_multiplier": 0.0001
+        },
+        "bid_comparison_source": "formula",
+        "bid_formula": null,
         "api_endpoint": "https://tripoint-proxy.trypennie.dev/leads/create",
         "cf_secret_key": "TRIPOINT_PROXY_SECRET",
         "daily_cap": null,
         "min_bid": null,
-        "bid_formula": null,
         "dedup_endpoint": null,
         "response_classification": {
           "rejection_signals": [
@@ -515,34 +516,15 @@
             "alert": true
           }
         },
+        "circuit_enabled": true,
         "circuit_error_threshold": 1,
         "circuit_window_seconds": 10,
         "circuit_cooldown_seconds": 100,
-        "circuit_enabled": true,
-        "is_active": true,
         "priority": 0,
-        "created_at": "2026-04-21T19:46:00.407619+00:00",
-        "updated_at": "2026-10-01T13:38:45.151947+00:00",
         "sell_off_offer_title": null,
         "sell_off_offer_details": null,
-        "partner_type": "buyer",
         "click_url": "https://trypennie.com/portal/tpl",
-        "bid_resolver_type": "api",
-        "bid_resolver_config": {
-          "tiers": [
-            {
-              "above": 10000,
-              "multiplier": 0.001
-            }
-          ],
-          "pricing_mode": "tiered_multiplier",
-          "source_field": "context.finalDebt",
-          "min_source_value": 10000,
-          "default_multiplier": 0.0001
-        },
         "outbound_field_mapping": null,
-        "bid_mode": "commit",
-        "bid_comparison_source": "formula",
         "extra_extraction": {
           "leadId": "data.createLead.id",
           "result": {
@@ -569,7 +551,6 @@
             "field": "data.createLead.resultCode"
           }
         ],
-        "external_routing_code": 2,
         "duplicate_signals": [
           {
             "in": [
@@ -581,7 +562,8 @@
             ],
             "field": "data.createLead.resultCode"
           }
-        ]
+        ],
+        "external_routing_code": 2
       }
     ],
     "buyer_profiles": [
@@ -651,10 +633,9 @@
         "hourly_spend_cap_cents": null,
         "daily_spend_cap_cents": null,
         "version": 4,
-        "created_at": "2026-09-22T19:59:30.017405+00:00",
-        "updated_at": "2026-09-23T15:47:10.49461+00:00",
         "sold_on": "offer",
-        "click_delivery": null
+        "click_delivery": null,
+        "updated_at": "2026-09-23T15:47:10.49461+00:00"
       },
       {
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
@@ -711,8 +692,6 @@
         "hourly_spend_cap_cents": null,
         "daily_spend_cap_cents": null,
         "version": 10,
-        "created_at": "2026-09-25T14:16:54.187074+00:00",
-        "updated_at": "2026-09-30T19:00:35.694025+00:00",
         "sold_on": "click",
         "click_delivery": {
           "routes": [
@@ -739,58 +718,52 @@
             }
           ],
           "success_pattern": "^\\s*\\{(?=[\\s\\S]*\"status\"\\s*:\\s*\"Success)[\\s\\S]*?\"id\"\\s*:\\s*\"(?<id>[A-Za-z0-9]{15,20})\"[\\s\\S]*\\}\\s*$"
-        }
+        },
+        "updated_at": "2026-09-30T19:00:35.694025+00:00"
       }
     ],
     "partner_uuid_map": [
       {
-        "id": "3920bfe8-7d56-434d-b918-20cfba7f8e53",
-        "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "partner_slug": "sofi",
-        "uuid": "189b30c2-b93c-42dd-945a-e88246d0362a",
-        "created_at": "2026-04-21T19:25:02.630383+00:00"
-      },
-      {
-        "id": "aaacf834-5af4-4fe0-a9a7-ee8af638b3ff",
-        "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "partner_slug": "sofi",
-        "uuid": "026f93f3-3d57-44b0-b52f-82426c91e547",
-        "created_at": "2026-04-21T19:25:02.64761+00:00"
-      },
-      {
         "id": "18f77359-e0b5-4d89-b336-2029832a47f9",
         "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_slug": "sofi",
-        "uuid": "dd56c162-0b24-4c53-a76c-a6b2f717051b",
-        "created_at": "2026-04-21T19:25:02.667663+00:00"
+        "uuid": "dd56c162-0b24-4c53-a76c-a6b2f717051b"
       },
       {
-        "id": "b40013a3-a367-45a0-b202-a495bb231781",
+        "id": "3920bfe8-7d56-434d-b918-20cfba7f8e53",
         "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_slug": "sofi",
-        "uuid": "c439f8ab-eea4-4684-805e-6f305994543b",
-        "created_at": "2026-04-21T19:25:02.689559+00:00"
+        "uuid": "189b30c2-b93c-42dd-945a-e88246d0362a"
       },
       {
         "id": "5ce27195-9683-4437-a0c7-8ec80419441e",
         "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_slug": "nerdwallet",
-        "uuid": "76024d2a-1cdf-496e-980e-44732d341c13",
-        "created_at": "2026-04-21T19:46:34.531899+00:00"
+        "uuid": "76024d2a-1cdf-496e-980e-44732d341c13"
+      },
+      {
+        "id": "aaacf834-5af4-4fe0-a9a7-ee8af638b3ff",
+        "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_slug": "sofi",
+        "uuid": "026f93f3-3d57-44b0-b52f-82426c91e547"
+      },
+      {
+        "id": "b40013a3-a367-45a0-b202-a495bb231781",
+        "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_slug": "sofi",
+        "uuid": "c439f8ab-eea4-4684-805e-6f305994543b"
       },
       {
         "id": "c4a9d0bc-358f-432b-86f6-f5b0920f22b2",
         "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_slug": "dot818",
-        "uuid": "1b715767-547f-4f89-b792-5bb151434531",
-        "created_at": "2026-04-21T19:48:15.785653+00:00"
+        "uuid": "1b715767-547f-4f89-b792-5bb151434531"
       },
       {
         "id": "f4b92acf-7a69-40cd-b29c-82e35926a916",
         "org_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_slug": "brainsome",
-        "uuid": "f8b2633f-b8d0-4d74-a361-39365630b761",
-        "created_at": "2026-04-21T19:48:30.788985+00:00"
+        "uuid": "f8b2633f-b8d0-4d74-a361-39365630b761"
       }
     ],
     "environment_variables": [
@@ -1270,8 +1243,8 @@
     "buyer_pricing_tiers": [
       {
         "id": "304089aa-797f-4a5a-926b-48e050eab013",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "population": "engine",
         "debt_from": 10000,
         "debt_to": 10000,
@@ -1279,8 +1252,8 @@
       },
       {
         "id": "a022bdd8-248f-4f23-b667-14db1ae03371",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "population": "engine",
         "debt_from": 10000,
         "debt_to": null,
@@ -1290,96 +1263,96 @@
     "buyer_operating_windows": [
       {
         "id": "b74ef426-a053-4d89-b632-dcb75d9264f7",
-        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 1,
         "opens_minute": 660,
         "closes_minute": 1260
       },
       {
         "id": "2bf9696f-84e7-4c72-b62d-a0fca9f4b0e4",
-        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 2,
         "opens_minute": 660,
         "closes_minute": 1260
       },
       {
         "id": "e014fba4-1d45-4ddf-a2f6-b213d1cfeae1",
-        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 3,
         "opens_minute": 660,
         "closes_minute": 1260
       },
       {
         "id": "30e2bcdf-6199-41a9-a8ef-9c306756a170",
-        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 4,
         "opens_minute": 660,
         "closes_minute": 1260
       },
       {
         "id": "d4d4dcee-5df3-4a82-998f-d7958784d472",
-        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 5,
         "opens_minute": 660,
         "closes_minute": 1260
       },
       {
         "id": "33122b99-6331-4353-872b-a0e10ecc2efe",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 0,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "3e62cf9f-98bd-4f63-927c-fb296720d968",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 1,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "4fd5f914-ab47-495f-a03e-c0585c43a831",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 2,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "4be5984a-fea2-4009-b2e4-aa4d38500065",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 3,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "ae29445d-304f-45b5-a103-b87cdad891fb",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 4,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "350712d3-36ed-4847-bd62-2413b28a0ec9",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 5,
         "opens_minute": 0,
         "closes_minute": 1440
       },
       {
         "id": "84e7b386-ce16-4c81-aabf-a286285fcac8",
-        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 6,
         "opens_minute": 0,
         "closes_minute": 1440

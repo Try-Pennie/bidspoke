@@ -44,6 +44,33 @@ describe('readOnlyClient', () => {
     expect(() => ro.from('workflows').select().update()).toThrow(/read only/)
   })
 
+  it.each(['rest', 'storage', 'functions', 'auth', 'realtime', 'channel', 'removeAllChannels'])('refuses %s: everything but the read path is denied by default', (prop) => {
+    const { client, calls } = recordingClient()
+    const withMore = {
+      ...client,
+      rest: { from: (t: string) => client.from(t) },
+      storage: { from: () => ({ upload: () => calls.push('storage.upload') }) },
+      functions: { invoke: () => calls.push('functions.invoke') },
+      auth: { admin: { deleteUser: () => calls.push('auth.deleteUser') } },
+      realtime: {},
+      channel: () => ({}),
+      removeAllChannels: () => calls.push('removeAllChannels'),
+    }
+    const ro = readOnlyClient(withMore as never) as unknown as Record<string, unknown>
+    expect(() => ro[prop]).toThrow(/read only/)
+    expect(calls).toEqual([])
+  })
+
+  it('refuses any builder method that is not a read', () => {
+    const { client } = recordingClient()
+    const b = client.from('workflows') as Record<string, unknown>
+    b.rpc = () => 'escaped'
+    b.someFutureWrite = () => 'escaped'
+    const ro = readOnlyClient({ ...client, from: () => b } as never) as unknown as { from: (t: string) => Record<string, () => unknown> }
+    expect(() => ro.from('workflows').someFutureWrite()).toThrow(/read only/)
+    expect(() => ro.from('workflows').rpc()).toThrow(/read only/)
+  })
+
   it('throws on rpc and on another schema', () => {
     const { client, calls } = recordingClient()
     const ro = readOnlyClient(client as never) as unknown as { rpc: (n: string) => unknown; schema: (s: string) => unknown }

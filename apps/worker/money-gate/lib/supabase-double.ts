@@ -149,7 +149,9 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>) {
           const copy = clone(r)
           const existing = conflict ? base.find((b) => conflict.every((c) => b[c] !== undefined && b[c] === copy[c])) : undefined
           if (existing) {
-            if (!options?.ignoreDuplicates) Object.assign(existing, copy)
+            // An ignored duplicate is neither written nor returned (ON CONFLICT DO NOTHING).
+            if (options?.ignoreDuplicates) continue
+            Object.assign(existing, copy)
             out.push(existing)
           } else {
             base.push(copy)

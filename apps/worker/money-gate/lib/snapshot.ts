@@ -47,8 +47,40 @@ export function synthesizeNumbers(value: unknown, index = 0): unknown {
   return value
 }
 
-/** Who edited a row and what a live probe last saw describe people and traffic, not structure. */
-const DROPPED = new Set(['updated_by', 'updated_by_email', 'updated_by_name', 'created_by', 'last_probe_response'])
+/**
+ * The columns each config table may contribute, by allowlist: anything not listed
+ * never reaches the snapshot, so a column added later (an editor's email, a free
+ * text note or reason) stays in production until somebody decides it belongs here.
+ * Who edited a row, what a live probe last saw and a blackout date's note are left
+ * out on purpose. `synthesize` replaces numbers (prices, caps, thresholds) with
+ * synthetic ones; operating hours and blackout dates are kept exactly, because they
+ * are when a buyer takes leads, which the fixtures' fixed clock is judged against.
+ */
+export const SNAPSHOT_COLUMNS = {
+  partner_configs: {
+    synthesize: true,
+    columns: [
+      'id', 'organization_id', 'name', 'slug', 'partner_type', 'is_active', 'bid_mode', 'bid_resolver_type', 'bid_resolver_config',
+      'bid_comparison_source', 'bid_formula', 'api_endpoint', 'cf_secret_key', 'daily_cap', 'min_bid', 'dedup_endpoint',
+      'response_classification', 'alert_config', 'circuit_enabled', 'circuit_error_threshold', 'circuit_window_seconds',
+      'circuit_cooldown_seconds', 'priority', 'sell_off_offer_title', 'sell_off_offer_details', 'click_url', 'outbound_field_mapping',
+      'extra_extraction', 'confirmation_window_ms', 'sub_account_min_bids', 'accept_signals', 'duplicate_signals', 'external_routing_code',
+    ],
+  },
+  buyer_profiles: {
+    synthesize: true,
+    columns: [
+      'partner_id', 'organization_id', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min',
+      'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'version', 'sold_on', 'click_delivery', 'updated_at',
+    ],
+  },
+  partner_uuid_map: { synthesize: true, columns: ['id', 'org_id', 'partner_slug', 'uuid'] },
+  buyer_pricing_tiers: { synthesize: true, columns: ['id', 'organization_id', 'partner_id', 'population', 'debt_from', 'debt_to', 'multiplier'] },
+  buyer_operating_windows: { synthesize: false, columns: ['id', 'organization_id', 'partner_id', 'day_of_week', 'opens_minute', 'closes_minute'] },
+  buyer_blackout_dates: { synthesize: false, columns: ['id', 'organization_id', 'partner_id', 'blackout_date'] },
+} as const satisfies Record<string, { synthesize: boolean; columns: readonly string[] }>
+
+export type SnapshotTable = keyof typeof SNAPSHOT_COLUMNS
 
 /**
  * Numbers that are codes or an order, not prices, caps or thresholds: a partner's
@@ -58,25 +90,25 @@ const DROPPED = new Set(['updated_by', 'updated_by_email', 'updated_by_name', 'c
  */
 const STRUCTURE_KEYS = new Set(['response_classification', 'accept_signals', 'duplicate_signals', 'external_routing_code', 'priority', 'version', 'extra_extraction', 'outbound_field_mapping'])
 
-function stripAndSynthesize(row: Record<string, unknown>): Record<string, unknown> {
+/** One config row as the snapshot holds it: listed columns only, numbers synthesized where the table says. */
+export function snapshotRow(table: SnapshotTable, row: Record<string, unknown>): Record<string, unknown> {
+  const spec = SNAPSHOT_COLUMNS[table]
+  if (!spec) throw new Error(`money gate snapshot: no column allowlist for ${String(table)}`)
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(row)) {
-    if (DROPPED.has(k)) continue
-    out[k] = STRUCTURE_KEYS.has(k) ? v : synthesizeNumbers(v)
+  for (const k of spec.columns) {
+    if (!(k in row)) continue
+    const v = row[k]
+    out[k] = !spec.synthesize || STRUCTURE_KEYS.has(k) ? v : synthesizeNumbers(v)
   }
   return out
 }
 
 export function snapshotPartnerConfig(row: Record<string, unknown>): Record<string, unknown> {
-  return stripAndSynthesize(row)
+  return snapshotRow('partner_configs', row)
 }
 
 export function snapshotBuyerProfile(row: Record<string, unknown>): Record<string, unknown> {
-  return stripAndSynthesize(row)
-}
-
-export function snapshotUuidMapRow(row: Record<string, unknown>): Record<string, unknown> {
-  return stripAndSynthesize(row)
+  return snapshotRow('buyer_profiles', row)
 }
 
 export interface EnvVarRow {

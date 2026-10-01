@@ -81,7 +81,7 @@ function synthString(path: string, f: FieldShape, seed: string): string {
       return len >= 11 ? `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}` : d
     }
     case 'iso_date': return DOB_PATH.test(seg) ? '1980-01-01' : '2026-09-30'
-    case 'iso_datetime': return '2026-10-01T15:00:00.000Z'
+    case 'iso_datetime': return DOB_PATH.test(seg) ? '1980-01-01T00:00:00.000Z' : '2026-10-01T15:00:00.000Z'
     case 'us_date': return DOB_PATH.test(seg) ? '01/01/1980' : '09/30/2026'
     case 'digits': return ACCOUNT_PATH.test(seg) ? '0'.repeat(Math.max(len, 6)) : digits(s, Math.max(len, 1))
     case 'decimal': return '1000.00'

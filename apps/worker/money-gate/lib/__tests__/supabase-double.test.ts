@@ -100,6 +100,16 @@ describe('createSupabaseDouble writes', () => {
     expect(rows.map((r) => `${r.slug}:${r.priority}`)).toEqual(['amone:5', 'gone:3', 'new:7', 'tripoint:2'])
   })
 
+  it('an upsert with ignoreDuplicates returns no row for a duplicate it ignored, as PostgREST does', async () => {
+    const d = createSupabaseDouble(tables())
+    const r = await d.client.from('partner_configs')
+      .upsert([{ slug: 'amone', organization_id: 'o1', priority: 5 }, { slug: 'fresh', organization_id: 'o1', priority: 6 }], { onConflict: 'organization_id,slug', ignoreDuplicates: true })
+      .select('slug')
+    expect((r.data as Array<{ slug: string }>).map((x) => x.slug)).toEqual(['fresh'])
+    const amone = (await d.client.from('partner_configs').select('*').eq('slug', 'amone').single()).data as { priority: number }
+    expect(amone.priority).toBe(1)
+  })
+
   it('a reader cannot mutate the store through a returned row', async () => {
     const d = createSupabaseDouble(tables())
     const r = await d.client.from('partner_configs').select('*').eq('slug', 'amone').single()

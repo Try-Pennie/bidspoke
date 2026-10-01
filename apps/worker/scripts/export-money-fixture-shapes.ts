@@ -29,12 +29,12 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { readOnlyClient } from '../money-gate/lib/read-only-client'
 import { buildWorkflowShape, renderShapesFile, summarizeShapes, type ShapesFile, type WorkflowShape } from '../money-gate/lib/shape'
 import {
-  snapshotBuyerProfile,
+  SNAPSHOT_COLUMNS,
   snapshotEnvVar,
-  snapshotPartnerConfig,
-  snapshotUuidMapRow,
+  snapshotRow,
   type ConfigSnapshot,
   type EnvVarRow,
+  type SnapshotTable,
 } from '../money-gate/lib/snapshot'
 
 /** How many recent payloads per workflow, and how far back. Under PostgREST's 1,000 row cap. */
@@ -119,12 +119,16 @@ export async function runExport(deps: ExportDeps): Promise<void> {
     live.push(wf)
   }
 
+  // Every output is built and checked before any is written, so a refusal (a backup
+  // that differs from production, a failed read) leaves the committed fixtures as
+  // they were rather than half updated.
+  const outputs: Array<[path: string, text: string]> = []
   for (const wf of live) {
     const backup = await deps.fetchBackupDefinition(wf.id)
     if (canonical(backup) !== canonical(wf.definition)) {
       throw new Error(`money gate export: the backup of ${wf.name} differs from what production runs; re-save it or wait for the backup, then rerun`)
     }
-    write(`money-gate/fixtures/definitions/${wf.id}.json`, `${JSON.stringify({ id: wf.id, name: wf.name, definition: backup }, null, 2)}\n`)
+    outputs.push([`money-gate/fixtures/definitions/${wf.id}.json`, `${JSON.stringify({ id: wf.id, name: wf.name, definition: backup }, null, 2)}\n`])
   }
 
   const orgIds = [...new Set(live.map((w) => w.organization_id))]
@@ -145,14 +149,13 @@ export async function runExport(deps: ExportDeps): Promise<void> {
     tables.workflow_versions.push(...versions.map((v) => ({ id: v.id, workflow_id: w.id, version_number: v.version_number })))
   }
   for (const org of orgIds) {
-    tables.partner_configs.push(...(await read<Record<string, unknown>>('partner_configs', client.from('partner_configs').select('*').eq('organization_id', org))).map(snapshotPartnerConfig))
-    tables.buyer_profiles.push(...(await read<Record<string, unknown>>('buyer_profiles', client.from('buyer_profiles').select('*').eq('organization_id', org))).map(snapshotBuyerProfile))
-    tables.partner_uuid_map.push(...(await read<Record<string, unknown>>('partner_uuid_map', client.from('partner_uuid_map').select('*').eq('org_id', org))).map(snapshotUuidMapRow))
-    // Prices are synthesized like every other number; operating hours and blackout dates
-    // are when a buyer takes leads, structure the fixtures' fixed clock is judged against.
-    tables.buyer_pricing_tiers.push(...(await read<Record<string, unknown>>('buyer_pricing_tiers', client.from('buyer_pricing_tiers').select('*').eq('organization_id', org))).map(snapshotBuyerProfile))
-    tables.buyer_operating_windows.push(...(await read<Record<string, unknown>>('buyer_operating_windows', client.from('buyer_operating_windows').select('*').eq('organization_id', org))))
-    tables.buyer_blackout_dates.push(...(await read<Record<string, unknown>>('buyer_blackout_dates', client.from('buyer_blackout_dates').select('*').eq('organization_id', org))))
+    // Each table is read by its column allowlist and filtered by it again, so a column
+    // added later never reaches the snapshot until somebody lists it (SNAPSHOT_COLUMNS).
+    for (const table of Object.keys(SNAPSHOT_COLUMNS) as SnapshotTable[]) {
+      const orgColumn = table === 'partner_uuid_map' ? 'org_id' : 'organization_id'
+      const rows = await read<Record<string, unknown>>(table, client.from(table).select(SNAPSHOT_COLUMNS[table].columns.join(', ')).eq(orgColumn, org))
+      tables[table].push(...rows.map((r) => snapshotRow(table, r)))
+    }
     tables.environment_variables.push(...(await read<EnvVarRow>('environment_variables', client
       .from('environment_variables').select('key, value, is_secret, scope, organization_id, workflow_id').eq('organization_id', org))).map((r) => snapshotEnvVar(r) as unknown as Record<string, unknown>))
   }
@@ -161,8 +164,9 @@ export async function runExport(deps: ExportDeps): Promise<void> {
   const exportedAt = now.toISOString()
   const shapesFile: ShapesFile = { version: 1, exported_at: exportedAt, workflows: shapes }
   const snapshot: ConfigSnapshot = { version: 1, exported_at: exportedAt, tables }
-  write('money-gate/fixtures/shapes.json', renderShapesFile(shapesFile))
-  write('money-gate/fixtures/config-snapshot.json', `${JSON.stringify(snapshot, null, 2)}\n`)
+  outputs.push(['money-gate/fixtures/shapes.json', renderShapesFile(shapesFile)])
+  outputs.push(['money-gate/fixtures/config-snapshot.json', `${JSON.stringify(snapshot, null, 2)}\n`])
+  for (const [path, text] of outputs) write(path, text)
 
   log(summarizeShapes(shapesFile))
   log(`config snapshot: ${Object.entries(tables).map(([t, r]) => `${t} ${r.length}`).join(', ')}`)

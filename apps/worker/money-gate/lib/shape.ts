@@ -110,7 +110,7 @@ function newAcc(): Acc {
   return { present: 0, classes: {}, formats: {}, minLen: Infinity, maxLen: 0, allInteger: true, maxAbs: 0, sawNumber: false, values: new Map() }
 }
 
-function walk(v: unknown, path: string, seen: Map<string, Set<string>>, touched: Map<string, Set<ValueClass>>, strings: Map<string, string[]>, numbers: Map<string, number[]>) {
+function walk(v: unknown, path: string, touched: Map<string, Set<ValueClass>>, strings: Map<string, string[]>, numbers: Map<string, number[]>) {
   // JSON cannot carry undefined, so a key holding it is a key that is absent.
   if (v === undefined) return
   const cls = classify(v)
@@ -119,11 +119,11 @@ function walk(v: unknown, path: string, seen: Map<string, Set<string>>, touched:
     touched.get(path)!.add(cls)
   }
   if (cls === 'array') {
-    for (const item of v as unknown[]) walk(item, `${path}[]`, seen, touched, strings, numbers)
+    for (const item of v as unknown[]) walk(item, `${path}[]`, touched, strings, numbers)
     return
   }
   if (cls === 'object') {
-    for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, path ? `${path}.${k}` : k, seen, touched, strings, numbers)
+    for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, path ? `${path}.${k}` : k, touched, strings, numbers)
     return
   }
   if (!path) return
@@ -134,7 +134,6 @@ function walk(v: unknown, path: string, seen: Map<string, Set<string>>, touched:
     if (!numbers.has(path)) numbers.set(path, [])
     numbers.get(path)!.push(v as number)
   }
-  void seen
 }
 
 export function buildWorkflowShape(input: { workflow_id: string; workflow_name: string; payloads: unknown[] }): WorkflowShape {
@@ -143,7 +142,7 @@ export function buildWorkflowShape(input: { workflow_id: string; workflow_name: 
     const touched = new Map<string, Set<ValueClass>>()
     const strings = new Map<string, string[]>()
     const numbers = new Map<string, number[]>()
-    walk(payload, '', new Map(), touched, strings, numbers)
+    walk(payload, '', touched, strings, numbers)
     for (const [path, classes] of touched) {
       if (!accs.has(path)) accs.set(path, newAcc())
       const a = accs.get(path)!

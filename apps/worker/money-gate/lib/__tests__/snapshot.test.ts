@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue } from '../snapshot'
+import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue, snapshotRow, SNAPSHOT_COLUMNS, type SnapshotTable } from '../snapshot'
 
 describe('synthesizeNumbers', () => {
   it('replaces every number, keeping only its order of magnitude and its position', () => {
@@ -53,6 +53,31 @@ describe('snapshotPartnerConfig', () => {
 
   it('drops who edited it and what a probe saw', () => {
     for (const k of ['updated_by', 'updated_by_email', 'updated_by_name', 'last_probe_response']) expect(k in snap).toBe(false)
+  })
+})
+
+describe('snapshotRow keeps columns by allowlist for every table', () => {
+  const tables = Object.keys(SNAPSHOT_COLUMNS) as SnapshotTable[]
+
+  it('covers every config table the snapshot holds', () => {
+    expect(tables.sort()).toEqual(['buyer_blackout_dates', 'buyer_operating_windows', 'buyer_pricing_tiers', 'buyer_profiles', 'partner_configs', 'partner_uuid_map'])
+  })
+
+  it.each(tables)('%s drops any column it does not list, a future editor or free text column included', (table) => {
+    const row: Record<string, unknown> = { updated_by_email: 'editor@trypennie.com', created_by: 'u1', reason: 'called the buyer about Jo', note: 'personal note', some_new_column: 'x' }
+    for (const c of SNAPSHOT_COLUMNS[table].columns) row[c] ??= 1
+    const out = snapshotRow(table, row)
+    expect(Object.keys(out).sort()).toEqual([...SNAPSHOT_COLUMNS[table].columns].sort())
+    expect(JSON.stringify(out)).not.toMatch(/editor@|called the buyer|personal note/)
+  })
+
+  it('does not keep a blackout date note, which is free text', () => {
+    expect(SNAPSHOT_COLUMNS.buyer_blackout_dates.columns).not.toContain('note')
+  })
+
+  it('keeps operating hours exactly, since they are structure the fixed clock is judged against', () => {
+    expect(snapshotRow('buyer_operating_windows', { id: 'w', organization_id: 'o', partner_id: 'p', day_of_week: 3, opens_minute: 540, closes_minute: 1020 }))
+      .toEqual({ id: 'w', organization_id: 'o', partner_id: 'p', day_of_week: 3, opens_minute: 540, closes_minute: 1020 })
   })
 })
 

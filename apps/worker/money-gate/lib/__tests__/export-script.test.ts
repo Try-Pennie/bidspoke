@@ -41,8 +41,8 @@ function fakeTables(): Record<string, Array<Record<string, unknown>>> {
     environment_variables: [{ key: 'EQUIFAX_PASSWORD', value: 'Sup3rS3cretValue!', is_secret: true, scope: 'global', organization_id: ORG, workflow_id: null }],
     workflow_versions: [{ id: 'v1', workflow_id: WF, version_number: 7 }],
     buyer_pricing_tiers: [{ id: 't1', organization_id: ORG, partner_id: 'p1', population: 'engine', debt_from: 12345, debt_to: null, multiplier: 0.0137 }],
-    buyer_operating_windows: [{ id: 'w1', organization_id: ORG, partner_id: 'p1', day_of_week: 3, opens_minute: 540, closes_minute: 1020 }],
-    buyer_blackout_dates: [],
+    buyer_operating_windows: [{ id: 'w1', organization_id: ORG, partner_id: 'p1', day_of_week: 3, opens_minute: 540, closes_minute: 1020, updated_by_email: 'hours.editor@trypennie.com' }],
+    buyer_blackout_dates: [{ id: 'b1', organization_id: ORG, partner_id: 'p1', blackout_date: '2026-12-25', note: 'Priya out, see thread', reason: 'holiday call with Dana', created_by: 'u9' }],
   }
 }
 
@@ -125,7 +125,13 @@ describe('export-money-fixture-shapes output guard', () => {
     const snap = JSON.parse(files.get('money-gate/fixtures/config-snapshot.json')!) as { tables: Record<string, Array<Record<string, unknown>>> }
     expect(snap.tables.buyer_pricing_tiers[0]).toMatchObject({ population: 'engine', debt_from: 10000, multiplier: 0.01 })
     expect(snap.tables.buyer_operating_windows[0]).toMatchObject({ day_of_week: 3, opens_minute: 540, closes_minute: 1020 })
-    expect(snap.tables.buyer_blackout_dates).toEqual([])
+    expect(snap.tables.buyer_blackout_dates).toEqual([{ id: 'b1', organization_id: ORG, partner_id: 'p1', blackout_date: '2026-12-25' }])
+  })
+
+  it('never commits a column no table lists: an editor, a note or a reason', async () => {
+    const { files } = await run()
+    const snap = files.get('money-gate/fixtures/config-snapshot.json')!
+    for (const v of ['hours.editor@trypennie.com', 'Priya out', 'holiday call', 'updated_by_email', '"note"', '"reason"', '"created_by"']) expect(snap).not.toContain(v)
   })
 
   it('everything written passes the personal data scanner', async () => {
@@ -143,6 +149,26 @@ describe('export-money-fixture-shapes output guard', () => {
   it('prints counts and names only', async () => {
     const { lines } = await run()
     expect(lines.join('\n')).toMatch(/Engine Bidding Workflow: 12 samples/)
+  })
+})
+
+describe('export-money-fixture-shapes writes all or nothing', () => {
+  it('writes no file at all when a later workflow\'s backup differs from production', async () => {
+    const WF2 = 'ffffffff-0000-4000-8000-000000000002'
+    const tables = fakeTables()
+    // Sorted after WF, so a writer inside the check loop would already have written WF's file.
+    tables.workflows.push({ id: WF2, name: 'Second', organization_id: ORG, is_active: true, deleted_at: null, slack_channel: null, definition: DEFINITION })
+    tables.workflow_executions.push(...PAYLOADS.map((p) => ({ workflow_id: WF2, trigger_payload: p, source: 'engine', is_test: false, started_at: '2026-09-30T12:00:00Z' })))
+    const files = new Map<string, string>()
+    const { client } = fakeClient(tables)
+    await expect(runExport({
+      client: client as never,
+      fetchBackupDefinition: async (id) => (id === WF2 ? { ...DEFINITION, nodes: [] } : DEFINITION),
+      write: (path, text) => files.set(path, text),
+      log: () => {},
+      now: () => new Date('2026-10-01T00:00:00Z'),
+    })).rejects.toThrow(/backup of Second differs/)
+    expect([...files.keys()]).toEqual([])
   })
 })
 
