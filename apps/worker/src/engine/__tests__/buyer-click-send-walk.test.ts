@@ -99,7 +99,7 @@ describe('executeWorkflow marks a recovery run on the context', () => {
     vi.doMock('../definition-loader', () => ({
       loadWorkflowDefinition: vi.fn().mockResolvedValue({
         definition: { trigger: { id: 't', type: 'trigger', config: {} }, nodes: [{ id: 'a', namespace: 'a', type: 'code', config: { retries: 0 } }], edges: [] },
-        org_id: 'org-1', workflow_version_id: 'v1', workflow_name: 'wf', is_active: true,
+        org_id: 'org-1', workflow_version_id: 'v1', workflow_name: 'wf', is_active: true, lane: 'money',
       }),
     }))
     vi.doMock('../../lib/env-loader', () => ({ loadEnvVars: vi.fn().mockResolvedValue({}) }))
@@ -112,15 +112,15 @@ describe('executeWorkflow marks a recovery run on the context', () => {
         return { output: { ok: true } }
       }),
     }))
-    const { executeWorkflow } = await import('../index')
+    const { executeWorkflow, moneyRuntime } = await import('../index')
     const kv = { get: async () => null, put: async () => undefined, delete: async () => undefined } as unknown as KVNamespace
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
     const sb = { from: () => ({ select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }) }) } as unknown as SupabaseClient
     const ec = { waitUntil: (p: Promise<unknown>) => void p.catch(() => undefined) }
     const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's' }
-    await executeWorkflow(base, e, sb, ec)
-    await executeWorkflow({ ...base, resumeFromExecutionId: 'orig-1' }, e, sb, ec)
-    await executeWorkflow({ ...base, parentExecutionId: 'orig-1' }, e, sb, ec)
+    await executeWorkflow(base, e, moneyRuntime(sb), ec)
+    await executeWorkflow({ ...base, resumeFromExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
+    await executeWorkflow({ ...base, parentExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
     expect(seen).toEqual([undefined, 'resume', 'replay'])
   })
 })

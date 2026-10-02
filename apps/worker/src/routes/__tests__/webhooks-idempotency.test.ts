@@ -118,7 +118,7 @@ beforeEach(() => {
     workflow_version_id: 'v1',
     workflow_name: 'Dup Test',
     org_id: 'org-1',
-    slack_channel: null,
+    slack_channel: null, lane: 'money',
   })
   vi.mocked(executeNode).mockResolvedValue({ output: { ok: true } })
 })

@@ -3,7 +3,7 @@ import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-e
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { executeWorkflow } from '../../engine/index'
+import { executeWorkflow, moneyRuntime } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
@@ -656,7 +656,7 @@ executions.post('/:id/resume', async (c) => {
       resumeFromExecutionId: id,
     },
     c.env,
-    supabase,
+    moneyRuntime(supabase),
     c.executionCtx
   )
 
@@ -704,7 +704,7 @@ executions.post('/:id/replay', async (c) => {
       parentExecutionId: id,
     },
     c.env,
-    supabase,
+    moneyRuntime(supabase),
     c.executionCtx
   )
 

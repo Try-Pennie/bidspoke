@@ -16,6 +16,7 @@ vi.mock('../../lib/supabase')
 
 import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../../engine/index'
 import { WorkflowNotFoundError } from '../../engine/definition-loader'
+import { WorkflowLaneError } from '../../engine/lane'
 import { createSupabaseClient } from '../../lib/supabase'
 import webhooks from '../webhooks'
 
@@ -102,6 +103,15 @@ describe('POST /webhooks/:workflow_id', () => {
       const res = await request('wf-missing', { apiKey: 'sk_test_key' })
       expect(res.status).toBe(404)
       expect(await res.json()).toEqual({ error: 'Workflow not found' })
+    })
+
+    // #1707: an ops workflow on the money host is neither missing nor broken, so
+    // the sender is told it reached the wrong place, not that the endpoint is gone.
+    it('returns 421 for a workflow stored under another lane', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(new WorkflowLaneError('wf-ops', 'ops', 'money'))
+      const res = await request('wf-ops', { apiKey: 'sk_test_key' })
+      expect(res.status).toBe(421)
+      expect(await res.json()).toEqual({ error: 'Workflow is not served on this host' })
     })
 
     // The old code mapped any error whose text contained "not found"/"inactive"

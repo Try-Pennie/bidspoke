@@ -11,7 +11,7 @@ import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
-import { executeWorkflow } from '../../engine/index'
+import { executeWorkflow, moneyRuntime } from '../../engine/index'
 import { executeNode } from '../../engine/nodes/index'
 import { buildContext } from '../../engine/context'
 import { formatCodeErrorMessage } from '../../engine/error-classifier'
@@ -922,7 +922,7 @@ workflows.post('/:id/test', async (c) => {
       ...(body.definition ? { definitionOverride: body.definition as import('../../types').WorkflowDefinition } : {}),
     },
     c.env,
-    supabase,
+    moneyRuntime(supabase),
     c.executionCtx
   )
 

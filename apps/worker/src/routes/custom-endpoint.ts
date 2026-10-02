@@ -23,7 +23,7 @@
 
 import type { Context } from 'hono'
 import type { Env } from '../index'
-import { executeWorkflow } from '../engine/index'
+import { executeWorkflow, moneyRuntime, WorkflowLaneError } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 import { isNotFoundError } from '../lib/api-error'
@@ -188,7 +188,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
         isTest: false,
       },
       c.env,
-      supabase,
+      moneyRuntime(supabase),
       c.executionCtx
     )
 
@@ -217,6 +217,13 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     // generic so internal/DB details don't leak (#107). Real error is logged.
     if (err instanceof WorkflowNotFoundError) {
       return c.json({ error: 'Workflow not found' }, 404)
+    }
+    // An ops workflow on the money host (#1707): not this Worker's to run, and
+    // not missing either, so a sender is told it reached the wrong place
+    // rather than that the endpoint is gone. Forwarding to the ops Worker comes
+    // with the ops lane (plan R5).
+    if (err instanceof WorkflowLaneError) {
+      return c.json({ error: 'Workflow is not served on this host' }, 421)
     }
     console.error('[custom-endpoint] execution error:', err)
     return c.json({ error: 'Internal error' }, 500)

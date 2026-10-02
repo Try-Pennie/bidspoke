@@ -29,7 +29,7 @@ vi.mock('../achieve-log', () => ({
 }))
 vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 
@@ -58,7 +58,7 @@ async function runWith(isTest?: boolean): Promise<ExecutionContext> {
   await executeWorkflow(
     { workflowId: 'wf-547', payload: { lead: 1 }, source: 'engine', ...(isTest === undefined ? {} : { isTest }) },
     env,
-    supabase,
+    moneyRuntime(supabase),
     executionCtx,
   )
   await Promise.all(background.splice(0))
@@ -76,7 +76,7 @@ beforeEach(() => {
     workflow_version_id: 'v1',
     workflow_name: 'Ctx Flag Test',
     org_id: 'org-1',
-    slack_channel: null,
+    slack_channel: null, lane: 'money',
   })
   vi.mocked(executeNode).mockResolvedValue({ output: { ok: true } } as never)
 })

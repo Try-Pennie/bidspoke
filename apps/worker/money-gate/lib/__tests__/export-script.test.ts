@@ -33,7 +33,7 @@ const DEFINITION = { trigger: { type: 'http_webhook', config: {} }, nodes: [{ id
 
 function fakeTables(): Record<string, Array<Record<string, unknown>>> {
   return {
-    workflows: [{ id: WF, name: 'Engine Bidding Workflow', organization_id: ORG, is_active: true, deleted_at: null, slack_channel: null, definition: DEFINITION }],
+    workflows: [{ id: WF, name: 'Engine Bidding Workflow', organization_id: ORG, is_active: true, deleted_at: null, lane: 'money', slack_channel: null, definition: DEFINITION }],
     workflow_executions: PAYLOADS.map((p) => ({ workflow_id: WF, trigger_payload: p, source: 'engine', is_test: false, started_at: '2026-09-30T12:00:00Z' })),
     partner_configs: [{ id: 'p1', slug: 'tripoint', organization_id: ORG, daily_cap: 4321, bid_resolver_config: { tiers: [{ above: 12499, multiplier: 0.0013 }] }, updated_by_email: 'editor@trypennie.com' }],
     buyer_profiles: [{ partner_id: 'p1', organization_id: ORG, allowed_states: ['FL'], debt_min: 7777, updated_by_email: 'editor@trypennie.com' }],
@@ -157,7 +157,7 @@ describe('export-money-fixture-shapes writes all or nothing', () => {
     const WF2 = 'ffffffff-0000-4000-8000-000000000002'
     const tables = fakeTables()
     // Sorted after WF, so a writer inside the check loop would already have written WF's file.
-    tables.workflows.push({ id: WF2, name: 'Second', organization_id: ORG, is_active: true, deleted_at: null, slack_channel: null, definition: DEFINITION })
+    tables.workflows.push({ id: WF2, name: 'Second', organization_id: ORG, is_active: true, deleted_at: null, lane: 'money', slack_channel: null, definition: DEFINITION })
     tables.workflow_executions.push(...PAYLOADS.map((p) => ({ workflow_id: WF2, trigger_payload: p, source: 'engine', is_test: false, started_at: '2026-09-30T12:00:00Z' })))
     const files = new Map<string, string>()
     const { client } = fakeClient(tables)
@@ -169,6 +169,29 @@ describe('export-money-fixture-shapes writes all or nothing', () => {
       now: () => new Date('2026-10-01T00:00:00Z'),
     })).rejects.toThrow(/backup of Second differs/)
     expect([...files.keys()]).toEqual([])
+  })
+})
+
+// #1707: the gate replays the bidding Worker, so an ops workflow is never one of
+// its fixtures, and every exported workflow row carries the money lane the head
+// engine refuses to run without.
+describe('export-money-fixture-shapes exports money workflows only', () => {
+  it('leaves an ops workflow out and stamps each exported row with the money lane', async () => {
+    const OPS = 'ffffffff-0000-4000-8000-000000000003'
+    const tables = fakeTables()
+    tables.workflows.push({ id: OPS, name: 'Ops tool', organization_id: ORG, is_active: true, deleted_at: null, lane: 'ops', slack_channel: null, definition: DEFINITION })
+    const files = new Map<string, string>()
+    const { client } = fakeClient(tables)
+    await runExport({
+      client: client as never,
+      fetchBackupDefinition: async () => DEFINITION,
+      write: (path, text) => files.set(path, text),
+      log: () => {},
+      now: () => new Date('2026-10-01T00:00:00Z'),
+    })
+    const snapshot = JSON.parse(files.get('money-gate/fixtures/config-snapshot.json') ?? '{}') as { tables: { workflows: { id: string; lane: string }[] } }
+    expect(snapshot.tables.workflows.map((w) => [w.id, w.lane])).toEqual([[WF, 'money']])
+    expect([...files.keys()].some((k) => k.includes(OPS))).toBe(false)
   })
 })
 

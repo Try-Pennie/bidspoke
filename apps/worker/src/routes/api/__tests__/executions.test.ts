@@ -10,7 +10,12 @@ vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../engine/definition-loader')
 vi.mock('../../../lib/audit')
-vi.mock('../../../engine/index')
+// executeWorkflow is replaced; the runtime helper stays real, so the route is
+// seen passing a money runtime rather than an automocked undefined (#1707).
+vi.mock('../../../engine/index', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../engine/index')>()),
+  executeWorkflow: vi.fn(),
+}))
 vi.mock('../../../lib/archive-read')
 
 import { verifyJwt } from '../../../lib/jwt'

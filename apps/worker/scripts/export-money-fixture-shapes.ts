@@ -93,6 +93,8 @@ export async function runExport(deps: ExportDeps): Promise<void> {
     .from('workflows')
     .select('id, name, organization_id, slack_channel, definition')
     .eq('is_active', true)
+    // The gate replays the bidding Worker, so only money workflows are its fixtures (#1707).
+    .eq('lane', 'money')
     .is('deleted_at', null))
 
   const shapes: WorkflowShape[] = []
@@ -133,7 +135,7 @@ export async function runExport(deps: ExportDeps): Promise<void> {
 
   const orgIds = [...new Set(live.map((w) => w.organization_id))]
   const tables: ConfigSnapshot['tables'] = {
-    workflows: live.map((w) => ({ id: w.id, name: w.name, organization_id: w.organization_id, slack_channel: null, is_active: true, deleted_at: null })),
+    workflows: live.map((w) => ({ id: w.id, name: w.name, organization_id: w.organization_id, slack_channel: null, is_active: true, deleted_at: null, lane: 'money' })),
     workflow_versions: [],
     partner_configs: [],
     buyer_profiles: [],

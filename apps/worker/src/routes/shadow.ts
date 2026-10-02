@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
-import { executeWorkflow } from '../engine/index'
+import { executeWorkflow, moneyRuntime } from '../engine/index'
 import { createSupabaseClient } from '../lib/supabase'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
@@ -43,7 +43,7 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
         enforceSourceAssignment: false,
       },
       c.env,
-      supabase,
+      moneyRuntime(supabase),
       c.executionCtx
     ).catch((err) => console.error('[shadow] execution failed:', err))
   )

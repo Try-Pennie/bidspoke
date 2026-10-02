@@ -42,7 +42,29 @@ export function isNodeType(value: unknown): value is NodeType {
   return typeof value === 'string' && NODE_TYPE_SET.has(value)
 }
 
+/**
+ * The lane a workflow runs in (#1707, plan 0.C). Money workflows sell leads and
+ * run on the bidding Worker; ops workflows (internal tooling, texting, file
+ * parsers moved off Pipedream) run on the ops Worker against their own database.
+ */
+export const WORKFLOW_LANES = ['money', 'ops'] as const
+export type WorkflowLane = (typeof WORKFLOW_LANES)[number]
+
+export function isWorkflowLane(value: unknown): value is WorkflowLane {
+  return value === 'money' || value === 'ops'
+}
+
+/**
+ * Which workflows may run a node type: `money` only in a money workflow,
+ * `shared` in either. A node is money only when it reads partner config,
+ * partner credentials, buyer ledgers or the bid matrix, or writes state money
+ * flows share (the SUBMISSIONS store), so an ops workflow can never reach one.
+ */
+export type NodeLane = 'money' | 'shared'
+
 export interface NodeTraits {
+  /** Which workflow lanes may run it: required, so a new type has to decide. */
+  lane: NodeLane
   /** Every run pays an outbound round trip plus TLS: the network timeout floor. */
   network: boolean
   /** A cold dispatch or storage round trip no retry can rescue: the dispatch floor. */
@@ -59,7 +81,7 @@ export interface NodeTraits {
   executorFile: string | null
 }
 
-const inMemory = (over: Partial<NodeTraits> = {}): NodeTraits => ({
+const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane'>): NodeTraits => ({
   network: false,
   dispatchOrDb: false,
   walkGraphOnly: false,
@@ -71,16 +93,17 @@ const inMemory = (over: Partial<NodeTraits> = {}): NodeTraits => ({
 })
 
 export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
-  filter: inMemory({ executorFile: 'filter', staticHandles: ['pass', 'exit'] }),
-  branch: inMemory({ executorFile: 'branch' }),
-  branch_end: inMemory(),
-  code: inMemory({ dispatchOrDb: true, executorFile: 'code' }),
-  response: inMemory({ executorFile: 'response' }),
-  exit: inMemory(),
-  parallel: inMemory({ walkGraphOnly: true, executorFile: 'parallel' }),
-  parallel_end: inMemory({ walkGraphOnly: true }),
-  partner_bid: inMemory({ network: true, referencesPartners: true, executorFile: 'partner-bid' }),
+  filter: inMemory({ lane: 'shared', executorFile: 'filter', staticHandles: ['pass', 'exit'] }),
+  branch: inMemory({ lane: 'shared', executorFile: 'branch' }),
+  branch_end: inMemory({ lane: 'shared' }),
+  code: inMemory({ lane: 'shared', dispatchOrDb: true, executorFile: 'code' }),
+  response: inMemory({ lane: 'shared', executorFile: 'response' }),
+  exit: inMemory({ lane: 'shared' }),
+  parallel: inMemory({ lane: 'shared', walkGraphOnly: true, executorFile: 'parallel' }),
+  parallel_end: inMemory({ lane: 'shared', walkGraphOnly: true }),
+  partner_bid: inMemory({ lane: 'money', network: true, referencesPartners: true, executorFile: 'partner-bid' }),
   bid_group: inMemory({
+    lane: 'money',
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
@@ -88,18 +111,19 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     staticHandles: ['winner', 'no_winner'],
     executorFile: 'bid-group',
   }),
-  webhook: inMemory({ network: true, executorFile: 'integration' }),
-  transform: inMemory({ executorFile: 'transform' }),
-  constants: inMemory({ dispatchOrDb: true, executorFile: 'constants' }),
-  salesforce: inMemory({ network: true, executorFile: 'salesforce' }),
-  data_store: inMemory({ dispatchOrDb: true, executorFile: 'data-store' }),
-  latency_gate: inMemory({ dispatchOrDb: true, executorFile: 'latency-gate' }),
-  achieve_offers: inMemory({ network: true, executorFile: 'achieve-offers' }),
+  webhook: inMemory({ lane: 'shared', network: true, executorFile: 'integration' }),
+  transform: inMemory({ lane: 'shared', executorFile: 'transform' }),
+  constants: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'constants' }),
+  salesforce: inMemory({ lane: 'money', network: true, executorFile: 'salesforce' }),
+  data_store: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'data-store' }),
+  latency_gate: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'latency-gate' }),
+  achieve_offers: inMemory({ lane: 'money', network: true, executorFile: 'achieve-offers' }),
   // Sells a lead to the highest ranked eligible buyer (#1411). Walker only,
   // because it writes one attempt row per buyer tried; names no partner in its
   // config, since the buyers are whoever holds an enabled profile priced for its
   // population, which the partner routes resolve at read time.
   buyer_select: inMemory({
+    lane: 'money',
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
@@ -111,6 +135,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // refuses a resumed or replayed execution. It names its partner by id in
   // `partner_id` (#1553), so the partner finder reads it like partner_bid.
   buyer_click_send: inMemory({
+    lane: 'money',
     network: true,
     walkGraphOnly: true,
     referencesPartners: true,
@@ -125,12 +150,27 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // its own 300 ms budget is the only bound and no retry loop repeats it. It
   // names its partner by id in `partner_id`.
   buyer_click_check: inMemory({
+    lane: 'money',
     dispatchOrDb: true,
     walkGraphOnly: true,
     referencesPartners: true,
     staticHandles: ['eligible', 'not_eligible'],
     executorFile: 'buyer-click-check',
   }),
+}
+
+const NODE_TYPES_BY_LANE: Record<WorkflowLane, readonly NodeType[]> = {
+  money: NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'money' || NODE_TRAITS[t].lane === 'shared'),
+  ops: NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'shared'),
+}
+
+/** The node types a workflow in this lane may carry. */
+export function nodeTypesForLane(lane: WorkflowLane): readonly NodeType[] {
+  return NODE_TYPES_BY_LANE[lane]
+}
+
+export function nodeTypeRunsInLane(type: NodeType, lane: WorkflowLane): boolean {
+  return NODE_TYPES_BY_LANE[lane].includes(type)
 }
 
 /**

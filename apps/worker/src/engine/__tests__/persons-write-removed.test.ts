@@ -53,7 +53,7 @@ vi.mock('../lead-sightings', async (importOriginal) => ({
   finalizeSighting: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 
@@ -147,7 +147,7 @@ beforeEach(() => {
     workflow_version_id: 'v1',
     workflow_name: 'Persons Write Test',
     org_id: 'org-1',
-    slack_channel: null,
+    slack_channel: null, lane: 'money',
   })
   vi.mocked(executeNode).mockResolvedValue({ output: RESPONSE, earlyResponse: RESPONSE })
 })
@@ -159,7 +159,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
 
     await executeWorkflow(
       { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
-      harness.env, db.client, harness.executionCtx,
+      harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
 
@@ -173,7 +173,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
 
     await executeWorkflow(
       { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
-      harness.env, db.client, harness.executionCtx,
+      harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
 
@@ -192,7 +192,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
 
     await executeWorkflow(
       { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
-      harness.env, db.client, harness.executionCtx,
+      harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
 
@@ -209,7 +209,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
 
     const result = await executeWorkflow(
       { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
-      harness.env, db.client, harness.executionCtx,
+      harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
 

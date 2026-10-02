@@ -5,7 +5,7 @@
  * about it, and a switch that forgets one is a compile error at assertNever.
  */
 import { describe, expect, it } from 'vitest'
-import { NODE_TRAITS, NODE_TYPES, assertNever, isNodeType, type NodeType } from './index'
+import { NODE_TRAITS, NODE_TYPES, WORKFLOW_LANES, assertNever, isNodeType, isWorkflowLane, nodeTypeRunsInLane, nodeTypesForLane, type NodeType } from './index'
 
 const SORTED = [
   'achieve_offers', 'bid_group', 'branch', 'branch_end', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
@@ -98,6 +98,45 @@ describe('NODE_TRAITS', () => {
     for (const file of Object.values(files)) {
       if (file !== null) expect(file).toMatch(/^[a-z]+(-[a-z]+)*$/)
     }
+  })
+})
+
+// #1707 (plan 0.C): every node type declares which workflow lanes may run it.
+// The money only list is written out here, independently of the traits, so a
+// trait flipped to shared by mistake turns this red rather than agreeing with
+// itself (L70): these touch partner config, partner credentials, buyer ledgers
+// or the bid matrix, and an ops workflow must never reach one.
+const MONEY_ONLY = [
+  'achieve_offers', 'bid_group', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'constants', 'data_store',
+  'latency_gate', 'partner_bid', 'salesforce',
+]
+
+describe('lanes', () => {
+  it('names the two workflow lanes', () => {
+    expect([...WORKFLOW_LANES]).toEqual(['money', 'ops'])
+    expect(isWorkflowLane('ops')).toBe(true)
+    expect(isWorkflowLane('Money')).toBe(false)
+    expect(isWorkflowLane(null)).toBe(false)
+  })
+
+  it('every node type declares a lane, money or shared', () => {
+    for (const t of NODE_TYPES) expect(['money', 'shared']).toContain(NODE_TRAITS[t].lane)
+  })
+
+  it('marks exactly the money only types as money', () => {
+    expect(withTrait((t) => t.lane === 'money')).toEqual(MONEY_ONLY)
+  })
+
+  it('a money workflow may run every node type', () => {
+    expect([...nodeTypesForLane('money')].sort()).toEqual(SORTED)
+  })
+
+  it('an ops workflow may run no money only type', () => {
+    const ops = nodeTypesForLane('ops')
+    for (const t of MONEY_ONLY) expect(ops).not.toContain(t)
+    expect([...ops].sort()).toEqual(SORTED.filter((t) => !MONEY_ONLY.includes(t)))
+    expect(nodeTypeRunsInLane('partner_bid', 'ops')).toBe(false)
+    expect(nodeTypeRunsInLane('code', 'ops')).toBe(true)
   })
 })
 
