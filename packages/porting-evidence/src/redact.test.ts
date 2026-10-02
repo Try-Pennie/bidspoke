@@ -274,6 +274,38 @@ describe('redactCapture: names that only contain a sensitive word by accident', 
   })
 })
 
+// #1718: names are matched on their tokens, so a sensitive word run together
+// with another inside one lower case token (`userssn`, `bankaccountnumber`) was
+// one unknown token and its value was stored readable. Inside a single token the
+// long words match anywhere, and the short ones (ssn, dob) only at the token's
+// start or end, so `adobe`, `cardobject` and `businessname` stay readable.
+describe('redactCapture: sensitive words run together inside one token', () => {
+  const SENSITIVE = [
+    'bankaccountnumber', 'borrowerdob', 'userssn', 'customerdob', 'lastfourssn', 'ssnlast4', 'dobraw',
+    'applicantdateofbirth', 'applicantbirthdate', 'primarysocialsecurity', 'bankroutingnumber',
+  ]
+  const READABLE = ['businessname', 'classname', 'addressnumber', 'adobeid', 'cardobject', 'routingpartner', 'accountname']
+
+  it.each(SENSITIVE)('scrambles %s as an object field', async (name) => {
+    const { value, redactedCount } = await redactCapture({ [name]: '123456789' }, KEY)
+    expect((value as Record<string, string>)[name]).not.toBe('123456789')
+    expect(redactedCount).toBe(1)
+  })
+
+  it.each(SENSITIVE)('scrambles %s inside a body held as a string', async (name) => {
+    const body = JSON.stringify({ [name]: '123456789' })
+    const { value } = await redactCapture({ body }, KEY)
+    expect((value as { body: string }).body).not.toContain('123456789')
+  })
+
+  it.each(READABLE)('keeps %s readable', async (name) => {
+    const input = { [name]: 'ordinary-value-1990', body: JSON.stringify({ [name]: 'ordinaryvalue1990' }) }
+    const { value, redactedCount } = await redactCapture(input, KEY)
+    expect(value).toEqual(input)
+    expect(redactedCount).toBe(0)
+  })
+})
+
 // Review of #1711, the serialised text pass: values cut short at a space or
 // comma, key spellings the object path scrambles but the text path missed, and
 // literals replaced inside JSON so the body no longer parsed.

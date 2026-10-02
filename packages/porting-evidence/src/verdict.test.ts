@@ -173,3 +173,22 @@ describe('evaluateEvidence: recording off', () => {
     expect(r.verdict).toBe('complete')
   })
 })
+
+// #1718: the newest capture was found by spreading every capture in the window
+// as call arguments, which throws RangeError once the window is large enough.
+describe('evaluateEvidence: a busy window', () => {
+  it('returns a verdict for a window holding hundreds of thousands of captures', () => {
+    const count = 300_000
+    const step = Math.floor((24 * HOUR - 2 * MIN) / count)
+    const captures: CaptureRecord[] = []
+    for (let i = 0; i < count; i++) captures.push(...run(`b${i}`, T0 + i * step))
+    const r = evaluateEvidence(base({
+      captures,
+      floor: count,
+      learnedGapMs: HOUR,
+      independentRunCount: { count, windowStart: T0, windowEnd: T0 + 24 * HOUR },
+    }))
+    expect(r.verdict).toBe('complete')
+    expect(r.stats.paired).toBe(count)
+  })
+})
