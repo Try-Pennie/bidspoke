@@ -90,9 +90,13 @@ class FakeLedger implements LedgerApi {
     if (this.commitError) throw this.commitError
     return entry('accepted', outcome)
   }
-  async release(_key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry> {
+  released: (SaleOutcomeRecord | undefined)[] = []
+  releaseError: Error | null = null
+  async release(_key: EntryKey, status: 'declined' | 'released', outcome?: SaleOutcomeRecord): Promise<LedgerEntry> {
     this.calls.push(`release:${status}`)
-    return entry(status)
+    this.released.push(outcome)
+    if (this.releaseError) throw this.releaseError
+    return entry(status, outcome)
   }
   async entry(_key: EntryKey): Promise<EntryResult> {
     this.calls.push('entry')
@@ -354,6 +358,45 @@ describe('runBuyerSaleAttempt buyer outcomes', () => {
     const h = harness({ sale, ledger, buyer: { outcome: 'buyer_error', record: { ...OUTCOME, http_status: 403, result_code: null } } })
     expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'buyer_error', detail: 'http 403' })
     expect(ledger.calls).toEqual(['reserve:lead-1', 'release:released'])
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+  })
+
+  it('declined: the buyer\'s answer is kept on the entry and copied to buyer_sales at once (#1735)', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const record = { ...OUTCOME, result_code: '1003', buyer_reference: 'tp-lead-9', http_status: 200 }
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record } })
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(ledger.released).toEqual([record])
+    expect(h.mirrored).toHaveLength(1)
+    expect(h.mirrored[0]).toMatchObject({ status: 'declined', outcome: record })
+  })
+
+  it('buyer_error: the answer the buyer gave is kept and copied too (#1735)', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const record = { ...OUTCOME, http_status: 403, result_code: null }
+    const h = harness({ sale, ledger, buyer: { outcome: 'buyer_error', record } })
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(ledger.released).toEqual([record])
+    expect(h.mirrored[0]).toMatchObject({ status: 'released', outcome: record })
+  })
+
+  it('declined: a failed copy is left to the drain and never changes the answer (#1735)', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record: { ...OUTCOME, result_code: '1003' } }, mirrorError: new Error('supabase down') })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'declined_by_buyer', detail: '1003' })
+    expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
+  })
+
+  it('declined: a release that fails copies nothing and still frees the claim (#1735)', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    ledger.releaseError = new Error('ledger unreachable')
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record: { ...OUTCOME, result_code: '1003' } } })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'declined_by_buyer', detail: '1003' })
+    expect(h.mirrored).toEqual([])
     expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
   })
 

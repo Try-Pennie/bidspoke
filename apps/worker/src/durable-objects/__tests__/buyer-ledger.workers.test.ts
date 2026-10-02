@@ -173,6 +173,24 @@ describe('BuyerLedgerObject outcomes', () => {
     expect((await peek(stub)).hour_leads).toBe(1)
   })
 
+  it('a release keeps the buyer\'s answer it is given, so a decline records what the buyer said (#1735)', async () => {
+    const stub = ledger()
+    await reserve(stub, 'lead-a')
+    const answer = { ...OUTCOME, result_code: '1003', buyer_reference: 'TP-9' }
+    const res = await post(stub, '/release', { ...key('lead-a'), status: 'declined', outcome: answer })
+    expect(res.status).toBe(200)
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'declined', outcome: answer, mirrored: false } })
+  })
+
+  it('a release given a malformed answer is refused and leaves the reservation as it was (#1735)', async () => {
+    const stub = ledger()
+    await reserve(stub, 'lead-a')
+    const res = await post(stub, '/release', { ...key('lead-a'), status: 'declined', outcome: { result_code: 1003 } })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'bad_outcome' })
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'reserved' } })
+  })
+
   it('a transition on an absent entry answers absent, not success (L100)', async () => {
     const stub = ledger()
     const res = await post(stub, '/release', { ...key('never-reserved'), status: 'released' })

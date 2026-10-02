@@ -112,6 +112,8 @@ export interface CommitBody extends EntryKey {
 
 export interface ReleaseBody extends EntryKey {
   status: 'declined' | 'released'
+  /** What the buyer answered, when it answered at all, so a decline records the buyer's code and reference (#1735). */
+  outcome?: SaleOutcomeRecord
 }
 
 export interface SettleBody extends EntryKey {
@@ -281,7 +283,9 @@ export class BuyerLedgerObject implements DurableObject {
     const key = body && parseKey(body)
     if (!body || !key) return jsonResponse({ error: 'bad_key' }, 400)
     if (body.status !== 'declined' && body.status !== 'released') return jsonResponse({ error: 'bad_status' }, 400)
-    return this.transition(key, ['reserved'], body.status, null, { source: sourceForKind(key.kind), resolvedBy: null })
+    const outcome = body.outcome === undefined ? null : parseOutcome(body.outcome)
+    if (body.outcome !== undefined && !outcome) return jsonResponse({ error: 'bad_outcome' }, 400)
+    return this.transition(key, ['reserved'], body.status, outcome, { source: sourceForKind(key.kind), resolvedBy: null })
   }
 
   private async handleSettle(request: Request): Promise<Response> {

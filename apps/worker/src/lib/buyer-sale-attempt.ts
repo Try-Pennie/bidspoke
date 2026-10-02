@@ -57,7 +57,8 @@ export interface SaleApi {
 export interface LedgerApi {
   reserve(body: ReserveBody): Promise<ReserveResult>
   commit(key: EntryKey, outcome: SaleOutcomeRecord): Promise<LedgerEntry>
-  release(key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry>
+  /** `outcome` is what the buyer answered, kept on the entry so the copy in buyer_sales records it (#1735). */
+  release(key: EntryKey, status: 'declined' | 'released', outcome?: SaleOutcomeRecord): Promise<LedgerEntry>
   entry(key: EntryKey): Promise<EntryResult>
 }
 
@@ -244,11 +245,11 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
 
   switch (call.outcome) {
     case 'declined_by_buyer':
-      await deps.ledger.release(key, 'declined').catch(() => undefined)
+      await releaseAnswered(deps, key, 'declined', call.record)
       await freeQuietly(deps, generation)
       return { result: 'no_sale', reason: 'declined_by_buyer', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'buyer_error':
-      await deps.ledger.release(key, 'released').catch(() => undefined)
+      await releaseAnswered(deps, key, 'released', call.record)
       await freeQuietly(deps, generation)
       return { result: 'no_sale', reason: 'buyer_error', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'outcome_unknown':
@@ -496,6 +497,19 @@ async function handOff(deps: AttemptDeps, work: Promise<void>): Promise<void> {
 async function freeQuietly(deps: AttemptDeps, generation: number): Promise<void> {
   // A refusal here means the claim already moved on, which is the state we wanted.
   await deps.sale.free(generation).catch(() => undefined)
+}
+
+/**
+ * Ends a reservation the buyer answered, keeping the answer on the entry, and
+ * copies it to buyer_sales at once (#1735). A sale's row is written inline with
+ * the attempt's workflow, trace and pricing; a decline's is too, because the
+ * minute drain knows none of them and would leave them null. A release that
+ * fails copies nothing and the alarm settles the entry; a copy that fails is
+ * left to the drain. Neither changes what the buyer answered.
+ */
+async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declined' | 'released', record: SaleOutcomeRecord): Promise<void> {
+  const released = await deps.ledger.release(key, status, record).catch(() => null)
+  if (released) await mirrorQuietly(deps, released)
 }
 
 async function mirrorQuietly(deps: AttemptDeps, entry: LedgerEntry): Promise<boolean> {
