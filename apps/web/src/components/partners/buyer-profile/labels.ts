@@ -127,25 +127,64 @@ export function minutesToTime(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
+/**
+ * The two spellings of a row path (#1672). The conflict view's diff (diff.ts)
+ * keys a row in brackets and values it by the whole row: `windows[1:660]`,
+ * `blackout_dates[2026-12-25]`, `tiers[engine:10000]`. The history reads
+ * audit_log, which save_buyer_profile fills through buyer_profile_flatten, and
+ * that keys a row in dots and values it by ONE field of the row: `windows.1.660`
+ * holds the closing minute, `blackout_dates.2026-12-25` holds the note, and a
+ * tier is two paths, `tiers.engine.10000.multiplier` and `.debt_to`. Both are
+ * read here so neither surface shows a raw path.
+ */
+const WINDOW_PATH = /^windows(?:\[(\d+):(\d+)\]|\.(\d+)\.(\d+))$/
+const BLACKOUT_PATH = /^blackout_dates(?:\[(.+)\]|\.(.+))$/
+const TIER_PATH = /^tiers(?:\[([^:]+):(\d+(?:\.\d+)?)\]|\.([^.]+)\.(\d+(?:\.\d+)?)\.(multiplier|debt_to))$/
+const TIER_FIELD_LABELS: Record<string, string> = { multiplier: 'multiplier', debt_to: 'upper bound' }
+
+type RowPath =
+  | { kind: 'window'; dotted: boolean; day: number; opens: number }
+  | { kind: 'blackout'; dotted: boolean; date: string }
+  | { kind: 'tier'; dotted: boolean; population: string; from: number; field: string | null }
+
+function parseRowPath(path: string): RowPath | null {
+  const w = WINDOW_PATH.exec(path)
+  if (w) return { kind: 'window', dotted: w[3] !== undefined, day: Number(w[1] ?? w[3]), opens: Number(w[2] ?? w[4]) }
+  const b = BLACKOUT_PATH.exec(path)
+  if (b) return { kind: 'blackout', dotted: b[2] !== undefined, date: b[1] ?? b[2] }
+  const t = TIER_PATH.exec(path)
+  if (t) return { kind: 'tier', dotted: t[3] !== undefined, population: t[1] ?? t[3], from: Number(t[2] ?? t[4]), field: t[5] ?? null }
+  return null
+}
+
 /** A human label for a diff or history path. */
 export function profileFieldLabel(path: string): string {
   if (FIELD_LABELS[path]) return FIELD_LABELS[path]
   if (path === 'click_delivery.success_pattern') return SUCCESS_REPLY
   const clickRoute = /^click_delivery\.routes\[(.*)\]$/.exec(path)
   if (clickRoute) return `Route ${clickRoute[1]}`
-  const window = /^windows\[(\d+):(\d+)\]$/.exec(path)
-  if (window) {
-    const day = DAYS_OF_WEEK.find((d) => d.index === Number(window[1]))?.label ?? `Day ${window[1]}`
-    return `${day} hours from ${minutesToTime(Number(window[2]))}`
+  const row = parseRowPath(path)
+  if (row?.kind === 'window') {
+    const day = DAYS_OF_WEEK.find((d) => d.index === row.day)?.label ?? `Day ${row.day}`
+    return `${day} hours from ${minutesToTime(row.opens)}`
   }
-  const blackout = /^blackout_dates\[(.+)\]$/.exec(path)
-  if (blackout) return `Blackout ${blackout[1]}`
-  const tier = /^tiers\[([^:]+):(\d+(?:\.\d+)?)\]$/.exec(path)
-  if (tier) {
-    const population = (POPULATIONS as readonly string[]).includes(tier[1]) ? POPULATION_LABELS[tier[1] as Population] : tier[1]
-    return `${population} tier from $${formatWhole(Number(tier[2]))}`
+  if (row?.kind === 'blackout') return row.dotted ? `Blackout ${row.date} note` : `Blackout ${row.date}`
+  if (row?.kind === 'tier') {
+    const population = (POPULATIONS as readonly string[]).includes(row.population) ? POPULATION_LABELS[row.population as Population] : row.population
+    const tier = `${population} tier from $${formatWhole(row.from)}`
+    return row.field ? `${tier} ${TIER_FIELD_LABELS[row.field] ?? row.field}` : tier
   }
   return path
+}
+
+/** A history value at a dotted row path, which holds one field of the row (#1672). Null means the field was absent on that side. */
+function formatDottedRowValue(row: RowPath, value: unknown): string | null {
+  if (!row.dotted) return null
+  if (row.kind === 'window' && typeof value === 'number') return `open until ${minutesToTime(value)}`
+  if (row.kind === 'blackout' && typeof value === 'string') return value
+  if (row.kind === 'tier' && row.field === 'debt_to' && (typeof value === 'number' || typeof value === 'string')) return formatDollars(Number(value))
+  if (row.kind === 'tier' && row.field === 'multiplier' && (typeof value === 'number' || typeof value === 'string')) return String(Number(value))
+  return null
 }
 
 /** A human value for a diff or history value at a path. */
@@ -153,6 +192,9 @@ export function formatProfileValue(path: string, value: unknown): string {
   if (value === null || value === undefined) return 'none'
   if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]
   if (path.endsWith('_cents') && typeof value === 'number') return formatCents(value)
+  const row = parseRowPath(path)
+  const dotted = row ? formatDottedRowValue(row, value) : null
+  if (dotted !== null) return dotted
   if (path.startsWith('click_delivery.routes[') && typeof value === 'object') {
     const r = value as { url?: unknown; states?: unknown }
     const states = Array.isArray(r.states) && r.states.length > 0 ? [...r.states].map(String).sort().join(', ') : 'every state no other route lists'
