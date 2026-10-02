@@ -41,7 +41,7 @@ describe('executor registry', () => {
     const refusal = run(node(type), ctx(), {} as never).catch((e: unknown) => e)
     const err = await refusal
     expect(err).toBeInstanceOf(LaneRefusedNodeError)
-    expect((err as Error).message).toBe(`Node type ${type} cannot run in an ops workflow`)
+    expect((err as Error).message).toBe(`Node type ${type} cannot run in the ops lane`)
   })
 
   it('an ops executor runs a shared node', async () => {

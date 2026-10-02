@@ -10,7 +10,7 @@ import type { WorkflowDefinition } from '../types'
 /** A node type the workflow's lane may not run: an ops workflow never reaches a money executor. */
 export class LaneRefusedNodeError extends Error {
   constructor(type: string, lane: WorkflowLane) {
-    super(`Node type ${type} cannot run in an ${lane} workflow`)
+    super(`Node type ${type} cannot run in the ${lane} lane`)
     this.name = 'LaneRefusedNodeError'
   }
 }

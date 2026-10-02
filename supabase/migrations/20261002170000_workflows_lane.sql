@@ -12,12 +12,14 @@
 --
 -- Expand only (ADR 0007): a new NOT NULL column with a constant default fills
 -- every existing row with 'money' without rewriting the table, and the code
--- deployed today never selects it, so the apply and the deploy can happen in
--- either order. The lock_timeout keeps the brief ACCESS EXCLUSIVE lock from
+-- deployed before #1707 never selects it, so applying this first is safe. The
+-- order is NOT free the other way: the #1707 loader selects the column on every
+-- cache miss, so this must be applied BEFORE that code deploys (it was, on
+-- 2026-10-02, ahead of the merge). The lock_timeout keeps the brief ACCESS EXCLUSIVE lock from
 -- queueing every webhook's cache miss behind a long running transaction; if it
 -- cannot be taken in time the statement fails and is simply run again.
 
-SET lock_timeout = '5s';
+SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE public.workflows
   ADD COLUMN lane text NOT NULL DEFAULT 'money'
