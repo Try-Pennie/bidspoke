@@ -104,6 +104,31 @@ END
 $do$;
 
 -- ── 3. The Achieve sandbox purge, which keys on is_sandbox and its partition key
+-- The predicate bounds the partition key (requested_at_utc < now() - 7 days), so
+-- the planner prunes every partition wholly newer than that, and on a throwaway
+-- database whose seeded partitions all start later there is nothing left to plan
+-- (#1716: it went red on 2026-10-01 once the seeds aged past the window). So make
+-- sure one partition covers time before the cutoff: placed directly below the
+-- earliest existing one, it cannot overlap any, and like every partition it is
+-- given the parent's partitioned indexes, so a dropped sandbox index still fails.
+DO $do$
+DECLARE
+  v_earliest timestamp;
+  v_from timestamp;
+BEGIN
+  SELECT min((regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\)'))[1]::timestamp)
+    INTO v_earliest
+  FROM pg_inherits i
+  JOIN pg_class c ON c.oid = i.inhrelid
+  WHERE i.inhparent = 'public.achieve_evaluations'::regclass;
+  IF v_earliest IS NULL THEN RAISE EXCEPTION 'achieve_evaluations has no partitions to place one below'; END IF;
+  IF v_earliest > (now() - interval '7 days')::timestamp THEN
+    v_from := least(v_earliest - interval '1 month', date_trunc('month', now() - interval '8 days')::timestamp);
+    EXECUTE format('CREATE TABLE IF NOT EXISTS public.achieve_evaluations_sql_suite_past PARTITION OF public.achieve_evaluations FOR VALUES FROM (%L) TO (%L)', v_from, v_earliest);
+  END IF;
+END
+$do$;
+
 DO $do$
 BEGIN
   PERFORM pg_temp.assert_indexed('achieve_evaluations sandbox purge page',
