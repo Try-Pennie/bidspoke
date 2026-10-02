@@ -108,3 +108,67 @@ describe('click delivery words (#1639)', () => {
     expect(formatProfileValue('click_delivery.routes[DI4]', null)).toBe('none')
   })
 })
+
+/**
+ * #1672: the history reads audit_log rows that save_buyer_profile writes through
+ * buyer_profile_flatten, whose paths are DOTTED (`windows.1.660`), not the
+ * bracket keys diff.ts uses for the conflict view (`windows[1:660]`). The rows
+ * below are copied from real audit_log changes (read 2026-10-02): Liberty1's
+ * hours move on 2026-10-01, Tripoint's pricing edit on 2026-09-23, and the
+ * click delivery save on 2026-09-30 (route addresses replaced by example ones).
+ * No blackout date has ever been saved, so that row is built from the flatten's
+ * own shape: `'blackout_dates.' || date`, valued by the note.
+ */
+describe('history paths in the dotted form buyer_profile_flatten writes (#1672)', () => {
+  const realRows: Record<string, { old: unknown; new: unknown }> = {
+    'windows.1.660': { old: 1260, new: null },
+    'windows.1.540': { old: null, new: 1260 },
+    'windows.0.0': { old: null, new: 1440 },
+    'tiers.engine.10000.debt_to': { old: null, new: 12500 },
+    'tiers.engine.10000.multiplier': { old: null, new: 0.0009 },
+    'tiers.engine.0.multiplier': { old: 0.0009, new: null },
+    'click_delivery.success_pattern': { old: null, new: '(?<id>\\w+)' },
+    'click_delivery.routes[DV1]': { old: null, new: { url: 'https://a.example/dv1', states: ['DE', 'HI'] } },
+  }
+
+  it('labels every real row in the form\'s words, never as the raw path', () => {
+    for (const path of Object.keys(realRows)) expect(profileFieldLabel(path), path).not.toBe(path)
+  })
+
+  it('names an hours row by its day and opening time, valued by its closing time', () => {
+    expect(profileFieldLabel('windows.1.660')).toBe('Monday hours from 11:00')
+    expect(profileFieldLabel('windows.0.0')).toBe('Sunday hours from 00:00')
+    expect(formatProfileValue('windows.1.540', 1260)).toBe('open until 21:00')
+    expect(formatProfileValue('windows.1.660', null)).toBe('none')
+  })
+
+  it('names a pricing row by its tier and the field that moved', () => {
+    expect(profileFieldLabel('tiers.engine.10000.multiplier')).toBe('Engine tier from $10,000 multiplier')
+    expect(profileFieldLabel('tiers.engine.10000.debt_to')).toBe('Engine tier from $10,000 upper bound')
+    expect(profileFieldLabel('tiers.main_flow.0.multiplier')).toBe('Main Flow tier from $0 multiplier')
+    expect(profileFieldLabel('tiers.lead_economy.12500.debt_to')).toBe('Lead Economy tier from $12,500 upper bound')
+    expect(formatProfileValue('tiers.engine.10000.multiplier', 0.0009)).toBe('0.0009')
+    expect(formatProfileValue('tiers.engine.10000.debt_to', 12500)).toBe('$12,500.00')
+    expect(formatProfileValue('tiers.engine.0.multiplier', null)).toBe('none')
+  })
+
+  it('names a blackout row by its date, valued by its note', () => {
+    expect(profileFieldLabel('blackout_dates.2026-12-25')).toBe('Blackout 2026-12-25 note')
+    expect(formatProfileValue('blackout_dates.2026-12-25', 'Christmas')).toBe('Christmas')
+    expect(formatProfileValue('blackout_dates.2026-12-25', null)).toBe('none')
+  })
+
+  it('labels every scalar key the flatten passes through from buyer_profile_document', () => {
+    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents']
+    for (const key of documentScalars) expect(profileFieldLabel(key), key).not.toBe(key)
+  })
+
+  it('still reads the bracket keys the conflict view diff produces', () => {
+    expect(profileFieldLabel('windows[1:660]')).toBe('Monday hours from 11:00')
+    expect(profileFieldLabel('tiers[engine:10000]')).toBe('Engine tier from $10,000')
+    expect(profileFieldLabel('blackout_dates[2026-12-25]')).toBe('Blackout 2026-12-25')
+    expect(formatProfileValue('windows[1:660]', { day_of_week: 1, opens_minute: 660, closes_minute: 1260 })).toBe('11:00 to 21:00')
+    expect(formatProfileValue('tiers[engine:10000]', { multiplier: 0.0009, debt_to: 12500 })).toBe('0.0009 with up to $12,500')
+    expect(formatProfileValue('blackout_dates[2026-12-25]', { date: '2026-12-25', note: null })).toBe('off')
+  })
+})

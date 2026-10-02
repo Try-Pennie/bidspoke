@@ -46,3 +46,21 @@ describe('click delivery in the history (#1639)', () => {
     expect(screen.getByText('Success reply: none to (?<id>\\w+)')).toBeInTheDocument()
   })
 })
+
+describe('rows as audit_log holds them (#1672)', () => {
+  it('reads the dotted paths buyer_profile_flatten writes, from a real hours move and a real pricing edit', () => {
+    render(<BuyerProfileHistory entries={[{
+      changed_at: '2026-10-01T23:32:19.553Z', changed_by: 'Dan', action: 'updated',
+      changes: {
+        'windows.1.660': { old: 1260, new: null },
+        'windows.1.540': { old: null, new: 1260 },
+        'tiers.engine.10000.multiplier': { old: null, new: 0.0009 },
+        'tiers.engine.10000.debt_to': { old: null, new: 12500 },
+      },
+    }]} />)
+    expect(screen.getByText('Monday hours from 11:00: open until 21:00 to none')).toBeInTheDocument()
+    expect(screen.getByText('Monday hours from 09:00: none to open until 21:00')).toBeInTheDocument()
+    expect(screen.getByText('Engine tier from $10,000 multiplier: none to 0.0009')).toBeInTheDocument()
+    expect(screen.getByText('Engine tier from $10,000 upper bound: none to $12,500.00')).toBeInTheDocument()
+  })
+})
