@@ -382,6 +382,17 @@ describe('runBuyerSaleAttempt buyer outcomes', () => {
     expect(h.mirrored[0]).toMatchObject({ status: 'released', outcome: record })
   })
 
+  it('declined: the claim is freed BEFORE the copy, so a slow buyer_sales write never holds the lead (#1735)', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record: { ...OUTCOME, result_code: '1003' } } })
+    let callsAtCopy: string[] = []
+    const copy = h.deps.mirror
+    h.deps.mirror = async (e) => { callsAtCopy = [...sale.calls]; await copy(e) }
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(callsAtCopy).toEqual(['claim:exec-1', 'free:1'])
+  })
+
   it('declined: a failed copy is left to the drain and never changes the answer (#1735)', async () => {
     const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
     const ledger = new FakeLedger()

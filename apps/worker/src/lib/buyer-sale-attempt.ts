@@ -245,12 +245,10 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
 
   switch (call.outcome) {
     case 'declined_by_buyer':
-      await releaseAnswered(deps, key, 'declined', call.record)
-      await freeQuietly(deps, generation)
+      await releaseAnswered(deps, key, 'declined', call.record, generation)
       return { result: 'no_sale', reason: 'declined_by_buyer', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'buyer_error':
-      await releaseAnswered(deps, key, 'released', call.record)
-      await freeQuietly(deps, generation)
+      await releaseAnswered(deps, key, 'released', call.record, generation)
       return { result: 'no_sale', reason: 'buyer_error', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'outcome_unknown':
       // The buyer may have taken the lead: hold the reservation (the alarm makes
@@ -500,15 +498,18 @@ async function freeQuietly(deps: AttemptDeps, generation: number): Promise<void>
 }
 
 /**
- * Ends a reservation the buyer answered, keeping the answer on the entry, and
- * copies it to buyer_sales at once (#1735). A sale's row is written inline with
- * the attempt's workflow, trace and pricing; a decline's is too, because the
- * minute drain knows none of them and would leave them null. A release that
- * fails copies nothing and the alarm settles the entry; a copy that fails is
- * left to the drain. Neither changes what the buyer answered.
+ * Ends a reservation the buyer answered, keeping the answer on the entry, frees
+ * the claim, and then copies the entry to buyer_sales (#1735). A sale's row is
+ * written inline with the attempt's workflow, trace and pricing; a decline's is
+ * too, because the minute drain knows none of them and would leave them null.
+ * The claim is freed first, so a slow copy never holds the lead from another
+ * execution. A release that fails copies nothing and the alarm settles the
+ * entry; a copy that fails is left to the drain. Neither changes what the buyer
+ * answered.
  */
-async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declined' | 'released', record: SaleOutcomeRecord): Promise<void> {
+async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declined' | 'released', record: SaleOutcomeRecord, generation: number): Promise<void> {
   const released = await deps.ledger.release(key, status, record).catch(() => null)
+  await freeQuietly(deps, generation)
   if (released) await mirrorQuietly(deps, released)
 }
 
