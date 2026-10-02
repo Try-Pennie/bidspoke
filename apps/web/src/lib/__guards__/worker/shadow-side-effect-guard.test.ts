@@ -2,7 +2,7 @@
  * Guard against the recurring "node leaks a side effect in a shadow dry-run" bug
  * (#230). Shadow mode (apps/worker/src/engine/shadow.ts) requires every node that
  * performs an external side effect (HTTP fetch, KV write, Supabase write, Durable
- * Object call) to short-circuit under isShadowDryRun(ctx). Nothing enforced this:
+ * Object call) to short-circuit under shadowOf(ctx).outboundStubbed (isShadowDryRun before #1708). Nothing enforced this:
  * the shadow-mode review caught that latency-gate.ts (`mark` -> kv.put) was missed
  * entirely, and a newly added node could leak the same way.
  *
@@ -30,23 +30,38 @@ describe('findShadowGuardViolations (classifier)', () => {
     expect(v.map((x) => x.node)).toEqual(['evil'])
   })
 
-  it('passes a node that fetches but short-circuits under isShadowDryRun', () => {
+  it('passes a node that fetches but short-circuits under shadowOf(ctx)', () => {
     const v = findShadowGuardViolations([
       {
         name: 'good',
         content:
-          'import { isShadowDryRun } from "../shadow"\n' +
-          'export async function run(ctx) { if (isShadowDryRun(ctx)) return stub; await fetch("https://x") }',
+          'import { shadowOf } from "../run-reality"\n' +
+          'export async function run(ctx) { if (shadowOf(ctx).outboundStubbed) return stub; await fetch("https://x") }',
       },
     ])
     expect(v).toEqual([])
+  })
+
+  // Asking run-reality for the test flag or LOCAL_DEV is not a shadow check: it
+  // stubs nothing, so a node whose only run-reality call is runRealityOf must
+  // still be flagged when it sends (review of #1729).
+  it('flags a node that fetches and only asks runRealityOf, which stubs nothing', () => {
+    const v = findShadowGuardViolations([
+      {
+        name: 'pager',
+        content:
+          'import { runRealityOf } from "../run-reality"\n' +
+          'export async function run(ctx, env) { const r = runRealityOf(ctx, env); if (!r.isTest) page(); await fetch("https://x") }',
+      },
+    ])
+    expect(v.map((x) => x.node)).toEqual(['pager'])
   })
 
   it('passes a shadow-aware writing node even if it is not on the allowlist', () => {
     const v = findShadowGuardViolations([
       {
         name: 'writer',
-        content: 'import { isShadowDryRun } from "../shadow"\nif (isShadowDryRun(ctx)) return; await kv.put(k, v)',
+        content: 'import { shadowOf } from "../run-reality"\nif (shadowOf(ctx).outboundStubbed) return; await kv.put(k, v)',
       },
     ])
     expect(v).toEqual([])
@@ -109,7 +124,7 @@ describe('every side-effecting node executor is shadow-mode aware (#230)', () =>
       violations,
       `Shadow side-effect guard violation(s):\n${report}\n\n` +
         `A node that performs HTTP/KV/DB/Durable-Object work must short-circuit under ` +
-        `isShadowDryRun(ctx) (see apps/worker/src/engine/shadow.ts), or be added to ` +
+        `shadowOf(ctx).outboundStubbed (see apps/worker/src/engine/run-reality.ts), or be added to ` +
         `SHADOW_EXEMPT_NODES if it is genuinely pure/read-only.`,
     ).toEqual([])
   })

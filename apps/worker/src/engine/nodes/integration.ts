@@ -21,7 +21,8 @@ import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
-import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
+import { shadowIntegrationStub } from '../shadow'
+import { shadowOf } from '../run-reality'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { containsHtmlDocument } from '../../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
@@ -96,7 +97,7 @@ export async function executeIntegrationNode(
   }
 
   // Shadow dry-run: don't make the outbound call.
-  if (isShadowDryRun(ctx)) return shadowIntegrationStub()
+  if (shadowOf(ctx).outboundStubbed) return shadowIntegrationStub()
 
   // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves.
   // CF secrets are not in ctx.env (which only has non-secret Supabase vars).

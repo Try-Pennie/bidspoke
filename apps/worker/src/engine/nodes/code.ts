@@ -6,6 +6,7 @@
 // the legacy per-node worker.
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
+import { shadowOf } from '../run-reality'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { formatErr } from '../../lib/format-error'
@@ -262,7 +263,7 @@ export function buildCodeSandboxBody(
     // populated by buildContext; if missing, fall back to {trace_id} only.
     execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
     props: resolvedProps,
-    shadow_mode: ctx.shadow_mode ?? 'off',
+    shadow_mode: shadowOf(ctx).sandboxShadowMode,
   })
 }
 

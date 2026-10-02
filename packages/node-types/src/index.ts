@@ -79,6 +79,13 @@ export interface NodeTraits {
   staticHandles: readonly string[] | null
   /** The executor's file name under engine/nodes, or null for the walk only and inline types. */
   executorFile: string | null
+  /**
+   * How a canvas test run differs for this node from a live run, or null when it
+   * does not: a test run is otherwise live and makes its real calls (#1708).
+   * `report_only` decides and records but commits nothing; `unscreened` skips
+   * the pre-send screen. Read only through engine/run-reality.ts.
+   */
+  testRunException: { kind: 'report_only' | 'unscreened'; reason: string } | null
 }
 
 const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane'>): NodeTraits => ({
@@ -89,6 +96,7 @@ const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane'>): NodeTra
   referencesPartners: false,
   staticHandles: null,
   executorFile: null,
+  testRunException: null,
   ...over,
 })
 
@@ -117,7 +125,15 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   salesforce: inMemory({ lane: 'money', network: true, executorFile: 'salesforce' }),
   data_store: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'data-store' }),
   latency_gate: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'latency-gate' }),
-  achieve_offers: inMemory({ lane: 'money', network: true, executorFile: 'achieve-offers' }),
+  achieve_offers: inMemory({
+    lane: 'money',
+    network: true,
+    executorFile: 'achieve-offers',
+    testRunException: {
+      kind: 'unscreened',
+      reason: 'The score floor doubles as the live pipe pause switch, and a canvas test send is one deliberate lead, so it goes out regardless (Dan, 2026-08-31).',
+    },
+  }),
   // Sells a lead to the highest ranked eligible buyer (#1411). Walker only,
   // because it writes one attempt row per buyer tried; names no partner in its
   // config, since the buyers are whoever holds an enabled profile priced for its
@@ -129,6 +145,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     synthesizesAttempts: true,
     staticHandles: ['sold', 'no_sale', 'not_applicable', 'deferred'],
     executorFile: 'buyer-select',
+    testRunException: { kind: 'report_only', reason: 'A test run must not sell a lead, spend a buyer cap or write a sale.' },
   }),
   // Claims, posts and counts one click for a click sold buyer (#1542). Walker
   // only, because a retried send is a duplicate: it runs exactly once and
@@ -141,6 +158,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     referencesPartners: true,
     staticHandles: ['sent', 'refused', 'unknown', 'already_sent', 'in_progress', 'needs_review', 'not_sent'],
     executorFile: 'buyer-click-send',
+    testRunException: { kind: 'report_only', reason: 'A test run must not post a click or count it against the buyer cap.' },
   }),
   // Decides on Engine's response path whether a click sold buyer may be offered
   // this lead (#1543): the buyer profile's box, judged when the node runs, then

@@ -18,7 +18,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 import { coerceString } from '../../lib/coerce'
-import { isShadowDryRun } from '../shadow'
+import { shadowOf } from '../run-reality'
 
 type DataStoreName = 'submissions'
 
@@ -58,7 +58,7 @@ export async function executeDataStoreNode(
       if (typeof config.ttl_seconds === 'number' && config.ttl_seconds > 0) {
         putOpts.expirationTtl = Math.max(config.ttl_seconds, KV_MIN_TTL_SECONDS)
       }
-      if (!isShadowDryRun(ctx)) {
+      if (!shadowOf(ctx).outboundStubbed) {
         await kv.put(key, JSON.stringify(value), putOpts)
       }
       const resolvedInput: ResolvedStepInput = {
@@ -94,7 +94,7 @@ export async function executeDataStoreNode(
       }
     }
     case 'delete': {
-      if (!isShadowDryRun(ctx)) {
+      if (!shadowOf(ctx).outboundStubbed) {
         await kv.delete(key)
       }
       const resolvedInput: ResolvedStepInput = {

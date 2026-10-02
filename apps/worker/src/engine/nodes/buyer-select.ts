@@ -69,7 +69,7 @@ import { log as structuredLog } from '../../lib/logger'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
-import { isShadowDryRun } from '../shadow'
+import { nodeReportsOnly, runRealityOf } from '../run-reality'
 import { resolveSalePayload } from './buyer-select-payload'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     clock: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
-    localDev: Boolean(env.LOCAL_DEV),
+    localDev: runRealityOf(ctx, env).localDev,
   }
 }
 
@@ -322,7 +322,7 @@ class Run {
     this.config = node.config as unknown as BuyerSelectConfig
     this.startedAt = deps.clock()
     this.configuredMode = (BUYER_SELECT_MODES as readonly string[]).includes(String(this.config.mode)) ? this.config.mode : null
-    const reportOnly = Boolean(ctx.isTest) || isShadowDryRun(ctx) || deps.localDev
+    const reportOnly = nodeReportsOnly('buyer_select', runRealityOf(ctx, { LOCAL_DEV: deps.localDev }))
     this.modeEffective = reportOnly ? 'report_only' : this.configuredMode ?? 'live'
     this.out = {
       _route: 'no_sale',

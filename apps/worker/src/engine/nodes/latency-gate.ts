@@ -43,7 +43,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 import { coerceString } from '../../lib/coerce'
-import { isShadowDryRun } from '../shadow'
+import { shadowOf } from '../run-reality'
 
 interface LatencyGateConfig {
   operation?: 'mark' | 'check'
@@ -94,7 +94,7 @@ export async function executeLatencyGateNode(
     )
     // Shadow dry-run: don't write the mark (a real side effect); still return the
     // same output shape so downstream logic is unchanged.
-    if (!isShadowDryRun(ctx)) {
+    if (!shadowOf(ctx).outboundStubbed) {
       await stub.fetch('http://do/mark', {
         method: 'POST',
         body: JSON.stringify({ marked_at: markedAt, ttl_seconds: ttlSeconds }),

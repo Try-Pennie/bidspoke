@@ -35,7 +35,7 @@ import { resolveBid, effectiveResolverType } from '../bid-resolver'
 import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger } from '../bid-logger'
-import { isShadowDryRun, isShadowStandIn } from '../shadow'
+import { runRealityOf, shadowOf } from '../run-reality'
 
 // Re-exports — keep external imports stable.
 export { PartnerApiError } from '../partner-bid-error'
@@ -314,15 +314,15 @@ export async function executePartnerBidNode(
   // Shadow stand-in (#232): resolve a deterministic bid WITHOUT the outbound
   // submission, cap increment, dedup call, circuit-breaker writes, or bid-attempt
   // write — so downstream Bid Group / bid-evaluation / routing can be rehearsed.
-  // Checked before the plain dry-run skip (stand_in also satisfies isShadowDryRun).
-  if (isShadowStandIn(ctx)) {
+  // Checked before the plain dry-run skip (stand_in also stubs outbound, so outboundStubbed is true for it too).
+  if (shadowOf(ctx).standIn) {
     return standInBid(p, ctx, env, supabase, signal, buildInput)
   }
 
   // Shadow dry-run: skip the partner submission, dedup call, and bid-attempt
   // write. The partner config load above is a harmless DB read, so we still have
   // the slug for a canonical skip.
-  if (isShadowDryRun(ctx)) {
+  if (shadowOf(ctx).outboundStubbed) {
     return { ...skip(p.slug, 'shadow'), resolvedInput: buildInput({ skip_reason: 'shadow' }) }
   }
 
@@ -541,9 +541,10 @@ export async function executePartnerBidNode(
       }))
       // Page ops if this error just tripped the breaker open — otherwise the
       // partner silently drops out of bidding for hours with no signal (1.2).
+      const reality = runRealityOf(ctx, env)
       await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome, {
-        isLocalDev: !!env.LOCAL_DEV,
-        isTest: ctx.isTest,
+        isLocalDev: reality.localDev,
+        isTest: reality.isTest,
       })
     }
 
