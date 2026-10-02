@@ -20,6 +20,11 @@ import {
   ALERT_WHEN_DAYS_LEFT,
   GATE_SUBREQUEST_SHARE,
   costWarnings,
+  ARCHIVE_GATE_CLEANUP_JOB,
+  ARCHIVE_GATE_COST_JOB,
+  etClock,
+  etWhen,
+  type BeneathStatus,
 } from '../archive-gate'
 import { encodeBundle } from '../../archive/bundle'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
@@ -245,6 +250,7 @@ async function run(opts: {
   watermarkThrows?: string
   restrictDays?: { from?: string; to?: string; limit?: number }
   daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
+  beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -263,8 +269,45 @@ async function run(opts: {
     now: () => NOW,
     restrictDays: opts.restrictDays,
     daysHeld: opts.daysHeld,
+    beneathStatus: opts.beneathStatus,
   })
   return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
+}
+
+/** The day as the alert says it, "Aug 9", derived so the fixture follows NOW. */
+const spoken = (day: string) =>
+  new Date(`${day}T00:00:00.000Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+describe('times are spoken in Eastern time, daylight saving included', () => {
+  it('says 11:30 PM ET for the 03:30 UTC purge in summer and 10:30 PM ET in winter', () => {
+    expect(etClock(new Date('2026-08-23T03:30:00.000Z'))).toBe('11:30 PM ET')
+    expect(etClock(new Date('2026-01-10T03:30:00.000Z'))).toBe('10:30 PM ET')
+  })
+
+  it('calls a deadline tonight only when it falls on the reader\'s own Eastern evening', () => {
+    const now = new Date('2026-08-22T13:00:00.000Z')
+    expect(etWhen(new Date('2026-08-23T03:30:00.000Z'), now)).toBe('tonight')
+    expect(etWhen(new Date('2026-08-24T03:30:00.000Z'), now)).toBe('on Sunday, Aug 23')
+  })
+})
+
+/** The lines an alert key was sent, ignoring the empty sends that clear it. */
+function sentTo(job: string): string[] {
+  return vi
+    .mocked(notifyExportFailure)
+    .mock.calls.filter((c) => c[1] === job)
+    .flatMap((c) => c[2] as string[])
+}
+
+/** The title and fix of every alert actually raised, so a test sees what a reader sees. */
+function raised(): Array<{ job: string; title: string; fix: string | undefined }> {
+  return vi
+    .mocked(notifyExportFailure)
+    .mock.calls.filter((c) => (c[2] as string[]).length > 0)
+    .map((c) => {
+      const remedy = c[4] as { title: string; fixHint?: string }
+      return { job: c[1] as string, title: remedy.title, fix: remedy.fixHint }
+    })
 }
 
 function alerted(): string[] {
@@ -331,9 +374,18 @@ describe('a day whose counts do not reconcile', () => {
     })
 
     expect(resultFor(summary, DUE_TONIGHT).refusals.map((r) => r.code)).toEqual(['executions-disagree'])
-    expect(alerted().join(' ')).toMatch(
-      new RegExp(`${DUE_TONIGHT} is not verified and its partition is due at the next 03:30 UTC purge`),
-    )
+    // Dan's wording (2026-10-02): the deadline first, in ET, and what is lost after it.
+    expect(alerted()).toEqual([
+      'Aug 15 is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ET ' +
+        'tonight, and after that it cannot be recovered.',
+    ])
+    expect(raised()).toEqual([
+      {
+        job: ARCHIVE_GATE_JOB,
+        title: 'Run history will be deleted without a backup',
+        fix: 'Fix: back the day up again with POST /api/admin/re-archive and day 2026-08-15 before 11:30 PM ET.',
+      },
+    ])
   })
 
   it('says so when a day is past retention and the purge did not take it', async () => {
@@ -346,9 +398,11 @@ describe('a day whose counts do not reconcile', () => {
     })
 
     expect(resultFor(summary, OLDEST_DAY).daysLeft).toBeLessThan(0)
-    expect(alerted().join(' ')).toMatch(
-      new RegExp(`${OLDEST_DAY} is past retention and the purge did not take it: .*executions`),
-    )
+    // Past its own purge, so the deadline is the NEXT one, tonight, not a date gone by.
+    expect(alerted()).toEqual([
+      'Aug 14 is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ET ' +
+        'tonight, and after that it cannot be recovered.',
+    ])
   })
 
   it('records the refusal but stays quiet for a day with plenty of runway', async () => {
@@ -555,7 +609,9 @@ describe('when one day cannot be measured at all', () => {
     expect(resultFor(summary, OLDEST_DAY).error).toMatch(/warehouse could not resume/)
     expect(db.recorded.some((r) => r.p_day === OLDEST_DAY)).toBe(false)
     // The day it failed on is the closest to deletion, so it is alerted.
-    expect(alerted().join(' ')).toMatch(new RegExp(`${OLDEST_DAY} could not be measured`))
+    // A day that could not be measured is not shown to be short, so the line
+    // claims only what is known (L11).
+    expect(alerted().join(' ')).toMatch(/Aug 14 is not confirmed as fully backed up in Snowflake\./)
   })
 
   it('does not fabricate a measurement when the Postgres RPC answers with no row', async () => {
@@ -735,25 +791,107 @@ describe('a caller can restrict the pass to a range of days', () => {
  * outside its view is one it can never vouch for while the purge takes it.
  */
 describe('the gate notices a day Postgres holds that it is not considering', () => {
-  const alerts = () =>
-    vi.mocked(notifyExportFailure).mock.calls.filter((c) => c[1] === ARCHIVE_GATE_JOB).flatMap((c) => c[2] as string[])
-
-  it('names it, in the summary and in the alert', async () => {
+  it('names it in the summary', async () => {
     const stranded = daysBeforeNow(CANDIDATE_COUNT + 4)
     const { summary } = await run({ daysHeld: async () => [stranded] })
-
     expect(summary.daysBeneathTheGate).toEqual([stranded])
-    const said = alerts().filter((m) => m.includes(stranded))
-    expect(said).toHaveLength(1)
-    // Its own sentence, because no re-archive of a considered day can clear it:
-    // the day is outside the gate's view rather than unverified (L11).
-    expect(said[0]).toMatch(/older than anything the gate considers/)
+  })
+
+  /**
+   * The 2026-10-02 alert (#1720). Sep 23 was fully backed up and the 03:30
+   * cleanup had lost its lock twice, so nothing was at risk, and the alert said
+   * "found days at risk" and "nothing vouches for it" with three fixes. A backed
+   * up day the cleanup missed is housekeeping, and says so in full sentences.
+   */
+  /**
+   * The 2026-10-02 alert (#1720). Sep 23 was fully backed up and the 03:30
+   * cleanup had lost its lock twice, so nothing was at risk, and the alert said
+   * "found days at risk" and "nothing vouches for it" with three fixes. A backed
+   * up day the cleanup missed is housekeeping: silent for two nights, then its
+   * own alert in Dan's wording.
+   */
+  const backedUp = async (days: string[]) => new Map(days.map((d) => [d, { backedUp: true } as BeneathStatus]))
+
+  it('stays silent about a backed up day for the first two missed cleanups', async () => {
+    // One day past the oldest candidate: its own purge and one more have run.
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
+    const { summary } = await run({ daysHeld: async () => [stranded], beneathStatus: backedUp })
+    expect(summary.daysBeneathTheGate).toEqual([stranded])
+    expect(raised()).toEqual([])
+  })
+
+  it('alerts once a backed up day has survived three nightly cleanups, and says nothing is lost', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 2)
+    await run({ daysHeld: async () => [stranded], beneathStatus: backedUp })
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)).toEqual([
+      `${spoken(stranded)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. The ` +
+        'nightly cleanup has been blocked for 3 nights in a row, so it is not fixing itself.',
+    ])
+    expect(raised()).toEqual([
+      {
+        job: ARCHIVE_GATE_CLEANUP_JOB,
+        title: 'Old run history has not been cleaned up',
+        fix:
+          'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+          'then find which scheduled job is blocking it at 11:30 PM ET.',
+      },
+    ])
+  })
+
+  it('treats a day it cannot show is backed up as at risk, not as housekeeping', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
+    await run({
+      daysHeld: async () => [stranded],
+      beneathStatus: async () => new Map([[stranded, { backedUp: false }]]),
+    })
+    expect(alerted()).toEqual([
+      `${spoken(stranded)} is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ` +
+        'ET tonight, and after that it cannot be recovered.',
+    ])
+    expect(raised().map((r) => r.title)).toEqual(['Run history will be deleted without a backup'])
+  })
+
+  it('does not claim a day is safe when its backup status could not be read', async () => {
+    // An unreadable status is not evidence of a backup (L215).
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
+    await run({
+      daysHeld: async () => [stranded],
+      beneathStatus: async () => {
+        throw new Error('postgres said no')
+      },
+    })
+    expect(alerted().join(' ')).toMatch(new RegExp(`${spoken(stranded)} is not confirmed as fully backed up`))
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)).toEqual([])
+  })
+
+  it('sends the two kinds as separate alerts, so neither title sits over the other kind', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 3)
+    await run({
+      perDay: { [DUE_TONIGHT]: facts({ sfExecutions: 2 }) },
+      daysHeld: async () => [stranded],
+      beneathStatus: backedUp,
+    })
+    expect(raised().map((r) => [r.job, r.title])).toEqual([
+      [ARCHIVE_GATE_JOB, 'Run history will be deleted without a backup'],
+      [ARCHIVE_GATE_CLEANUP_JOB, 'Old run history has not been cleaned up'],
+    ])
+    expect(sentTo(ARCHIVE_GATE_JOB).join(' ')).not.toMatch(/nothing is lost/)
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB).join(' ')).toMatch(/4 nights in a row/)
+  })
+
+  it('clears each alert on a run that has nothing to say about it', async () => {
+    await run({ daysHeld: async () => [] })
+    const cleared = vi
+      .mocked(notifyExportFailure)
+      .mock.calls.filter((c) => (c[2] as string[]).length === 0)
+      .map((c) => c[1])
+    expect(cleared).toEqual([ARCHIVE_GATE_JOB, ARCHIVE_GATE_CLEANUP_JOB, ARCHIVE_GATE_COST_JOB])
   })
 
   it('says nothing on the healthy day, which is every day', async () => {
     const { summary } = await run({ daysHeld: async () => [] })
     expect(summary.daysBeneathTheGate).toEqual([])
-    expect(alerts().filter((m) => /older than anything/.test(m))).toEqual([])
+    expect(raised()).toEqual([])
   })
 
   it('asks about the days BELOW its oldest candidate, not the ones above', async () => {
@@ -920,20 +1058,23 @@ describe('a day with no archived hour at all is reported at once', () => {
   it('alerts even with the whole retention window left', async () => {
     await run({ perDay: { [NOT_URGENT]: facts({ hoursRecorded: 0 }) } })
 
-    const said = alerts().filter((m) => m.includes(NOT_URGENT))
+    const said = alerts().filter((m) => m.includes(spoken(NOT_URGENT)))
     expect(said, `nothing was said about ${NOT_URGENT}`).toHaveLength(1)
-    expect(said[0]).toMatch(/no hour of/)
+    expect(said[0]).toMatch(/is not fully backed up in Snowflake/)
   })
 
   it('says what is at risk rather than that a gate refused', async () => {
     await run({ perDay: { [NOT_URGENT]: facts({ hoursRecorded: 0, pgExecutions: 104599 }) } })
 
-    const said = alerts().find((m) => m.includes(NOT_URGENT)) as string
-    // The reader has to be able to act: what is uncovered, how much is in it,
-    // and how long there is to fix it.
-    expect(said).toMatch(/no copy anywhere/)
-    expect(said).toMatch(/104,599/)
-    expect(said).toMatch(/days? left/)
+    const said = alerts().find((m) => m.includes(spoken(NOT_URGENT))) as string
+    // The reader has to be able to act: what is uncovered, and the deadline, as
+    // a real ET day when it is not tonight (Dan, 2026-10-02).
+    const deadline = new Date(Date.parse(`${NOT_URGENT}T03:30:00.000Z`) + (RETENTION_DAYS + 1) * 86400000)
+    expect(said).toBe(
+      `${spoken(NOT_URGENT)} is not fully backed up in Snowflake. The database copy is due to be deleted at ` +
+        `11:30 PM ET ${etWhen(deadline, NOW)}, and after that it cannot be recovered.`,
+    )
+    expect(etWhen(deadline, NOW)).toMatch(/^on [A-Z][a-z]+day, Aug \d+$/)
   })
 
   it('reports incomplete rows while there is still runway to re-archive them', async () => {
@@ -947,10 +1088,9 @@ describe('a day with no archived hour at all is reported at once', () => {
     // that makes it fixable.
     await run({ perDay: { [NOT_URGENT]: facts({ incomplete: 2 }) } })
 
-    const said = alerts().filter((m) => m.includes(NOT_URGENT))
+    const said = alerts().filter((m) => m.includes(spoken(NOT_URGENT)))
     expect(said, `nothing was said about ${NOT_URGENT}`).toHaveLength(1)
-    expect(said[0]).toMatch(/re-archive/i)
-    expect(said[0]).toMatch(/days? left/)
+    expect(raised()[0].fix).toMatch(/re-archive/i)
   })
 
   it('does not tell anybody to wait for a repair that does not exist', async () => {
