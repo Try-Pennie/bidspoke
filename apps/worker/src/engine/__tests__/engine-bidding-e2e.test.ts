@@ -331,7 +331,7 @@ describe('engine bidding: Tripoint lead ID Salesforce write-back', () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('patch_prospect step fires after a successful Tripoint bid and receives Tripoint_Lead_ID__c', async () => {
+  it('patch_prospect step fires after a successful Tripoint bid and receives TripointLeadID__c', async () => {
     const patchCalls: Record<string, unknown>[] = []
 
     vi.mocked(executeNode).mockImplementation(async (n) => {

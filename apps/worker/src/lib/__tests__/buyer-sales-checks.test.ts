@@ -30,6 +30,7 @@ import {
   OUTCOME_RATE_MIN_ATTEMPTS,
   OUTCOME_SATURATION_MIN_ATTEMPTS,
   endingOf,
+  independentRecordSoql,
   judgeOutcomeRate,
   productionChecksDeps,
   runBuyerSalesChecks,
@@ -526,5 +527,25 @@ describe('productionChecksDeps lists offer buyers only', () => {
     ])
     const buyers = await productionChecksDeps(supabase, {} as unknown as Env).listBuyers()
     expect(buyers.map((b) => b.partner_id)).toEqual(['p-offer'])
+  })
+})
+
+describe('the independent record lookup (#1737)', () => {
+  it('asks Salesforce for the field the Engine Bidding patch writes, TripointLeadID__c, bounded by CreatedDate', () => {
+    const from = Date.UTC(2026, 9, 2, 4, 0, 0)
+    const soql = independentRecordSoql(['51550e5d-dc03-4889-8e8e-f02355316ea4', 'TP-2'], from)
+    expect(soql).toBe(
+      "SELECT TripointLeadID__c FROM Prospect__c WHERE CreatedDate >= 2026-10-02T04:00:00Z AND TripointLeadID__c IN ('51550e5d-dc03-4889-8e8e-f02355316ea4','TP-2')",
+    )
+    // The field that does not exist on Prospect__c, read 2026-10-02 from FieldDefinition.
+    expect(soql).not.toContain('Tripoint_Lead_ID__c')
+  })
+
+  it('looks back from an hour before the earliest checked Eastern day, so a prospect created just before midnight still counts', async () => {
+    const seen: number[] = []
+    const d = deps({}, { readIndependentRecord: async (_buyer, _refs, fromMs) => { seen.push(fromMs); return new Set(['TP-lead-1']) } })
+    await runBuyerSalesChecks(d)
+    // The fixture checks Eastern days 2027-09-20 and 2027-09-19; 2027-09-19 starts at 04:00 UTC (EDT).
+    expect(seen).toEqual([Date.UTC(2027, 8, 19, 3, 0, 0)])
   })
 })
