@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { ExecutionContext } from '../../types'
+import { shadowOf } from '../run-reality'
 import {
-  isShadowDryRun,
   shadowIntegrationStub,
   shadowSalesforceStub,
   shadowAchieveStub,
@@ -16,11 +16,11 @@ function ctx(shadow_mode?: 'off' | 'dry_run'): ExecutionContext {
   }
 }
 
-describe('isShadowDryRun', () => {
-  it('is true only when shadow_mode is dry_run', () => {
-    expect(isShadowDryRun(ctx('dry_run'))).toBe(true)
-    expect(isShadowDryRun(ctx('off'))).toBe(false)
-    expect(isShadowDryRun(ctx(undefined))).toBe(false)
+describe('shadowOf(ctx).outboundStubbed', () => {
+  it('is true for dry_run and false for off or unset', () => {
+    expect(shadowOf(ctx('dry_run')).outboundStubbed).toBe(true)
+    expect(shadowOf(ctx('off')).outboundStubbed).toBe(false)
+    expect(shadowOf(ctx(undefined)).outboundStubbed).toBe(false)
   })
 })
 

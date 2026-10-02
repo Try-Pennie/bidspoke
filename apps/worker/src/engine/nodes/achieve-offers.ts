@@ -43,7 +43,8 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../.
 import { formatErr } from '../../lib/format-error'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
-import { isShadowDryRun, shadowAchieveStub } from '../shadow'
+import { shadowAchieveStub } from '../shadow'
+import { nodeSkipsScreenOn, shadowOf } from '../run-reality'
 
 import { screenLead } from './achieve-screen'
 import { resolveAchieveEndpoint } from './achieve-endpoint'
@@ -176,7 +177,7 @@ export async function executeAchieveOffersNode(
 ): Promise<StepExecutionResult> {
   // Shadow dry-run: don't hit the Achieve API; return a stub that the achieve-log
   // hook ignores (no _achieve_evaluation marker means no DB write).
-  if (isShadowDryRun(ctx)) return shadowAchieveStub()
+  if (shadowOf(ctx).outboundStubbed) return shadowAchieveStub()
 
   const config = node.config as unknown as AchieveOffersConfig
   const waitForOffers = config.wait_for_offers !== false
@@ -190,7 +191,7 @@ export async function executeAchieveOffersNode(
   // Test runs bypass the screen (Dan, 2026-08-31): the score floor doubles as the live
   // pipe's pause switch, and a canvas test send is a deliberate, person-initiated single
   // lead, so it goes out regardless. Real webhook traffic stays fully screened.
-  const verdict = ctx.isTest ? undefined : screenLead(ctx, config)
+  const verdict = nodeSkipsScreenOn('achieve_offers', ctx) ? undefined : screenLead(ctx, config)
   if (verdict && !verdict.pass) {
     return {
       output: {

@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS, NODE_TYPES, type NodeType } from '@bidspoke/node-types'
-import { SHADOW_EXEMPT_NODES } from '../../shadow-side-effect-guard'
+import { SHADOW_EXEMPT_NODES, SHADOW_GUARD_RE } from '../../shadow-side-effect-guard'
 import { CARD_EXECUTORS } from '../../node-card-config-guard'
 import { WORKER_SRC } from '../../__tests__/_scan-utils'
 
@@ -83,7 +83,7 @@ describe('shadow side effect exemptions', () => {
       const file = NODE_TRAITS[t].executorFile
       expect(file, `${t} has an executor file`).not.toBeNull()
       const src = readFileSync(path.join(WORKER_SRC, 'engine/nodes', `${file}.ts`), 'utf8')
-      expect(src, `${t}: ${reason}`).toMatch(/isShadowDryRun|isShadowStandIn|shadow_mode/)
+      expect(src, `${t}: ${reason}`).toMatch(SHADOW_GUARD_RE)
     }
   })
 })

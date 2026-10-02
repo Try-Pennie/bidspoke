@@ -58,6 +58,7 @@ import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, WorkflowLaneError } from './lane'
+import { runRealityOfOptions, stampRunReality } from './run-reality'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -169,11 +170,13 @@ export async function executeWorkflow(
   // through it, which is the same client in the money lane and never runs in
   // the ops lane.
   const { config: configDb, run: runDb } = runtime
+  // What kind of run this is, decided once (#1708).
+  const reality = runRealityOfOptions(options, env)
 
   // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes).
   // Test runs bypass the is_active filter so authors can iterate before flipping a workflow live.
   const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, configDb, {
-    allowInactive: options.isTest === true,
+    allowInactive: reality.isTest,
   })
   const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
   const definition = options.definitionOverride ?? loaded.definition
@@ -229,7 +232,7 @@ export async function executeWorkflow(
   // all — a test payload matching a live lead must neither read nor poison
   // the production entry.
   const isRecoveryRun = Boolean(options.resumeFromExecutionId || options.parentExecutionId)
-  const useIdempotency = idempotencyKey !== null && !options.isTest
+  const useIdempotency = idempotencyKey !== null && !reality.isTest
 
   // Parallel: idempotency check + env var load (both independent once we have definition/org_id)
   // UUIDv7, so the execution archive can derive the UTC day from the id in the URL
@@ -288,7 +291,7 @@ export async function executeWorkflow(
     trigger_payload: payload,
     trace_id: traceId,
     started_at: startedAt,
-    is_test: options.isTest ?? false,
+    is_test: reality.isTest,
     parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
     resumed_from_execution_id: options.resumeFromExecutionId,
   })
@@ -310,7 +313,7 @@ export async function executeWorkflow(
   // The workflows capture-sightings column still exists but nothing reads it
   // (expand now, contract later, ADR 0007), so a stale false in a production row
   // cannot suppress a sighting. A guard enforces that nothing reads it again.
-  const sightingId = options.isTest ? undefined : crypto.randomUUID()
+  const sightingId = reality.isTest ? undefined : crypto.randomUUID()
   // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
   // lead_sighting_bids writes through writeOutcome so a loss after retries
   // dead-letters instead of vanishing into a log line.
@@ -351,10 +354,10 @@ export async function executeWorkflow(
   // Build execution context
   const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
   if (options.codeBundleName) ctx.codeBundleName = options.codeBundleName
-  if (options.shadowMode) ctx.shadow_mode = options.shadowMode
-  // Node executors only ever see the context, so the test flag has to ride along on it.
-  // The circuit-breaker trip alert needs it to stay silent on Test Runner runs (#547).
-  if (options.isTest) ctx.isTest = true
+  // Node executors only ever see the context, so the test flag and shadow mode ride
+  // along on it. The circuit-breaker trip alert needs it to stay silent on Test
+  // Runner runs (#547).
+  stampRunReality(ctx, options)
   // A node that must never repeat a send refuses a recovery run (#1542): resume re-runs
   // every node from the entry, so it would post a click a second time.
   if (options.resumeFromExecutionId) ctx.recovery = 'resume'
@@ -422,7 +425,7 @@ export async function executeWorkflow(
       )
       return conn ? [conn] : []
     },
-    silent: options.isTest === true || !!env.LOCAL_DEV,
+    silent: reality.silentAlerts,
     appUrl: env.APP_URL,
   }
   const onBlockSighting = (sighting: PartnerBlockSighting): void => {
@@ -531,13 +534,13 @@ export async function executeWorkflow(
   // post-response steps get their logs written too.
   const flushPromise: Promise<string | null> = walkPromiseCaught
     .then(() => executionRecordPromise)
-    .then(() => flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
+    .then(() => flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }))
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
       return formatErr(e)
     })
 
-  if (options.isTest) {
+  if (reality.isTest) {
     // Test mode: wait for everything so the UI sees a complete step list.
     await walkPromiseCaught
     await flushPromise
@@ -616,7 +619,7 @@ export async function executeWorkflow(
           if (
             failedErrorType !== null &&
             !failedSuppressAlert &&
-            !options.isTest &&
+            !reality.isTest &&
             !matchesMutedSignal(finalErrorMessage, mutedFailureSignals) &&
             !classifyOutageCause(finalErrorMessage)
           ) {
@@ -664,7 +667,7 @@ export async function executeWorkflow(
             // one silently null (#1212).
             externalDebt: extractExternalDebt(ctx, definition.nodes),
           },
-          { sightingId, isTest: options.isTest },
+          { sightingId, isTest: reality.isTest },
         )
         // Phase 0 (#419): dark field-presence capture. Behind a default-off
         // flag, log-only. The watched map is an empty stub until Phase 1 (#420),
@@ -723,7 +726,7 @@ export async function executeWorkflow(
           source,
           trigger_payload: payload,
           trace_id: traceId,
-          is_test: options.isTest ?? false,
+          is_test: reality.isTest,
           parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
           resumed_from_execution_id: options.resumeFromExecutionId,
         }, () => { reconstructed = true })
@@ -739,7 +742,7 @@ export async function executeWorkflow(
           executionCtx.waitUntil(
             flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
               workflowId,
-              isTest: options.isTest ?? false,
+              isTest: reality.isTest,
             })
               .then((flushErr) => {
                 if (flushErr) {
@@ -764,7 +767,7 @@ export async function executeWorkflow(
         // row is stranded at 'running'. Both are invisible to the dashboards, so
         // dead-letter them through the same rate-aggregated alert the SF
         // writeback uses rather than accepting the loss silently (#487).
-        if (finalizeError && !options.isTest) {
+        if (finalizeError && !reality.isTest) {
           executionCtx.waitUntil(
             recordOutcomeDeadLetter('execution_finalize', finalizeError, { ...outcomeDeps, supabase: runDb }).catch((e) =>
               console.error('[durability] execution_finalize dead-letter failed:', e),
@@ -780,7 +783,7 @@ export async function executeWorkflow(
         if (
           finalStatus === 'failed' &&
           executionStatus === 'completed' &&
-          !options.isTest &&
+          !reality.isTest &&
           failedErrorType !== null &&
           !failedSuppressAlert &&
           !matchesMutedSignal(finalErrorMessage, mutedFailureSignals) &&
@@ -816,7 +819,7 @@ export async function executeWorkflow(
   // Lead sighting finalize: flip outcome_state to 'finalized', populate
   // terminal/enrichment/bid summary, derive reject_reason, mark winning bid.
   // Skipped for test runs (no sighting was inserted at the trigger boundary).
-  if (sightingId && !options.isTest) {
+  if (sightingId && !reality.isTest) {
     const startedAtDate = new Date(startedAt)
     executionCtx.waitUntil(
       walkPromiseCaught
@@ -899,7 +902,7 @@ export async function executeWorkflow(
           execution_id: executionId,
           workflow_id: workflowId,
           submission_id: typeof payloadSubmissionId === 'string' ? payloadSubmissionId : null,
-          is_test: options.isTest ?? false,
+          is_test: reality.isTest,
         })
         await insertAchieveEvaluations(runDb, achieveRows)
       })
@@ -912,7 +915,7 @@ export async function executeWorkflow(
   // minute cron (lib/slow-execution-rate.ts) fires only when slow runs SPIKE
   // across a 5-minute window. See runSlowExecutionCheck.
 
-  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert && !matchesMutedSignal(errorMessage, mutedFailureSignals) && !classifyOutageCause(errorMessage)) {
+  if (executionStatus === 'failed' && !reality.isTest && failedErrorType !== null && !failedSuppressAlert && !matchesMutedSignal(errorMessage, mutedFailureSignals) && !classifyOutageCause(errorMessage)) {
     executionCtx.waitUntil(
       fireExecutionAlert({
         alertType: 'failure',

@@ -2,7 +2,7 @@
  * Static classifier for the shadow side-effect guard (#230). Given the source of
  * each node executor, returns the ones that would leak an external side effect in
  * a shadow dry-run. A node is a violation when it performs an outbound action
- * (HTTP/KV/DB/Durable-Object) without short-circuiting under isShadowDryRun, OR
+ * (HTTP/KV/DB/Durable-Object) without short-circuiting under a run-reality shadow check, OR
  * when an allowlisted "pure" node turns out to perform one anyway, OR when a new
  * node is neither shadow-aware nor explicitly classified as pure.
  *
@@ -47,7 +47,9 @@ export const SHADOW_EXEMPT_NODES = [
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).
-const SHADOW_GUARD_RE = /isShadowDryRun|isShadowStandIn|shadow_mode/
+// Each is a question asked of engine/run-reality.ts, the only reader of the
+// shadow mode since #1708. Exported so the node coverage guard uses this copy.
+export const SHADOW_GUARD_RE = /\bshadowOf\(|\bnodeReportsOnly\(|\brunRealityOf\(/
 
 // Outbound side-effect markers. Reads (.select/.get) are intentionally excluded —
 // a shadow dry-run may read freely; only outbound writes/calls must be skipped.
@@ -82,8 +84,8 @@ export function findShadowGuardViolations(files: NodeSource[]): ShadowGuardViola
           node: file.name,
           reason:
             `on the pure/read-only allowlist but performs an outbound side effect ` +
-            `(${outbound.join(', ')}). Remove it from SHADOW_EXEMPT_NODES and add an ` +
-            `isShadowDryRun guard.`,
+            `(${outbound.join(', ')}). Remove it from SHADOW_EXEMPT_NODES and add a ` +
+            `shadow check (shadowOf, nodeReportsOnly or runRealityOf).`,
         })
       }
       continue
@@ -94,7 +96,7 @@ export function findShadowGuardViolations(files: NodeSource[]): ShadowGuardViola
         node: file.name,
         reason:
           `performs an outbound side effect (${outbound.join(', ')}) without a shadow guard. ` +
-          `Short-circuit it under isShadowDryRun(ctx), or add it to SHADOW_EXEMPT_NODES if pure.`,
+          `Short-circuit it under shadowOf(ctx).outboundStubbed, or add it to SHADOW_EXEMPT_NODES if pure.`,
       })
       continue
     }

@@ -21,7 +21,8 @@ import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
-import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
+import { shadowSalesforceStub } from '../shadow'
+import { shadowOf } from '../run-reality'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
@@ -108,7 +109,7 @@ export async function executeSalesforceNode(
   const config = node.config as unknown as SalesforceConfig
 
   // Shadow dry-run: don't touch Salesforce (no token fetch, no write).
-  if (isShadowDryRun(ctx)) return shadowSalesforceStub()
+  if (shadowOf(ctx).outboundStubbed) return shadowSalesforceStub()
 
   // Merge CF secrets so {{env.*}} templates resolve. Filtered through the sandbox
   // blocklist (#474) so platform master secrets (SUPABASE_SECRET_KEY,

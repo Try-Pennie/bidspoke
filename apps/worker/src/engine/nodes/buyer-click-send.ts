@@ -85,7 +85,7 @@ import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
 import { resolveValue } from '../context'
-import { isShadowDryRun } from '../shadow'
+import { nodeReportsOnly, runRealityOf } from '../run-reality'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -369,7 +369,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     },
     clock: () => Date.now(),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
-    localDev: Boolean(env.LOCAL_DEV),
+    localDev: runRealityOf(ctx, env).localDev,
   }
 }
 
@@ -455,7 +455,7 @@ class Run {
   constructor(private readonly node: NodeDefinition, private readonly ctx: ExecutionContext, private readonly deps: BuyerClickSendDeps) {
     this.startedAt = deps.clock()
     this.config = node.config as unknown as BuyerClickSendConfig
-    const reportOnly = Boolean(ctx.isTest) || isShadowDryRun(ctx) || deps.localDev
+    const reportOnly = nodeReportsOnly('buyer_click_send', runRealityOf(ctx, { LOCAL_DEV: deps.localDev }))
     this.out = {
       _route: 'not_sent',
       reason: 'report_only',
