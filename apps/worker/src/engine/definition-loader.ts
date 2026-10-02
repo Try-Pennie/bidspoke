@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { LoadedWorkflow, WorkflowDefinition } from '../types'
 import { isNotFoundError } from '../lib/api-error'
+import { isWorkflowLane, type WorkflowLane } from '@bidspoke/node-types'
 
 // Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
 // A typed error so routes can map it to 404 by instanceof rather than matching
@@ -22,6 +23,7 @@ interface CachedDefinition {
   workflow_name: string
   org_id: string
   slack_channel: string | null
+  lane: WorkflowLane
 }
 
 export async function loadWorkflowDefinition(
@@ -36,7 +38,9 @@ export async function loadWorkflowDefinition(
   // pollute the cache with definitions that real webhooks shouldn't serve.
   if (!allowInactive) {
     const cached = await kv.get<CachedDefinition>(cacheKey(workflowId), 'json')
-    if (cached) {
+    // An entry cached before the lane existed (#1707) carries none: read the
+    // row again rather than guess one, and the put below replaces the entry.
+    if (cached && isWorkflowLane(cached.lane)) {
       return cached
     }
   }
@@ -51,6 +55,7 @@ export async function loadWorkflowDefinition(
       slack_channel,
       definition,
       is_active,
+      lane,
       workflow_versions (id, version_number)
     `)
     .eq('id', workflowId)
@@ -82,12 +87,18 @@ export async function loadWorkflowDefinition(
     throw new Error(`Workflow ${workflowId} has no versions`)
   }
 
+  const lane: unknown = data.lane
+  if (!isWorkflowLane(lane)) {
+    throw new Error(`Workflow ${workflowId} has unknown lane ${JSON.stringify(lane)}`)
+  }
+
   const result: LoadedWorkflow = {
     definition: data.definition as WorkflowDefinition,
     workflow_version_id,
     workflow_name: data.name as string,
     org_id: data.organization_id as string,
     slack_channel: (data.slack_channel as string | null) ?? null,
+    lane,
   }
 
   // Cache for 5min — KV is eventually consistent; invalidation fires on save, and

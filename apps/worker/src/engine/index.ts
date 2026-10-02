@@ -57,6 +57,8 @@ import { matchesMutedSignal } from '../lib/failure-rate'
 import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
+import { assertDefinitionRunsInLane, WorkflowLaneError } from './lane'
+import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
   ExecutionContext,
@@ -136,25 +138,53 @@ export interface WalkGraphResult {
   headers?: Record<string, string>
 }
 
+/**
+ * What a run executes under (#1707, plan 0.C): the lane this Worker serves, the
+ * client config is read through, and the client the run is written through.
+ */
+export interface EngineRuntime {
+  lane: WorkflowLane
+  config: SupabaseClient
+  run: SupabaseClient
+}
+
+/** The bidding Worker's runtime: one client for config and run alike. */
+export function moneyRuntime(supabase: SupabaseClient): EngineRuntime {
+  return { lane: 'money', config: supabase, run: supabase }
+}
+
+export { WorkflowLaneError }
+
 export async function executeWorkflow(
   options: ExecuteOptions,
   env: Env,
-  supabase: SupabaseClient,
+  runtime: EngineRuntime,
   executionCtx: ExecutionContext_CF
 ): Promise<ExecuteResult> {
   const { workflowId, payload, source } = options
   const traceId = generateTraceId()
+  // Config is read through one client and the run written through the other
+  // (#1707). The money Worker passes its one client as both; node executors
+  // take the config client, and every money node also writes its own rows
+  // through it, which is the same client in the money lane and never runs in
+  // the ops lane.
+  const { config: configDb, run: runDb } = runtime
 
   // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes).
   // Test runs bypass the is_active filter so authors can iterate before flipping a workflow live.
-  const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase, {
+  const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, configDb, {
     allowInactive: options.isTest === true,
   })
   const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
   const definition = options.definitionOverride ?? loaded.definition
+  // Before anything is recorded or run: a workflow stored under another lane is
+  // not this Worker's to run, and a definition (a test run's unsaved override
+  // included) may carry only node types its lane can run.
+  if (loaded.lane !== runtime.lane) throw new WorkflowLaneError(workflowId, loaded.lane, runtime.lane)
+  assertDefinitionRunsInLane(definition, runtime.lane)
 
   if (options.enforceSourceAssignment) {
-    await enforceSourceAssignment(supabase, org_id, source, workflowId)
+    await enforceSourceAssignment(configDb, org_id, source, workflowId)
   }
 
   // Resolve idempotency key (needs definition)
@@ -214,11 +244,11 @@ export async function executeWorkflow(
     useIdempotency && !isRecoveryRun
       ? checkIdempotency(env.IDEMPOTENCY, workflowId, source, idempotencyKey)
       : Promise.resolve(null),
-    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase, secretKeys(env)),
+    loadEnvVars(org_id, env.WORKFLOW_CACHE, configDb, secretKeys(env)),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
     // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
     // node retries on its own access and surfaces any real failure there.
-    loadPartnerConstants(org_id, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+    loadPartnerConstants(org_id, env.WORKFLOW_CACHE, configDb).catch(() => undefined),
   ])
 
   if (idempotencyCached) {
@@ -250,7 +280,7 @@ export async function executeWorkflow(
   const idempotencyProcessingPromise = useIdempotency && !isRecoveryRun
     ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, source, idempotencyKey, ttl)
     : Promise.resolve()
-  const executionRecordPromise = createExecutionRecord(supabase, {
+  const executionRecordPromise = createExecutionRecord(runDb, {
     id: executionId,
     workflow_id: workflowId,
     workflow_version_id,
@@ -297,7 +327,7 @@ export async function executeWorkflow(
     const personFields = extractPersonFields(payload)
     const startedAtDate = new Date(startedAt)
     sightingWritePromise = (async () => {
-      await insertSighting(supabase, {
+      await insertSighting(runDb, {
         id: sightingId,
         trace_id: traceId,
         execution_id: executionId,
@@ -387,7 +417,7 @@ export async function executeWorkflow(
     resolveSlack: async () => {
       const conn = await resolveSlackForBlockAlert(
         org_id,
-        () => getSlackConnection(supabase, org_id),
+        () => getSlackConnection(configDb, org_id),
         () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
       )
       return conn ? [conn] : []
@@ -403,7 +433,7 @@ export async function executeWorkflow(
   }
 
   const walkPromise = walkGraph(
-    ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue,
+    ctx, definition, executionId, startedAt, configDb, env, workflow_version_id, stepLogQueue,
     (r) => earlyResponseResolve(r),
     onBlockSighting
   )
@@ -501,7 +531,7 @@ export async function executeWorkflow(
   // post-response steps get their logs written too.
   const flushPromise: Promise<string | null> = walkPromiseCaught
     .then(() => executionRecordPromise)
-    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
+    .then(() => flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
       return formatErr(e)
@@ -591,7 +621,7 @@ export async function executeWorkflow(
             !classifyOutageCause(finalErrorMessage)
           ) {
             executionCtx.waitUntil(
-              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase }).catch((e) =>
+              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase: runDb }).catch((e) =>
                 console.error('[durability] sf_writeback dead-letter failed:', e),
               ),
             )
@@ -663,7 +693,7 @@ export async function executeWorkflow(
         // insert, which failed, so it never ran and left no trace. Once the
         // parent row exists again we re-flush the queue below.
         let reconstructed = false
-        const finalizeError = await updateExecutionRecord(supabase, executionId, startedAt, {
+        const finalizeError = await updateExecutionRecord(runDb, executionId, startedAt, {
           status: finalStatus,
           outcome,
           final_node_namespace: finalNodeNamespace,
@@ -707,7 +737,7 @@ export async function executeWorkflow(
         // survived via reconstruction).
         if (reconstructed && stepLogQueue.length > 0) {
           executionCtx.waitUntil(
-            flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
+            flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
               workflowId,
               isTest: options.isTest ?? false,
             })
@@ -736,7 +766,7 @@ export async function executeWorkflow(
         // writeback uses rather than accepting the loss silently (#487).
         if (finalizeError && !options.isTest) {
           executionCtx.waitUntil(
-            recordOutcomeDeadLetter('execution_finalize', finalizeError, { ...outcomeDeps, supabase }).catch((e) =>
+            recordOutcomeDeadLetter('execution_finalize', finalizeError, { ...outcomeDeps, supabase: runDb }).catch((e) =>
               console.error('[durability] execution_finalize dead-letter failed:', e),
             ),
           )
@@ -761,7 +791,7 @@ export async function executeWorkflow(
           executionCtx.waitUntil(
             fireExecutionAlert({
               alertType: 'failure',
-              supabase,
+              supabase: configDb,
               env,
               executionCtx,
               orgId: org_id,
@@ -830,7 +860,7 @@ export async function executeWorkflow(
             is_test: false,
           }, definition.nodes)) {
             ctx.pendingBidWrites ??= []
-            ctx.pendingBidWrites.push(recordBidAttempt(supabase, bid, outcomeDeps))
+            ctx.pendingBidWrites.push(recordBidAttempt(runDb, bid, outcomeDeps))
           }
 
           // Wait for every bid-attempt insert to commit before finalize's
@@ -841,7 +871,7 @@ export async function executeWorkflow(
           // walk), so this await is also what keeps them alive past teardown.
           await Promise.allSettled(ctx.pendingBidWrites ?? [])
 
-          await finalizeSighting(supabase, {
+          await finalizeSighting(runDb, {
             sighting_id: sightingId,
             execution_id: executionId,
             execution_started_at_utc: startedAtDate,
@@ -871,7 +901,7 @@ export async function executeWorkflow(
           submission_id: typeof payloadSubmissionId === 'string' ? payloadSubmissionId : null,
           is_test: options.isTest ?? false,
         })
-        await insertAchieveEvaluations(supabase, achieveRows)
+        await insertAchieveEvaluations(runDb, achieveRows)
       })
       .catch((e) => console.error('[achieve-log] write failed:', e))
   )
@@ -886,7 +916,7 @@ export async function executeWorkflow(
     executionCtx.waitUntil(
       fireExecutionAlert({
         alertType: 'failure',
-        supabase,
+        supabase: configDb,
         env,
         executionCtx,
         orgId: org_id,

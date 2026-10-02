@@ -6,14 +6,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 import type { Env } from '../../index'
 
-// custom-endpoint only uses executeWorkflow from engine/index, so a full mock
-// is enough (WorkflowNotFoundError is imported from definition-loader, unmocked).
-vi.mock('../../engine/index', () => ({ executeWorkflow: vi.fn() }))
+// executeWorkflow is the only engine call to replace; the runtime helper and the
+// error classes stay real so the route's mapping is tested against them.
+vi.mock('../../engine/index', async () => {
+  const actual = await vi.importActual<typeof import('../../engine/index')>('../../engine/index')
+  return { ...actual, executeWorkflow: vi.fn() }
+})
 vi.mock('../../lib/supabase')
 
 import { executeWorkflow } from '../../engine/index'
 import { createSupabaseClient } from '../../lib/supabase'
 import { WorkflowNotFoundError } from '../../engine/definition-loader'
+import { WorkflowLaneError } from '../../engine/lane'
 import { handleCustomEndpoint } from '../custom-endpoint'
 
 // Empty KV so the handler falls through to the DB lookup.
@@ -82,6 +86,13 @@ describe('custom endpoint error mapping (#107)', () => {
     const res = await post()
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Workflow not found' })
+  })
+
+  it('returns 421 for a workflow stored under another lane (#1707)', async () => {
+    vi.mocked(executeWorkflow).mockRejectedValue(new WorkflowLaneError('wf-1', 'ops', 'money'))
+    const res = await post()
+    expect(res.status).toBe(421)
+    expect(await res.json()).toEqual({ error: 'Workflow is not served on this host' })
   })
 
   it('returns 500 (not 404) for an internal error whose message contains "not found"', async () => {

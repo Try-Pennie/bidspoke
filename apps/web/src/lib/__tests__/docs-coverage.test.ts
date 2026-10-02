@@ -47,8 +47,12 @@ describe('docs coverage: node types', () => {
   // page. Passive join nodes are documented inside their parent node's page.
   const DOCUMENTED_IN_PARENT = new Set(['branch_end', 'parallel_end'])
 
+  // The engine's executor registry (#1707): one `  type: ` entry per node type
+  // inside the EXECUTORS record.
   const dispatch = read(path.join(workerSrc, 'engine/nodes/index.ts'))
-  const engineNodeTypes = [...dispatch.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1])
+  const registryStart = dispatch.indexOf('const EXECUTORS: Record<NodeType, NodeExecutor> = {')
+  const registry = registryStart === -1 ? '' : dispatch.slice(registryStart, dispatch.indexOf('\n}\n', registryStart))
+  const engineNodeTypes = [...registry.matchAll(/\n  ([a-z_]+): /g)].map((m) => m[1])
 
   it('extracts node types from the engine dispatch', () => {
     // Sanity check: if this drops near zero the regex broke and the rest of the

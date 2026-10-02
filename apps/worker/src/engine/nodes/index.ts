@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import { assertNever } from '../../types'
+import type { NodeType } from '../../types'
+import { isNodeType, nodeTypesForLane, type WorkflowLane } from '@bidspoke/node-types'
+import { LaneRefusedNodeError } from '../lane'
+
+export { LaneRefusedNodeError }
 import type { Env } from '../../index'
 import { executeFilterNode } from './filter'
 import { executeBranchNode } from './branch'
@@ -15,7 +20,79 @@ import { executeDataStoreNode } from './data-store'
 import { executeLatencyGateNode } from './latency-gate'
 import { executeAchieveOffersNode } from './achieve-offers'
 
-export async function executeNode(
+/** Everything an executor may need; each one reads only what it uses. */
+interface ExecutorArgs {
+  node: NodeDefinition
+  ctx: ExecutionContext
+  env: Env
+  supabase?: SupabaseClient
+  signal?: AbortSignal
+  chainOutput?: unknown
+}
+
+type NodeExecutor = (args: ExecutorArgs) => Promise<StepExecutionResult> | StepExecutionResult
+
+const walkGraphOnly = (message: string): NodeExecutor => () => {
+  throw new Error(message)
+}
+
+/**
+ * One executor per node type (#1707, plan 0.C). A Record over NodeType, so a
+ * type added to @bidspoke/node-types without an executor here is a compile
+ * error, as the switch's assertNever was before.
+ */
+const EXECUTORS: Record<NodeType, NodeExecutor> = {
+  filter: ({ node, ctx }) => executeFilterNode(node, ctx),
+  branch: ({ node, ctx }) => executeBranchNode(node, ctx),
+  response: ({ node, ctx }) => executeResponseNode(node, ctx),
+  exit: ({ node }) => executeExitNode(node),
+  code: ({ node, ctx, env, signal }) => executeCodeNode(node, ctx, env, signal),
+  partner_bid: ({ node, ctx, env, supabase, signal }) => {
+    if (!supabase) throw new Error('Partner Bid node requires a Supabase client')
+    return executePartnerBidNode(node, ctx, env, supabase, signal)
+  },
+  // Parallel nodes are handled directly in walkGraph before reaching executeNode.
+  // If this is ever hit, a parallel node was called outside of walkGraph.
+  parallel: walkGraphOnly('Parallel node must be executed through walkGraph, not executeNode directly'),
+  // Bid Group is handled directly in walkGraph (synthesizes per-partner step rows).
+  bid_group: walkGraphOnly('Bid Group node must be executed through walkGraph, not executeNode directly'),
+  // Buyer selection is handled directly in walkGraph too: one attempt row per buyer tried (#1411).
+  buyer_select: walkGraphOnly('Buyer Select node must be executed through walkGraph, not executeNode directly'),
+  // Run once by walkGraph and never retried: a retried click is a duplicate send (#1542).
+  buyer_click_send: walkGraphOnly('Buyer Click Send node must be executed through walkGraph, not executeNode directly'),
+  // Run once by walkGraph under its own budget, never retried (#1543).
+  buyer_click_check: walkGraphOnly('Buyer Click Check node must be executed through walkGraph, not executeNode directly'),
+  parallel_end: walkGraphOnly('Parallel End node must be executed through walkGraph, not executeNode directly'),
+  // Passive convergence node: passthrough. The engine routes to whichever path
+  // the branch's selected handle led down; once that chain reaches branch_end,
+  // this returns the prior step's output and the main walk continues to
+  // branch_end's successor.
+  branch_end: ({ chainOutput }) => executeBranchEndNode(chainOutput),
+  webhook: ({ node, ctx, env, signal }) => executeIntegrationNode(node, ctx, env, signal),
+  transform: ({ node, ctx }) => executeTransformNode(node, ctx),
+  constants: ({ node, ctx, env, supabase }) => {
+    if (!supabase) throw new Error('Constants node requires a Supabase client')
+    return executeConstantsNode(node, ctx, env, supabase)
+  },
+  salesforce: ({ node, ctx, env, signal }) => executeSalesforceNode(node, ctx, env, signal),
+  data_store: ({ node, ctx, env }) => executeDataStoreNode(node, ctx, env),
+  latency_gate: ({ node, ctx, env, supabase }) => executeLatencyGateNode(node, ctx, env, supabase),
+  achieve_offers: ({ node, ctx, signal }) => executeAchieveOffersNode(node, ctx, signal),
+}
+
+/** The registry for one lane: a filter on EXECUTORS by each type's lane trait. */
+function registryForLane(lane: WorkflowLane): Partial<Record<NodeType, NodeExecutor>> {
+  const out: Partial<Record<NodeType, NodeExecutor>> = {}
+  for (const type of nodeTypesForLane(lane)) out[type] = EXECUTORS[type]
+  return out
+}
+
+/** The node types a lane's registry can run. */
+export function executorTypesForLane(lane: WorkflowLane): NodeType[] {
+  return Object.keys(registryForLane(lane)) as NodeType[]
+}
+
+export type ExecuteNode = (
   node: NodeDefinition,
   ctx: ExecutionContext,
   env: Env,
@@ -26,67 +103,24 @@ export async function executeNode(
   // Output of the step the caller's walk just executed in THIS chain. Only
   // branch_end consumes it; see executeBranchEndNode (#489).
   chainOutput?: unknown
-): Promise<StepExecutionResult> {
-  switch (node.type) {
-    case 'filter':
-      return executeFilterNode(node, ctx)
-    case 'branch':
-      return executeBranchNode(node, ctx)
-    case 'response':
-      return executeResponseNode(node, ctx)
-    case 'exit':
-      return executeExitNode(node)
-    case 'code':
-      return executeCodeNode(node, ctx, env, signal)
-    case 'partner_bid':
-      if (!supabase) throw new Error('Partner Bid node requires a Supabase client')
-      return executePartnerBidNode(node, ctx, env, supabase, signal)
-    case 'parallel':
-      // Parallel nodes are handled directly in walkGraph before reaching executeNode.
-      // If this case is ever hit, it means a parallel node was called outside of walkGraph.
-      throw new Error('Parallel node must be executed through walkGraph, not executeNode directly')
-    case 'bid_group':
-      // Bid Group is handled directly in walkGraph (synthesizes per-partner step rows).
-      throw new Error('Bid Group node must be executed through walkGraph, not executeNode directly')
-    case 'buyer_select':
-      // Buyer selection is handled directly in walkGraph too: one attempt row per buyer tried (#1411).
-      throw new Error('Buyer Select node must be executed through walkGraph, not executeNode directly')
-    case 'buyer_click_send':
-      // Run once by walkGraph and never retried: a retried click is a duplicate send (#1542).
-      throw new Error('Buyer Click Send node must be executed through walkGraph, not executeNode directly')
-    case 'buyer_click_check':
-      // Run once by walkGraph under its own budget, never retried (#1543).
-      throw new Error('Buyer Click Check node must be executed through walkGraph, not executeNode directly')
-    case 'parallel_end':
-      throw new Error('Parallel End node must be executed through walkGraph, not executeNode directly')
-    case 'branch_end':
-      // Passive convergence node — passthrough. The engine routes to whichever
-      // path the branch's selected handle led down; once that chain reaches
-      // branch_end, this returns the prior step's output and the main walk
-      // continues to branch_end's successor.
-      return executeBranchEndNode(chainOutput)
-    case 'webhook':
-      return executeIntegrationNode(node, ctx, env, signal)
-    case 'transform':
-      return executeTransformNode(node, ctx)
-    case 'constants':
-      if (!supabase) throw new Error('Constants node requires a Supabase client')
-      return executeConstantsNode(node, ctx, env, supabase)
-    case 'salesforce':
-      return executeSalesforceNode(node, ctx, env, signal)
-    case 'data_store':
-      return executeDataStoreNode(node, ctx, env)
-    case 'latency_gate':
-      return executeLatencyGateNode(node, ctx, env, supabase)
-    case 'achieve_offers':
-      return executeAchieveOffersNode(node, ctx, signal)
-    default:
-      // Exhaustive over NodeType at compile time (#1411): a type added to
-      // @bidspoke/node-types without a case here is a type error on this line,
-      // and a definition carrying a type this build never heard of fails loud.
-      return assertNever(node.type, 'node type')
+) => Promise<StepExecutionResult>
+
+/**
+ * The node executor for one lane. A type outside the lane's registry is refused
+ * by name; a type this build has never heard of fails loud, as assertNever did.
+ */
+export function createNodeExecutor(lane: WorkflowLane): ExecuteNode {
+  const registry = registryForLane(lane)
+  return async (node, ctx, env, supabase, signal, chainOutput) => {
+    if (!isNodeType(node.type)) return assertNever(node.type, 'node type')
+    const executor = registry[node.type]
+    if (!executor) throw new LaneRefusedNodeError(node.type, lane)
+    return executor({ node, ctx, env, supabase, signal, chainOutput })
   }
 }
+
+/** The bidding Worker's executor: the money lane runs every node type. */
+export const executeNode: ExecuteNode = createNodeExecutor('money')
 
 function executeExitNode(node: NodeDefinition): StepExecutionResult {
   return {

@@ -43,7 +43,7 @@ vi.mock('../lead-sightings', async (importOriginal) => ({
   finalizeSighting: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 import { insertSighting, finalizeSighting } from '../lead-sightings'
@@ -89,7 +89,7 @@ beforeEach(() => {
     workflow_version_id: 'v1',
     workflow_name: 'Race Test',
     org_id: 'org-1',
-    slack_channel: null,
+    slack_channel: null, lane: 'money',
   })
   vi.mocked(executeNode).mockResolvedValue({ output: RESPONSE, earlyResponse: RESPONSE })
 })
@@ -108,7 +108,7 @@ describe('sighting insert / finalize ordering', () => {
     vi.mocked(finalizeSighting).mockImplementation(async () => { order.push('finalize') })
 
     const harness = makeHarness()
-    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, supabase, harness.executionCtx)
+    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
 
     // Let every already-resolvable background task run. If finalize does not
     // await the insert, it runs here, while the insert is still pending.
@@ -127,7 +127,7 @@ describe('sighting insert / finalize ordering', () => {
     vi.mocked(finalizeSighting).mockImplementation(async () => { order.push('finalize') })
 
     const harness = makeHarness()
-    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, supabase, harness.executionCtx)
+    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
     await harness.drain()
 
     expect(order).toEqual(['finalize'])
@@ -140,7 +140,7 @@ describe('sighting insert / finalize ordering', () => {
 
     const harness = makeHarness()
     // Would hang if the response path awaited the insert.
-    const result = await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, supabase, harness.executionCtx)
+    const result = await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
     expect(result.status).toBe(200)
 
     releaseInsert()

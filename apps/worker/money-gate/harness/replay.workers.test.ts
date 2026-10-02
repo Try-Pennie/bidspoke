@@ -264,6 +264,23 @@ interface RunResult {
 }
 
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
+/**
+ * The engine's third argument, readable by both sides of the gate (#1707). The
+ * head takes a runtime of { lane, config, run }; a merge base from before 0.C
+ * takes the client itself. This one value is both: the client, with the runtime
+ * fields read through it. Delete once no merge base predates 0.C.
+ */
+function engineDbArgument(client: object): unknown {
+  const runtime: Record<string, unknown> = { lane: 'money', config: client, run: client }
+  return new Proxy(client, {
+    get(target, prop) {
+      if (typeof prop === 'string' && prop in runtime) return runtime[prop]
+      const value: unknown = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value
+    },
+  })
+}
+
 async function runOnce(e: GateEnv, def: DefinitionFile, id: string, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape): Promise<RunResult> {
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
@@ -347,7 +364,7 @@ async function runOnce(e: GateEnv, def: DefinitionFile, id: string, payload: unk
   let error: string | undefined
   try {
     const ctx = createExecutionContext()
-    const result = await executeWorkflow({ workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }, runEnv as never, db.client as never, ctx)
+    const result = await executeWorkflow({ workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }, runEnv as never, engineDbArgument(db.client) as never, ctx)
     await waitOnExecutionContext(ctx)
     response = { status: result.status, body: result.response, headers: result.responseHeaders }
   } catch (err) {

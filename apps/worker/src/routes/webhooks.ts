@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
-import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
+import { executeWorkflow, moneyRuntime, WorkflowLaneError, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 
@@ -32,7 +32,7 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
         enforceSourceAssignment: true,
       },
       c.env,
-      supabase,
+      moneyRuntime(supabase),
       c.executionCtx
     )
 
@@ -68,6 +68,13 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
     }
     if (err instanceof WorkflowNotFoundError) {
       return c.json({ error: 'Workflow not found' }, 404)
+    }
+    // An ops workflow on the money host (#1707): not this Worker's to run, and
+    // not missing either, so a sender is told it reached the wrong place
+    // rather than that the endpoint is gone. Forwarding to the ops Worker comes
+    // with the ops lane (plan R5).
+    if (err instanceof WorkflowLaneError) {
+      return c.json({ error: 'Workflow is not served on this host' }, 421)
     }
 
     console.error('[webhook] execution error:', err)

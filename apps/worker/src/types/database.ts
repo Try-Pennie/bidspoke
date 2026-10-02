@@ -2496,6 +2496,7 @@ export type Database = {
           folder_id: string | null
           id: string
           is_active: boolean
+          lane: string
           name: string
           organization_id: string
           slack_channel: string | null
@@ -2515,6 +2516,7 @@ export type Database = {
           folder_id?: string | null
           id?: string
           is_active?: boolean
+          lane?: string
           name: string
           organization_id: string
           slack_channel?: string | null
@@ -2534,6 +2536,7 @@ export type Database = {
           folder_id?: string | null
           id?: string
           is_active?: boolean
+          lane?: string
           name?: string
           organization_id?: string
           slack_channel?: string | null

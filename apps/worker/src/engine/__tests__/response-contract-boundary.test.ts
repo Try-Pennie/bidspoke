@@ -30,7 +30,7 @@ vi.mock('../achieve-log', () => ({
 }))
 vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 
@@ -62,7 +62,7 @@ function run(workflowId: string) {
   } as unknown as Env
   const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
   return {
-    result: executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, {} as SupabaseClient, executionCtx),
+    result: executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime({} as SupabaseClient), executionCtx),
     flush: async () => {
       for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
     },
@@ -97,7 +97,7 @@ describe('the response boundary', () => {
       workflow_version_id: 'v1',
       workflow_name: 'Contract Boundary Test',
       org_id: 'org-1',
-      slack_channel: null,
+      slack_channel: null, lane: 'money',
     })
   })
   afterEach(() => vi.restoreAllMocks())

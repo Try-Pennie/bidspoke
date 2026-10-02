@@ -25,6 +25,7 @@ const workflowRow = {
   slack_channel: '#alerts',
   definition: { nodes: [], edges: [] },
   is_active: true,
+  lane: 'money',
   workflow_versions: [{ id: 'ver-1', version_number: 1 }],
 }
 
@@ -57,6 +58,7 @@ describe('loadWorkflowDefinition', () => {
       workflow_name: 'Cached Workflow',
       org_id: 'org-1',
       slack_channel: null,
+      lane: 'money',
     }
     const kv = makeKv(cached)
     const sb = makeSupabase()
@@ -130,5 +132,31 @@ describe('invalidateWorkflowCache', () => {
     await invalidateWorkflowCache(WF_ID, kv)
 
     expect(kv.delete).toHaveBeenCalledWith(CACHE_KEY)
+  })
+})
+
+// #1707 (plan 0.C): the workflow's stored lane rides on the loaded workflow, so
+// every entry point that runs a workflow reads it through this one loader.
+describe('loadWorkflowDefinition: the stored lane', () => {
+  it('reads the lane from the workflow row', async () => {
+    const sb = makeSupabase({ ...workflowRow, lane: 'ops' } as typeof workflowRow)
+    const loaded = await loadWorkflowDefinition(WF_ID, makeKv(), sb as never)
+    expect(loaded.lane).toBe('ops')
+  })
+
+  it('treats a cached entry written before the lane existed as a miss and reads the row', async () => {
+    const stale = { definition: { nodes: [], edges: [] }, workflow_version_id: 'ver-old', workflow_name: 'Old', org_id: 'org-1', slack_channel: null }
+    const sb = makeSupabase({ ...workflowRow, lane: 'money' } as typeof workflowRow)
+    const loaded = await loadWorkflowDefinition(WF_ID, makeKv(stale), sb as never)
+    expect(sb.from).toHaveBeenCalledWith('workflows')
+    expect(loaded.lane).toBe('money')
+    expect(loaded.workflow_version_id).toBe('ver-1')
+  })
+
+  it('refuses a row whose lane is not one the engine knows, rather than guessing one', async () => {
+    const sb = makeSupabase({ ...workflowRow, lane: 'sideways' } as typeof workflowRow)
+    await expect(loadWorkflowDefinition(WF_ID, makeKv(), sb as never)).rejects.toThrow(
+      `Workflow ${WF_ID} has unknown lane "sideways"`,
+    )
   })
 })

@@ -9,7 +9,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
@@ -17,7 +18,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
@@ -25,7 +27,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
@@ -33,7 +36,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
@@ -41,7 +45,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
@@ -49,7 +54,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       },
       {
         "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
@@ -57,7 +63,8 @@
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "slack_channel": null,
         "is_active": true,
-        "deleted_at": null
+        "deleted_at": null,
+        "lane": "money"
       }
     ],
     "workflow_versions": [

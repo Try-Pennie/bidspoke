@@ -159,7 +159,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 - Live truth: `wrangler secret list --name bidspoke-worker`.
 - Annotated inventory with where to re-obtain each (for recovery): [docs/disaster-recovery.md](./docs/disaster-recovery.md) (Secret inventory).
 - The no-default secrets are runtime-guarded: a daily cron check (`apps/worker/src/lib/required-secrets.ts`, #386) alerts Slack if any is unset in prod. It covers the 15 core secrets plus the live partner secrets (Salesforce, Equifax `EQ_USER`/`EQ_PASS`, Tripoint); feature-gated partners (Achieve, Scout) are excluded to avoid false alarms.
-- Note: the worker's `Env` TypeScript interface (`apps/worker/src/index.ts`) is NOT a complete list. Several partner secrets (Salesforce, Achieve, Equifax) are read dynamically and aren't declared there.
+- Note: the worker's `Env` TypeScript interface (`apps/worker/src/env.ts`, re-exported from `src/index.ts`) is NOT a complete list. Several partner secrets (Salesforce, Achieve, Equifax) are read dynamically and aren't declared there.
 
 | Group | Secrets |
 |-------|---------|

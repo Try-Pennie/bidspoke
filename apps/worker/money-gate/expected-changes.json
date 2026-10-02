@@ -1,4 +1,47 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over, excuses nothing, and should be deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": []
+  "entries": [
+    {
+      "workflow": "Delegate Gmail Access for Offboarded Agents",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "Lead Economy - Bidding Workflow",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "Main Flow",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
+      "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    }
+  ]
 }

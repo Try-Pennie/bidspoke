@@ -45,7 +45,7 @@ vi.mock('../lead-sightings', async (importOriginal) => ({
   finalizeSighting: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 import { insertSighting } from '../lead-sightings'
@@ -85,6 +85,7 @@ function loadDefinition() {
     workflow_name: 'Main Flow',
     org_id: 'org-1',
     slack_channel: null,
+    lane: 'money',
   } as unknown as Awaited<ReturnType<typeof loadWorkflowDefinition>>)
 }
 
@@ -93,7 +94,7 @@ async function run(isTest = false) {
   await executeWorkflow(
     { workflowId: 'wf-1', payload: { ssn: '000-00-0000' }, source: 'engine', isTest },
     env,
-    supabase,
+    moneyRuntime(supabase),
     executionCtx,
   )
   await drain()

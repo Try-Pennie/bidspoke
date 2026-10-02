@@ -29,8 +29,12 @@ describe('executorFile trait against the worker tree', () => {
   it('the types with no executor file are exactly the ones executeNode handles inline or the walker owns', () => {
     const inline = NODE_TYPES.filter((t) => NODE_TRAITS[t].executorFile === null).sort()
     expect(inline).toEqual(['branch_end', 'exit', 'parallel_end'])
+    // The executor registry (#1707): one entry per type inside the EXECUTORS record.
     const src = readFileSync(path.join(WORKER_SRC, 'engine/nodes/index.ts'), 'utf8')
-    for (const t of inline) expect(src, `executeNode has a case for ${t}`).toMatch(new RegExp(`case '${t}':`))
+    const start = src.indexOf('const EXECUTORS: Record<NodeType, NodeExecutor> = {')
+    expect(start, 'engine/nodes/index.ts has no EXECUTORS registry').toBeGreaterThan(-1)
+    const registry = src.slice(start, src.indexOf('\n}\n', start))
+    for (const t of inline) expect(registry, `the executor registry has an entry for ${t}`).toMatch(new RegExp(`\\n  ${t}: `))
   })
 
   it('every card source the config guard names exists', () => {

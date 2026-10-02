@@ -7,7 +7,7 @@
 // every existing import of NodeType from './types' keeps working.
 export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 export type { NodeType, NodeTraits } from '@bidspoke/node-types'
-import type { NodeType } from '@bidspoke/node-types'
+import type { NodeType, WorkflowLane } from '@bidspoke/node-types'
 
 export interface WorkflowDefinition {
   id: string
@@ -260,6 +260,8 @@ export interface LoadedWorkflow {
   workflow_name: string
   org_id: string
   slack_channel: string | null
+  /** The lane the workflow is stored under (#1707): read at every entry point through the loader. */
+  lane: WorkflowLane
 }
 
 export interface IdempotencyState {

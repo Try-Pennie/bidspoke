@@ -49,7 +49,7 @@ vi.mock('../lead-sightings', () => ({
   recordBidAttempt: vi.fn(),
 }))
 
-import { executeWorkflow } from '../index'
+import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 import { deriveCodeNodeBidAttempts } from '../bid-log'
@@ -101,7 +101,7 @@ function loadDef() {
     workflow_version_id: 'v1',
     workflow_name: 'Finalize Ordering',
     org_id: 'org-1',
-    slack_channel: null,
+    slack_channel: null, lane: 'money',
   })
 }
 
@@ -110,7 +110,7 @@ async function run(opts: { isTest?: boolean } = {}) {
   await executeWorkflow(
     { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...opts },
     harness.env,
-    supabase,
+    moneyRuntime(supabase),
     harness.executionCtx,
   )
   await harness.flush()
