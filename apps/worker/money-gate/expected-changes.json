@@ -42,6 +42,18 @@
       "check": "kv_state",
       "field": "kv_state.WORKFLOW_CACHE.workflow-def-*",
       "reason": "The cached workflow definition now records the workflow's lane (money) so every entry point can refuse a workflow stored under another lane (#1707). Measured on the local run: in every differing cache entry the only changed field is the added lane, and no request, route, write, Durable Object state or response differs."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "field": "rpc record_buyer_sale",
+      "reason": "A live sale the buyer declines is now copied to buyer_sales inline, with its workflow, trace, pricing and the buyer's answer, as an accepted sale already was (#1735). Before, only the minute drain copied it, without any of those. Only the buyer_select_live_declined fixture differs."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "do_state",
+      "field": "do_state.BUYER_LEDGER.*",
+      "reason": "The buyer ledger's declined entry now keeps the buyer's answer (result code, reference, HTTP status) and is marked mirrored once the inline copy lands (#1735). Status, payout, key and counts are unchanged; only the buyer_select_live_declined fixture differs."
     }
   ]
 }

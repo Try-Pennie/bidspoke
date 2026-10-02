@@ -339,8 +339,8 @@ export class BuyerLedgerClient implements LedgerApi {
     return r.entry
   }
 
-  async release(key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry> {
-    const r = await call<{ entry: LedgerEntry }>(this.stub, LEDGER_RELEASE_OP, 'http://do/release', postJson({ ...key, status }), this.opts)
+  async release(key: EntryKey, status: 'declined' | 'released', outcome?: SaleOutcomeRecord): Promise<LedgerEntry> {
+    const r = await call<{ entry: LedgerEntry }>(this.stub, LEDGER_RELEASE_OP, 'http://do/release', postJson({ ...key, status, ...(outcome ? { outcome } : {}) }), this.opts)
     return r.entry
   }
 
