@@ -180,8 +180,8 @@ export interface ChecksDeps {
   readSalesRows(partnerId: string, day: string): Promise<SalesRow[]>
   /** lead_sighting_bids winner rows this buyer's buyer_select attempts wrote, inside [fromMs, toMs). */
   readWinnerRows(slug: string, fromMs: number, toMs: number): Promise<WinnerRow[]>
-  /** The buyer references Salesforce holds among those asked for; null when the buyer has no independent record. */
-  readIndependentRecord(buyer: CheckBuyer, references: string[]): Promise<Set<string> | null>
+  /** The buyer references Salesforce holds among those asked for, on prospects created from `fromMs`; null when the buyer has no independent record. */
+  readIndependentRecord(buyer: CheckBuyer, references: string[], fromMs: number): Promise<Set<string> | null>
   /** Counts over live buyer_sales rows with et_day in [fromDay, toDay). */
   readOutcomeBaseline(partnerId: string, fromDay: string, toDay: string): Promise<OutcomeBaseline>
   kv: BackoffKv
@@ -515,7 +515,8 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
   let independent: BuyerCheckSummary['independent']
   try {
     const references = accepted.map((e) => e.outcome?.buyer_reference).filter((r): r is string => typeof r === 'string' && r.length > 0)
-    const found = buyer.has_independent_record ? await deps.readIndependentRecord(buyer, references) : null
+    const lookbackFrom = easternDayStartUtc(days[days.length - 1]) - INDEPENDENT_LOOKBACK_MARGIN_MS
+    const found = buyer.has_independent_record ? await deps.readIndependentRecord(buyer, references, lookbackFrom) : null
     independent = judgeIndependent(accepted, found)
   } catch (err) {
     independent = { verdict: 'unmeasured', reason: `the independent record could not be read: ${messageOf(err)}` }
@@ -575,6 +576,24 @@ interface ProfileRow {
 
 const SOQL_CHUNK = 150
 
+/**
+ * How far before the earliest checked Eastern day the Salesforce lookup starts (#1737). The
+ * prospect is created earlier in the same execution as the sale, so a sale just after midnight
+ * Eastern can belong to a prospect created just before it.
+ */
+const INDEPENDENT_LOOKBACK_MARGIN_MS = HOUR_MS
+
+/**
+ * The Salesforce query for the Tripoint lead ids among `references` (#1737). The field is
+ * TripointLeadID__c, the one the Engine Bidding patch writes and the only Tripoint lead id field
+ * on Prospect__c. It is not indexed, so a lookup by it alone times out on the whole object; the
+ * CreatedDate bound makes it selective (3 s for a day, measured 2026-10-02).
+ */
+export function independentRecordSoql(references: string[], fromMs: number): string {
+  const from = new Date(fromMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  return `SELECT TripointLeadID__c FROM Prospect__c WHERE CreatedDate >= ${from} AND TripointLeadID__c IN (${references.map((r) => `'${r}'`).join(',')})`
+}
+
 export function productionChecksDeps(supabase: SupabaseClient, env: Env): ChecksDeps {
   return {
     listBuyers: async () => {
@@ -625,7 +644,7 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
           .range(from, to),
         'lead_sighting_bids',
       ),
-    readIndependentRecord: async (buyer, references) => {
+    readIndependentRecord: async (buyer, references, fromMs) => {
       if (!buyer.has_independent_record) return null
       if (references.length === 0) return new Set()
       const { creds, missing } = await resolveSalesforceCredsFor(env, supabase, buyer.organization_id)
@@ -635,13 +654,13 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       const safe = references.filter((r) => /^[A-Za-z0-9_-]{1,64}$/.test(r))
       for (let i = 0; i < safe.length; i += SOQL_CHUNK) {
         const chunk = safe.slice(i, i + SOQL_CHUNK)
-        const soql = `SELECT Tripoint_Lead_ID__c FROM Prospect__c WHERE Tripoint_Lead_ID__c IN (${chunk.map((r) => `'${r}'`).join(',')})`
+        const soql = independentRecordSoql(chunk, fromMs)
         let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
         while (next) {
           const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
           if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
-          const body = await parseJson<{ records: Array<{ Tripoint_Lead_ID__c?: unknown }>; done: boolean; nextRecordsUrl?: string }>(res)
-          for (const rec of body.records) if (typeof rec.Tripoint_Lead_ID__c === 'string') found.add(rec.Tripoint_Lead_ID__c)
+          const body = await parseJson<{ records: Array<{ TripointLeadID__c?: unknown }>; done: boolean; nextRecordsUrl?: string }>(res)
+          for (const rec of body.records) if (typeof rec.TripointLeadID__c === 'string') found.add(rec.TripointLeadID__c)
           next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
         }
       }
