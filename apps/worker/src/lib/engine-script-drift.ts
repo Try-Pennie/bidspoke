@@ -122,7 +122,8 @@ export interface KeptWorkflow {
  *
  * #1549 edited tripoint_ping and build_response_body (the duplicate result codes
  * became 1002 to 1005 and 1020); both were pasted as version 103 on 2026-09-30,
- * so neither carries a baseline again.
+ * so neither carries a baseline again. #1653 edited known_no_gate, pasted as
+ * version 106 on 2026-10-02, so none of the four carries one.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -146,16 +147,13 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     canvasBaselineSha256: null,
     baselineReadOn: null,
   },
-  // The known no gate (#1544), written here first and on the canvas since version 101.
-  // #1653 edited it here first (a buyer_select decline is judged in tripoint_ping's words),
-  // so it carries the hash of the script versions 103 and 104 hold until that paste; remove
-  // both fields in the change after the hourly check reads it as agree.
+  // The known no gate (#1544). #1653's edit was pasted as version 106 on 2026-10-02.
   {
     namespace: 'known_no_gate',
     file: 'known_no_gate.js',
     script: KNOWN_NO_GATE,
-    canvasBaselineSha256: 'e74b9d55a4c5a82b29d755015e52b22301ba6c9b8f5fb200a80e2131cdf69476',
-    baselineReadOn: '2026-09-30',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
 ]
 

@@ -41,10 +41,6 @@ import PATCH_PROSPECT_BODY_RAW from '../../engine/scripts/engine-bidding/patch_p
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import KNOWN_NO_GATE_RAW from '../../engine/scripts/engine-bidding/known_no_gate.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import KNOWN_NO_GATE_V103_RAW from './fixtures/known_no_gate.canvas-v103.txt?raw'
-/** The known_no_gate script on the Engine Bidding canvas at version 103, before #1653. A canvas script box holds no final newline. */
-const CANVAS_GATE_V103 = (KNOWN_NO_GATE_V103_RAW as string).replace(/[\r\n]+$/, '')
-// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import RESOLVE_CLICK_INPUT_RAW from '../../engine/scripts/liberty1-click/resolve_click_input.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import BUILD_LIBERTY1_REQUEST_RAW from '../../engine/scripts/liberty1-click/build_liberty1_request.js?raw'
@@ -93,23 +89,19 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance except known_no_gate: Engine Bidding version 103 (2026-09-30) holds all four, #1549 included, so any difference is a drift or a missing node', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'known_no_gate')) {
+  it('carry no canvas baseline and no new node allowance: Engine Bidding version 106 (2026-10-02) holds all four, #1653 included, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS) {
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
       expect(kept.newNodeSince, kept.file).toBeUndefined()
     }
   })
 
-  it('known_no_gate, edited here first by #1653, carries the version 103 canvas script as its baseline, so the unpasted edit reads awaiting_paste', async () => {
+  it('pages a canvas edit to known_no_gate as drift, now that it carries no baseline', async () => {
     const gate = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'known_no_gate')!
-    // sha256 of the known_no_gate script in Engine Bidding versions 103 and 104, read from workflow_versions on 2026-09-30.
-    expect(gate.canvasBaselineSha256).toBe('e74b9d55a4c5a82b29d755015e52b22301ba6c9b8f5fb200a80e2131cdf69476')
-    expect(gate.baselineReadOn).toBe('2026-09-30')
-    expect(gate.newNodeSince).toBeUndefined()
-    // The #1544 script as it stands on the canvas, rebuilt from the text this change replaced: the check calls it a paste awaited, not a drift.
-    const [verdict] = await judgeKeptScripts([gate], { nodes: [{ type: 'code', namespace: 'known_no_gate', config: { script: CANVAS_GATE_V103 } }] }, 'Engine Bidding')
-    expect(verdict.state).toBe('awaiting_paste')
+    const edited = `${gate.script.replace(/[\r\n]+$/, '')}\n// an edit made on the canvas only`
+    const [verdict] = await judgeKeptScripts([gate], { nodes: [{ type: 'code', namespace: 'known_no_gate', config: { script: edited } }] }, 'Engine Bidding')
+    expect(verdict.state).toBe('drift')
   })
 
   it('names the Engine Bidding Workflow the parity and contract code already name', () => {
