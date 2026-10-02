@@ -142,7 +142,10 @@ export function evaluateEvidence(input: EvidenceInput): EvidenceResult {
   if (input.learnedGapMs === null) {
     thin.push('no learned gap for this workflow, so a quiet recorder cannot be told from a quiet workflow')
   } else if (inWindow.length > 0) {
-    const newest = Math.max(...inWindow.map((c) => c.receivedAt))
+    // A loop, not Math.max(...spread): spreading a busy window as call
+    // arguments throws RangeError (#1718).
+    let newest = inWindow[0].receivedAt
+    for (const c of inWindow) if (c.receivedAt > newest) newest = c.receivedAt
     const limit = input.learnedGapMs * (input.quietMultiplier ?? 3)
     if (now - newest > limit) thin.push(`recorder quiet since ${iso(newest)}, longer than ${input.quietMultiplier ?? 3} learned gaps`)
   }

@@ -65,6 +65,22 @@ const SENSITIVE_PERSONAL_WORDS = new Set([
 const MAX_WORD_TOKENS = 3
 
 /**
+ * A sensitive word run together with another inside ONE token, which the token
+ * rule above cannot see (`userssn`, `borrowerdob`, `bankaccountnumber`, #1718).
+ * The long words are distinctive enough to match anywhere in the token. The
+ * short ones match only at its start or end, because inside a word they are
+ * ordinary letters: `adobe` and `cardobject` hold "dob", `businessname` and
+ * `classname` hold "ssn".
+ */
+const INNER_ANYWHERE = ['dateofbirth', 'birthdate', 'socialsecurity', 'accountnumber', 'routingnumber']
+const INNER_AT_EDGE = ['ssn', 'dob']
+
+function tokenHoldsSensitiveWord(token: string): boolean {
+  if (INNER_ANYWHERE.some((word) => token.includes(word))) return true
+  return INNER_AT_EDGE.some((word) => token.length > word.length && (token.startsWith(word) || token.endsWith(word)))
+}
+
+/**
  * Splits a field name into lower case tokens: on underscores, hyphens, spaces
  * and dots, at camelCase and letter to digit boundaries, after removing a
  * trailing Salesforce `__c` or `_SO__c`.
@@ -81,9 +97,10 @@ export function nameTokens(name: string): string[] {
     .filter((t) => t.length > 0)
 }
 
-/** True when the name's tokens contain a sensitive personal word. */
+/** True when the name's tokens, or a word run together inside one of them, name a sensitive personal field. */
 export function isSensitivePersonalName(name: string): boolean {
   const tokens = nameTokens(name)
+  if (tokens.some(tokenHoldsSensitiveWord)) return true
   for (let i = 0; i < tokens.length; i++) {
     let joined = ''
     for (let j = i; j < tokens.length && j < i + MAX_WORD_TOKENS; j++) {
