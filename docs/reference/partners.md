@@ -77,6 +77,17 @@ tiers for the `engine` population on its buyer profile, read through the buyer
 profile loader and reported, never compared (ADR 0010). A profile the check cannot
 read is a finding of its own, not an absence of tiers.
 
+The same check also compares the three Salesforce formulas that book partner
+revenue with each other (#1419): `Lead.ExternalRevenue__c`,
+`Submission__c.ExternalRevenue__c` and `Prospect__c.ExternalExchangeRevenue__c`.
+Each carries its own copy of every partner's rates, and on 2026-09-30 the Lead copy
+priced Tripoint at 0.0012 from $12,500 while the other two used 0.0013. Any partner
+paid a rate on debt whose bands or rates differ between the formulas is alerted,
+naming what each formula pays (`revenue-formula.ts`). A partner booked only as a
+field or as nothing (Engine and AmOne, which the Prospect formula does not book) is
+noted without alerting. A formula that cannot be read, or one rewritten into a
+shape the check does not know, is its own finding, named for its object.
+
 ### Matrix resolver
 
 `bid_resolver_type: 'matrix'`. The bid is looked up from a two-dimensional bid matrix. `bid_resolver_config` must contain:

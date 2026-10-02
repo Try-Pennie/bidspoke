@@ -64,7 +64,14 @@ describe('POST /admin/tripoint-pricing-check', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>,
     )
-    vi.mocked(checkTripointPricing).mockResolvedValue({ salesforce: rule, engine_tiers: null, differences: [], notes: [note], alerted: false })
+    vi.mocked(checkTripointPricing).mockResolvedValue({
+      salesforce: rule,
+      engine_tiers: null,
+      formulas_read: ['Lead', 'Submission', 'Prospect'],
+      differences: [],
+      notes: [note],
+      alerted: false,
+    })
     app = await makeApp()
   })
 
@@ -77,6 +84,8 @@ describe('POST /admin/tripoint-pricing-check', () => {
     expect(body.salesforce).toEqual(rule)
     expect(body.differences).toEqual([])
     expect(body.notes).toEqual([note])
+    // Which of the three Salesforce formulas were read (#1419), so a partial read is visible.
+    expect((body as unknown as { formulas_read: string[] }).formulas_read).toEqual(['Lead', 'Submission', 'Prospect'])
   })
 
   it('runs the scheduled check itself, not a copy of it', async () => {
@@ -90,6 +99,7 @@ describe('POST /admin/tripoint-pricing-check', () => {
     vi.mocked(checkTripointPricing).mockResolvedValue({
       salesforce: rule,
       engine_tiers: null,
+      formulas_read: ['Lead', 'Submission', 'Prospect'],
       differences: [{ code: 'high-multiplier-disagrees', message: 'Bidspoke prices the high band at 0.0013 of debt, Salesforce books 0.0012' }],
       notes: [note],
       alerted: true,
@@ -107,6 +117,7 @@ describe('POST /admin/tripoint-pricing-check', () => {
     vi.mocked(checkTripointPricing).mockResolvedValue({
       salesforce: null,
       engine_tiers: null,
+      formulas_read: [],
       differences: [{ code: 'formula-unreadable', message: 'Tooling query failed (403): INSUFFICIENT_ACCESS' }],
       notes: [],
       alerted: true,

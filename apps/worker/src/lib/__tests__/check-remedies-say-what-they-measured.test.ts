@@ -43,7 +43,12 @@ import { LOGPUSH_CHECK_REMEDY } from '../logpush-check'
 import { RETENTION_CHECK_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
 import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
-import { TRIPOINT_PRICING_MISMATCH_REMEDY, TRIPOINT_PRICING_UNREADABLE_REMEDY } from '../tripoint-pricing-check'
+import {
+  PARTNER_RATES_MISMATCH_REMEDY,
+  REVENUE_FORMULAS_DISAGREE_REMEDY,
+  TRIPOINT_PRICING_MISMATCH_REMEDY,
+  TRIPOINT_PRICING_UNREADABLE_REMEDY,
+} from '../tripoint-pricing-check'
 import { TRIPOINT_DUPLICATE_CODES_REMEDY } from '../tripoint-duplicate-codes-check'
 import { LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY } from '../lead-status-check'
 import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export-schema-check'
@@ -104,6 +109,8 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
 const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
   ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
+  ['salesforce revenue formulas disagree', REVENUE_FORMULAS_DISAGREE_REMEDY],
+  ['partner rates mismatch', PARTNER_RATES_MISMATCH_REMEDY],
   ['lead status backlog', LEAD_STATUS_BACKLOG_REMEDY],
   ['lead status broken', LEAD_STATUS_BROKEN_REMEDY],
   ['lead status unchecked', LEAD_STATUS_UNCHECKED_REMEDY],

@@ -27,6 +27,15 @@
  * loader the buyer_select node uses, so each daily answer carries both rules
  * under their population names. The Engine rule is a note, never compared with
  * the Lead formula; a failure to read it is a finding, never "no tiers" (L98).
+ *
+ * IT ALSO COMPARES THE THREE SALESFORCE FORMULAS WITH EACH OTHER (#1419). The
+ * Lead, Submission and Prospect formulas each carry their own copy of every
+ * partner's rates, and on 2026-09-30 the Lead copy priced Tripoint at 0.0012
+ * from $12,500 while the other two used 0.0013. All three are read through the
+ * one Tooling reader below, the Lead text is the one the Bidspoke comparison
+ * uses, and any partner whose bands or rates differ between them is its own
+ * finding beside the Bidspoke one (`revenue-formula.ts`). A formula that cannot
+ * be read is a finding too, named for its object, and reported once.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
@@ -41,6 +50,7 @@ import {
   type PricingDifference,
   type TripointRule,
 } from './tripoint-pricing-drift'
+import { compareRevenueFormulas, type FormulaRead } from './revenue-formula'
 import type { Env } from '../index'
 import type { PricingTier } from '@bidspoke/buyer-profile'
 import { loadBuyerProfiles } from './buyer-profile-loader'
@@ -61,18 +71,38 @@ export const TRIPOINT_PRICING_MISMATCH_REMEDY: TitledRemedy = {
     "If it's Bidspoke, change the External Revenue formula on the Salesforce Lead.",
 }
 
+/** The Salesforce formulas disagreeing with each other, and nothing else. */
+export const REVENUE_FORMULAS_DISAGREE_REMEDY: TitledRemedy = {
+  title: "Salesforce formulas don't agree on partner rates",
+  fixHint: 'Decide which rate is right, then change the other formulas in Salesforce to match.',
+}
+
+/** Both kinds of disagreement at once, as on 2026-09-30: one title, both fixes. */
+export const PARTNER_RATES_MISMATCH_REMEDY: TitledRemedy = {
+  title: "Partner rates don't match",
+  fixHint:
+    'Decide which rate is right. Change Bidspoke under Partners > Tripoint, or the External Revenue formula on the Salesforce Lead, ' +
+    'and change the other formulas in Salesforce to match.',
+}
+
 /** No fix line: the finding itself says what could not be read, and that is where to look. */
 export const TRIPOINT_PRICING_UNREADABLE_REMEDY: TitledRemedy = {
   title: "Tripoint rate check couldn't run",
 }
 
-/** The differences that are a disagreement between two rules that were both read. Everything else is a refusal. */
+/**
+ * The differences that are a disagreement between Bidspoke and the Lead
+ * formula, both read. With FORMULA_MISMATCH_CODES, everything else is a refusal.
+ */
 const MISMATCH_CODES = new Set([
   'boundary-disagrees',
   'low-multiplier-disagrees',
   'high-multiplier-disagrees',
   'floor-disagrees',
 ])
+
+/** A disagreement between Salesforce formulas that were all read. */
+const FORMULA_MISMATCH_CODES = new Set(['formulas-disagree'])
 
 /** Who last changed the Salesforce formula, as the alert's context line. */
 export interface FormulaChange {
@@ -92,8 +122,35 @@ function changedLine(change: FormulaChange | null): string | undefined {
     : `The Salesforce formula was last changed ${day}.`
 }
 
+/** A Salesforce formula field: the label people call it by, its object's API name, and its developer name. */
+export interface RevenueFormulaField {
+  label: 'Lead' | 'Submission' | 'Prospect'
+  object: string
+  developerName: string
+}
+
+/**
+ * The three formulas that book partner revenue, each with its own copy of every
+ * partner's rates (#1419). The Lead is first because it is the one that books
+ * Main Flow Tripoint revenue, and so the one compared with Bidspoke.
+ */
+export const REVENUE_FORMULA_FIELDS: readonly RevenueFormulaField[] = [
+  { label: 'Lead', object: 'Lead', developerName: 'ExternalRevenue' },
+  { label: 'Submission', object: 'Submission__c', developerName: 'ExternalRevenue' },
+  { label: 'Prospect', object: 'Prospect__c', developerName: 'ExternalExchangeRevenue' },
+]
+
 /** The Salesforce field whose formula books Main Flow Tripoint revenue. */
-export const LEAD_REVENUE_FIELD = { object: 'Lead', developerName: 'ExternalRevenue' } as const
+export const LEAD_REVENUE_FIELD = REVENUE_FORMULA_FIELDS[0]
+
+/**
+ * The Tooling filter for one field. By the entity's API name, because a custom
+ * object's TableEnumOrId is its id: `TableEnumOrId='Submission__c'` answered no
+ * records on 2026-10-02, which would read as a missing field.
+ */
+function fieldFilter(field: RevenueFormulaField): string {
+  return `EntityDefinition.QualifiedApiName='${field.object}' AND DeveloperName='${field.developerName}'`
+}
 
 export interface TripointPricingCheckResult {
   /** The Salesforce Main Flow rule as read, or null when it could not be read or recognised. */
@@ -104,6 +161,8 @@ export interface TripointPricingCheckResult {
    * differences say which), never compared with `salesforce`.
    */
   engine_tiers: PricingTier[] | null
+  /** The Salesforce formulas that were read, by label. One missing here has its own finding. */
+  formulas_read: string[]
   /** Disagreements and refusals, each under its own code and population. Alerted. */
   differences: PricingDifference[]
   /** Standing facts about the rules, each under its population. Logged, never alerted. */
@@ -112,8 +171,8 @@ export interface TripointPricingCheckResult {
 }
 
 export interface TripointPricingDeps {
-  /** Returns the formula text. Injected so the check is testable without Salesforce (L196). */
-  readFormula?: () => Promise<string>
+  /** Returns one field's formula text. Injected so the check is testable without Salesforce (L196). */
+  readFormula?: (field: RevenueFormulaField) => Promise<string>
   /** Tripoint's enabled profile tiers, or null when no enabled profile exists. Injected for the same reason. */
   readEngineTiers?: () => Promise<PricingTier[] | null>
   /** When and by whom the formula last changed, for the alert's context line. Injected for the same reason. */
@@ -133,7 +192,7 @@ export async function checkTripointPricing(
     return await runCheck(
       env,
       supabase,
-      deps.readFormula ?? salesforceFormulaReader(env, supabase),
+      deps.readFormula ?? ((field) => salesforceFormulaReader(env, supabase, field)()),
       deps.readEngineTiers ?? engineTiersReader(env, supabase),
       deps.readFormulaChange ?? formulaChangeReader(env, supabase),
     )
@@ -141,7 +200,14 @@ export async function checkTripointPricing(
     const detail = `The check itself failed: ${formatErr(err)}`
     console.error(`[tripoint-pricing] ${detail}`)
     await alertQuietly(supabase, env, [detail], TRIPOINT_PRICING_UNREADABLE_REMEDY)
-    return { salesforce: null, engine_tiers: null, differences: [{ code: 'failed', message: detail }], notes: [], alerted: true }
+    return {
+      salesforce: null,
+      engine_tiers: null,
+      formulas_read: [],
+      differences: [{ code: 'failed', message: detail }],
+      notes: [],
+      alerted: true,
+    }
   }
 }
 
@@ -173,7 +239,7 @@ async function finish(
     ? `engine=${result.engine_tiers.map((t) => `${t.debtFrom}-${t.debtTo ?? 'up'}@${t.multiplier}`).join(',')}`
     : 'engine=none'
   console.log(
-    `[tripoint-pricing] ${rule} ${engine} differences=${result.differences.length} notes=${result.notes.map((n) => n.code).join(',')}`,
+    `[tripoint-pricing] ${rule} ${engine} formulas=${result.formulas_read.join('+') || 'none'} differences=${result.differences.length} notes=${result.notes.map((n) => n.code).join(',')}`,
   )
   return { ...result, alerted: result.differences.length > 0 }
 }
@@ -187,9 +253,13 @@ async function remedyFor(
   differences: PricingDifference[],
   readFormulaChange: () => Promise<FormulaChange | null>,
 ): Promise<TitledRemedy> {
-  if (differences.length === 0 || !differences.every((d) => MISMATCH_CODES.has(d.code))) {
+  const isMismatch = (d: PricingDifference) => MISMATCH_CODES.has(d.code)
+  const isFormulaMismatch = (d: PricingDifference) => FORMULA_MISMATCH_CODES.has(d.code)
+  if (differences.length === 0 || !differences.every((d) => isMismatch(d) || isFormulaMismatch(d))) {
     return TRIPOINT_PRICING_UNREADABLE_REMEDY
   }
+  if (!differences.some(isMismatch)) return REVENUE_FORMULAS_DISAGREE_REMEDY
+  const base = differences.some(isFormulaMismatch) ? PARTNER_RATES_MISMATCH_REMEDY : TRIPOINT_PRICING_MISMATCH_REMEDY
   let change: FormulaChange | null = null
   try {
     change = await readFormulaChange()
@@ -197,17 +267,20 @@ async function remedyFor(
     console.error('[tripoint-pricing] could not read who last changed the formula:', formatErr(err))
   }
   const context = changedLine(change)
-  return context ? { ...TRIPOINT_PRICING_MISMATCH_REMEDY, context } : TRIPOINT_PRICING_MISMATCH_REMEDY
+  return context ? { ...base, context } : base
 }
 
 /**
  * The Main Flow half: the legacy config against the Lead formula. Its notes are
  * labelled Main Flow, because the Engine notes sit beside them. Its differences
- * are not: only this rule is ever compared, and they are the alert's lines.
+ * are not: only this rule is ever compared with Bidspoke, and they are the
+ * alert's lines. A Lead formula the cross formula comparison has already
+ * reported as unreadable is not reported a second time here (L605).
  */
 async function compareMainFlow(
   supabase: SupabaseClient,
-  readFormula: () => Promise<string>,
+  lead: FormulaRead,
+  leadAlreadyReported: boolean,
 ): Promise<Pick<TripointPricingCheckResult, 'salesforce' | 'differences' | 'notes'>> {
   const mf = (d: PricingDifference) => underPopulation('main_flow', d)
   const { data, error } = await supabase
@@ -234,28 +307,21 @@ async function compareMainFlow(
     }
   }
 
-  let formula: string
-  try {
-    formula = await readFormula()
-  } catch (err) {
-    return {
-      salesforce: null,
-      notes: [],
-      differences: [
-        { code: 'formula-unreadable', message: `The check couldn't read the Salesforce formula: ${formatErr(err)}` },
-      ],
-    }
-  }
+  // An unread Lead formula is already a finding of the cross formula comparison.
+  if ('error' in lead) return { salesforce: null, notes: [], differences: [] }
 
-  const rule = parseTripointRevenueFormula(formula)
+  const rule = parseTripointRevenueFormula(lead.formula)
   if (rule === null) {
+    if (leadAlreadyReported) return { salesforce: null, notes: [], differences: [] }
     return {
       salesforce: null,
       notes: [],
       differences: [
         {
           code: 'formula-unrecognised',
-          message: `The Salesforce formula has been rewritten in a form the check can't read. It now says: ${formula.replace(/\s+/g, ' ').slice(0, 300)}`,
+          object: lead.object,
+          partner: 'Tripoint',
+          message: `The Salesforce Lead formula prices Tripoint in a form the check can't compare with Bidspoke. It now says: ${lead.formula.replace(/\s+/g, ' ').slice(0, 300)}`,
         },
       ],
     }
@@ -263,6 +329,22 @@ async function compareMainFlow(
 
   const compared = tripointPricingDifferences(rule, cfg as Record<string, unknown>)
   return { salesforce: rule, differences: compared.differences, notes: compared.notes.map(mf) }
+}
+
+/**
+ * Each formula's text, or why it could not be read. One read per field, and
+ * a failure stays with its own field, so one 403 cannot hide the other two.
+ */
+async function readAllFormulas(readFormula: (field: RevenueFormulaField) => Promise<string>): Promise<FormulaRead[]> {
+  return Promise.all(
+    REVENUE_FORMULA_FIELDS.map(async (field): Promise<FormulaRead> => {
+      try {
+        return { object: field.label, formula: await readFormula(field) }
+      } catch (err) {
+        return { object: field.label, error: formatErr(err) }
+      }
+    }),
+  )
 }
 
 /** The Engine half: the buyer profile tiers, reported. A failed read is a difference, never an empty note. */
@@ -287,17 +369,28 @@ async function reportEngine(
 async function runCheck(
   env: Env,
   supabase: SupabaseClient,
-  readFormula: () => Promise<string>,
+  readFormula: (field: RevenueFormulaField) => Promise<string>,
   readEngineTiers: () => Promise<PricingTier[] | null>,
   readFormulaChange: () => Promise<FormulaChange | null>,
 ): Promise<TripointPricingCheckResult> {
-  const mainFlow = await compareMainFlow(supabase, readFormula)
+  const reads = await readAllFormulas(readFormula)
+  const formulas = compareRevenueFormulas(reads)
+  const lead = reads[0]
+  const leadAlreadyReported = formulas.differences.some(
+    (d) =>
+      d.object === lead.object &&
+      (d.code === 'formula-unreadable' ||
+        d.code === 'formula-unrecognised' ||
+        (d.code === 'branch-unrecognised' && d.partner === 'Tripoint')),
+  )
+  const mainFlow = await compareMainFlow(supabase, lead, leadAlreadyReported)
   const engine = await reportEngine(readEngineTiers)
   return finish(supabase, env, {
     salesforce: mainFlow.salesforce,
     engine_tiers: engine.engine_tiers,
-    differences: [...mainFlow.differences, ...engine.differences],
-    notes: [...mainFlow.notes, ...engine.notes],
+    formulas_read: reads.filter((r) => 'formula' in r).map((r) => r.object),
+    differences: [...mainFlow.differences, ...formulas.differences, ...engine.differences],
+    notes: [...mainFlow.notes, ...formulas.notes, ...engine.notes],
   }, readFormulaChange)
 }
 
@@ -318,19 +411,22 @@ export function engineTiersReader(env: Env, supabase: SupabaseClient): () => Pro
 }
 
 /**
- * The real reader: the Tooling API's `CustomField.Metadata.formula`, through the
- * one credential resolver (#1174) and the cached per-organization token.
+ * The real reader: the Tooling API's `CustomField.Metadata.formula` for one
+ * field, through the one credential resolver (#1174) and the cached
+ * per-organization token. All three revenue formulas are read through this.
  *
  * Tooling, not the data API, because the data API can return the field's VALUE
  * on a record but never the rule that produced it. A non-2xx answer THROWS with
  * the status and body, so a connected app without Tooling access shows up as
  * `formula-unreadable` naming the 403, rather than as agreement.
  */
-export function salesforceFormulaReader(env: Env, supabase: SupabaseClient): () => Promise<string> {
+export function salesforceFormulaReader(
+  env: Env,
+  supabase: SupabaseClient,
+  field: RevenueFormulaField = LEAD_REVENUE_FIELD,
+): () => Promise<string> {
   return async () => {
-    const soql =
-      `SELECT Metadata FROM CustomField WHERE TableEnumOrId='${LEAD_REVENUE_FIELD.object}' ` +
-      `AND DeveloperName='${LEAD_REVENUE_FIELD.developerName}'`
+    const soql = `SELECT Metadata FROM CustomField WHERE ${fieldFilter(field)}`
     const body = await salesforceGet<{ records?: Array<{ Metadata?: { formula?: unknown } }> }>(
       env,
       supabase,
@@ -340,7 +436,7 @@ export function salesforceFormulaReader(env: Env, supabase: SupabaseClient): () 
     const formula = body.records?.[0]?.Metadata?.formula
     if (typeof formula !== 'string' || !formula.trim()) {
       throw new Error(
-        `Tooling returned ${body.records?.length ?? 0} record(s) for ${LEAD_REVENUE_FIELD.object}.${LEAD_REVENUE_FIELD.developerName} and no formula text`,
+        `Tooling returned ${body.records?.length ?? 0} record(s) for ${field.object}.${field.developerName} and no formula text`,
       )
     }
     return formula
@@ -356,9 +452,7 @@ export function salesforceFormulaReader(env: Env, supabase: SupabaseClient): () 
  */
 export function formulaChangeReader(env: Env, supabase: SupabaseClient): () => Promise<FormulaChange | null> {
   return async () => {
-    const soql =
-      `SELECT LastModifiedDate, LastModifiedById FROM CustomField WHERE TableEnumOrId='${LEAD_REVENUE_FIELD.object}' ` +
-      `AND DeveloperName='${LEAD_REVENUE_FIELD.developerName}'`
+    const soql = `SELECT LastModifiedDate, LastModifiedById FROM CustomField WHERE ${fieldFilter(LEAD_REVENUE_FIELD)}`
     const body = await salesforceGet<{ records?: Array<{ LastModifiedDate?: unknown; LastModifiedById?: unknown }> }>(
       env,
       supabase,

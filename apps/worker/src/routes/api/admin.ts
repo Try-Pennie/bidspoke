@@ -696,6 +696,7 @@ admin.post('/tripoint-pricing-check', async (c) => {
       ok,
       salesforce: result.salesforce,
       engine_tiers: result.engine_tiers,
+      formulas_read: result.formulas_read,
       differences: result.differences,
       notes: result.notes,
     },

@@ -17,6 +17,11 @@ import { checkTripointPricing, TRIPOINT_PRICING_JOB, type TripointPricingDeps } 
 import { notifyExportFailure } from '../export-alerts'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import {
+  LEAD_FORMULA_2026_10_02,
+  PROSPECT_FORMULA_2026_10_02,
+  SUBMISSION_FORMULA_2026_10_02,
+} from './fixtures/salesforce-revenue-formulas'
 
 const env = { IDEMPOTENCY: undefined } as unknown as Env
 
@@ -175,8 +180,15 @@ describe('checkTripointPricing', () => {
       },
     }))
 
-    expect(r.differences.map((d) => d.code)).toEqual(['formula-unreadable'])
-    expect(alerted()).toEqual(["The check couldn't read the Salesforce formula: Tooling API answered 403 INSUFFICIENT_ACCESS"])
+    // One finding per formula, and none repeated by the Main Flow comparison,
+    // which had no Lead formula to compare.
+    expect(r.differences.map((d) => [d.code, d.object])).toEqual([
+      ['formula-unreadable', 'Lead'],
+      ['formula-unreadable', 'Submission'],
+      ['formula-unreadable', 'Prospect'],
+    ])
+    expect(r.salesforce).toBeNull()
+    expect(alerted()[0]).toBe("The check couldn't read the Salesforce Lead formula: Tooling API answered 403 INSUFFICIENT_ACCESS")
   })
 
   it('treats a formula of an unfamiliar shape as its own finding, quoting what it saw', async () => {
@@ -244,5 +256,94 @@ describe('checkTripointPricing', () => {
     expect(r.engine_tiers).toBeNull()
     expect(r.notes.map((n) => n.code)).not.toContain('engine-tiers-none')
     expect(alerted()).toEqual(["The check couldn't read Tripoint's Engine rates: buyer profiles read failed for org x: timeout"])
+  })
+
+  describe('the three Salesforce formulas against each other (#1419)', () => {
+    /** Today's real formula for each field, with any replaced as a test says. */
+    function formulas(over: Partial<Record<'Lead' | 'Submission' | 'Prospect', string | Error>> = {}) {
+      const text: Record<'Lead' | 'Submission' | 'Prospect', string | Error> = { Lead: LEAD_FORMULA_2026_10_02, Submission: SUBMISSION_FORMULA_2026_10_02, Prospect: PROSPECT_FORMULA_2026_10_02, ...over }
+      const asked: string[] = []
+      const readFormula: TripointPricingDeps['readFormula'] = async (field) => {
+        asked.push(`${field.object}.${field.developerName}`)
+        const t = text[field.label]
+        if (t instanceof Error) throw t
+        return t
+      }
+      return { readFormula, asked }
+    }
+    /** The Lead formula as it stood on the morning of 2026-09-30. */
+    const LEAD_WITH_0012 = LEAD_FORMULA_2026_10_02.replace('ExternalDebtAmount__c) * 0.0013', 'ExternalDebtAmount__c) * 0.0012')
+    const PROSPECT_WITH_0012 = PROSPECT_FORMULA_2026_10_02.replace('EngineDebt__c * 0.0013', 'EngineDebt__c * 0.0012')
+    const BIDSPOKE_TODAY = {
+      pricing_mode: 'tiered_multiplier',
+      source_field: 'context.finalDebt',
+      tiers: [{ above: 12499, multiplier: 0.0013 }],
+      default_multiplier: 0.0009,
+      min_source_value: 10000,
+    }
+
+    it('reads all three formulas, each once, and finds nothing to alert in them as they stand today', async () => {
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+      const f = formulas()
+
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: f.readFormula }))
+
+      expect(f.asked).toEqual(['Lead.ExternalRevenue', 'Submission__c.ExternalRevenue', 'Prospect__c.ExternalExchangeRevenue'])
+      expect(r.differences).toEqual([])
+      expect(alerted()).toEqual([])
+      // Engine and AmOne differ between the formulas, but not as rates: noted, never paged.
+      expect(r.notes.filter((n) => n.code === 'formulas-differ-not-rate').map((n) => n.partner)).toEqual(['Engine', 'AmOne'])
+    })
+
+    it('alerts the Lead formula pricing Tripoint at 0.0012 beside the Bidspoke comparison, as on 2026-09-30', async () => {
+      const lead = LEAD_WITH_0012
+      expect(lead).not.toBe(LEAD_FORMULA_2026_10_02)
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: formulas({ Lead: lead }).readFormula }))
+
+      expect(r.differences.map((d) => d.code)).toEqual(['high-multiplier-disagrees', 'formulas-disagree'])
+      expect(alerted()).toEqual([
+        'For Main Flow leads with $12,500 or more of debt, Bidspoke pays Tripoint 0.13% of the debt, but Salesforce books 0.12%.',
+        'The Lead formula pays Tripoint 0.09% of debt from $10,000 to $12,499 and 0.12% from $12,500 up. ' +
+          'The Submission and Prospect formulas pay Tripoint 0.09% of debt from $10,000 to $12,499 and 0.13% from $12,500 up.',
+      ])
+      expect(sentRemedy()?.title).toBe("Partner rates don't match")
+      expect(sentRemedy()?.fixHint).toMatch(/Partners > Tripoint/)
+      expect(sentRemedy()?.fixHint).toMatch(/other formulas in Salesforce/)
+    })
+
+    it('titles a disagreement between the formulas alone as that, with its own fix', async () => {
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: formulas({ Prospect: PROSPECT_WITH_0012 }).readFormula }))
+
+      expect(r.differences.map((d) => [d.code, d.partner])).toEqual([['formulas-disagree', 'Tripoint']])
+      expect(sentRemedy()?.title).toBe("Salesforce formulas don't agree on partner rates")
+      expect(sentRemedy()?.fixHint).toBe('Decide which rate is right, then change the other formulas in Salesforce to match.')
+      expect(sentRemedy()?.context).toBeUndefined()
+    })
+
+    it('treats one formula it cannot read as its own finding and still compares the rest (L98)', async () => {
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+      const f = formulas({ Lead: LEAD_WITH_0012, Submission: new Error('Salesforce answered 403 INSUFFICIENT_ACCESS') })
+
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: f.readFormula }))
+
+      expect(r.differences.map((d) => d.code)).toEqual(['high-multiplier-disagrees', 'formula-unreadable', 'formulas-disagree'])
+      expect(alerted()).toContain("The check couldn't read the Salesforce Submission formula: Salesforce answered 403 INSUFFICIENT_ACCESS")
+      expect(sentRemedy()?.title).toBe("Tripoint rate check couldn't run")
+    })
+
+    it('reports a Lead formula it cannot parse once, never again as the Main Flow comparison failing', async () => {
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+      const garbled = 'CASE(ExternalPartnerName__c, "Tripoint", ExternalDebtAmount__c * 0.0013, 0)'
+
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: formulas({ Lead: garbled }).readFormula }))
+
+      expect(r.salesforce).toBeNull()
+      expect(r.differences.map((d) => [d.code, d.object])).toEqual([['formula-unrecognised', 'Lead']])
+      expect(alerted()[0]).toContain(garbled)
+    })
   })
 })

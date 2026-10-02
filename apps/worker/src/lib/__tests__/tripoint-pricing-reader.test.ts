@@ -22,7 +22,7 @@ vi.mock('../../engine/nodes/salesforce', () => ({
   getSalesforceToken: vi.fn().mockResolvedValue('tok-123'),
 }))
 
-import { salesforceFormulaReader, formulaChangeReader, LEAD_REVENUE_FIELD } from '../tripoint-pricing-check'
+import { salesforceFormulaReader, formulaChangeReader, LEAD_REVENUE_FIELD, REVENUE_FORMULA_FIELDS } from '../tripoint-pricing-check'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -54,9 +54,26 @@ describe('salesforceFormulaReader', () => {
     expect(url.origin).toBe('https://example.my.salesforce.com')
     expect(url.pathname).toMatch(/\/services\/data\/v\d+\.\d+\/tooling\/query$/)
     const soql = url.searchParams.get('q') ?? ''
-    expect(soql).toContain(`TableEnumOrId='${LEAD_REVENUE_FIELD.object}'`)
-    expect(soql).toContain(`DeveloperName='${LEAD_REVENUE_FIELD.developerName}'`)
+    expect(soql).toBe(
+      `SELECT Metadata FROM CustomField WHERE EntityDefinition.QualifiedApiName='Lead' AND DeveloperName='ExternalRevenue'`,
+    )
     expect(calls[0].headers.Authorization).toBe('Bearer tok-123')
+  })
+
+  it('reads the Submission and Prospect fields by object API name, as the org answered on 2026-10-02 (#1419)', async () => {
+    // TableEnumOrId holds a custom object's id, not its name, so
+    // TableEnumOrId='Submission__c' answers zero records. Filtering on the
+    // entity's API name is the one query shape that reads all three fields.
+    const calls = fetchAnswering(200, { records: [{ Metadata: { formula: 'IF(1, 2, 3)' } }] })
+
+    for (const field of REVENUE_FORMULA_FIELDS) await salesforceFormulaReader(env, supabase, field)()
+
+    expect(calls.map((c) => new URL(c.url).searchParams.get('q'))).toEqual([
+      `SELECT Metadata FROM CustomField WHERE EntityDefinition.QualifiedApiName='Lead' AND DeveloperName='ExternalRevenue'`,
+      `SELECT Metadata FROM CustomField WHERE EntityDefinition.QualifiedApiName='Submission__c' AND DeveloperName='ExternalRevenue'`,
+      `SELECT Metadata FROM CustomField WHERE EntityDefinition.QualifiedApiName='Prospect__c' AND DeveloperName='ExternalExchangeRevenue'`,
+    ])
+    expect(LEAD_REVENUE_FIELD).toBe(REVENUE_FORMULA_FIELDS[0])
   })
 
   it('throws with the status and body on a non-2xx answer, so a 403 reads as unreadable rather than as agreement', async () => {
