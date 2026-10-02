@@ -49,7 +49,7 @@ export const SHADOW_EXEMPT_NODES = [
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).
 // Each is a question asked of engine/run-reality.ts, the only reader of the
 // shadow mode since #1708. Exported so the node coverage guard uses this copy.
-export const SHADOW_GUARD_RE = /\bshadowOf\(|\bnodeReportsOnly\(|\brunRealityOf\(/
+export const SHADOW_GUARD_RE = /\bshadowOf\(|\bnodeReportsOnly\(/
 
 // Outbound side-effect markers. Reads (.select/.get) are intentionally excluded —
 // a shadow dry-run may read freely; only outbound writes/calls must be skipped.
@@ -85,7 +85,7 @@ export function findShadowGuardViolations(files: NodeSource[]): ShadowGuardViola
           reason:
             `on the pure/read-only allowlist but performs an outbound side effect ` +
             `(${outbound.join(', ')}). Remove it from SHADOW_EXEMPT_NODES and add a ` +
-            `shadow check (shadowOf, nodeReportsOnly or runRealityOf).`,
+            `shadow check (shadowOf or nodeReportsOnly).`,
         })
       }
       continue

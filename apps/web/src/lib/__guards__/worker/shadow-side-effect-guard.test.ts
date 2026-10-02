@@ -42,6 +42,21 @@ describe('findShadowGuardViolations (classifier)', () => {
     expect(v).toEqual([])
   })
 
+  // Asking run-reality for the test flag or LOCAL_DEV is not a shadow check: it
+  // stubs nothing, so a node whose only run-reality call is runRealityOf must
+  // still be flagged when it sends (review of #1729).
+  it('flags a node that fetches and only asks runRealityOf, which stubs nothing', () => {
+    const v = findShadowGuardViolations([
+      {
+        name: 'pager',
+        content:
+          'import { runRealityOf } from "../run-reality"\n' +
+          'export async function run(ctx, env) { const r = runRealityOf(ctx, env); if (!r.isTest) page(); await fetch("https://x") }',
+      },
+    ])
+    expect(v.map((x) => x.node)).toEqual(['pager'])
+  })
+
   it('passes a shadow-aware writing node even if it is not on the allowlist', () => {
     const v = findShadowGuardViolations([
       {

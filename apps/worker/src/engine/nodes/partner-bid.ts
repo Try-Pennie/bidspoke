@@ -314,7 +314,7 @@ export async function executePartnerBidNode(
   // Shadow stand-in (#232): resolve a deterministic bid WITHOUT the outbound
   // submission, cap increment, dedup call, circuit-breaker writes, or bid-attempt
   // write — so downstream Bid Group / bid-evaluation / routing can be rehearsed.
-  // Checked before the plain dry-run skip (stand_in also satisfies isShadowDryRun).
+  // Checked before the plain dry-run skip (stand_in also stubs outbound, so outboundStubbed is true for it too).
   if (shadowOf(ctx).standIn) {
     return standInBid(p, ctx, env, supabase, signal, buildInput)
   }
