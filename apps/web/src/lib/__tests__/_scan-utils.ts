@@ -397,13 +397,18 @@ export function workflowJobBody(yaml: string, jobId: string): string {
 /**
  * The steps of one job body (as `workflowJobBody` returns it), in file order,
  * each with its `name:` (null for an unnamed step such as a bare `uses:`) and
- * its own lines. A step starts at a `- ` six spaces deep and runs to the next.
+ * its own lines. A step starts at a `- ` six spaces deep and runs to the next,
+ * less the comment block written above that next step.
  */
 export function workflowSteps(jobBody: string): Array<{ name: string | null; body: string }> {
   const lines = jobBody.split('\n')
   const starts = lines.flatMap((line, i) => (/^ {6}- /.test(line) ? [i] : []))
   return starts.map((start, n) => {
-    const body = lines.slice(start, starts[n + 1] ?? lines.length).join('\n')
+    // Trailing blank lines and a comment block at step depth introduce the NEXT
+    // step, so they are trimmed off, as workflowJobBody does for jobs (L103).
+    let end = starts[n + 1] ?? lines.length
+    while (end > start + 1 && (lines[end - 1].trim() === '' || /^ {6}#/.test(lines[end - 1]))) end -= 1
+    const body = lines.slice(start, end).join('\n')
     const name = /^ {6}(?:- | {2})name:\s*(.+?)\s*$/m.exec(body)?.[1] ?? null
     return { name, body }
   })

@@ -27,6 +27,9 @@ const GUARDS = [
   { name: 'Pull request closes the issue it names', script: 'issue-closure-decision.sh', events: 'pull_request' },
 ] as const
 
+/** Blank YAML comment lines so prose about a command cannot stand in for it (L103). */
+const code = (body: string): string => body.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+
 const stepIf = (body: string): string => /^ {8}if:\s*(.+)$/m.exec(body)?.[1] ?? ''
 
 describe('the short guards run as steps of Security scans', () => {
@@ -42,7 +45,7 @@ describe('the short guards run as steps of Security scans', () => {
 
   it('has one named step per guard that calls its decision script and fails the job', () => {
     for (const guard of GUARDS) {
-      const step = workflowStepBody(security, guard.name)
+      const step = code(workflowStepBody(security, guard.name))
       expect(step).toContain(guard.script)
       expect(step).toContain('::error::')
       expect(step).toMatch(/exit 1/)
@@ -74,5 +77,23 @@ describe('the short guards run as steps of Security scans', () => {
   it('grants the token the pull request read the direct push guard needs', () => {
     expect(security).toMatch(/^ {4}permissions:\s*\n(?: {6}.*\n)*? {6}pull-requests: read/m)
     expect(security).toMatch(/^ {4}permissions:\s*\n(?: {6}.*\n)*? {6}contents: read/m)
+  })
+})
+
+describe('workflowSteps slices one step, not the comment introducing the next', () => {
+  it('leaves the next step\'s comment block out of the previous step', () => {
+    const job = [
+      '  example:',
+      '    steps:',
+      '      - name: First',
+      '        run: echo one',
+      '',
+      '      # The next step calls decision.sh and exits 1 on ::error::.',
+      '      - name: Second',
+      '        run: echo two',
+    ].join('\n')
+    const first = workflowStepBody(job, 'First')
+    expect(first).not.toContain('decision.sh')
+    expect(first.trimEnd().endsWith('run: echo one')).toBe(true)
   })
 })
