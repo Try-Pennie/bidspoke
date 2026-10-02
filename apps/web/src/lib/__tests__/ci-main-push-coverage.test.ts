@@ -118,12 +118,13 @@ describe('what ci.yml skips on main, deploy.yml still runs on main (#972)', () =
   })
 
   it('keeps the jobs unique to main running on main', () => {
-    // The direct-push guard, the security scan and the db-types check exist to
-    // watch main itself. Restricting one of them to pull requests would remove
-    // the only place it ever runs, which is the opposite mistake and would look
-    // identical in the diff.
+    // The security scans, and the direct push and db-types steps folded into
+    // that job, exist to watch main itself. Restricting the job to pull requests
+    // would remove the only place they ever run, which is the opposite mistake
+    // and would look identical in the diff. The steps' own event conditions are
+    // asserted in ci-short-guards-folded.test.ts.
     const yaml = readWorkflow(CI)
-    for (const id of ['direct-push-guard', 'security', 'db-types-fresh']) {
+    for (const id of ['security']) {
       const body = workflowJobBody(yaml, id)
       const jobIf = body.split('\n').find((l) => /^ {4}if:/.test(l)) ?? ''
       expect(

@@ -394,6 +394,37 @@ export function workflowJobBody(yaml: string, jobId: string): string {
   return lines.slice(start, end).join('\n')
 }
 
+/**
+ * The steps of one job body (as `workflowJobBody` returns it), in file order,
+ * each with its `name:` (null for an unnamed step such as a bare `uses:`) and
+ * its own lines. A step starts at a `- ` six spaces deep and runs to the next,
+ * less the comment block written above that next step.
+ */
+export function workflowSteps(jobBody: string): Array<{ name: string | null; body: string }> {
+  const lines = jobBody.split('\n')
+  const starts = lines.flatMap((line, i) => (/^ {6}- /.test(line) ? [i] : []))
+  return starts.map((start, n) => {
+    // Trailing blank lines and a comment block at step depth introduce the NEXT
+    // step, so they are trimmed off, as workflowJobBody does for jobs (L103).
+    let end = starts[n + 1] ?? lines.length
+    while (end > start + 1 && (lines[end - 1].trim() === '' || /^ {6}#/.test(lines[end - 1]))) end -= 1
+    const body = lines.slice(start, end).join('\n')
+    const name = /^ {6}(?:- | {2})name:\s*(.+?)\s*$/m.exec(body)?.[1] ?? null
+    return { name, body }
+  })
+}
+
+/** The body of the one step in `jobBody` whose `name:` is `stepName`. */
+export function workflowStepBody(jobBody: string, stepName: string): string {
+  const steps = workflowSteps(jobBody)
+  const matches = steps.filter((s) => s.name === stepName)
+  if (matches.length !== 1) {
+    const found = steps.map((s) => s.name ?? '(unnamed)').join(', ')
+    throw new Error(`expected exactly one step named '${stepName}', found ${matches.length}. Steps: ${found}`)
+  }
+  return matches[0].body
+}
+
 /** Read a workflow file from the repo and return its text. */
 export function readWorkflow(relativePath: string): string {
   const file = path.join(REPO_ROOT, relativePath)

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
+import { REPO_ROOT, readWorkflow, workflowJobBody, workflowStepBody } from './_scan-utils'
 
 /**
  * A pull request must actually CLOSE the issue its title names.
@@ -254,23 +254,25 @@ describe('issue-closure-decision: the guard is wired into CI', () => {
   // A guard nothing calls is the classic silent failure: it passes its own tests
   // forever while checking nothing at all.
   const ci = readWorkflow('.github/workflows/ci.yml')
+  // A step of the Security scans job since the short guards were folded in.
+  const guardStep = () => workflowStepBody(workflowJobBody(ci, 'security'), 'Pull request closes the issue it names')
 
-  it('has a job that runs the decision script', () => {
-    const body = workflowJobBody(ci, 'issue-closure-guard')
+  it('has a step that runs the decision script', () => {
+    const body = guardStep()
     expect(body).toContain('.github/scripts/issue-closure-decision.sh')
   })
 
   it('runs on pull requests, which is the only moment the remedy is cheap', () => {
-    const body = workflowJobBody(ci, 'issue-closure-guard')
+    const body = guardStep()
     expect(body).toMatch(/pull_request/)
   })
 
   it('fails the build when the decision is missing, rather than only logging it', () => {
-    const body = workflowJobBody(ci, 'issue-closure-guard')
+    const body = guardStep()
     expect(body).toContain('exit 1')
   })
 
   it('carries a timeout, because a hang is worse than a failure', () => {
-    expect(workflowJobBody(ci, 'issue-closure-guard')).toMatch(/timeout-minutes:\s*\d+/)
+    expect(workflowJobBody(ci, 'security')).toMatch(/timeout-minutes:\s*\d+/)
   })
 })

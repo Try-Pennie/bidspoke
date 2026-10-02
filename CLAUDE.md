@@ -128,8 +128,8 @@ branch protection is unavailable on this repo (both `/rulesets` and
 repository public"), and Dan decided on 2026-08-17 to keep detection rather than
 pay for prevention. So nothing stops a direct push except this line.
 
-What exists instead is **detection after the fact**. The `Main has no unreviewed
-direct push` job in `ci.yml` (#760) runs on every push to main and reports a
+What exists instead is **detection after the fact**. The `Main has no unreviewed direct push` step of the
+Security scans job in `ci.yml` (#760) runs on every push to main and reports a
 commit that arrived without a reviewed PR. It is deliberately fail-safe towards
 staying quiet, because it makes an accusation rather than withholding an action,
 and it confirms an empty commit-to-PR association against the PR record before
