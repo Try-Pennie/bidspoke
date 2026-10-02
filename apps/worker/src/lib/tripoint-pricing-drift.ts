@@ -31,6 +31,7 @@
  * Both rules are labelled so a line from one can never be read as the other.
  */
 import type { PricingTier } from '@bidspoke/buyer-profile'
+import { readRevenueFormula } from './revenue-formula'
 
 export interface TripointRule {
   /** Debt below this books zero revenue. */
@@ -45,6 +46,10 @@ export interface PricingDifference {
   /** Stable name, so alerting and tests never match on prose. */
   code: string
   message: string
+  /** The Salesforce formula a finding is about, when it is about one (#1419). */
+  object?: string
+  /** The partner a finding is about, when it is about one (#1419). */
+  partner?: string
 }
 
 export interface PricingComparison {
@@ -54,62 +59,23 @@ export interface PricingComparison {
   notes: PricingDifference[]
 }
 
-/** The partner field is spelled two ways across objects (Lead against Submission). */
-const PARTNER_FIELD = '(?:ExternalPartnerName__c|External_Partner_Name__c)'
-/**
- * The debt a band is priced on, in each spelling the org has used: the old
- * ExternalDebtAmount__c alone, EngineDebt__c alone (Prospect, 2026-09-29), and
- * EngineDebt__c when present else ExternalDebtAmount__c (Lead and Submission,
- * 2026-09-29, #1640). The first use is captured and every later use must repeat
- * it, so a branch pricing its bands on two different figures is refused.
- */
-const DEBT_FIRST =
-  '(?<debt>ExternalDebtAmount__c|EngineDebt__c|' +
-  'IF\\(NULLVALUE\\(EngineDebt__c, 0\\) > 0, EngineDebt__c, ExternalDebtAmount__c\\))'
-const DEBT = '\\k<debt>'
-const NUM = '(\\d+(?:\\.\\d+)?)'
-
-/**
- * The Tripoint branch, whitespace normalised:
- *   <partner> = "Tripoint", IF(AND(<debt> >= FLOOR, <debt> <= UPTO), <debt> * LOW,
- *     IF(<debt> >= FROM, <debt> * HIGH, 0))
- * The low band's edge may also be written `< UPTO + 1` (#1640). Anchored on the
- * partner comparison so the Engine, Liberty1 and AmOne branches around it cannot
- * answer for it (L135).
- */
-const TRIPOINT_BRANCH = new RegExp(
-  `${PARTNER_FIELD} = "Tripoint", IF\\(AND\\(${DEBT_FIRST} >= ${NUM}, ${DEBT} (<=|<) ${NUM}\\), ` +
-    `${DEBT} \\* ${NUM}, IF\\(${DEBT} >= ${NUM}, ${DEBT} \\* ${NUM}, 0\\)\\)`,
-)
-
-/** Collapse every run of whitespace to one space and remove spaces inside brackets. */
-function normalise(formula: string): string {
-  return formula
-    .replace(/\s+/g, ' ')
-    .replace(/\(\s+/g, '(')
-    .replace(/\s+\)/g, ')')
-    .trim()
-}
-
 /**
  * The rule the formula encodes for Tripoint, or null when the text does not hold
- * the one shape this reads. Null is a finding for the caller, never agreement.
+ * the one shape this reads: two paid bands, a closed one and an open one above
+ * it, with nothing paid outside them. Read through the one formula parser
+ * (`revenue-formula.ts`), so the cross formula comparison and this comparison
+ * can never read the same text two ways. Null is a finding for the caller,
+ * never agreement.
  */
 export function parseTripointRevenueFormula(formula: string): TripointRule | null {
-  const m = TRIPOINT_BRANCH.exec(normalise(formula))
-  if (!m) return null
-  const [, , floorText, edgeOp, edgeText, lowText, fromText, highText] = m
-  const [floor, edge, low, from, high] = [floorText, edgeText, lowText, fromText, highText].map(Number)
-  if ([floor, edge, low, from, high].some((n) => !Number.isFinite(n))) return null
-  // Debts are whole dollars, so `< 12500` is the same band as `<= 12499`; the
-  // comparison below reasons in the inclusive form. A strict edge with cents has
-  // no such form, so it is an unfamiliar shape rather than a guess.
-  if (edgeOp === '<' && !Number.isInteger(edge)) return null
-  const upTo = edgeOp === '<' ? edge - 1 : edge
+  const rules = readRevenueFormula(formula)?.rules.get('Tripoint')
+  if (!rules || rules.length !== 2) return null
+  const [low, high] = rules
+  if (low.from === null || low.to === null || high.from === null || high.to !== null) return null
   return {
-    floor,
-    lowBand: { upTo, multiplier: low },
-    highBand: { from, multiplier: high },
+    floor: low.from,
+    lowBand: { upTo: low.to, multiplier: low.rate },
+    highBand: { from: high.from, multiplier: high.rate },
   }
 }
 
