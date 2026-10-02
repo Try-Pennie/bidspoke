@@ -26,7 +26,12 @@ import {
   ARCHIVE_KILLED_REMEDY,
 } from '../../archive/alerts'
 import { ARCHIVE_BACKLOG_REMEDY } from '../archive-backlog-run'
-import { ARCHIVE_GATE_REMEDY, ARCHIVE_GATE_UNREADABLE_REMEDY } from '../archive-gate'
+import {
+  ARCHIVE_GATE_AT_RISK_REMEDY,
+  ARCHIVE_GATE_COST_REMEDY,
+  ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
+  ARCHIVE_GATE_UNREADABLE_REMEDY,
+} from '../archive-gate'
 import { ARCHIVE_IDENTITY_REMEDY } from '../archive-identity-check'
 import { ARCHIVE_INDEX_REMEDY } from '../archive-index-check'
 import { ARCHIVE_SETTINGS_REMEDY } from '../archive-settings-check'
@@ -58,7 +63,6 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive lag', ARCHIVE_LAG_REMEDY],
   ['archive killed', ARCHIVE_KILLED_REMEDY],
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
-  ['archive gate', ARCHIVE_GATE_REMEDY],
   ['archive gate unreadable', ARCHIVE_GATE_UNREADABLE_REMEDY],
   ['archive read index', ARCHIVE_INDEX_REMEDY],
   ['archive identities', ARCHIVE_IDENTITY_REMEDY],
@@ -103,6 +107,9 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['lead status backlog', LEAD_STATUS_BACKLOG_REMEDY],
   ['lead status broken', LEAD_STATUS_BROKEN_REMEDY],
   ['lead status unchecked', LEAD_STATUS_UNCHECKED_REMEDY],
+  ['archive gate at risk', ARCHIVE_GATE_AT_RISK_REMEDY],
+  ['archive gate not cleaned up', ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY],
+  ['archive gate cost', ARCHIVE_GATE_COST_REMEDY],
 ]
 
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']

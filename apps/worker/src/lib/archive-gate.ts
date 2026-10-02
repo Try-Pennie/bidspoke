@@ -18,7 +18,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy, type TitledRemedy } from './export-alerts'
 import { executeStatement } from './snowflake'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
 import { ARCHIVE_STREAM, SUBREQUEST_BUDGET } from './execution-archive'
@@ -31,22 +31,131 @@ import { withJobRun } from './job-run-record'
 import type { Env } from '../index'
 
 /**
- * The gate's end of pass report: days whose Postgres rows are about to be
- * deleted without a verified copy. It RAN correctly, so it did not fail, and
- * what it lists are findings rather than errors (2026-09-10).
+ * What the gate's end of pass report says, as three separate alerts (#1720).
+ *
+ * One alert used to carry every finding under "found days at risk". On
+ * 2026-10-02 that headline sat above a day that was fully backed up and merely
+ * not cleaned up, with three fixes for three other situations, and read as data
+ * about to be lost. A backed up day the cleanup missed and a day with no backup
+ * due for deletion ask for different things on different clocks (L11, L112), so
+ * each is its own alert with its own title, and neither title can misdescribe the
+ * other's lines. The wording is Dan's (2026-10-02).
  */
-export const ARCHIVE_GATE_REMEDY: AlertRemedy = {
-  consequence:
-    'The deletion gate finished its pass and found days whose rows are due to be destroyed without a ' +
-    'verified backup. Nothing has been lost yet and nothing was exported anywhere. Each line names a ' +
-    'day and its deadline:',
+export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
+  title: 'Run history will be deleted without a backup',
+  fixHint: 'Fix: back each day up again with POST /api/admin/re-archive and its day before its deadline.',
+}
+
+export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
+  title: 'Old run history has not been cleaned up',
   fixHint:
-    'For a day that is unverified or never archived, re-archive it with POST /api/admin/re-archive and a ' +
-    'day of YYYY-MM-DD, before the next 03:30 UTC purge drops its partition. For a day past retention ' +
-    'that the purge did not take, the purge schedule itself is not enforcing retention, so check the ' +
-    'scheduled jobs in Postgres. Re-run the pass on demand with POST /api/admin/archive-gate.',
-  headlineVerb: 'found days at risk',
-  itemNoun: { one: 'finding', many: 'findings' },
+    'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+    'then find which scheduled job is blocking it at 11:30 PM ET.',
+}
+
+export const ARCHIVE_GATE_COST_REMEDY: TitledRemedy = {
+  title: 'The daily backup check is outgrowing its time slot',
+  fixHint: 'Fix: move the deletion gate to its own scheduled run before it slows the other 13:00 UTC jobs.',
+}
+
+/** The alert keys for the two findings that are not the at risk one, so each pages and clears on its own. */
+export const ARCHIVE_GATE_CLEANUP_JOB = 'execution-archive-gate-cleanup'
+export const ARCHIVE_GATE_COST_JOB = 'execution-archive-gate-cost'
+
+/**
+ * Nightly purges a backed up day may survive before anybody is told (Dan,
+ * 2026-10-02). One or two misses are a lock lost to a busy minute and the next
+ * night takes the day; a third says the cleanup is not fixing itself.
+ */
+export const CLEANUP_SILENT_NIGHTS = 2
+
+/** The minute of the nightly purge, `30 3 * * *` UTC. */
+const PURGE_MINUTE_OF_DAY_UTC = 3 * 60 + 30
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function utcMidnight(day: string): number {
+  return Date.parse(`${day}T00:00:00.000Z`)
+}
+
+/** The purge that first should take a day: 03:30 UTC on the morning after its last day inside retention. */
+export function nominalPurgeFor(day: string): Date {
+  return new Date(utcMidnight(day) + (RETENTION_DAYS + 1) * DAY_MS + PURGE_MINUTE_OF_DAY_UTC * 60 * 1000)
+}
+
+/** The first purge at or after `now`. */
+function nextPurgeAfter(now: Date): Date {
+  const atToday = utcMidnight(now.toISOString().slice(0, 10)) + PURGE_MINUTE_OF_DAY_UTC * 60 * 1000
+  return new Date(atToday >= now.getTime() ? atToday : atToday + DAY_MS)
+}
+
+/** Nightly purges that have run since a day was first due; 0 before it was. */
+export function purgesMissed(day: string, now: Date): number {
+  const due = nominalPurgeFor(day).getTime()
+  if (now.getTime() < due) return 0
+  return Math.floor((now.getTime() - due) / DAY_MS) + 1
+}
+
+/** When a day's database copy is next due to go: its own purge, or the next one if that has passed. */
+export function deletionDeadline(day: string, now: Date): Date {
+  const nominal = nominalPurgeFor(day)
+  return nominal.getTime() >= now.getTime() ? nominal : nextPurgeAfter(now)
+}
+
+const ET = 'America/New_York'
+
+/** "Sep 23". A day here is a UTC calendar day, so it is spoken as that day. */
+export function spokenDay(day: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
+    new Date(utcMidnight(day)),
+  )
+}
+
+/** "11:30 PM ET" for an instant, daylight saving included. */
+export function etClock(instant: Date): string {
+  return `${new Intl.DateTimeFormat('en-US', { timeZone: ET, hour: 'numeric', minute: '2-digit' }).format(instant)} ET`
+}
+
+function etCalendarDay(instant: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: ET, year: 'numeric', month: '2-digit', day: '2-digit' }).format(
+    instant,
+  )
+}
+
+/** "tonight" when the deadline falls on the reader's own ET evening, otherwise "on Saturday, Oct 4". */
+export function etWhen(deadline: Date, now: Date): string {
+  if (etCalendarDay(deadline) === etCalendarDay(now)) return 'tonight'
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: ET, weekday: 'long', month: 'short', day: 'numeric' })
+  return `on ${day.format(deadline)}`
+}
+
+/** The at risk fix line names the day and the deadline it has to beat. */
+function atRiskRemedy(atRisk: Array<{ day: string }>, now: Date): TitledRemedy {
+  if (atRisk.length === 0) return ARCHIVE_GATE_AT_RISK_REMEDY
+  const by = etClock(deletionDeadline(atRisk[0].day, now))
+  if (atRisk.length === 1) {
+    return {
+      ...ARCHIVE_GATE_AT_RISK_REMEDY,
+      fixHint: `Fix: back the day up again with POST /api/admin/re-archive and day ${atRisk[0].day} before ${by}.`,
+    }
+  }
+  return {
+    ...ARCHIVE_GATE_AT_RISK_REMEDY,
+    fixHint:
+      'Fix: back each day up again with POST /api/admin/re-archive and its day ' +
+      `(${atRisk.map((d) => d.day).join(', ')}), earliest first, before ${by}.`,
+  }
+}
+
+/**
+ * What the gate knows about a day older than anything it considers.
+ *
+ * `backedUp` is true only when the day's last measurement showed the archive
+ * holding every execution Postgres counted, with every hour recorded, no
+ * incomplete row and a passing probe. Anything less, including no record at all,
+ * is false: an absent or unreadable record is not evidence of a backup (L215).
+ */
+export interface BeneathStatus {
+  backedUp: boolean
 }
 
 /**
@@ -222,6 +331,44 @@ export interface GateDeps {
    * point: one method for this question rather than two that happen to coincide.
    */
   daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
+  /** Whether each day beneath the gate is backed up (#1720). Injected for the same reason as `daysHeld`. */
+  beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
+}
+
+/**
+ * Whether each day beneath the gate was backed up at its last measurement.
+ *
+ * THROWS on a failed read, so the caller treats every day as unconfirmed rather
+ * than as safe (L215).
+ */
+export async function readBeneathStatus(
+  supabase: SupabaseClient,
+  days: string[],
+): Promise<Map<string, BeneathStatus>> {
+  const { data, error } = await supabase
+    .from('execution_archive_days')
+    .select(
+      'archive_day, pg_execution_count, erased_execution_count, sf_execution_count, hours_recorded, incomplete_count, probe_ok',
+    )
+    .in('archive_day', days)
+  if (error) throw new Error(`reading the archive record for ${days.join(', ')} failed: ${formatErr(error)}`)
+  const status = new Map<string, BeneathStatus>(days.map((d) => [d, { backedUp: false }]))
+  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+    const pg = Number(row.pg_execution_count)
+    const erased = Number(row.erased_execution_count ?? 0)
+    const sf = Number(row.sf_execution_count)
+    const backedUp =
+      row.pg_execution_count !== null &&
+      row.sf_execution_count !== null &&
+      Number.isFinite(pg) &&
+      Number.isFinite(sf) &&
+      sf >= pg - erased &&
+      Number(row.hours_recorded) === 24 &&
+      Number(row.incomplete_count) === 0 &&
+      row.probe_ok === true
+    status.set(String(row.archive_day), { backedUp })
+  }
+  return status
 }
 
 /**
@@ -718,55 +865,73 @@ async function gatePass(
     (r) =>
       (r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null)) || alwaysReport(r),
   )
-  const errors = urgent.map((r) => {
-    const why = r.error !== null ? r.error : r.refusals.map((x) => x.message).join('; ')
-    // Three situations, three sentences, because each asks for something
-    // different (L11): a day with runway can wait; a day due
-    // tonight needs a re-archive or a resolved refusal today; a day PAST
-    // retention means last night's purge ran and left its rows behind, which is
-    // the schedule failing to enforce retention at all, and it stayed silent for
-    // two nights before #1196.
-    if (r.daysLeft < 0) {
-      return r.error !== null
-        ? `${r.archiveDay} could not be measured, and it is past retention with the purge not having taken it: ${why}`
-        : `${r.archiveDay} is past retention and the purge did not take it: ${why}`
-    }
-    if (r.daysLeft === 0) {
-      return r.error !== null
-        ? `${r.archiveDay} could not be measured and its partition is due at the next 03:30 UTC purge: ${why}`
-        : `${r.archiveDay} is not verified and its partition is due at the next 03:30 UTC purge: ${why}`
-    }
-    // Its own sentence, leading with what is at risk rather than with a gate
-    // having refused. The two read very differently to somebody deciding whether
-    // to act tonight, and this one is the only state where the archive's promise
-    // is actually being broken (L11).
-    if (alwaysReport(r)) {
-      return (
-        `${why} (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left before its partition is dropped, ` +
-        'after which it is not recoverable)'
-      )
-    }
-    return r.error !== null
-      ? `${r.archiveDay} could not be measured (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} before its partition is dropped): ${why}`
-      : `${r.archiveDay} is not verified with ${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left: ${why}`
-  })
+  // A day whose last reading cannot vouch for it either way, as opposed to one
+  // whose reading shows the archive short. The first is "not confirmed", the
+  // second "not fully backed up": a message may claim only what was measured (L11).
+  const UNCONFIRMED = ['never-measured', 'stale-measurement']
+  const atRisk: Array<{ day: string; confirmedShort: boolean }> = urgent.map((r) => ({
+    day: r.archiveDay,
+    confirmedShort: r.error === null && !r.refusals.every((x) => UNCONFIRMED.includes(x.code)),
+  }))
+
+  // Days older than anything the gate considers (#1025). The purge should have
+  // taken them; whether that matters depends on whether they were backed up.
+  const notCleanedUp: string[] = []
   if (beneath.length > 0) {
-    // Its own sentence, because the remedy differs from a refusal: these days are
-    // not unverified, they are outside the gate's view entirely, so no
-    // re-archive of a considered day can clear it (L11).
-    errors.push(
-      `Postgres still holds ${beneath.length} day${beneath.length === 1 ? '' : 's'} older than anything the gate ` +
-        `considers (${beneath.join(', ')}), so nothing vouches for ${beneath.length === 1 ? 'it' : 'them'} while ` +
-        `the purge deletes on schedule`,
-    )
+    let status: Map<string, BeneathStatus> | null = null
+    try {
+      used.postgres += 1
+      status = await (deps.beneathStatus ?? ((d: string[]) => readBeneathStatus(supabase, d)))(beneath)
+    } catch (err) {
+      console.error(`[archive-gate] could not read whether the days beneath the gate are backed up: ${formatErr(err)}`)
+    }
+    for (const day of beneath) {
+      const known = status?.get(day)
+      if (known === undefined) atRisk.push({ day, confirmedShort: false })
+      else if (!known.backedUp) atRisk.push({ day, confirmedShort: true })
+      // Backed up, so nothing is lost, and silent for the first nights: a lock
+      // lost to a busy minute is taken the next night (Dan, 2026-10-02).
+      else if (purgesMissed(day, now) > CLEANUP_SILENT_NIGHTS) notCleanedUp.push(day)
+    }
   }
+  atRisk.sort((a, b) => a.day.localeCompare(b.day))
+
+  const atRiskLines = atRisk.map(({ day, confirmedShort }) => {
+    const deadline = deletionDeadline(day, now)
+    return (
+      `${spokenDay(day)} is ${confirmedShort ? 'not fully backed up' : 'not confirmed as fully backed up'} in ` +
+      `Snowflake. The database copy is due to be deleted at ${etClock(deadline)} ${etWhen(deadline, now)}, and ` +
+      'after that it cannot be recovered.'
+    )
+  })
+  const cleanupLines = notCleanedUp.map(
+    (day) =>
+      `${spokenDay(day)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. The ` +
+      `nightly cleanup has been blocked for ${purgesMissed(day, now)} nights in a row, so it is not fixing itself.`,
+  )
+
   const cost = costNow(measured.length)
-  errors.push(...costWarnings(cost, measured.length))
-  await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY, ARCHIVE_GATE_REMEDY)
+  // Three alerts, each paging and clearing on its own, so a title can never sit
+  // above a line it misdescribes. An empty list clears its alert (#1720).
+  await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, atRiskRemedy(atRisk, now))
+  await notifyExportFailure(supabase, ARCHIVE_GATE_CLEANUP_JOB, cleanupLines, env.IDEMPOTENCY, {
+    ...ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
+    fixHint:
+      'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+      `then find which scheduled job is blocking it at ${etClock(nextPurgeAfter(now))}.`,
+  })
+  await notifyExportFailure(
+    supabase,
+    ARCHIVE_GATE_COST_JOB,
+    costWarnings(cost, measured.length),
+    env.IDEMPOTENCY,
+    ARCHIVE_GATE_COST_REMEDY,
+  )
 
   const detail =
     `measured ${measured.length} of ${candidates.length} candidate days ` +
-    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${urgent.length} urgent`
+    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${atRisk.length} at risk, ` +
+    `${notCleanedUp.length} not cleaned up`
   console.log(`[archive-gate] ${detail}`)
   // Printed as well as recorded, so a run being watched live shows its cost
   // without a query, and recorded as well as printed, because stdout reaches its
