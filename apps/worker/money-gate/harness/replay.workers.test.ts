@@ -263,7 +263,6 @@ interface RunResult {
   unstubbed: string[]
 }
 
-/** One execution of a workflow through the engine under test, with everything it did recorded. */
 /**
  * The engine's third argument, readable by both sides of the gate (#1707). The
  * head takes a runtime of { lane, config, run }; a merge base from before 0.C
@@ -281,6 +280,7 @@ function engineDbArgument(client: object): unknown {
   })
 }
 
+/** One execution of a workflow through the engine under test, with everything it did recorded. */
 async function runOnce(e: GateEnv, def: DefinitionFile, id: string, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape): Promise<RunResult> {
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
