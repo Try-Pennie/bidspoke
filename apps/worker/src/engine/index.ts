@@ -624,7 +624,9 @@ export async function executeWorkflow(
             !classifyOutageCause(finalErrorMessage)
           ) {
             executionCtx.waitUntil(
-              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase: runDb }).catch((e) =>
+              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase: runDb }, {
+                workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),
+              }).catch((e) =>
                 console.error('[durability] sf_writeback dead-letter failed:', e),
               ),
             )

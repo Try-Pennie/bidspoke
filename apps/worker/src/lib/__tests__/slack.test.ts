@@ -770,6 +770,66 @@ describe('sendBackupFailureAlert (#206)', () => {
   })
 })
 
+describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answer', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
+  const run = { workflow_id: 'wf-7', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-9', at: '2026-10-03T05:01:03Z' }
+  const send = (over: Partial<Parameters<typeof sendOutcomeDeadLetterAlert>[1]> = {}) =>
+    sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'sf_writeback',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'Salesforce API error (401): [{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]',
+        run,
+        ...over,
+      },
+      'https://app.test',
+    )
+  const textOf = () => {
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    return body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+  }
+
+  it('names the workflow, the time in ET, what Salesforce said, and links the run', async () => {
+    await send()
+    const text = textOf()
+    expect(text).toContain('Salesforce update lost')
+    expect(text).toContain('Engine Bidding Workflow answered a lead at 1:01 AM ET')
+    expect(text).toContain('1 lead was affected in the last 30 minutes.')
+    expect(text).toContain('Salesforce said: Session expired or invalid.')
+    expect(text).toContain('Fix: open the run below and enter the outcome in Salesforce by hand. Bidspoke will not retry it.')
+    expect(text).toContain('<https://app.test/workflows/wf-7?execution=ex-9|View the run')
+  })
+
+  it('drops the internal label, the raw JSON and the claim of retries', async () => {
+    await send()
+    const text = textOf()
+    expect(text).not.toContain('sf_writeback')
+    expect(text).not.toContain('errorCode')
+    expect(text).not.toContain('after all retries')
+  })
+
+  it('counts several leads and links the latest run', async () => {
+    await send({ window_loss_count: 3 })
+    const text = textOf()
+    expect(text).toContain('3 leads were affected in the last 30 minutes.')
+    expect(text).toContain('View the latest run')
+  })
+
+  it('passes a non-JSON Salesforce error on as written', async () => {
+    await send({ error_message: 'Salesforce API error (503): Service Unavailable' })
+    expect(textOf()).toContain('Salesforce said: Service Unavailable')
+  })
+})
+
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
