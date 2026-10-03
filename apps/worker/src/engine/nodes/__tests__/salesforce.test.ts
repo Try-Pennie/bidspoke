@@ -529,6 +529,74 @@ describe('executeSalesforceNode', () => {
     expect(vi.mocked(env.WORKFLOW_CACHE.delete as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('sf-token-org-1')
   })
 
+  // #1741: a session Salesforce revoked answers 401 INVALID_SESSION_ID. Evicting
+  // the token and failing lost every lead in flight while the next lead quietly
+  // succeeded on a fresh login (four on 2026-10-03), so the step retries once.
+  describe('401 retries once with a fresh token (#1741)', () => {
+    const SESSION_EXPIRED = '[{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]'
+
+    function kvEnv(): { env: Env; store: Map<string, string> } {
+      const store = new Map<string, string>([['sf-token-org-1', 'revoked-token']])
+      const env = makeEnv()
+      env.WORKFLOW_CACHE = {
+        get: vi.fn(async (k: string) => store.get(k) ?? null),
+        put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
+        delete: vi.fn(async (k: string) => { store.delete(k) }),
+      } as unknown as KVNamespace
+      return { env, store }
+    }
+
+    const isTokenCall = (url: unknown) => String(url).endsWith('/services/oauth2/token')
+
+    it('succeeds on the retry, sent with the fresh token', async () => {
+      const { env } = kvEnv()
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (isTokenCall(url)) return Promise.resolve(mockResponse(200, JSON.stringify({ access_token: 'fresh-token' })))
+        const auth = (init?.headers as Record<string, string>).Authorization
+        return Promise.resolve(auth === 'Bearer fresh-token' ? mockResponse(201, '{"id":"a0X1"}') : mockResponse(401, SESSION_EXPIRED))
+      })
+
+      const result = await executeSalesforceNode(
+        makeNode({ operation: 'create', object: 'Prospect__c', body: { A: 1 } }),
+        makeCtx(),
+        env,
+      )
+
+      expect(result.output).toEqual({ status: 201, body: { id: 'a0X1' } })
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]))
+      expect(calls.filter(isTokenCall)).toHaveLength(1)
+      expect(calls.filter((u) => !isTokenCall(u))).toHaveLength(2)
+      expect(fetchMock.mock.calls.at(-1)![1].body).toBe('{"A":1}')
+    })
+
+    it('fails permanently when the retry is also refused, with no third call', async () => {
+      const { env, store } = kvEnv()
+      fetchMock.mockImplementation((url: string) =>
+        Promise.resolve(isTokenCall(url) ? mockResponse(200, JSON.stringify({ access_token: 'fresh-token' })) : mockResponse(401, SESSION_EXPIRED)),
+      )
+
+      const err = await executeSalesforceNode(
+        makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+        makeCtx(),
+        env,
+      ).catch((e) => e)
+
+      expect((err as Error).message).toContain('Session expired or invalid')
+      expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+      expect(fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => !isTokenCall(u))).toHaveLength(2)
+      expect(store.has('sf-token-org-1')).toBe(false)
+    })
+
+    it('does not retry a non-401 refusal', async () => {
+      const { env } = kvEnv()
+      fetchMock.mockResolvedValue(mockResponse(400, '[{"message":"bad","errorCode":"INVALID_FIELD"}]'))
+
+      await executeSalesforceNode(makeNode({ operation: 'create', object: 'Prospect__c', body: {} }), makeCtx(), env).catch(() => {})
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+  })
+
   // ── Non-2xx throws readable Error ───────────────────────────────────────────
 
   it('throws an Error with status and body on 4xx so the UI can show the real SF error', async () => {

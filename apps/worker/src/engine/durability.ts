@@ -17,7 +17,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { withDbRetry, isDuplicateError, toDbError, type DbError } from '../lib/db-retry'
 import { formatErr } from '../lib/format-error'
-import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../lib/slack'
+import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -106,6 +106,7 @@ export async function recordOutcomeDeadLetter(
   label: string,
   error: unknown,
   deps: OutcomeDeps,
+  run?: OutcomeDeadLetterAlert['run'],
 ): Promise<boolean> {
   const { kv, orgId } = deps
 
@@ -134,6 +135,7 @@ export async function recordOutcomeDeadLetter(
       // Pass the SQLSTATE / PostgREST code so the alert can give cause-specific
       // remediation instead of always blaming Supabase / the purge window (#600).
       error_code: toDbError(error).code ?? null,
+      ...(run ? { run } : {}),
     },
     deps.appUrl,
   )

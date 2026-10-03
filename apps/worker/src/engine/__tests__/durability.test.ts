@@ -84,6 +84,13 @@ describe('writeOutcome (tier 2)', () => {
 })
 
 describe('recordOutcomeDeadLetter', () => {
+  it('hands the run behind the loss to the alert, so it can name and link it', async () => {
+    const kv = fakeKv()
+    const run = { workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1', at: '2026-10-03T05:01:03Z' }
+    await recordOutcomeDeadLetter('sf_writeback', new Error('boom'), deps(kv), run)
+    expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0][1]).toMatchObject({ run })
+  })
+
   const cooldownKeyFor = (label: string) => `outcome-deadletter-cooldown:org-1:${label}`
   const lossCount = (callIndex = -1) =>
     (vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.at(callIndex)![1] as unknown as { window_loss_count: number })

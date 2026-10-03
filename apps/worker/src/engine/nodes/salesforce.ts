@@ -272,11 +272,22 @@ export async function executeSalesforceNode(
     tokenMs,
   }
 
-  const { res, responseText, parsedBody: firstParsedBody } = await performSalesforceCall(bodyStr, callOpts)
-  let parsedBody = firstParsedBody
+  let { res, responseText, parsedBody } = await performSalesforceCall(bodyStr, callOpts)
+
+  // A cached token Salesforce has revoked answers 401 INVALID_SESSION_ID. Evicting
+  // it and failing lost every lead in flight while the next lead succeeded on a
+  // fresh login (#1741), so clear it and send this same request once more with a
+  // fresh token. A 401 means Salesforce refused before running anything, so the
+  // retry cannot write twice. A second 401 is a real credential fault and fails.
+  if (res.status === 401) {
+    await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
+    console.log(`[salesforce] event=session_rejected_retry operation=${operation} target=${targetLabel} trace=${ctx.trigger.trace_id}`)
+    headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret)}`
+    ;({ res, responseText, parsedBody } = await performSalesforceCall(bodyStr, callOpts))
+  }
 
   if (!res.ok) {
-    // If token expired (401), evict cache so next attempt re-fetches
+    // Still refused after the fresh token: evict again so the next lead does not reuse it.
     if (res.status === 401) {
       await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
     }

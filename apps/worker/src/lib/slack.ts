@@ -920,6 +920,12 @@ export interface OutcomeDeadLetterAlert {
    * (#600).
    */
   error_code?: string | null
+  /**
+   * The run behind the latest loss, when the caller has one (the engine's
+   * after-the-answer writeback). Lets the alert name the workflow, the time
+   * and link the run instead of pointing at a log it cannot show.
+   */
+  run?: { workflow_id: string; workflow_name: string; execution_id: string; at: string }
 }
 
 /**
@@ -965,6 +971,60 @@ function outcomeDeadLetterGuidance(label: string, errorCode: string | null | und
 }
 
 /**
+ * What an upstream said, as a person reads it: the messages of a Salesforce
+ * error list ("Session expired or invalid."), or the text after the status.
+ */
+function upstreamSaid(error: string): string {
+  const rest = error.replace(/^[^(]*\(\d{3}\):\s*/, '')
+  try {
+    const parsed: unknown = JSON.parse(rest)
+    if (Array.isArray(parsed)) {
+      const messages = parsed
+        .map((e: unknown) => (e as { message?: unknown } | null)?.message)
+        .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+      if (messages.length > 0) return messages.map((m) => (/[.!?]$/.test(m) ? m : `${m}.`)).join(' ')
+    }
+  } catch {
+    // Not JSON: an HTML page or plain text, passed on as written.
+  }
+  return truncateErrorForAlert(rest)
+}
+
+/**
+ * A step after the lead was answered failed, so whatever it was writing (almost
+ * always the Salesforce outcome) never landed. Plain copy (Dan, 2026-10-03): the
+ * workflow, the time in ET, what the upstream said, one fix line, the run.
+ */
+async function sendLostWritebackAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  run: NonNullable<OutcomeDeadLetterAlert['run']>,
+  appUrl: string,
+): Promise<boolean> {
+  const isSalesforce = payload.error_message.startsWith('Salesforce')
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))
+  const n = payload.window_loss_count
+  const affected = n === 1 ? '1 lead was affected' : `${n} leads were affected`
+  const title = isSalesforce ? 'Salesforce update lost' : 'Update lost after a lead was answered'
+  const summary = isSalesforce
+    ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step after the answer failed, so Salesforce is missing that lead's outcome. ${affected} in the last ${payload.window_minutes} minutes.`
+    : `${run.workflow_name} answered a lead at ${when} ET, but a step after the answer failed, so its update never landed. ${affected} in the last ${payload.window_minutes} minutes.`
+  const said = `${isSalesforce ? 'Salesforce said' : 'The error was'}: ${upstreamSaid(payload.error_message)}`
+  const fix = isSalesforce
+    ? 'Fix: open the run below and enter the outcome in Salesforce by hand. Bidspoke will not retry it.'
+    : 'Fix: open the run below and redo that step\'s update by hand. Bidspoke will not retry it.'
+  const link = `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: said } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`)) !== null
+}
+
+/**
  * Alert that a must-not-lose outcome write was dead-lettered after its retries
  * were exhausted (or a tier-3 Salesforce writeback was given up on). The record
  * feeds billing / win-tracking / repeat-lead analytics and is NOT auto-recovered.
@@ -976,6 +1036,7 @@ export async function sendOutcomeDeadLetterAlert(
   payload: OutcomeDeadLetterAlert,
   appUrl: string
 ): Promise<boolean> {
+  if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
   const errText = truncateErrorForAlert(payload.error_message)
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it
