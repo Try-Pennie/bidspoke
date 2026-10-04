@@ -17,6 +17,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { classifyExportError, buildFixHint, buildConsequence, isTransientExportError, GENERIC_FIX_HINT } from '../export-error-hints'
+import { DeadlineError } from '@bidspoke/buyer-profile'
 
 describe('classifyExportError', () => {
   it('classifies a Postgres statement timeout as database congestion', () => {
@@ -258,5 +259,26 @@ describe('buildConsequence (#1180)', () => {
 
   it('leaves a mixed batch to the default, rather than letting one class speak for all', () => {
     expect(buildConsequence([KILLED, 'bids export: Snowflake 503: connection termination'])).toBeUndefined()
+  })
+})
+
+describe('a Durable Object call that missed its deadline (buyer-sale-drain, 2026-10-04)', () => {
+  // Built from the real error and the drain's own page line, so a change to
+  // either wording fails here rather than silently reverting to "unknown".
+  const deadline = new DeadlineError('buyer ledger unmirrored', 5000).message
+  const pagedLine = `tripoint: the buyer ledger could not be read, so its backlog is unmeasured (${deadline})`
+
+  it('is classified as a missed deadline, not as an unknown failure', () => {
+    expect(classifyExportError(pagedLine)).toBe('call_deadline')
+  })
+
+  it('is transient, so one slow minute is held and only a second in a row pages', () => {
+    expect(isTransientExportError(pagedLine)).toBe(true)
+  })
+
+  it('gets advice saying a single miss needs no action', () => {
+    const hint = buildFixHint([pagedLine])
+    expect(hint.toLowerCase()).toContain('no action')
+    expect(hint).not.toContain('Snowflake availability')
   })
 })
