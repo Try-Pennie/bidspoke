@@ -262,23 +262,30 @@ describe('buildConsequence (#1180)', () => {
   })
 })
 
-describe('a Durable Object call that missed its deadline (buyer-sale-drain, 2026-10-04)', () => {
-  // Built from the real error and the drain's own page line, so a change to
-  // either wording fails here rather than silently reverting to "unknown".
-  const deadline = new DeadlineError('buyer ledger unmirrored', 5000).message
-  const pagedLine = `tripoint: the buyer ledger could not be read, so its backlog is unmeasured (${deadline})`
+describe('a slow buyer ledger read in the minute drain (2026-10-04)', () => {
+  // The drain's own page line for this case is asserted from the real drain in
+  // buyer-sale-drain.test.ts; these lines pin what must NOT share its grace.
+  const deadline = (op: string, ms: number) => new DeadlineError(op, ms).message
+  const drainLine = `tripoint: the buyer ledger could not be read, so its backlog is unmeasured (${deadline('buyer ledger unmirrored', 5000)})`
 
-  it('is classified as a missed deadline, not as an unknown failure', () => {
-    expect(classifyExportError(pagedLine)).toBe('call_deadline')
-  })
-
-  it('is transient, so one slow minute is held and only a second in a row pages', () => {
-    expect(isTransientExportError(pagedLine)).toBe(true)
+  it('is its own class, held once because the next minute asks again', () => {
+    expect(classifyExportError(drainLine)).toBe('drain_ledger_slow')
+    expect(isTransientExportError(drainLine)).toBe(true)
   })
 
   it('gets advice saying a single miss needs no action', () => {
-    const hint = buildFixHint([pagedLine])
+    const hint = buildFixHint([drainLine])
     expect(hint.toLowerCase()).toContain('no action')
     expect(hint).not.toContain('Snowflake availability')
+  })
+
+  it.each([
+    // The daily drill: holding it would delay its page by a whole day.
+    [`the drill did not finish: ${deadline('buyer objects drill', 30000)}`],
+    [`ledger reserve: ${deadline('buyer ledger unmirrored', 5000)}`],
+    // A drain ledger that REFUSED rather than ran slow is not a slow minute.
+    ['tripoint: the buyer ledger could not be read, so its backlog is unmeasured (buyer ledger unmirrored answered 500: boom)'],
+  ])('does not lend that grace to %s, which still pages on the first occurrence', (line) => {
+    expect(isTransientExportError(line)).toBe(false)
   })
 })

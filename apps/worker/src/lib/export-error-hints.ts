@@ -24,7 +24,7 @@ export type ExportErrorClass =
   | 'platform_limit'
   | 'archive_run_killed'
   | 'export_behind'
-  | 'call_deadline'
+  | 'drain_ledger_slow'
   | 'unknown'
 
 export const GENERIC_FIX_HINT =
@@ -51,8 +51,8 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
     "The Worker hit Cloudflare's per invocation subrequest ceiling while draining a backlog. There is no action to take: the run stopped cleanly and the next run continues from where it left off.",
   export_behind:
     'The export stopped at its own limit with rows still waiting, so it did not catch up this run. One such run straight after a failed run is normal catch-up, and is held back rather than paged. Two in a row means one run can no longer drain what arrives between runs: read the last runs in job_runs (job sightings-export) for rows per run against the measured rate in WALL_TIME_BUDGET_MS, and raise the export rate or the frequency rather than waiting.',
-  call_deadline:
-    'A Durable Object (a buyer ledger or counter) took longer than its deadline to answer, so this run could not measure it. There is no action to take for a single miss: the next minute asks again, and one slow answer is held back rather than paged. Two in a row means the object is refusing: check the worker logs for that object and run the drill at POST /api/admin/buyer-objects/drill.',
+  drain_ledger_slow:
+    'A buyer ledger took longer than its deadline to answer the minute drain, so that minute could not measure its backlog. There is no action to take for a single miss: the next minute asks again, and one slow answer is held back rather than paged. Two in a row means the ledger is refusing: check the worker logs for the buyer ledger and run the drill at POST /api/admin/buyer-objects/drill.',
   archive_run_killed:
     'The previous archive invocation was terminated by the platform before it could release its lock; its job_runs row has no ending. Nothing is lost: the run that posted this took over and is archiving the hours it left, so the archive is at most one hour later than usual. No action for a single occurrence. If it repeats several times a day, read the Cloudflare cron events for bidspoke-worker (Workers and Pages, bidspoke-worker, Settings, Trigger Events) and the invocation statuses under Metrics, which name the termination.',
 }
@@ -102,13 +102,14 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
   { cls: 'export_behind', test: /stopped at .+ with rows still waiting to export/ },
   { cls: 'db_congestion', test: /\b57014\b|statement timeout/i },
   { cls: 'platform_limit', test: /too many subrequests|subrequest limit/i },
-  // The wording of DeadlineError in packages/buyer-profile/src/deadline.ts, the
-  // deadline every Durable Object call carries. On 2026-10-04 one 5 second miss
-  // on the Tripoint ledger paged buyer-sale-drain on its first occurrence, and
-  // the next minute read the ledger cleanly with nothing left to copy. Matched
-  // on the "ms" form only, so the archive reader's own seconds wording keeps
-  // its existing treatment.
-  { cls: 'call_deadline', test: /did not answer within \d+ ms\b/ },
+  // The minute drain's page line for a buyer ledger that missed its deadline
+  // (buyer-sale-drain.ts, around DeadlineError from packages/buyer-profile). On
+  // 2026-10-04 one 5 second miss paged on its first occurrence, and the next
+  // minute read the ledger cleanly with nothing left to copy. Scoped to the
+  // DRAIN's line on purpose: the grace waits for the job's next run, which for
+  // the drain is a minute but for the daily buyer objects drill is a whole day,
+  // and a ledger that REFUSED (an HTTP error, not a slow answer) still pages.
+  { cls: 'drain_ledger_slow', test: /the buyer ledger could not be read, so its backlog is unmeasured \(.*did not answer within \d+ ms\)/ },
   {
     cls: 'transient_snowflake',
     // "idle timeout expired" is Snowflake's own 30s server-side timeout, served
@@ -145,9 +146,9 @@ const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
   // Held once and paged on the second consecutive run, which is the runaway:
   // one catch-up run that does not finish is normal after a failure (#749).
   'export_behind',
-  // A slow answer from a Durable Object. The next run asks again, and an object
-  // that stays down still pages on the second consecutive run.
-  'call_deadline',
+  // One slow minute from a buyer ledger. The drain asks again a minute later,
+  // and a ledger that stays slow still pages on the second consecutive run.
+  'drain_ledger_slow',
 ])
 
 export function isTransientExportError(message: string): boolean {
