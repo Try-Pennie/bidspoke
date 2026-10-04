@@ -11,6 +11,15 @@ import {
 /** How long the same set of dispatch failures stays quiet after it was reported. */
 export const DISPATCH_ALERT_COOLDOWN_SECONDS = 60 * 60
 
+/**
+ * How long a first transient failure is remembered (#1751). Long enough to
+ * outlast one 15 minute tick with room for a late cron, short enough that a
+ * failure two ticks apart, with the workflow undriven in between, counts afresh.
+ */
+export const TRANSIENT_HOLD_SECONDS = 40 * 60
+
+const holdKey = (file: string) => `workflow-dispatch:transient-since:${file}`
+
 interface DriverEnv {
   GITHUB_ACTIONS_TOKEN?: string
   GITHUB_TOKEN?: string
@@ -43,9 +52,40 @@ export async function runAndReportDispatch(
   // (L98, L106).
   console.log(`[workflow-dispatch] ${formatDispatchSummary(results)}`)
 
-  const problems = dispatchFailed(results)
+  // A dispatch that went through ends any run of transient failures for that
+  // workflow. Only `dispatched` clears it: a failed dispatch leaves the workflow
+  // due, so the next tick either dispatches or fails again, never `not_due`.
+  for (const r of results) {
+    if (r.outcome !== 'dispatched') continue
+    try {
+      await kv.delete(holdKey(r.file))
+    } catch (e) {
+      console.error(`[workflow-dispatch] could not clear the transient hold for ${r.file}:`, e)
+    }
+  }
+
+  const failed = dispatchFailed(results)
+  if (failed.length === 0) return results
+  for (const p of failed) console.error(`[workflow-dispatch] ${p.file} ${p.outcome}: ${p.reason}`)
+
+  // A failure on GitHub's side (a 5xx, a dropped connection) is held for one
+  // tick and speaks only if the next tick fails too (#1751). On 2026-10-04 one
+  // 500 paged and the next tick dispatched fine, which is the noise L36 warns
+  // of. A refusal is never held: it needs somebody to act.
+  const problems: DispatchAttempt[] = []
+  for (const p of failed) {
+    if (!p.transient) {
+      problems.push(p)
+      continue
+    }
+    const decision = await holdOrRelease(kv, p.file, nowMs)
+    if (decision.hold) {
+      console.log(`[workflow-dispatch] ${p.file} held: first transient failure, alerting only if the next tick fails too`)
+      continue
+    }
+    problems.push(decision.since ? { ...p, failingSince: decision.since } : p)
+  }
   if (problems.length === 0) return results
-  for (const p of problems) console.error(`[workflow-dispatch] ${p.file} ${p.outcome}: ${p.reason}`)
 
   // At most one alert an hour for the same set of failures (#1368). The driver
   // runs every 15 minutes so a refused read is retried within the hour, and a
@@ -86,7 +126,7 @@ export async function runAndReportDispatch(
     // remaining orgs theirs (L73). The returned results and the run log above
     // are the other half of this check's output.
     try {
-      if (await sendWorkflowDispatchAlert(supabase, orgId, results)) delivered = true
+      if (await sendWorkflowDispatchAlert(supabase, orgId, problems)) delivered = true
     } catch (e) {
       console.error(`[workflow-dispatch] alert to ${orgId} failed:`, e)
     }
@@ -101,4 +141,44 @@ export async function runAndReportDispatch(
     }
   }
   return results
+}
+
+/**
+ * Decide whether a transient failure is the first in a row (hold it) or a
+ * repeat (report it, with when it started).
+ *
+ * Both KV failures release rather than hold, because a protective control fails
+ * towards speaking (L42): an unreadable marker is not evidence this is the first
+ * failure, and a marker that could not be written would hold every later
+ * failure as the first, for ever.
+ */
+async function holdOrRelease(
+  kv: KVNamespace,
+  file: string,
+  nowMs: number,
+): Promise<{ hold: true } | { hold: false; since?: string }> {
+  let since: string | null
+  try {
+    since = await kv.get(holdKey(file))
+  } catch (e) {
+    console.error(`[workflow-dispatch] transient hold for ${file} unreadable, alerting now:`, e)
+    return { hold: false }
+  }
+  if (since !== null) {
+    // Renewed so a failure that persists keeps its true start time rather than
+    // restarting the count each time the marker would have expired.
+    try {
+      await kv.put(holdKey(file), since, { expirationTtl: TRANSIENT_HOLD_SECONDS })
+    } catch (e) {
+      console.error(`[workflow-dispatch] could not renew the transient hold for ${file}:`, e)
+    }
+    return { hold: false, since }
+  }
+  try {
+    await kv.put(holdKey(file), new Date(nowMs).toISOString(), { expirationTtl: TRANSIENT_HOLD_SECONDS })
+  } catch (e) {
+    console.error(`[workflow-dispatch] could not record the first transient failure of ${file}, alerting now:`, e)
+    return { hold: false }
+  }
+  return { hold: true }
 }

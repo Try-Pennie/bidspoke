@@ -126,6 +126,23 @@ describe('dispatchWorkflow: what it actually asks GitHub to do', () => {
     expect(result.ok === false && result.reason).toContain('ETIMEDOUT')
   })
 
+  it('marks a GitHub 5xx and a dropped connection as transient, and nothing else (#1751)', async () => {
+    // A 500 from GitHub's own service cleared on the next tick on 2026-10-04 and
+    // paged anyway. Only GitHub's side failing is transient: a refusal or a
+    // missing workflow needs somebody to act, so it must not be held back.
+    const answer = (status: number) => vi.fn().mockResolvedValue(new Response('x', { status }))
+    for (const status of [500, 502, 503]) {
+      const r = await dispatchWorkflow(access, 'deploy-drift.yml', answer(status))
+      expect(r, `${status} should be transient`).toMatchObject({ ok: false, transient: true })
+    }
+    const dropped = await dispatchWorkflow(access, 'deploy-drift.yml', vi.fn().mockRejectedValue(new Error('reset')))
+    expect(dropped).toMatchObject({ ok: false, transient: true })
+    for (const status of [200, 401, 403, 404, 422]) {
+      const r = await dispatchWorkflow(access, 'deploy-drift.yml', answer(status))
+      expect(r.ok === false && r.transient, `${status} must not be transient`).toBeFalsy()
+    }
+  })
+
   it('treats a 200 as a failure, because a real dispatch answers 204', async () => {
     // Anything other than the documented 204 means GitHub did not do what was
     // asked, and reading it as success would report a run that never started.

@@ -100,7 +100,15 @@ export function decideDue(lookup: ScheduleLookup, nowMs: number, driveAfterMs: n
   return { act: 'wait', why: `last qualifying run was ${lookup.lastRunIso}` }
 }
 
-export type DispatchResult = { ok: true } | { ok: false; reason: string; rateLimited?: boolean }
+/**
+ * `transient` marks a failure on GitHub's side (a 5xx, or the connection
+ * dropped) that usually clears by the next tick, so the caller can hold it for
+ * one tick instead of paging (#1751). A refusal is never transient: it needs
+ * somebody to act.
+ */
+export type DispatchResult =
+  | { ok: true }
+  | { ok: false; reason: string; rateLimited?: boolean; transient?: boolean }
 
 /**
  * Ask GitHub to run one workflow now.
@@ -131,7 +139,7 @@ export async function dispatchWorkflow(
       body: JSON.stringify({ ref: DISPATCH_REF, inputs: { driver: DRIVER_MARKER } }),
     })
   } catch (e) {
-    return { ok: false, reason: `the dispatch request to GitHub failed: ${formatErr(e)}` }
+    return { ok: false, transient: true, reason: `the dispatch request to GitHub failed: ${formatErr(e)}` }
   }
 
   // 204 and nothing else. GitHub documents exactly one success status here, and
@@ -172,7 +180,11 @@ export async function dispatchWorkflow(
         `${DISPATCH_REF}, or the inputs it declares do not include 'driver'`,
     }
   }
-  return { ok: false, reason: `GitHub returned ${response.status} when asked to dispatch ${file}` }
+  return {
+    ok: false,
+    reason: `GitHub returned ${response.status} when asked to dispatch ${file}`,
+    ...(response.status >= 500 ? { transient: true } : {}),
+  }
 }
 
 export type DispatchOutcome = 'dispatched' | 'not_due' | 'unknown' | 'failed' | 'unconfigured'
@@ -184,6 +196,10 @@ export interface DispatchAttempt {
   reason: string
   /** GitHub refused because the request allowance was used up (#1365). */
   rateLimited?: boolean
+  /** The failure was on GitHub's side and may clear by the next tick (#1751). */
+  transient?: boolean
+  /** When a repeated transient failure first happened, set once it is reported. */
+  failingSince?: string
 }
 
 /** Did this run leave anything a person needs to act on? */
@@ -248,6 +264,7 @@ export async function runWorkflowDispatchDriver(
               outcome: 'failed',
               reason: dispatched.reason,
               ...(dispatched.rateLimited ? { rateLimited: true } : {}),
+              ...(dispatched.transient ? { transient: true } : {}),
             },
       )
     } catch (e) {

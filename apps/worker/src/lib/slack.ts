@@ -1497,15 +1497,27 @@ export async function sendWorkflowDispatchAlert(
   ]
 
   for (const problem of problems) {
+    const since = problem.failingSince ? ` Failing since ${easternInstant(problem.failingSince)}.` : ''
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*\`${problem.file}\`:* ${problem.reason}` },
+      text: { type: 'mrkdwn', text: `*\`${problem.file}\`:* ${problem.reason}.${since}` },
     })
   }
 
   const fixes: string[] = []
   if (problems.some((p) => p.rateLimited)) fixes.push(GITHUB_RATE_LIMIT_FIX)
-  if (problems.some((p) => !p.rateLimited)) {
+  if (problems.some((p) => p.transient)) {
+    // A 5xx or a dropped connection is GitHub's own service failing. It has
+    // already failed twice in a row to get here (#1751), so it is not a blip,
+    // but the token advice below would send the reader after a credential that
+    // works.
+    fixes.push(
+      'A 5xx or a dropped connection means GitHub\'s own service failed, not our credential. Check ' +
+        'https://www.githubstatus.com for an Actions or API incident. The worker keeps retrying every 15 minutes, ' +
+        'so this clears on its own once GitHub recovers.',
+    )
+  }
+  if (problems.some((p) => !p.rateLimited && !p.transient)) {
     fixes.push(
       'This is not a workflow that needs re-enabling in GitHub Actions. The dispatch itself is ' +
         'being refused, so read the reason above: a 401, or a 403 that is not a rate limit, means `GITHUB_ACTIONS_TOKEN` needs Actions read ' +
