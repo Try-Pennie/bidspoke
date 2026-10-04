@@ -17,6 +17,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { classifyExportError, buildFixHint, buildConsequence, isTransientExportError, GENERIC_FIX_HINT } from '../export-error-hints'
+import { DeadlineError } from '@bidspoke/buyer-profile'
 
 describe('classifyExportError', () => {
   it('classifies a Postgres statement timeout as database congestion', () => {
@@ -258,5 +259,33 @@ describe('buildConsequence (#1180)', () => {
 
   it('leaves a mixed batch to the default, rather than letting one class speak for all', () => {
     expect(buildConsequence([KILLED, 'bids export: Snowflake 503: connection termination'])).toBeUndefined()
+  })
+})
+
+describe('a slow buyer ledger read in the minute drain (2026-10-04)', () => {
+  // The drain's own page line for this case is asserted from the real drain in
+  // buyer-sale-drain.test.ts; these lines pin what must NOT share its grace.
+  const deadline = (op: string, ms: number) => new DeadlineError(op, ms).message
+  const drainLine = `tripoint: the buyer ledger could not be read, so its backlog is unmeasured (${deadline('buyer ledger unmirrored', 5000)})`
+
+  it('is its own class, held once because the next minute asks again', () => {
+    expect(classifyExportError(drainLine)).toBe('drain_ledger_slow')
+    expect(isTransientExportError(drainLine)).toBe(true)
+  })
+
+  it('gets advice saying a single miss needs no action', () => {
+    const hint = buildFixHint([drainLine])
+    expect(hint.toLowerCase()).toContain('no action')
+    expect(hint).not.toContain('Snowflake availability')
+  })
+
+  it.each([
+    // The daily drill: holding it would delay its page by a whole day.
+    [`the drill did not finish: ${deadline('buyer objects drill', 30000)}`],
+    [`ledger reserve: ${deadline('buyer ledger unmirrored', 5000)}`],
+    // A drain ledger that REFUSED rather than ran slow is not a slow minute.
+    ['tripoint: the buyer ledger could not be read, so its backlog is unmeasured (buyer ledger unmirrored answered 500: boom)'],
+  ])('does not lend that grace to %s, which still pages on the first occurrence', (line) => {
+    expect(isTransientExportError(line)).toBe(false)
   })
 })

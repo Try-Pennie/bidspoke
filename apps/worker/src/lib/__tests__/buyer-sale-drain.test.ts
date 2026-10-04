@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
 import { BUYER_SALE_DRAIN_JOB, EXISTING_ROWS_PER_READ, OUTBOX_BACKLOG_MS, numericOrNull, productionDrainDeps, readExistingBuyerSaleRows, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import { isTransientExportError } from '../export-error-hints'
+import { DeadlineError } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import { profilesTableDouble } from './_profiles-table-double'
 
@@ -142,6 +144,15 @@ describe('runBuyerSaleDrain', () => {
     const summary = await runBuyerSaleDrain(d)
     expect(summary.buyers[0]).toMatchObject({ pending: 1, delivered: 1, failed: 0 })
     expect(d.notify).toHaveBeenCalledWith([])
+  })
+
+  it('a ledger that only missed its deadline pages a line the alerter holds for one minute, not one it pages at once', async () => {
+    const slow: DrainLedger = { unmirrored: async () => { throw new DeadlineError('buyer ledger unmirrored', 5000) }, markMirrored: async () => 0 }
+    const d = deps({ ledger: () => slow })
+    await runBuyerSaleDrain(d)
+    const lines = vi.mocked(d.notify).mock.calls[0][0] as string[]
+    expect(lines).toHaveLength(1)
+    expect(isTransientExportError(lines[0])).toBe(true)
   })
 
   it('a ledger that cannot be read is reported unmeasured for that buyer and pages, while the other buyers still drain (L98)', async () => {
