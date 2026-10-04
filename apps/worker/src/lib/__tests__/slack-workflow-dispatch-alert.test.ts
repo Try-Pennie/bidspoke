@@ -129,3 +129,21 @@ describe('sendWorkflowDispatchAlert', () => {
     expect(posts().length).toBe(0)
   })
 })
+
+describe('sendWorkflowDispatchAlert: a repeated failure on GitHub\'s side (#1751)', () => {
+  it('says the fault is GitHub\'s and how long it has lasted, instead of pointing at the token', async () => {
+    await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
+      {
+        ...attempt('deploy-drift.yml', 'failed', 'GitHub returned 500 when asked to dispatch deploy-drift.yml'),
+        transient: true,
+        failingSince: '2026-10-04T21:30:00.000Z',
+      },
+    ])
+    const body = posts()[0]
+    expect(body).toContain('GitHub')
+    // The same Eastern formatter the other alerts use, so every page reads alike.
+    expect(body).toContain('Oct 4, 5:30 PM EDT')
+    expect(body).toContain('githubstatus.com')
+    expect(body, 'a 5xx is not a token problem').not.toContain('needs Actions read')
+  })
+})

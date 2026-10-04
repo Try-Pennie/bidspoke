@@ -63,7 +63,7 @@ afterEach(() => {
  * KV outage arrives. `puts` records every write with its options so a test can
  * see the cooldown's lifetime.
  */
-function makeKv(opts: { failGet?: boolean } = {}) {
+function makeKv(opts: { failGet?: boolean; failPut?: boolean } = {}) {
   const store = new Map<string, string>()
   const puts: { key: string; ttl: number | undefined }[] = []
   return Object.assign(
@@ -73,8 +73,12 @@ function makeKv(opts: { failGet?: boolean } = {}) {
         return store.get(key) ?? null
       }),
       put: vi.fn(async (key: string, value: string, o?: { expirationTtl?: number }) => {
+        if (opts.failPut) throw new Error('kv write refused')
         store.set(key, value)
         puts.push({ key, ttl: o?.expirationTtl })
+      }),
+      delete: vi.fn(async (key: string) => {
+        store.delete(key)
       }),
     },
     { puts },
@@ -200,5 +204,75 @@ describe('runAndReportDispatch: a rate limited read is retried on the next tick 
     expect(first.every((r) => r.outcome === 'unknown')).toBe(true)
     const second = await runAndReportDispatch(orgsOk, env, makeKv(), NOW + 15 * 60_000, wire(204))
     expect(second.every((r) => r.outcome === 'dispatched')).toBe(true)
+  })
+})
+
+describe('runAndReportDispatch: a single GitHub 5xx is held for one tick (#1751)', () => {
+  // On 2026-10-04 GitHub answered one dispatch with 500 and the next tick, 15
+  // minutes later, dispatched fine. Paging on the first one was noise (L36), so a
+  // failure on GitHub's side speaks only when the next tick fails the same way.
+  const TICK = 15 * 60_000
+  const alertedFiles = () =>
+    vi
+      .mocked(sendWorkflowDispatchAlert)
+      .mock.calls.map((c) => (c[2] as { file: string; outcome: string }[]).filter((r) => r.outcome === 'failed').length)
+
+  it('alerts nobody on a single 500', async () => {
+    const results = await runAndReportDispatch(orgsOk, env, makeKv(), NOW, wire(500))
+    expect(results.every((r) => r.outcome === 'failed'), 'the verdict itself must stay honest').toBe(true)
+    expect(sendWorkflowDispatchAlert).not.toHaveBeenCalled()
+    const logged = vi.mocked(console.log).mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(logged).toContain('held')
+  })
+
+  it('alerts when the next tick fails the same way, saying when it started', async () => {
+    const kv = makeKv()
+    await runAndReportDispatch(orgsOk, env, kv, NOW, wire(500))
+    await runAndReportDispatch(orgsOk, env, kv, NOW + TICK, wire(500))
+    expect(vi.mocked(sendWorkflowDispatchAlert).mock.calls.length, 'two orgs, once each').toBe(2)
+    const sent = vi.mocked(sendWorkflowDispatchAlert).mock.calls[0][2] as { failingSince?: string }[]
+    expect(sent.every((r) => r.failingSince === new Date(NOW).toISOString())).toBe(true)
+  })
+
+  it('forgets the first failure once a dispatch succeeds in between', async () => {
+    const kv = makeKv()
+    await runAndReportDispatch(orgsOk, env, kv, NOW, wire(500))
+    await runAndReportDispatch(orgsOk, env, kv, NOW + TICK, wire(204))
+    await runAndReportDispatch(orgsOk, env, kv, NOW + 2 * TICK, wire(500))
+    expect(sendWorkflowDispatchAlert).not.toHaveBeenCalled()
+  })
+
+  it('still alerts at once for a refusal, which needs somebody to act', async () => {
+    await runAndReportDispatch(orgsOk, env, makeKv(), NOW, wire(403))
+    expect(vi.mocked(sendWorkflowDispatchAlert).mock.calls.length).toBe(2)
+  })
+
+  it('alerts at once when it cannot tell whether this is the first failure (L42)', async () => {
+    await runAndReportDispatch(orgsOk, env, makeKv({ failGet: true }), NOW, wire(500))
+    expect(vi.mocked(sendWorkflowDispatchAlert).mock.calls.length).toBe(2)
+    expect(errors()).toContain('kv unavailable')
+  })
+
+  it('alerts at once when the first failure cannot be remembered, or it would be held for ever', async () => {
+    await runAndReportDispatch(orgsOk, env, makeKv({ failPut: true }), NOW, wire(500))
+    expect(vi.mocked(sendWorkflowDispatchAlert).mock.calls.length).toBe(2)
+    expect(errors()).toContain('kv write refused')
+  })
+
+  it('sends only the failures that are due, not the ones still held', async () => {
+    // A refusal on one workflow and a first 5xx on another: the page names the
+    // refusal and leaves the held one out, since it has not earned a page yet.
+    const mixed = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/dispatches')) {
+        return new Response(null, { status: url.includes(WATCHED_WORKFLOWS[0].file) ? 403 : 500 })
+      }
+      return new Response(
+        JSON.stringify({ workflow_runs: [{ created_at: '2026-08-01T00:00:00Z', conclusion: 'success', event: 'schedule' }] }),
+        { status: 200 },
+      )
+    }) as unknown as typeof fetch
+    await runAndReportDispatch(orgsOk, env, makeKv(), NOW, mixed)
+    expect(alertedFiles()).toEqual([1, 1])
   })
 })
