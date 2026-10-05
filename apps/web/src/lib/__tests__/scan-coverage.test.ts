@@ -243,11 +243,16 @@ describe('scan-coverage CLI (#779)', () => {
     const copy = path.join(odd, 'scan-coverage.mjs')
     copyFileSync(SCRIPT, copy)
     let code = 0
+    let stderr = ''
     try {
       execFileSync('node', [copy, 'trivy', path.join(odd, 'nope.json'), 'pnpm-lock.yaml'], { stdio: 'pipe' })
     } catch (e) {
-      code = (e as { status: number }).status
+      const err = e as { status: number; stderr: Buffer }
+      code = err.status
+      stderr = String(err.stderr)
     }
-    expect(code).not.toBe(0)
+    // The CLI's own refusal, not any crash: a throw at startup also exits non zero.
+    expect(stderr).toMatch(/scan-coverage: could not read trivy report at .*nope\.json/)
+    expect(code).toBe(1)
   })
 })
