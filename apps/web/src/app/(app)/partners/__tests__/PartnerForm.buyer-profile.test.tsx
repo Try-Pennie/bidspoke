@@ -464,7 +464,9 @@ describe('how the buyer is sold', () => {
       // An older worker sends no count_failure, and its message cannot say which it was.
       ['older worker', { count_error: 'click counter add did not answer within 5000 ms' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): click counter add did not answer within 5000 ms"],
       // A platform message often ends in its own full stop, which must not be doubled.
-      ['own full stop', { count_failure: 'unknown', count_error: 'Network connection lost.' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): Network connection lost. "],
+      ['own full stop', { count_failure: 'unknown', count_error: 'Network connection lost.' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): Network connection lost. Salesforce updated"],
+      // No reason at all: the sentence ends where the colon would have been, never on a bare full stop.
+      ['no reason', { count_failure: 'unknown' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific). Salesforce updated"],
     ]
     for (const [name, failure, sentence] of cases) {
       cleanup()

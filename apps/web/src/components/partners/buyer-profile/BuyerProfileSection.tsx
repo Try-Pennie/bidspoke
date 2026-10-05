@@ -143,10 +143,15 @@ function salesforceSentence(writes: SaleWrites): string {
 /** Said when the audit entry, the only record of the Salesforce outcome, did not land. */
 const AUDIT_NOT_RECORDED = ' The record of these Salesforce updates could not be saved, so after a reload this page will not know them.'
 
-/** A message ended as a sentence, without doubling a full stop it already carries. */
-const asSentence = (message: string | undefined): string => {
+/**
+ * The reason after a count sentence's colon, ended as a sentence without
+ * doubling a full stop it already carries. With no reason, the sentence ends
+ * at the colon's place instead of on a bare full stop.
+ */
+const reasonOf = (message: string | undefined): string => {
   const text = (message ?? '').trim()
-  return /[.!?]$/.test(text) ? text : `${text}.`
+  if (text === '') return '.'
+  return `: ${/[.!?]$/.test(text) ? text : `${text}.`}`
 }
 
 function markSentMessage(result: MarkSentResult, leadId: string, partnerName: string): string {
@@ -156,9 +161,9 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
       ? ` Counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
       : ` It was already counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
     : result.count_failure === 'not_added'
-      ? ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${asSentence(result.count_error)}`
+      ? ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific)${reasonOf(result.count_error)}`
       // An add that got no answer may still have landed (#1766), so only a refusal says it was not added.
-      : ` It may not have been added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${asSentence(result.count_error)}`
+      : ` It may not have been added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific)${reasonOf(result.count_error)}`
   // An entry kept for its Salesforce retry is kept on purpose, so the not-removed note is only for a complete one.
   const notCleared = !result.list_cleared && result.salesforce.complete ? LIST_NOT_CLEARED : ''
   return `${base}${counted}${salesforceSentence(result.salesforce)}${result.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notCleared}`
