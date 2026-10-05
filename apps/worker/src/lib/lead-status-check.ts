@@ -46,10 +46,29 @@
  * A COUNT THAT COULD NOT BE READ IS ITS OWN FINDING, never a zero, and a
  * judged partner with no Completed sale at all is reported rather than read as
  * agreement (L98, L215).
+ *
+ * BUT NOT ON A DAY THE BUYER COULD NOT SELL (#1767). Liberty1 buys Monday to
+ * Friday, so every Monday run paged on Sunday's zero. A zero is reported only
+ * when the partner could have sold that day. For a buyer sold on the click that
+ * is read from its buyer profile, through the one loader and the one isOpen the
+ * click check offers it by: could have sold means some minute of the judged UTC
+ * day falls inside an operating window and outside a blackout date. The UTC day
+ * spans two Eastern dates, so a Saturday whose first hour is Friday evening
+ * Eastern still counts as a selling day; that errs toward reporting (L42). A
+ * buyer sold on offers keeps the old rule, because the older Tripoint ping
+ * sells it without reading its profile, so its hours bound nothing; so does a
+ * partner with no enabled profile. The profile maps to the Salesforce partner
+ * by partner_configs.name, the value Salesforce records as the partner, and is
+ * then the one keyed by that partner's id. A profile that cannot be read, or
+ * reads as something saving refuses, is its own finding, never a pass. The
+ * profiles are read only when a judged partner had no sales.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, isOpenDuring } from '@bidspoke/buyer-profile'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type TitledRemedy } from './export-alerts'
+import { loadBuyerProfiles, type BuyerProfilesSnapshot } from './buyer-profile-loader'
+import { resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { salesforceCount, salesforceGet, salesforceRows } from './salesforce-read'
 import type { Env } from '../index'
 
@@ -122,6 +141,8 @@ type FindingKind = 'backlog' | 'broken' | 'unchecked'
 interface Finding {
   kind: FindingKind
   text: string
+  /** Set on a judged partner's no sales line, which stands only if that partner could have sold that day. */
+  zeroFor?: string
 }
 
 /** The broken title outranks the backlog one, which outranks a check that could not run. */
@@ -167,6 +188,8 @@ export interface LeadStatusDeps {
   rows?: (soql: string) => Promise<Array<Record<string, unknown>>>
   /** Every partner value with Completed sales created in the UTC day starting at `dayStart`. Injected likewise. */
   listPartners?: (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>>
+  /** The enabled buyer profiles of the org whose Salesforce this reads. Injected likewise. */
+  loadProfiles?: () => Promise<BuyerProfilesSnapshot>
   now?: () => Date
 }
 
@@ -180,6 +203,8 @@ export interface PartnerLeadStatus {
   backlog: number | null
   /** The same, where the Lead has moved on to a later Submission, so no backfill can change it; null when unread. */
   backlog_returning: number | null
+  /** True when it had no Completed sales and its buyer profile was closed every minute of the day, so the zero was not reported. */
+  closed_all_day: boolean
 }
 
 export interface LeadStatusResult {
@@ -208,13 +233,15 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   const count = deps.count ?? ((soql: string) => salesforceCount(env, supabase, soql, 'the Lead status check'))
   const rows = deps.rows ?? ((soql: string) => salesforceRows(env, supabase, soql, 'the Lead status check', BACKLOG_MAX_ROWS))
   const listPartners = deps.listPartners ?? salesforcePartnerLister(env, supabase)
+  const loadProfiles = deps.loadProfiles ?? salesforceOrgBuyerProfiles(env, supabase)
 
   let partners: PartnerLeadStatus[] = []
   let found: Finding[]
   try {
     const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, rows, p, dayStart, day)))
     partners = measured.map((m) => m.status)
-    found = [...measured.flatMap((m) => m.findings), ...(await uncoveredPartners(listPartners, dayStart, day))]
+    const judged = await judgeZeroDays(measured.flatMap((m) => m.findings), partners, loadProfiles, dayStart, now)
+    found = [...judged, ...(await uncoveredPartners(listPartners, dayStart, day))]
   } catch (err) {
     found = [{ kind: 'unchecked', text: `The check itself failed: ${formatErr(err)}` }]
   }
@@ -230,12 +257,16 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   // Logged on every run, Engine included, so a working check and the unjudged
   // partner's numbers are visible rather than only heard from on a complaint.
   const unread = (n: number | null) => (n === null ? 'unread' : String(n))
+  const notReported = partners
+    .filter((p) => p.closed_all_day)
+    .map((p) => ` not reported: ${p.partner} had no Completed sales and its buyer profile was closed all day.`)
+    .join('')
   console.log(
     `[lead-status] day=${day} ` +
       partners
         .map((p) => `${p.partner}=${unread(p.leads_completed)}/${unread(p.submissions_completed)} backlog=${unread(p.backlog)} returning=${unread(p.backlog_returning)}`)
         .join(' ') +
-      ` findings=${findings.length}`,
+      ` findings=${findings.length}${notReported}`,
   )
   return { day, partners, findings, alerted: findings.length > 0 }
 }
@@ -317,6 +348,7 @@ async function measure(
     leads_completed: 'n' in leads ? leads.n : null,
     backlog: 'err' in backlog ? null : backlog.own,
     backlog_returning: 'err' in backlog ? null : backlog.returning,
+    closed_all_day: false,
   }
 
   // A count that could not be read is a refusal for every partner, judged or
@@ -325,7 +357,8 @@ async function measure(
     const why = 'err' in subs ? subs.err : (leads as { err: string }).err
     findings.push({ kind: 'unchecked', text: `The check couldn't count ${partner} sales in Salesforce: ${why}` })
   } else if (judged && subs.n === 0) {
-    findings.push({ kind: 'unchecked', text: `Salesforce has no Completed ${partner} sales from ${on}, so there was nothing to compare.` })
+    // judgeZeroDays decides whether this stands, from the partner's buyer profile.
+    findings.push({ kind: 'unchecked', text: `${noSales(partner, on)}, so there was nothing to compare.`, zeroFor: partner })
   } else if (judged && subs.n >= MIN_SUBMISSIONS_TO_JUDGE && leads.n / subs.n < LEAD_COMPLETED_MIN_SHARE) {
     const older = status.backlog ? ` ${fmt(status.backlog)} older ${partner} sales are also waiting.` : ''
     findings.push({
@@ -343,6 +376,109 @@ async function measure(
   }
 
   return { status, findings }
+}
+
+const noSales = (partner: string, on: string) => `Salesforce has no Completed ${partner} sales from ${on}`
+
+type ProfileRead = { snapshot: BuyerProfilesSnapshot } | { err: string }
+
+/**
+ * Keeps a judged partner's no sales line only where the partner could have sold
+ * that day (#1767), dropping it for a click buyer whose profile was closed every
+ * minute of the UTC day and marking that partner closed_all_day. The profiles
+ * are read once, and only when there is a line to decide. Every other finding
+ * passes through in its place.
+ */
+async function judgeZeroDays(
+  findings: Finding[],
+  partners: PartnerLeadStatus[],
+  loadProfiles: () => Promise<BuyerProfilesSnapshot>,
+  dayStart: Date,
+  now: Date,
+): Promise<Finding[]> {
+  if (!findings.some((f) => f.zeroFor)) return findings
+  const read = await readProfiles(loadProfiles, now)
+  const on = shortDay(dayStart.toISOString().slice(0, 10)) ?? dayStart.toISOString().slice(0, 10)
+  const kept: Finding[] = []
+  for (const f of findings) {
+    if (!f.zeroFor) {
+      kept.push(f)
+      continue
+    }
+    // Its own failure boundary (L73): a profile whose hours cannot be judged
+    // names that partner, and every other partner's findings still go out,
+    // rather than the whole run collapsing into one "check itself failed" line.
+    let verdict: Finding | 'closed' | null
+    try {
+      verdict = zeroDayVerdict(f.zeroFor, read, dayStart, on)
+    } catch (err) {
+      verdict = {
+        kind: 'unchecked',
+        text: `${noSales(f.zeroFor, on)}, and the check couldn't judge ${f.zeroFor}'s buyer hours for that day: ${formatErr(err)}`,
+      }
+    }
+    if (verdict === 'closed') {
+      const status = partners.find((p) => p.partner === f.zeroFor)
+      if (status) status.closed_all_day = true
+    } else kept.push(verdict ?? f)
+  }
+  return kept
+}
+
+/** The profiles, or why they cannot be trusted: a failed read, or a last good copy older than the click check would offer from. */
+async function readProfiles(loadProfiles: () => Promise<BuyerProfilesSnapshot>, now: Date): Promise<ProfileRead> {
+  let snapshot: BuyerProfilesSnapshot
+  try {
+    snapshot = await loadProfiles()
+  } catch (err) {
+    return { err: formatErr(err) }
+  }
+  if (snapshot.served_from === 'last_good') {
+    const ageMs = now.getTime() - Date.parse(snapshot.loaded_at)
+    if (!(ageMs <= CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)) {
+      const age = Number.isFinite(ageMs) ? `${Math.round(ageMs / 60_000)} minutes old` : `of unknown age (${snapshot.loaded_at})`
+      return { err: `the database read failed and the saved copy is ${age}.` }
+    }
+  }
+  return { snapshot }
+}
+
+/**
+ * For one judged partner with no sales: 'closed' when its click buyer profile
+ * was closed all day, null when the plain no sales line stands, or the
+ * unchecked finding that replaces it when the profile cannot be judged.
+ */
+function zeroDayVerdict(partner: string, read: ProfileRead, dayStart: Date, on: string): Finding | 'closed' | null {
+  const lead = noSales(partner, on)
+  if ('err' in read) {
+    return { kind: 'unchecked', text: `${lead}, and the check couldn't read the buyer profiles to tell whether ${partner} was buying that day: ${read.err}` }
+  }
+  // partner_configs.name is the value Salesforce records as the partner.
+  const named = read.snapshot.buyers.filter((b) => b.partner.name === partner)
+  if (named.length > 1) {
+    return { kind: 'unchecked', text: `${lead}, and ${named.length} buyer profiles are named ${partner}, so the check couldn't tell whose hours to use.` }
+  }
+  // No enabled profile, or one sold on offers that the older Tripoint ping also
+  // sells without reading it: nothing bounds when this partner can sell.
+  if (named.length === 0 || named[0].profile.soldOn !== 'click') return null
+  const { windows, blackoutDates } = named[0].profile
+  if (windows.length === 0) {
+    return { kind: 'unchecked', text: `${lead}, and ${partner}'s buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.` }
+  }
+  return isOpenDuring(windows, blackoutDates, dayStart.getTime(), dayStart.getTime() + 86_400_000) ? null : 'closed'
+}
+
+/**
+ * The real profile reader: the enabled buyer profiles through the one loader the
+ * click check uses, for the organization that holds the Salesforce credentials,
+ * which is the one whose Salesforce this check reads.
+ */
+export function salesforceOrgBuyerProfiles(env: Env, supabase: SupabaseClient): () => Promise<BuyerProfilesSnapshot> {
+  return async () => {
+    const { orgId, error } = await resolveSalesforceCredentialOrg(supabase)
+    if (!orgId) throw new Error(error ?? 'no_org_holds_salesforce_credentials')
+    return loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase)
+  }
 }
 
 /**

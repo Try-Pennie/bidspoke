@@ -27,9 +27,9 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
 const partners = [
-  { partner: 'Tripoint', judged: true, submissions_completed: 1035, leads_completed: 1033, backlog: 0, backlog_returning: 0 },
-  { partner: 'AmOne', judged: true, submissions_completed: 63, leads_completed: 62, backlog: 0, backlog_returning: 0 },
-  { partner: 'Engine', judged: false, submissions_completed: 696, leads_completed: 1, backlog: 73000, backlog_returning: 0 },
+  { partner: 'Tripoint', judged: true, submissions_completed: 1035, leads_completed: 1033, backlog: 0, backlog_returning: 0, closed_all_day: false },
+  { partner: 'AmOne', judged: true, submissions_completed: 63, leads_completed: 62, backlog: 0, backlog_returning: 0, closed_all_day: false },
+  { partner: 'Engine', judged: false, submissions_completed: 696, leads_completed: 1, backlog: 73000, backlog_returning: 0, closed_all_day: false },
 ]
 
 async function makeApp() {

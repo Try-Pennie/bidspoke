@@ -27,6 +27,8 @@ import {
   type LeadStatusDeps,
 } from '../lead-status-check'
 import { notifyExportFailure } from '../export-alerts'
+import type { BuyerProfilesSnapshot, LoadedBuyer } from '../buyer-profile-loader'
+import type { OperatingWindow } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -62,12 +64,12 @@ function backlogRows(partner: string, own: number, returning: number): Array<Rec
 }
 
 /** A counter and a row reader answering by partner and by which of that partner's three queries it was handed. */
-function counter(answers: Record<string, PartnerAnswers>) {
+function counter(answers: Record<string, PartnerAnswers>, day: Date = DAY) {
   const asked: string[] = []
   const count: LeadStatusDeps['count'] = async (soql) => {
     asked.push(soql)
     for (const { partner } of LEAD_STATUS_PARTNERS) {
-      const q = leadStatusQueries(partner, DAY)
+      const q = leadStatusQueries(partner, day)
       const a = answers[partner] ?? HEALTHY
       const hit = soql === q.submissions ? a.submissions : soql === q.leads ? a.leads : undefined
       if (hit === undefined) continue
@@ -79,7 +81,7 @@ function counter(answers: Record<string, PartnerAnswers>) {
   const rows: LeadStatusDeps['rows'] = async (soql) => {
     asked.push(soql)
     for (const { partner } of LEAD_STATUS_PARTNERS) {
-      if (soql !== leadStatusQueries(partner, DAY).backlog) continue
+      if (soql !== leadStatusQueries(partner, day).backlog) continue
       const b = (answers[partner] ?? HEALTHY).backlog
       if (b instanceof Error) throw b
       return typeof b === 'number' ? backlogRows(partner, b, 0) : backlogRows(partner, b.own, b.returning)
@@ -89,10 +91,49 @@ function counter(answers: Record<string, PartnerAnswers>) {
   return { count, rows, asked }
 }
 
-/** The deps for one run: both Salesforce seams set from the same answers, never left to the real reader (L284). */
+/** No enabled buyer profile at all: the seam set explicitly, never left to the real reader (L284). */
+const NO_PROFILES: LeadStatusDeps['loadProfiles'] = async () => snapshotOf([])
+
+function snapshotOf(buyers: LoadedBuyer[], extra: Partial<BuyerProfilesSnapshot> = {}): BuyerProfilesSnapshot {
+  return { org_id: 'org-1', loaded_at: NOW().toISOString(), content_hash: 'h', served_from: 'database', buyers, ...extra }
+}
+
+/**
+ * An enabled buyer as the one profile loader shapes it. The partner name is the
+ * value Salesforce records as the partner (held click writes send it), which is
+ * how the check finds a Salesforce partner's profile.
+ */
+let nextBuyerId = 0
+function buyer(name: string, soldOn: 'click' | 'offer', windows: OperatingWindow[], blackoutDates: string[] = []): LoadedBuyer {
+  const id = `00000000-0000-4000-8000-${String(++nextBuyerId).padStart(12, '0')}`
+  return {
+    partner: {
+      id, slug: name.toLowerCase(), name, is_active: true, api_endpoint: null, cf_secret_key: null, outbound_field_mapping: null,
+      extra_extraction: null, accept_signals: [], response_classification: null, click_url: null, external_routing_code: 4,
+      duplicate_signals: [], circuit_enabled: false, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 60,
+    },
+    profile: {
+      partnerId: id, soldOn, isEnabled: true, priority: soldOn === 'offer' ? 1 : null, allowedStates: ['NY'], debtMin: null, debtMax: null,
+      loanAmountMin: null, hourlyLeadCap: null, dailyLeadCap: 50, hourlySpendCapCents: null, dailySpendCapCents: null,
+      windows, blackoutDates, tiers: [],
+    },
+    version: 1,
+    updated_at: '2026-10-01T00:00:00Z',
+  }
+}
+
+/** Liberty1's hours since 2026-10-01: Monday to Friday, 09:00 to 21:00 Eastern. */
+const WEEKDAYS_9_TO_9: OperatingWindow[] = [1, 2, 3, 4, 5].map((dayOfWeek) => ({ dayOfWeek, opensMinute: 9 * 60, closesMinute: 21 * 60 }))
+
+/** The UTC day before a run, which is the day the check judges. */
+function judgedDay(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1))
+}
+
+/** The deps for one run: every seam set from the same answers, never left to the real reader (L284). */
 function deps(answers: Record<string, PartnerAnswers>, extra: Partial<LeadStatusDeps> = {}): LeadStatusDeps {
-  const c = counter(answers)
-  return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, ...extra }
+  const c = counter(answers, judgedDay((extra.now ?? NOW)()))
+  return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, loadProfiles: NO_PROFILES, ...extra }
 }
 
 type SentRemedy = { title?: string; context?: string; fixHint?: string }
@@ -386,5 +427,152 @@ describe('checkLeadStatus', () => {
     expect(sentRemedy()?.title).toBe(LEAD_STATUS_BROKEN_REMEDY.title)
     expect(sentRemedy()?.fixHint).toBe(LEAD_STATUS_BROKEN_REMEDY.fixHint)
     expect(alerted()).toHaveLength(2)
+  })
+})
+
+// Measured in Salesforce (#1767): Liberty1 Completed Submissions by UTC day were
+// Sep 30 43, Oct 1 44, Oct 2 47, Oct 3 3 (Friday evening Eastern) and Oct 4 0,
+// a Sunday, when Liberty1 does not buy. The Monday run paged on that zero.
+describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
+  /** Monday 2026-10-05 at 13:02 UTC, the run that paged: the day judged is Sunday Oct 4. */
+  const MONDAY = () => new Date('2026-10-05T13:02:00Z')
+  const LIBERTY1_ZERO = { Liberty1: { submissions: 0, leads: 0, backlog: 0 } }
+  const liberty1Profile = (blackoutDates: string[] = []) => async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9, blackoutDates)])
+
+  /** The one line every run logs, captured without printing it. */
+  async function runLogged(d: LeadStatusDeps) {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const r = await checkLeadStatus(env, supabase, d)
+      const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('[lead-status] day='))
+      return { r, line }
+    } finally {
+      log.mockRestore()
+    }
+  }
+
+  it('raises nothing for a click buyer with no sales on a Sunday its hours never reach, and logs why', async () => {
+    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: liberty1Profile() }))
+
+    expect(r.day).toBe('2026-10-04')
+    expect(r.alerted).toBe(false)
+    expect(alerted()).toEqual([])
+    expect(r.partners.find((p) => p.partner === 'Liberty1')?.closed_all_day).toBe(true)
+    expect(line).toContain('not reported: Liberty1 had no Completed sales and its buyer profile was closed all day')
+  })
+
+  it('still raises the line for a click buyer with no sales on a Wednesday inside its hours', async () => {
+    const thursday = () => new Date('2026-10-08T13:00:00Z')
+    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: thursday, loadProfiles: liberty1Profile() }))
+
+    expect(r.day).toBe('2026-10-07')
+    expect(alerted()).toEqual(['Salesforce has no Completed Liberty1 sales from Oct 7, so there was nothing to compare.'])
+    expect(r.partners.find((p) => p.partner === 'Liberty1')?.closed_all_day).toBe(false)
+    expect(line).not.toContain('not reported')
+  })
+
+  it('raises nothing for a click buyer with no sales on its blackout date', async () => {
+    // Monday 2026-10-12 blacked out: the rest of that UTC day is Sunday evening Eastern, also closed.
+    const tuesday = () => new Date('2026-10-13T13:00:00Z')
+    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: tuesday, loadProfiles: liberty1Profile(['2026-10-12']) }))
+
+    expect(r.day).toBe('2026-10-12')
+    expect(alerted()).toEqual([])
+    expect(line).toContain('not reported: Liberty1')
+  })
+
+  it('judges the whole UTC day, so a Saturday whose first hour is Friday evening Eastern still raises a zero', async () => {
+    const sunday = () => new Date('2026-10-04T13:00:00Z')
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: sunday, loadProfiles: liberty1Profile() }))
+
+    expect(alerted()).toEqual(['Salesforce has no Completed Liberty1 sales from Oct 3, so there was nothing to compare.'])
+  })
+
+  it('raises an unchecked finding, never a pass, when the buyer profiles cannot be read', async () => {
+    const r = await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, {
+      now: MONDAY,
+      loadProfiles: async () => {
+        throw new Error('buyer profiles read failed for org org-1: timeout')
+      },
+    }))
+
+    expect(r.alerted).toBe(true)
+    expect(alerted()).toEqual([
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 was buying that day: " +
+        'buyer profiles read failed for org org-1: timeout',
+    ])
+    expect(sentRemedy()?.title).toBe(LEAD_STATUS_UNCHECKED_REMEDY.title)
+  })
+
+  it('raises an unchecked finding when the only copy of the profiles is too old to trust', async () => {
+    // The database read failed and the loader served its last good copy, saved an hour before the run.
+    const stale = async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)], { served_from: 'last_good', loaded_at: '2026-10-05T12:02:00Z' })
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: stale }))
+
+    expect(alerted()).toEqual([
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 was buying that day: " +
+        'the database read failed and the saved copy is 60 minutes old.',
+    ])
+  })
+
+  it('raises an unchecked finding when the buyer profile is switched on with no hours, which saving refuses', async () => {
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: async () => snapshotOf([buyer('Liberty1', 'click', [])]) }))
+
+    expect(alerted()).toEqual([
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and Liberty1's buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.",
+    ])
+  })
+
+  it('raises an unchecked finding when two buyer profiles carry the partner name, rather than picking one (L521)', async () => {
+    const two = async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9), buyer('Liberty1', 'click', [{ dayOfWeek: 0, opensMinute: 0, closesMinute: 1440 }])])
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: two }))
+
+    expect(alerted()).toEqual([
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and 2 buyer profiles are named Liberty1, so the check couldn't tell whose hours to use.",
+    ])
+  })
+
+  it('still raises the line for Tripoint with no sales on a Sunday, even with a buyer profile closed that day', async () => {
+    // Tripoint's profile prices it for buyer selection, but most Tripoint sales come
+    // through the older Tripoint ping, which never reads the profile, so its hours
+    // do not bound when Tripoint can sell.
+    const tripointOffer = async () => snapshotOf([buyer('Tripoint', 'offer', WEEKDAYS_9_TO_9), buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)])
+    const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 0, leads: 0, backlog: 0 } }, { now: MONDAY, loadProfiles: tripointOffer }))
+
+    expect(alerted()).toEqual(['Salesforce has no Completed Tripoint sales from Oct 4, so there was nothing to compare.'])
+    expect(r.partners.find((p) => p.partner === 'Tripoint')?.closed_all_day).toBe(false)
+  })
+
+  it('keeps every other partner\'s findings when judging one buyer\'s hours throws, and names that buyer (L73)', async () => {
+    // A profile whose hours cannot be read at all: the judgement for Liberty1 throws.
+    const broken = buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)
+    Object.defineProperty(broken.profile, 'windows', { get: () => { throw new Error('windows unreadable') } })
+    await checkLeadStatus(env, supabase, deps(
+      { ...LIBERTY1_ZERO, AmOne: { submissions: 55, leads: 0, backlog: 0 } },
+      { now: MONDAY, loadProfiles: async () => snapshotOf([broken]) },
+    ))
+
+    const lines = alerted()
+    expect(lines).toContain(
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't judge Liberty1's buyer hours for that day: windows unreadable",
+    )
+    expect(lines.some((l) => l.startsWith('Only 0 of 55 AmOne sales on Oct 4 reached their Lead'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('The check itself failed'))).toBe(false)
+  })
+
+  it('still raises the line for a partner with no buyer profile, as before', async () => {
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }, { now: MONDAY, loadProfiles: liberty1Profile() }))
+
+    expect(alerted()).toEqual(['Salesforce has no Completed AmOne sales from Oct 4, so there was nothing to compare.'])
+  })
+
+  it('does not read the buyer profiles on a day every judged partner had sales, so a failed read there adds nothing', async () => {
+    const loadProfiles = vi.fn(async (): Promise<BuyerProfilesSnapshot> => {
+      throw new Error('should not be read')
+    })
+    const r = await checkLeadStatus(env, supabase, deps({}, { now: MONDAY, loadProfiles }))
+
+    expect(r.alerted).toBe(false)
+    expect(loadProfiles).not.toHaveBeenCalled()
   })
 })
