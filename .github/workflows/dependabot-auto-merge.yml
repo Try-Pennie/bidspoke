@@ -27,6 +27,12 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # To start Deploy on main after a merge (#1761). The merge is made with
+  # GITHUB_TOKEN, and GitHub starts no workflow from a push made by that token,
+  # so without a dispatch no Deploy ran for any auto-merged pull request. A
+  # workflow_dispatch is the documented exception, and it needs this scope:
+  # anything not listed here is `none`.
+  actions: write
 
 jobs:
   auto-merge:
@@ -50,7 +56,8 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'dependabot/')
     runs-on: ubuntu-latest
-    # measured max 6s, plus headroom. Bounds a HANG, not slowness (#1062).
+    # measured max 6s, plus headroom; the Deploy dispatch adds about a second.
+    # Bounds a HANG, not slowness (#1062).
     timeout-minutes: 5
     steps:
       # Checks out the DEFAULT branch (main), not the PR head, because this job
@@ -87,7 +94,9 @@ jobs:
 
           if [ "$DECISION" = "merge" ]; then
             echo "Merging routine Dependabot PR #$PR_NUMBER ($BRANCH)"
-            gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
+            # Merges, confirms the merge landed by its state, then starts Deploy
+            # on main (#1761), failing this step loudly if either does not happen.
+            bash .github/scripts/dependabot-merge-and-deploy.sh "$REPO" "$PR_NUMBER"
           else
             echo "PR #$PR_NUMBER (author=$AUTHOR, branch=$BRANCH) is not in the auto-merge allowlist, leaving for manual review."
           fi

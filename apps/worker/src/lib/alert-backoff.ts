@@ -25,6 +25,8 @@
  * would be one component holding two unrelated rules.
  */
 
+import schedule from './alert-backoff-schedule.json'
+
 export interface BackoffKv {
   get(key: string): Promise<string | null>
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
@@ -35,12 +37,17 @@ export interface BackoffKv {
  * The gap before each reminder, in seconds, indexed by how many have already
  * been sent. The last entry repeats for ever.
  *
+ * The values live in alert-backoff-schedule.json, not here, because Deploy Drift
+ * backs off on the same schedule from GitHub's side (#1761) and reads that file
+ * with jq. It cannot route its alerts through this worker, whose death it exists
+ * to report (L71), so one file is the only way the two stay the same (L41).
+ *
  * Six hours first, because that is the cadence every family used and the first
  * reminder is the one most likely to be acted on. A day at the end, because a
  * condition still standing after a day and a half is one somebody has decided
  * not to fix today, and a daily line is enough to stop it being forgotten.
  */
-export const BACKOFF_STEPS_SECONDS = [6 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60]
+export const BACKOFF_STEPS_SECONDS: number[] = schedule.stepsSeconds
 
 /**
  * How long a standing-condition record lives without being refreshed.

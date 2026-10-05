@@ -47,6 +47,7 @@ const ok = (lastRunIso: string | null): ScheduleLookup => ({
   ok: true,
   lastRunIso,
   conclusions: lastRunIso === null ? [] : ['success'],
+  runIds: lastRunIso === null ? [] : [null],
   manualPassIso: null,
 })
 
@@ -59,6 +60,7 @@ const ranWith = (
   ok: true,
   lastRunIso,
   conclusions,
+  runIds: conclusions.map(() => null),
   manualPassIso,
 })
 
@@ -287,7 +289,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'schedule' }],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], manualPassIso: null })
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], runIds: [null], manualPassIso: null })
     expect(String(fetchMock.mock.calls[0][0])).toContain('deploy-drift.yml')
   })
 
@@ -307,7 +309,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       ],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], manualPassIso: null })
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], runIds: [null], manualPassIso: null })
   })
 
   it('still ignores a dispatch a PERSON started, so a manual press cannot mask a dead schedule', async () => {
@@ -332,7 +334,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'Deploy Drift (manual)' }],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], runIds: [], manualPassIso: null })
   })
 
   it('builds the failure streak only from qualifying runs', async () => {
@@ -372,7 +374,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
 
   it('reports a confirmed empty list as a real absence', async () => {
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', runs({ workflow_runs: [] }))
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], runIds: [], manualPassIso: null })
   })
 
   it('reports runs that carry no trigger at all as unreadable, not as an absence', async () => {
@@ -401,7 +403,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       ],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], runIds: [], manualPassIso: null })
   })
 
   it('reports a non-200 as a failed lookup, naming the status', async () => {
@@ -491,7 +493,7 @@ describe('evaluateSchedule: an unreadable timestamp must not pass (L50)', () => 
     // the timestamp today, but this function is exported and its type accepts any
     // lookup, so the fail-safe belongs at the comparison as well.
     const v = evaluateSchedule(
-      { ok: true, lastRunIso: 'yesterday afternoon', conclusions: ['success'], manualPassIso: null },
+      { ok: true, lastRunIso: 'yesterday afternoon', conclusions: ['success'], runIds: [null], manualPassIso: null },
       NOW,
       4 * HOUR,
     )
@@ -561,6 +563,7 @@ describe('lookupLastScheduledRun: which manual pass counts as clearing a failure
       ok: true,
       lastRunIso: '2026-08-17T11:17:00Z',
       conclusions: ['failure', 'failure'],
+      runIds: [null, null],
       manualPassIso: '2026-08-17T11:40:00Z',
     })
   })
@@ -607,6 +610,7 @@ describe('lookupLastScheduledRun: which manual pass counts as clearing a failure
       ok: true,
       lastRunIso: '2026-08-17T11:17:00Z',
       conclusions: ['failure', 'failure'],
+      runIds: [null, null],
       manualPassIso: null,
     })
   })

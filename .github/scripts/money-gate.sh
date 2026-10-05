@@ -9,7 +9,8 @@
 #   .github/scripts/money-gate.sh <base_commit_or_ref>
 #
 # ci.yml passes the pull request's base commit (the merge base is computed here);
-# deploy.yml's verify-worker passes the commit main was at before the push.
+# deploy.yml's verify-worker passes the commit main was at before the push, or on
+# a dispatched run the base money-gate-base.sh resolves (#1761).
 #
 # The harness, the fixtures and the stub rules always come from the head, so base
 # and head are driven identically and differ only in the engine under test. The
