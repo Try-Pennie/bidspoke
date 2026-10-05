@@ -6,448 +6,399 @@
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Delegate Gmail Access for Offboarded Agents",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "Engine Bidding Workflow",
-      "check": "outbound_request",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "Engine Bidding Workflow",
-      "check": "route",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "route",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Liberty1 Click Handler",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "Main Flow",
-      "check": "outbound_request",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "route",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "Main Flow",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "RML - Bidding Workflow (GigFi)",
-      "check": "outbound_request",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "RML - Bidding Workflow (GigFi)",
-      "check": "route",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (GigFi)",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "code_namespace",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "error",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "final_node",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "golden_trigger",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "kv_state",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "nodes_executed",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "RML - Bidding Workflow (LendSwift)",
-      "check": "outbound_request",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "response",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
-    },
-    {
-      "workflow": "RML - Bidding Workflow (LendSwift)",
-      "check": "route",
-      "fixture": "* as shadow *",
-      "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     },
     {
       "workflow": "RML - Bidding Workflow (LendSwift)",
       "check": "supabase_write",
       "fixture": "* as shadow *",
       "field": "*",
-      "reason": "A shadow run of a workflow carrying a code node is now refused before anything runs (#1780). A code node's scripts made their real outbound calls on a shadow run, an Equifax pull among them, so this shadow replay now records the refusal and runs, sends and writes nothing. Live and test replays are unchanged."
+      "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
     }
   ]
 }

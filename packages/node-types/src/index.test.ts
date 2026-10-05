@@ -59,10 +59,15 @@ describe('NODE_TRAITS', () => {
     ])
   })
 
-  it('refuses a shadow run of a code node, with the reason, since its scripts make their real calls', () => {
-    expect(withTrait((t) => t.shadowRun.kind === 'refused')).toEqual(['code'])
-    const code = NODE_TRAITS.code.shadowRun
-    expect(code.kind === 'refused' && code.reason).toMatch(/real outbound calls/)
+  // #1708 part B: a code node's scripts make their real calls, so on a shadow
+  // run they run in the compare namespace, whose outbound Worker refuses every
+  // request, rather than being trusted to stub themselves.
+  it('sandboxes a code node on a shadow run, the one node whose calls only the compare namespace can stop', () => {
+    expect(withTrait((t) => t.shadowRun.kind === 'sandboxed')).toEqual(['code'])
+  })
+
+  it('declares every node one of the three things a shadow run can do with it', () => {
+    for (const type of NODE_TYPES) expect(['sends_nothing', 'stubbed', 'sandboxed'], type).toContain(NODE_TRAITS[type].shadowRun.kind)
   })
 
   it('a node is never both network and dispatch or storage, so the timeout floor has one answer', () => {

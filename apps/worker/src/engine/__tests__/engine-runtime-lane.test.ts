@@ -129,14 +129,21 @@ describe('engine runtime: the stored lane', () => {
   })
 })
 
-describe('engine: a shadow run it cannot stub (#1780)', () => {
-  it('refuses a shadow run of a workflow carrying a code node before recording or running anything', async () => {
+describe('engine: a shadow run of code needs its compare bundle (#1780, #1708)', () => {
+  it('refuses a shadow run of a workflow carrying a code node with no compare bundle, before recording or running anything', async () => {
     vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('code') }))
     const err = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run' }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ShadowRunRefusedError)
     expect((err as Error).message).toContain('step is a code node')
     expect(createExecutionRecord).not.toHaveBeenCalled()
     expect(executeNode).not.toHaveBeenCalled()
+  })
+
+  it('runs a shadow of a workflow carrying a code node once its compare bundle is named', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('code') }))
+    const result = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run', codeBundleName: 'bs-cmp-wf-1707-0123abcd' })
+    expect(result.status).toBe(200)
+    expect(executeNode).toHaveBeenCalledTimes(1)
   })
 
   it('refuses a test run override carrying a code node too, since that is what would run', async () => {
@@ -146,7 +153,7 @@ describe('engine: a shadow run it cannot stub (#1780)', () => {
     expect(executeNode).not.toHaveBeenCalled()
   })
 
-  it('still runs a shadow of a workflow with no code node', async () => {
+  it('still runs a shadow of a workflow with no code node, with no bundle', async () => {
     vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('salesforce') }))
     const result = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run' })
     expect(result.status).toBe(200)

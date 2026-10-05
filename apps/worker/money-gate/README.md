@@ -42,8 +42,11 @@ randomness) started another way (#1730):
   locally and hosts the script under the name it chose, so the test run dispatches
   to its test bundle.
 * **shadow dry_run**: the shadow mirror, `POST /shadow/:workflow_id`, with every
-  outbound submission stubbed. #1708 part B moves these to a compare namespace
-  with deny mode egress.
+  outbound submission stubbed and its code on a compare bundle (#1708 part B).
+  The gate calls the engine's own `deployCompareCodeBundle`, as the route does,
+  and hosts the script in the namespace its upload names, so the shadow run
+  dispatches there. An engine from before part B has no such deploy, and its
+  shadow runs of code are refused by name instead.
 
 Each kind's options are what its route hands `executeWorkflow`, built in
 `lib/run-kinds.ts`; `lib/__tests__/run-kinds.test.ts` drives both routes and fails
@@ -167,13 +170,12 @@ workflow not replayed as a test run or as a shadow run.
   a Node test holds to what the two routes pass; a route that changes them fails
   that test, and the replay then drives both sides with the new options, so the
   route change itself is never a base and head difference.
-* A dry_run shadow run's code nodes send their requests (an Equifax pull, Eligibility
-  Scout, Engine, Taktile) because no script receives the shadow mode: the engine
-  puts `shadow_mode` in the sandbox body, and the bundle never hands it to a
-  script. The shadow fixtures record exactly that, as today's behaviour. When #1708
-  part B moves shadow runs to the compare namespace, the gate shows that on the
-  shadow fixtures as differences to acknowledge: `code_namespace`, and
-  `outbound_request` once their egress is denied.
+* Bundles are hosted per dispatch namespace, as on the platform: a name in one
+  namespace is not reachable through another's binding. A bundle in a namespace
+  whose binding names an outbound Worker has its requests answered by that
+  Worker's own code (`apps/compare-outbound` for the compare namespace), and they
+  are not recorded as sent, because none is; a namespace naming an outbound Worker
+  the gate has no handler for stops the replay by name.
 * Responses are canned. A change that only matters against a real partner answer
   the stubs do not model is invisible here.
 * Arms no fixture reaches are listed by name in the coverage report rather than

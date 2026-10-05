@@ -87,18 +87,21 @@ export interface NodeTraits {
    */
   testRunException: { kind: 'report_only' | 'unscreened'; reason: string } | null
   /**
-   * What a shadow run does with this node (#1780). A shadow run must send
-   * nothing: `sends_nothing` makes no outside call or write anyway, `stubbed`
-   * has its outbound call or write skipped by the run, and `refused` cannot be
-   * stubbed, so a shadow run of a workflow carrying it is refused before
+   * What a shadow run does with this node (#1780, #1708). A shadow run must
+   * send nothing: `sends_nothing` makes no outside call or write anyway,
+   * `stubbed` has its outbound call or write skipped by the run, and
+   * `sandboxed` runs where every outside call is refused: a code node's scripts
+   * run in the compare dispatch namespace, whose outbound Worker refuses every
+   * request, and a shadow run with no compare bundle deployed is refused before
    * anything runs. Required, so a new type has to decide. Read only through
    * engine/run-reality.ts.
    */
-  shadowRun: { kind: 'sends_nothing' | 'stubbed' } | { kind: 'refused'; reason: string }
+  shadowRun: { kind: 'sends_nothing' | 'stubbed' | 'sandboxed' }
 }
 
 const SENDS_NOTHING = { kind: 'sends_nothing' } as const
 const STUBBED = { kind: 'stubbed' } as const
+const SANDBOXED = { kind: 'sandboxed' } as const
 
 const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane' | 'shadowRun'>): NodeTraits => ({
   network: false,
@@ -120,8 +123,9 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     lane: 'shared',
     dispatchOrDb: true,
     executorFile: 'code',
-    // Until shadow runs dispatch to a compare namespace that denies egress (#1708 part B).
-    shadowRun: { kind: 'refused', reason: "a code node's scripts make their real outbound calls on a shadow run, with nothing to stub them" },
+    // Its scripts make their real calls, which nothing inside a script can be
+    // trusted to stub, so a shadow run dispatches them to the compare namespace (#1708).
+    shadowRun: SANDBOXED,
   }),
   response: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, executorFile: 'response' }),
   exit: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING }),

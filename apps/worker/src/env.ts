@@ -117,6 +117,12 @@ export interface Env {
 
   // Dynamic Worker dispatch: code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
+  /**
+   * The compare namespace (#1708 part B): where shadow runs dispatch their code,
+   * with bidspoke-compare-outbound as its outbound Worker, which refuses every
+   * request. Optional, so a run without it refuses a shadow run by name.
+   */
+  COMPARE_CODE_LOADER?: DispatchNamespace
 
   // GitHub backup: push workflow definitions on save (PRD Section 3.2)
   // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO

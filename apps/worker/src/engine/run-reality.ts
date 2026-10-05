@@ -14,7 +14,7 @@
  * 2026-10-02). Where a node must behave differently on a test run, the
  * difference is a named `testRunException` in NODE_TRAITS with its reason.
  */
-import { NODE_TRAITS, isNodeType, type NodeType } from '@bidspoke/node-types'
+import { NODE_TRAITS, assertNever, isNodeType, type NodeType } from '@bidspoke/node-types'
 import type { ExecutionContext, WorkflowDefinition } from '../types'
 
 export type ShadowMode = NonNullable<ExecutionContext['shadow_mode']>
@@ -101,50 +101,75 @@ export function nodeSkipsScreenOn(type: NodeType, ctx: ExecutionContext): boolea
 }
 
 /**
- * A shadow run of a workflow carrying a node it cannot stub (#1780). Refused
- * before anything is recorded or run: a shadow run exists to send nothing, and
- * a code node's scripts would make their real calls, an Equifax credit pull
- * among them. Lifts when shadow runs dispatch to a compare namespace that
- * denies egress (#1708 part B).
+ * A shadow run of a workflow carrying code nodes with no compare bundle deployed
+ * for it (#1780, #1708). A code node's scripts make their real calls, an Equifax
+ * credit pull among them, so on a shadow run they run only in the compare
+ * namespace, whose outbound Worker refuses every request. With no bundle there,
+ * they have nowhere safe to run, so the run is refused before anything is
+ * recorded or run.
  */
 export class ShadowRunRefusedError extends Error {
   /** Read by the retry classifier: a refusal is the same on every attempt. */
   readonly permanent = true
 
-  constructor(readonly nodes: Array<{ namespace: string; type: NodeType; reason: string }>) {
+  constructor(readonly nodes: Array<{ namespace: string; type: NodeType }>) {
     super(shadowRefusalMessage(nodes))
     this.name = 'ShadowRunRefusedError'
   }
 }
 
-function shadowRefusalMessage(nodes: Array<{ namespace: string; type: NodeType; reason: string }>): string {
-  const byType = new Map<NodeType, { reason: string; namespaces: string[] }>()
-  for (const n of nodes) {
-    const group = byType.get(n.type) ?? { reason: n.reason, namespaces: [] }
-    group.namespaces.push(n.namespace)
-    byType.set(n.type, group)
-  }
-  const sentences = [...byType].map(([type, { reason, namespaces }]) => {
+function shadowRefusalMessage(nodes: Array<{ namespace: string; type: NodeType }>): string {
+  const byType = new Map<NodeType, string[]>()
+  for (const n of nodes) byType.set(n.type, [...(byType.get(n.type) ?? []), n.namespace])
+  const sentences = [...byType].map(([type, namespaces]) => {
     const names = namespaces.length === 1 ? namespaces[0] : `${namespaces.slice(0, -1).join(', ')} and ${namespaces[namespaces.length - 1]}`
     const what = namespaces.length === 1 ? `is a ${type} node` : `are ${type} nodes`
-    return `${names} ${what}, and ${reason}.`
+    const whose = namespaces.length === 1 ? 'its scripts have' : 'their scripts have'
+    return `${names} ${what}, and no compare bundle was deployed for this run, so ${whose} nowhere to run that refuses their outside calls.`
   })
   return `A shadow run of this workflow is refused before anything runs. ${sentences.join(' ')}`
 }
 
 /**
  * The refusal for a shadow run of this definition, or null when the run may go
- * ahead: it is no shadow run, or every node sends nothing or is stubbed. A type
- * this build has never heard of is left to the executor, which refuses it by
- * name, as the lane check does.
+ * ahead: it is no shadow run, every node sends nothing or is stubbed, or a
+ * compare bundle was deployed for its sandboxed nodes. A type this build has
+ * never heard of is left to the executor, which refuses it by name, as the
+ * lane check does.
  */
-export function shadowRunRefusal(definition: WorkflowDefinition, reality: Pick<RunReality, 'outboundStubbed'>): ShadowRunRefusedError | null {
-  if (!reality.outboundStubbed) return null
-  const refused: Array<{ namespace: string; type: NodeType; reason: string }> = []
+export function shadowRunRefusal(
+  definition: WorkflowDefinition,
+  reality: Pick<RunReality, 'outboundStubbed'>,
+  compareBundle: string | undefined,
+): ShadowRunRefusedError | null {
+  if (!reality.outboundStubbed || compareBundle) return null
+  const refused: Array<{ namespace: string; type: NodeType }> = []
   for (const n of definition.nodes) {
-    if (!isNodeType(n.type)) continue
-    const trait = NODE_TRAITS[n.type].shadowRun
-    if (trait.kind === 'refused') refused.push({ namespace: n.namespace, type: n.type, reason: trait.reason })
+    if (isNodeType(n.type) && NODE_TRAITS[n.type].shadowRun.kind === 'sandboxed') refused.push({ namespace: n.namespace, type: n.type })
   }
   return refused.length > 0 ? new ShadowRunRefusedError(refused) : null
+}
+
+/** Which dispatch namespace a run's code nodes run in. */
+export type CodeNamespace = 'money' | 'compare'
+
+/**
+ * The one switch that decides it (#1708, plan 0.D). A live run and a canvas
+ * test run dispatch to the money namespace and make their real calls (Dan,
+ * 2026-10-02). Every shadow run dispatches to the compare namespace, whose
+ * outbound Worker refuses every request, and never to the money one. A shadow
+ * mode it cannot classify is refused by name rather than given a namespace.
+ */
+export function codeNamespaceOf(ctx: ExecutionContext): CodeNamespace {
+  const mode = ctx.shadow_mode
+  switch (mode) {
+    case undefined:
+    case 'off':
+      return 'money'
+    case 'dry_run':
+    case 'stand_in':
+      return 'compare'
+    default:
+      return assertNever(mode, 'shadow mode')
+  }
 }

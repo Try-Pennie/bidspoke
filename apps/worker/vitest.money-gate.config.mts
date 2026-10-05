@@ -31,12 +31,14 @@ const engineWorker = resolve(engineRoot, 'apps', 'worker')
  * recorded without this file changing.
  */
 const dispatchNamespaces = (unstable_readConfig({ config: resolve(engineWorker, 'wrangler.toml') }, { hideWarnings: true }).dispatch_namespaces ?? [])
-  .map((d) => ({ binding: d.binding, namespace: d.namespace }))
+  // The outbound Worker a namespace names (#1708 part B), so the gate answers its
+  // bundles' requests the way that Worker does, not from the stub rules.
+  .map((d) => ({ binding: d.binding, namespace: d.namespace, outbound: d.outbound?.service ?? null }))
 if (dispatchNamespaces.length === 0) {
   throw new Error(`money gate: ${resolve(engineWorker, 'wrangler.toml')} declares no dispatch namespace, so there is nothing for code nodes to dispatch through`)
 }
 
-const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS })
+const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS, dispatchNamespaces })
 
 export default defineConfig({
   plugins: [

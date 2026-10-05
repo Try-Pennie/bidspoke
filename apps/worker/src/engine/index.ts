@@ -20,7 +20,7 @@ import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
-import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
+import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, type CodeDispatchTarget } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -198,9 +198,9 @@ export async function executeWorkflow(
   // included) may carry only node types its lane can run.
   assertWorkflowServedInLane(workflowId, loaded.lane, runtime.lane)
   assertDefinitionRunsInLane(definition, runtime.lane)
-  // A shadow run must send nothing, so one carrying a node it cannot stub (a
-  // code node, whose scripts make their real calls) is refused here (#1780).
-  const shadowRefusal = shadowRunRefusal(definition, reality)
+  // A shadow run must send nothing, so one carrying code nodes with no compare
+  // bundle deployed for its scripts to run in is refused here (#1780, #1708).
+  const shadowRefusal = shadowRunRefusal(definition, reality, options.codeBundleName)
   if (shadowRefusal) throw shadowRefusal
 
   if (options.enforceSourceAssignment) {
@@ -1660,7 +1660,7 @@ export async function walkGraph(
           // alerts/logs (#458). The chain path isn't retried (chainable nodes
           // carry retries=0), but classification still drives alerting.
           const chainErrorType: import('../types').ErrorType = r.status === 'failed'
-            ? (isDeterministicCodeError(r.errorName, r.error ?? '') ? 'permanent' : 'transient')
+            ? (r.permanent || isDeterministicCodeError(r.errorName, r.error ?? '') ? 'permanent' : 'transient')
             : null
           if (r.status === 'completed') {
             log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs })
@@ -2219,6 +2219,8 @@ interface ChainStepResult {
   // Constructor name of the thrown error (#458) — lets the chain path classify a
   // deterministic programming error as permanent rather than transient.
   errorName?: string
+  /** A failure the same on every attempt: a shadow chain the compare namespace refused (#1708). */
+  permanent?: true
   durationMs: number
   sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
   logs?: import('../types').StepLogEntry[]
@@ -2319,7 +2321,17 @@ export async function executeCodeChain(
   const controller = new AbortController()
   const chainTimer = setTimeout(() => controller.abort(), chainTimeoutMs)
 
-  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(ctx.trigger.workflow_id))
+  // The one switch for where a run's code goes (#1708): a shadow run's chain runs
+  // only on its compare bundle, and never falls back to the money namespace.
+  let target: CodeDispatchTarget
+  try {
+    target = codeDispatchTarget(env, ctx, { chain: true })
+  } catch (err) {
+    clearTimeout(chainTimer)
+    const permanent = (err as { permanent?: unknown }).permanent === true ? { permanent: true as const } : {}
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: formatErr(err), durationMs: 0, ...permanent }] }
+  }
+  const bundleBinding = target.binding.get(target.bundleName)
   let bundleRes: Response | undefined
   let bindingError: unknown
   let timedOut = false
@@ -2359,6 +2371,10 @@ export async function executeCodeChain(
     bindingError !== undefined ||   // guaranteed a "Worker not found" throw at this point
     bundleRes?.status === 404 ||
     bundleRes?.status === 503
+
+  if ((chainUnsupported || !bundleRes) && !target.legacyFallback) {
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0, permanent: true }] }
+  }
 
   if (chainUnsupported || !bundleRes) {
     const results: ChainStepResult[] = []

@@ -8,15 +8,18 @@
  *                    test, in its own workerd (a nested Miniflare), so code nodes
  *                    run for real. A determinism prelude pins the clock and the
  *                    randomness inside the bundle (L504).
- *   POST /dispatch   forwards one dispatch from the fake DYNAMIC_WORKER_LOADER to
- *                    the bundle it names, or answers "not found" as the platform
- *                    does for a script that was never deployed.
+ *   POST /dispatch   forwards one dispatch from a fake dispatch namespace binding
+ *                    to the bundle it names in that namespace, or answers "not
+ *                    found" as the platform does for a script never deployed there.
  *   POST /begin      starts a fixture: names it and sets its stub arms.
  *   GET  /drain      returns, and clears, the outbound requests the code bundles sent.
  *   POST /transcript writes the transcript to MONEY_GATE_OUT.
  *
  * Every outbound request a bundle makes lands in outboundService below: recorded,
  * stripped of credentials, and answered by the shared stub rules. Nothing leaves.
+ * A bundle in a namespace that names an outbound Worker (the compare namespace,
+ * #1708 part B) has its requests answered by that Worker's own code instead, as
+ * the platform routes them, and they are not recorded as sent, because none is.
  */
 import { createRequire } from 'node:module'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -26,6 +29,22 @@ import type { OutboundRecord } from '../lib/compare'
 import { parseBody, redactBody, redactHeaders, redactPathAndQuery } from '../lib/redact'
 import { noRuleAnswer, readBodyText, stubAnswer, toResponse, type Arms } from '../lib/stub-rules'
 import { determinismPrelude, GATE_ENTRY } from './determinism-prelude'
+import compareOutbound from '../../../compare-outbound/src/index'
+import type { HostedBundle } from '../lib/hosted-bundle'
+
+/**
+ * The outbound Workers the gate can stand in for, by the service name a
+ * namespace's binding names, each its real handler. A namespace naming any
+ * other stops the gate by name, since its bundles' egress would be a guess.
+ */
+const OUTBOUND_WORKERS: Record<string, (request: Request) => Response | Promise<Response>> = {
+  'bidspoke-compare-outbound': (request) => compareOutbound.fetch(request),
+}
+
+export interface GateNamespace { binding: string; namespace: string; outbound: string | null }
+
+/** One hosted script per namespace and name: the same name in two namespaces is two scripts. */
+const bundleKey = (namespace: string, name: string): string => `${namespace}/${name}`
 
 type MiniflareCtor = new (opts: Record<string, unknown>) => {
   ready: Promise<unknown>
@@ -49,11 +68,14 @@ async function loadMiniflare(): Promise<{ Miniflare: MiniflareCtor; convert: (o:
 export interface GateIoOptions {
   outPath: string | undefined
   fixedTimeMs: number
+  /** The engine under test's dispatch namespaces, from its wrangler.toml. */
+  dispatchNamespaces: GateNamespace[]
 }
 
 export function createGateIo(opts: GateIoOptions) {
   let mf: InstanceType<MiniflareCtor> | null = null
-  let names = new Set<string>()
+  /** Hosted bundles by namespace and name, to the Miniflare worker holding each. */
+  let hosted = new Map<string, string>()
   let fixture = ''
   let arms: Arms = {}
   let dispatchNode = ''
@@ -82,17 +104,27 @@ export function createGateIo(opts: GateIoOptions) {
     return toResponse(answer)
   }
 
-  async function hostBundles(bundles: Array<{ name: string; script: string }>): Promise<void> {
+  /** How a bundle's outbound requests are answered: its namespace's outbound Worker, or the stub rules. */
+  function egressFor(namespace: string): (request: Request) => Response | Promise<Response> {
+    const ns = opts.dispatchNamespaces.find((d) => d.namespace === namespace)
+    if (!ns) throw new Error(`money gate: a bundle was hosted in ${namespace}, which the engine under test's wrangler.toml does not declare`)
+    if (ns.outbound === null) return codeOutbound
+    const worker = OUTBOUND_WORKERS[ns.outbound]
+    if (!worker) throw new Error(`money gate: ${namespace} names the outbound Worker ${ns.outbound}, which the gate cannot stand in for; add its handler to OUTBOUND_WORKERS`)
+    return worker
+  }
+
+  async function hostBundles(bundles: HostedBundle[]): Promise<void> {
     if (mf) await mf.dispose()
     mf = null
-    names = new Set(bundles.map((b) => b.name))
+    hosted = new Map(bundles.map((b, i) => [bundleKey(b.namespace, b.name), `bundle-${i}`]))
     // No code to host: the replay goes on, and the verdict fails by name if it
     // turns out nothing was replayed at all, rather than this failing obliquely.
     if (bundles.length === 0) return
     const { Miniflare, convert } = await loadMiniflare()
     mf = new Miniflare(convert({
-      workers: bundles.map((b) => ({
-        name: b.name,
+      workers: bundles.map((b, i) => ({
+        name: `bundle-${i}`,
         modules: [
           { type: 'ESModule', path: 'gate-entry.mjs', contents: GATE_ENTRY },
           { type: 'ESModule', path: 'gate-determinism.mjs', contents: determinismPrelude(opts.fixedTimeMs) },
@@ -101,7 +133,7 @@ export function createGateIo(opts: GateIoOptions) {
         // The dispatch namespace uploads bundles with no compatibility date of their
         // own; any fixed date works here because base and head share it.
         compatibilityDate: '2024-09-23',
-        outboundService: codeOutbound,
+        outboundService: egressFor(b.namespace),
       })),
     }))
     await mf.ready
@@ -111,9 +143,9 @@ export function createGateIo(opts: GateIoOptions) {
     const url = new URL(request.url)
     switch (url.pathname) {
       case '/bundles': {
-        const { bundles } = (await request.json()) as { bundles: Array<{ name: string; script: string }> }
+        const { bundles } = (await request.json()) as { bundles: HostedBundle[] }
         await hostBundles(bundles)
-        return Response.json({ hosted: [...names] })
+        return Response.json({ hosted: [...hosted.keys()] })
       }
       case '/begin': {
         const body = (await request.json()) as { fixture: string; arms: Arms }
@@ -124,10 +156,12 @@ export function createGateIo(opts: GateIoOptions) {
       }
       case '/dispatch': {
         const name = url.searchParams.get('name') ?? ''
+        const namespace = url.searchParams.get('namespace') ?? ''
         const path = url.searchParams.get('path') ?? '/'
         dispatchNode = url.searchParams.get('node') ?? ''
-        if (!mf || !names.has(name)) return new Response('not found', { status: 404, headers: { 'x-money-gate': 'worker-not-found' } })
-        const worker = await mf.getWorker(name)
+        const workerName = hosted.get(bundleKey(namespace, name))
+        if (!mf || !workerName) return new Response('not found', { status: 404, headers: { 'x-money-gate': 'worker-not-found' } })
+        const worker = await mf.getWorker(workerName)
         const res = await worker.fetch(`https://worker${path}`, {
           method: request.method,
           headers: { 'content-type': 'application/json', 'x-money-gate-seed': request.headers.get('x-money-gate-seed') ?? fixture },
