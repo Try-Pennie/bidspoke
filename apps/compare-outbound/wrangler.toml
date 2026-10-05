@@ -1,0 +1,9 @@
+# The compare namespace's outbound Worker (#1708 part B). Every request a code
+# bundle in the bidspoke-code-nodes-compare dispatch namespace makes is routed
+# here by the platform, and refused. It is reached only as that outbound
+# service, so it has no route and no workers.dev address.
+name = "bidspoke-compare-outbound"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
+workers_dev = false
