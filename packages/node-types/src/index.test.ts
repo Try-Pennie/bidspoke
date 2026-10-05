@@ -46,6 +46,25 @@ describe('NODE_TRAITS', () => {
     expect(withTrait((t) => t.dispatchOrDb)).toEqual(['buyer_click_check', 'code', 'constants', 'data_store', 'latency_gate'])
   })
 
+  // What a shadow run does with each node (#1780): a shadow run must send
+  // nothing, so a node either sends nothing anyway, has its outbound stubbed by
+  // the run, or makes the whole shadow run refuse.
+  it('stubs every network node on a shadow run or refuses it, so none is ever trusted to send nothing', () => {
+    expect(withTrait((t) => t.network && t.shadowRun.kind === 'sends_nothing')).toEqual([])
+  })
+
+  it('names the nodes whose outbound or writes a shadow run stubs', () => {
+    expect(withTrait((t) => t.shadowRun.kind === 'stubbed')).toEqual([
+      'achieve_offers', 'bid_group', 'buyer_click_send', 'buyer_select', 'data_store', 'latency_gate', 'partner_bid', 'salesforce', 'webhook',
+    ])
+  })
+
+  it('refuses a shadow run of a code node, with the reason, since its scripts make their real calls', () => {
+    expect(withTrait((t) => t.shadowRun.kind === 'refused')).toEqual(['code'])
+    const code = NODE_TRAITS.code.shadowRun
+    expect(code.kind === 'refused' && code.reason).toMatch(/real outbound calls/)
+  })
+
   it('a node is never both network and dispatch or storage, so the timeout floor has one answer', () => {
     expect(withTrait((t) => t.network && t.dispatchOrDb)).toEqual([])
   })

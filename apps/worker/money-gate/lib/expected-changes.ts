@@ -22,6 +22,12 @@ export interface ExpectedChange {
   check: Check
   /** Node pattern; absent matches any node. `*` matches any run of characters. */
   node?: string
+  /**
+   * Replay pattern, matched against the fixture id after `<workflow>/`, so an
+   * entry can name only some replays, `* as shadow *` for every shadow run
+   * (#1780). Absent matches every replay of the workflow.
+   */
+  fixture?: string
   /** Field pattern, `*` for any run of characters, matched against the whole field. */
   field: string
   /** Why this difference is intended, in words. */
@@ -35,7 +41,7 @@ function globToRegex(pattern: string): RegExp {
 }
 
 function describeEntry(e: ExpectedChange): string {
-  return `${e.workflow} ${e.check}${e.node !== undefined ? ` node ${e.node}` : ''} field ${JSON.stringify(e.field)}`
+  return `${e.workflow} ${e.check}${e.node !== undefined ? ` node ${e.node}` : ''}${e.fixture !== undefined ? ` fixture ${JSON.stringify(e.fixture)}` : ''} field ${JSON.stringify(e.field)}`
 }
 
 /** Parses the file, refusing malformed entries by name rather than skipping them. A missing file is no entries. */
@@ -57,6 +63,7 @@ export function parseExpectedChanges(text: string | null): { entries: ExpectedCh
     if (!(CHECKS as readonly string[]).includes(String(e?.check))) problems.push(`unknown check ${JSON.stringify(e?.check)}`)
     if (typeof e?.field !== 'string' || !e.field) problems.push('no field pattern')
     if (e?.node !== undefined && typeof e.node !== 'string') problems.push('a node that is not a string')
+    if (e?.fixture !== undefined && typeof e.fixture !== 'string') problems.push('a fixture that is not a string')
     // A reason must start with a word and say something (L675).
     if (typeof e?.reason !== 'string' || !/^[A-Za-z]/.test(e.reason) || e.reason.trim().length < MIN_REASON) problems.push('no written reason')
     if (problems.length) failures.push(`expected-changes.json entry ${i}: ${problems.join(', ')}`)
@@ -66,7 +73,9 @@ export function parseExpectedChanges(text: string | null): { entries: ExpectedCh
 }
 
 function matches(e: ExpectedChange, d: Difference): boolean {
-  return d.fixture.startsWith(`${e.workflow}/`) &&
+  const prefix = `${e.workflow}/`
+  return d.fixture.startsWith(prefix) &&
+    (e.fixture === undefined || globToRegex(e.fixture).test(d.fixture.slice(prefix.length))) &&
     d.check === e.check &&
     (e.node === undefined || (d.node !== undefined && globToRegex(e.node).test(d.node))) &&
     globToRegex(e.field).test(d.field)

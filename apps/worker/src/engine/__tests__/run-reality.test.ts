@@ -9,8 +9,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import { NODE_TYPES } from '@bidspoke/node-types'
-import { nodeReportsOnly, nodeSkipsScreen, runReality, runRealityOf, stampRunReality } from '../run-reality'
-import type { ExecutionContext } from '../../types'
+import { nodeReportsOnly, nodeSkipsScreen, runReality, runRealityOf, shadowRunRefusal, ShadowRunRefusedError, stampRunReality } from '../run-reality'
+import type { ExecutionContext, WorkflowDefinition } from '../../types'
 
 type Shadow = 'off' | 'dry_run' | 'stand_in' | undefined
 const TESTS: (boolean | undefined)[] = [undefined, false, true]
@@ -82,5 +82,49 @@ describe('run reality: the per node exceptions are named, not scattered', () => 
   it('a live run is report only and unscreened for no node', () => {
     const real = runReality({})
     expect(NODE_TYPES.filter((t) => nodeReportsOnly(t, real) || nodeSkipsScreen(t, real))).toEqual([])
+  })
+})
+
+describe('run reality: a shadow run refuses a node it cannot stub (#1780)', () => {
+  const definition = (...nodes: Array<{ namespace: string; type: string }>): WorkflowDefinition =>
+    ({ trigger: { id: 't', type: 'trigger', config: {} }, nodes: nodes.map((n, i) => ({ id: `n${i}`, config: {}, ...n })), edges: [] }) as unknown as WorkflowDefinition
+  const withCode = definition({ namespace: 'prep', type: 'transform' }, { namespace: 'equifax_pull', type: 'code' }, { namespace: 'scout', type: 'code' })
+
+  it('refuses a dry run of a workflow carrying code nodes, naming every one and why', () => {
+    const refusal = shadowRunRefusal(withCode, runReality({ isTest: true, shadowMode: 'dry_run' }))
+    expect(refusal).toBeInstanceOf(ShadowRunRefusedError)
+    expect(refusal?.nodes.map(({ namespace, type }) => ({ namespace, type }))).toEqual([{ namespace: 'equifax_pull', type: 'code' }, { namespace: 'scout', type: 'code' }])
+    expect(refusal?.message).toBe(
+      "A shadow run of this workflow is refused before anything runs. equifax_pull and scout are code nodes, and a code node's scripts make their real outbound calls on a shadow run, with nothing to stub them."
+    )
+  })
+
+  it('says is for one node', () => {
+    const one = definition({ namespace: 'equifax_pull', type: 'code' })
+    expect(shadowRunRefusal(one, runReality({ isTest: true, shadowMode: 'dry_run' }))?.message).toContain('equifax_pull is a code node, and')
+  })
+
+  it('refuses a stand in run the same way, since it stubs no more than a dry run', () => {
+    expect(shadowRunRefusal(withCode, runReality({ isTest: true, shadowMode: 'stand_in' }))).toBeInstanceOf(ShadowRunRefusedError)
+  })
+
+  it('runs a shadow of a workflow whose nodes are all stubbed or send nothing', () => {
+    const stubbed = definition({ namespace: 'bids', type: 'bid_group' }, { namespace: 'sf', type: 'salesforce' }, { namespace: 'reply', type: 'response' })
+    expect(shadowRunRefusal(stubbed, runReality({ isTest: true, shadowMode: 'dry_run' }))).toBeNull()
+  })
+
+  it('never refuses a run that is not a shadow, live or canvas test, which makes its real calls by design', () => {
+    for (const isTest of [false, true]) {
+      expect(shadowRunRefusal(withCode, runReality({ isTest, shadowMode: undefined }))).toBeNull()
+      expect(shadowRunRefusal(withCode, runReality({ isTest, shadowMode: 'off' }))).toBeNull()
+    }
+  })
+
+  it('leaves a type this build has never heard of to the executor, which refuses it by name', () => {
+    expect(shadowRunRefusal(definition({ namespace: 'x', type: 'not_a_type' }), runReality({ isTest: true, shadowMode: 'dry_run' }))).toBeNull()
+  })
+
+  it('marks the refusal permanent, so a retry classifier never runs it again', () => {
+    expect(shadowRunRefusal(withCode, runReality({ isTest: true, shadowMode: 'dry_run' }))?.permanent).toBe(true)
   })
 })

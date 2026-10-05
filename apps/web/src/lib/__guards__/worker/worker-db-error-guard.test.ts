@@ -37,7 +37,9 @@ interface Finding { file: string; line: number }
 // `if (!data) return 404` only for genuine zero-rows.
 //
 // A condition that narrows on not-found (`isNotFoundError(...)`) is the correct
-// shape (it 404s ONLY on a genuine zero-rows), so it is not flagged.
+// shape (it 404s ONLY on a genuine zero-rows), so it is not flagged. So is
+// `instanceof WorkflowNotFoundError`: the definition loader throws it only for
+// zero rows and a plain Error for a real database failure (#303, #1780).
 function findConflation(rawSrc: string, file: string): Finding[] {
   const src = sanitizeSource(rawSrc)
   const findings: Finding[] = []
@@ -52,8 +54,9 @@ function findConflation(rawSrc: string, file: string): Finding[] {
     re.lastIndex = close
     if (!/error/i.test(cond) || !/\b404\b/.test(body)) continue
     // Narrowing on a genuine not-found is the correct gate, not a conflation:
-    // isNotFoundError (read side, PGRST116) or isNoRowMatchedError (write side).
-    if (/isNotFoundError|isNoRowMatchedError/.test(cond)) continue
+    // isNotFoundError (read side, PGRST116), isNoRowMatchedError (write side), or
+    // the definition loader's own zero-rows error.
+    if (/isNotFoundError|isNoRowMatchedError|instanceof WorkflowNotFoundError\b/.test(cond)) continue
     const stmt = rawSrc.slice(m.index, nl === -1 ? rawSrc.length : nl)
     if (/db-guard-ok/.test(stmt)) continue
     findings.push({ file: path.relative(WORKER_SRC, file), line: src.slice(0, m.index).split('\n').length })
@@ -143,6 +146,17 @@ describe('findConflation (detector)', () => {
   it('does NOT flag the write-side not-found narrowing (isNoRowMatchedError)', () => {
     expect(findConflation(`if (isNoRowMatchedError(error)) return c.json({ error: notFoundMessage }, 404)`, 'f.ts')).toHaveLength(0)
   })
+  // The definition loader throws WorkflowNotFoundError only for a genuine
+  // zero-rows lookup, and a plain Error for a real database failure (#303), so
+  // narrowing on it is the same correct gate as isNotFoundError (#1780).
+  it("does NOT flag a narrowing on the definition loader's WorkflowNotFoundError", () => {
+    expect(findConflation(`if (err instanceof WorkflowNotFoundError) return c.json({ error: 'Workflow not found' }, 404)`, 'f.ts')).toHaveLength(0)
+  })
+
+  it('still flags any other error class answered with a 404', () => {
+    expect(findConflation(`if (err instanceof Error) return c.json({ error: 'Workflow not found' }, 404)`, 'f.ts')).toHaveLength(1)
+  })
+
   it('does NOT flag the corrected split (real error → 5xx, then !data → 404)', () => {
     const fixed = `const blocked = dbErrorUnlessNotFound(c, error)\n  if (blocked) return blocked\n  if (!config) return c.json({ error: 'Config not found' }, 404)`
     expect(findConflation(fixed, 'f.ts')).toHaveLength(0)

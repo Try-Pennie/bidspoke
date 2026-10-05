@@ -92,6 +92,33 @@ describe('resolveExpectedBase', () => {
   })
 })
 
+describe('applyExpectedChanges: the replay an entry names (#1780)', () => {
+  const live = diff({ fixture: 'Main Flow/bid_race_tripoint_wins' })
+  const shadow = diff({ fixture: 'Main Flow/bid_race_tripoint_wins as shadow dry_run' })
+
+  it('excuses only the replays its fixture pattern names, so a shadow only excuse leaves a live difference red', () => {
+    const r = applyExpectedChanges([live, shadow], [entry({ fixture: '* as shadow *' })], [])
+    expect(r.excused.map((x) => x.diff.fixture)).toEqual(['Main Flow/bid_race_tripoint_wins as shadow dry_run'])
+    expect(r.unexcused.map((d) => d.fixture)).toEqual(['Main Flow/bid_race_tripoint_wins'])
+  })
+
+  it('matches the pattern against the replay after the workflow name', () => {
+    expect(applyExpectedChanges([live], [entry({ fixture: 'bid_race_*' })], []).unexcused).toEqual([])
+    expect(applyExpectedChanges([live], [entry({ fixture: 'Main Flow/*' })], []).unexcused).toHaveLength(1)
+  })
+
+  it('names the pattern when an entry carrying one matches nothing', () => {
+    const r = applyExpectedChanges([live], [entry(), entry({ fixture: '* as shadow *', reason: 'A shadow only excuse with nothing to excuse' })], [])
+    expect(r.failures).toEqual(['expected change for Main Flow outbound_request node bid_race fixture "* as shadow *" field "* body.unsecuredDebt" matched no difference; remove it or fix its pattern'])
+  })
+
+  it('refuses a fixture pattern that is not a string', () => {
+    const r = parseExpectedChanges(JSON.stringify({ entries: [{ workflow: 'Main Flow', check: 'outbound_request', fixture: 7, field: '*', reason: 'A perfectly good reason here' }] }))
+    expect(r.entries).toEqual([])
+    expect(r.failures[0]).toMatch(/a fixture that is not a string/)
+  })
+})
+
 describe('parseExpectedChanges', () => {
   it('reads an absent or empty file as no entries', () => {
     expect(parseExpectedChanges(null)).toEqual({ entries: [], failures: [] })

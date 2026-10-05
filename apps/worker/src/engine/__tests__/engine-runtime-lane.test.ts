@@ -36,6 +36,7 @@ import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { createExecutionRecord, flushStepLogs } from '../step-logger'
 import { executeNode } from '../nodes/index'
 import { LaneRefusedNodeError } from '../lane'
+import { ShadowRunRefusedError } from '../run-reality'
 
 const definitionWith = (type: string): WorkflowDefinition =>
   ({
@@ -66,12 +67,12 @@ function makeKV() {
 const client = (name: string) =>
   ({ name, from: () => ({ select: () => ({ in: () => Promise.resolve({ data: [] }) }) }) }) as unknown as SupabaseClient
 
-async function run(runtime: Parameters<typeof executeWorkflow>[2]) {
+async function run(runtime: Parameters<typeof executeWorkflow>[2], extra: Partial<Parameters<typeof executeWorkflow>[0]> = {}) {
   const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
   const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
   try {
-    return await executeWorkflow({ workflowId: 'wf-1707', payload: { lead: 1 }, source: 'engine' }, env, runtime, executionCtx)
+    return await executeWorkflow({ workflowId: 'wf-1707', payload: { lead: 1 }, source: 'engine', ...extra }, env, runtime, executionCtx)
   } finally {
     await Promise.all(background.splice(0))
   }
@@ -122,6 +123,38 @@ describe('engine runtime: the stored lane', () => {
 
   it('runs a money workflow carrying a money node on the money runtime', async () => {
     vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('salesforce') }))
+    const result = await run(moneyRuntime(client('main')))
+    expect(result.status).toBe(200)
+    expect(executeNode).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('engine: a shadow run it cannot stub (#1780)', () => {
+  it('refuses a shadow run of a workflow carrying a code node before recording or running anything', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('code') }))
+    const err = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ShadowRunRefusedError)
+    expect((err as Error).message).toContain('step is a code node')
+    expect(createExecutionRecord).not.toHaveBeenCalled()
+    expect(executeNode).not.toHaveBeenCalled()
+  })
+
+  it('refuses a test run override carrying a code node too, since that is what would run', async () => {
+    const override = definitionWith('code')
+    const err = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run', definitionOverride: override }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ShadowRunRefusedError)
+    expect(executeNode).not.toHaveBeenCalled()
+  })
+
+  it('still runs a shadow of a workflow with no code node', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('salesforce') }))
+    const result = await run(moneyRuntime(client('main')), { isTest: true, shadowMode: 'dry_run' })
+    expect(result.status).toBe(200)
+    expect(executeNode).toHaveBeenCalledTimes(1)
+  })
+
+  it('still runs a live run of a workflow carrying a code node', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ definition: definitionWith('code') }))
     const result = await run(moneyRuntime(client('main')))
     expect(result.status).toBe(200)
     expect(executeNode).toHaveBeenCalledTimes(1)

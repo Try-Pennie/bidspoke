@@ -86,9 +86,21 @@ export interface NodeTraits {
    * the pre-send screen. Read only through engine/run-reality.ts.
    */
   testRunException: { kind: 'report_only' | 'unscreened'; reason: string } | null
+  /**
+   * What a shadow run does with this node (#1780). A shadow run must send
+   * nothing: `sends_nothing` makes no outside call or write anyway, `stubbed`
+   * has its outbound call or write skipped by the run, and `refused` cannot be
+   * stubbed, so a shadow run of a workflow carrying it is refused before
+   * anything runs. Required, so a new type has to decide. Read only through
+   * engine/run-reality.ts.
+   */
+  shadowRun: { kind: 'sends_nothing' | 'stubbed' } | { kind: 'refused'; reason: string }
 }
 
-const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane'>): NodeTraits => ({
+const SENDS_NOTHING = { kind: 'sends_nothing' } as const
+const STUBBED = { kind: 'stubbed' } as const
+
+const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane' | 'shadowRun'>): NodeTraits => ({
   network: false,
   dispatchOrDb: false,
   walkGraphOnly: false,
@@ -101,17 +113,25 @@ const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane'>): NodeTra
 })
 
 export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
-  filter: inMemory({ lane: 'shared', executorFile: 'filter', staticHandles: ['pass', 'exit'] }),
-  branch: inMemory({ lane: 'shared', executorFile: 'branch' }),
-  branch_end: inMemory({ lane: 'shared' }),
-  code: inMemory({ lane: 'shared', dispatchOrDb: true, executorFile: 'code' }),
-  response: inMemory({ lane: 'shared', executorFile: 'response' }),
-  exit: inMemory({ lane: 'shared' }),
-  parallel: inMemory({ lane: 'shared', walkGraphOnly: true, executorFile: 'parallel' }),
-  parallel_end: inMemory({ lane: 'shared', walkGraphOnly: true }),
-  partner_bid: inMemory({ lane: 'money', network: true, referencesPartners: true, executorFile: 'partner-bid' }),
+  filter: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, executorFile: 'filter', staticHandles: ['pass', 'exit'] }),
+  branch: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, executorFile: 'branch' }),
+  branch_end: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING }),
+  code: inMemory({
+    lane: 'shared',
+    dispatchOrDb: true,
+    executorFile: 'code',
+    // Until shadow runs dispatch to a compare namespace that denies egress (#1708 part B).
+    shadowRun: { kind: 'refused', reason: "a code node's scripts make their real outbound calls on a shadow run, with nothing to stub them" },
+  }),
+  response: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, executorFile: 'response' }),
+  exit: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING }),
+  parallel: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, walkGraphOnly: true, executorFile: 'parallel' }),
+  parallel_end: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, walkGraphOnly: true }),
+  partner_bid: inMemory({ lane: 'money', shadowRun: STUBBED, network: true, referencesPartners: true, executorFile: 'partner-bid' }),
   bid_group: inMemory({
     lane: 'money',
+    // Each attempt runs through partner_bid, which the run stubs.
+    shadowRun: STUBBED,
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
@@ -119,14 +139,15 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     staticHandles: ['winner', 'no_winner'],
     executorFile: 'bid-group',
   }),
-  webhook: inMemory({ lane: 'shared', network: true, executorFile: 'integration' }),
-  transform: inMemory({ lane: 'shared', executorFile: 'transform' }),
-  constants: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'constants' }),
-  salesforce: inMemory({ lane: 'money', network: true, executorFile: 'salesforce' }),
-  data_store: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'data-store' }),
-  latency_gate: inMemory({ lane: 'money', dispatchOrDb: true, executorFile: 'latency-gate' }),
+  webhook: inMemory({ lane: 'shared', shadowRun: STUBBED, network: true, executorFile: 'integration' }),
+  transform: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, executorFile: 'transform' }),
+  constants: inMemory({ lane: 'money', shadowRun: SENDS_NOTHING, dispatchOrDb: true, executorFile: 'constants' }),
+  salesforce: inMemory({ lane: 'money', shadowRun: STUBBED, network: true, executorFile: 'salesforce' }),
+  data_store: inMemory({ lane: 'money', shadowRun: STUBBED, dispatchOrDb: true, executorFile: 'data-store' }),
+  latency_gate: inMemory({ lane: 'money', shadowRun: STUBBED, dispatchOrDb: true, executorFile: 'latency-gate' }),
   achieve_offers: inMemory({
     lane: 'money',
+    shadowRun: STUBBED,
     network: true,
     executorFile: 'achieve-offers',
     testRunException: {
@@ -140,6 +161,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // population, which the partner routes resolve at read time.
   buyer_select: inMemory({
     lane: 'money',
+    shadowRun: STUBBED,
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
@@ -153,6 +175,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // `partner_id` (#1553), so the partner finder reads it like partner_bid.
   buyer_click_send: inMemory({
     lane: 'money',
+    shadowRun: STUBBED,
     network: true,
     walkGraphOnly: true,
     referencesPartners: true,
@@ -169,6 +192,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // names its partner by id in `partner_id`.
   buyer_click_check: inMemory({
     lane: 'money',
+    shadowRun: SENDS_NOTHING,
     dispatchOrDb: true,
     walkGraphOnly: true,
     referencesPartners: true,
