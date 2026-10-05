@@ -78,8 +78,8 @@ export interface DrainDeps {
   ledger(partnerId: string): DrainLedger
   readExistingRows(ids: string[]): Promise<Map<string, ExistingRowMeta>>
   supabase: SupabaseClient
-  /** Receives the page lines; an empty list clears the standing condition. */
   /**
+   * Receives the page lines; an empty list clears the standing condition.
    * `keys` names each paged line's problem for the alerter (#1768): the buyer and
    * what is wrong, never the age or the last error, which move every tick. An
    * empty list, the clear, carries none.

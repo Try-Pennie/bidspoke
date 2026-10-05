@@ -262,6 +262,14 @@ describe('fingerprintAlert and recurrenceOf (#1768)', () => {
     expect(recurrenceOf(standing, later)).toEqual({ kind: 'reminder', standing, unchanged: false })
   })
 
+  it('keeps the digits inside a name, so two numbered partners are two problems', () => {
+    // Partner names carry digits (Liberty1, Dot818, M1): only a number standing on
+    // its own is a count or a time that moves.
+    expect(meaningOf('Liberty1 had no sales')).not.toBe(meaningOf('Liberty2 had no sales'))
+    expect(meaningOf('Dot818 refused 3 clicks')).toBe(meaningOf('Dot818 refused 4 clicks'))
+    expect(meaningOf('Dot818 refused 3 clicks')).not.toBe(meaningOf('M1 refused 3 clicks'))
+  })
+
   it('reads a duration in any of its phrasings as one, so an age that grows is the same problem', () => {
     // describeDuration's forms, as the buyer sale drain words its oldest entry,
     // and the compact forms other checks use.

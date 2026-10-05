@@ -155,8 +155,12 @@ const sortedUnique = (values: readonly string[]): string[] => [...new Set(values
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
 /** A run of eight or more hex characters holding a digit: a statement handle, a request id, a hash. */
 const HEX_ID = /\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/gi
-/** A number, with any thousands separators or decimal point inside it. */
-const NUMBER = /\d(?:[\d,.]*\d)?/g
+/**
+ * A number standing on its own, with any thousands separators or decimal point
+ * inside it. Digits after a letter are part of a name (Liberty1, Dot818, M1), so
+ * they are kept: folded, two numbered partners would read as one problem.
+ */
+const NUMBER = /(?<![A-Za-z])\d(?:[\d,.]*\d)?/g
 const UNIT = '(?:millisecond|second|minute|hour|day|week)s?'
 /**
  * A duration once its numbers are folded: as describeDuration words one ("under
