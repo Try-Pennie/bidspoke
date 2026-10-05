@@ -424,6 +424,7 @@ async function judgeZeroDays(
       verdict = {
         kind: 'unchecked',
         text: `${noSales(f.zeroFor, on)}, and the check couldn't judge ${f.zeroFor}'s buyer hours for that day: ${formatErr(err)}`,
+        key: `zero-profile-unjudged:${f.zeroFor}`,
       }
     }
     if (verdict === 'closed') {
