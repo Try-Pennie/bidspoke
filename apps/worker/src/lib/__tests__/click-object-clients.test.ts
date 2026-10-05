@@ -156,6 +156,41 @@ describe('ClickCounterClient', () => {
     expect(err).not.toBeInstanceOf(ObjectCallError)
   })
 
+  // The lost call is caught AFTER the deadline race, so the one catch sees the race's own
+  // DeadlineError too, and must pass it through; and it never sees a fetch that throws at once.
+  describe('how a call that gets no answer ends, each kept apart by its type', () => {
+    const add = (fetch: () => unknown, timers?: Timers) => {
+      const ns = { idFromName: (n: string) => ({ n }), get: () => ({ fetch }) } as unknown as DurableObjectNamespace
+      return new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0, timers ? { timers, deadlineMs: 50 } : {}).addMember('p-1').catch((e: unknown) => e)
+    }
+
+    it('a deadline that expires stays the DeadlineError the race raised, never a lost call', async () => {
+      const pending: Array<() => void> = []
+      const timers: Timers = { setTimeout: (fn) => { pending.push(fn); return pending.length }, clearTimeout: () => undefined }
+      const p = add(() => new Promise(() => undefined), timers)
+      await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0))
+      pending.forEach((fn) => fn())
+      const err = await p
+      expect(err).toBeInstanceOf(DeadlineError)
+      expect(err).not.toBeInstanceOf(ObjectCallLostError)
+    })
+
+    it('a rejection with no Error is a lost call named by its operation, because the race names it first', async () => {
+      // A rejection that is not an Error is the case under test, so the rule against one is set aside here.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      const err = await add(() => Promise.reject('socket closed'))
+      expect(err).toBeInstanceOf(ObjectCallLostError)
+      expect((err as Error).message).toBe('click counter add rejected with a non Error value')
+    })
+
+    it('a fetch that throws at once sent nothing, so it passes through untouched and the node would not ask again', async () => {
+      const thrown = new TypeError('Invalid URL')
+      const err = await add(() => { throw thrown })
+      expect(err).toBe(thrown)
+      expect(err).not.toBeInstanceOf(ObjectCallLostError)
+    })
+  })
+
   it('a refusal stays an ObjectCallError and a call that never answers stays a DeadlineError, never an unreadable answer', async () => {
     const refused = await new ClickCounterClient(namespace(() => json({ error: 'bad_member' }, 400)).ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
     expect(refused).toBeInstanceOf(ObjectCallError)
@@ -314,7 +349,9 @@ describe('the saved copy never moves down (#1632 review)', () => {
     const timers: Timers = { setTimeout: (fn, ms) => { deadlines.push(ms); pending.push(fn); return pending.length }, clearTimeout: () => undefined }
     const copy = memoryKv({ hangPut: true })
     const p = new ClickCounterClient(namespace(() => json({ added: true, count: 5 })).ns, copy.kv, LIBERTY1, AT, { timers }).addMember('p-1')
-    for (let i = 0; i < 10 && pending.length < 2; i++) await Promise.resolve()
+    // Waits on the copy's timer being set, never a fixed number of turns (L290): a fixed
+    // count failed in CI on 2026-10-05 when the call gained one turn (#1766).
+    await vi.waitFor(() => expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS))
     pending.splice(0).forEach((fn) => fn())
     expect(await p).toEqual({ added: true, count: 5 })
     expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS)

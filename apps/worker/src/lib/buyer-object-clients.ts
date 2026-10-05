@@ -8,7 +8,7 @@
  * anything else is an ObjectCallError naming the call and the status, so no
  * failure can read as an answer (L11).
  */
-import { isPartnerId, PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
+import { DeadlineError, isPartnerId, PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
 import type { AddMemberResult, MembersResult } from '../durable-objects/daily-cap'
 import type {
   CapLimits,
@@ -112,10 +112,16 @@ type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
   // Only the request itself can be lost in transit; what happens after it arrived is an answer.
-  const sent = Promise.resolve(stub.fetch(url, init)).catch((err: unknown) => {
+  // Caught after the race rather than chained onto the fetch, so a call that answers pays no extra turn.
+  // Started outside the try: a fetch that throws at once sent nothing, so it is not a lost call.
+  const sent = stub.fetch(url, init)
+  let res: Response
+  try {
+    res = await withDeadline(sent, deadlineOf(opts, op), op, opts.timers)
+  } catch (err) {
+    if (err instanceof DeadlineError) throw err
     throw new ObjectCallLostError(err)
-  })
-  const res = await withDeadline(sent, deadlineOf(opts, op), op, opts.timers)
+  }
   if (res.ok) return res.json<T>()
   const text = await res.text()
   if (res.status === 409 && refusal) {
