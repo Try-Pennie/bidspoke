@@ -36,10 +36,11 @@ Variables can be organized into folders. You can create folders (including neste
 
 A variable can also be saved against a single workflow, for a workflow that keeps its own settings (#1681). That workflow's runs read it as `env.<KEY>` in place of the organization value of the same key; every other workflow keeps reading the organization value and never sees it. Re-running a single node from the canvas reads the same values as the workflow's runs.
 
-- For now this is done through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)). The page lists such a variable like any other but cannot yet create one or show which workflow it belongs to.
+- It is created through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)). The page lists such a variable like any other; creating one there and showing which workflow it belongs to is #1774.
+- Every node reads the same values: Code, Webhook and Salesforce nodes all prefer the run's own value over a Cloudflare Worker secret of the same name.
 - A workflow's own secret is stored encrypted like any other, but it is not synced to the Cloudflare Worker, because the Worker holds one value per name for every workflow.
 - If a workflow's own secret cannot be decrypted, that workflow's runs get an empty value for the key. The organization value is deliberately not used in its place, so a workflow saved with, say, a sandbox credential never sends the production one. The daily decrypt check names the secret and its workflow.
-- The Salesforce and Webhook nodes still prefer a Cloudflare Worker secret over a stored value of the same name, so a workflow's own value for a key that is also an organization secret does not reach those two nodes yet. Use a key of its own in that case.
+- The Salesforce connection (`SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`) belongs to the organization and cannot be set for one workflow, because Bidspoke holds one Salesforce login per organization. A workflow with a Salesforce org of its own is #1689.
 
 ## Where partner and workflow credentials go
 

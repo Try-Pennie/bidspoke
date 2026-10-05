@@ -50,6 +50,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { isOrgOnlyEnvKey } from './org-only-env-keys'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 
 const TTL = 300
@@ -201,6 +202,13 @@ async function loadOrgEnv(
     // A workflow scoped row that names no workflow belongs to no run.
     const workflowId = row.scope === 'workflow' ? row.workflow_id : null
     if (row.scope !== 'global' && !workflowId) continue
+    // The Salesforce connection is the organization's only (org-only-env-keys).
+    // The API refuses one for a workflow; a row that got in some other way is
+    // left out and named, never applied.
+    if (workflowId && isOrgOnlyEnvKey(row.key)) {
+      console.error(`[env-loader] ignoring ${row.key} saved for workflow ${workflowId} in org ${orgId}: it is the organization's Salesforce connection`)
+      continue
+    }
 
     let value: string | null = row.value
     if (row.is_secret) {

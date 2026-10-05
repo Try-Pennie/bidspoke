@@ -8,6 +8,7 @@ import { changedFields, writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret, secretKeys } from '../../lib/secret-crypto'
 import { isUuid } from '../../lib/query-validators'
+import { isOrgOnlyEnvKey } from '../../lib/org-only-env-keys'
 import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
@@ -26,6 +27,11 @@ const env = new Hono<{ Bindings: Env; Variables: Variables }>()
  */
 function mirroredToWorker(row: { is_secret: boolean; scope: string }): boolean {
   return row.is_secret && row.scope === 'global'
+}
+
+/** Why a workflow cannot hold its own value for this key (lib/org-only-env-keys.ts). */
+function orgOnlyRefusal(key: string): string {
+  return `${key} is the organization's Salesforce connection and cannot be set for one workflow`
 }
 
 // GET /api/env — list vars; secret values omitted
@@ -82,6 +88,7 @@ env.post('/', async (c) => {
   if (scope === 'workflow') {
     if (!workflowId) return c.json({ error: 'workflow_id is required for a workflow scoped variable' }, 400)
     if (!isUuid(workflowId)) return c.json({ error: 'workflow_id must be a workflow id' }, 400)
+    if (isOrgOnlyEnvKey(body.key)) return c.json({ error: orgOnlyRefusal(body.key) }, 400)
     const { data: workflow, error: workflowErr } = await supabase
       .from('workflows')
       .select('id')
@@ -178,6 +185,9 @@ env.put('/:id', async (c) => {
   const keyChanged = newKey !== existing.key
   const isRename = existing.is_secret && keyChanged
   const mirrored = mirroredToWorker(existing)
+  if (keyChanged && existing.scope === 'workflow' && isOrgOnlyEnvKey(newKey)) {
+    return c.json({ error: orgOnlyRefusal(newKey) }, 400)
+  }
 
   // Reject a rename that collides with another var of the same (key, scope,
   // workflow) BEFORE touching Cloudflare — otherwise we'd overwrite that other

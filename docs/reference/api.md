@@ -252,7 +252,7 @@ Response `200` returns the workflow response body, with `X-Trace-Id` and `X-Exec
 
 ### Create a variable
 
-`POST /api/env`. `key` is required. For a secret, set `is_secret: true` and provide a `value`. `scope` defaults to `global`; pass a `workflow_id` (with `scope: "workflow"`, or no `scope`) to save it against one workflow. That workflow's runs then read it in place of the org value of the same key, and no other workflow sees it. The workflow must be one of your organization's and not deleted (`404` otherwise); a `workflow_id` with `scope: "global"`, a `workflow` scope with no `workflow_id`, and any other `scope` are refused with `400`. `folder_id` is optional.
+`POST /api/env`. `key` is required. For a secret, set `is_secret: true` and provide a `value`. `scope` defaults to `global`; pass a `workflow_id` (with `scope: "workflow"`, or no `scope`) to save it against one workflow. That workflow's runs then read it in place of the org value of the same key, and no other workflow sees it. The workflow must be one of your organization's and not deleted (`404` otherwise); a `workflow_id` with `scope: "global"`, a `workflow` scope with no `workflow_id`, any other `scope`, and a workflow scoped `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID` or `SALESFORCE_CLIENT_SECRET` (the Salesforce login is held once per organization) are refused with `400`. `folder_id` is optional.
 
 ```bash
 curl -X POST https://bidspoke.trypennie.dev/api/env \

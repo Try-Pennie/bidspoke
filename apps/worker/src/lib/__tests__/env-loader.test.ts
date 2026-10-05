@@ -328,6 +328,26 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
     expect(r).toEqual({ API_URL: 'https://org.example', SHARED: 'org-shared' })
   })
 
+  // The Salesforce node holds one token per organization, so a workflow's own
+  // Salesforce connection would run on the org's token (#1689 is a workflow with
+  // its own Salesforce org). The API refuses one; a row written some other way is
+  // not applied, and says so in the log.
+  it("does not apply a workflow's own value for a Salesforce connection key", async () => {
+    const rows = [
+      globalRow('SALESFORCE_INSTANCE_URL', 'https://org.my.salesforce.com'),
+      workflowRow(WF_A, 'SALESFORCE_INSTANCE_URL', 'https://other.my.salesforce.com'),
+      workflowRow(WF_A, 'ONLY_A', 'a-only'),
+    ]
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await loadEnvVars(ORG, fakeKv(), filteringSupabase(rows), KEY, { workflowId: WF_A }))
+        .toEqual({ SALESFORCE_INSTANCE_URL: 'https://org.my.salesforce.com', ONLY_A: 'a-only' })
+      expect(logged.mock.calls.flat().join(' ')).toContain('SALESFORCE_INSTANCE_URL')
+    } finally {
+      logged.mockRestore()
+    }
+  })
+
   it('applies a workflow scoped row that names no workflow to no run at all', async () => {
     const rows = [globalRow('API_URL', 'https://org.example'), workflowRow(null, 'API_URL', 'orphan')]
     expect(await loadEnvVars(ORG, fakeKv(), filteringSupabase(rows), KEY, { workflowId: WF_A })).toEqual({ API_URL: 'https://org.example' })

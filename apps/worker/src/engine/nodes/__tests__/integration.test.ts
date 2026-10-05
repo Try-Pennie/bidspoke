@@ -184,6 +184,21 @@ describe('executeIntegrationNode', () => {
     expect(fetchMock.mock.calls[0][1].headers['Authorization']).toBe('Bearer super-secret-token')
   })
 
+  // #1681: ctx.env is the run's own values, a workflow's laid over the org's. A
+  // Worker secret of the same name (an org secret's Cloudflare copy) used to win
+  // here while code nodes let the run's value win, so a workflow's own value never
+  // reached this node. The run's value wins now, the same as in a code node.
+  it("uses the run's value over a Worker secret of the same name, as a code node does (#1681)", async () => {
+    fetchMock.mockResolvedValue(mockResponse(200, '{}'))
+    const node = makeNode({
+      url: 'https://api.example.com/report',
+      auth: { type: 'bearer', token: '{{env.PARTNER_TOKEN}}' },
+    })
+    const env = makeEnv({ PARTNER_TOKEN: 'org-worker-copy' })
+    await executeIntegrationNode(node, makeCtx({ env: { PARTNER_TOKEN: 'workflow-value' } }), env)
+    expect(fetchMock.mock.calls[0][1].headers['Authorization']).toBe('Bearer workflow-value')
+  })
+
   it('ignores non-string CF bindings (KV, DO, etc.)', async () => {
     fetchMock.mockResolvedValue(mockResponse(200, '{}'))
     const node = makeNode({ url: 'https://api.example.com/data' })

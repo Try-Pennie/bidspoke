@@ -713,12 +713,12 @@ describe('workflow scoped variables (#1681)', () => {
   })
 
   it("stores a workflow's own secret encrypted and does not write it to Cloudflare", async () => {
-    const created = { id: 'v2', key: 'SALESFORCE_CLIENT_SECRET', value: 'encrypted-test-value', is_secret: true, scope: 'workflow', workflow_id: WF }
+    const created = { id: 'v2', key: 'EQUIFAX_PASSWORD', value: 'encrypted-test-value', is_secret: true, scope: 'workflow', workflow_id: WF }
     const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF } }, environment_variables: { insertResult: created } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
 
     const res = await request(app, 'POST', '/env', {
-      body: { key: 'SALESFORCE_CLIENT_SECRET', value: 'a-workflow-secret', is_secret: true, scope: 'workflow', workflow_id: WF },
+      body: { key: 'EQUIFAX_PASSWORD', value: 'a-workflow-secret', is_secret: true, scope: 'workflow', workflow_id: WF },
     })
 
     expect(res.status).toBe(201)
@@ -752,8 +752,34 @@ describe('workflow scoped variables (#1681)', () => {
     expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
   })
 
+  // The Salesforce node holds ONE token per organization (sf-token-<org>), so a
+  // workflow with its own Salesforce connection would be handed the org's token,
+  // or leave its own under the org's key for every other workflow. A workflow of
+  // its own Salesforce org is #1689; until then these three are the org's only.
+  it.each(['SALESFORCE_INSTANCE_URL', 'SALESFORCE_CLIENT_ID', 'SALESFORCE_CLIENT_SECRET'])(
+    'refuses a workflow scoped %s, since the Salesforce token is held per organization',
+    async (key) => {
+      const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF } } })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+      const res = await request(app, 'POST', '/env', { body: { key, value: 'x', is_secret: true, scope: 'workflow', workflow_id: WF } })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: `${key} is the organization's Salesforce connection and cannot be set for one workflow` })
+      expect(inserts(sb)).toEqual([])
+      expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    },
+  )
+
+  it("refuses renaming a workflow's own variable to a Salesforce connection key", async () => {
+    const existing = { id: 'v3', key: 'OLD_KEY', value: 'x', is_secret: false, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }, { updateResult: { ...existing, key: 'SALESFORCE_CLIENT_ID' } }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'PUT', '/env/v3', { body: { key: 'SALESFORCE_CLIENT_ID' } })
+    expect(res.status).toBe(400)
+    expect((sb.calls['environment_variables'] ?? []).some(([m]) => m === 'update')).toBe(false)
+  })
+
   it("deletes a workflow's own secret without deleting the Cloudflare secret of the same name", async () => {
-    const existing = { id: 'v2', key: 'SALESFORCE_CLIENT_SECRET', value: 'ciphertext', is_secret: true, scope: 'workflow' }
+    const existing = { id: 'v2', key: 'EQUIFAX_PASSWORD', value: 'ciphertext', is_secret: true, scope: 'workflow' }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { writeRows: [{ id: 'v2' }] }] }) as never
     )
