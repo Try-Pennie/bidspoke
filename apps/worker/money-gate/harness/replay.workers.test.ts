@@ -13,7 +13,7 @@
  */
 import { env, listDurableObjectIds, runInDurableObject, createExecutionContext, waitOnExecutionContext, reset } from 'cloudflare:test'
 import { it, expect, vi } from 'vitest'
-import { executeWorkflow } from '@money-gate-engine/engine/index'
+import { executeWorkflow, moneyRuntime } from '@money-gate-engine/engine/index'
 import { buildBundledWorkerScript, codeBundleName } from '@money-gate-engine/lib/code-node-deployer'
 import { createSupabaseDouble, type RecordedWrite, type Row } from '../lib/supabase-double'
 import { generatePayload } from '../lib/generate'
@@ -263,23 +263,6 @@ interface RunResult {
   unstubbed: string[]
 }
 
-/**
- * The engine's third argument, readable by both sides of the gate (#1707). The
- * head takes a runtime of { lane, config, run }; a merge base from before 0.C
- * takes the client itself. This one value is both: the client, with the runtime
- * fields read through it. Delete once no merge base predates 0.C.
- */
-function engineDbArgument(client: object): unknown {
-  const runtime: Record<string, unknown> = { lane: 'money', config: client, run: client }
-  return new Proxy(client, {
-    get(target, prop) {
-      if (typeof prop === 'string' && prop in runtime) return runtime[prop]
-      const value: unknown = Reflect.get(target, prop, target)
-      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value
-    },
-  })
-}
-
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
 async function runOnce(e: GateEnv, def: DefinitionFile, id: string, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape): Promise<RunResult> {
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
@@ -364,7 +347,8 @@ async function runOnce(e: GateEnv, def: DefinitionFile, id: string, payload: unk
   let error: string | undefined
   try {
     const ctx = createExecutionContext()
-    const result = await executeWorkflow({ workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }, runEnv as never, engineDbArgument(db.client) as never, ctx)
+    // The runtime the bidding Worker's routes pass, built by the engine under test.
+    const result = await executeWorkflow({ workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }, runEnv as never, moneyRuntime(db.client as never), ctx)
     await waitOnExecutionContext(ctx)
     response = { status: result.status, body: result.response, headers: result.responseHeaders }
   } catch (err) {
