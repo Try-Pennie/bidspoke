@@ -405,7 +405,18 @@ async function judgeZeroDays(
       kept.push(f)
       continue
     }
-    const verdict = zeroDayVerdict(f.zeroFor, read, dayStart, on)
+    // Its own failure boundary (L73): a profile whose hours cannot be judged
+    // names that partner, and every other partner's findings still go out,
+    // rather than the whole run collapsing into one "check itself failed" line.
+    let verdict: Finding | 'closed' | null
+    try {
+      verdict = zeroDayVerdict(f.zeroFor, read, dayStart, on)
+    } catch (err) {
+      verdict = {
+        kind: 'unchecked',
+        text: `${noSales(f.zeroFor, on)}, and the check couldn't judge ${f.zeroFor}'s buyer hours for that day: ${formatErr(err)}`,
+      }
+    }
     if (verdict === 'closed') {
       const status = partners.find((p) => p.partner === f.zeroFor)
       if (status) status.closed_all_day = true

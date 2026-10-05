@@ -543,6 +543,23 @@ describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
     expect(r.partners.find((p) => p.partner === 'Tripoint')?.closed_all_day).toBe(false)
   })
 
+  it('keeps every other partner\'s findings when judging one buyer\'s hours throws, and names that buyer (L73)', async () => {
+    // A profile whose hours cannot be read at all: the judgement for Liberty1 throws.
+    const broken = buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)
+    Object.defineProperty(broken.profile, 'windows', { get: () => { throw new Error('windows unreadable') } })
+    await checkLeadStatus(env, supabase, deps(
+      { ...LIBERTY1_ZERO, AmOne: { submissions: 55, leads: 0, backlog: 0 } },
+      { now: MONDAY, loadProfiles: async () => snapshotOf([broken]) },
+    ))
+
+    const lines = alerted()
+    expect(lines).toContain(
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't judge Liberty1's buyer hours for that day: windows unreadable",
+    )
+    expect(lines.some((l) => l.startsWith('Only 0 of 55 AmOne sales on Oct 4 reached their Lead'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('The check itself failed'))).toBe(false)
+  })
+
   it('still raises the line for a partner with no buyer profile, as before', async () => {
     await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }, { now: MONDAY, loadProfiles: liberty1Profile() }))
 
