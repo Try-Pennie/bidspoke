@@ -26,6 +26,26 @@ on:
         required: false
         default: ''
 
+# Dispatched runs queue behind each other; push runs never wait (#1761).
+#
+# Batched Dependabot auto-merges each dispatch a Deploy at main's tip a few
+# minutes apart (#700 and #701 merged 2.5 minutes apart), each deploys every
+# target, and a Deploy takes about 6 minutes, so two running at once could finish
+# in the wrong order and leave the OLDER commit on Pages or the tail worker. One
+# group for every dispatch makes them run one at a time. cancel-in-progress is
+# false because a cancelled run can stop part way through a deploy (L671).
+#
+# GitHub keeps one PENDING run per group and replaces it with a newer one. For a
+# dispatch that loses nothing: the newer dispatch deploys every target at a newer
+# tip. A push run deploys only what its own diff touched (#1514), so a replaced
+# push would take its targets with it, and that is why each push run gets a group
+# of its own (its run id) and keeps the behaviour it had before #1761. A push run
+# can still overlap a dispatched one; drift reports the result if it ever lands
+# in the wrong order.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'deploy-dispatched-main' || format('deploy-push-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 # supabase/setup-cli@v3 still ships Node.js 20, which GitHub deprecated.
 # Force Node 24 across all JS actions until upstream publishes a v24-native release.
 env:
@@ -295,12 +315,16 @@ jobs:
       # skips a byte identical bundle.
       - name: Decide which targets deploy
         id: targets
+        # REF because a Deploy dispatched from a branch would otherwise
+        # `wrangler deploy` that branch to production (the dispatch has a branch
+        # picker). The script deploys nothing off main and fails this job.
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           WORKER: ${{ steps.filter.outputs.worker }}
           WORKER_TAIL: ${{ steps.filter.outputs.worker_tail }}
           PAGES: ${{ steps.filter.outputs.pages }}
-        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$WORKER" "$WORKER_TAIL" "$PAGES" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$REF" "$WORKER" "$WORKER_TAIL" "$PAGES" >> "$GITHUB_OUTPUT"
 
   deploy-worker-tail:
     name: Deploy Worker Tail

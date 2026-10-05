@@ -56,4 +56,13 @@ describe('the recovery runbook gives the same remedy (#1761)', () => {
   it('says to start Deploy on main with Run workflow', () => {
     expect(RECOVERY).toMatch(/start Deploy on main[^\n]*Run workflow/i)
   })
+
+  it('says a lost worker needs money_gate_base, because the default asks the live worker for its commit', () => {
+    // With the worker gone, a dispatched Deploy with no money_gate_base gets no
+    // commit back, money-gate-base.sh refuses, Verify fails and nothing deploys.
+    const sectionC = RECOVERY.slice(RECOVERY.indexOf('### C.'), RECOVERY.indexOf('### D.'))
+    const step1 = sectionC.split('\n').find((line) => line.startsWith('1. Worker:')) ?? ''
+    expect(step1).toContain('money_gate_base')
+    expect(step1).toMatch(/full 40 character/)
+  })
 })

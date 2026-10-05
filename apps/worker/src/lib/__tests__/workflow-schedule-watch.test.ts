@@ -476,6 +476,21 @@ describe('formatScheduleSummary: making a working check visible (#842)', () => {
     expect(line, 'an age is what proves a real reading was taken').toMatch(/2h/)
   })
 
+  it('shows why a healthy verdict stood down from a failing streak, so it reads differently from a clean one (#1761)', () => {
+    const detail = 'the last 2 scheduled runs failed, but they found a problem and reported it to Slack themselves'
+    const line = formatScheduleSummary([
+      { file: 'deploy-drift.yml', status: 'healthy', alerted: false, ageMs: 2 * HOUR, detail },
+    ])
+    expect(line).toBe(`deploy-drift.yml=healthy (last ran 2h ago; ${detail})`)
+  })
+
+  it('adds nothing to a clean healthy reading', () => {
+    const line = formatScheduleSummary([
+      { file: 'deploy-drift.yml', status: 'healthy', alerted: false, ageMs: 2 * HOUR, detail: '' },
+    ])
+    expect(line).toBe('deploy-drift.yml=healthy (last ran 2h ago)')
+  })
+
   it('says so plainly when there is no age to report', () => {
     const line = formatScheduleSummary([
       { file: 'deploy-drift.yml', status: 'unreadable', alerted: true, ageMs: null, detail: 'GitHub returned 404' },

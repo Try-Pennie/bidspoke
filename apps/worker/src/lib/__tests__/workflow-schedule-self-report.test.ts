@@ -117,6 +117,10 @@ describe('classifySelfReported: reading whether a failed run reported itself', (
     ['the job never started (no steps, the billing failure shape)', { jobs: [{ conclusion: 'failure', steps: [] }] }],
     ['the job timed out', { jobs: [{ conclusion: 'timed_out', steps: [step(REPORTED_STEP, 'success'), step(GATE, 'failure')] }] }],
     [
+      'a step timed out, even though the job concluded failure and the marker passed',
+      { jobs: [{ conclusion: 'failure', steps: [step('Decide and alert', 'timed_out'), step(REPORTED_STEP, 'success'), step(GATE, 'failure')] }] },
+    ],
+    [
       'a step was cancelled',
       { jobs: [{ conclusion: 'failure', steps: [step('Decide and alert', 'cancelled'), step(REPORTED_STEP, 'success'), step(GATE, 'failure')] }] },
     ],
@@ -151,6 +155,29 @@ describe('evaluateSchedule with self reports (#1761)', () => {
     const v = evaluateSchedule(lookup(['failure', 'failure']), NOW, 4 * H, { reported: [true, false], unreadable: null })
     expect(v.status).toBe('healthy')
     expect(v.detail).toMatch(/reported .*Slack/)
+  })
+
+  it('does not claim every failed run reported when the newest did not, and names why it could not be read', () => {
+    // The newest run's jobs could not be read (or it crashed with no marker), and
+    // the run before it reported its strand. One unreported failure is under the
+    // failing streak, so the verdict stays healthy, but the run log must not say
+    // that both runs reported (L11).
+    const v = evaluateSchedule(lookup(['failure', 'failure']), NOW, 4 * H, {
+      reported: [false, true],
+      unreadable: "GitHub returned 403 reading run 100's jobs",
+    })
+    expect(v.status).toBe('healthy')
+    expect(v.detail).not.toMatch(/they found a problem/)
+    expect(v.detail).toContain('the newest failed run did not report a finding of its own')
+    expect(v.detail).toContain("could not be read: GitHub returned 403 reading run 100's jobs")
+    expect(v.detail).toContain('the one before it reported its finding to Slack')
+  })
+
+  it('says the newest failed run did not report, without a reason, when its jobs were read and showed none', () => {
+    const v = evaluateSchedule(lookup(['failure', 'failure']), NOW, 4 * H, { reported: [false, true], unreadable: null })
+    expect(v.status).toBe('healthy')
+    expect(v.detail).toContain('the newest failed run did not report a finding of its own')
+    expect(v.detail).not.toContain('could not be read')
   })
 
   it('lets a reported run break a streak of older failures, so stale history cannot accuse', () => {

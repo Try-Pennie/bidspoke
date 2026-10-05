@@ -72,6 +72,18 @@ describe('money-gate-base on a dispatched run', () => {
     expect(r.stderr).toContain("'main~3'")
   })
 
+  it('refuses a short hash by name, because the shallow checkout can only fetch a full one', () => {
+    // verify-worker checks out at depth 1, so money-gate.sh fetches the base by
+    // name, and `git fetch origin <short hash>` dies with "couldn't find remote
+    // ref" (measured on a depth 1 clone of this repo) instead of a refusal that
+    // says what to change. The short hash is what the GitHub UI shows.
+    const r = resolve(['workflow_dispatch', '', '63d3cc3'])
+    expect(r.status).toBe(1)
+    expect(r.base).toBe('')
+    expect(r.stderr).toContain("'63d3cc3'")
+    expect(r.stderr).toMatch(/full 40 character commit hash/)
+  })
+
   it('otherwise uses the commit the live worker reports', () => {
     const r = resolve(['workflow_dispatch', '', ''], { stdout: JSON.stringify({ version: LIVE }) })
     expect(r).toMatchObject({ base: LIVE, status: 0, curled: true })

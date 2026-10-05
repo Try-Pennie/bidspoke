@@ -50,12 +50,17 @@ const stateDir = (prior?: { status: 'state' | 'none' | 'unavailable'; targets?: 
   return dir
 }
 
-/** A curl stand in that records the posted body, and exits with `code`. */
+/**
+ * A curl stand in that records the posted body, and exits with `code`. Like
+ * curl against a real Slack incoming webhook, it writes the response body `ok` to
+ * standard output unless told where else to write it with -o, so the subcommand's
+ * one word answer is checked against what production actually sends back.
+ */
 const fakeCurl = (dir: string, code = 0): string => {
   const bin = path.join(dir, 'curl')
   writeFileSync(
     bin,
-    `#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do if [ "$1" = "--data" ]; then printf '%s' "$2" > ${JSON.stringify(path.join(dir, 'posted.json'))}; fi; shift; done\nexit ${code}\n`,
+    `#!/usr/bin/env bash\nout=/dev/stdout\nwhile [ $# -gt 0 ]; do if [ "$1" = "--data" ]; then printf '%s' "$2" > ${JSON.stringify(path.join(dir, 'posted.json'))}; fi; if [ "$1" = "-o" ]; then out="$2"; fi; shift; done\n[ ${code} -eq 0 ] && printf 'ok' > "$out"\nexit ${code}\n`,
   )
   chmodSync(bin, 0o755)
   return bin
@@ -152,19 +157,46 @@ describe('drift-alert-state alert: the first sighting posts', () => {
   })
 })
 
+/** Drift runs hourly, so a reminder is due from half an hour before its interval ends. */
+const GRACE = H / 2
+
 describe('drift-alert-state alert: a standing condition backs off on the shared schedule', () => {
   it.each([
     [1, 6],
     [2, 12],
     [3, 24],
     [7, 24],
-  ])('after %i alert(s) it holds until %ih after the last one, then reminds', (alerts, hours) => {
-    const held = stateDir({ status: 'state', targets: { worker: standing(alerts, hours * H - 1, 100 * H) } })
+  ])('after %i alert(s) it holds until about %ih after the last one, then reminds', (alerts, hours) => {
+    const held = stateDir({ status: 'state', targets: { worker: standing(alerts, hours * H - GRACE - 1, 100 * H) } })
     expect(alert(held, strand)).toBe('held')
     expect(posted(held)).toBeNull()
 
-    const due = stateDir({ status: 'state', targets: { worker: standing(alerts, hours * H, 100 * H) } })
+    const due = stateDir({ status: 'state', targets: { worker: standing(alerts, hours * H - GRACE, 100 * H) } })
     expect(alert(due, strand)).toBe('post-reminder')
+  })
+
+  it('reminds on the run that lands a few seconds earlier past its hour than the post did, not an hour later', () => {
+    // Runs start tens of seconds apart from hour to hour (08:01:23, 09:01:35,
+    // 10:01:32 on 2026-10-05). Judged on the exact boundary, the run 6h after a
+    // post that started 30 seconds earlier past its hour would hold the reminder
+    // a whole extra hour, and about half of all reminders would arrive late.
+    const dir = stateDir({ status: 'state', targets: { worker: standing(1, 6 * H - 30, 6 * H) } })
+    expect(alert(dir, strand)).toBe('post-reminder')
+  })
+
+  it('answers exactly one word on standard output when Slack accepts the post with its body, ok', () => {
+    const dir = stateDir({ status: 'none' })
+    const r = spawnSync('bash', [SCRIPT, 'alert', 'worker', 'alert', 'aaaa|bbbb', 'TEXT'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DRIFT_STATE_DIR: dir,
+        DRIFT_NOW: String(NOW),
+        CURL_BIN: fakeCurl(dir),
+        SLACK_WEBHOOK_URL: 'https://hooks.example/x',
+      },
+    })
+    expect(r.stdout).toBe('post-first\n')
   })
 
   it('carries a held record forward unchanged', () => {
@@ -228,6 +260,74 @@ describe('drift-alert-state alert: it fails toward speaking', () => {
     const done = finish(dir, { WORKER: 'failure' })
     expect(done.next.targets.worker).toBeUndefined()
     expect(done.outcome).toBe('unreported')
+  })
+})
+
+/**
+ * One whole drift run against the record the previous run left: read that record,
+ * alert (or clear) the worker, finish, and hand back what the next run would read.
+ */
+const run = (
+  prior: Record<string, Entry> | null,
+  now: number,
+  action: { kind: string; facts?: string; target?: string } | 'clear',
+  outcomes: { WORKER?: string; PAGES?: string; TAIL?: string } = { WORKER: 'failure' },
+): { decision: string; text: string | null; outcome: string; targets: Record<string, Entry> } => {
+  const dir = stateDir(prior === null ? { status: 'none' } : { status: 'state', targets: prior })
+  let decision = 'cleared'
+  if (action === 'clear') clear(dir, 'worker')
+  else decision = alert(dir, { target: action.target ?? 'worker', kind: action.kind, facts: action.facts ?? 'aaaa|bbbb' }, { now })
+  const done = finish(dir, outcomes)
+  return { decision, text: posted(dir), outcome: done.outcome, targets: done.next.targets }
+}
+
+describe('drift-alert-state: a broken check never resets a standing finding (#1761)', () => {
+  it('keeps the strand on its schedule through an hour the check itself failed', () => {
+    // alert, alert-unconfirmed (the confirming build failed), alert. The hour the
+    // check broke is its own news and posts, but it must not replace the strand's
+    // record: if it did, the strand's return would post as a fresh discovery with
+    // its age back at 0h and its schedule back at 6h.
+    const r1 = run(null, NOW, { kind: 'alert' })
+    expect(r1.decision).toBe('post-first')
+
+    const r2 = run(r1.targets, NOW + H, { kind: 'alert-unconfirmed' })
+    expect(r2.decision).toBe('post-first')
+    expect(r2.outcome).toBe('unreported')
+
+    const r3 = run(r2.targets, NOW + 2 * H, { kind: 'alert' })
+    expect(r3.decision).toBe('held')
+    expect(r3.outcome).toBe('reported')
+
+    const r4 = run(r3.targets, NOW + 6 * H, { kind: 'alert' })
+    expect(r4.decision).toBe('post-reminder')
+    expect(r4.text).toContain(describeRepeat({ since: iso(NOW), alerts: 1 }, (NOW + 6 * H) * 1000))
+  })
+
+  it('treats the check breaking again after it worked as news, since the check recovered in between', () => {
+    const r1 = run(null, NOW, { kind: 'alert-unconfirmed' })
+    const r2 = run(r1.targets, NOW + H, { kind: 'alert' })
+    expect(r2.decision).toBe('post-first')
+    const r3 = run(r2.targets, NOW + 2 * H, { kind: 'alert-unconfirmed' })
+    expect(r3.decision).toBe('post-first')
+  })
+
+  it('drops both the finding and the broken check on a healthy reading', () => {
+    const r1 = run(null, NOW, { kind: 'alert' })
+    const r2 = run(r1.targets, NOW + H, { kind: 'alert-unconfirmed' })
+    const r3 = run(r2.targets, NOW + 2 * H, 'clear', {})
+    expect(r3.targets).toEqual({})
+  })
+
+  it.each([
+    ['worker', 'alert-unconfirmed', { WORKER: 'failure' }],
+    ['site', 'alert-no-samples', { PAGES: 'failure' }],
+    ['tail', 'alert-inflight-unknown', { TAIL: 'failure' }],
+  ])('a HELD %s %s alert still reads as unreported, so the schedule watch keeps speaking', (target, kind, outcomes) => {
+    const r1 = run(null, NOW, { target, kind }, outcomes)
+    expect(r1.decision).toBe('post-first')
+    const r2 = run(r1.targets, NOW + H, { target, kind }, outcomes)
+    expect(r2.decision).toBe('held')
+    expect(r2.outcome).toBe('unreported')
   })
 })
 

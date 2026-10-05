@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
@@ -20,15 +20,21 @@ import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
  */
 const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-targets-decision.sh')
 
-const decide = (...args: string[]): Record<string, string> => {
-  const out = execFileSync('bash', [SCRIPT, ...args], { encoding: 'utf8' })
-  return Object.fromEntries(
+const MAIN = 'refs/heads/main'
+
+/** The decision for a run on main: the event, then the three filter values. */
+const decide = (event: string, ...filters: string[]): Record<string, string> => decideOn(event, MAIN, ...filters)
+
+const parse = (out: string): Record<string, string> =>
+  Object.fromEntries(
     out
       .split('\n')
       .filter((line) => line.includes('='))
       .map((line) => line.split('=') as [string, string]),
   )
-}
+
+const decideOn = (event: string, ref: string, ...filters: string[]): Record<string, string> =>
+  parse(execFileSync('bash', [SCRIPT, event, ref, ...filters], { encoding: 'utf8' }))
 
 describe('deploy-targets-decision', () => {
   it('deploys every target on a dispatched run, whatever the filter said', () => {
@@ -47,6 +53,23 @@ describe('deploy-targets-decision', () => {
 
   it('deploys a target whose filter value on a push is empty or malformed, because a value nobody measured must not skip a deploy', () => {
     expect(decide('push', '', 'yes', 'false')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false' })
+  })
+
+  it.each([
+    ['workflow_dispatch', 'refs/heads/some-feature'],
+    ['workflow_dispatch', 'refs/tags/v1'],
+    ['workflow_dispatch', ''],
+    ['push', 'refs/heads/some-feature'],
+  ])('deploys nothing, and refuses by name, on %s from %s, because only main reaches production', (event, ref) => {
+    // Deploy Worker and Deploy Worker Tail run `wrangler deploy`, which goes to
+    // production whatever branch the run is on, and the worker drift check skips a
+    // commit that is not in main's history, so a branch deploy would run unreviewed
+    // code with nothing reporting it.
+    const run = spawnSync('bash', [SCRIPT, event, ref, 'true', 'true', 'true'], { encoding: 'utf8' })
+    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false' })
+    expect(run.status).toBe(1)
+    expect(run.stderr).toMatch(/::error::/)
+    expect(run.stderr).toContain(`'${ref}'`)
   })
 
   it('deploys everything on an event it does not know', () => {
@@ -79,5 +102,34 @@ describe('deploy.yml routes its targets through the script (#1761)', () => {
     }
     expect(outputs).not.toContain('steps.filter.outputs')
     expect(changes).toContain('.github/scripts/deploy-targets-decision.sh')
+  })
+
+  it('hands the decision script the ref the run is on, so a branch dispatch deploys nothing', () => {
+    const step = changes.slice(changes.indexOf('Decide which targets deploy'))
+    expect(step).toMatch(/REF:\s*\$\{\{\s*github\.ref\s*\}\}/)
+    expect(step).toMatch(/deploy-targets-decision\.sh "\$EVENT_NAME" "\$REF" /)
+  })
+})
+
+describe('dispatched Deploys queue rather than overlap (#1761)', () => {
+  const deploy = readWorkflow('.github/workflows/deploy.yml')
+  const head = deploy.slice(0, deploy.indexOf('\njobs:'))
+  const block = head.slice(head.indexOf('\nconcurrency:'))
+
+  it('puts every dispatched run in one group that never cancels a run already deploying (L671)', () => {
+    // Batched auto-merges each dispatch a Deploy at main's tip a few minutes
+    // apart, and each deploys every target, so two running at once can finish in
+    // the wrong order and leave the older commit live.
+    expect(head).toMatch(/\nconcurrency:\n/)
+    expect(block).toMatch(/cancel-in-progress:\s*false/)
+    expect(block).toContain("github.event_name == 'workflow_dispatch'")
+  })
+
+  it('gives every push run a group of its own, so a pending push is never replaced and its diff lost', () => {
+    // GitHub replaces a PENDING run in a group with the newer one. A push run
+    // deploys only what its own diff touched, so a replaced push would take its
+    // targets with it; a replaced dispatch loses nothing, because the newer
+    // dispatch deploys every target at a newer tip.
+    expect(block).toContain('github.run_id')
   })
 })

@@ -11,7 +11,8 @@
 #
 #   push               github.event.before, passed through as it is. money-gate.sh
 #                      already refuses an empty or all zeros value by name.
-#   workflow_dispatch  the money_gate_base input when given (a commit hash). The
+#   workflow_dispatch  the money_gate_base input when given (a full 40 character
+#                      commit hash; a short one is refused by name). The
 #                      Dependabot auto-merge passes the commit main was at before
 #                      its merge, which is what a push would have carried.
 #                      Otherwise the commit the LIVE worker reports at GET /, so
@@ -44,12 +45,15 @@ case "$EVENT" in
 esac
 
 if [ -n "$INPUT_BASE" ]; then
-  if [[ "$INPUT_BASE" =~ ^[0-9a-f]{7,40}$ ]]; then
+  # A full hash only. verify-worker checks out at depth 1, so money-gate.sh
+  # fetches the base by name, and git cannot fetch a short hash from a remote: it
+  # dies with "couldn't find remote ref" rather than a refusal naming the fix.
+  if [[ "$INPUT_BASE" =~ ^[0-9a-f]{40}$ ]]; then
     printf '%s\n' "$INPUT_BASE"
     echo "money gate base: the money_gate_base input, ${INPUT_BASE}" >&2
     exit 0
   fi
-  refuse "the money_gate_base input '${INPUT_BASE}' is not a commit hash. Start Deploy on main again with money_gate_base set to a full commit hash, or left empty to use the commit the live worker reports."
+  refuse "the money_gate_base input '${INPUT_BASE}' is not a full 40 character commit hash (a short hash cannot be fetched by this run's shallow checkout). Start Deploy on main again with money_gate_base set to the full 40 character commit hash, or left empty to use the commit the live worker reports."
 fi
 
 if [ -z "${WORKER_URL:-}" ]; then

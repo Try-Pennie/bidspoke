@@ -323,11 +323,22 @@ export function evaluateSchedule(
   }
   if (rawStreak >= FAILING_STREAK) {
     // Healthy, but the detail says why, so the run log can tell this from an
-    // ordinary clean reading (L11), as the #1188 manual pass does.
+    // ordinary clean reading (L11), as the #1188 manual pass does. Worded from
+    // what was measured: `streak` failed runs at the front did NOT prove they
+    // reported (or could not be read), and the run behind them did.
+    if (streak === 0) {
+      return {
+        status: 'healthy',
+        ageMs,
+        detail: `the last ${rawStreak} scheduled runs failed, but they found a problem and reported it to Slack themselves, so this does not report it a second time`,
+      }
+    }
+    const newest = streak === 1 ? 'the newest failed run' : `the newest ${streak} failed runs`
+    const why = selfReport?.unreadable ? ` (whether it did could not be read: ${selfReport.unreadable})` : ''
     return {
       status: 'healthy',
       ageMs,
-      detail: `the last ${rawStreak} scheduled runs failed, but they found a problem and reported it to Slack themselves, so this does not report it a second time`,
+      detail: `the last ${rawStreak} scheduled runs failed: ${newest} did not report a finding of its own${why}, but the one before it reported its finding to Slack, so this is not yet a failing streak`,
     }
   }
   return { status: 'healthy', ageMs, detail: '' }

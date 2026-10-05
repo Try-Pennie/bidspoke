@@ -69,7 +69,9 @@ one, and so does a person repairing a stranded target from the Actions tab,
 given (the auto-merge passes the commit main was at before its merge), and
 otherwise the commit the live worker reports, so the gate compares exactly the
 engine production runs. A dispatched run that can find neither refuses by name:
-start it again with `money_gate_base` set. That rule lives in
+start it again with `money_gate_base` set to a full 40 character commit hash
+(a short hash is refused, because the run's shallow checkout cannot fetch one).
+That rule lives in
 `.github/scripts/money-gate-base.sh`.
 
 Against the live worker's commit, every `expected-changes.json` entry added since

@@ -46,6 +46,17 @@
 # A target with no call this run (in flight, propagating, skipped, or a step that
 # never ran) carries its record forward unchanged: only a real healthy reading
 # clears, and only a confirmed post advances the schedule.
+#
+# Each target keeps two records: `<target>` for a finding about the target, and
+# `<target>:check` for the drift check being unable to measure it. A broken check
+# must never replace a standing finding's record, or one hour of a failed build
+# would make the strand's return post as a fresh discovery, its age back at 0h and
+# its schedule back at 6h. A finding (held or posted) proves the check works, so it
+# drops the `:check` record; a healthy reading drops both.
+#
+# A reminder is due from EARLY_GRACE_SECONDS before its interval ends. Drift runs
+# once an hour and its start time wanders by tens of seconds, so judged on the
+# exact boundary about half of all reminders would wait a whole extra hour.
 
 set -uo pipefail
 
@@ -57,6 +68,7 @@ ARTIFACT_NAME="${DRIFT_STATE_ARTIFACT:-deploy-drift-alert-state}"
 GH_BIN="${GH_BIN:-gh}"
 CURL_BIN="${CURL_BIN:-curl}"
 TARGETS="worker site tail"
+EARLY_GRACE_SECONDS=1800
 
 mkdir -p "$DIR/next" "$DIR/run"
 
@@ -151,8 +163,16 @@ cmd_read() {
 cmd_alert() {
   local target="${1-}" kind="${2-}" facts="${3-}" text="${4-}"
   local key="${target}|${kind}|${facts}"
-  local class now now_iso status steps entry note decision body
+  local class slot now now_iso status steps entry note decision body
   class=$(classify "$target" "$kind")
+  slot="$target"
+  if [ "$class" = "finding" ]; then
+    # The check measured something, so it is not broken.
+    rm -f "$DIR/next/${target}:check.json"
+    : >"$DIR/next/${target}:check.cleared"
+  else
+    slot="${target}:check"
+  fi
   now="${DRIFT_NOW:-$(date -u +%s)}"
   now_iso=$(jq -nr --argjson n "$now" '$n | todate')
   status=$(prior_status)
@@ -161,7 +181,7 @@ cmd_alert() {
   entry=""
   if [ "$status" = "state" ]; then
     # A malformed entry is no entry, as readCondition treats one (alert-backoff.ts).
-    entry=$(jq -ce --arg t "$target" '.targets[$t]
+    entry=$(jq -ce --arg t "$slot" '.targets[$t]
       | select(type == "object" and (.key | type) == "string" and (.since | type) == "string"
                and (.alerts | type) == "number" and .alerts >= 1 and (.last_alert | type) == "string")' \
       "$DIR/prior.json" 2>/dev/null) || entry=""
@@ -177,11 +197,12 @@ cmd_alert() {
   if [ -n "$note" ]; then
     decision=post-first
   else
-    decision=$(jq -nr --argjson steps "$steps" --argjson entry "${entry:-null}" --arg key "$key" --argjson now "$now" "$JQ_DEFS"'
+    decision=$(jq -nr --argjson steps "$steps" --argjson entry "${entry:-null}" --arg key "$key" --argjson now "$now" \
+      --argjson grace "$EARLY_GRACE_SECONDS" "$JQ_DEFS"'
       if $entry == null or $entry.key != $key then "post-first"
       else (try ($entry.last_alert | fromdateiso8601) catch null) as $last
         | if $last == null then "post-reminder"
-          elif ($now - $last) >= interval($entry.alerts - 1) then "post-reminder"
+          elif ($now - $last) >= (interval($entry.alerts - 1) - $grace) then "post-reminder"
           else "held" end
       end')
   fi
@@ -208,7 +229,9 @@ cmd_alert() {
     return
   fi
 
-  if ! "$CURL_BIN" -fsS -X POST "$SLACK_WEBHOOK_URL" \
+  # -o /dev/null: Slack answers an accepted post with the body `ok`, which would
+  # otherwise land in front of this subcommand's one word answer.
+  if ! "$CURL_BIN" -fsS -o /dev/null -X POST "$SLACK_WEBHOOK_URL" \
       -H 'Content-Type: application/json' \
       --data "$(jq -nc --arg text "$body" '{text: $text}')"; then
     # Nothing recorded: a post Slack refused must not buy hours of silence.
@@ -225,32 +248,36 @@ cmd_alert() {
       alerts: (if $decision == "post-reminder" then $entry.alerts + 1 else 1 end),
       last_alert: $now,
       class: $class
-    }' >"$DIR/next/$target.json"
-  rm -f "$DIR/next/$target.cleared"
+    }' >"$DIR/next/$slot.json"
+  rm -f "$DIR/next/$slot.cleared"
   printf '%s\n' "$class" >"$DIR/run/$target"
   log "alert: $target $decision ($key)"
   echo "$decision"
 }
 
 cmd_clear() {
-  local target="${1-}"
-  rm -f "$DIR/next/$target.json"
-  : >"$DIR/next/$target.cleared"
-  log "clear: $target measured healthy, its record is dropped"
+  local target="${1-}" slot
+  for slot in "$target" "${target}:check"; do
+    rm -f "$DIR/next/$slot.json"
+    : >"$DIR/next/$slot.cleared"
+  done
+  log "clear: $target measured healthy, its records are dropped"
 }
 
 cmd_finish() {
-  local targets t failed report outcome
+  local targets t slot failed report outcome
   targets='{}'
   if [ "$(prior_status)" = "state" ]; then
     targets=$(jq -c '.targets // {}' "$DIR/prior.json" 2>/dev/null) || targets='{}'
   fi
   for t in $TARGETS; do
-    if [ -f "$DIR/next/$t.json" ]; then
-      targets=$(jq -c --arg t "$t" --slurpfile e "$DIR/next/$t.json" '.[$t] = $e[0]' <<<"$targets")
-    elif [ -f "$DIR/next/$t.cleared" ]; then
-      targets=$(jq -c --arg t "$t" 'del(.[$t])' <<<"$targets")
-    fi
+    for slot in "$t" "${t}:check"; do
+      if [ -f "$DIR/next/$slot.json" ]; then
+        targets=$(jq -c --arg t "$slot" --slurpfile e "$DIR/next/$slot.json" '.[$t] = $e[0]' <<<"$targets")
+      elif [ -f "$DIR/next/$slot.cleared" ]; then
+        targets=$(jq -c --arg t "$slot" 'del(.[$t])' <<<"$targets")
+      fi
+    done
   done
   jq -n --argjson targets "$targets" '{version: 1, targets: $targets}' >"$DIR/next.json"
 
