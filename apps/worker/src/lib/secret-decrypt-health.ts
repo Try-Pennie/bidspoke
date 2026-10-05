@@ -16,19 +16,38 @@
  * - Only the "fails to decrypt" direction. The sibling "exists in the DB but not
  *   synced as a Cloudflare worker secret" direction is owned by the secret-drift
  *   check (#199, `secret-drift.ts`); duplicating it here would double-alert.
- * - Only `scope='global'` secrets — the same set the env-loader actually decrypts
- *   and skips. A secret nothing decrypts cannot silently strand a node.
+ * - The same set the env-loader actually decrypts: every org secret, and since
+ *   #1681 every secret saved for one workflow, which the loader WITHHOLDS from
+ *   that workflow's runs when it cannot decrypt it. A workflow's own secret is
+ *   named with its workflow, since the same key can be the org's too. One saved
+ *   for a deleted workflow is left out: no run reads it, so it strands nothing.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { getSlackConnection, sendSecretDecryptAlert } from './slack'
 
+interface EmbeddedWorkflow {
+  name: string
+  deleted_at: string | null
+}
+
 export interface SecretRow {
   key: string
   value: string | null
   organization_id: string
+  scope: string
+  workflow_id: string | null
+  /**
+   * The workflow a workflow scoped secret was saved for, embedded by the read.
+   * PostgREST returns a many to one embed as one object; the untyped client
+   * declares it as a list, so both are accepted.
+   */
+  workflows: EmbeddedWorkflow | EmbeddedWorkflow[] | null
 }
+
+const embeddedWorkflow = (row: SecretRow): EmbeddedWorkflow | null =>
+  (Array.isArray(row.workflows) ? row.workflows[0] : row.workflows) ?? null
 
 /** Rows whose stored ciphertext fails to decrypt under the given key. Empty values
  * are skipped — an unset secret is a presence problem (required-secrets / secret-drift),
@@ -68,34 +87,37 @@ export async function runSecretDecryptHealthCheck(
 
   const { data, error } = await supabase
     .from('environment_variables')
-    .select('key, value, organization_id')
+    .select('key, value, organization_id, scope, workflow_id, workflows(name, deleted_at)')
     .eq('is_secret', true)
-    .eq('scope', 'global')
 
   if (error) {
     // A transient DB error must never raise a false alert (the #391 outage shape,
-    // inverted). Log and skip — the next daily run re-checks.
+    // inverted). Log and skip: the next daily run re-checks.
     console.error(`[secret-decrypt-health] load failed, skipping: ${error.message}`)
     return { checked: 0, undecryptable: 0, alerted: false, skipped: 'db-error' }
   }
 
-  const rows = (data ?? []) as SecretRow[]
+  // A workflow scoped secret counts only while its workflow can still run, and
+  // only when it names one, which is the set the loader hands a run (#1681).
+  const rows = ((data ?? []) as SecretRow[]).filter((row) =>
+    row.scope === 'global' || (row.scope === 'workflow' && row.workflow_id !== null && !embeddedWorkflow(row)?.deleted_at)
+  )
   const bad = await findUndecryptableSecrets(rows, secretKeys(env))
   if (bad.length === 0) return { checked: rows.length, undecryptable: 0, alerted: false }
 
   // Group by org so each org's Slack connection gets only its own undecryptable keys.
-  const byOrg = new Map<string, string[]>()
+  const byOrg = new Map<string, { key: string; workflow: string | null }[]>()
   for (const s of bad) {
     const list = byOrg.get(s.organization_id) ?? []
-    list.push(s.key)
+    list.push({ key: s.key, workflow: s.scope === 'workflow' ? (embeddedWorkflow(s)?.name ?? s.workflow_id) : null })
     byOrg.set(s.organization_id, list)
   }
 
   let alerted = false
-  for (const [orgId, keys] of byOrg) {
+  for (const [orgId, secrets] of byOrg) {
     const connection = await getSlackConnection(supabase, orgId)
     if (!connection || !connection.config_alerts_enabled) continue
-    if (await sendSecretDecryptAlert(connection, keys, env.APP_URL)) alerted = true
+    if (await sendSecretDecryptAlert(connection, secrets, env.APP_URL)) alerted = true
   }
 
   return { checked: rows.length, undecryptable: bad.length, alerted }

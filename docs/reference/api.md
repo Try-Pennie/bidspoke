@@ -240,7 +240,7 @@ Response `200` returns the workflow response body, with `X-Trace-Id` and `X-Exec
 
 ## Environment variables
 
-`/api/env`. Workflow-accessible config and secrets. Non-secret values are returned in full; secret values are masked as `null` on read and only revealed through the dedicated endpoint. Secrets are also synced to Cloudflare Worker secrets and stored encrypted (for reveal). See [environment variables and secrets](../guides/environment-variables-and-secrets.md).
+`/api/env`. Workflow-accessible config and secrets. Non-secret values are returned in full; secret values are masked as `null` on read and only revealed through the dedicated endpoint. Every secret is stored encrypted (for the engine and for reveal); an org wide secret is also synced to the Cloudflare Worker secret of the same name, and a secret saved for one workflow is not (#1681). See [environment variables and secrets](../guides/environment-variables-and-secrets.md).
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -248,11 +248,11 @@ Response `200` returns the workflow response body, with `X-Trace-Id` and `X-Exec
 | POST | `/api/env` | Create a variable. |
 | PUT | `/api/env/:id` | Update a variable's value, key, or folder. |
 | GET | `/api/env/:id/reveal` | Decrypt and return a secret's value (audit-logged). |
-| DELETE | `/api/env/:id` | Delete a variable (also removes the Cloudflare secret if it was one). |
+| DELETE | `/api/env/:id` | Delete a variable (also removes the Cloudflare secret if it was an org wide secret). |
 
 ### Create a variable
 
-`POST /api/env`. `key` is required. For a secret, set `is_secret: true` and provide a `value`. `scope` defaults to `global`; pass a `workflow_id` to scope it to one workflow. `folder_id` is optional.
+`POST /api/env`. `key` is required. For a secret, set `is_secret: true` and provide a `value`. `scope` defaults to `global`; pass a `workflow_id` (with `scope: "workflow"`, or no `scope`) to save it against one workflow. That workflow's runs then read it in place of the org value of the same key, and no other workflow sees it. The workflow must be one of your organization's and not deleted (`404` otherwise); a `workflow_id` with `scope: "global"`, a `workflow` scope with no `workflow_id`, and any other `scope` are refused with `400`. `folder_id` is optional.
 
 ```bash
 curl -X POST https://bidspoke.trypennie.dev/api/env \

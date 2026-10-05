@@ -30,7 +30,16 @@ If a secret shows "Rotate to enable reveal", it was created before the encryptio
 
 ## Folders
 
-Variables can be organized into folders. You can create folders (including nested folders), drag variables between them, rename and move folders, collapse them, and sort by most-recently-used or by name. Folders are organizational only; they do not affect how a node reads `env.<KEY>` (keys are global within the organization, not scoped to a folder).
+Variables can be organized into folders. You can create folders (including nested folders), drag variables between them, rename and move folders, collapse them, and sort by most-recently-used or by name. Folders are organizational only; they do not affect how a node reads `env.<KEY>` (a key is not scoped to a folder).
+
+## Values saved for one workflow
+
+A variable can also be saved against a single workflow, for a workflow that keeps its own settings (#1681). That workflow's runs read it as `env.<KEY>` in place of the organization value of the same key; every other workflow keeps reading the organization value and never sees it. Re-running a single node from the canvas reads the same values as the workflow's runs.
+
+- For now this is done through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)). The page lists such a variable like any other but cannot yet create one or show which workflow it belongs to.
+- A workflow's own secret is stored encrypted like any other, but it is not synced to the Cloudflare Worker, because the Worker holds one value per name for every workflow.
+- If a workflow's own secret cannot be decrypted, that workflow's runs get an empty value for the key. The organization value is deliberately not used in its place, so a workflow saved with, say, a sandbox credential never sends the production one. The daily decrypt check names the secret and its workflow.
+- The Salesforce and Webhook nodes still prefer a Cloudflare Worker secret over a stored value of the same name, so a workflow's own value for a key that is also an organization secret does not reach those two nodes yet. Use a key of its own in that case.
 
 ## Where partner and workflow credentials go
 

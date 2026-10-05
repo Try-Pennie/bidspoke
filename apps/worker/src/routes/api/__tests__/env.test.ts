@@ -196,7 +196,7 @@ describe('PUT /env/:id', () => {
   })
 
   it('calls setCfSecret when updating a secret variable', async () => {
-    const existing = { id: 'v2', key: 'SECRET_KEY', value: null, is_secret: true }
+    const existing = { id: 'v2', key: 'SECRET_KEY', value: null, is_secret: true, scope: 'global', workflow_id: null }
     const updated = { id: 'v2', key: 'SECRET_KEY', value: null, is_secret: true }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -323,7 +323,7 @@ describe('DELETE /env/:id', () => {
   })
 
   it('calls deleteCfSecret when deleting a secret variable', async () => {
-    const existing = { id: 'v2', key: 'SECRET_KEY', is_secret: true }
+    const existing = { id: 'v2', key: 'SECRET_KEY', is_secret: true, scope: 'global' }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, environment_variables: { single: existing } }) as never
     )
@@ -614,5 +614,159 @@ describe('env var audit entries carry old and new values (#1085)', () => {
     const [entry] = changesOf()
     expect(entry).toEqual({ action: 'deleted', changes: { key: 'SECRET_KEY' } })
     expect(JSON.stringify(entry.changes)).not.toContain('ciphertext')
+  })
+})
+
+/**
+ * #1681. A run now loads the values saved for its own workflow, so which
+ * workflow a variable is saved against decides which runs read it.
+ *
+ * The Worker connects as service_role, which bypasses RLS, so nothing in the
+ * database stops a caller naming another organization's workflow: the route
+ * has to check it belongs to the caller's (CLAUDE.md, "Security scoping by
+ * default"). And Cloudflare holds ONE Worker secret per name for every
+ * workflow, so a workflow's own secret must stay out of it: mirrored there it
+ * would overwrite the org secret of the same name, which the Salesforce and
+ * Webhook nodes of every workflow read, and deleting it would delete the org's.
+ */
+describe('workflow scoped variables (#1681)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const WF = '0190c3a0-0000-7000-8000-000000000001'
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  const inserts = (sb: ReturnType<typeof makeSupabase>) =>
+    (sb.calls['environment_variables'] ?? []).filter(([m]) => m === 'insert')
+
+  it("refuses a workflow from another organization with a 404, writing nothing and touching no Cloudflare secret", async () => {
+    // Scoped by organization, the other organization's workflow is not found.
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: null } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'POST', '/env', { body: { key: 'API_URL', value: 'x', scope: 'workflow', workflow_id: WF } })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+    expect(sb.eqCalls['workflows']).toEqual(expect.arrayContaining([['id', WF], ['organization_id', USER_ORG]]))
+    expect(sb.calls['workflows']).toContainEqual(['is', ['deleted_at', null]])
+    expect(inserts(sb)).toEqual([])
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the workflow lookup hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { singleError: { code: '57014', message: 'statement timeout' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/env', { body: { key: 'API_URL', value: 'x', scope: 'workflow', workflow_id: WF } })
+    expect(res.status).toBe(500)
+    expect(inserts(sb)).toEqual([])
+  })
+
+  it.each([
+    ['a workflow scope with no workflow', { scope: 'workflow' }, 'workflow_id is required for a workflow scoped variable'],
+    ['a global variable naming a workflow', { scope: 'global', workflow_id: WF }, 'a global variable cannot name a workflow'],
+    ['a scope the table does not have', { scope: 'folder' }, "scope must be 'global' or 'workflow'"],
+    ['a workflow id that is not an id', { scope: 'workflow', workflow_id: 'main-flow' }, 'workflow_id must be a workflow id'],
+  ])('refuses %s with a 400 before reading or writing anything', async (_label, extra, message) => {
+    const sb = makeSupabase({ users: { single: testUser } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/env', { body: { key: 'API_URL', value: 'x', ...extra } })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: message })
+    expect(sb.calls['workflows']).toBeUndefined()
+    expect(inserts(sb)).toEqual([])
+  })
+
+  it("saves a variable against one of the caller's own workflows", async () => {
+    const created = { id: 'v1', key: 'API_URL', value: 'x', is_secret: false, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF } }, environment_variables: { insertResult: created } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'POST', '/env', { body: { key: 'API_URL', value: 'x', scope: 'workflow', workflow_id: WF } })
+
+    expect(res.status).toBe(201)
+    const [[, [row]]] = inserts(sb) as Array<[string, [Record<string, unknown>]]>
+    expect(row).toMatchObject({ organization_id: USER_ORG, scope: 'workflow', workflow_id: WF })
+  })
+
+  // docs/reference/api.md has always said "pass a workflow_id to scope it to one
+  // workflow". Before #1681 that stored scope 'global' beside the workflow id,
+  // which the loader would now hand to EVERY workflow, the opposite of the intent.
+  it('scopes a variable to the workflow it names when no scope is given, as the API reference documents', async () => {
+    const created = { id: 'v1', key: 'API_URL', value: 'x', is_secret: false, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF } }, environment_variables: { insertResult: created } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'POST', '/env', { body: { key: 'API_URL', value: 'x', workflow_id: WF } })
+
+    expect(res.status).toBe(201)
+    const [[, [row]]] = inserts(sb) as Array<[string, [Record<string, unknown>]]>
+    expect(row).toMatchObject({ scope: 'workflow', workflow_id: WF })
+    expect(sb.eqCalls['workflows']).toContainEqual(['organization_id', USER_ORG])
+  })
+
+  it("stores a workflow's own secret encrypted and does not write it to Cloudflare", async () => {
+    const created = { id: 'v2', key: 'SALESFORCE_CLIENT_SECRET', value: 'encrypted-test-value', is_secret: true, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF } }, environment_variables: { insertResult: created } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'POST', '/env', {
+      body: { key: 'SALESFORCE_CLIENT_SECRET', value: 'a-workflow-secret', is_secret: true, scope: 'workflow', workflow_id: WF },
+    })
+
+    expect(res.status).toBe(201)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    const [[, [row]]] = inserts(sb) as Array<[string, [Record<string, unknown>]]>
+    expect(row.value).toBe('encrypted-test-value')
+  })
+
+  it("rotates a workflow's own secret in the database only", async () => {
+    const existing = { id: 'v2', key: 'PARTNER_TOKEN', value: 'old-ciphertext', is_secret: true, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: { ...existing, value: 'encrypted-test-value' } }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'PUT', '/env/v2', { body: { value: 'rotated' } })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    const update = (sb.calls['environment_variables'] ?? []).find(([m]) => m === 'update') as [string, [Record<string, unknown>]]
+    expect(update[1][0].value).toBe('encrypted-test-value')
+  })
+
+  it("renames a workflow's own secret without creating or deleting any Cloudflare secret", async () => {
+    const existing = { id: 'v3', key: 'OLD_KEY', value: 'ciphertext', is_secret: true, scope: 'workflow', workflow_id: WF }
+    const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }, { updateResult: { ...existing, key: 'NEW_KEY' } }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'PUT', '/env/v3', { body: { key: 'NEW_KEY' } })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
+
+  it("deletes a workflow's own secret without deleting the Cloudflare secret of the same name", async () => {
+    const existing = { id: 'v2', key: 'SALESFORCE_CLIENT_SECRET', value: 'ciphertext', is_secret: true, scope: 'workflow' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { writeRows: [{ id: 'v2' }] }] }) as never
+    )
+    const res = await request(app, 'DELETE', '/env/v2')
+    expect(res.status).toBe(200)
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
+
+  it('re-pushes only org secrets to Cloudflare, never a workflow\'s own', async () => {
+    vi.mocked(listCfSecretNames).mockResolvedValue(new Set())
+    const sb = makeSupabase({ users: { single: testUser }, environment_variables: { list: [] } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    await request(app, 'POST', '/env/resync-secrets')
+    expect(sb.eqCalls['environment_variables']).toContainEqual(['scope', 'global'])
   })
 })

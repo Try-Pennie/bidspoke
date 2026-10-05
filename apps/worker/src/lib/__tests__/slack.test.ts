@@ -695,7 +695,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
   const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
 
   it('posts a Block Kit message naming the undecryptable secrets with a fix path', async () => {
-    const sent = await sendSecretDecryptAlert(conn, ['ELIGIBILITY_SCOUT_CLIENT_SECRET'], 'https://app.test')
+    const sent = await sendSecretDecryptAlert(conn, [{ key: 'ELIGIBILITY_SCOUT_CLIENT_SECRET', workflow: null }], 'https://app.test')
     expect(sent).toBe(true)
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.channel).toBe('#alerts')
@@ -707,6 +707,19 @@ describe('sendSecretDecryptAlert (#404)', () => {
     expect(text).toContain('ELIGIBILITY_SCOUT_CLIENT_SECRET')
     expect(text).toContain('How to fix:')
     expect(text).toContain('https://app.test/env')
+  })
+
+  // #1681: the same key can be the org's and a workflow's own, and the two are
+  // handled differently at load (skipped against withheld), so the line says which.
+  it("names the workflow a workflow's own secret was saved for, and says its runs go without it", async () => {
+    await sendSecretDecryptAlert(
+      conn,
+      [{ key: 'EQUIFAX_PASSWORD', workflow: null }, { key: 'EQUIFAX_PASSWORD', workflow: 'Main Flow' }],
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const lines = (body.blocks[2].text.text as string).split('\n')
+    expect(lines).toEqual(['• `EQUIFAX_PASSWORD`', "• `EQUIFAX_PASSWORD`, saved for the workflow Main Flow, whose runs get no value for it"])
   })
 
   it('does nothing and reports not-sent when there are no keys', async () => {

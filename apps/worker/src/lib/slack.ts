@@ -1798,16 +1798,25 @@ export async function sendExportFailureAlert(
  * The cause is almost always a stored value encrypted under a previous
  * SECRET_ENCRYPTION_KEY (or predating encryption), so the fix is to re-enter the
  * value in the UI to re-encrypt it under the current key. Returns true when delivered.
+ *
+ * A secret saved for one workflow (#1681) names that workflow: the same key can
+ * be the org's too, and the loader withholds the workflow's own rather than
+ * letting the org value stand in, so that workflow's runs get no value for it.
  */
 export async function sendSecretDecryptAlert(
   connection: SlackConnection,
-  keys: string[],
+  secrets: { key: string; workflow: string | null }[],
   appUrl: string,
 ): Promise<boolean> {
-  if (keys.length === 0) return false
-  const lines = keys.slice(0, 30).map((k) => `• \`${k}\``)
-  const more = keys.length > 30 ? `\n_and ${keys.length - 30} more_` : ''
-  const isOne = keys.length === 1
+  if (secrets.length === 0) return false
+  const keys = secrets.map((s) => s.key)
+  const lines = secrets.slice(0, 30).map((s) =>
+    s.workflow === null
+      ? `• \`${s.key}\``
+      : `• \`${s.key}\`, saved for the workflow ${s.workflow}, whose runs get no value for it`
+  )
+  const more = secrets.length > 30 ? `\n_and ${secrets.length - 30} more_` : ''
+  const isOne = secrets.length === 1
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Secret cannot be decrypted', emoji: false } },
     {

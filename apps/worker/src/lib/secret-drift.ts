@@ -26,9 +26,14 @@ export interface DbSecret {
   organization_id: string
 }
 
-/** DB secret keys that Cloudflare is missing — the workflow-breaking direction. */
+/**
+ * DB secret keys that Cloudflare is missing, the workflow-breaking direction.
+ * Only org secrets are expected there: a workflow's own secret is never written
+ * to Cloudflare, whose Worker holds one value per name for every workflow, so
+ * its absence is the design rather than drift (#1681).
+ */
 export function findMissingSecrets(dbSecrets: DbSecret[], cfNames: Set<string>): DbSecret[] {
-  return dbSecrets.filter((s) => !cfNames.has(s.key))
+  return dbSecrets.filter((s) => s.scope === 'global' && !cfNames.has(s.key))
 }
 
 export interface SecretDriftResult {

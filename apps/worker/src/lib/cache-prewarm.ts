@@ -38,7 +38,8 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const perOrg = orgIds.flatMap((orgId) => {
     const tasks: Promise<unknown>[] = [
-      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env)).catch(() => undefined),
+      // One load warms the org values and every workflow's own (#1681).
+      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env), 'global-only').catch(() => undefined),
       loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
       // Never throws; a failure is logged inside and the held copy is kept.
       keepBuyerProfilesWarm(orgId, env.WORKFLOW_CACHE, supabase),

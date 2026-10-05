@@ -27,6 +27,17 @@ const r = (key: string, value: string | null = `cipher-${key}`, org = 'org-1'): 
   key,
   value,
   organization_id: org,
+  scope: 'global',
+  workflow_id: null,
+  workflows: null,
+})
+
+// A secret saved against one workflow, with the workflow the read embeds.
+const own = (key: string, workflowName: string, deletedAt: string | null = null): SecretRow => ({
+  ...r(key),
+  scope: 'workflow',
+  workflow_id: 'wf-9',
+  workflows: { name: workflowName, deleted_at: deletedAt },
 })
 
 // decryptSecret throws for any value listed in `bad`, resolves otherwise.
@@ -59,15 +70,27 @@ describe('findUndecryptableSecrets', () => {
   })
 })
 
+// Applies the equality filters the check sends, so a filter that drops the rows
+// it is meant to cover shows up as a missed alert rather than passing unseen.
+// Every row here is a secret, as the table's rows are when the check reads them.
 function makeSupabase(rows: SecretRow[], error: { message: string } | null = null) {
+  const filters: Array<[string, unknown]> = []
   const chain: unknown = new Proxy(
     {},
     {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'then')
+        if (prop === 'eq')
+          return (col: string, val: unknown) => {
+            filters.push([col, val])
+            return chain
+          }
+        if (prop === 'then') {
+          const stored = rows.map((row) => ({ ...row, is_secret: true }) as Record<string, unknown>)
+          const matched = stored.filter((row) => filters.every(([c, v]) => row[c] === v))
           return (resolve: (v: unknown) => unknown) =>
-            Promise.resolve({ data: error ? null : rows, error }).then(resolve)
+            Promise.resolve({ data: error ? null : matched, error }).then(resolve)
+        }
         return () => chain
       },
     },
@@ -100,7 +123,28 @@ describe('runSecretDecryptHealthCheck', () => {
     vi.mocked(sendSecretDecryptAlert).mockResolvedValue(true)
     const res = await runSecretDecryptHealthCheck(makeSupabase([r('A'), r('GONE')]), ENV)
     expect(res).toMatchObject({ checked: 2, undecryptable: 1, alerted: true })
-    expect(vi.mocked(sendSecretDecryptAlert).mock.calls[0][1]).toEqual(['GONE'])
+    expect(vi.mocked(sendSecretDecryptAlert).mock.calls[0][1]).toEqual([{ key: 'GONE', workflow: null }])
+  })
+
+  // #1681: the loader now decrypts a workflow's own secrets too, and withholds
+  // one it cannot decrypt from that workflow's runs. This check exists so that a
+  // credential the loader drops is never dropped silently, so it covers the same
+  // set, and names the workflow, because the same key can be the org's as well.
+  it("alerts a workflow's own secret that fails to decrypt, naming the workflow it was saved for", async () => {
+    decryptExcept(['cipher-PARTNER_TOKEN'])
+    vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
+    vi.mocked(sendSecretDecryptAlert).mockResolvedValue(true)
+    const res = await runSecretDecryptHealthCheck(makeSupabase([r('A'), own('PARTNER_TOKEN', 'Main Flow')]), ENV)
+    expect(res).toMatchObject({ checked: 2, undecryptable: 1, alerted: true })
+    expect(vi.mocked(sendSecretDecryptAlert).mock.calls[0][1]).toEqual([{ key: 'PARTNER_TOKEN', workflow: 'Main Flow' }])
+  })
+
+  it('does not alert a secret saved for a deleted workflow, which no run can read', async () => {
+    decryptExcept(['cipher-PARTNER_TOKEN'])
+    vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
+    const res = await runSecretDecryptHealthCheck(makeSupabase([own('PARTNER_TOKEN', 'Old Flow', '2026-09-01T00:00:00Z')]), ENV)
+    expect(res).toMatchObject({ checked: 0, undecryptable: 0, alerted: false })
+    expect(vi.mocked(sendSecretDecryptAlert)).not.toHaveBeenCalled()
   })
 
   it('does not alert when the org opted out of config alerts', async () => {
