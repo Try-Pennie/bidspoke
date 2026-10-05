@@ -141,6 +141,14 @@ type FindingKind = 'backlog' | 'broken' | 'unchecked'
 interface Finding {
   kind: FindingKind
   text: string
+  /**
+   * What the finding is about, for the alerter to tell a reminder from a new
+   * problem (#1768): the partner and what is wrong, never the day judged or a
+   * count, which move every run. A backlog also names the days of the sales it
+   * lists, so a different set of waiting sales is a new problem while the same
+   * span being worked through is not.
+   */
+  key: string
   /** Set on a judged partner's no sales line, which stands only if that partner could have sold that day. */
   zeroFor?: string
 }
@@ -243,14 +251,14 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
     const judged = await judgeZeroDays(measured.flatMap((m) => m.findings), partners, loadProfiles, dayStart, now)
     found = [...judged, ...(await uncoveredPartners(listPartners, dayStart, day))]
   } catch (err) {
-    found = [{ kind: 'unchecked', text: `The check itself failed: ${formatErr(err)}` }]
+    found = [{ kind: 'unchecked', text: `The check itself failed: ${formatErr(err)}`, key: 'check-failed' }]
   }
   const findings = found.map((f) => f.text)
 
   // AN EMPTY LIST IS STILL SENT: the alerter reads no findings as the recovery
   // signal and clears its standing alert with it.
   try {
-    await notifyExportFailure(supabase, LEAD_STATUS_JOB, findings, env.IDEMPOTENCY, remedyFor(found))
+    await notifyExportFailure(supabase, LEAD_STATUS_JOB, findings, env.IDEMPOTENCY, remedyFor(found), undefined, { keys: found.map((f) => f.key) })
   } catch (err) {
     console.error('[lead-status] could not send its alert:', formatErr(err))
   }
@@ -355,10 +363,10 @@ async function measure(
   // not: the check did not measure what it reports.
   if ('err' in subs || 'err' in leads) {
     const why = 'err' in subs ? subs.err : (leads as { err: string }).err
-    findings.push({ kind: 'unchecked', text: `The check couldn't count ${partner} sales in Salesforce: ${why}` })
+    findings.push({ kind: 'unchecked', text: `The check couldn't count ${partner} sales in Salesforce: ${why}`, key: `uncounted:${partner}` })
   } else if (judged && subs.n === 0) {
     // judgeZeroDays decides whether this stands, from the partner's buyer profile.
-    findings.push({ kind: 'unchecked', text: `${noSales(partner, on)}, so there was nothing to compare.`, zeroFor: partner })
+    findings.push({ kind: 'unchecked', text: `${noSales(partner, on)}, so there was nothing to compare.`, zeroFor: partner, key: `zero:${partner}` })
   } else if (judged && subs.n >= MIN_SUBMISSIONS_TO_JUDGE && leads.n / subs.n < LEAD_COMPLETED_MIN_SHARE) {
     const older = status.backlog ? ` ${fmt(status.backlog)} older ${partner} sales are also waiting.` : ''
     findings.push({
@@ -366,13 +374,14 @@ async function measure(
       text:
         `Only ${fmt(leads.n)} of ${fmt(subs.n)} ${partner} sales on ${on} reached their Lead ` +
         `(${Math.round((leads.n / subs.n) * 100)}%). Normally ${before} do, so new sales aren't syncing.${older}`,
+      key: `broken:${partner}`,
     })
   }
 
   if ('err' in backlog) {
-    findings.push({ kind: 'unchecked', text: `The check couldn't count older ${partner} sales waiting on their Lead: ${backlog.err}` })
+    findings.push({ kind: 'unchecked', text: `The check couldn't count older ${partner} sales waiting on their Lead: ${backlog.err}`, key: `backlog-uncounted:${partner}` })
   } else if (judged && backlog.own > 0 && !findings.some((f) => f.kind === 'broken')) {
-    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog) })
+    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog), key: backlogKey(partner, backlog) })
   }
 
   return { status, findings }
@@ -451,19 +460,31 @@ async function readProfiles(loadProfiles: () => Promise<BuyerProfilesSnapshot>, 
 function zeroDayVerdict(partner: string, read: ProfileRead, dayStart: Date, on: string): Finding | 'closed' | null {
   const lead = noSales(partner, on)
   if ('err' in read) {
-    return { kind: 'unchecked', text: `${lead}, and the check couldn't read the buyer profiles to tell whether ${partner} was buying that day: ${read.err}` }
+    return {
+      kind: 'unchecked',
+      text: `${lead}, and the check couldn't read the buyer profiles to tell whether ${partner} was buying that day: ${read.err}`,
+      key: `zero-profiles-unread:${partner}`,
+    }
   }
   // partner_configs.name is the value Salesforce records as the partner.
   const named = read.snapshot.buyers.filter((b) => b.partner.name === partner)
   if (named.length > 1) {
-    return { kind: 'unchecked', text: `${lead}, and ${named.length} buyer profiles are named ${partner}, so the check couldn't tell whose hours to use.` }
+    return {
+      kind: 'unchecked',
+      text: `${lead}, and ${named.length} buyer profiles are named ${partner}, so the check couldn't tell whose hours to use.`,
+      key: `zero-profiles-ambiguous:${partner}`,
+    }
   }
   // No enabled profile, or one sold on offers that the older Tripoint ping also
   // sells without reading it: nothing bounds when this partner can sell.
   if (named.length === 0 || named[0].profile.soldOn !== 'click') return null
   const { windows, blackoutDates } = named[0].profile
   if (windows.length === 0) {
-    return { kind: 'unchecked', text: `${lead}, and ${partner}'s buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.` }
+    return {
+      kind: 'unchecked',
+      text: `${lead}, and ${partner}'s buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.`,
+      key: `zero-profile-no-hours:${partner}`,
+    }
   }
   return isOpenDuring(windows, blackoutDates, dayStart.getTime(), dayStart.getTime() + 86_400_000) ? null : 'closed'
 }
@@ -497,6 +518,13 @@ function describeBacklog(partner: string, b: BacklogSplit): string {
     : `${fmt(b.own)} ${partner} sales${when} are marked Completed on their Submission, but their Lead still says ${says}.`
 }
 
+/** A backlog's key: its partner and the days of the first and last waiting sale, the same days its line names. */
+function backlogKey(partner: string, b: BacklogSplit): string {
+  const first = b.ownFirst ? shortDay(b.ownFirst) : null
+  const last = b.ownLast ? shortDay(b.ownLast) : null
+  return `backlog:${partner}:${first ?? 'unknown'}..${last ?? 'unknown'}`
+}
+
 /**
  * A line for every partner Salesforce sold to that day which this check does
  * not cover. A sale with no partner is skipped: its Lead has no partner to
@@ -512,7 +540,11 @@ async function uncoveredPartners(
   try {
     sold = await listPartners(dayStart)
   } catch (err) {
-    return [{ kind: 'unchecked', text: `The check couldn't list which partners had sales on ${on}, so a new partner would go unnoticed: ${formatErr(err)}` }]
+    return [{
+      kind: 'unchecked',
+      text: `The check couldn't list which partners had sales on ${on}, so a new partner would go unnoticed: ${formatErr(err)}`,
+      key: 'partners-unlisted',
+    }]
   }
   const covered = new Set(LEAD_STATUS_PARTNERS.map((p) => p.partner))
   return sold
@@ -520,6 +552,7 @@ async function uncoveredPartners(
     .map((s) => ({
       kind: 'unchecked' as const,
       text: `Salesforce had ${fmt(s.n)} ${s.partner} sales on ${on}, but this check doesn't cover ${s.partner} yet, so their Leads weren't checked.`,
+      key: `uncovered:${s.partner}`,
     }))
 }
 

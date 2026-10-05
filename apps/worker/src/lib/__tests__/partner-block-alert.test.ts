@@ -175,6 +175,31 @@ describe('reportPartnerBlock: while the block stands', () => {
     expect((await readCondition(kv, 'partner-block:oauth.prd.ffngcp.com'))?.alerts).toBe(2)
   })
 
+  // Every sighting carries its own Ray IDs, workflow and trace, so a reminder that
+  // said "nothing about it has changed" was false on almost every post (#1768).
+  it('says nothing has changed only when the block reads word for word as the last post did', async () => {
+    const { deps, sent, clock, kv } = makeDeps()
+    await reportPartnerBlock(deps, run, sighting)
+    clock.now += (BACKOFF_STEPS_SECONDS[0] + 1) * 1000
+    await reportPartnerBlock(deps, run, sighting)
+    expect(sent[1].payload.repeat).toContain('nothing about it has changed')
+
+    kv.store.delete('partner-block:oauth.prd.ffngcp.com:cooldown')
+    await reportPartnerBlock(deps, { ...run, traceId: 'trace-2' }, { ...sighting, bodyRayId: 'b471a2f0c1d2e3f4', edgeRayId: 'b471a2f0c1d2e3f4-EWR' })
+    expect(sent[2].payload.repeat).toContain('same problem as before')
+    expect(sent[2].payload.repeat).not.toContain('nothing about it has changed')
+    expect(sent[2].payload.repeat).toContain('reminder 3')
+  })
+
+  it('posts a block recorded before fingerprints as new once its cooldown has passed', async () => {
+    const { deps, sent, kv, clock } = makeDeps()
+    await kv.put('partner-block:oauth.prd.ffngcp.com:condition', JSON.stringify({ since: new Date(clock.now - 30 * 3_600_000).toISOString(), alerts: 3 }))
+
+    expect(await reportPartnerBlock(deps, run, sighting)).toBe('posted')
+    expect(sent[0].payload.repeat).toBeNull()
+    expect(await readCondition(kv, 'partner-block:oauth.prd.ffngcp.com')).toMatchObject({ alerts: 1, since: new Date(clock.now).toISOString() })
+  })
+
   it('a sighting after the record has expired starts a fresh incident rather than a stale reminder', async () => {
     const { deps, sent, clock } = makeDeps()
     await reportPartnerBlock(deps, run, sighting)

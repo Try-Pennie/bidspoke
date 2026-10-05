@@ -153,4 +153,16 @@ describe('sendCronHeartbeatAlert', () => {
     expect(headers.size).toBe(2)
     expect([...headers].some((h) => h.includes('never finished'))).toBe(true)
   })
+
+  it('says a reminder has not changed only when the caller measured it, never by default (#1768)', async () => {
+    const now = Date.parse('2026-10-05T13:00:00Z')
+    const standing = { since: new Date(now - 26 * 3_600_000).toISOString(), alerts: 2 }
+
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, standing, now, true)
+    expect(textOf(lastPost())).toContain('nothing about it has changed: this is reminder 3')
+
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, standing, now)
+    expect(textOf(lastPost())).not.toContain('nothing about it has changed')
+    expect(textOf(lastPost())).toContain('same problem as before')
+  })
 })

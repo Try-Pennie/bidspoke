@@ -430,6 +430,73 @@ describe('checkLeadStatus', () => {
   })
 })
 
+// The alerter tells a reminder from a new problem by these keys (#1768). Measured
+// in #statuspage: Oct 3 posted two Tripoint sales from Sep 25 to Sep 27, Oct 4
+// one from Sep 30, Oct 5 a Liberty1 day with no sales; each was a new problem.
+describe('what each finding is about, for the alerter (#1768)', () => {
+  /** The meaning keys the run handed the alerter, one per finding. */
+  function sentKeys(): string[] | undefined {
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === LEAD_STATUS_JOB)
+    return (call?.[6] as { keys?: string[] } | undefined)?.keys
+  }
+  const backlogOn = (rows: Array<[string, string]>) => ({
+    rows: async (soql: string) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+      ? rows.map(([id, created]) => ({ Id: id, CreatedDate: created, Lead__r: { Submission_Object_ID__c: id, External_Exchange_Status__c: 'Fail' } }))
+      : []),
+  })
+
+  it('names one key per finding', async () => {
+    await checkLeadStatus(env, supabase, deps({
+      AmOne: { submissions: 63, leads: 0, backlog: 4259 },
+      Liberty1: { submissions: 0, leads: 0, backlog: 0 },
+    }, { listPartners: async () => [{ partner: 'Acme', n: 12 }] }))
+
+    expect(alerted()).toHaveLength(3)
+    expect(sentKeys()).toEqual(['broken:AmOne', 'zero:Liberty1', 'uncovered:Acme'])
+  })
+
+  it('gives a partner with no sales the same key whatever day was judged', async () => {
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }))
+    const first = sentKeys()
+    vi.mocked(notifyExportFailure).mockClear()
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 0, leads: 0, backlog: 0 } }, { now: () => new Date('2026-09-26T13:00:00Z') }))
+
+    expect(alerted()).toEqual(['Salesforce has no Completed AmOne sales from Sep 25, so there was nothing to compare.'])
+    expect(first).toEqual(['zero:AmOne'])
+    expect(sentKeys()).toEqual(first)
+  })
+
+  it('names the days of the waiting sales, so a different set of sales is a new problem', async () => {
+    await checkLeadStatus(env, supabase, deps({}, backlogOn([
+      ['a04Ui00000MnrZZIAZ', '2026-09-25T15:00:00.000+0000'],
+      ['a04Ui00000MzB6jIAF', '2026-09-27T15:00:00.000+0000'],
+    ])))
+    const oct3 = sentKeys()
+    vi.mocked(notifyExportFailure).mockClear()
+    await checkLeadStatus(env, supabase, deps({}, backlogOn([['a04Ui00000N55GLIAZ', '2026-09-30T15:00:00.000+0000']])))
+
+    expect(oct3).toEqual(['backlog:Tripoint:Sep 25..Sep 27'])
+    expect(sentKeys()).toEqual(['backlog:Tripoint:Sep 30..Sep 30'])
+  })
+
+  it('keeps the key when sales over the same days are fixed one at a time', async () => {
+    await checkLeadStatus(env, supabase, deps({}, backlogOn([
+      ['a04Ui00000MnrZZIAZ', '2026-09-25T15:00:00.000+0000'],
+      ['a04Ui00000MzB6kIAF', '2026-09-26T15:00:00.000+0000'],
+      ['a04Ui00000MzB6jIAF', '2026-09-27T15:00:00.000+0000'],
+    ])))
+    const three = sentKeys()
+    vi.mocked(notifyExportFailure).mockClear()
+    await checkLeadStatus(env, supabase, deps({}, backlogOn([
+      ['a04Ui00000MnrZZIAZ', '2026-09-25T15:00:00.000+0000'],
+      ['a04Ui00000MzB6jIAF', '2026-09-27T15:00:00.000+0000'],
+    ])))
+
+    expect(three).toEqual(['backlog:Tripoint:Sep 25..Sep 27'])
+    expect(sentKeys()).toEqual(three)
+  })
+})
+
 // Measured in Salesforce (#1767): Liberty1 Completed Submissions by UTC day were
 // Sep 30 43, Oct 1 44, Oct 2 47, Oct 3 3 (Friday evening Eastern) and Oct 4 0,
 // a Sunday, when Liberty1 does not buy. The Monday run paged on that zero.

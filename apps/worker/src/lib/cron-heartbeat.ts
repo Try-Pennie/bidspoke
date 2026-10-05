@@ -40,7 +40,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert } from './slack'
-import { clearCondition, inCooldown, readCondition, recordAlert } from './alert-backoff'
+import { clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 
 const MIN = 60 * 1000
 const H = 60 * MIN
@@ -380,18 +380,28 @@ async function checkJob(
   }
 
   // Alert once per interval, and the interval GROWS while the condition stands.
-  if (await inCooldown(kv, key)) {
+  // The record is keyed on the job, while the header and the fix depend on the
+  // status, so the status is what the alert is about (#1768): one not posted
+  // while the condition stood is a new condition, posted at once, never "still".
+  // Each status can do that once per stretch, so a status that flaps between two
+  // values cannot post every minute.
+  const standing = await readCondition(kv, key)
+  const print = await fingerprintAlert({ title: job.id, findings: [status] })
+  const recurrence = recurrenceOf(standing, print)
+  const different = recurrence.kind === 'new' && standing !== null
+  if (!different && (await inCooldown(kv, key))) {
     return { jobId: job.id, status, alerted: false, ageMs: verdict.ageMs }
   }
 
-  const standing = await readCondition(kv, key)
+  const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
+  const unchanged = recurrence.kind === 'reminder' && recurrence.unchanged
   let alerted = false
   for (const orgId of orgIds) {
-    if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, standing)) alerted = true
+    if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, reminderOf, nowMs, unchanged)) alerted = true
   }
   // Only arm the next interval once something actually delivered, so a Slack
   // outage does not silence the condition for a day.
-  if (alerted) await recordAlert(kv, key, standing, nowMs)
+  if (alerted) await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
   return { jobId: job.id, status, alerted, ageMs: verdict.ageMs }
 }
 

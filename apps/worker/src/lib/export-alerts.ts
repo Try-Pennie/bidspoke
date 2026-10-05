@@ -12,7 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
-import { clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
+import { clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -172,6 +172,25 @@ export interface AlertRemedy {
  */
 export type ExportJobWording = 'export-job'
 
+/**
+ * What identifies each finding's problem across runs (#1768). Without it a
+ * finding means its words with every number read as one (alert-backoff
+ * meaningOf), which covers a count, an age or a day of the month that moves
+ * between runs. A caller whose distinct problems differ only in their numbers,
+ * or whose moving part is a word, names its own.
+ */
+export interface AlertMeaning {
+  /** One per finding, in the same order as the findings. */
+  keys?: readonly string[]
+}
+
+/** The caller's keys when they name every finding; otherwise the default meaning, so a mismatch never loses the page. */
+function meaningKeys(jobName: string, errors: readonly string[], keys: readonly string[] | undefined): readonly string[] | undefined {
+  if (keys === undefined || keys.length === errors.length) return keys
+  console.error(`[export-alerts] ${jobName}: ${keys.length} meaning keys for ${errors.length} findings, so each finding is matched by its default meaning`)
+  return undefined
+}
+
 export async function notifyExportFailure(
   supabase: SupabaseClient,
   jobName: string,
@@ -179,6 +198,7 @@ export async function notifyExportFailure(
   kv: KvLike | undefined,
   remedy: AlertRemedy | TitledRemedy | ExportJobWording,
   nowMs: number = Date.now(),
+  meaning: AlertMeaning = {},
 ): Promise<void> {
   const pendingKey = `export-alert-pending:${jobName}`
   // The reminder schedule for this job's standing failure (#1334).
@@ -221,21 +241,6 @@ export async function notifyExportFailure(
     else failingSince = since
   }
 
-  // Already paged for this ongoing issue; stay quiet until it recovers (the
-  // condition is cleared above) or the current interval expires. The interval
-  // grows while the failure stands, so a long outage is still reported and does
-  // not arrive at the volume that teaches people to skip the channel.
-  if (kv && (await inCooldown(kv, backoff))) return
-  const standing = kv ? await readCondition(kv, backoff) : null
-  const repeat = describeRepeat(standing, nowMs) ?? undefined
-
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('export-alerts', 'slack connections', connsError)
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
-
   // Classify once, not per org: the same errors produce the same advice. The
   // consequence sentence comes from the same classification (#1180), so the
   // alert's second sentence and its remedy cannot disagree about what happened.
@@ -247,6 +252,39 @@ export async function notifyExportFailure(
   const explained = own && !('title' in own) ? own : undefined
   const fixHint = titled ? titled.fixHint : (explained?.fixHint ?? buildFixHint(errors))
   const consequence = titled ? undefined : (explained?.consequence ?? buildConsequence(errors))
+
+  // What this alert says, compared with what the last one for this job said
+  // (#1768). The standing condition is keyed on the job, so without this a
+  // different problem from the same job was posted as a reminder that nothing
+  // had changed. A new problem goes out at once and restarts the schedule.
+  const print = await fingerprintAlert({
+    title: titled?.title ?? `${jobName} ${explained?.headlineVerb ?? ''}`.trim(),
+    findings: errors,
+    keys: meaningKeys(jobName, errors, meaning.keys),
+    alsoShown: [consequence, fixHint, titled?.context].filter((s): s is string => typeof s === 'string' && s !== ''),
+  })
+  const standing = kv ? await readCondition(kv, backoff) : null
+  const recurrence = recurrenceOf(standing, print)
+
+  // Already paged for this ongoing issue; stay quiet until it recovers (the
+  // condition is cleared above) or the current interval expires. The interval
+  // grows while the failure stands, so a long outage is still reported and does
+  // not arrive at the volume that teaches people to skip the channel. Only a
+  // record that shows the last post was about something else skips the
+  // cooldown. One from before fingerprints, or a cooldown whose record cannot be
+  // read, says something was posted without saying what, so it waits: every
+  // condition standing at the deploy does not post at once, and when it does
+  // post, it posts as new.
+  const different = recurrence.kind === 'new' && standing !== null
+  if (kv && !different && (await inCooldown(kv, backoff))) return
+  const repeat = recurrence.kind === 'reminder' ? (describeRepeat(recurrence.standing, nowMs, recurrence.unchanged) ?? undefined) : undefined
+
+  const { data: conns, error: connsError } = await supabase
+    .from('service_connections')
+    .select('organization_id')
+    .eq('service_type', 'slack')
+  logReadFailure('export-alerts', 'slack connections', connsError)
+  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   let delivered = false
   for (const orgId of orgIds) {
@@ -271,5 +309,7 @@ export async function notifyExportFailure(
 
   // Only start the cooldown once something actually delivered -- otherwise a
   // Slack outage would suppress retries for hours while nobody got paged.
-  if (kv && delivered) await recordAlert(kv, backoff, standing, nowMs)
+  if (kv && delivered) {
+    await recordAlert(kv, backoff, recurrence.kind === 'reminder' ? recurrence.standing : null, nowMs, { fingerprint: nextFingerprint(standing, print) })
+  }
 }

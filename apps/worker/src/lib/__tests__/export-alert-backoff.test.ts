@@ -113,3 +113,122 @@ describe('a standing export failure', () => {
     expect(await readCondition(kv, KEY)).toBeNull()
   })
 })
+
+// Measured in #statuspage (#1768): the Lead status check posted three different
+// problems on Oct 3, 4 and 5, and the second and third went out as "(still)",
+// "nothing about it has changed", reminders 2 and 3.
+describe('a reminder says what it measured about the findings (#1768)', () => {
+  const TITLED = { title: "Some sales aren't showing on their Salesforce Lead" }
+  const OCT_3 = ['2 Tripoint sales from Sep 25 to Sep 27 are marked Completed on their Submission, but their Lead still says Fail.']
+  const OCT_4 = ['1 Tripoint sale from Sep 30 is marked Completed on its Submission, but its Lead still says Fail.']
+  const payload = (i: number) => vi.mocked(sendExportFailureAlert).mock.calls[i]?.[3] as { repeat?: string; errors: string[] }
+
+  it('posts identical findings on the next run as a reminder that nothing has changed', async () => {
+    const kv = fakeKv()
+    await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW)
+    kv.store.delete(`${KEY}:cooldown`)
+    await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW + 24 * H)
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(2)
+    expect(payload(1).repeat).toContain('nothing about it has changed: this is reminder 2')
+    expect((await readCondition(kv, KEY))?.alerts).toBe(2)
+  })
+
+  it('posts different findings at once as a new condition, inside the cooldown, and restarts the schedule', async () => {
+    const kv = fakeKv()
+    await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW)
+    expect(kv.store.has(`${KEY}:cooldown`)).toBe(true)
+
+    await notifyExportFailure(supabase, JOB, OCT_4, kv, TITLED, NOW + H)
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(2)
+    expect(payload(1).repeat).toBeUndefined()
+    expect(payload(1).errors).toEqual(OCT_4)
+    const standing = await readCondition(kv, KEY)
+    expect(standing?.alerts).toBe(1)
+    expect(standing?.since).toBe(new Date(NOW + H).toISOString())
+    expect(kv.ttls.get(`${KEY}:cooldown`)).toBe(BACKOFF_STEPS_SECONDS[0])
+  })
+
+  it('posts a condition stored before fingerprints as new once its cooldown has passed, never claiming nothing changed', async () => {
+    const kv = fakeKv()
+    // What production KV holds as this ships: the old shape, reminder 2 already sent.
+    kv.store.set(`${KEY}:condition`, JSON.stringify({ since: new Date(NOW - 48 * H).toISOString(), alerts: 2 }))
+
+    await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW)
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    expect(payload(0).repeat).toBeUndefined()
+    const standing = await readCondition(kv, KEY)
+    expect(standing).toMatchObject({ alerts: 1, since: new Date(NOW).toISOString() })
+    expect(standing?.fingerprint).toBeDefined()
+    expect(kv.ttls.get(`${KEY}:cooldown`)).toBe(BACKOFF_STEPS_SECONDS[0])
+  })
+
+  it('keeps an old record\'s cooldown, so every standing condition does not post at once on the deploy', async () => {
+    const kv = fakeKv()
+    kv.store.set(`${KEY}:condition`, JSON.stringify({ since: new Date(NOW - 48 * H).toISOString(), alerts: 2 }))
+    kv.store.set(`${KEY}:cooldown`, '1')
+
+    await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW)
+
+    expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
+  })
+
+  it('holds the reminder schedule when a finding clears and nothing new appears', async () => {
+    const kv = fakeKv()
+    await notifyExportFailure(supabase, JOB, [...OCT_3, ...OCT_4], kv, TITLED, NOW)
+    await notifyExportFailure(supabase, JOB, OCT_4, kv, TITLED, NOW + H)
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+
+    kv.store.delete(`${KEY}:cooldown`)
+    await notifyExportFailure(supabase, JOB, OCT_4, kv, TITLED, NOW + 7 * H)
+    expect(payload(1).repeat).toContain('same problem as before')
+    expect(payload(1).repeat).not.toContain('nothing about it has changed')
+  })
+
+  it('reads a finding whose day moves but whose meaning is the same as a reminder, when the caller names the meaning', async () => {
+    const kv = fakeKv()
+    const zero = (day: string) => [`Salesforce has no Completed Liberty1 sales from ${day}, so there was nothing to compare.`]
+    await notifyExportFailure(supabase, JOB, zero('Oct 6'), kv, TITLED, NOW, { keys: ['zero:Liberty1'] })
+    kv.store.delete(`${KEY}:cooldown`)
+    await notifyExportFailure(supabase, JOB, zero('Oct 7'), kv, TITLED, NOW + 24 * H, { keys: ['zero:Liberty1'] })
+
+    expect(payload(1).repeat).toContain('reminder 2')
+    expect(payload(1).repeat).toContain('same problem as before')
+    expect(payload(1).repeat).not.toContain('nothing about it has changed')
+  })
+
+  it('stays quiet inside the cooldown when a frequent job\'s counts tick, with no keys of its own', async () => {
+    // The buyer sale drain runs every minute and its age moves every run: read
+    // as new each time, the change would post sixty times an hour.
+    const kv = fakeKv()
+    await notifyExportFailure(supabase, JOB, ['3 sales waiting, the oldest 61 minutes old.'], kv, TITLED, NOW)
+    await notifyExportFailure(supabase, JOB, ['4 sales waiting, the oldest 62 minutes old.'], kv, TITLED, NOW + 60_000)
+    await notifyExportFailure(supabase, JOB, ['4 sales waiting, the oldest 63 minutes old.'], kv, TITLED, NOW + 120_000)
+
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    kv.store.delete(`${KEY}:cooldown`)
+    await notifyExportFailure(supabase, JOB, ['5 sales waiting, the oldest 481 minutes old.'], kv, TITLED, NOW + 7 * H)
+    expect(payload(1).repeat).toContain('same problem as before')
+  })
+
+  it('falls back to the default meaning, and says so, when a key list does not name every finding', async () => {
+    // Throwing here would lose the page, since callers catch and log; the default
+    // meaning can only make more runs read as new, never claim nothing changed.
+    const kv = fakeKv()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await notifyExportFailure(supabase, JOB, [...OCT_3, ...OCT_4], kv, TITLED, NOW, { keys: ['backlog:Tripoint'] })
+      kv.store.delete(`${KEY}:cooldown`)
+      await notifyExportFailure(supabase, JOB, OCT_3, kv, TITLED, NOW + 7 * H)
+
+      expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(2)
+      expect(error.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/1 meaning keys for 2 findings/)
+      // By the default meaning, the second run's one finding was already posted: a reminder.
+      expect(payload(1).repeat).toContain('reminder 2')
+    } finally {
+      error.mockRestore()
+    }
+  })
+})

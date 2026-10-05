@@ -210,7 +210,7 @@ describe('drift-alert-state alert: a standing condition backs off on the shared 
     const entry = standing(1, 6 * H, 6 * H)
     const dir = stateDir({ status: 'state', targets: { worker: entry } })
     expect(alert(dir, strand)).toBe('post-reminder')
-    const sentence = describeRepeat({ since: entry.since, alerts: 1 }, NOW * 1000)
+    const sentence = describeRepeat({ since: entry.since, alerts: 1 }, NOW * 1000, true)
     expect(posted(dir)).toBe(`TEXT\n\n${sentence}`)
     expect(finish(dir, { WORKER: 'failure' }).next.targets.worker).toMatchObject({
       since: entry.since,
@@ -300,7 +300,7 @@ describe('drift-alert-state: a broken check never resets a standing finding (#17
 
     const r4 = run(r3.targets, NOW + 6 * H, { kind: 'alert' })
     expect(r4.decision).toBe('post-reminder')
-    expect(r4.text).toContain(describeRepeat({ since: iso(NOW), alerts: 1 }, (NOW + 6 * H) * 1000))
+    expect(r4.text).toContain(describeRepeat({ since: iso(NOW), alerts: 1 }, (NOW + 6 * H) * 1000, true))
   })
 
   it('treats the check breaking again after it worked as news, since the check recovered in between', () => {
@@ -515,6 +515,10 @@ describe('drift-alert-state read: three answers, never two', () => {
   })
 })
 
+// Drift reminds only when its record's key, the target, the kind and the measured
+// facts, is the one already posted, so nothing it reports has changed and its
+// sentence is the worker's unchanged wording; describeRepeat now asks for that to
+// be stated rather than assumed (#1768).
 describe('the reminder wording and schedule match the worker exactly (#1761, L26)', () => {
   const shell = (...args: string[]) =>
     execFileSync('bash', [SCRIPT, ...args], {
@@ -532,12 +536,12 @@ describe('the reminder wording and schedule match the worker exactly (#1761, L26
     (alerts, age) => {
       const since = iso(NOW - age)
       expect(shell('describe', since, String(alerts), String(NOW))).toBe(
-        describeRepeat({ since, alerts }, NOW * 1000),
+        describeRepeat({ since, alerts }, NOW * 1000, true),
       )
     },
   )
 
   it('describeRepeat with a first sighting time that cannot be read', () => {
-    expect(shell('describe', 'garbage', '2', String(NOW))).toBe(describeRepeat({ since: 'garbage', alerts: 2 }, NOW * 1000))
+    expect(shell('describe', 'garbage', '2', String(NOW))).toBe(describeRepeat({ since: 'garbage', alerts: 2 }, NOW * 1000, true))
   })
 })
