@@ -1793,28 +1793,49 @@ export async function sendExportFailureAlert(
 }
 
 /**
- * Alert that secret env vars cannot be decrypted (#404). The env-loader silently
- * skips these, so a node loses the credential with no error until the call fails.
- * The cause is almost always a stored value encrypted under a previous
- * SECRET_ENCRYPTION_KEY (or predating encryption), so the fix is to re-enter the
- * value in the UI to re-encrypt it under the current key. Returns true when delivered.
+ * Alert that secret env vars cannot be decrypted (#404). The env-loader never
+ * passes ciphertext on, so a node loses the credential with no error until the
+ * call fails. What it does instead depends on the kind, and the alert says so for
+ * the kinds it lists, and only those (#1681): an org secret is left out of every
+ * run (code, Webhook and Salesforce nodes then fall back to its Cloudflare copy,
+ * if one exists), and a secret saved for one workflow is handed to that
+ * workflow's runs empty, so the org value of the same key never stands in for it.
+ * A workflow's own secret is named with its workflow, since the same key can be
+ * the org's too. The cause is almost always a stored value encrypted under a
+ * previous SECRET_ENCRYPTION_KEY (or predating encryption), so the fix is to
+ * re-enter the value in the UI to re-encrypt it under the current key. Returns
+ * true when delivered.
  */
 export async function sendSecretDecryptAlert(
   connection: SlackConnection,
-  keys: string[],
+  secrets: { key: string; workflow: string | null }[],
   appUrl: string,
 ): Promise<boolean> {
-  if (keys.length === 0) return false
-  const lines = keys.slice(0, 30).map((k) => `• \`${k}\``)
-  const more = keys.length > 30 ? `\n_and ${keys.length - 30} more_` : ''
-  const isOne = keys.length === 1
+  if (secrets.length === 0) return false
+  const keys = secrets.map((s) => s.key)
+  const lines = secrets.slice(0, 30).map((s) =>
+    s.workflow === null
+      ? `• \`${s.key}\``
+      : `• \`${s.key}\`, saved for the workflow ${s.workflow}, whose runs get it empty`
+  )
+  const more = secrets.length > 30 ? `\n_and ${secrets.length - 30} more_` : ''
+  const isOne = secrets.length === 1
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Secret cannot be decrypted', emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${keys.length} secret${isOne ? '' : 's'} cannot be decrypted* and ${isOne ? 'is' : 'are'} silently skipped at load, so any node that needs ${isOne ? 'it' : 'them'} runs without the credential (no error until the partner call fails):`,
+        text: [
+          `*${keys.length} secret${isOne ? '' : 's'} cannot be decrypted.*`,
+          ...(secrets.some((s) => s.workflow === null)
+            ? ['An organization secret is left out of every run. Code, Webhook and Salesforce nodes fall back to its Cloudflare copy if one exists; other nodes get no value.']
+            : []),
+          ...(secrets.some((s) => s.workflow !== null)
+            ? ["A secret saved for one workflow is handed to that workflow's runs empty, so the organization's value of the same name is never sent in its place."]
+            : []),
+          `Nothing errors until a call that needs ${isOne ? 'it' : 'one'} fails:`,
+        ].join(' '),
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') + more } },

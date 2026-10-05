@@ -259,7 +259,9 @@ export async function executeWorkflow(
     useIdempotency && !isRecoveryRun
       ? checkIdempotency(env.IDEMPOTENCY, workflowId, source, idempotencyKey)
       : Promise.resolve(null),
-    loadEnvVars(org_id, env.WORKFLOW_CACHE, configDb, secretKeys(env)),
+    // The org values with this workflow's own laid over them (#1681). Live,
+    // test, resume, replay and shadow runs all come through here.
+    loadEnvVars(org_id, env.WORKFLOW_CACHE, configDb, secretKeys(env), { workflowId }),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
     // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
     // node retries on its own access and surfaces any real failure there.

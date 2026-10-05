@@ -32,11 +32,8 @@ export interface SalesforceCreds {
   clientSecret: string
 }
 
-export const SALESFORCE_CRED_KEYS = [
-  'SALESFORCE_INSTANCE_URL',
-  'SALESFORCE_CLIENT_ID',
-  'SALESFORCE_CLIENT_SECRET',
-] as const
+// Defined beside the rule that a workflow cannot hold its own copy of them (#1681).
+export { SALESFORCE_CRED_KEYS } from './org-only-env-keys'
 
 /**
  * Choose each value from the organization store first, then the Worker env.
@@ -80,7 +77,9 @@ export async function resolveSalesforceCredsFor(
   supabase: SupabaseClient,
   orgId: string,
 ): Promise<{ creds: SalesforceCreds | null; missing: string[] }> {
-  const orgVars = await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env))
+  // Organization credentials for jobs that run outside any workflow, so the
+  // org values only: no one workflow's own values may stand in for them (#1681).
+  const orgVars = await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env), 'global-only')
   return pickSalesforceCreds(orgVars, env as unknown as Record<string, string | undefined>)
 }
 

@@ -16,7 +16,7 @@ These are the only values in scope. There are no imports.
 |--------|------|-------------|
 | `trigger` | object | `{ payload }` - the inbound webhook/trigger body is at `trigger.payload`. |
 | `steps` | object | Outputs of upstream steps, keyed by node namespace. Read an upstream value as `steps.<namespace>.output.<field>`. |
-| `env` | object | Merged environment variables: non-secret Bidspoke env vars plus Cloudflare secrets. Cloudflare bindings win on name collisions. |
+| `env` | object | Merged environment variables: your Bidspoke env vars (secrets decrypted, a workflow's own over the organization's) plus Cloudflare secrets. Your env vars win on name collisions. |
 | `execution` | object | Run metadata: `trace_id`, `execution_id`, `workflow_id`, and `bidspoke_link` (a deep link to this run). |
 | `props` | object | Declared inputs resolved from templated sources (see Props below). Always an object, defaults to `{}`. |
 | `console` | object | `console.log` / `.info` / `.warn` / `.error` / `.debug`. Captured per run and shown on the step's row (capped at 200 entries / 50 KB). |
@@ -94,7 +94,7 @@ return { exit: true, reason: 'below minimum score' }
 
 ## Notes
 
-- Reference secrets with `env.SECRET_NAME`. Cloudflare worker secrets and non-secret Bidspoke env vars are both on `env`; Cloudflare bindings take precedence on name collisions.
+- Reference secrets with `env.SECRET_NAME`. Your Bidspoke env vars (secrets decrypted, and a workflow's own values in place of the organization's of the same name) and Cloudflare worker secrets are both on `env`. Your env vars win on a name collision; platform secrets are never exposed.
 - Bidspoke statically scans your script for `steps.<name>` references and only ships those step outputs to the isolate, to keep payloads small. Dynamic access (for example `steps[key]`, `Object.keys(steps)`, `for (const k in steps)`, or assigning `const s = steps`) disables that optimization and the full `steps` object is sent. Behavior is the same either way; only payload size differs.
 - Edits to a script take effect on workflow save (scripts are bundled and deployed at save time). Test runs deploy an ephemeral bundle so unsaved edits run immediately in the test runner.
 

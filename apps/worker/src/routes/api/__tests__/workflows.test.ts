@@ -1202,6 +1202,31 @@ describe('POST /workflows/:id/test-node', () => {
       { from: 'enrich' }
     )
   })
+
+  // #1681: re-running one node must see the same env as the workflow's run does,
+  // its own workflow scoped values included, so it loads them for THIS workflow
+  // and hands them to the node.
+  it("loads the env for the workflow under test and hands it to the node", async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(loadEnvVars).mockResolvedValue({ PARTNER_URL: 'https://wf-1.example' })
+
+    const definition = {
+      nodes: [{ id: 'n1', namespace: 'n1', type: 'exit', config: {} }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows/wf-1/test-node', { body: { namespace: 'n1', definition } })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(loadEnvVars).mock.calls[0][4]).toEqual({ workflowId: 'wf-1' })
+    const ctx = vi.mocked(executeNode).mock.calls[0][1]
+    expect(ctx.env).toEqual({ PARTNER_URL: 'https://wf-1.example' })
+  })
 })
 
 describe('GET /workflows/:id/timeout-suggestions', () => {

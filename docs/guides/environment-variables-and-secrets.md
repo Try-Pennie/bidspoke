@@ -30,7 +30,17 @@ If a secret shows "Rotate to enable reveal", it was created before the encryptio
 
 ## Folders
 
-Variables can be organized into folders. You can create folders (including nested folders), drag variables between them, rename and move folders, collapse them, and sort by most-recently-used or by name. Folders are organizational only; they do not affect how a node reads `env.<KEY>` (keys are global within the organization, not scoped to a folder).
+Variables can be organized into folders. You can create folders (including nested folders), drag variables between them, rename and move folders, collapse them, and sort by most-recently-used or by name. Folders are organizational only; they do not affect how a node reads `env.<KEY>` (a key is not scoped to a folder).
+
+## Values saved for one workflow
+
+A variable can also be saved against a single workflow, for a workflow that keeps its own settings (#1681). That workflow's runs read it as `env.<KEY>` in place of the organization value of the same key; every other workflow keeps reading the organization value and never sees it. Re-running a single node from the canvas reads the same values as the workflow's runs.
+
+- It is created through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)). The page lists such a variable like any other; creating one there and showing which workflow it belongs to is #1774.
+- Every node reads the same values: Code, Webhook and Salesforce nodes all prefer the run's own value over a Cloudflare Worker secret of the same name.
+- A workflow's own secret is stored encrypted like any other, but it is not synced to the Cloudflare Worker, because the Worker holds one value per name for every workflow.
+- If a workflow's own secret cannot be decrypted, that workflow's runs get an empty value for the key. The organization value is deliberately not used in its place, so a workflow saved with, say, a sandbox credential never sends the production one. The daily decrypt check names the secret and its workflow.
+- The Salesforce connection (`SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`) belongs to the organization and cannot be set for one workflow, because Bidspoke holds one Salesforce login per organization. A workflow with a Salesforce org of its own is #1689.
 
 ## Where partner and workflow credentials go
 

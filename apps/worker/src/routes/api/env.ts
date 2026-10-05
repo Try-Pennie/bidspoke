@@ -7,11 +7,32 @@ import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../lib/cf-sec
 import { changedFields, writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret, secretKeys } from '../../lib/secret-crypto'
+import { isUuid } from '../../lib/query-validators'
+import { isOrgOnlyEnvKey } from '../../lib/org-only-env-keys'
 import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
 const env = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+/**
+ * Whether a secret is mirrored to the Cloudflare Worker secret of the same name.
+ *
+ * Only an org secret is. The Worker holds ONE value per name, read by every
+ * workflow, so a workflow's own secret mirrored there would overwrite the org
+ * secret of that name (which the Salesforce and Webhook nodes of every workflow
+ * read ahead of the database copy), and deleting it would delete the org's. A
+ * workflow's own secret lives only in its encrypted database row, which is what
+ * the env loader hands that workflow's runs (#1681).
+ */
+function mirroredToWorker(row: { is_secret: boolean; scope: string }): boolean {
+  return row.is_secret && row.scope === 'global'
+}
+
+/** Why a workflow cannot hold its own value for this key (lib/org-only-env-keys.ts). */
+function orgOnlyRefusal(key: string): string {
+  return `${key} is the organization's Salesforce connection and cannot be set for one workflow`
+}
 
 // GET /api/env — list vars; secret values omitted
 env.get('/', async (c) => {
@@ -51,6 +72,35 @@ env.post('/', async (c) => {
   if (!body.key) return c.json({ error: 'key is required' }, 400)
   if (body.is_secret && !body.value) return c.json({ error: 'value is required for secrets' }, 400)
 
+  // Which workflow a variable is saved against decides which runs read it
+  // (#1681), and this client is service_role, which RLS does not stop, so the
+  // workflow is checked to be one of the caller's own before anything is written.
+  // Naming a workflow without a scope means that workflow, as the API reference
+  // has always said; it used to be stored as an org variable, read by every run.
+  const workflowId = body.workflow_id ?? null
+  const scope = body.scope ?? (workflowId !== null ? 'workflow' : 'global')
+  if (scope !== 'global' && scope !== 'workflow') {
+    return c.json({ error: "scope must be 'global' or 'workflow'" }, 400)
+  }
+  if (scope === 'global' && workflowId !== null) {
+    return c.json({ error: 'a global variable cannot name a workflow' }, 400)
+  }
+  if (scope === 'workflow') {
+    if (!workflowId) return c.json({ error: 'workflow_id is required for a workflow scoped variable' }, 400)
+    if (!isUuid(workflowId)) return c.json({ error: 'workflow_id must be a workflow id' }, 400)
+    if (isOrgOnlyEnvKey(body.key)) return c.json({ error: orgOnlyRefusal(body.key) }, 400)
+    const { data: workflow, error: workflowErr } = await supabase
+      .from('workflows')
+      .select('id')
+      .eq('id', workflowId)
+      .eq('organization_id', orgId)
+      .is('deleted_at', null)
+      .single()
+    const workflowBlocked = dbErrorUnlessNotFound(c, workflowErr)
+    if (workflowBlocked) return workflowBlocked
+    if (!workflow) return c.json({ error: 'Workflow not found' }, 404)
+  }
+
   if (body.folder_id) {
     const { data: folder, error: folderErr } = await supabase
       .from('env_var_folders')
@@ -63,10 +113,13 @@ env.post('/', async (c) => {
     if (!folder) return c.json({ error: 'folder not found' }, 404)
   }
 
-  // Sync to Cloudflare if secret; also store encrypted copy for reveal
+  // Sync an org secret to Cloudflare; store every secret's encrypted copy, which
+  // is what the env loader reads and what reveal decrypts.
   let storedValue: string | null = body.value ?? null
   if (body.is_secret && body.value) {
-    await setCfSecret(body.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    if (mirroredToWorker({ is_secret: true, scope })) {
+      await setCfSecret(body.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    }
     storedValue = await encryptSecret(body.value, secretKeys(c.env))
   }
 
@@ -77,8 +130,8 @@ env.post('/', async (c) => {
       key: body.key,
       value: storedValue,
       is_secret: body.is_secret ?? false,
-      scope: body.scope ?? 'global',
-      workflow_id: body.workflow_id ?? null,
+      scope,
+      workflow_id: workflowId,
       folder_id: body.folder_id ?? null,
       created_by: userId,
       updated_by: userId,
@@ -131,6 +184,10 @@ env.put('/:id', async (c) => {
   const newKey = body.key ?? existing.key
   const keyChanged = newKey !== existing.key
   const isRename = existing.is_secret && keyChanged
+  const mirrored = mirroredToWorker(existing)
+  if (keyChanged && existing.scope === 'workflow' && isOrgOnlyEnvKey(newKey)) {
+    return c.json({ error: orgOnlyRefusal(newKey) }, 400)
+  }
 
   // Reject a rename that collides with another var of the same (key, scope,
   // workflow) BEFORE touching Cloudflare — otherwise we'd overwrite that other
@@ -156,8 +213,10 @@ env.put('/:id', async (c) => {
     // else (a rename with no new value) the current value decrypted from storage
     // so the secret can be copied to the new name. A rename that touches neither
     // a new value nor a recoverable stored value can't be carried over (#104).
+    // A workflow's own secret has no Cloudflare copy (#1681), so its rename
+    // keeps the stored ciphertext as it is.
     let plaintext: string | null = body.value ?? null
-    if (plaintext === null && isRename) {
+    if (plaintext === null && isRename && mirrored) {
       if (!existing.value) {
         return c.json({ error: 'Provide a new value to rename this secret' }, 400)
       }
@@ -166,10 +225,10 @@ env.put('/:id', async (c) => {
     if (plaintext !== null) {
       // Write under the NEW name first (no window without a secret), then drop
       // the old name so it isn't orphaned in Cloudflare.
-      await setCfSecret(newKey, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+      if (mirrored) await setCfSecret(newKey, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
       updatedValue = await encryptSecret(plaintext, secretKeys(c.env))
     }
-    if (isRename) {
+    if (isRename && mirrored) {
       await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
     }
   } else {
@@ -270,6 +329,8 @@ env.post('/resync-secrets', async (c) => {
     .select('id, key, value')
     .eq('organization_id', orgId)
     .eq('is_secret', true)
+    // Org secrets only: a workflow's own secret is never mirrored (#1681).
+    .eq('scope', 'global')
   if (error) return dbError(c, error)
 
   const missing = (data ?? []).filter((s) => !cfNames.has(s.key))
@@ -309,7 +370,7 @@ env.delete('/:id', async (c) => {
 
   const { data: existing, error: fetchError } = await supabase
     .from('environment_variables')
-    .select('key, is_secret, value')
+    .select('key, is_secret, value, scope')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -318,7 +379,9 @@ env.delete('/:id', async (c) => {
   if (blocked) return blocked
   if (!existing) return c.json({ error: 'Variable not found' }, 404)
 
-  if (existing.is_secret) {
+  // A workflow's own secret has no Cloudflare copy, and the Worker secret of the
+  // same name is the org's, so it is left alone (#1681).
+  if (mirroredToWorker(existing)) {
     await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
   }
 

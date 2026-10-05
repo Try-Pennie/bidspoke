@@ -1059,7 +1059,8 @@ workflows.post('/:id/test-node', async (c) => {
   }
 
   // Reconstruct execution context
-  const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env))
+  // This workflow's own values over the org ones, as its runs get them (#1681).
+  const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase, secretKeys(c.env), { workflowId: id })
   const ctx = buildContext(triggerPayload, source, id, traceId, envVars, orgId, body.execution_id, c.env.APP_URL)
   ctx.steps = ctxSteps
 

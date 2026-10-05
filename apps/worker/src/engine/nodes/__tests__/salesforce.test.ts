@@ -490,6 +490,26 @@ describe('executeSalesforceNode', () => {
     expect(sent.secret).toBe('secret-val')
   })
 
+  // #1681: ctx.env is the run's own values, a workflow's laid over the org's. A
+  // Worker secret of the same name used to win here while code nodes let the run's
+  // value win, so a workflow's own value never reached a Salesforce template.
+  it("resolves {{env.*}} to the run's value over a Worker secret of the same name, as a code node does (#1681)", async () => {
+    const env = makeEnv({ TRIPOINT_PROXY_SECRET: 'org-worker-copy' })
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+    const ctx = makeCtx({
+      env: { SALESFORCE_CLIENT_ID: 'client-id', SALESFORCE_CLIENT_SECRET: 'client-secret', SALESFORCE_INSTANCE_URL: INSTANCE, TRIPOINT_PROXY_SECRET: 'workflow-value' },
+    })
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: { secret: '{{env.TRIPOINT_PROXY_SECRET}}' } }),
+      ctx,
+      env
+    )
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).secret).toBe('workflow-value')
+  })
+
   // #474: platform master secrets must NOT resolve in {{env.*}} templates. A
   // workflow author could otherwise put {{env.SUPABASE_SECRET_KEY}} in a field and
   // exfiltrate a key that bypasses RLS. SF/partner creds (SALESFORCE_*, TRIPOINT_*)

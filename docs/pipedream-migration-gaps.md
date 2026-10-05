@@ -89,8 +89,8 @@ Today: this works as a plain web call, so it's mostly a matter of order: a calle
 Most called: "Send rejection to Salesforce" (16 callers) and "Gather Webhook Responses After Send" (10).
 
 ### 12. Workflow scoped settings (#1681)
-Today: Bidspoke lets you save a setting against one workflow, but runs never load it.
-Need: fix it, since ported workflows keep their own settings.
+Done for runs (#1681): a setting saved against one workflow now reaches that workflow's runs, over the organization value of the same key, and no other workflow's.
+Still needed: the Environment Variables page cannot create one or show which workflow a row belongs to (#1774), so they are created through the API. A workflow cannot have its own Salesforce login until #1689.
 
 ---
 

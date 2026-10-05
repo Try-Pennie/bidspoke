@@ -695,7 +695,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
   const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
 
   it('posts a Block Kit message naming the undecryptable secrets with a fix path', async () => {
-    const sent = await sendSecretDecryptAlert(conn, ['ELIGIBILITY_SCOUT_CLIENT_SECRET'], 'https://app.test')
+    const sent = await sendSecretDecryptAlert(conn, [{ key: 'ELIGIBILITY_SCOUT_CLIENT_SECRET', workflow: null }], 'https://app.test')
     expect(sent).toBe(true)
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.channel).toBe('#alerts')
@@ -707,6 +707,48 @@ describe('sendSecretDecryptAlert (#404)', () => {
     expect(text).toContain('ELIGIBILITY_SCOUT_CLIENT_SECRET')
     expect(text).toContain('How to fix:')
     expect(text).toContain('https://app.test/env')
+  })
+
+  // #1681: the same key can be the org's and a workflow's own, and the two are
+  // handled differently at load (skipped against withheld), so the line says which.
+  it("names the workflow a workflow's own secret was saved for, and says its runs get it empty", async () => {
+    await sendSecretDecryptAlert(
+      conn,
+      [{ key: 'EQUIFAX_PASSWORD', workflow: null }, { key: 'EQUIFAX_PASSWORD', workflow: 'Main Flow' }],
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const lines = (body.blocks[2].text.text as string).split('\n')
+    expect(lines).toEqual(['• `EQUIFAX_PASSWORD`', "• `EQUIFAX_PASSWORD`, saved for the workflow Main Flow, whose runs get it empty"])
+  })
+
+  // What the loader does with each kind differs, so the alert says what happens
+  // to the kinds it lists, and only those: an org secret is left out (and some
+  // nodes fall back to its Cloudflare copy), a workflow's own is handed over empty.
+  const summary = async (secrets: { key: string; workflow: string | null }[]) => {
+    fetchMock.mockClear()
+    await sendSecretDecryptAlert(conn, secrets, 'https://app.test')
+    return JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+  }
+  const ORG_LINE = 'An organization secret is left out of every run. Code, Webhook and Salesforce nodes fall back to its Cloudflare copy if one exists; other nodes get no value.'
+  const WORKFLOW_LINE = "A secret saved for one workflow is handed to that workflow's runs empty, so the organization's value of the same name is never sent in its place."
+
+  it('says what happens to an org secret, and nothing about workflow secrets, when only org secrets are listed', async () => {
+    expect(await summary([{ key: 'A', workflow: null }])).toBe(
+      `*1 secret cannot be decrypted.* ${ORG_LINE} Nothing errors until a call that needs it fails:`,
+    )
+  })
+
+  it("says what happens to a workflow's own secret when only those are listed", async () => {
+    expect(await summary([{ key: 'A', workflow: 'Main Flow' }, { key: 'B', workflow: 'Main Flow' }])).toBe(
+      `*2 secrets cannot be decrypted.* ${WORKFLOW_LINE} Nothing errors until a call that needs one fails:`,
+    )
+  })
+
+  it('says both when both kinds are listed', async () => {
+    expect(await summary([{ key: 'A', workflow: null }, { key: 'A', workflow: 'Main Flow' }])).toBe(
+      `*2 secrets cannot be decrypted.* ${ORG_LINE} ${WORKFLOW_LINE} Nothing errors until a call that needs one fails:`,
+    )
   })
 
   it('does nothing and reports not-sent when there are no keys', async () => {

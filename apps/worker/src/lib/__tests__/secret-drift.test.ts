@@ -25,6 +25,14 @@ describe('findMissingSecrets', () => {
   it('returns nothing when Cloudflare has every DB secret', () => {
     expect(findMissingSecrets([s('A'), s('B')], new Set(['A', 'B', 'EXTRA']))).toEqual([])
   })
+
+  // A workflow's own secret is never written to Cloudflare, because the Worker
+  // holds one value per name for every workflow (#1681). Its absence there is
+  // the design, so reporting it would be an alert nobody can act on.
+  it("does not report a workflow's own secret, which is never mirrored to Cloudflare (#1681)", () => {
+    const db = [s('A'), s('WF_TOKEN', { scope: 'workflow', workflow_id: 'wf-9' })]
+    expect(findMissingSecrets(db, new Set(['A']))).toEqual([])
+  })
 })
 
 function makeSupabase(rows: DbSecret[]) {

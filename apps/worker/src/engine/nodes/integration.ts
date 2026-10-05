@@ -7,10 +7,12 @@
  * Config: { service, action?, url, method?, headers?, body?, auth? }
  * Output: { status, body, headers }
  *
- * Auth credentials should be referenced via {{env.SECRET_NAME}}. Non-secret env
- * vars come from ctx.env (Supabase environment_variables); Cloudflare secrets
- * injected via `wrangler secret put` are merged in at execution time. CF bindings
- * take precedence over same-named Supabase env vars.
+ * Auth credentials should be referenced via {{env.SECRET_NAME}}. The run's own
+ * values come from ctx.env (Supabase environment_variables, secrets decrypted, a
+ * workflow's own laid over the org's); Cloudflare secrets set with `wrangler
+ * secret put` are merged in underneath at execution time, minus the platform
+ * block list. The run's value wins over a Cloudflare secret of the same name, as
+ * in a code node (#1681).
  *
  * On non-2xx: throws a Response instance so engine.ts classifies the HTTP error
  * via classifyHttpError() — same pattern as partner-bid node.
@@ -23,7 +25,7 @@ import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
 import { shadowIntegrationStub } from '../shadow'
 import { shadowOf } from '../run-reality'
-import { sandboxEnvBindings } from '../../lib/sandbox-env'
+import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { containsHtmlDocument } from '../../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 
@@ -99,13 +101,16 @@ export async function executeIntegrationNode(
   // Shadow dry-run: don't make the outbound call.
   if (shadowOf(ctx).outboundStubbed) return shadowIntegrationStub()
 
-  // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves.
-  // CF secrets are not in ctx.env (which only has non-secret Supabase vars).
-  // Filtered through the sandbox blocklist (#474) so platform master secrets
-  // (SUPABASE_SECRET_KEY, SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never
-  // resolve in a template — same blocklist code nodes enforce.
-  // CF bindings take precedence over same-named Supabase env vars.
-  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...sandboxEnvBindings(env) } }
+  // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves
+  // for a Worker secret the stored variables do not hold. Filtered through the
+  // sandbox blocklist (#474) so platform master secrets (SUPABASE_SECRET_KEY,
+  // SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never resolve in a template, the
+  // same blocklist code nodes enforce. The run's own values (ctx.env, decrypted
+  // secrets included, a workflow's laid over the org's) win over a Worker secret
+  // of the same name, exactly as in a code node, through the one shared merge
+  // (#1681). The Worker secret used to win here, so a workflow's own value never
+  // reached this node.
+  const enrichedCtx: ExecutionContext = { ...ctx, env: buildSandboxEnv(env, ctx.env) }
 
   const method = (config.method ?? 'POST').toUpperCase()
   const timeoutMs = config.timeout_ms ?? 15000

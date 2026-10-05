@@ -24,7 +24,7 @@ import { linkAbort } from '../retry'
 import { shadowSalesforceStub } from '../shadow'
 import { shadowOf } from '../run-reality'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
-import { sandboxEnvBindings } from '../../lib/sandbox-env'
+import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
 import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
@@ -113,9 +113,13 @@ export async function executeSalesforceNode(
 
   // Merge CF secrets so {{env.*}} templates resolve. Filtered through the sandbox
   // blocklist (#474) so platform master secrets (SUPABASE_SECRET_KEY,
-  // SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never resolve in a template —
+  // SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never resolve in a template, the
   // same blocklist code nodes enforce. SALESFORCE_* creds are not blocked.
-  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...sandboxEnvBindings(env) } }
+  // The run's own values (ctx.env, a workflow's laid over the org's) win over a
+  // Worker secret of the same name, exactly as in a code node, through the one
+  // shared merge (#1681). They used to lose here, so a workflow's own value never
+  // reached this node.
+  const enrichedCtx: ExecutionContext = { ...ctx, env: buildSandboxEnv(env, ctx.env) }
 
   const instanceUrl = (enrichedCtx.env.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
   const clientId = enrichedCtx.env.SALESFORCE_CLIENT_ID ?? ''
