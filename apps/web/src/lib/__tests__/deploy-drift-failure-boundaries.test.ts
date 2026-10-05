@@ -88,7 +88,8 @@ describe('the main worker is probed and reported like the other targets (#1373)'
       expect(alert!.text, `the alert has no message for ${verdict}`).toMatch(new RegExp(`${verdict}\\)`))
     }
     expect(condition, 'a compare step that crashed would go unreported').toContain("steps.compare.outcome == 'failure'")
-    expect(alert!.text).toContain('SLACK_WEBHOOK_URL')
+    // Posts to Slack through the reminder record since #1761, which owns the curl.
+    expect(alert!.text).toContain('drift-alert-state.sh alert worker')
   })
 
   it('counts that alert in the final gate, so the run still goes red', () => {

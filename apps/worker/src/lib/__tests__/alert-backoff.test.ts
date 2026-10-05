@@ -29,6 +29,16 @@ function fakeKv(initial: Record<string, string> = {}) {
   }
 }
 
+describe('the schedule has one home (#1761)', () => {
+  it('is read from alert-backoff-schedule.json, which Deploy Drift also reads, so the two cannot drift apart', async () => {
+    // Deploy Drift backs off on GitHub's side (it cannot depend on this worker,
+    // whose death it reports, L71) and reads the same file with jq (L41).
+    const schedule = (await import('../alert-backoff-schedule.json')).default as { stepsSeconds: number[] }
+    expect(BACKOFF_STEPS_SECONDS).toEqual(schedule.stepsSeconds)
+    expect(schedule.stepsSeconds).toEqual([6 * 3600, 12 * 3600, 24 * 3600])
+  })
+})
+
 describe('intervalSecondsFor', () => {
   it('walks the schedule as a condition keeps standing', () => {
     // The whole point: the second reminder is not as soon as the first.

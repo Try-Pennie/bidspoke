@@ -90,10 +90,10 @@ The realistic loss modes are account level and credential level, not hardware. T
 
 Everything here is redeployable from git — no data loss, since state lives in Supabase.
 
-1. Worker: `pnpm --filter worker exec wrangler deploy` (or re-run the Deploy workflow). This recreates the worker from `wrangler.toml` (KV/DO/dispatch bindings, routes, crons).
+1. Worker: start Deploy on main from the Actions tab (Actions, Deploy, Run workflow, branch main), which deploys every target at main's newest commit. With the worker gone, fill in `money_gate_base` with a full 40 character commit hash: the commit of the newest Deploy run that succeeded, or main's newest commit when that is not known. Left empty, the money gate asks the live worker which commit it runs, gets no answer, and refuses, so Verify fails and nothing deploys. Re-running an old Deploy run is not the same thing: it redeploys that run's own commit. By hand, `pnpm --filter worker exec wrangler deploy --var DEPLOYED_SHA:$(git rev-parse HEAD)` also works; without the `--var` the worker reports no deployed commit and Deploy Drift alerts that it is unstamped until Deploy runs. Either recreates the worker from `wrangler.toml` (KV/DO/dispatch bindings, routes, crons).
 2. Re-provision the worker secrets (Secret inventory below) via `wrangler secret put <NAME> --name bidspoke-worker` or the CF dashboard. NOTE: `wrangler secret put` through a non-interactive shell uploads blank — use a real terminal or the dashboard.
 3. KV namespaces / DOs / dispatch namespace: if deleted, recreate (`wrangler kv namespace create ...`) and paste the new IDs into `wrangler.toml`. KV/DO contents are caches/transient and self-rebuild; no restore needed.
-4. Pages: re-deploy the frontend (Deploy workflow's Deploy Pages job).
+4. Pages: the same Deploy run on main redeploys the frontend (its Deploy Pages job), because a started run deploys every target (#1761).
 5. DNS/routes: recreate the wildcard `* CNAME -> bidspoke-worker.workers.dev`, the Worker route `*.trypennie.dev/*`, and the `bidspoke.trypennie.dev/*` bypass route (no worker) that protects Pages. These are configured in the CF dashboard, not wrangler.
 
 ### D. Cloudflare account loss

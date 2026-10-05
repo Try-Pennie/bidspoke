@@ -124,3 +124,65 @@ describe('every scheduled workflow is watched (#805)', () => {
     }
   })
 })
+
+/**
+ * A workflow that reports its own findings tells the watch so through a step it
+ * names (#1761): Deploy Drift concludes a marker step only when every failure in
+ * the run was a finding it already posted to Slack, and the watch then does not
+ * repeat it. The registry names that step and the gate allowed to fail beside it.
+ *
+ * A renamed step fails SAFE (the watch goes back to reporting the duplicate), but
+ * silently, and a name that matches two steps would let the wrong one answer. So
+ * each name must appear exactly once as a step in that workflow.
+ *
+ * Read from the registry's SOURCE, like the rest of this file: importing the
+ * module would pull worker only types into the web typecheck.
+ */
+interface SelfReportEntry {
+  file: string
+  reportedStep: string
+  failedSteps: string[]
+}
+
+const selfReports = (): SelfReportEntry[] => {
+  const registry = readFileSync(REGISTRY, 'utf8')
+  const starts = [...registry.matchAll(/^\s*file: '([^']+)',$/gm)]
+  return starts.flatMap((m, i) => {
+    const entry = registry.slice(m.index, starts[i + 1]?.index ?? registry.length)
+    const reported = entry.match(/reportedStep: '([^']+)'/)
+    const failed = entry.match(/failedSteps: \[([^\]]*)\]/)
+    if (!reported || !failed) return []
+    return [{ file: m[1], reportedStep: reported[1], failedSteps: [...failed[1].matchAll(/'([^']+)'/g)].map((f) => f[1]) }]
+  })
+}
+
+describe('a self report names real steps (#1761)', () => {
+  it('declares at least one self reporting workflow, with an allowed failure, so this cannot pass on nothing', () => {
+    expect(selfReports().length).toBeGreaterThan(0)
+    for (const w of selfReports()) expect(w.failedSteps.length, w.file).toBeGreaterThan(0)
+  })
+
+  it('names each reported step and allowed failure exactly once in its workflow file', () => {
+    for (const w of selfReports()) {
+      const yml = readFileSync(path.join(WORKFLOW_DIR, w.file), 'utf8')
+      const names = [...yml.matchAll(/^\s+- name:\s*(.+?)\s*$/gm)].map((m) => m[1])
+      for (const step of [w.reportedStep, ...w.failedSteps]) {
+        expect(
+          names.filter((n) => n === step),
+          `${w.file} should have exactly one step named "${step}"`,
+        ).toHaveLength(1)
+      }
+    }
+  })
+
+  it('never lets the reported step fail the run, and runs it only on a reported outcome', () => {
+    for (const w of selfReports()) {
+      const yml = readFileSync(path.join(WORKFLOW_DIR, w.file), 'utf8')
+      const at = yml.indexOf(`- name: ${w.reportedStep}`)
+      const next = yml.indexOf('\n      - ', at + 1)
+      const body = yml.slice(at, next === -1 ? undefined : next)
+      expect(body).not.toMatch(/\bexit 1\b/)
+      expect(body).toMatch(/if:\s*always\(\) && steps\.\w+\.outputs\.outcome == 'reported'/)
+    }
+  })
+})

@@ -77,6 +77,26 @@ export interface WatchedWorkflow {
   driveAfterMs: number
   /** What stops being true while this workflow is dark (for the alert body). */
   dependents: string
+  /**
+   * How a run of this workflow says it failed only because it FOUND something and
+   * reported it to Slack itself (#1761). Absent for a workflow that cannot say so.
+   *
+   * Deploy Drift is red by design while a target is stranded, and it reports the
+   * strand itself, so two such runs are not "Deploy Drift keeps failing": that
+   * duplicate is what posted beside every drift alert on 2026-10-05. A run counts
+   * as having reported itself only when the step named `reportedStep` passed and
+   * every step that failed is one of `failedSteps`. Anything else, including a
+   * jobs read that could not be completed, is not proof, and the watch speaks.
+   * Both names are held to the workflow file by watched-workflows-complete.test.ts.
+   */
+  selfReport?: SelfReport
+}
+
+export interface SelfReport {
+  /** A step that concludes `success` only when every failure in the run was reported. */
+  reportedStep: string
+  /** The steps allowed to fail in a run that reported itself, normally its gate. */
+  failedSteps: string[]
 }
 
 /**
@@ -106,6 +126,15 @@ export const WATCHED_WORKFLOWS: WatchedWorkflow[] = [
     driveAfterMs: 50 * 60 * 1000,
     dependents:
       'nothing is checking whether the live worker and the live site are running the code that is on main, so a failed deploy would leave production behind with no signal',
+    // The marker step deploy-drift.yml concludes only when every failed alert
+    // step posted (or held as a reminder not yet due) a finding about its target,
+    // and the gate that turns the run red (#1761). A drift check that could not
+    // run, a post Slack refused, or any other failed step leaves the marker
+    // skipped, so the watch still speaks about a drift check that is broken.
+    selfReport: {
+      reportedStep: 'Every failure in this run was a finding reported to Slack',
+      failedSteps: ['Fail the run if any target is stranded'],
+    },
   },
   {
     file: 'db-types-drift.yml',
@@ -139,6 +168,12 @@ export type ScheduleLookup =
       ok: true
       lastRunIso: string | null
       conclusions: (string | null)[]
+      /**
+       * Each qualifying run's id, aligned with `conclusions`, or null where GitHub
+       * gave none. Read only when a failing streak has to be checked against the
+       * runs' own self reports (#1761), so the lookup itself costs nothing more.
+       */
+      runIds: (number | null)[]
       /**
        * When the newest failed qualifying run has since been followed by a run
        * a PERSON started that passed, on the same branch: that run's created_at.
@@ -187,14 +222,32 @@ const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure'])
  */
 export const FAILING_STREAK = 2
 
-/** Leading failures among the conclusive runs, newest first. */
-function failureStreak(conclusions: (string | null)[]): number {
-  // A `null` conclusion is a run still in flight. It is neither a pass nor a
-  // failure, so it is skipped rather than allowed to break a real streak.
-  const settled = conclusions.filter((c) => c !== null)
+/**
+ * Which failed runs reported their own finding (#1761), aligned with a lookup's
+ * `conclusions`: true when the run's jobs prove it did, false when they do not or
+ * could not be read, null when it was not asked. `unreadable` says why the jobs of
+ * some run could not be read, so the alert can say that rather than claim the runs
+ * did not report (L11).
+ */
+export interface SelfReportReading {
+  reported: (boolean | null)[]
+  unreadable: string | null
+}
+
+/**
+ * Leading failures among the conclusive runs, newest first. A failure that
+ * reported its own finding ends the streak exactly as a pass does: it proves the
+ * workflow ran end to end and delivered what it found (#1761).
+ */
+function failureStreak(conclusions: (string | null)[], reported?: (boolean | null)[]): number {
   let streak = 0
-  for (const c of settled) {
+  for (let i = 0; i < conclusions.length; i++) {
+    const c = conclusions[i]
+    // A `null` conclusion is a run still in flight. It is neither a pass nor a
+    // failure, so it is skipped rather than allowed to break a real streak.
+    if (c === null) continue
     if (!FAILED_CONCLUSIONS.has(c)) break
+    if (reported?.[i] === true) break
     streak += 1
   }
   return streak
@@ -205,6 +258,7 @@ export function evaluateSchedule(
   lookup: ScheduleLookup,
   nowMs: number,
   staleMs: number,
+  selfReport?: SelfReportReading,
 ): ScheduleVerdict {
   if (!lookup.ok) {
     // Never folded into never_ran. A lookup that could not be completed is not
@@ -238,7 +292,8 @@ export function evaluateSchedule(
   if (ageMs > staleMs) {
     return { status: 'stale', ageMs, detail: `last scheduled run was ${lookup.lastRunIso}` }
   }
-  const streak = failureStreak(lookup.conclusions)
+  const rawStreak = failureStreak(lookup.conclusions)
+  const streak = failureStreak(lookup.conclusions, selfReport?.reported)
   if (streak >= FAILING_STREAK) {
     if (lookup.manualPassIso !== null) {
       // A later pass of the identical job on the same branch is proof the failure
@@ -251,7 +306,40 @@ export function evaluateSchedule(
         detail: `the last ${streak} scheduled runs failed, but a run started by hand passed at ${lookup.manualPassIso}, so the failure is not persisting`,
       }
     }
+    if (selfReport?.unreadable) {
+      // Never "did not report": what was measured is that it could not be read.
+      // Not rateLimited either, whatever the reason, or the rate limit hold would
+      // silence a real failing streak (#1367).
+      return {
+        status: 'failing',
+        ageMs,
+        detail: `the last ${streak} scheduled runs failed, and whether they reported a finding of their own could not be read: ${selfReport.unreadable}`,
+      }
+    }
+    if (selfReport) {
+      return { status: 'failing', ageMs, detail: `the last ${streak} scheduled runs failed without reporting a finding of their own` }
+    }
     return { status: 'failing', ageMs, detail: `the last ${streak} scheduled runs failed` }
+  }
+  if (rawStreak >= FAILING_STREAK) {
+    // Healthy, but the detail says why, so the run log can tell this from an
+    // ordinary clean reading (L11), as the #1188 manual pass does. Worded from
+    // what was measured: `streak` failed runs at the front did NOT prove they
+    // reported (or could not be read), and the run behind them did.
+    if (streak === 0) {
+      return {
+        status: 'healthy',
+        ageMs,
+        detail: `the last ${rawStreak} scheduled runs failed, but they found a problem and reported it to Slack themselves, so this does not report it a second time`,
+      }
+    }
+    const newest = streak === 1 ? 'the newest failed run' : `the newest ${streak} failed runs`
+    const why = selfReport?.unreadable ? ` (whether it did could not be read: ${selfReport.unreadable})` : ''
+    return {
+      status: 'healthy',
+      ageMs,
+      detail: `the last ${rawStreak} scheduled runs failed: ${newest} did not report a finding of its own${why}, but the one before it reported its finding to Slack, so this is not yet a failing streak`,
+    }
   }
   return { status: 'healthy', ageMs, detail: '' }
 }
@@ -453,7 +541,7 @@ export async function lookupLastScheduledRun(
   // GitHub confirming there are zero runs is a real, complete answer, and has to
   // be returned before the shape check below: an empty list trivially satisfies
   // "no run named its trigger" and would otherwise be reported as unreadable.
-  if (runs.length === 0) return { ok: true, lastRunIso: null, conclusions: [], manualPassIso: null }
+  if (runs.length === 0) return { ok: true, lastRunIso: null, conclusions: [], runIds: [], manualPassIso: null }
 
   // A page of runs where not one names its trigger is an API shape we cannot
   // read, not a workflow that never ran. Without this, GitHub dropping the
@@ -469,7 +557,7 @@ export async function lookupLastScheduledRun(
   // runs IS a real absence: reading the newest run anyway would count a manual
   // press as the schedule being alive.
   const qualifying = runs.filter(isQualifyingRun)
-  if (qualifying.length === 0) return { ok: true, lastRunIso: null, conclusions: [], manualPassIso: null }
+  if (qualifying.length === 0) return { ok: true, lastRunIso: null, conclusions: [], runIds: [], manualPassIso: null }
 
   const createdAt = (qualifying[0] as { created_at?: unknown }).created_at
   if (typeof createdAt !== 'string' || Number.isNaN(Date.parse(createdAt))) {
@@ -479,7 +567,102 @@ export async function lookupLastScheduledRun(
     const c = (run as { conclusion?: unknown }).conclusion
     return typeof c === 'string' ? c : null
   })
-  return { ok: true, lastRunIso: createdAt, conclusions, manualPassIso: manualPassSince(runs, qualifying) }
+  const runIds = qualifying.map((run) => {
+    const id = (run as { id?: unknown }).id
+    return typeof id === 'number' && Number.isFinite(id) ? id : null
+  })
+  return { ok: true, lastRunIso: createdAt, conclusions, runIds, manualPassIso: manualPassSince(runs, qualifying) }
+}
+
+/**
+ * Read the jobs of a workflow's newest failed runs and decide which reported their
+ * own finding (#1761).
+ *
+ * Called by the watch only when a workflow that declares `selfReport` would
+ * otherwise read as failing, never by the lookup, which the dispatch driver also
+ * calls every 15 minutes and which must stay one request. It stops at the first
+ * run that reported itself, or after FAILING_STREAK runs that did not, so a
+ * standing strand costs one request an hour.
+ *
+ * Measured on run 37313686587: a `continue-on-error` step that exited 1 is listed
+ * with conclusion `success`, so which alert fired cannot be read from GitHub. The
+ * workflow computes that itself and says so through `reportedStep`.
+ */
+export async function classifySelfReported(
+  access: Extract<GithubAccess, { ok: true }>,
+  lookup: Extract<ScheduleLookup, { ok: true }>,
+  selfReport: SelfReport,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SelfReportReading> {
+  const reported: (boolean | null)[] = lookup.conclusions.map(() => null)
+  let unreadable: string | null = null
+  let notReported = 0
+  for (let i = 0; i < lookup.conclusions.length && notReported < FAILING_STREAK; i++) {
+    const c = lookup.conclusions[i]
+    if (c === null) continue
+    if (!FAILED_CONCLUSIONS.has(c)) break
+    const id = lookup.runIds[i] ?? null
+    if (id === null) {
+      reported[i] = false
+      unreadable = 'a failed run carried no id, so its jobs could not be asked about'
+      notReported += 1
+      continue
+    }
+    const answer = await runReportedItself(access, id, selfReport, fetchImpl)
+    reported[i] = answer.reported
+    if (answer.reported) break
+    if (answer.unreadable) unreadable = answer.unreadable
+    notReported += 1
+  }
+  return { reported, unreadable }
+}
+
+async function runReportedItself(
+  access: Extract<GithubAccess, { ok: true }>,
+  runId: number,
+  selfReport: SelfReport,
+  fetchImpl: typeof fetch,
+): Promise<{ reported: boolean; unreadable?: string }> {
+  const url = `https://api.github.com/repos/${access.repo}/actions/runs/${runId}/jobs?per_page=100`
+  let response: Response
+  try {
+    response = await fetchImpl(url, { headers: githubHeaders(access.token) })
+  } catch (e) {
+    return { reported: false, unreadable: `the request for run ${runId}'s jobs failed: ${formatErr(e)}` }
+  }
+  if (!response.ok) {
+    const refusal = await readGithubRefusal(response)
+    return { reported: false, unreadable: `${describeGithubRefusal(refusal)} reading run ${runId}'s jobs` }
+  }
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch (e) {
+    return { reported: false, unreadable: `GitHub's answer for run ${runId}'s jobs was not JSON: ${formatErr(e)}` }
+  }
+  const jobs = (body as { jobs?: unknown })?.jobs
+  if (!Array.isArray(jobs)) {
+    return { reported: false, unreadable: `GitHub's answer for run ${runId}'s jobs had no jobs list` }
+  }
+  // Every condition is about proof, never about absence of a problem: a job that
+  // timed out or was cancelled reported nothing, a failed step outside
+  // `failedSteps` means a target may have gone unchecked with no message, and the
+  // marker itself must be there and have passed, which is also what refuses a job
+  // that never started (no jobs or no steps, the 2026-09-23 billing failure).
+  const steps: { name: unknown; conclusion: unknown }[] = []
+  for (const job of jobs) {
+    if ((job as { conclusion?: unknown })?.conclusion !== 'failure') return { reported: false }
+    const jobSteps = (job as { steps?: unknown })?.steps
+    if (!Array.isArray(jobSteps)) return { reported: false }
+    steps.push(...(jobSteps as { name: unknown; conclusion: unknown }[]))
+  }
+  const allowed = new Set(selfReport.failedSteps)
+  for (const s of steps) {
+    if (s?.conclusion === 'timed_out' || s?.conclusion === 'cancelled') return { reported: false }
+    if (s?.conclusion === 'failure' && !(typeof s.name === 'string' && allowed.has(s.name))) return { reported: false }
+  }
+  const marker = steps.some((s) => s?.name === selfReport.reportedStep && s?.conclusion === 'success')
+  return { reported: marker }
 }
 
 const readString = (run: unknown, field: string): string | null => {
@@ -574,7 +757,10 @@ export function formatScheduleSummary(results: ScheduleCheckResult[]): string {
   return results
     .map((r) => {
       const age = r.ageMs === null ? 'age unknown' : `last ran ${Math.round(r.ageMs / H)}h ago`
-      return `${r.file}=${r.status} (${age})`
+      // A healthy verdict that stood down from a failing streak says why, so the
+      // run log shows the stand down rather than a clean reading (#1188, #1761).
+      const why = r.status === 'healthy' && r.detail ? `; ${r.detail}` : ''
+      return `${r.file}=${r.status} (${age}${why})`
     })
     .join('; ')
 }
@@ -633,7 +819,14 @@ export async function runWorkflowScheduleWatch(
     // looks exactly like a healthy system (L73).
     let verdict: ScheduleVerdict
     try {
-      verdict = evaluateSchedule(await lookupLastScheduledRun(access, workflow.file, fetchImpl), nowMs, workflow.staleMs)
+      const lookup = await lookupLastScheduledRun(access, workflow.file, fetchImpl)
+      verdict = evaluateSchedule(lookup, nowMs, workflow.staleMs)
+      // Only a would-be failing verdict pays for the jobs read (#1761), so a
+      // passing workflow costs nothing extra and a standing strand one request.
+      if (verdict.status === 'failing' && workflow.selfReport && lookup.ok) {
+        const reading = await classifySelfReported(access, lookup, workflow.selfReport, fetchImpl)
+        verdict = evaluateSchedule(lookup, nowMs, workflow.staleMs, reading)
+      }
     } catch (e) {
       verdict = { status: 'unreadable', ageMs: null, detail: `the check for this workflow failed: ${formatErr(e)}` }
     }

@@ -40,6 +40,15 @@ on:
 # while a manual press still must not, or one click hides a dead schedule.
 run-name: Deploy Drift (${{ inputs.driver || 'schedule' }})
 
+# One run at a time (#1761). Each run reads the reminder record the previous run
+# uploaded, so two runs in the same hour (the worker's dispatch and a late cron,
+# measured 09:01 and 09:02 on 2026-10-05) must not both read the same old record
+# and both post. Never cancel-in-progress: a run cancelled mid flight uploads no
+# record, and the next one would post again (L671).
+concurrency:
+  group: deploy-drift
+  cancel-in-progress: false
+
 jobs:
   drift:
     name: Deploy targets match main
@@ -65,6 +74,12 @@ jobs:
       WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
       SITE_URL: ${{ vars.SITE_URL }}
       TAIL_URL: ${{ vars.WORKER_TAIL_URL }}
+      # The ONE remedy every alert gives when the fix is a deploy (#1761). These
+      # alerts used to say "re-run the most recent Deploy run on main", but a
+      # re-run deploys that run's own commit, which is the one already live, so
+      # it could not fix the strand it was sent about. A fresh run started from
+      # Run workflow deploys main's newest commit to every target.
+      DEPLOY_REMEDY: 'start Deploy on main: <${{ github.server_url }}/${{ github.repository }}/actions/workflows/deploy.yml|open the Deploy workflow>, press Run workflow and keep branch main. A fresh run deploys every target at the newest commit, while re-running an old Deploy run only redeploys that run''s own commit, which is the one already live.'
     # ONE JOB, THREE TARGETS (#1065)
     #
     # These were three jobs, one per target, each finishing in 8 to 14 seconds.
@@ -92,6 +107,24 @@ jobs:
         with:
           fetch-depth: 0 # full history so merge-base can compare commits
           path: head
+
+      # The reminder record the previous run left (#1761), so a standing
+      # condition is posted once and then reminded on the worker's schedule
+      # (6h, 12h, then daily) instead of every hour. It lives in this workflow's
+      # own run history, never in the worker, whose death drift exists to report
+      # (L71). An unreadable record answers `unavailable`, and every alert then
+      # posts and says why (L42). The directory is under RUNNER_TEMP so the
+      # checkouts below cannot remove it.
+      - name: Read the alert record from the previous run
+        id: drift_state_read
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRIFT_SCHEDULE_SRC: head/apps/worker/src/lib/alert-backoff-schedule.json
+        run: |
+          set -uo pipefail
+          echo "DRIFT_STATE_DIR=$RUNNER_TEMP/drift-state" >> "$GITHUB_ENV"
+          DRIFT_STATE_DIR="$RUNNER_TEMP/drift-state" bash head/.github/scripts/drift-alert-state.sh read
 
       - name: Compare live worker commit to the latest worker-touching commit
         id: compare
@@ -210,18 +243,16 @@ jobs:
           esac
 
           echo "::error::worker drift: $VERDICT"
-          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
-          fi
+          # Posts once, then reminds on the backoff schedule (#1761).
+          POSTED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$VERDICT" '' "$TEXT")
+          echo "slack: $POSTED"
           exit 1
 
       - name: Report the settled state
         if: steps.compare.outputs.confirm != 'true'
         run: |
           case "${{ steps.compare.outputs.verdict }}" in
-            ok) echo "Worker is up to date." ;;
+            ok) echo "Worker is up to date."; bash head/.github/scripts/drift-alert-state.sh clear worker ;;
             skip) echo "Live commit is not in this repository's history; nothing to compare." ;;
             deploy-in-flight)
               # Not a strand: a deploy is mid-flight and the worker is expected to
@@ -327,6 +358,7 @@ jobs:
 
           if [ "$DECISION" = "ok" ]; then
             echo "::notice::The worker is behind in history, but the built artifact is byte identical to what is live, so nothing is unshipped."
+            bash head/.github/scripts/drift-alert-state.sh clear worker
             exit 0
           fi
           if [ "$DECISION" = "deploy-in-flight" ]; then
@@ -344,15 +376,14 @@ jobs:
               "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           else
             echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT, the built artifact differs from what is live, and the live worker is $LIVE_SHA."
-            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe live worker is running `%s`, and building `apps/worker` at commit `%s` produces a different bundle, so shipping code is sitting on main unshipped. This happens when a deploy failed at Verify.\n\n*How to fix:* re-run the most recent Deploy run on main (apply any pending migration first with `supabase db push`). Pushing an empty worker change will not help: the deploy compares the built bundle, so a change that does not move it is skipped.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe live worker is running `%s`, and building `apps/worker` at commit `%s` produces a different bundle, so shipping code is sitting on main unshipped. This happens when a deploy failed at Verify, or when a merge started no Deploy.\n\n*How to fix:* apply any pending migration first with `supabase db push`, then %s Pushing an empty worker change will not help: the deploy compares the built bundle, so a change that does not move it is skipped.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           fi
 
-          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
-          fi
+          # Keyed on every fact the message states, so a new live commit or a new
+          # worker commit is news and posts at once (L641).
+          POSTED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$DECISION" "$LIVE_SHA|$LAST_WORKER_COMMIT" "$TEXT")
+          echo "slack: $POSTED"
           exit 1
 
       # ---- SITE -------------------------------------------------------
@@ -482,11 +513,8 @@ jobs:
             TEXT=$(printf '*The site drift check has no address to check*\n\nThe `SITE_URL` repository variable is empty, so the site is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
             echo "::error::site drift: SITE_URL is unset"
-            if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-              curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
-                -H 'Content-Type: application/json' \
-                --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
-            fi
+            POSTED=$(bash .github/scripts/drift-alert-state.sh alert site unconfigured '' "$TEXT")
+            echo "slack: $POSTED"
             exit 1
           fi
 
@@ -501,6 +529,7 @@ jobs:
           case "$DECISION" in
             ok)
               echo "::notice::Every sampled route is serving the latest apps/web commit."
+              bash .github/scripts/drift-alert-state.sh clear site
               exit 0 ;;
             deploy-in-flight)
               echo "::notice::A deploy is still running, so some routes are expected to be behind. The next run judges the settled state."
@@ -510,7 +539,7 @@ jobs:
               exit 0 ;;
             alert-behind|alert-stuck-deploy)
               HEADLINE='*The site is serving an older build*'
-              DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`.\n\n*How to fix:* re-run the most recent Deploy run on main. A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
+              DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`.\n\n*How to fix:* %s A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS" "$DEPLOY_REMEDY") ;;
             alert-inflight-unknown)
               # Distinct from alert-behind on purpose. Telling the reader to
               # re-run a deploy would send them after a deploy that was never
@@ -529,7 +558,7 @@ jobs:
               DETAIL=$(printf 'At least one route answered with no usable build stamp (`%s`), so a stranded site can no longer be detected at all. This means `NEXT_PUBLIC_COMMIT_SHA` is not reaching the Pages build.\n\n*How to fix:* check the Build (next-on-pages) step in deploy.yml still sets it. It is inlined at compile time, so it has to be on the build step, not the upload.' "$OBSERVATIONS") ;;
             alert-unknown-commit)
               HEADLINE='*The site is serving a commit this repository does not have*'
-              DETAIL=$(printf 'A route named a commit that is not in main history (`%s`), so what is live cannot be placed against the repository. This usually means a deploy went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on the site.' "$OBSERVATIONS") ;;
+              DETAIL=$(printf 'A route named a commit that is not in main history (`%s`), so what is live cannot be placed against the repository. This usually means a deploy went out from a branch or a local build.\n\n*How to fix:* to put a known commit back on the site, %s' "$OBSERVATIONS" "$DEPLOY_REMEDY") ;;
             alert-unreachable)
               HEADLINE='*The site did not answer*'
               DETAIL=$(printf 'At least one public route did not answer on two looks about two minutes apart (`%s`), so this is more than a momentary blip.\n\n*How to fix:* open the site. If it does not load, the site is down. If it does, the outage was brief and the next hourly run will clear it.' "$OBSERVATIONS") ;;
@@ -546,11 +575,12 @@ jobs:
           TEXT=$(printf '%s\n\n%s\n\n<%s/%s/actions/runs/%s|Open this check>' \
             "$HEADLINE" "$DETAIL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
 
-          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
-          fi
+          # Keyed on the decision and the latest web commit, deliberately NOT on
+          # the route list: routes flip between runs while a deploy propagates, and
+          # keying on them would post every hour again, which is the defect this
+          # record exists to end. The message gives the routes at this check.
+          POSTED=$(bash .github/scripts/drift-alert-state.sh alert site "$DECISION" "$LAST_WEB_COMMIT" "$TEXT")
+          echo "slack: $POSTED"
           exit 1
 
       # ---- TAIL WORKER ------------------------------------------------
@@ -645,6 +675,7 @@ jobs:
           # condition rather than merely a suspicion.
           VERDICT=$(bash .github/scripts/deploy-drift-decision.sh "$TAIL_SHA" "$UP_TO_DATE" "$INFLIGHT_AGE" not-gated)
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "tail_sha=$TAIL_SHA" >> "$GITHUB_OUTPUT"
           echo "tail_sha=$TAIL_SHA up_to_date=$UP_TO_DATE inflight=${INFLIGHT_AGE:-none} verdict=$VERDICT"
 
       - name: Decide and alert
@@ -659,10 +690,12 @@ jobs:
           set -uo pipefail
           VERDICT='${{ steps.tail_compare.outputs.verdict }}'
           LAST='${{ steps.tail_compare.outputs.last_tail_commit }}'
+          TAIL_SHA='${{ steps.tail_compare.outputs.tail_sha }}'
 
           case "$VERDICT" in
             ok)
               echo "::notice::The tail worker is up to date."
+              bash .github/scripts/drift-alert-state.sh clear tail
               exit 0 ;;
             deploy-in-flight)
               echo "::notice::A deploy is still running, so the tail worker is expected to be behind. The next run judges the settled state."
@@ -674,26 +707,69 @@ jobs:
               TEXT=$(printf '*The cost tail worker cannot say which build it is running*\n\nIt answered with no deployed commit, so a stranded tail worker can no longer be detected. While this is true, per-execution cost attribution could be running old code and the dashboard would show numbers that look fine.\n\n*How to fix:* check the Deploy Worker Tail step still passes `--var DEPLOYED_SHA`, and that it uses `exec` rather than `run ... --`, which wrangler silently ignores.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unreachable)
-              TEXT=$(printf '*The cost tail worker did not answer*\n\nIt did not answer on two looks about two minutes apart, so whether it is running current code is unknown. It writes per-execution cost, so while this is true the cost figures on the dashboard cannot be vouched for.\n\n*How to fix:* open the worker in Cloudflare. If it is down, redeploy it from the most recent Deploy run on main. If it is healthy, the outage was brief and the next hourly run clears it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+              TEXT=$(printf '*The cost tail worker did not answer*\n\nIt did not answer on two looks about two minutes apart, so whether it is running current code is unknown. It writes per-execution cost, so while this is true the cost figures on the dashboard cannot be vouched for.\n\n*How to fix:* open the worker in Cloudflare. If it is healthy, the outage was brief and the next hourly run clears it. If it is down, %s\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unconfigured)
               TEXT=$(printf '*The cost tail worker check has no address to check*\n\nThe `WORKER_TAIL_URL` repository variable is empty, so the tail worker is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unknown-commit)
-              TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+              TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* to put a known commit back on it, %s\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             *)
-              TEXT=$(printf '*Cost tail worker code is committed but not deployed*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`. It is not failing, which is the problem: it writes per-execution cost, so a stranded copy under-reports what executions cost while the dashboard keeps showing numbers that look fine.\n\n*How to fix:* re-run the most recent Deploy run on main.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-                "${LAST:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+              TEXT=$(printf '*Cost tail worker code is committed but not deployed*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`. It is not failing, which is the problem: it writes per-execution cost, so a stranded copy under-reports what executions cost while the dashboard keeps showing numbers that look fine.\n\n*How to fix:* %s\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "${LAST:0:7}" "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
           esac
 
           echo "::error::tail worker drift: $VERDICT (latest tail commit $LAST)"
-          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
-          fi
+          POSTED=$(bash .github/scripts/drift-alert-state.sh alert tail "$VERDICT" "$TAIL_SHA|$LAST" "$TEXT")
+          echo "slack: $POSTED"
           exit 1
+
+      # Write the reminder record for the next run, whatever happened above
+      # (#1761): a posted condition advances, a held one is carried, a healthy
+      # reading is dropped, and a target this run never judged is carried
+      # unchanged. Also says whether every failure in this run was a finding
+      # already reported to Slack, for the marker step below.
+      - name: Record the alert state for the next run
+        id: drift_finish
+        if: always()
+        continue-on-error: true
+        env:
+          WORKER: ${{ steps.worker_alert.outcome }}
+          WORKER_PROBE: ${{ steps.worker_probe_alert.outcome }}
+          PAGES: ${{ steps.pages_alert.outcome }}
+          TAIL: ${{ steps.tail_alert.outcome }}
+        run: |
+          set -uo pipefail
+          OUTCOME=$(bash .github/scripts/drift-alert-state.sh finish)
+          echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
+          echo "run outcome: $OUTCOME"
+
+      # Kept seven days: a record older than that is from a drift check that has
+      # not run for a week, and the next alert posting fresh is then right.
+      - name: Upload the alert record
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-drift-alert-state
+          path: ${{ runner.temp }}/drift-state/next.json
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: warn
+
+      # Read by the worker's schedule watch (#1761). A drift run that found a
+      # stranded target and reported it to Slack (or held a reminder that is not
+      # due) is red BY DESIGN, and without this the watch counted two of those as
+      # "Deploy Drift keeps failing" and posted the same fact again. This step
+      # concludes success only when EVERY failed alert step posted or held a
+      # finding about its target. A drift check that could not run, a post Slack
+      # refused, or a step that crashed leaves it skipped, and the watch still
+      # speaks. The watch matches this name exactly, and a guard holds the two
+      # together. It never fails, so it is not a second gate.
+      - name: Every failure in this run was a finding reported to Slack
+        if: always() && steps.drift_finish.outputs.outcome == 'reported'
+        run: echo "Every failed target here was reported to Slack, or held as a reminder that is not due yet."
 
       # The three alert steps above each swallow their own exit code so the next
       # target still gets checked. This is what puts the failure back: without

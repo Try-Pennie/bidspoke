@@ -61,6 +61,24 @@ Refresh them with `npx tsx scripts/export-money-fixture-shapes.ts` from
 `apps/worker`, which needs `SUPABASE_URL` and `SUPABASE_SECRET_KEY` in the
 environment or `.dev.vars`, and the `gh` CLI for the definitions backup.
 
+## The base on a dispatched Deploy
+
+A Deploy that was DISPATCHED rather than pushed (the Dependabot auto-merge starts
+one, and so does a person repairing a stranded target from the Actions tab,
+#1761) has no commit before. Its base is the `money_gate_base` input when one is
+given (the auto-merge passes the commit main was at before its merge), and
+otherwise the commit the live worker reports, so the gate compares exactly the
+engine production runs. A dispatched run that can find neither refuses by name:
+start it again with `money_gate_base` set to a full 40 character commit hash
+(a short hash is refused, because the run's shallow checkout cannot fetch one).
+That rule lives in
+`.github/scripts/money-gate-base.sh`.
+
+Against the live worker's commit, every `expected-changes.json` entry added since
+that commit counts as new, so an entry whose difference was later reverted can
+fail as matching nothing. Passing `money_gate_base` set to a nearer commit avoids
+that.
+
 ## Reading a red
 
 The first difference of each check is the place to start. A route difference
