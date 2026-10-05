@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ENV_READ_MAX_PAGES, loadEnvVars, invalidateEnvCache } from '../env-loader'
+import { ENV_READ_MAX_PAGES, loadEnvVars, invalidateEnvCache, rowReach } from '../env-loader'
 import { decryptSecret, encryptSecret } from '../secret-crypto'
 import { buildSandboxEnv } from '../sandbox-env'
 import type { Env } from '../../index'
@@ -696,5 +696,20 @@ describe('loadEnvVars: every row or none (#1681)', () => {
       logged.mockRestore()
     }
     expect(kv.store.size).toBe(0)
+  })
+})
+
+// The one rule for which runs a stored row reaches, shared by the loader and the
+// daily decrypt check so the alert never describes a row no run is handed (L11).
+describe('rowReach (#1681)', () => {
+  it.each([
+    [{ scope: 'global', workflow_id: null, key: 'API_URL' }, 'org'],
+    [{ scope: 'global', workflow_id: null, key: 'SALESFORCE_CLIENT_SECRET' }, 'org'],
+    [{ scope: 'workflow', workflow_id: 'wf-a', key: 'API_URL' }, 'workflow'],
+    [{ scope: 'workflow', workflow_id: null, key: 'API_URL' }, 'none'],
+    [{ scope: 'workflow', workflow_id: 'wf-a', key: 'SALESFORCE_CLIENT_SECRET' }, 'none'],
+    [{ scope: 'folder', workflow_id: null, key: 'API_URL' }, 'none'],
+  ])('%o reaches %s', (row, reach) => {
+    expect(rowReach(row)).toBe(reach)
   })
 })

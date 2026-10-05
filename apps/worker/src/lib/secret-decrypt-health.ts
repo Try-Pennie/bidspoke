@@ -18,14 +18,18 @@
  * - Only the "fails to decrypt" direction. The sibling "exists in the DB but not
  *   synced as a Cloudflare worker secret" direction is owned by the secret-drift
  *   check (#199, `secret-drift.ts`); duplicating it here would double-alert.
- * - The same set the env-loader actually decrypts: every org secret, and since
- *   #1681 every secret saved for one workflow, which the loader WITHHOLDS from
- *   that workflow's runs when it cannot decrypt it. A workflow's own secret is
- *   named with its workflow, since the same key can be the org's too. One saved
- *   for a deleted workflow is left out: no run reads it, so it strands nothing.
+ * - The same set the env-loader actually decrypts, chosen by the loader's own
+ *   predicate (`rowReach`): every org secret, and since #1681 every secret saved
+ *   for one workflow, which the loader WITHHOLDS from that workflow's runs when it
+ *   cannot decrypt it. A workflow's own secret is named with its workflow, since
+ *   the same key can be the org's too. Left out, because no run is handed them:
+ *   one saved for a deleted workflow, and a workflow's own value for a key that
+ *   is the organization's only (its Salesforce connection), which the loader
+ *   ignores and logs.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
+import { rowReach } from './env-loader'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { getSlackConnection, sendSecretDecryptAlert } from './slack'
 
@@ -101,9 +105,10 @@ export async function runSecretDecryptHealthCheck(
 
   // A workflow scoped secret counts only while its workflow can still run, and
   // only when it names one, which is the set the loader hands a run (#1681).
-  const rows = ((data ?? []) as SecretRow[]).filter((row) =>
-    row.scope === 'global' || (row.scope === 'workflow' && row.workflow_id !== null && !embeddedWorkflow(row)?.deleted_at)
-  )
+  const rows = ((data ?? []) as SecretRow[]).filter((row) => {
+    const reach = rowReach(row)
+    return reach === 'org' || (reach === 'workflow' && !embeddedWorkflow(row)?.deleted_at)
+  })
   const bad = await findUndecryptableSecrets(rows, secretKeys(env))
   if (bad.length === 0) return { checked: rows.length, undecryptable: 0, alerted: false }
 

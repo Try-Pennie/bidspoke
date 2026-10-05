@@ -82,6 +82,20 @@ interface EnvRow {
 }
 
 /**
+ * Which runs a stored row reaches (#1681): every run of the organization
+ * ('org'), its own workflow's runs ('workflow'), or none. A workflow scoped row
+ * that names no workflow reaches none, and so does a workflow's own value for a
+ * key that is the organization's only (org-only-env-keys). The one predicate the
+ * loader and the daily decrypt check both apply, so the check reports exactly
+ * the rows a run can be handed (L11).
+ */
+export function rowReach(row: { scope: string; workflow_id: string | null; key: string }): 'org' | 'workflow' | 'none' {
+  if (row.scope === 'global') return 'org'
+  if (row.scope === 'workflow' && row.workflow_id && !isOrgOnlyEnvKey(row.key)) return 'workflow'
+  return 'none'
+}
+
+/**
  * Which values a load is for (#1681). A run names its workflow, so it gets that
  * workflow's own values over the org ones. A caller with no workflow (the cache
  * prewarm, the scheduled Salesforce jobs) asks for the org values only, and says
@@ -280,16 +294,16 @@ async function loadOrgEnv(
   const workflows: WorkflowScoped = {}
   for (const row of data) {
     if (!row.value) continue
-    // A workflow scoped row that names no workflow belongs to no run.
-    const workflowId = row.scope === 'workflow' ? row.workflow_id : null
-    if (row.scope !== 'global' && !workflowId) continue
-    // The Salesforce connection is the organization's only (org-only-env-keys).
-    // The API refuses one for a workflow; a row that got in some other way is
-    // left out and named, never applied.
-    if (workflowId && isOrgOnlyEnvKey(row.key)) {
-      console.error(`[env-loader] ignoring ${row.key} saved for workflow ${workflowId} in org ${orgId}: it is the organization's Salesforce connection`)
+    const reach = rowReach(row)
+    if (reach === 'none') {
+      // The API refuses a workflow's own Salesforce connection; a row that got in
+      // some other way is left out and named, never applied.
+      if (row.scope === 'workflow' && row.workflow_id) {
+        console.error(`[env-loader] ignoring ${row.key} saved for workflow ${row.workflow_id} in org ${orgId}: it is the organization's Salesforce connection`)
+      }
       continue
     }
+    const workflowId = reach === 'workflow' ? row.workflow_id : null
 
     let value: string | null = row.value
     if (row.is_secret) {

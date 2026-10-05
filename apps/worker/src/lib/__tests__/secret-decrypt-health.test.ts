@@ -147,6 +147,27 @@ describe('runSecretDecryptHealthCheck', () => {
     expect(vi.mocked(sendSecretDecryptAlert)).not.toHaveBeenCalled()
   })
 
+  // The loader ignores a workflow's own value for a Salesforce connection key (the
+  // connection is the org's only), so no run is handed it, empty or otherwise.
+  // Reporting it as "handed to that workflow's runs empty" would describe something
+  // that never happens; the check covers exactly the rows the loader reads.
+  it("does not alert a workflow's own Salesforce connection secret, which the loader ignores", async () => {
+    decryptExcept(['cipher-SALESFORCE_CLIENT_SECRET'])
+    vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
+    const res = await runSecretDecryptHealthCheck(makeSupabase([own('SALESFORCE_CLIENT_SECRET', 'Main Flow')]), ENV)
+    expect(res).toMatchObject({ checked: 0, undecryptable: 0, alerted: false })
+    expect(vi.mocked(sendSecretDecryptAlert)).not.toHaveBeenCalled()
+  })
+
+  it('still alerts the org Salesforce connection secret itself', async () => {
+    decryptExcept(['cipher-SALESFORCE_CLIENT_SECRET'])
+    vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
+    vi.mocked(sendSecretDecryptAlert).mockResolvedValue(true)
+    const res = await runSecretDecryptHealthCheck(makeSupabase([r('SALESFORCE_CLIENT_SECRET')]), ENV)
+    expect(res).toMatchObject({ checked: 1, undecryptable: 1, alerted: true })
+    expect(vi.mocked(sendSecretDecryptAlert).mock.calls[0][1]).toEqual([{ key: 'SALESFORCE_CLIENT_SECRET', workflow: null }])
+  })
+
   it('does not alert when the org opted out of config alerts', async () => {
     decryptExcept(['cipher-GONE'])
     vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: false } as never)
