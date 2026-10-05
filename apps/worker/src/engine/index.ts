@@ -11,7 +11,7 @@ import { loadEnvVars } from '../lib/env-loader'
 import { buildSandboxEnv } from '../lib/sandbox-env'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
-import { executeNode } from './nodes/index'
+import { executeNode, createNodeExecutor, type ExecuteNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
@@ -57,7 +57,7 @@ import { matchesMutedSignal } from '../lib/failure-rate'
 import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
-import { assertDefinitionRunsInLane, WorkflowLaneError } from './lane'
+import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, stampRunReality } from './run-reality'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
@@ -154,7 +154,19 @@ export function moneyRuntime(supabase: SupabaseClient): EngineRuntime {
   return { lane: 'money', config: supabase, run: supabase }
 }
 
-export { WorkflowLaneError }
+export { WorkflowLaneError, LaneRefusedNodeError }
+
+/**
+ * The node executor a walk runs under (#1725). The money lane's is
+ * `executeNode`, built once as createNodeExecutor('money'); any other lane gets
+ * a registry filtered to its own node types, which holds no money executor.
+ * The one place the engine names the money executor: every step the walk runs
+ * goes through what this returns, so the walk cannot reach money code by
+ * calling it directly.
+ */
+export function nodeExecutorForLane(lane: WorkflowLane): ExecuteNode {
+  return lane === 'money' ? executeNode : createNodeExecutor(lane)
+}
 
 export async function executeWorkflow(
   options: ExecuteOptions,
@@ -183,7 +195,7 @@ export async function executeWorkflow(
   // Before anything is recorded or run: a workflow stored under another lane is
   // not this Worker's to run, and a definition (a test run's unsaved override
   // included) may carry only node types its lane can run.
-  if (loaded.lane !== runtime.lane) throw new WorkflowLaneError(workflowId, loaded.lane, runtime.lane)
+  assertWorkflowServedInLane(workflowId, loaded.lane, runtime.lane)
   assertDefinitionRunsInLane(definition, runtime.lane)
 
   if (options.enforceSourceAssignment) {
@@ -436,7 +448,7 @@ export async function executeWorkflow(
   }
 
   const walkPromise = walkGraph(
-    ctx, definition, executionId, startedAt, configDb, env, workflow_version_id, stepLogQueue,
+    ctx, definition, executionId, startedAt, configDb, env, runtime.lane, workflow_version_id, stepLogQueue,
     (r) => earlyResponseResolve(r),
     onBlockSighting
   )
@@ -991,6 +1003,9 @@ export async function walkGraph(
   executionStartedAt: string,
   supabase: SupabaseClient,
   env: Env,
+  // The lane this walk runs in (#1725). Required, so no caller can fall into
+  // the money lane by leaving it out.
+  lane: WorkflowLane,
   workflowVersionId = '',
   stepLogQueue: StepLogEntry[] = [],
   onRespondEarly?: (response: WalkGraphResult) => void,
@@ -1015,6 +1030,7 @@ export async function walkGraph(
       }
     }
   }
+  const runNode = nodeExecutorForLane(lane)
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
   let lastOutput: unknown = null
@@ -1033,6 +1049,23 @@ export async function walkGraph(
         node.namespace,
         'permanent',
       )
+    }
+
+    // A node this walk's lane cannot run is refused here, by name, before any
+    // branch below can reach it (#1725). Here rather than in the executor alone,
+    // because the money walker branches (bid_group, buyer_select, buyer_click_*)
+    // call their own executors by type and never pass through the registry, and
+    // because a refusal must not be skipped or routed to a fallback by on_error
+    // the way an executor's error is. The entry check in executeWorkflow refuses
+    // such a definition before anything is recorded; this holds the line for
+    // any other way into the walk.
+    const laneRefusal = laneRefusalFor(node.type, lane)
+    if (laneRefusal) {
+      const refusedAt = new Date().toISOString()
+      log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: 0, error_message: laneRefusal.message, error_type: 'permanent' })
+      recordStepOutput(ctx, node.namespace, { output: null, status: 'failed', error: laneRefusal.message, error_type: 'permanent' }, { nodeType: node.type, chainStep: true })
+      logStep(stepLogQueue, executionId, executionStartedAt, node, 'failed', null, null, laneRefusal.message, 'permanent', 0, refusedAt, stepOrder)
+      throw new StepFailureError(laneRefusal.message, node.namespace, 'permanent')
     }
 
     // ── Parallel node — fan out to children concurrently ───────────────────────
@@ -1121,7 +1154,7 @@ export async function walkGraph(
           execNode,
           resolvedChildren,
           (child, childIndex, abandonSignal) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal),
+            runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal),
           slotHandleIds
         )
         output = result.output
@@ -1723,7 +1756,7 @@ export async function walkGraph(
 
     try {
       const result = await withRetry(
-        (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
+        (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
         retryStats,
@@ -2005,6 +2038,8 @@ export async function runParallelChild(
   ctx: ExecutionContext,
   env: Env,
   supabase: SupabaseClient,
+  // The lane of the walk this child belongs to (#1725), required like walkGraph's.
+  lane: WorkflowLane,
   executionId: string,
   executionStartedAt: string,
   baseStepOrder: number,
@@ -2025,6 +2060,12 @@ export async function runParallelChild(
   // Bid Evaluation and other downstream consumers key off this namespace.
   const slotNamespace = child.namespace
 
+  // Every node of the slot, the walker only types included, goes through this
+  // lane's executor (#1725), which refuses a type its lane cannot run by name and
+  // as permanent, so the refusal is a rejected slot that is never retried. A
+  // child has no on_error handling and no walker branches, so the executor is
+  // the whole of the lane check here; the main walk needs its own gate as well.
+  const runNode = nodeExecutorForLane(lane)
   let current: NodeDefinition | undefined = child
   let chainIndex = 0
   let lastOutput: unknown = null
@@ -2056,7 +2097,7 @@ export async function runParallelChild(
 
     try {
       const result = await withRetry(
-        (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
+        (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
         retryStats,

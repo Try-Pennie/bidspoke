@@ -85,7 +85,7 @@ beforeEach(() => {
 })
 
 const walk = (def: ReturnType<typeof definition>, queue: StepLogEntry[] = []) =>
-  walkGraph(buildContext({ Submission__c: 'S-1', BegDebtRange: '$10,000 - $14,999' }, 'web', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-23T15:30:00.000Z', supabase, env, 'v1', queue)
+  walkGraph(buildContext({ Submission__c: 'S-1', BegDebtRange: '$10,000 - $14,999' }, 'web', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-23T15:30:00.000Z', supabase, env, 'money', 'v1', queue)
 
 describe('bid_group outbound_fields in the walker (#1518)', () => {
   it('resolves every outbound field from the step that computed it and hands the map to EVERY partner attempt', async () => {
@@ -108,7 +108,7 @@ describe('bid_group outbound_fields in the walker (#1518)', () => {
 
   it('clears the map once the group has settled, so nothing after the group inherits it', async () => {
     const ctx = buildContext({}, 'web', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1')
-    await walkGraph(ctx, definition({ outbound_fields: { unsecuredDebt: '{{steps.pennie_or_eligibility.output.final}}' } }), 'exec-1', '2027-09-23T15:30:00.000Z', supabase, env, 'v1', [])
+    await walkGraph(ctx, definition({ outbound_fields: { unsecuredDebt: '{{steps.pennie_or_eligibility.output.final}}' } }), 'exec-1', '2027-09-23T15:30:00.000Z', supabase, env, 'money', 'v1', [])
     expect(ctx.bidGroupOutboundFields).toBeUndefined()
   })
 

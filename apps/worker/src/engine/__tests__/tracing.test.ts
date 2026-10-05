@@ -92,7 +92,7 @@ describe('trace_id propagation — structured logs', () => {
       node('b', 'enrich', 'code'),
       node('c', 'respond', 'response')
     )
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
 
     const lines = parsedLogs()
     expect(lines.length).toBeGreaterThan(0)
@@ -103,7 +103,7 @@ describe('trace_id propagation — structured logs', () => {
 
   it('every structured log line contains workflow_id and workflow_version_id', async () => {
     const def = chain(node('a', 'step_a', 'code'), node('b', 'step_b', 'response'))
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
 
     for (const line of parsedLogs()) {
       expect(line.workflow_id).toBe(WORKFLOW_ID)
@@ -113,7 +113,7 @@ describe('trace_id propagation — structured logs', () => {
 
   it('step-level log lines include step_namespace and step_type', async () => {
     const def = chain(node('a', 'credit_pull', 'code'), node('b', 'respond', 'response'))
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
 
     const stepLines = parsedLogs().filter((l) =>
       typeof l.event === 'string' && l.event.startsWith('step_')
@@ -130,7 +130,7 @@ describe('trace_id propagation — structured logs', () => {
       node('a', 'validate', 'code'),
       node('b', 'respond', 'response')
     )
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
 
     const lines = parsedLogs()
     const events = lines.map((l) => ({ event: l.event, ns: l.step_namespace }))
@@ -145,7 +145,7 @@ describe('trace_id propagation — structured logs', () => {
 
   it('step_complete log includes duration_ms', async () => {
     const def = chain(node('a', 'step_a', 'code'), node('b', 'step_b', 'response'))
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
 
     const completeLogs = parsedLogs().filter((l) => l.event === 'step_complete')
     expect(completeLogs.length).toBeGreaterThan(0)
@@ -175,7 +175,7 @@ describe('trace_id propagation — structured logs', () => {
     ctx.retrySleep = async (ms) => { slept.push(ms) }
 
     await expect(
-      walkGraph(ctx, def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+      walkGraph(ctx, def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID)
     ).rejects.toThrow()
 
     // Two retries on the engine default, exponential from 500ms, and no sleep
@@ -208,7 +208,7 @@ describe('trace_id propagation — execution_steps linkage', () => {
       node('c', 'step_c', 'response')
     )
     const queue: StepLogEntry[] = []
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID, queue)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID, queue)
 
     expect(queue.length).toBe(3)
     // Every step row shares the same execution_id, which is the FK to workflow_executions
@@ -224,7 +224,7 @@ describe('trace_id propagation — execution_steps linkage', () => {
       node('b', 'respond', 'response')
     )
     const queue: StepLogEntry[] = []
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID, queue)
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, 'money', WORKFLOW_VERSION_ID, queue)
 
     expect(queue.map((e) => e.step_namespace)).toEqual(['credit_pull', 'respond'])
     expect(queue.map((e) => e.step_type)).toEqual(['code', 'response'])

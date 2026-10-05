@@ -4,6 +4,7 @@ import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
 import { executeWorkflow, moneyRuntime, WorkflowLaneError, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
+import { PUBLIC_WRONG_LANE_ERROR, WRONG_LANE_STATUS } from './lane-refusal'
 
 const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -74,7 +75,7 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
     // rather than that the endpoint is gone. Forwarding to the ops Worker comes
     // with the ops lane (plan R5).
     if (err instanceof WorkflowLaneError) {
-      return c.json({ error: 'Workflow is not served on this host' }, 421)
+      return c.json({ error: PUBLIC_WRONG_LANE_ERROR }, WRONG_LANE_STATUS)
     }
 
     console.error('[webhook] execution error:', err)

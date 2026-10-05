@@ -52,7 +52,7 @@ function output(route: BuyerClickSendRoute): BuyerClickSendOutput {
 }
 
 const walk = (def: ReturnType<typeof definition>, queue: StepLogEntry[] = []) =>
-  walkGraph(buildContext({ prospect: 'p-1' }, 'liberty-proxy', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-20T18:00:00.000Z', supabase, env, 'v1', queue)
+  walkGraph(buildContext({ prospect: 'p-1' }, 'liberty-proxy', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-20T18:00:00.000Z', supabase, env, 'money', 'v1', queue)
 
 beforeEach(() => {
   vi.mocked(executeBuyerClickSendNode).mockReset()

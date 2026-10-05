@@ -50,7 +50,7 @@ describe('walkGraph step ceiling (#260)', () => {
       ],
     }
     await expect(
-      walkGraph(makeCtx(), def, 'exec-cycle', new Date().toISOString(), supabase, env, 'v1'),
+      walkGraph(makeCtx(), def, 'exec-cycle', new Date().toISOString(), supabase, env, 'money', 'v1'),
     ).rejects.toThrow(/maximum step count/i)
     // It bounded the walk rather than running unbounded.
     expect(vi.mocked(executeNode).mock.calls.length).toBeLessThanOrEqual(MAX_WALK_STEPS + 1)
@@ -60,7 +60,7 @@ describe('walkGraph step ceiling (#260)', () => {
     const nodes = Array.from({ length: 50 }, (_, i) => node(`n${i}`, `n${i}`, i === 49 ? 'response' : 'code'))
     const edges = nodes.slice(0, -1).map((n, i) => ({ id: `e${i}`, source: n.id, target: nodes[i + 1].id }))
     await expect(
-      walkGraph(makeCtx(), { nodes, edges }, 'exec-linear', new Date().toISOString(), supabase, env, 'v1'),
+      walkGraph(makeCtx(), { nodes, edges }, 'exec-linear', new Date().toISOString(), supabase, env, 'money', 'v1'),
     ).resolves.toBeTruthy()
     expect(MAX_WALK_STEPS).toBeGreaterThan(100)
   })

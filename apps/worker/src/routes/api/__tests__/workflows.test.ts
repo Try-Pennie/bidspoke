@@ -54,7 +54,9 @@ const makeSupabase = (
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
-const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [] } }
+// A stored row always carries its lane (NOT NULL, default money, #1707), and the
+// test and test-node routes refuse a row without one (#1725).
+const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [] }, lane: 'money' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = {
   SUPABASE_JWKS_URL: 'https://fake.jwks',

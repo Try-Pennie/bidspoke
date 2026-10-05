@@ -67,14 +67,14 @@ describe('resume — full re-run, no skip', () => {
   it('re-executes all steps when no prior context', async () => {
     const def = chain(node('a', 'step_a'), node('b', 'step_b'), node('c', 'step_c', 'response'))
     const ctx = makeCtx()
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money')
     expect(vi.mocked(executeNode)).toHaveBeenCalledTimes(3)
   })
 
   it('re-executes a step even when it is pre-loaded as completed', async () => {
     const def = chain(node('a', 'step_a'), node('b', 'step_b'), node('c', 'step_c', 'response'))
     const ctx = makeCtx({ step_a: { prior: true } })
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money')
     expect(vi.mocked(executeNode)).toHaveBeenCalledTimes(3)
     const calledNamespaces = vi.mocked(executeNode).mock.calls.map((c) => (c[0] as NodeDefinition).namespace)
     expect(calledNamespaces).toContain('step_a')
@@ -90,7 +90,7 @@ describe('resume — full re-run, no skip', () => {
     // A prior execution that completed a, b but failed at c must still re-run
     // a and b — resume is a fresh run, not a continuation from the failure.
     const ctx = makeCtx({ step_a: { ok: true }, step_b: { ok: true } })
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money')
     const calledNamespaces = vi.mocked(executeNode).mock.calls.map((c) => (c[0] as NodeDefinition).namespace)
     expect(calledNamespaces).toEqual(['step_a', 'step_b', 'step_c', 'step_d'])
   })
@@ -99,7 +99,7 @@ describe('resume — full re-run, no skip', () => {
     const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
     const ctx = makeCtx({ step_a: { ok: true } })
     const queue: import('../step-logger').StepLogEntry[] = []
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, '', queue)
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money', '', queue)
     const loggedNamespaces = queue.map((e) => e.step_namespace)
     expect(loggedNamespaces).toContain('step_a')
     expect(loggedNamespaces).toContain('step_b')
@@ -134,7 +134,7 @@ describe('resume — routes on fresh output, not a pre-loaded _route', () => {
     // Prior run exited. If resume honored the stale route it would go to exit;
     // it must re-run the filter and follow the FRESH 'pass' route instead.
     const ctx = makeCtx({ filter_step: { passed: false, _route: 'exit' } })
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money')
     const calledNamespaces = vi.mocked(executeNode).mock.calls.map((c) => (c[0] as NodeDefinition).namespace)
     expect(calledNamespaces).toContain('filter_step')
     expect(calledNamespaces).toContain('pass_step')
@@ -158,7 +158,7 @@ describe('terminal response status extraction', () => {
         : { output: { result: 'ok' } }
     )
     const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
-    const result = await walkGraph(makeCtx(), def, 'exec', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec', new Date().toISOString(), supabase, env, 'money')
     expect(result.status).toBe(502)
     expect(result.body).toEqual({ error: 'engine down' })
     expect(result.headers).toEqual({ 'X-Reason': 'upstream' })
@@ -176,7 +176,7 @@ describe('terminal response status extraction', () => {
       step_a: { ok: true },
       step_b: { status: 503, headers: {}, body: { error: 'old shape' } },
     })
-    const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, 'money')
     expect(vi.mocked(executeNode)).toHaveBeenCalled()
     expect(result.status).toBe(200)
     expect(result.body).toEqual({ fresh: true })

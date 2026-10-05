@@ -142,7 +142,7 @@ describe('end-to-end: outbound lead routing — happy path', () => {
       ],
     }
 
-    const result = await walkGraph(makeCtx({ debt_amount: 15000 }), def, 'exec-1', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx({ debt_amount: 15000 }), def, 'exec-1', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 60 })
   })
 
@@ -171,7 +171,7 @@ describe('end-to-end: outbound lead routing — happy path', () => {
       ],
     }
 
-    await walkGraph(makeCtx(), def, 'exec-2', new Date().toISOString(), supabase, env)
+    await walkGraph(makeCtx(), def, 'exec-2', new Date().toISOString(), supabase, env, 'money')
 
     // route_lead step should have seen validate and the bid group in ctx.steps
     expect(seenCtxAtRoute[0]).toHaveProperty('validate')
@@ -207,7 +207,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
       ],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-3', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-3', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: false, reason: 'no_bids' })
   })
 
@@ -227,7 +227,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
       edges: [edge('bids', 'respond', 'winner')],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-4', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-4', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: true, partner: 'engine', offer: 0 })
   })
 })
@@ -253,7 +253,7 @@ describe('end-to-end: Tripoint dedup rejects → M1 wins', () => {
       edges: [edge('bids', 'respond', 'winner')],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-5', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-5', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 55 })
   })
 })
@@ -286,7 +286,7 @@ describe('end-to-end: inbound bidding', () => {
     const result = await walkGraph(
       makeCtx({ applicant_id: 'A1', loan_amount: 25000 }),
       def, 'exec-6', new Date().toISOString(), supabase, env
-    )
+    , 'money')
     expect(result.body).toEqual({ bid: 42.50, accepted: true })
   })
 
@@ -319,7 +319,7 @@ describe('end-to-end: inbound bidding', () => {
     const result = await walkGraph(
       makeCtx({ applicant_id: 'A1' }),
       def, 'exec-7', new Date().toISOString(), supabase, env
-    )
+    , 'money')
     expect(result.body).toEqual({ accepted: false, reason: 'invalid_lead' })
   })
 })
@@ -346,7 +346,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
       edges: [edge('bids', 'respond', 'winner')],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-8', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-8', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 38 })
   })
 
@@ -369,7 +369,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
       ],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-9', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-9', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: false, reason: 'all_partners_capped' })
   })
 })
@@ -395,7 +395,7 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
       edges: [edge('bids', 'respond', 'winner')],
     }
 
-    const result = await walkGraph(makeCtx(), def, 'exec-10', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), def, 'exec-10', new Date().toISOString(), supabase, env, 'money')
     expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 70 })
   })
 
@@ -423,11 +423,11 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
     }
 
     // First execution: tripoint circuit open → M1 wins
-    const firstResult = await walkGraph(makeCtx(), def, 'exec-11a', new Date().toISOString(), supabase, env)
+    const firstResult = await walkGraph(makeCtx(), def, 'exec-11a', new Date().toISOString(), supabase, env, 'money')
     expect(firstResult).toBeDefined()
 
     // Second execution: tripoint half-open, now bids $80 → tripoint wins
-    const secondResult = await walkGraph(makeCtx(), def, 'exec-11b', new Date().toISOString(), supabase, env)
+    const secondResult = await walkGraph(makeCtx(), def, 'exec-11b', new Date().toISOString(), supabase, env, 'money')
     expect(secondResult).toBeDefined()
     // Verify tripoint was attempted in both runs (once skipped, once through)
     expect(tripointCallCount).toBe(2)
@@ -473,7 +473,7 @@ describe('end-to-end: bid group resume — completed group re-runs on resume (#5
     const ctx = makeCtx()
     ctx.steps['bid_race'] = { output: { winner: { partner: 'stale', bid: 1 } }, status: 'completed' }
 
-    const result = await walkGraph(ctx, def, 'exec-resume', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(ctx, def, 'exec-resume', new Date().toISOString(), supabase, env, 'money')
 
     // Both partner attempts re-ran (the prior completed group did not short-circuit them).
     expect(bidCallCount).toBe(2)
@@ -497,7 +497,7 @@ describe('end-to-end: bid group resume — completed group re-runs on resume (#5
     const ctx = makeCtx()
     ctx.steps['bid_race'] = { output: { winner: { partner: 'tripoint', bid: 50 } }, status: 'completed' }
 
-    await walkGraph(ctx, def, 'exec-resume2', new Date().toISOString(), supabase, env)
+    await walkGraph(ctx, def, 'exec-resume2', new Date().toISOString(), supabase, env, 'money')
 
     // The group re-ran with fresh bids: tripoint $75 wins, not the stale $50.
     const groupOut = ctx.steps['bid_race']?.output as BidGroupOutput
@@ -534,7 +534,7 @@ describe('end-to-end: concurrent execution — no race conditions', () => {
     const CONCURRENCY = 50
     const executions = Array.from({ length: CONCURRENCY }, (_, i) => {
       const ctx = makeCtx({ lead_id: `L${i}` })
-      return walkGraph(ctx, def, `exec-concurrent-${i}`, new Date().toISOString(), supabase, env)
+      return walkGraph(ctx, def, `exec-concurrent-${i}`, new Date().toISOString(), supabase, env, 'money')
         .then((result) => ({ id: i, result, ctx }))
     })
 
@@ -568,7 +568,7 @@ describe('end-to-end: concurrent execution — no race conditions', () => {
 
     const results = await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
-        walkGraph(makeCtx({ lead_id: `L${i}` }), def, `exec-iso-${i}`, new Date().toISOString(), supabase, env)
+        walkGraph(makeCtx({ lead_id: `L${i}` }), def, `exec-iso-${i}`, new Date().toISOString(), supabase, env, 'money')
       )
     )
 
@@ -615,7 +615,7 @@ describe('parallel_end logging — matches parallel start status', () => {
     const ctx = makeCtx()
     ctx.retrySleep = async (ms) => { slept.push(ms) }
     await expect(
-      walkGraph(ctx, def, 'exec-par-fail', new Date().toISOString(), supabase, env, '', queue)
+      walkGraph(ctx, def, 'exec-par-fail', new Date().toISOString(), supabase, env, 'money', '', queue)
     ).rejects.toThrow()
 
     const endRow = queue.find((r) => r.step_namespace === 'fan_end')
@@ -655,7 +655,7 @@ describe('filter routing — unwired handle terminates the chain', () => {
       ],
     }
 
-    await walkGraph(makeCtx(), def, 'exec-filter', new Date().toISOString(), supabase, env)
+    await walkGraph(makeCtx(), def, 'exec-filter', new Date().toISOString(), supabase, env, 'money')
 
     // The `exit`-routed lead must NOT leak down the `pass` edge.
     expect(ran).toContain('gate')
