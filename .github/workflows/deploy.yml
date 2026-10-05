@@ -124,6 +124,7 @@ jobs:
           pnpm --filter @bidspoke/buyer-profile test
           pnpm --filter @bidspoke/node-types test
           pnpm --filter @bidspoke/porting-evidence test
+          pnpm --filter compare-outbound test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the worker guards, which the web leg below
@@ -273,6 +274,7 @@ jobs:
       worker: ${{ steps.targets.outputs.worker }}
       worker_tail: ${{ steps.targets.outputs.worker_tail }}
       pages: ${{ steps.targets.outputs.pages }}
+      compare_outbound: ${{ steps.targets.outputs.compare_outbound }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -308,6 +310,11 @@ jobs:
               - 'packages/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
+            compare_outbound:
+              - 'apps/compare-outbound/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
 
       # On a push, the filter's answer. On a dispatched run (or an event this
       # does not know), every target, because there is no previous push to diff
@@ -324,7 +331,8 @@ jobs:
           WORKER: ${{ steps.filter.outputs.worker }}
           WORKER_TAIL: ${{ steps.filter.outputs.worker_tail }}
           PAGES: ${{ steps.filter.outputs.pages }}
-        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$REF" "$WORKER" "$WORKER_TAIL" "$PAGES" >> "$GITHUB_OUTPUT"
+          COMPARE_OUTBOUND: ${{ steps.filter.outputs.compare_outbound }}
+        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$REF" "$WORKER" "$WORKER_TAIL" "$PAGES" "$COMPARE_OUTBOUND" >> "$GITHUB_OUTPUT"
 
   deploy-worker-tail:
     name: Deploy Worker Tail
@@ -353,6 +361,38 @@ jobs:
       # skipped every hour. A test asserts this line never regains that shape.
       - name: Deploy Worker Tail
         run: pnpm --filter=worker-tail exec wrangler deploy --var DEPLOYED_SHA:${{ github.sha }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  # The compare namespace's outbound Worker (#1708 part B): every request a code
+  # bundle makes in the bidspoke-code-nodes-compare namespace, where shadow runs
+  # dispatch, is routed to it and refused, so a shadow run sends nothing. It has
+  # no route or workers.dev address, so it is reached only as that outbound
+  # service. Its own app and leg, like the tail worker, so a change to it ships
+  # on its own path rather than waiting on the engine's artifact gate.
+  deploy-compare-outbound:
+    name: Deploy Compare Outbound
+    runs-on: ubuntu-latest
+    # conditional and rarely run; sized like Deploy Worker Tail, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
+    needs: [verify, changes]
+    if: needs.changes.outputs.compare_outbound == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker Tail.
+      - name: Deploy Compare Outbound
+        run: pnpm --filter=compare-outbound exec wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 

@@ -22,7 +22,7 @@ const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-targets-decision.sh'
 
 const MAIN = 'refs/heads/main'
 
-/** The decision for a run on main: the event, then the three filter values. */
+/** The decision for a run on main: the event, then the four filter values. */
 const decide = (event: string, ...filters: string[]): Record<string, string> => decideOn(event, MAIN, ...filters)
 
 const parse = (out: string): Record<string, string> =>
@@ -38,21 +38,24 @@ const decideOn = (event: string, ref: string, ...filters: string[]): Record<stri
 
 describe('deploy-targets-decision', () => {
   it('deploys every target on a dispatched run, whatever the filter said', () => {
-    expect(decide('workflow_dispatch', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true' })
-    expect(decide('workflow_dispatch', 'false', 'false', 'false')).toEqual({
+    expect(decide('workflow_dispatch', '', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true' })
+    expect(decide('workflow_dispatch', 'false', 'false', 'false', 'false')).toEqual({
       worker: 'true',
       worker_tail: 'true',
       pages: 'true',
+      compare_outbound: 'true',
     })
   })
 
   it('passes the paths filter through on a push', () => {
-    expect(decide('push', 'true', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false' })
-    expect(decide('push', 'false', 'true', 'true')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true' })
+    expect(decide('push', 'true', 'false', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false', compare_outbound: 'false' })
+    expect(decide('push', 'false', 'true', 'true', 'false')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true', compare_outbound: 'false' })
+    // #1708 part B: the compare namespace's outbound Worker ships on its own path.
+    expect(decide('push', 'false', 'false', 'false', 'true')).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'true' })
   })
 
   it('deploys a target whose filter value on a push is empty or malformed, because a value nobody measured must not skip a deploy', () => {
-    expect(decide('push', '', 'yes', 'false')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false' })
+    expect(decide('push', '', 'yes', 'false', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false', compare_outbound: 'true' })
   })
 
   it.each([
@@ -65,18 +68,19 @@ describe('deploy-targets-decision', () => {
     // production whatever branch the run is on, and the worker drift check skips a
     // commit that is not in main's history, so a branch deploy would run unreviewed
     // code with nothing reporting it.
-    const run = spawnSync('bash', [SCRIPT, event, ref, 'true', 'true', 'true'], { encoding: 'utf8' })
-    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false' })
+    const run = spawnSync('bash', [SCRIPT, event, ref, 'true', 'true', 'true', 'true'], { encoding: 'utf8' })
+    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'false' })
     expect(run.status).toBe(1)
     expect(run.stderr).toMatch(/::error::/)
     expect(run.stderr).toContain(`'${ref}'`)
   })
 
   it('deploys everything on an event it does not know', () => {
-    expect(decide('repository_dispatch', 'false', 'false', 'false')).toEqual({
+    expect(decide('repository_dispatch', 'false', 'false', 'false', 'false')).toEqual({
       worker: 'true',
       worker_tail: 'true',
       pages: 'true',
+      compare_outbound: 'true',
     })
   })
 })
@@ -97,7 +101,7 @@ describe('deploy.yml routes its targets through the script (#1761)', () => {
 
   it('takes every output from the decision script, never straight from the filter', () => {
     const outputs = changes.slice(changes.indexOf('outputs:'), changes.indexOf('steps:'))
-    for (const target of ['worker', 'worker_tail', 'pages']) {
+    for (const target of ['worker', 'worker_tail', 'pages', 'compare_outbound']) {
       expect(outputs).toContain(`${target}: \${{ steps.targets.outputs.${target} }}`)
     }
     expect(outputs).not.toContain('steps.filter.outputs')
