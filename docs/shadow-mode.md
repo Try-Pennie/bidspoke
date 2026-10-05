@@ -15,8 +15,9 @@ mirror step never blocks Pipedream, and runs the workflow in the background with
 `shadow_mode: 'dry_run'`. Add `?mode=stand_in` to the URL to run the stand-in
 sub-mode instead (see below).
 
-A workflow carrying a Code node is refused with `422` and a message naming the
-nodes, and nothing runs (#1780); see Code nodes below. A workflow that does not
+For a workflow carrying a Code node, the route first deploys its compare bundle
+(see Code nodes below). A deploy that fails, or a compare namespace the Worker
+does not bind, answers a named `503` and nothing runs. A workflow that does not
 exist answers `404`, and one that cannot be read answers `503`, since whether
 the run would send anything is then unknown.
 
@@ -42,20 +43,32 @@ Everything else — filters, branches, transforms, matrix lookups, bid evaluatio
 — runs for real. That is the point: the decision logic executes, the side
 effects do not.
 
-## Code nodes: refused until they can be sandboxed
+## Code nodes: run in the compare namespace
 
-A Code node's scripts make their real outbound calls on a shadow run. The
-sandbox request carries `shadow_mode`, but the bundled script never receives it
-and no script reads it, so nothing stubs them: a shadow run of Engine Bidding or
-Main Flow would pull a real person's credit report. So a shadow run of any
-workflow carrying a Code node is refused before anything is recorded or runs, by
-the shadow route (`422`) and again by the engine for any other caller (#1780).
+A Code node's scripts make their real outbound calls; the sandbox request carries
+`shadow_mode`, but no script reads it, and nothing inside a script could be
+trusted to stub itself anyway. So a shadow run's code runs somewhere every call
+is refused (#1708 part B):
 
-The rule is the `shadowRun` trait every node type declares in
-`packages/node-types` (`sends_nothing`, `stubbed`, or `refused` with its
-reason), so a new node type has to say what a shadow run does with it. The
-refusal lifts when shadow runs dispatch to a compare namespace whose outbound
-Worker denies egress (#1708 part B).
+- `POST /shadow` deploys the workflow's code to a compare bundle
+  (`bs-cmp-<workflow>-<hash>`) in the `bidspoke-code-nodes-compare` dispatch
+  namespace, by content hash, so the same code is uploaded once. Never on save.
+- The platform routes every request a script in that namespace makes to its
+  outbound Worker, `bidspoke-compare-outbound` (`apps/compare-outbound`), which
+  answers `403 egress_denied` naming the host, and sends nothing. A code step that
+  calls Equifax on a shadow run sees that refusal, and its step records it.
+- The engine dispatches a shadow run's code, single steps and chains alike, only
+  to that bundle in that namespace (`codeDispatchTarget`, from the one switch
+  `codeNamespaceOf` in `engine/run-reality.ts`), and never falls back to the money
+  namespace. A shadow run carrying code with no compare bundle is refused before
+  anything runs (#1780).
+
+Live runs and canvas test runs still dispatch to `bidspoke-code-nodes` and make
+their real calls (Dan, 2026-10-02). Every node type declares what a shadow run
+does with it, the `shadowRun` trait in `packages/node-types` (`sends_nothing`,
+`stubbed`, or `sandboxed`), so a new node type has to decide. Deploy Worker
+creates the compare namespace if it is missing
+(`.github/scripts/ensure-compare-namespace.sh`).
 
 ## Stand-in bid sub-mode
 

@@ -33,6 +33,25 @@ function filesUnder(dir: string): string[] {
   return out
 }
 
+describe('money-gate-inputs-changed: every file the harness imports wakes it (#1708 part B)', () => {
+  // The harness reads code outside apps/worker too (the compare namespace's
+  // outbound Worker, whose handler answers compare bundles' requests), so the
+  // files it imports are derived from its own import lines rather than listed.
+  it('wakes on a change to any file a harness or gate config file imports by a relative path', () => {
+    const sources = [...filesUnder(join(workerRoot, 'money-gate', 'harness')), 'apps/worker/vitest.money-gate.config.mts']
+    const imported = new Set<string>()
+    for (const rel of sources) {
+      const text = readFileSync(join(repoRoot, rel), 'utf8')
+      for (const m of text.matchAll(/^import[^'"]*['"](\.{1,2}\/[^'"]+)['"]/gm)) {
+        const target = relative(repoRoot, join(repoRoot, dirname(rel), m[1]))
+        imported.add(/\.[cm]?[jt]s$/.test(target) ? target : `${target}.ts`)
+      }
+    }
+    expect(imported).toContain('apps/compare-outbound/src/index.ts')
+    for (const file of imported) expect(decide('7', 'true', file), file).toBe('true')
+  })
+})
+
 describe('money-gate-inputs-changed: runs on any input the gate reads, skips only on proof', () => {
   it('skips a pull request that touches nothing the gate reads', () => {
     expect(decide('7', 'true', 'apps/web/src/app/page.tsx\ndocs/runbook.md\napps/worker-tail/src/index.ts')).toBe('false')

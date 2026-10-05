@@ -6,7 +6,8 @@
 // the legacy per-node worker.
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
-import { shadowOf } from '../run-reality'
+import { assertNever } from '@bidspoke/node-types'
+import { codeNamespaceOf, shadowOf, type CodeNamespace } from '../run-reality'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { formatErr } from '../../lib/format-error'
@@ -189,7 +190,7 @@ export async function executeCodeNode(
 
   const body = buildCodeSandboxBody(ctx, stepsToSend, mergedEnv, resolvedProps)
 
-  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName, signal)
+  const res = await dispatchWithFallback(env, ctx, node.namespace, body, signal)
   const text = await res.text()
 
   // One shared parser for both dispatch paths (see engine/code-response.ts):
@@ -245,10 +246,9 @@ export function codeSentinel(output: unknown): Pick<StepExecutionResult, 'earlyR
 /**
  * Build the JSON request body sent to the code sandbox. It carries
  * `shadow_mode`, but no script reads it: the bundled chain never passes it on,
- * so a code node makes its real calls on a shadow run. A shadow run of a
- * workflow carrying a code node is therefore refused before anything runs
- * (engine/run-reality.ts shadowRunRefusal, #1780) until shadow runs dispatch to
- * a namespace that denies egress (#1708 part B).
+ * so a code node makes its real calls wherever it runs. A shadow run's code is
+ * kept from reaching anyone by where it runs, the compare namespace, whose
+ * outbound Worker refuses every request (codeDispatchTarget below, #1708).
  */
 export function buildCodeSandboxBody(
   ctx: ExecutionContext,
@@ -269,24 +269,87 @@ export function buildCodeSandboxBody(
   })
 }
 
+/** A shadow run's code cannot be dispatched to the compare namespace, so it runs nowhere. */
+export class CompareDispatchUnavailableError extends Error {
+  /** Read by the retry classifier: the same on every attempt. */
+  readonly permanent = true
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'CompareDispatchUnavailableError'
+  }
+}
+
+/** Where one dispatch of a run's code goes. */
+export interface CodeDispatchTarget {
+  namespace: CodeNamespace
+  binding: DispatchNamespace
+  bundleName: string
+  /** Whether a missing bundle may fall back to the legacy per node workers (money namespace only). */
+  legacyFallback: boolean
+}
+
 /**
- * Attempts to dispatch to the bundled worker first; falls back to the legacy
- * per-node worker if the bundle is missing (503) or the namespace isn't in
- * the bundle (404). Any other status (including 500 from a user script error)
- * is returned directly — we do NOT fall back on script errors, since that
- * could silently run stale code.
+ * The namespace binding and bundle a run's code is dispatched to (#1708 part
+ * B), from the one switch in run-reality.ts. A live run uses the saved bundle
+ * in the money namespace, falling back to the legacy per node workers. A canvas
+ * test run uses its ephemeral test bundle there, with no fallback to stale code;
+ * the chain path still uses the saved bundle on a test run (#1781). A shadow run
+ * uses the compare bundle deployed for it in the compare namespace, whose
+ * outbound Worker refuses every request, and never the money namespace: an
+ * unbound compare namespace or a missing bundle refuses by name.
+ */
+export function codeDispatchTarget(env: Env, ctx: ExecutionContext, opts: { chain: boolean }): CodeDispatchTarget {
+  const namespace = codeNamespaceOf(ctx)
+  switch (namespace) {
+    case 'money': {
+      const testBundle = opts.chain ? undefined : ctx.codeBundleName
+      return {
+        namespace,
+        binding: env.DYNAMIC_WORKER_LOADER,
+        bundleName: testBundle ?? codeBundleName(ctx.trigger.workflow_id),
+        legacyFallback: !testBundle,
+      }
+    }
+    case 'compare': {
+      if (!env.COMPARE_CODE_LOADER) {
+        throw new CompareDispatchUnavailableError('The compare namespace is not bound to this Worker, so a shadow run has nowhere to run its code that refuses its outside calls.')
+      }
+      if (!ctx.codeBundleName) {
+        throw new CompareDispatchUnavailableError('There is no compare bundle for this shadow run, so its code has nowhere to run that refuses its outside calls.')
+      }
+      return { namespace, binding: env.COMPARE_CODE_LOADER, bundleName: ctx.codeBundleName, legacyFallback: false }
+    }
+    default:
+      return assertNever(namespace, 'code namespace')
+  }
+}
+
+/** Why a bundle with no legacy fallback could not be reached, naming the kind of bundle. */
+export function bundleUnreachableMessage(target: CodeDispatchTarget, namespace: string, status: number | undefined): string {
+  const seen = status ?? 'binding error'
+  return target.namespace === 'compare'
+    ? `The compare bundle "${target.bundleName}" is not reachable for "${namespace}" (status ${seen}), and a shadow run never falls back to the money namespace`
+    : `Test code bundle "${target.bundleName}" not reachable for "${namespace}" (status ${seen})`
+}
+
+/**
+ * Attempts to dispatch to the bundled worker first; on the money namespace with
+ * the saved bundle, falls back to the legacy per-node worker if the bundle is
+ * missing (503) or the namespace isn't in the bundle (404). Any other status
+ * (including 500 from a user script error) is returned directly: we do NOT
+ * fall back on script errors, since that could silently run stale code.
  */
 async function dispatchWithFallback(
   env: Env,
-  workflowId: string,
+  ctx: ExecutionContext,
   namespace: string,
   body: string,
-  bundleNameOverride?: string,
   signal?: AbortSignal
 ): Promise<Response> {
-  // Test runs pass an ephemeral content-hashed bundle name so unsaved edits run
-  // immediately; prod runs use the stable per-workflow bundle.
-  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(bundleNameOverride ?? codeBundleName(workflowId))
+  const workflowId = ctx.trigger.workflow_id
+  const target = codeDispatchTarget(env, ctx, { chain: false })
+  const bundleBinding = target.binding.get(target.bundleName)
   let bundleRes: Response | undefined
   let bindingError: unknown
   try {
@@ -316,12 +379,12 @@ async function dispatchWithFallback(
 
   if (!bundleMissing && bundleRes) return bundleRes
 
-  // Test runs target a freshly-deployed ephemeral bundle. The legacy per-node
-  // worker is stale-by-definition, so falling back to it would silently run old
-  // code — exactly what the ephemeral bundle exists to prevent. Surface the miss
-  // instead.
-  if (bundleNameOverride) {
-    throw new Error(`Test code bundle "${bundleNameOverride}" not reachable for "${namespace}" (status ${bundleRes?.status ?? 'binding error'})`)
+  // A test run targets a freshly deployed ephemeral bundle, and the legacy
+  // per-node worker is stale by definition, so falling back to it would silently
+  // run old code. A shadow run's legacy workers would be in the money namespace,
+  // where its calls go out. Surface the miss instead.
+  if (!target.legacyFallback) {
+    throw new Error(bundleUnreachableMessage(target, namespace, bundleRes?.status))
   }
 
   console.log(`[code-node] Bundle miss for "${namespace}" on workflow ${workflowId.slice(0, 8)}, falling back to per-node worker`)

@@ -7,8 +7,9 @@
  *                   everything it sends: it makes its real outbound calls into the
  *                   money namespace (Dan, 2026-10-02, on #1708).
  *   shadow_dry_run  the shadow mirror, POST /shadow/:workflow_id: every outbound
- *                   submission is stubbed. #1708 part B moves these to a compare
- *                   namespace with deny mode egress.
+ *                   submission is stubbed, and its code runs on the compare bundle
+ *                   the route deploys into the compare namespace, whose outbound
+ *                   Worker refuses every request (#1708 part B).
  *
  * Each kind's options are what its route hands executeWorkflow, field for field;
  * lib/__tests__/run-kinds.test.ts drives both routes and holds these to them. The
@@ -29,11 +30,14 @@ export const RUN_KIND_LABEL: Record<RunKind, string> = { live: 'live', test: 'te
 /** The trigger, as the live replay builds it. */
 export interface RunStart { workflowId: string; payload: unknown; source: string }
 
-/** What a test run carries that only the Test Runner supplies. */
+/** What a test or shadow run carries that only its route supplies. */
 export interface TestRunExtras {
   /** The id the canvas mints in the browser before the run, a UUIDv7. */
   executionId?: string
-  /** The test code bundle deployTestCodeBundle returned; null when none was deployed. */
+  /**
+   * The bundle the route deployed: a test run's test bundle (deployTestCodeBundle)
+   * or a shadow run's compare bundle (deployCompareCodeBundle); null when none was.
+   */
   codeBundleName?: string | null
   /** The canvas's current definition, sent with every Test Runner run. */
   definitionOverride?: unknown
@@ -68,8 +72,17 @@ export function runOptions(kind: RunKind, start: RunStart, extras: TestRunExtras
         ...(extras.definitionOverride ? { definitionOverride: extras.definitionOverride } : {}),
       }
     case 'shadow_dry_run':
-      // routes/shadow.ts: the caller's source with a __shadow suffix, marked a test.
-      return { workflowId, payload, source: `${source}__shadow`, isTest: true, shadowMode: 'dry_run', enforceSourceAssignment: false }
+      // routes/shadow.ts: the caller's source with a __shadow suffix, marked a test,
+      // with the compare bundle when the workflow carries code.
+      return {
+        workflowId,
+        payload,
+        source: `${source}__shadow`,
+        isTest: true,
+        shadowMode: 'dry_run',
+        enforceSourceAssignment: false,
+        ...(extras.codeBundleName ? { codeBundleName: extras.codeBundleName } : {}),
+      }
     default: {
       const never: never = kind
       throw new Error(`money gate: no options for run kind ${String(never)}`)

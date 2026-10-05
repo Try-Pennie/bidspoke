@@ -25,12 +25,13 @@ vi.mock('../../../src/lib/jwt')
 vi.mock('../../../src/lib/code-node-deployer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/lib/code-node-deployer')>()),
   deployTestCodeBundle: vi.fn(),
+  deployCompareCodeBundle: vi.fn(),
 }))
 
 import { executeWorkflow } from '../../../src/engine/index'
 import { createSupabaseClient } from '../../../src/lib/supabase'
 import { verifyJwt } from '../../../src/lib/jwt'
-import { deployTestCodeBundle } from '../../../src/lib/code-node-deployer'
+import { deployCompareCodeBundle, deployTestCodeBundle } from '../../../src/lib/code-node-deployer'
 import { loadWorkflowDefinition } from '../../../src/engine/definition-loader'
 import shadow from '../../../src/routes/shadow'
 import { RUN_KINDS, fixtureId, runOptions } from '../run-kinds'
@@ -60,6 +61,21 @@ describe('fixtureId', () => {
     expect(fixtureId('Main Flow', 'bid_race_tripoint_wins', 'live')).toBe('Main Flow/bid_race_tripoint_wins')
     expect(fixtureId('Main Flow', 'bid_race_tripoint_wins', 'test')).toBe('Main Flow/bid_race_tripoint_wins as test run')
     expect(fixtureId('Main Flow', 'bid_race_tripoint_wins', 'shadow_dry_run')).toBe('Main Flow/bid_race_tripoint_wins as shadow dry_run')
+  })
+})
+
+describe('a shadow run of code is replayed with exactly what POST /shadow/:workflow_id passes (#1708 part B)', () => {
+  it('matches the route field for field, the compare bundle it deployed included', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue({} as ReturnType<typeof createSupabaseClient>)
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: { trigger: { id: 't', type: 'trigger', config: {} }, nodes: [{ id: 'n', namespace: 'pull', type: 'code', config: { script: 'return 1' } }], edges: [] },
+      workflow_version_id: 'v1', workflow_name: 'Shadow', org_id: ORG, slack_channel: null, lane: 'money',
+    } as never)
+    vi.mocked(deployCompareCodeBundle).mockResolvedValue({ bundleName: 'bs-cmp-wf-1-0123abcd' })
+    const env = { API_KEY_MAP: JSON.stringify({ sk_test_key: 'website_form' }), COMPARE_CODE_LOADER: {} } as unknown as Env
+    const res = await shadow.request('/wf-1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'sk_test_key' }, body: JSON.stringify(payload) }, env, ctx)
+    expect(res.status).toBe(204)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toEqual(runOptions('shadow_dry_run', { workflowId: 'wf-1', payload, source: 'website_form' }, { codeBundleName: 'bs-cmp-wf-1-0123abcd' }))
   })
 })
 

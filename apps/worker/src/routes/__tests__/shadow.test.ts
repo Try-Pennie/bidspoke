@@ -12,10 +12,12 @@ vi.mock('../../engine/index', async () => {
 })
 vi.mock('../../lib/supabase')
 vi.mock('../../engine/definition-loader', async (orig) => ({ ...(await orig<object>()), loadWorkflowDefinition: vi.fn() }))
+vi.mock('../../lib/code-node-deployer', async (orig) => ({ ...(await orig<object>()), deployCompareCodeBundle: vi.fn() }))
 
 import { executeWorkflow } from '../../engine/index'
 import { createSupabaseClient } from '../../lib/supabase'
 import { loadWorkflowDefinition, WorkflowNotFoundError } from '../../engine/definition-loader'
+import { deployCompareCodeBundle } from '../../lib/code-node-deployer'
 import type { LoadedWorkflow, WorkflowDefinition } from '../../types'
 import shadow from '../shadow'
 
@@ -36,10 +38,16 @@ const loaded = (definition: WorkflowDefinition): LoadedWorkflow => ({
 })
 
 const KEY_MAP = JSON.stringify({ sk_test_key: 'website_form' })
+const compareLoader = { get: vi.fn() }
+const workflowCache = {}
 const testEnv = {
   API_KEY_MAP: KEY_MAP,
   SUPABASE_URL: 'https://fake.supabase.co',
   SUPABASE_ANON_KEY: 'fake-anon-key',
+  CLOUDFLARE_ACCOUNT_ID: 'acct',
+  CLOUDFLARE_API_TOKEN: 'tok',
+  WORKFLOW_CACHE: workflowCache,
+  COMPARE_CODE_LOADER: compareLoader,
 } as unknown as Env
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,18 +88,47 @@ describe('POST /shadow/:workflow_id', () => {
     })
   })
 
-  // #1780: a shadow run must send nothing, and a code node's scripts make their
-  // real calls, so the request is refused by name before anything starts.
-  it('refuses a workflow carrying a code node with a named 422 and starts nothing', async () => {
-    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definitionWith('transform', 'code')))
+  // #1708 part B: a shadow run's code runs on a compare bundle in the compare
+  // namespace, whose outbound Worker refuses every request. The route deploys it
+  // first and hands its name to the run.
+  it('deploys the compare bundle for a workflow carrying code, then runs the shadow on it', async () => {
+    const definition = definitionWith('transform', 'code')
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definition))
+    vi.mocked(deployCompareCodeBundle).mockResolvedValue({ bundleName: 'bs-cmp-wf-1-0123abcd' })
     const res = await request('wf-1', 'sk_test_key', { lead: 1 })
 
-    expect(res.status).toBe(422)
-    const body = (await res.json()) as { error: string; refused_nodes: Array<{ namespace: string; type: string }> }
-    expect(body.error).toContain('code_1 is a code node')
-    expect(body.refused_nodes).toEqual([{ namespace: 'code_1', type: 'code' }])
+    expect(res.status).toBe(204)
+    expect(deployCompareCodeBundle).toHaveBeenCalledWith('wf-1', definition, 'acct', 'tok', workflowCache)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: 'dry_run', isTest: true, codeBundleName: 'bs-cmp-wf-1-0123abcd' })
+  })
+
+  it('refuses with a named 503 and runs nothing when the compare bundle cannot be deployed', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definitionWith('code')))
+    vi.mocked(deployCompareCodeBundle).mockResolvedValue({ bundleName: null, error: 'namespace not found' })
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 })
+
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { error: string }).error).toContain('compare bundle could not be deployed: namespace not found')
     expect(executeWorkflow).not.toHaveBeenCalled()
     expect(mockCtx.waitUntil).not.toHaveBeenCalled()
+  })
+
+  it('refuses with a named 503 when the compare namespace is not bound, deploying and running nothing', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definitionWith('code')))
+    const unbound = { ...testEnv, COMPARE_CODE_LOADER: undefined } as unknown as Env
+    const res = await shadow.request('/wf-1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'sk_test_key' }, body: '{}' }, unbound, mockCtx)
+
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { error: string }).error).toContain('compare namespace is not bound')
+    expect(deployCompareCodeBundle).not.toHaveBeenCalled()
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('deploys nothing for a workflow with no code, and runs it with no bundle', async () => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 })
+    expect(res.status).toBe(204)
+    expect(deployCompareCodeBundle).not.toHaveBeenCalled()
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).not.toHaveProperty('codeBundleName')
   })
 
   it('checks the workflow the run would use, inactive ones included, as a test run does', async () => {

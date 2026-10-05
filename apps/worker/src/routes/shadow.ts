@@ -5,6 +5,7 @@ import { executeWorkflow, moneyRuntime } from '../engine/index'
 import { loadWorkflowDefinition, WorkflowNotFoundError } from '../engine/definition-loader'
 import { runReality, shadowRunRefusal } from '../engine/run-reality'
 import { createSupabaseClient } from '../lib/supabase'
+import { deployCompareCodeBundle } from '../lib/code-node-deployer'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
 // each real engine request here. We acknowledge with 204 immediately so the
@@ -16,12 +17,16 @@ import { createSupabaseClient } from '../lib/supabase'
 // cutover endpoint so removing the mirror at cutover touches nothing real.
 // See docs/engine-cutover-scope.md section 3.3.
 //
-// Before acknowledging, the route checks the workflow with the engine's own
-// rule (#1780): a workflow carrying a node a shadow run cannot stub (a code
-// node, whose scripts make their real calls) is refused by name with 422, so
-// the caller learns of it rather than a 204 for a run the engine then refuses.
-// A workflow that cannot be read is refused too, since whether the run would
-// send anything is then unknown.
+// Before acknowledging, the route reads the workflow. A code node's scripts make
+// their real calls, so a shadow run's code runs only in the compare namespace,
+// whose outbound Worker refuses every request (#1708 part B): the route deploys
+// the workflow's compare bundle there, by content hash, and hands its name to
+// the run. A deploy that fails, or a compare namespace this Worker does not
+// bind, is refused with a named 503 and nothing runs. The engine's own rule
+// (#1780) then refuses a shadow run of code with no bundle, here by name with
+// 422, so the caller learns of it rather than a 204 for a run the engine
+// refuses. A workflow that cannot be read is refused too, since whether the run
+// would send anything is then unknown.
 const shadow = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
@@ -50,7 +55,18 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
     console.error('[shadow] could not read the workflow to check it:', err instanceof Error ? err.message : 'non Error thrown')
     return c.json({ error: 'The workflow could not be read, so whether a shadow run of it would send anything is unknown. Try again shortly.' }, 503)
   }
-  const refusal = shadowRunRefusal(definition, runReality({ isTest: true, shadowMode }))
+  let compareBundle: string | undefined
+  if (definition.nodes.some((n) => n.type === 'code')) {
+    if (!c.env.COMPARE_CODE_LOADER) {
+      return c.json({ error: 'The compare namespace is not bound to this Worker, so a shadow run has nowhere to run its code that refuses its outside calls.' }, 503)
+    }
+    const deployed = await deployCompareCodeBundle(workflowId, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
+    if (deployed.error) {
+      return c.json({ error: `The compare bundle could not be deployed: ${deployed.error}. The shadow run did not start.` }, 503)
+    }
+    compareBundle = deployed.bundleName ?? undefined
+  }
+  const refusal = shadowRunRefusal(definition, runReality({ isTest: true, shadowMode }), compareBundle)
   if (refusal) {
     return c.json({ error: refusal.message, refused_nodes: refusal.nodes.map(({ namespace, type }) => ({ namespace, type })) }, 422)
   }
@@ -64,6 +80,7 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
         isTest: true,
         shadowMode,
         enforceSourceAssignment: false,
+        ...(compareBundle ? { codeBundleName: compareBundle } : {}),
       },
       c.env,
       moneyRuntime(supabase),

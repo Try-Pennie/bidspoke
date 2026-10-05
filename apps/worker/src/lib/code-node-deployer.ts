@@ -15,7 +15,13 @@
 import { lineStartsInsideTemplate } from '@bidspoke/script-hygiene'
 import type { WorkflowDefinition, NodeDefinition } from '../types'
 
-const NAMESPACE = 'bidspoke-code-nodes'
+/** The money namespace: live runs and canvas test runs dispatch here and make their real calls. */
+export const CODE_NAMESPACE = 'bidspoke-code-nodes'
+/**
+ * The compare namespace (#1708 part B): shadow runs dispatch here, and its
+ * outbound Worker (bidspoke-compare-outbound) refuses every request a script makes.
+ */
+export const COMPARE_NAMESPACE = 'bidspoke-code-nodes-compare'
 // Cloudflare's limit is 1MB compressed; stay under to avoid hitting it with
 // whitespace or minor growth between deploys.
 const MAX_SCRIPT_BYTES = 900_000
@@ -296,6 +302,101 @@ export function testBundleName(workflowId: string, hash: string): string {
   return `bs-wft-${workflowId.slice(0, 8)}-${hash.slice(0, 8)}`.slice(0, 64)
 }
 
+/** What one content hashed deploy is for: where it goes, its name, and how it is recorded. */
+interface HashedBundleKind {
+  /** For the log line. */
+  label: string
+  namespace: string
+  nameFor: (workflowId: string, hash: string) => string
+  /** KV key recording that this name already holds this content. */
+  deployedKey: (workerName: string) => string
+  /** Whether a missing CLOUDFLARE_ACCOUNT_ID or API token is a failure rather than a skip. */
+  requireConfig: boolean
+  /** Track the name for deletion on the next save (test bundles only). */
+  trackForSave: boolean
+}
+
+/**
+ * Deploys a workflow's code nodes as one bundle under a name derived from its
+ * content hash, and returns that name (null when there are no code nodes). Same
+ * content under the same name is already deployed, so the upload is skipped.
+ */
+async function deployHashedBundle(
+  kind: HashedBundleKind,
+  workflowId: string,
+  definition: WorkflowDefinition,
+  accountId: string | undefined,
+  apiToken: string | undefined,
+  cache?: KVNamespace
+): Promise<{ bundleName: string | null; error?: string }> {
+  const codeNodes = definition.nodes.filter((n): n is NodeDefinition => {
+    const script = n.config?.script as string | undefined
+    return n.type === 'code' && typeof script === 'string' && script.trim().length > 0
+  })
+  if (codeNodes.length === 0) return { bundleName: null }
+
+  if (!accountId || !apiToken) {
+    if (kind.requireConfig) return { bundleName: null, error: `${kind.label} deploy is not configured (CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN is unset)` }
+    console.warn(`[code-deployer] ${kind.label} deploy skipped: CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured`)
+    return { bundleName: null }
+  }
+
+  const scripts = codeNodes.map((n) => ({ namespace: n.namespace, script: n.config.script as string }))
+  const workerScript = buildBundledWorkerScript(scripts)
+  const scriptBytes = new TextEncoder().encode(workerScript).length
+  if (scriptBytes > MAX_SCRIPT_BYTES) {
+    const msg = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
+    console.error(`[code-deployer] ${msg}`)
+    return { bundleName: null, error: msg }
+  }
+
+  const hash = await sha256Hex(workerScript)
+  const workerName = kind.nameFor(workflowId, hash)
+
+  const deployedKey = kind.deployedKey(workerName)
+  const alreadyDeployed = cache ? await cache.get(deployedKey) : null
+  if (alreadyDeployed) return { bundleName: workerName }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${kind.namespace}/scripts/${workerName}`
+  const formData = new FormData()
+  formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))
+  formData.append('script.js', new Blob([workerScript], { type: 'application/javascript+module' }), 'script.js')
+
+  const res = await fetch(url, { method: 'PUT', headers: { Authorization: `Bearer ${apiToken}` }, body: formData })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    let msg: string
+    try { msg = (JSON.parse(body) as { errors?: { message?: string }[] }).errors?.[0]?.message ?? `HTTP ${res.status}` }
+    catch { msg = body || `HTTP ${res.status}` }
+    console.error(`[code-deployer] ${kind.label} deploy failed "${workerName}": ${msg}`)
+    return { bundleName: null, error: msg }
+  }
+
+  console.log(`[code-deployer] Deployed ${kind.label} bundle "${workerName}" (${codeNodes.length} nodes, ${scriptBytes} bytes)`)
+  if (cache) {
+    await cache.put(deployedKey, '1', { expirationTtl: 86400 }).catch(() => undefined)
+    if (kind.trackForSave) {
+      const key = TEST_BUNDLES_KEY(workflowId)
+      const existing = (await cache.get<string[]>(key, 'json')) ?? []
+      if (!existing.includes(workerName)) {
+        existing.push(workerName)
+        await cache.put(key, JSON.stringify(existing), { expirationTtl: 86400 }).catch(() => undefined)
+      }
+    }
+  }
+
+  return { bundleName: workerName }
+}
+
+const TEST_BUNDLE: HashedBundleKind = {
+  label: 'TEST',
+  namespace: CODE_NAMESPACE,
+  nameFor: (workflowId, hash) => testBundleName(workflowId, hash),
+  deployedKey: (name) => `test-deployed-${name}`,
+  requireConfig: false,
+  trackForSave: true,
+}
+
 /**
  * Deploys the workflow's code nodes to a content-hashed ephemeral bundle and
  * returns the name to dispatch to (null when there are no code nodes). The
@@ -309,61 +410,42 @@ export async function deployTestCodeBundle(
   apiToken: string | undefined,
   cache?: KVNamespace
 ): Promise<{ bundleName: string | null; error?: string }> {
-  if (!accountId || !apiToken) {
-    console.warn('[code-deployer] Test deploy skipped — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured')
-    return { bundleName: null }
-  }
+  return deployHashedBundle(TEST_BUNDLE, workflowId, definition, accountId, apiToken, cache)
+}
 
-  const codeNodes = definition.nodes.filter((n): n is NodeDefinition => {
-    const script = n.config?.script as string | undefined
-    return n.type === 'code' && typeof script === 'string' && script.trim().length > 0
-  })
-  if (codeNodes.length === 0) return { bundleName: null }
+// ── Compare bundles (#1708 part B) ──────────────────────────────────────────
+//
+// A shadow run's code runs in the compare namespace, whose outbound Worker
+// refuses every request. Its bundle is deployed lazily by the shadow route,
+// under a content hashed name like a test bundle (a fresh name has no stale
+// version to serve), and never on the save path. Not cleaned up on save, which
+// is the money path; shadow runs are rare and each code version is one script.
 
-  const scripts = codeNodes.map((n) => ({ namespace: n.namespace, script: n.config.script as string }))
-  const workerScript = buildBundledWorkerScript(scripts)
-  const scriptBytes = new TextEncoder().encode(workerScript).length
-  if (scriptBytes > MAX_SCRIPT_BYTES) {
-    const msg = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
-    console.error(`[code-deployer] ${msg}`)
-    return { bundleName: null, error: msg }
-  }
+/** Content-versioned bundle name in the compare namespace. */
+export function compareBundleName(workflowId: string, hash: string): string {
+  return `bs-cmp-${workflowId.slice(0, 8)}-${hash.slice(0, 8)}`.slice(0, 64)
+}
 
-  const hash = await sha256Hex(workerScript)
-  const workerName = testBundleName(workflowId, hash)
+const COMPARE_BUNDLE: HashedBundleKind = {
+  label: 'COMPARE',
+  namespace: COMPARE_NAMESPACE,
+  nameFor: (workflowId, hash) => compareBundleName(workflowId, hash),
+  deployedKey: (name) => `compare-deployed-${name}`,
+  // A shadow run of code with no compare bundle has nowhere safe to run, so a
+  // deploy that cannot happen is a failure the route reports, not a quiet skip.
+  requireConfig: true,
+  trackForSave: false,
+}
 
-  // Same content under the same name = already deployed; skip the upload.
-  const deployedKey = `test-deployed-${workerName}`
-  const alreadyDeployed = cache ? await cache.get(deployedKey) : null
-  if (alreadyDeployed) return { bundleName: workerName }
-
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${workerName}`
-  const formData = new FormData()
-  formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))
-  formData.append('script.js', new Blob([workerScript], { type: 'application/javascript+module' }), 'script.js')
-
-  const res = await fetch(url, { method: 'PUT', headers: { Authorization: `Bearer ${apiToken}` }, body: formData })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    let msg: string
-    try { msg = (JSON.parse(body) as { errors?: { message?: string }[] }).errors?.[0]?.message ?? `HTTP ${res.status}` }
-    catch { msg = body || `HTTP ${res.status}` }
-    console.error(`[code-deployer] Test deploy failed "${workerName}": ${msg}`)
-    return { bundleName: null, error: msg }
-  }
-
-  console.log(`[code-deployer] Deployed TEST bundle "${workerName}" (${codeNodes.length} nodes, ${scriptBytes} bytes)`)
-  if (cache) {
-    await cache.put(deployedKey, '1', { expirationTtl: 86400 }).catch(() => undefined)
-    const key = TEST_BUNDLES_KEY(workflowId)
-    const existing = (await cache.get<string[]>(key, 'json')) ?? []
-    if (!existing.includes(workerName)) {
-      existing.push(workerName)
-      await cache.put(key, JSON.stringify(existing), { expirationTtl: 86400 }).catch(() => undefined)
-    }
-  }
-
-  return { bundleName: workerName }
+/** Deploys the workflow's code to its compare bundle for a shadow run, returning its name. */
+export async function deployCompareCodeBundle(
+  workflowId: string,
+  definition: WorkflowDefinition,
+  accountId: string | undefined,
+  apiToken: string | undefined,
+  cache?: KVNamespace
+): Promise<{ bundleName: string | null; error?: string }> {
+  return deployHashedBundle(COMPARE_BUNDLE, workflowId, definition, accountId, apiToken, cache)
 }
 
 /**
@@ -382,7 +464,7 @@ export async function deleteTestBundles(
   const names = (await cache.get<string[]>(key, 'json')) ?? []
   if (names.length === 0) return
   await Promise.all(names.map(async (name) => {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${name}`
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${CODE_NAMESPACE}/scripts/${name}`
     await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${apiToken}` } })
       .then((r) => { if (!r.ok && r.status !== 404) console.warn(`[code-deployer] test bundle delete ${name}: HTTP ${r.status}`) })
       .catch((e) => console.warn(`[code-deployer] test bundle delete ${name} failed:`, e))
@@ -449,7 +531,7 @@ export async function deployCodeNodes(
   }
 
   const workerName = codeBundleName(workflowId)
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${workerName}`
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${CODE_NAMESPACE}/scripts/${workerName}`
 
   const formData = new FormData()
   formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))

@@ -20,7 +20,7 @@ import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
-import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
+import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, type CodeDispatchTarget } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -198,9 +198,9 @@ export async function executeWorkflow(
   // included) may carry only node types its lane can run.
   assertWorkflowServedInLane(workflowId, loaded.lane, runtime.lane)
   assertDefinitionRunsInLane(definition, runtime.lane)
-  // A shadow run must send nothing, so one carrying a node it cannot stub (a
-  // code node, whose scripts make their real calls) is refused here (#1780).
-  const shadowRefusal = shadowRunRefusal(definition, reality)
+  // A shadow run must send nothing, so one carrying code nodes with no compare
+  // bundle deployed for its scripts to run in is refused here (#1780, #1708).
+  const shadowRefusal = shadowRunRefusal(definition, reality, options.codeBundleName)
   if (shadowRefusal) throw shadowRefusal
 
   if (options.enforceSourceAssignment) {
@@ -2319,7 +2319,16 @@ export async function executeCodeChain(
   const controller = new AbortController()
   const chainTimer = setTimeout(() => controller.abort(), chainTimeoutMs)
 
-  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(ctx.trigger.workflow_id))
+  // The one switch for where a run's code goes (#1708): a shadow run's chain runs
+  // only on its compare bundle, and never falls back to the money namespace.
+  let target: CodeDispatchTarget
+  try {
+    target = codeDispatchTarget(env, ctx, { chain: true })
+  } catch (err) {
+    clearTimeout(chainTimer)
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: formatErr(err), durationMs: 0 }] }
+  }
+  const bundleBinding = target.binding.get(target.bundleName)
   let bundleRes: Response | undefined
   let bindingError: unknown
   let timedOut = false
@@ -2359,6 +2368,10 @@ export async function executeCodeChain(
     bindingError !== undefined ||   // guaranteed a "Worker not found" throw at this point
     bundleRes?.status === 404 ||
     bundleRes?.status === 503
+
+  if ((chainUnsupported || !bundleRes) && !target.legacyFallback) {
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0 }] }
+  }
 
   if (chainUnsupported || !bundleRes) {
     const results: ChainStepResult[] = []

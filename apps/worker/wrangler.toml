@@ -102,6 +102,16 @@ new_sqlite_classes = ["BuyerLedgerObject", "LeadSaleObject"]
 binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
 
+# The compare namespace (#1708 part B): shadow runs dispatch their code here,
+# and every request a script makes goes to bidspoke-compare-outbound
+# (apps/compare-outbound), which refuses it, so a shadow run sends nothing. Its
+# bundles are deployed lazily by POST /shadow, by content hash, never on save.
+# Deploy Worker creates the namespace if it is missing before deploying.
+[[dispatch_namespaces]]
+binding = "COMPARE_CODE_LOADER"
+namespace = "bidspoke-code-nodes-compare"
+outbound = { service = "bidspoke-compare-outbound" }
+
 # Hyperdrive — RETIRED 2026-06-20, code removed #363. The direct-Postgres
 # execution-log hot path was provisioned 2026-06-12 to dodge the nightly
 # partition-purge schema-cache 503s; the purge is now TRUNCATE-based (migration

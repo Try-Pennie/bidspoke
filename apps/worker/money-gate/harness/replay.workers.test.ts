@@ -20,6 +20,7 @@ import { env, listDurableObjectIds, runInDurableObject, createExecutionContext, 
 import { it, expect, vi } from 'vitest'
 import { executeWorkflow, moneyRuntime } from '@money-gate-engine/engine/index'
 import { buildBundledWorkerScript, codeBundleName, deployTestCodeBundle } from '@money-gate-engine/lib/code-node-deployer'
+import * as deployer from '@money-gate-engine/lib/code-node-deployer'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { createSupabaseDouble, type RecordedWrite, type Row } from '../lib/supabase-double'
 import { generatePayload } from '../lib/generate'
@@ -32,6 +33,7 @@ import type { ConfigSnapshot } from '../lib/snapshot'
 import { fixtureId, runOptions, type RunKind } from '../lib/run-kinds'
 import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, runPlan, type VariantFile, type Variant } from './replay-env'
+import type { HostedBundle } from '../lib/hosted-bundle'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
 
@@ -43,7 +45,7 @@ const shapes = shapesFile as unknown as ShapesFile
 const snapshot = snapshotFile as unknown as ConfigSnapshot
 
 /** The engine under test's dispatch namespaces, from its wrangler.toml (vitest.money-gate.config.mts). */
-const DISPATCH_NAMESPACES = JSON.parse(String((env as Record<string, unknown>).MONEY_GATE_DISPATCH_NAMESPACES ?? '[]')) as Array<{ binding: string; namespace: string }>
+const DISPATCH_NAMESPACES = JSON.parse(String((env as Record<string, unknown>).MONEY_GATE_DISPATCH_NAMESPACES ?? '[]')) as Array<{ binding: string; namespace: string; outbound: string | null }>
 const DISPATCH_BINDINGS = new Set(DISPATCH_NAMESPACES.map((d) => d.binding))
 
 /**
@@ -226,59 +228,79 @@ it('replays every fixture through the engine under test and writes the transcrip
   }
 }, 900_000)
 
+type DeployFn = (workflowId: string, definition: never, accountId: string, apiToken: string, cache: KVNamespace) => Promise<{ bundleName: string | null; error?: string }>
+
 /**
- * The Test Runner deploys the canvas definition to a test bundle named by its
- * content before every run (routes/api/workflows.ts, POST /:id/test). The gate
- * calls the engine under test's own deployTestCodeBundle with the route's
- * arguments; its upload to Cloudflare is answered here and never sent, and the
- * script it uploaded (the part its metadata names as main_module) is hosted
- * under the name it chose. Null when it deployed nothing, which the route also
- * runs with. An upload the gate cannot read a script from stops the replay,
- * naming the workflow, the bundle and what was missing.
+ * A hashed bundle the engine under test deploys itself, as its route would: the
+ * Test Runner's test bundle (routes/api/workflows.ts, POST /:id/test) and the
+ * shadow route's compare bundle (routes/shadow.ts, #1708 part B). The gate calls
+ * the engine's own deploy function with the route's arguments; its upload to
+ * Cloudflare is answered here and never sent, and the script it uploaded (the
+ * part its metadata names as main_module) is hosted under the name it chose, in
+ * the namespace its upload URL names. Null when it deployed nothing, which the
+ * route also runs with. An upload the gate cannot read a script from stops the
+ * replay, naming the workflow, the bundle and what was missing.
  */
-async function deployTestBundle(e: GateEnv, d: DefinitionFile): Promise<{ name: string; script: string } | null> {
+async function deployCaptured(e: GateEnv, d: DefinitionFile, label: string, deploy: DeployFn): Promise<HostedBundle | null> {
   const env = buildEnv(e, {}, d)
   const uploads: Array<{ url: string; read: Awaited<ReturnType<typeof scriptFromUpload>> }> = []
   const realFetch = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init)
     if (new URL(req.url).host !== 'api.cloudflare.com' || req.method !== 'PUT') {
-      return new Response(`money gate: network is off; the test bundle deploy reached ${req.method} ${req.url}`, { status: 598 })
+      return new Response(`money gate: network is off; the ${label} deploy reached ${req.method} ${req.url}`, { status: 598 })
     }
     uploads.push({ url: req.url, read: await scriptFromUpload(await req.formData()) })
     return Response.json({ success: true, errors: [], messages: [], result: {} })
   }) as typeof fetch
   const quiet = vi.spyOn(console, 'log').mockImplementation(() => {})
   try {
-    const dep = await deployTestCodeBundle(d.id, d.definition as never, env.CLOUDFLARE_ACCOUNT_ID as string, env.CLOUDFLARE_API_TOKEN as string, e.WORKFLOW_CACHE as KVNamespace)
-    if (dep.error) throw new Error(`money gate: deployTestCodeBundle refused ${d.name}: ${dep.error}`)
+    const dep = await deploy(d.id, d.definition as never, env.CLOUDFLARE_ACCOUNT_ID as string, env.CLOUDFLARE_API_TOKEN as string, e.WORKFLOW_CACHE as KVNamespace)
+    if (dep.error) throw new Error(`money gate: the ${label} deploy refused ${d.name}: ${dep.error}`)
     if (!dep.bundleName) return null
     const upload = uploads.find((u) => u.url.endsWith(`/scripts/${dep.bundleName}`))
-    if (!upload) throw new Error(`money gate: deployTestCodeBundle named ${dep.bundleName} for ${d.name} but uploaded no script under it`)
-    if ('problem' in upload.read) throw new Error(`money gate: deployTestCodeBundle's upload of ${dep.bundleName} for ${d.name} cannot be hosted: ${upload.read.problem}`)
-    return { name: dep.bundleName, script: upload.read.script }
+    if (!upload) throw new Error(`money gate: the ${label} deploy named ${dep.bundleName} for ${d.name} but uploaded no script under it`)
+    if ('problem' in upload.read) throw new Error(`money gate: the ${label} deploy's upload of ${dep.bundleName} for ${d.name} cannot be hosted: ${upload.read.problem}`)
+    const namespace = /\/dispatch\/namespaces\/([^/]+)\/scripts\//.exec(new URL(upload.url).pathname)?.[1]
+    if (!namespace) throw new Error(`money gate: the ${label} deploy of ${dep.bundleName} for ${d.name} uploaded to ${upload.url}, which names no dispatch namespace`)
+    return { name: dep.bundleName, script: upload.read.script, namespace }
   } finally {
     globalThis.fetch = realFetch
     quiet.mockRestore()
   }
 }
 
+/**
+ * The engine under test's compare bundle deploy, or undefined for an engine from
+ * before #1708 part B, whose shadow runs refuse code by name instead.
+ */
+const deployCompare = (deployer as Partial<typeof deployer>).deployCompareCodeBundle as DeployFn | undefined
+
 async function replayAll(e: GateEnv): Promise<void> {
   if (DISPATCH_NAMESPACES.length === 0) throw new Error('money gate: no dispatch namespace reached the replay; vitest.money-gate.config.mts reads them from wrangler.toml')
   // Host each workflow's code bundle, built by the engine under test's own builder,
-  // and the test bundle its Test Runner would deploy.
-  const bundles: Array<{ name: string; script: string }> = []
+  // the test bundle its Test Runner would deploy, and the compare bundle its shadow
+  // route would deploy, each in the namespace it is dispatched from.
+  const moneyNamespace = DISPATCH_NAMESPACES.find((d) => d.binding === 'DYNAMIC_WORKER_LOADER')?.namespace
+  if (!moneyNamespace) throw new Error('money gate: the engine under test binds no DYNAMIC_WORKER_LOADER, so its code has nowhere to run')
+  const bundles: HostedBundle[] = []
   const testBundles = new Map<string, string>()
+  const compareBundles = new Map<string, string>()
   for (const d of definitions) {
     const scripts = d.definition.nodes
       .filter((n) => n.type === 'code' && typeof n.config?.script === 'string' && (n.config.script as string).trim().length > 0)
       .map((n) => ({ namespace: n.namespace, script: n.config!.script as string }))
     if (scripts.length === 0) continue
-    bundles.push({ name: codeBundleName(d.id), script: buildBundledWorkerScript(scripts) })
-    const test = await deployTestBundle(e, d)
+    bundles.push({ name: codeBundleName(d.id), script: buildBundledWorkerScript(scripts), namespace: moneyNamespace })
+    const test = await deployCaptured(e, d, 'test bundle', deployTestCodeBundle as DeployFn)
     if (test) {
       bundles.push(test)
       testBundles.set(d.id, test.name)
+    }
+    const compare = deployCompare ? await deployCaptured(e, d, 'compare bundle', deployCompare) : null
+    if (compare) {
+      bundles.push(compare)
+      compareBundles.set(d.id, compare.name)
     }
   }
   const hosted = await e.GATE_IO.fetch('https://gate/bundles', { method: 'POST', body: JSON.stringify({ bundles }) })
@@ -313,7 +335,7 @@ async function replayAll(e: GateEnv): Promise<void> {
         await runOnce(e, def, { id: `${id}#prior${i}`, seed: `${seed}#prior${i}`, kind: 'live' }, payload, variant, variant.prior_stubs ?? variant.stubs ?? {}, shape)
       }
 
-      const run = await runOnce(e, def, { id, seed, kind, testBundle: testBundles.get(def.id) }, payload, variant, variant.stubs ?? {}, shape)
+      const run = await runOnce(e, def, { id, seed, kind, testBundle: testBundles.get(def.id), compareBundle: compareBundles.get(def.id) }, payload, variant, variant.stubs ?? {}, shape)
       for (const u of run.unstubbed) unstubbed.add(u)
       for (const t of run.db.unknownTables()) unknownTables.add(t)
       for (const q of run.db.unsupportedFilters()) unsupportedQueries.add(q)
@@ -380,7 +402,7 @@ interface RunResult {
 }
 
 /** Which run: the fixture it records, the seed its randomness and code draw from, its kind, and the test bundle a test run dispatches to. */
-interface RunSpec { id: string; seed: string; kind: RunKind; testBundle?: string }
+interface RunSpec { id: string; seed: string; kind: RunKind; testBundle?: string; compareBundle?: string }
 
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
 async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape): Promise<RunResult> {
@@ -448,7 +470,7 @@ async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: 
             const namespaces = parsed.chain ? parsed.chain.map((c) => c.namespace) : [path.replace(/^\/execute\//, '')]
             codeDispatch.push({ binding: ns.binding, dispatch_namespace: ns.namespace, name, path, namespaces })
             if (codeTrigger === null) codeTrigger = { payload: parsed.payload, execution: parsed.execution }
-            const res = await e.GATE_IO.fetch(`https://gate/dispatch?name=${encodeURIComponent(name)}&path=${encodeURIComponent(path)}&node=${encodeURIComponent(namespaces.join(','))}`, {
+            const res = await e.GATE_IO.fetch(`https://gate/dispatch?name=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns.namespace)}&path=${encodeURIComponent(path)}&node=${encodeURIComponent(namespaces.join(','))}`, {
               method: 'POST',
               headers: { 'x-money-gate-seed': `${seed}#${dispatchCount++}` },
               body: bodyText,
@@ -471,7 +493,15 @@ async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: 
   // A test run carries what only the Test Runner supplies: the id the canvas mints
   // (a UUIDv7, here under the pinned clock and randomness), the test bundle and the
   // canvas definition.
-  const options = runOptions(spec.kind, start, spec.kind === 'test' ? { executionId: uuidv7(), codeBundleName: spec.testBundle ?? null, definitionOverride: def.definition } : {})
+  const options = runOptions(
+    spec.kind,
+    start,
+    spec.kind === 'test'
+      ? { executionId: uuidv7(), codeBundleName: spec.testBundle ?? null, definitionOverride: def.definition }
+      : spec.kind === 'shadow_dry_run'
+        ? { codeBundleName: spec.compareBundle ?? null }
+        : {},
+  )
   let response: FixtureRecord['response'] = { status: 0, body: null }
   let error: string | undefined
   try {
