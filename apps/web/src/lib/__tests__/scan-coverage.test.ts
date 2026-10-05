@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -231,5 +231,23 @@ describe('scan-coverage CLI (#779)', () => {
   it('exits non-zero on an unknown scanner name rather than passing silently', () => {
     const r = run('nosuchscanner', {})
     expect(r.code).not.toBe(0)
+  })
+
+  it('still runs from a folder whose name has a space and a curly apostrophe (#1739)', () => {
+    // import.meta.url is percent encoded, so comparing it with a raw path never
+    // matched in such a folder: the CLI did nothing and exited 0, a pass with
+    // nothing checked. A copy under such a name reproduces it wherever the
+    // suite runs, CI included, whose own checkout path has neither.
+    const odd = path.join(mkdtempSync(path.join(tmpdir(), 'scan-coverage-')), 'Dan’s copy')
+    mkdirSync(odd)
+    const copy = path.join(odd, 'scan-coverage.mjs')
+    copyFileSync(SCRIPT, copy)
+    let code = 0
+    try {
+      execFileSync('node', [copy, 'trivy', path.join(odd, 'nope.json'), 'pnpm-lock.yaml'], { stdio: 'pipe' })
+    } catch (e) {
+      code = (e as { status: number }).status
+    }
+    expect(code).not.toBe(0)
   })
 })
