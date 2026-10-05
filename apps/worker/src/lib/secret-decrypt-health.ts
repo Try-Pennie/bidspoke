@@ -2,15 +2,17 @@
  * Secret decrypt-health check (#404).
  *
  * Secret env vars are stored encrypted (`secret-crypto`, key SECRET_ENCRYPTION_KEY).
- * Since `be895af` the env-loader DECRYPTS them and SILENTLY SKIPS any that fail to
- * decrypt (created before encryption was added, or encrypted under a rotated key =
- * the "rotate to enable reveal" state). Skipping is the safe choice — it avoids
- * passing ciphertext through as a credential (the 2026-06-26 Equifax outage) — but
- * it means a node can lose a credential it needs with no signal at all.
+ * Since `be895af` the env-loader DECRYPTS them, and one that fails to decrypt
+ * (created before encryption was added, or encrypted under a rotated key, the
+ * "rotate to enable reveal" state) is never passed on as ciphertext (the
+ * 2026-06-26 Equifax outage): an org secret is SKIPPED, and since #1681 a secret
+ * saved for one workflow is WITHHELD, handed to that workflow's runs empty. Either
+ * way a node can lose a credential it needs with no signal at all.
  *
- * This daily check attempts to decrypt every global secret env var and alerts the
- * org's Slack on the ones that fail, so a dead credential surfaces before a live
- * lead hits it. Scout's ELIGIBILITY_SCOUT_CLIENT_SECRET is the live validation case.
+ * This daily check attempts to decrypt every secret env var the loader reads, org
+ * wide and saved for one workflow, and alerts the org's Slack on the ones that
+ * fail, so a dead credential surfaces before a live lead hits it. Scout's
+ * ELIGIBILITY_SCOUT_CLIENT_SECRET is the live validation case.
  *
  * Scope notes:
  * - Only the "fails to decrypt" direction. The sibling "exists in the DB but not

@@ -7,10 +7,12 @@
  * Config: { service, action?, url, method?, headers?, body?, auth? }
  * Output: { status, body, headers }
  *
- * Auth credentials should be referenced via {{env.SECRET_NAME}}. Non-secret env
- * vars come from ctx.env (Supabase environment_variables); Cloudflare secrets
- * injected via `wrangler secret put` are merged in at execution time. CF bindings
- * take precedence over same-named Supabase env vars.
+ * Auth credentials should be referenced via {{env.SECRET_NAME}}. The run's own
+ * values come from ctx.env (Supabase environment_variables, secrets decrypted, a
+ * workflow's own laid over the org's); Cloudflare secrets set with `wrangler
+ * secret put` are merged in underneath at execution time, minus the platform
+ * block list. The run's value wins over a Cloudflare secret of the same name, as
+ * in a code node (#1681).
  *
  * On non-2xx: throws a Response instance so engine.ts classifies the HTTP error
  * via classifyHttpError() — same pattern as partner-bid node.

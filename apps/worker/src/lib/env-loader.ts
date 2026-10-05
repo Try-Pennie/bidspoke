@@ -191,8 +191,9 @@ async function loadOrgEnv(
   // gate. Secret values are stored ENCRYPTED (secret-crypto), so they MUST be
   // decrypted here. Injecting the raw ciphertext is what broke Equifax on
   // 2026-06-26 (the node sent the encrypted blob as the password, a 401), so a
-  // secret that fails to decrypt is never passed through raw; for code nodes the
-  // Cloudflare worker-secret binding remains the fallback for an org secret.
+  // secret that fails to decrypt is never passed through raw; for code, Webhook
+  // and Salesforce nodes the Cloudflare worker-secret binding remains the fallback
+  // for an org secret (buildSandboxEnv).
   // Platform master secrets (worker bindings) are blocked separately in
   // lib/sandbox-env.ts.
   //
