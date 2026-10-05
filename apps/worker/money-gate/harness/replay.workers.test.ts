@@ -30,6 +30,7 @@ import type { CodeDispatchRecord, FixtureRecord, OutboundRecord, RouteRecord, Tr
 import type { ShapesFile, WorkflowShape } from '../lib/shape'
 import type { ConfigSnapshot } from '../lib/snapshot'
 import { fixtureId, runOptions, type RunKind } from '../lib/run-kinds'
+import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, runPlan, type VariantFile, type Variant } from './replay-env'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
@@ -176,20 +177,21 @@ it('replays every fixture through the engine under test and writes the transcrip
  * content before every run (routes/api/workflows.ts, POST /:id/test). The gate
  * calls the engine under test's own deployTestCodeBundle with the route's
  * arguments; its upload to Cloudflare is answered here and never sent, and the
- * script it uploaded is hosted under the name it chose. Null when it deployed
- * nothing, which the route also runs with.
+ * script it uploaded (the part its metadata names as main_module) is hosted
+ * under the name it chose. Null when it deployed nothing, which the route also
+ * runs with. An upload the gate cannot read a script from stops the replay,
+ * naming the workflow, the bundle and what was missing.
  */
 async function deployTestBundle(e: GateEnv, d: DefinitionFile): Promise<{ name: string; script: string } | null> {
   const env = buildEnv(e, {}, d)
-  const uploads: Array<{ url: string; script: string }> = []
+  const uploads: Array<{ url: string; read: Awaited<ReturnType<typeof scriptFromUpload>> }> = []
   const realFetch = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init)
     if (new URL(req.url).host !== 'api.cloudflare.com' || req.method !== 'PUT') {
       return new Response(`money gate: network is off; the test bundle deploy reached ${req.method} ${req.url}`, { status: 598 })
     }
-    const file = (await req.formData()).get('script.js')
-    uploads.push({ url: req.url, script: typeof file === 'string' ? file : await (file as Blob).text() })
+    uploads.push({ url: req.url, read: await scriptFromUpload(await req.formData()) })
     return Response.json({ success: true, errors: [], messages: [], result: {} })
   }) as typeof fetch
   const quiet = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -199,7 +201,8 @@ async function deployTestBundle(e: GateEnv, d: DefinitionFile): Promise<{ name: 
     if (!dep.bundleName) return null
     const upload = uploads.find((u) => u.url.endsWith(`/scripts/${dep.bundleName}`))
     if (!upload) throw new Error(`money gate: deployTestCodeBundle named ${dep.bundleName} for ${d.name} but uploaded no script under it`)
-    return { name: dep.bundleName, script: upload.script }
+    if ('problem' in upload.read) throw new Error(`money gate: deployTestCodeBundle's upload of ${dep.bundleName} for ${d.name} cannot be hosted: ${upload.read.problem}`)
+    return { name: dep.bundleName, script: upload.read.script }
   } finally {
     globalThis.fetch = realFetch
     quiet.mockRestore()
