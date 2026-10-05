@@ -42,9 +42,12 @@ export default function EnvPage() {
   const [error, setError] = useState<string | null>(null)
 
   // The organization's live workflows (#1774), which name the workflow a
-  // variable belongs to and fill the form's Used by picker. Loaded beside the
-  // variables rather than with them, so a failure here still lists every
-  // variable; null with an error says the names could not be read.
+  // variable belongs to and fill the form's Used by picker. Fetched in parallel
+  // with the variables but failing on its own, so a failure here still lists
+  // every variable; null with an error says the names could not be read. The
+  // page waits for both before showing rows, so a workflow row never reads as
+  // unnamed while its name is still on the way; a slow answer holds the page no
+  // longer than the API's own timeout (DEFAULT_TIMEOUT_MS in lib/api.ts).
   const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null)
   const [workflowsError, setWorkflowsError] = useState<string | null>(null)
   const workflowNames = useMemo(
