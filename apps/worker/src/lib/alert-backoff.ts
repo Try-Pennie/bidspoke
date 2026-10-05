@@ -152,6 +152,8 @@ async function shortHash(value: string): Promise<string> {
 
 const sortedUnique = (values: readonly string[]): string[] => [...new Set(values)].sort()
 
+/** An ISO timestamp, read whole: its hour follows the letter T, which NUMBER would otherwise keep as part of a name. */
+const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
 /** A run of eight or more hex characters holding a digit: a statement handle, a request id, a hash. */
 const HEX_ID = /\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/gi
@@ -187,6 +189,7 @@ const PLURAL_S = /# ([a-z]{2,}?)s\b/gi
  */
 export function meaningOf(finding: string): string {
   return finding
+    .replace(ISO_TIME, '#')
     .replace(UUID, '#')
     .replace(HEX_ID, '#')
     .replace(NUMBER, '#')

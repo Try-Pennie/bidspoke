@@ -270,6 +270,14 @@ describe('fingerprintAlert and recurrenceOf (#1768)', () => {
     expect(meaningOf('Dot818 refused 3 clicks')).not.toBe(meaningOf('M1 refused 3 clicks'))
   })
 
+  it('reads a timestamp as one moving time, though its hour follows a letter', () => {
+    // The sightings buffer names its oldest row's time; the archive names the hour it stopped on.
+    expect(meaningOf('lead_sightings: 12 rows have waited (oldest from 2026-10-05T13:02:11.000Z UTC)'))
+      .toBe(meaningOf('lead_sightings: 40 rows have waited (oldest from 2026-10-06T09:41:07.123Z UTC)'))
+    expect(meaningOf('archive run stopped on fetch: hour 2026-10-05T13:00:00Z: timeout'))
+      .toBe(meaningOf('archive run stopped on fetch: hour 2026-10-05T14:00:00Z: timeout'))
+  })
+
   it('reads a duration in any of its phrasings as one, so an age that grows is the same problem', () => {
     // describeDuration's forms, as the buyer sale drain words its oldest entry,
     // and the compact forms other checks use.
