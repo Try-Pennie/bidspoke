@@ -92,8 +92,11 @@ describe('a shadow run dispatches only to the compare namespace', () => {
   it('fails a single code node whose compare bundle is missing, without falling back to a per node worker', async () => {
     const money = namespace(ok)
     const compare = namespace(missing)
-    await expect(executeCodeNode(node('equifax_pull'), ctx({ isTest: true, shadow_mode: 'dry_run', codeBundleName: COMPARE_BUNDLE }), env(money.binding, compare.binding)))
-      .rejects.toThrow(/compare bundle/)
+    const err = await executeCodeNode(node('equifax_pull'), ctx({ isTest: true, shadow_mode: 'dry_run', codeBundleName: COMPARE_BUNDLE }), env(money.binding, compare.binding)).catch((e: unknown) => e)
+    // The same permanent refusal the chain path records, so no retry repeats it.
+    expect(err).toBeInstanceOf(CompareDispatchUnavailableError)
+    expect((err as CompareDispatchUnavailableError).permanent).toBe(true)
+    expect((err as Error).message).toMatch(/compare bundle/)
     expect(compare.asked).toEqual([COMPARE_BUNDLE])
     expect(money.asked).toEqual([])
   })

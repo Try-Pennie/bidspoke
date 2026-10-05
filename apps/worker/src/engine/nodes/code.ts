@@ -384,7 +384,9 @@ async function dispatchWithFallback(
   // run old code. A shadow run's legacy workers would be in the money namespace,
   // where its calls go out. Surface the miss instead.
   if (!target.legacyFallback) {
-    throw new Error(bundleUnreachableMessage(target, namespace, bundleRes?.status))
+    const message = bundleUnreachableMessage(target, namespace, bundleRes?.status)
+    // A missing compare bundle is the same on every attempt, as the chain path records it.
+    throw target.namespace === 'compare' ? new CompareDispatchUnavailableError(message) : new Error(message)
   }
 
   console.log(`[code-node] Bundle miss for "${namespace}" on workflow ${workflowId.slice(0, 8)}, falling back to per-node worker`)
