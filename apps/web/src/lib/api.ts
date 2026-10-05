@@ -591,7 +591,8 @@ export const api = {
 
   env: {
     list: () => req<EnvVar[]>('/api/env'),
-    create: (data: { key: string; value?: string; is_secret?: boolean; scope?: string; folder_id?: string | null }) =>
+    /** `workflow_id` saves the variable as that workflow's own, read by its runs only (#1681, #1774). */
+    create: (data: { key: string; value?: string; is_secret?: boolean; scope?: string; workflow_id?: string; folder_id?: string | null }) =>
       req<EnvVar>('/api/env', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { value?: string; folder_id?: string | null }) =>
       req<EnvVar>(`/api/env/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

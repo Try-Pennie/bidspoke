@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 // NavLayout pulls in nav/auth chrome irrelevant to the delete-confirm flow under test.
 vi.mock('@/components/NavLayout', () => ({
@@ -8,8 +8,9 @@ vi.mock('@/components/NavLayout', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    env: { list: vi.fn(), update: vi.fn(), reveal: vi.fn() },
+    env: { list: vi.fn(), update: vi.fn(), reveal: vi.fn(), create: vi.fn() },
     envFolders: { list: vi.fn(), delete: vi.fn() },
+    workflows: { list: vi.fn() },
   },
 }))
 
@@ -20,10 +21,18 @@ const folder = { id: 'fol-1', organization_id: 'org-1', parent_id: null, name: '
 const plainVar = { id: 'var-1', key: 'MY_VAR', value: 'hello', is_secret: false, scope: 'global', folder_id: null, updated_at: '2026-01-01T00:00:00Z' }
 const secretVar = { id: 'var-2', key: 'MY_SECRET', value: null, is_secret: true, scope: 'global', folder_id: null, updated_at: '2026-01-01T00:00:00Z' }
 
+const workflows = [
+  { id: 'wf-main', name: 'Main Flow', is_active: true, created_at: '', updated_at: '' },
+  { id: 'wf-achieve', name: 'Achieve Offers', is_active: true, created_at: '', updated_at: '' },
+]
+const companyChannel = { id: 'var-3', key: 'CHANNEL', value: '#alerts', is_secret: false, scope: 'global', workflow_id: null, folder_id: null, updated_at: '2026-01-01T00:00:00Z' }
+const mainChannel = { id: 'var-4', key: 'CHANNEL', value: '#main', is_secret: false, scope: 'workflow', workflow_id: 'wf-main', folder_id: null, updated_at: '2026-01-01T00:00:00Z' }
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.env.list).mockResolvedValue([] as never)
   vi.mocked(api.envFolders.list).mockResolvedValue([folder] as never)
+  vi.mocked(api.workflows.list).mockResolvedValue(workflows as never)
 })
 
 async function openFolderMenu() {
@@ -129,5 +138,92 @@ describe('Env page — edit value (#480)', () => {
 
     await waitFor(() => expect(api.env.update).toHaveBeenCalled())
     expect(screen.queryByText('Rotate to enable reveal')).not.toBeInTheDocument()
+  })
+})
+
+describe('Env page: which runs read each variable (#1774)', () => {
+  it("names the workflow a workflow's own row belongs to, and the workflows a shared row does not reach", async () => {
+    vi.mocked(api.env.list).mockResolvedValue([plainVar, companyChannel, mainChannel] as never)
+    render(<EnvPage />)
+
+    expect(await screen.findByRole('columnheader', { name: 'Used by' })).toBeInTheDocument()
+    const rowOf = (value: string) => screen.getByText(value).closest('tr') as HTMLElement
+    expect(within(rowOf('hello')).getByText('All workflows')).toBeInTheDocument()
+    expect(within(rowOf('#alerts')).getByText('All workflows except Main Flow')).toBeInTheDocument()
+    expect(within(rowOf('#main')).getByText('Main Flow')).toBeInTheDocument()
+  })
+
+  it('still lists every variable when the workflows cannot be loaded, and says what is missing', async () => {
+    vi.mocked(api.env.list).mockResolvedValue([companyChannel, mainChannel] as never)
+    vi.mocked(api.workflows.list).mockRejectedValue(new Error('API 503: upstream'))
+    render(<EnvPage />)
+
+    expect(await screen.findByText('#main')).toBeInTheDocument()
+    expect(screen.getByText('Workflow name unavailable')).toBeInTheDocument()
+    expect(screen.getByText(/could not load the workflows/i)).toHaveTextContent('API 503: upstream')
+  })
+})
+
+describe('Env page: a variable for one workflow (#1774)', () => {
+  async function openForm() {
+    render(<EnvPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Add variable' }))
+  }
+
+  it('offers every workflow by name, and saves the variable against the one chosen', async () => {
+    vi.mocked(api.env.create).mockResolvedValue({ ...mainChannel, id: 'var-9' } as never)
+    await openForm()
+
+    const usedBy = screen.getByLabelText('Used by')
+    expect(within(usedBy).getAllByRole('option').map((o) => o.textContent)).toEqual(['All workflows', 'Achieve Offers', 'Main Flow'])
+    fireEvent.change(usedBy, { target: { value: 'wf-main' } })
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
+    fireEvent.change(screen.getByLabelText('Value'), { target: { value: '#main' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.env.create).toHaveBeenCalledWith(expect.objectContaining({ key: 'CHANNEL', value: '#main', workflow_id: 'wf-main' })))
+    expect(await screen.findByText('Main Flow')).toBeInTheDocument()
+  })
+
+  it('keeps the chosen workflow for the next variable after Save & add another', async () => {
+    vi.mocked(api.env.create).mockResolvedValue({ ...mainChannel, id: 'var-9' } as never)
+    await openForm()
+
+    fireEvent.change(screen.getByLabelText('Used by'), { target: { value: 'wf-main' } })
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save & add another' }))
+
+    await waitFor(() => expect(api.env.create).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByLabelText('Key')).toHaveValue(''))
+    expect(screen.getByLabelText('Used by')).toHaveValue('wf-main')
+  })
+
+  it('saves a variable for all workflows without naming one', async () => {
+    vi.mocked(api.env.create).mockResolvedValue({ ...companyChannel, id: 'var-9' } as never)
+    await openForm()
+
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.env.create).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.env.create).mock.calls[0][0]).not.toHaveProperty('workflow_id')
+  })
+
+  it("does not claim a workflow's own secret is copied to the Cloudflare Worker", async () => {
+    await openForm()
+    expect(screen.getByText(/synced to Cloudflare/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Used by'), { target: { value: 'wf-main' } })
+
+    expect(screen.queryByText(/Cloudflare/)).not.toBeInTheDocument()
+  })
+
+  it('offers only all workflows while the workflows cannot be loaded, and says why', async () => {
+    vi.mocked(api.workflows.list).mockRejectedValue(new Error('API 503: upstream'))
+    await openForm()
+
+    const usedBy = screen.getByLabelText('Used by')
+    expect(within(usedBy).getAllByRole('option').map((o) => o.textContent)).toEqual(['All workflows'])
+    expect(usedBy).toBeDisabled()
   })
 })

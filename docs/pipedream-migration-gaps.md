@@ -90,7 +90,8 @@ Most called: "Send rejection to Salesforce" (16 callers) and "Gather Webhook Res
 
 ### 12. Workflow scoped settings (#1681)
 Done for runs (#1681): a setting saved against one workflow now reaches that workflow's runs, over the organization value of the same key, and no other workflow's.
-Still needed: the Environment Variables page cannot create one or show which workflow a row belongs to (#1774), so they are created through the API. A workflow cannot have its own Salesforce login until #1689.
+Done on the page (#1774): the Environment Variables page creates one, says which workflow each row belongs to and which runs read a shared row, and the canvas suggests only the keys a workflow can read.
+Still needed: a workflow cannot have its own Salesforce login until #1689.
 
 ---
 

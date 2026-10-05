@@ -5,7 +5,9 @@ import { InlineDeleteConfirm } from '@/components/InlineDeleteConfirm'
 import { useInlineDeleteConfirm } from '@/hooks/useInlineDeleteConfirm'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import type { EnvVar, EnvVarFolder } from '@/types/workflow'
+import type { EnvVar, EnvVarFolder, WorkflowSummary } from '@/types/workflow'
+import { usedByLabel } from '@/lib/env-scope'
+import { Field, Select, describedBy } from '@/components/ui/form'
 import {
   Plus,
   Trash2,
@@ -28,7 +30,8 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate, InlineRenameInput, SearchInput } from '@/components/folders/FolderDnd'
 import type { DragEndEvent, SearchInputHandle } from '@/components/folders/FolderDnd'
 
-type NewVar = { key: string; value: string; is_secret: boolean }
+/** `workflow_id` null is a variable for all workflows; an id is that workflow's own (#1774). */
+type NewVar = { key: string; value: string; is_secret: boolean; workflow_id: string | null }
 
 const ROOT = '__root__'
 
@@ -37,6 +40,20 @@ export default function EnvPage() {
   const [folders, setFolders] = useState<EnvVarFolder[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // The organization's live workflows (#1774), which name the workflow a
+  // variable belongs to and fill the form's Used by picker. Fetched in parallel
+  // with the variables but failing on its own, so a failure here still lists
+  // every variable; null with an error says the names could not be read. The
+  // page waits for both before showing rows, so a workflow row never reads as
+  // unnamed while its name is still on the way; a slow answer holds the page no
+  // longer than the API's own timeout (DEFAULT_TIMEOUT_MS in lib/api.ts).
+  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null)
+  const [workflowsError, setWorkflowsError] = useState<string | null>(null)
+  const workflowNames = useMemo(
+    () => (workflows === null ? null : new Map(workflows.map((w) => [w.id, w.name]))),
+    [workflows],
+  )
 
   // Add-variable form
   const [showForm, setShowForm] = useState(false)
@@ -95,13 +112,17 @@ export default function EnvPage() {
   const rowMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    Promise.all([api.env.list(), api.envFolders.list()])
-      .then(([vs, fs]) => {
-        setVars(vs)
-        setFolders(fs)
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false))
+    Promise.all([
+      Promise.all([api.env.list(), api.envFolders.list()])
+        .then(([vs, fs]) => {
+          setVars(vs)
+          setFolders(fs)
+        })
+        .catch((e: Error) => setError(e.message)),
+      api.workflows.list()
+        .then(setWorkflows)
+        .catch((e: Error) => setWorkflowsError(e.message)),
+    ]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => {
@@ -313,7 +334,8 @@ export default function EnvPage() {
     if (!values.key) return false
     setCreating(true)
     try {
-      const created = await api.env.create({ ...values, folder_id: formFolderId })
+      const { workflow_id, ...rest } = values
+      const created = await api.env.create({ ...rest, folder_id: formFolderId, ...(workflow_id ? { workflow_id } : {}) })
       setVars((vs) => [...vs, created])
       if (!opts.keepOpen) {
         setShowForm(false)
@@ -568,7 +590,7 @@ export default function EnvPage() {
         key={`create-folder-${parentId ?? 'root'}`}
         parentId={parentId}
         paddingLeft={indentPx(depth)}
-        colSpan={5}
+        colSpan={6}
         leadingTd
         onSubmit={(name, pid) => handleCreateFolder(name, pid)}
         onCancel={() => setCreatingFolderParent(undefined)}
@@ -651,6 +673,9 @@ export default function EnvPage() {
           ) : (
             v.value ?? '—'
           )}
+        </td>
+        <td className={`px-4 py-3 text-xs ${v.scope === 'workflow' ? 'font-medium text-graphite' : 'text-gray-600'}`}>
+          {usedByLabel(v, vars, workflowNames)}
         </td>
         <td className="px-4 py-3">
           <span
@@ -743,7 +768,7 @@ export default function EnvPage() {
           <td className="w-8 px-2 py-2 align-middle">
             <DragHandle attributes={attributes} listeners={listeners} isDragging={isDragging} />
           </td>
-          <td colSpan={5} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
+          <td colSpan={6} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => toggleCollapse(folder.id)}
@@ -882,7 +907,7 @@ export default function EnvPage() {
     const { setNodeRef, isOver } = useDroppableFolder('drop:root', { kind: 'root' })
     return (
       <tr ref={setNodeRef} className={isOver ? 'bg-p-blue-light/60 ring-2 ring-inset ring-p-blue-dark' : 'bg-gray-50/40'}>
-        <td colSpan={6} className="px-4 py-1.5 text-center text-xs text-gray-500">
+        <td colSpan={7} className="px-4 py-1.5 text-center text-xs text-gray-500">
           Drop here to move out of any folder
         </td>
       </tr>
@@ -971,12 +996,19 @@ export default function EnvPage() {
           </div>
         )}
 
+        {workflowsError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Could not load the workflows ({workflowsError}), so a variable saved for one workflow shows without its name, and a new variable can only be saved for all workflows until the page is reloaded.
+          </div>
+        )}
+
         {/* Add form — animated slide open/closed */}
         <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${showForm ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             {showForm && (
               <NewVariableForm
                 folderName={formFolderId ? folderName(formFolderId) : undefined}
+                workflows={workflows}
                 creating={creating}
                 onSubmit={handleCreate}
                 onCancel={() => { setShowForm(false); setFormFolderId(null) }}
@@ -993,6 +1025,7 @@ export default function EnvPage() {
                   <tr key={i}>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-48" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-5 w-12 rounded-full" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-6 w-6" /></td>
@@ -1045,6 +1078,7 @@ export default function EnvPage() {
                       </div>
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Value</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Used by</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Type</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Last updated</th>
                     <th className="w-16 px-4 py-3" />
@@ -1124,19 +1158,34 @@ function EditValueRow({
 // (which would trigger flicker from dnd-kit re-measuring every row).
 function NewVariableForm({
   folderName,
+  workflows,
   creating,
   onSubmit,
   onCancel,
 }: {
   folderName?: string
+  /** null while the workflows could not be loaded: then only all workflows is offered. */
+  workflows: WorkflowSummary[] | null
   creating: boolean
   onSubmit: (values: NewVar, opts: { keepOpen: boolean }) => Promise<boolean>
   onCancel: () => void
 }) {
-  const [values, setValues] = useState<NewVar>({ key: '', value: '', is_secret: false })
+  const [values, setValues] = useState<NewVar>({ key: '', value: '', is_secret: false, workflow_id: null })
   const keyInputRef = useRef<HTMLInputElement | null>(null)
   const keyId = useId()
   const valueId = useId()
+  const usedById = useId()
+  const forOneWorkflow = values.workflow_id !== null
+
+  // Enumerated from the organization's workflows, never typed (L611). The API
+  // refuses a workflow outside the organization or one that is deleted.
+  const usedByOptions = useMemo(() => [
+    { value: '', label: 'All workflows' },
+    ...(workflows ?? [])
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      .map((w) => ({ value: w.id, label: w.name })),
+  ], [workflows])
 
   useEffect(() => {
     const f = requestAnimationFrame(() => keyInputRef.current?.focus())
@@ -1147,7 +1196,8 @@ function NewVariableForm({
     if (!values.key) return
     const ok = await onSubmit(values, { keepOpen })
     if (ok && keepOpen) {
-      setValues({ key: '', value: '', is_secret: false })
+      // The workflow stays chosen, since several variables are usually added for one.
+      setValues((v) => ({ key: '', value: '', is_secret: false, workflow_id: v.workflow_id }))
       requestAnimationFrame(() => keyInputRef.current?.focus())
     }
   }
@@ -1160,6 +1210,7 @@ function NewVariableForm({
       <h2 className="mb-4 text-sm font-medium text-gray-500">
         {folderName ? <>New variable <span className="text-gray-500">in {folderName}</span></> : 'New variable'}
       </h2>
+      {/* Used by takes the second row, at the width of Key, so a long workflow name is not clipped. */}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label htmlFor={keyId} className="mb-1 block text-xs font-medium text-gray-600">Key</label>
@@ -1185,6 +1236,21 @@ function NewVariableForm({
             onChange={(e) => setValues((v) => ({ ...v, value: e.target.value }))}
           />
         </div>
+        <Field
+          id={usedById}
+          label="Used by"
+          hint={forOneWorkflow ? "This workflow's runs read this value instead of one saved for all workflows under the same key." : undefined}
+        >
+          <Select
+            id={usedById}
+            value={values.workflow_id ?? ''}
+            onChange={(id) => setValues((v) => ({ ...v, workflow_id: id === '' ? null : id }))}
+            options={usedByOptions}
+            disabled={workflows === null}
+            describedBy={describedBy(usedById, forOneWorkflow, false)}
+            className="w-full"
+          />
+        </Field>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <input
@@ -1195,7 +1261,8 @@ function NewVariableForm({
           className="rounded border-gray-300 text-p-blue-dark"
         />
         <label htmlFor="is_secret" className="text-xs text-gray-600">
-          Secret. Value encrypted and synced to Cloudflare Worker.
+          {/* Only a secret for all workflows is copied to the Worker (#1681). */}
+          {forOneWorkflow ? 'Secret. Value encrypted.' : 'Secret. Value encrypted and synced to Cloudflare Worker.'}
         </label>
       </div>
       <div className="mt-4 flex items-center gap-2">
