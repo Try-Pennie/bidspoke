@@ -49,8 +49,9 @@ export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
  * The count has two (#1766), split by what the counter answered: count_failed
  * when it refused the add, so the click is known not to be counted, and
  * count_unknown when nothing it answered says whether it took the click (no
- * answer even after the one retry, an error status, or an answer that cannot be
- * read), because an add that timed out can still land.
+ * answer even after the one retry, an error status, an answer that cannot be
+ * read, or an error the node does not classify), because an add that timed out
+ * can still land.
  */
 export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'count_unknown', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id'] as const
 export type ClickPageReason = (typeof CLICK_PAGE_REASONS)[number]

@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError } from '../buyer-object-clients'
+import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -141,6 +141,19 @@ describe('ClickCounterClient', () => {
       expect(err).toBeInstanceOf(ObjectAnswerUnreadableError)
       expect((err as Error).message).toMatch(/click counter add answered an unreadable body/)
     }
+  })
+
+  // L35: the node may retry only what is named as no answer, so a call lost in transit
+  // carries its own type rather than reaching the node as a bare Error like any bug.
+  it('a call the object never answered because it failed in transit is an ObjectCallLostError with the same message and its cause', async () => {
+    const lost = new TypeError('Network connection lost.')
+    const ns = { idFromName: (n: string) => ({ n }), get: () => ({ fetch: () => Promise.reject(lost) }) } as unknown as DurableObjectNamespace
+    const err = await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ObjectCallLostError)
+    expect((err as Error).message).toBe('Network connection lost.')
+    expect((err as Error).cause).toBe(lost)
+    expect(err).not.toBeInstanceOf(ObjectAnswerUnreadableError)
+    expect(err).not.toBeInstanceOf(ObjectCallError)
   })
 
   it('a refusal stays an ObjectCallError and a call that never answers stays a DeadlineError, never an unreadable answer', async () => {

@@ -95,9 +95,9 @@ An add that gives no answer, because it timed out or failed in transit, may stil
 A count that still fails pages, saying only what the counter answered, and the route is still `sent`:
 
 - `count_failed`: the counter refused the add, so the click is known not to be counted and the count reads low by it.
-- `count_unknown`: nothing the counter answered says whether it took the click. That is no answer even after the retry, a retry the run had no room for, an error status, or an answer that cannot be read. The page says the click may not have been counted.
+- `count_unknown`: nothing the counter answered says whether it took the click. That is no answer even after the retry, a retry the run had no room for, an error status, an answer that cannot be read, or an error the node does not classify. The page says the click may not have been counted.
 
-Once the counter has answered, whatever it answered, it is not asked again. The step carries the page's detail as `count_error`. The click path reconcile after the Pacific day lists a `count_unknown` prospect as Completed but never counted only when its add never landed.
+Only a deadline that expired or a call lost in transit is asked again. Once the counter has answered, whatever it answered, it is not asked again, and neither is an error the node does not classify. The step carries the page's detail as `count_error`. The click path reconcile after the Pacific day lists a `count_unknown` prospect as Completed but never counted only when its add never landed.
 
 ## Pages and the over cap notice
 

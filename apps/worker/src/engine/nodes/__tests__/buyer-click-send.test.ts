@@ -32,7 +32,7 @@ import {
   type ProfileRead,
   type HeldClickRecord,
 } from '../buyer-click-send'
-import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError } from '../../../lib/buyer-object-clients'
+import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError } from '../../../lib/buyer-object-clients'
 
 // A buyer's success line lives on its buyer PROFILE (#1639, #1671), never in the node's code or config.
 const LIBERTY1_PATTERN = 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)'
@@ -79,9 +79,11 @@ const answer = (status: number, text: string, isHtml = false): PartnerCallResult
  * `transport` are no answer at all, and `lands` says whether the add was taken
  * anyway, as on 2026-10-05 when it landed 48 ms after the caller gave up.
  * `refused` (a 4xx), `error_status` (a 5xx) and `unreadable` are answers the
- * counter gave. `hang` never settles. `takesMs` moves the clock by that much.
+ * counter gave. `unrecognised` is a bare Error the client never raises, so the
+ * node cannot say what it was. `hang` never settles. `takesMs` moves the clock
+ * by that much.
  */
-type CounterAsk = { kind: 'answer' | 'timeout' | 'transport' | 'refused' | 'error_status' | 'unreadable' | 'hang'; lands?: boolean; takesMs?: number }
+type CounterAsk = { kind: 'answer' | 'timeout' | 'transport' | 'refused' | 'error_status' | 'unreadable' | 'unrecognised' | 'hang'; lands?: boolean; takesMs?: number }
 
 interface Harness {
   deps: BuyerClickSendDeps
@@ -199,7 +201,8 @@ function harness(opts: {
               throw new DeadlineError('click counter add', OBJECT_CALL_DEADLINE_MS)
             case 'transport':
               if (ask.lands) take()
-              throw new Error('Network connection lost.')
+              throw new ObjectCallLostError(new TypeError('Network connection lost.'))
+            case 'unrecognised': throw new Error('something nobody classified')
             case 'refused': throw new ObjectCallError('click counter add', 400, '{"error":"bad_member"}')
             case 'error_status': throw new ObjectCallError('click counter add', 500, 'internal error')
             case 'unreadable': throw new ObjectAnswerUnreadableError('click counter add', '{"added":"yes"}')
@@ -403,6 +406,18 @@ describe('a count with no answer is asked once more, and a page says only what i
     expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
     const page = h.alerts[0]
     expect(page.kind === 'page' && page.detail).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count answered with an error that does not say whether it took it: click counter add answered 500: internal error`)
+  })
+
+  // L35: only a deadline or a call lost in transit is no answer. An error the node cannot
+  // classify is never treated as retryable, and never as a refusal either.
+  it('an error the node cannot classify is not asked again, and pages count_unknown naming it as unclassified', async () => {
+    const h = harness({ counter: [{ kind: 'unrecognised' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(1)
+    expect(r.output.count_retried).toBeUndefined()
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    expect(r.output.count_error).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count failed in a way this node does not classify: something nobody classified`)
+    expect(h.logs.some((l) => l.event === 'buyer_click_count_no_answer')).toBe(false)
   })
 
   it('a counter that cannot be opened was never asked, so the click is known not to be counted: count_failed, and no retry', async () => {

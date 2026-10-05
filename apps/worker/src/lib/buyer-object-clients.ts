@@ -95,10 +95,27 @@ export class ObjectAnswerUnreadableError extends Error {
   }
 }
 
+/**
+ * The call to the object failed in transit, so no answer came back (#1766): a
+ * lost connection, an object reset by a deploy, an overloaded object. The
+ * object may still have done what it was asked. The message is the platform's
+ * own, unchanged, and the platform's error is the cause.
+ */
+export class ObjectCallLostError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'the call to the object failed in transit with a non Error value', { cause })
+    this.name = 'ObjectCallLostError'
+  }
+}
+
 type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
-  const res = await withDeadline(stub.fetch(url, init), deadlineOf(opts, op), op, opts.timers)
+  // Only the request itself can be lost in transit; what happens after it arrived is an answer.
+  const sent = Promise.resolve(stub.fetch(url, init)).catch((err: unknown) => {
+    throw new ObjectCallLostError(err)
+  })
+  const res = await withDeadline(sent, deadlineOf(opts, op), op, opts.timers)
   if (res.ok) return res.json<T>()
   const text = await res.text()
   if (res.status === 409 && refusal) {
@@ -284,7 +301,7 @@ export class ClickCounterClient {
    * What a failure was is in its type (#1766): an ObjectCallError is a status the
    * object answered with, an ObjectAnswerUnreadableError a success it answered
    * with a body that is not an add result (the wrong shape, or not JSON at all),
-   * and anything else, a DeadlineError included, is no answer at all.
+   * and a DeadlineError or an ObjectCallLostError is no answer at all.
    */
   async addMember(member: string): Promise<AddMemberResult> {
     let r: unknown

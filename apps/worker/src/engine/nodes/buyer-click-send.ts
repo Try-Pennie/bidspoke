@@ -74,13 +74,13 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, DeadlineError, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError, type ClickClaimKey } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
@@ -862,17 +862,25 @@ function messageOf(err: unknown): string {
  *   error_status  another error status, which does not say whether it took it.
  *   unreadable    a success whose body is not an add result.
  *   not_asked     the counter could not be opened, so nothing was asked.
+ *   unclassified  an error none of the above names, so what happened is not
+ *                 known and it is not asked again (L35).
  */
 type CountAsk =
   | { ok: true; result: AddMemberResult }
-  | { ok: false; answer: 'none' | 'refused' | 'error_status' | 'unreadable' | 'not_asked'; message: string }
+  | { ok: false; answer: 'none' | 'refused' | 'error_status' | 'unreadable' | 'not_asked' | 'unclassified'; message: string }
 type FailedAsk = Extract<CountAsk, { ok: false }>
 
-/** The client's typed failures (buyer-object-clients). Anything it does not name is no answer, which is safe to ask again because the count is a set. */
+/**
+ * The client's typed failures (buyer-object-clients). Only `none`, a deadline
+ * that expired or a call lost in transit, is asked again: the add is a set, so a
+ * second ask cannot count the click twice. An answer the counter gave, and an
+ * error nobody classified, are never asked again.
+ */
 function countAnswerOf(err: unknown): FailedAsk['answer'] {
+  if (err instanceof DeadlineError || err instanceof ObjectCallLostError) return 'none'
   if (err instanceof ObjectCallError) return err.status >= 400 && err.status < 500 ? 'refused' : 'error_status'
   if (err instanceof ObjectAnswerUnreadableError) return 'unreadable'
-  return 'none'
+  return 'unclassified'
 }
 
 function describeAsk(ask: FailedAsk): string {
@@ -882,5 +890,6 @@ function describeAsk(ask: FailedAsk): string {
     case 'error_status': return `answered with an error that does not say whether it took it: ${ask.message}`
     case 'unreadable': return `answered, but its answer could not be read: ${ask.message}`
     case 'not_asked': return `could not be asked: ${ask.message}`
+    case 'unclassified': return `failed in a way this node does not classify: ${ask.message}`
   }
 }
