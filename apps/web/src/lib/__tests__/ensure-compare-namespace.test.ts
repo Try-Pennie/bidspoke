@@ -112,6 +112,13 @@ describe('ensure-compare-namespace', () => {
     expect(r.stderr).not.toContain('does not exist')
   })
 
+  it('names an empty answer as no answer, rather than an empty reason', () => {
+    writeFileSync(path.join(dir, `answer-GET__workers_scripts_${OUTBOUND}_settings`), '')
+    const r = run()
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('(no answer)')
+  })
+
   it('refuses by name when an argument is missing', () => {
     const r = run([ACCOUNT, NAMESPACE])
     expect(r.status).toBe(1)

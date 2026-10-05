@@ -10,9 +10,10 @@ section 3.3 for the full plan.
 
 Pipedream (still the live system) fires a fire-and-forget copy of each request
 at `POST https://<worker-host>/shadow/<workflow_id>` with the same `X-API-Key`.
-Bidspoke checks the workflow first, then returns `204` immediately so the
-mirror step never blocks Pipedream, and runs the workflow in the background with
-`shadow_mode: 'dry_run'`. Add `?mode=stand_in` to the URL to run the stand-in
+Bidspoke reads the workflow and, for one carrying code, makes sure its compare
+bundle is deployed (an upload only the first time that version of the code is
+shadowed), then returns `204` without waiting for the run, and runs the workflow
+in the background with `shadow_mode: 'dry_run'`. Add `?mode=stand_in` to the URL to run the stand-in
 sub-mode instead (see below).
 
 For a workflow carrying a Code node, the route first deploys its compare bundle

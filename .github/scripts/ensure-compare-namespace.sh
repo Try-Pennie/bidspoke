@@ -51,6 +51,7 @@ cf() {
 
 # What Cloudflare said went wrong, from its answer, for the error line.
 reason() {
+  [ -n "$1" ] || { echo "no answer"; return; }
   printf '%s' "$1" | jq -r '[.errors[]?.message] | join("; ") | if . == "" then "no reason given" else . end' 2>/dev/null || echo "an answer that is not JSON"
 }
 
