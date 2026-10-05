@@ -116,6 +116,16 @@ describe('a shadow run dispatches only to the compare namespace', () => {
     expect(money.asked).toEqual([])
   })
 
+  it('marks a chain the compare namespace refused as permanently failed, unbound or with its bundle missing', async () => {
+    const shadow = ctx({ isTest: true, shadow_mode: 'dry_run', codeBundleName: COMPARE_BUNDLE })
+    const unbound = await executeCodeChain([node('a'), node('b')], shadow, env(namespace(ok).binding))
+    expect(unbound.results[0]).toMatchObject({ status: 'failed', permanent: true })
+    expect(unbound.results[0].error).toMatch(/compare namespace is not bound/)
+
+    const gone = await executeCodeChain([node('a'), node('b')], shadow, env(namespace(ok).binding, namespace(missing).binding))
+    expect(gone.results[0]).toMatchObject({ status: 'failed', permanent: true })
+  })
+
   it('leaves a live chain on the saved bundle in the money namespace', async () => {
     const chainOk = () => new Response(JSON.stringify({ results: [{ namespace: 'a', status: 'completed', output: {} }] }), { status: 200 })
     const money = namespace(chainOk)

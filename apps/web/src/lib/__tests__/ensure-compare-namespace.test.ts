@@ -120,10 +120,19 @@ describe('Deploy Worker runs it before the engine deploys', () => {
     const ensure = job.indexOf('ensure-compare-namespace.sh')
     expect(ensure).toBeGreaterThan(-1)
     expect(ensure).toBeLessThan(job.indexOf('wrangler deploy --var DEPLOYED_SHA'))
-    expect(job).toMatch(/ensure-compare-namespace\.sh "?[0-9a-f]{32}"? "?bidspoke-code-nodes-compare"? "?bidspoke-compare-outbound"?/)
+
+    // The names are read from the configs the deploys use, so a rename in one
+    // place fails here rather than leaving the step checking a stale name (L41).
     const toml = readFileSync(path.join(REPO_ROOT, 'apps/worker/wrangler.toml'), 'utf8')
-    expect(toml).toContain('namespace = "bidspoke-code-nodes-compare"')
-    expect(toml).toContain('outbound = { service = "bidspoke-compare-outbound" }')
+    const block = toml.split('[[dispatch_namespaces]]').find((b) => /binding\s*=\s*"COMPARE_CODE_LOADER"/.test(b)) ?? ''
+    const namespace = /\bnamespace\s*=\s*"([^"]+)"/.exec(block)?.[1]
+    const outbound = /outbound\s*=\s*\{\s*service\s*=\s*"([^"]+)"/.exec(block)?.[1]
+    const account = /^account_id\s*=\s*"([^"]+)"/m.exec(toml)?.[1]
+    const outboundName = /^name\s*=\s*"([^"]+)"/m.exec(readFileSync(path.join(REPO_ROOT, 'apps/compare-outbound/wrangler.toml'), 'utf8'))?.[1]
+    expect([namespace, outbound, account]).not.toContain(undefined)
+    expect(outbound).toBe(outboundName)
+    const args = /ensure-compare-namespace\.sh "?([^"\s]+)"? "?([^"\s]+)"? "?([^"\s]+)"?/.exec(job)?.slice(1)
+    expect(args).toEqual([account, namespace, outbound])
   })
 
   it('waits for Deploy Compare Outbound, so a fresh account has the outbound Worker first', () => {

@@ -1660,7 +1660,7 @@ export async function walkGraph(
           // alerts/logs (#458). The chain path isn't retried (chainable nodes
           // carry retries=0), but classification still drives alerting.
           const chainErrorType: import('../types').ErrorType = r.status === 'failed'
-            ? (isDeterministicCodeError(r.errorName, r.error ?? '') ? 'permanent' : 'transient')
+            ? (r.permanent || isDeterministicCodeError(r.errorName, r.error ?? '') ? 'permanent' : 'transient')
             : null
           if (r.status === 'completed') {
             log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs })
@@ -2219,6 +2219,8 @@ interface ChainStepResult {
   // Constructor name of the thrown error (#458) — lets the chain path classify a
   // deterministic programming error as permanent rather than transient.
   errorName?: string
+  /** A failure the same on every attempt: a shadow chain the compare namespace refused (#1708). */
+  permanent?: true
   durationMs: number
   sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
   logs?: import('../types').StepLogEntry[]
@@ -2326,7 +2328,8 @@ export async function executeCodeChain(
     target = codeDispatchTarget(env, ctx, { chain: true })
   } catch (err) {
     clearTimeout(chainTimer)
-    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: formatErr(err), durationMs: 0 }] }
+    const permanent = (err as { permanent?: unknown }).permanent === true ? { permanent: true as const } : {}
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: formatErr(err), durationMs: 0, ...permanent }] }
   }
   const bundleBinding = target.binding.get(target.bundleName)
   let bundleRes: Response | undefined
@@ -2370,7 +2373,7 @@ export async function executeCodeChain(
     bundleRes?.status === 503
 
   if ((chainUnsupported || !bundleRes) && !target.legacyFallback) {
-    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0 }] }
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0, permanent: true }] }
   }
 
   if (chainUnsupported || !bundleRes) {

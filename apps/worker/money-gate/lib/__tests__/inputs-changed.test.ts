@@ -10,7 +10,7 @@
  * fails closed in every case the lookup cannot prove nothing relevant changed.
  */
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -37,18 +37,33 @@ describe('money-gate-inputs-changed: every file the harness imports wakes it (#1
   // The harness reads code outside apps/worker too (the compare namespace's
   // outbound Worker, whose handler answers compare bundles' requests), so the
   // files it imports are derived from its own import lines rather than listed.
-  it('wakes on a change to any file a harness or gate config file imports by a relative path', () => {
-    const sources = [...filesUnder(join(workerRoot, 'money-gate', 'harness')), 'apps/worker/vitest.money-gate.config.mts']
-    const imported = new Set<string>()
-    for (const rel of sources) {
-      const text = readFileSync(join(repoRoot, rel), 'utf8')
-      for (const m of text.matchAll(/^import[^'"]*['"](\.{1,2}\/[^'"]+)['"]/gm)) {
-        const target = relative(repoRoot, join(repoRoot, dirname(rel), m[1]))
-        imported.add(/\.[cm]?[jt]s$/.test(target) ? target : `${target}.ts`)
+  it('wakes on a change to any file a harness or gate config file imports by a relative path, followed all the way down', () => {
+    // A specifier resolves to the first of these that exists. One that resolves
+    // to nothing is not a file this Worker reads: determinism-prelude.ts holds the
+    // source of the nested bundle Worker as text, whose own import lines name
+    // modules that exist only inside that Worker. A real import of a missing file
+    // fails the build long before this test.
+    const resolveImport = (from: string, spec: string): string | null => {
+      const base = relative(repoRoot, join(repoRoot, dirname(from), spec))
+      return [base, `${base}.ts`, `${base}/index.ts`].find((c) => existsSync(join(repoRoot, c)) && statSync(join(repoRoot, c)).isFile()) ?? null
+    }
+    const importsOf = (rel: string): string[] =>
+      [...readFileSync(join(repoRoot, rel), 'utf8').matchAll(/^(?:import|export)[^'"]*['"](\.{1,2}\/[^'"]+)['"]/gm)]
+        .map((m) => resolveImport(rel, m[1]))
+        .filter((f): f is string => f !== null)
+
+    // Every file reached from the harness and the gate's config by relative
+    // imports, transitively, so a file the compare Worker later imports from
+    // outside its own folder is still found.
+    const queue = [...filesUnder(join(workerRoot, 'money-gate', 'harness')), 'apps/worker/vitest.money-gate.config.mts']
+    const seen = new Set<string>(queue)
+    while (queue.length) {
+      for (const next of importsOf(queue.shift() as string)) {
+        if (!seen.has(next)) { seen.add(next); queue.push(next) }
       }
     }
-    expect(imported).toContain('apps/compare-outbound/src/index.ts')
-    for (const file of imported) expect(decide('7', 'true', file), file).toBe('true')
+    expect(seen).toContain('apps/compare-outbound/src/index.ts')
+    for (const file of seen) expect(decide('7', 'true', file), file).toBe('true')
   })
 })
 
