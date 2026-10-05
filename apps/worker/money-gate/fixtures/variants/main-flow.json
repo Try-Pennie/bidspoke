@@ -20,7 +20,7 @@
     }
   },
   "variants": [
-    { "name": "bid_race_tripoint_wins", "purpose": "Engine Debt 25k, score under 720: bid_race, Tripoint wins, the Tripoint response and Salesforce post", "stubs": { "tripoint_create": "accepted", "amone_ping": "no_bid" } },
+    { "name": "bid_race_tripoint_wins", "purpose": "Engine Debt 25k, score under 720: bid_race, Tripoint wins, the Tripoint response and Salesforce post", "stubs": { "tripoint_create": "accepted", "amone_ping": "no_bid" }, "also_run_as": ["test", "shadow_dry_run"] },
     { "name": "bid_race_amone_wins", "purpose": "AmOne outbids Tripoint's formula price: winner_branch amone", "stubs": { "tripoint_create": "accepted", "amone_ping": "bid_high" } },
     { "name": "bid_race_no_winner", "purpose": "Tripoint declines and AmOne fails: the Engine fallback", "stubs": { "tripoint_create": "declined", "amone_ping": "outage", "engine_proxy": "offers" } },
     { "name": "bid_race_no_winner_engine_failed", "purpose": "no winner and the Engine proxy refuses: engine_ok_branch failed", "stubs": { "tripoint_create": "declined", "amone_ping": "outage", "engine_proxy": "failed" } },

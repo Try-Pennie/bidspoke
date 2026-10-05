@@ -16,7 +16,7 @@
   },
   "variants": [
     { "name": "offer_no_sell_off", "purpose": "a bid without a sell off: no Tripoint call, tp_bid falls through" },
-    { "name": "tripoint_accepted", "purpose": "sell off sold to Tripoint: tp_bid Success", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "accepted" } },
+    { "name": "tripoint_accepted", "purpose": "sell off sold to Tripoint: tp_bid Success", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "accepted" }, "also_run_as": ["test", "shadow_dry_run"] },
     { "name": "tripoint_duplicate", "purpose": "Tripoint duplicate code: tp_bid Duplicate", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "duplicate" } },
     { "name": "tripoint_declined", "purpose": "Tripoint declines: rejected, tp_bid Error", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "declined" } },
     { "name": "tripoint_outage", "purpose": "a proxy 504: no result code", "stubs": { "salesforce_prospect_trades": "sell_off", "tripoint_create": "outage" } },

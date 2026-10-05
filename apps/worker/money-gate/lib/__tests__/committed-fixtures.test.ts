@@ -16,7 +16,8 @@ import { RULES } from '../stub-rules'
 import { parseExpectedChanges } from '../expected-changes'
 import type { ShapesFile } from '../shape'
 import type { ConfigSnapshot } from '../snapshot'
-import { resolveVariant, type VariantFile } from '../../harness/replay-env'
+import { resolveVariant, runPlan, type VariantFile } from '../../harness/replay-env'
+import { EXTRA_RUN_KINDS } from '../run-kinds'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures')
 const readJson = <T>(...p: string[]) => JSON.parse(readFileSync(join(fixtures, ...p), 'utf8')) as T
@@ -56,6 +57,23 @@ describe('committed money gate fixtures', () => {
 
   it('every live workflow in the shapes has a committed definition, and every definition a shape', () => {
     expect(shapes.workflows.map((w) => w.workflow_id).sort()).toEqual([...definitionIds].sort())
+  })
+
+  it('every workflow is replayed as a test run and as a dry_run shadow run, not only live (#1730)', () => {
+    for (const { file, v } of variantFiles) {
+      const kinds = new Set(runPlan(v).map((p) => p.kind))
+      expect({ file, missing: EXTRA_RUN_KINDS.filter((k) => !kinds.has(k)) }).toEqual({ file, missing: [] })
+    }
+  })
+
+  it('a variant opts only into kinds of run the gate can replay, each once', () => {
+    for (const { file, v } of variantFiles) {
+      for (const variant of v.variants) {
+        const kinds = variant.also_run_as ?? []
+        expect({ file, variant: variant.name, unknown: kinds.filter((k) => !EXTRA_RUN_KINDS.includes(k)), repeated: kinds.filter((k, i) => kinds.indexOf(k) !== i) })
+          .toEqual({ file, variant: variant.name, unknown: [], repeated: [] })
+      }
+    }
   })
 
   it('every variant file names a workflow with a shape, unique variant names, and stub scenarios that exist', () => {

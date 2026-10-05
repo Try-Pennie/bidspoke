@@ -4,11 +4,12 @@
  * Bindings (KV, Durable Objects) are the real ones the Vitest plugin builds from
  * the engine under test's wrangler.toml. The public [vars] come from that same
  * file, so a changed var is a change the gate sees. Every secret is a placeholder
- * (a URL shaped one on a reserved .invalid host), the dispatch namespace is the
+ * (a URL shaped one on a reserved .invalid host), every dispatch namespace is a
  * recording fake, and the local development switches are removed so no guard
  * behaves as it would on a laptop.
  */
 import { placeholderValue } from '../lib/snapshot'
+import { EXTRA_RUN_KINDS, type ExtraRunKind, type RunKind } from '../lib/run-kinds'
 
 /** 2026-10-01 15:00:00 UTC, a weekday afternoon in US Eastern business hours. */
 export const FIXED_TIME_MS = Date.UTC(2026, 9, 1, 15, 0, 0)
@@ -28,6 +29,12 @@ export interface Variant {
   prior_runs?: number
   /** Stub scenarios for the prior runs; the variant's own stubs when absent. */
   prior_stubs?: Record<string, string>
+  /**
+   * Kinds of run this variant is also replayed as, after its live run (#1730):
+   * a canvas Test Runner run, a dry_run shadow run. Prior runs stay live, since
+   * they stand for real traffic that came before.
+   */
+  also_run_as?: ExtraRunKind[]
 }
 
 export interface VariantFile {
@@ -52,6 +59,22 @@ export function resolveVariant(file: VariantFile | undefined, v: Variant): Varia
   }
 }
 
+/** One fixture to replay: a variant, as one kind of run. */
+export interface PlannedRun { variant: Variant; kind: RunKind }
+
+/**
+ * Every fixture a workflow replays, in order: each variant live, then as each
+ * further kind it opts into. A workflow with no variant file replays its shape
+ * default as every kind, so none goes without a test and a shadow run.
+ */
+export function runPlan(file: VariantFile | undefined): PlannedRun[] {
+  const variants: Variant[] = (file?.variants ?? [{ name: 'shape_default', also_run_as: [...EXTRA_RUN_KINDS] }]).map((v) => resolveVariant(file, v))
+  return variants.flatMap((variant) => [
+    { variant, kind: 'live' as const },
+    ...EXTRA_RUN_KINDS.filter((k) => variant.also_run_as?.includes(k)).map((kind) => ({ variant, kind })),
+  ])
+}
+
 /** The [vars] in wrangler.toml: public configuration, taken from the engine under test. */
 const PUBLIC_VARS = ['SUPABASE_JWKS_URL', 'PII_REDACTION_FIELDS', 'APP_URL', 'GITHUB_REPO', 'GITHUB_CODE_REPO', 'SELF_CHECK_URL', 'PARTNER_PROBE_ALERTS']
 
@@ -73,11 +96,16 @@ export function envNamesReadBy(definition: unknown): string[] {
   return [...new Set([...text.matchAll(/env\.([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]))].sort()
 }
 
-/** `partnerSecrets` are the Worker secret names partner configs read their credential from (cf_secret_key). */
-export function buildEnv(testEnv: Record<string, unknown>, loader: unknown, def: { definition: unknown }, partnerSecrets: string[] = []): Record<string, unknown> {
+/**
+ * `loaders` holds the recording fake for every dispatch namespace binding the
+ * engine under test's wrangler.toml declares, by binding name. `partnerSecrets`
+ * are the Worker secret names partner configs read their credential from
+ * (cf_secret_key).
+ */
+export function buildEnv(testEnv: Record<string, unknown>, loaders: Record<string, unknown>, def: { definition: unknown }, partnerSecrets: string[] = []): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(testEnv)) {
-    if (k === 'GATE_IO' || k === 'DYNAMIC_WORKER_LOADER') continue
+    if (k === 'GATE_IO' || k in loaders) continue
     if (typeof v !== 'string') out[k] = v
   }
   for (const k of PUBLIC_VARS) if (typeof testEnv[k] === 'string') out[k] = testEnv[k]
@@ -85,6 +113,6 @@ export function buildEnv(testEnv: Record<string, unknown>, loader: unknown, def:
   out.API_KEY_MAP = '{}'
   out.SECRET_ENCRYPTION_KEY = TEST_ENCRYPTION_KEY
   for (const k of DEV_SWITCHES) delete out[k]
-  out.DYNAMIC_WORKER_LOADER = loader
+  Object.assign(out, loaders)
   return out
 }
