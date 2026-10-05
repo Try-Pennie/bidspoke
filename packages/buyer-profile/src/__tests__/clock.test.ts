@@ -135,4 +135,13 @@ describe('isOpenDuring: open at some minute of a span, judged by isOpen (#1767)'
   it('refuses a span that does not start on a whole minute, rather than rounding it (L50)', () => {
     expect(() => isOpenDuring(weekdays, [], ms('2026-10-07T00:00:30Z'), ms('2026-10-08T00:00:00Z'))).toThrow(/whole minute/)
   })
+  it('refuses an end that is not a time, rather than reading the span as closed (L42)', () => {
+    // Read as closed, an unusable end would suppress the zero sales line it decides.
+    const from = ms('2026-10-07T00:00:00Z')
+    expect(() => isOpenDuring(weekdays, [], from, Number.NaN)).toThrow(/end is not a time/)
+    expect(() => isOpenDuring(weekdays, [], from, Number.POSITIVE_INFINITY)).toThrow(/end is not a time/)
+  })
+  it('refuses a start that is not a time with its own message, not a RangeError', () => {
+    expect(() => isOpenDuring(weekdays, [], Number.NaN, ms('2026-10-08T00:00:00Z'))).toThrow(/start is not a time/)
+  })
 })
