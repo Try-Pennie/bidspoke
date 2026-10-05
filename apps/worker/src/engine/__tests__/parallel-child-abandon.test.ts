@@ -34,7 +34,7 @@ describe('runParallelChild — abandonment guard (#63)', () => {
     abandon.abort() // group already stopped waiting
 
     const result = await runParallelChild(
-      filterChild, ctx, {} as Env, null as unknown as SupabaseClient,
+      filterChild, ctx, {} as Env, null as unknown as SupabaseClient, 'money',
       'exec-1', new Date().toISOString(), 0, 'group-1', '', queue,
       undefined, undefined, abandon.signal
     )
@@ -49,7 +49,7 @@ describe('runParallelChild — abandonment guard (#63)', () => {
     const queue: StepLogEntry[] = []
 
     const result = await runParallelChild(
-      filterChild, ctx, {} as Env, null as unknown as SupabaseClient,
+      filterChild, ctx, {} as Env, null as unknown as SupabaseClient, 'money',
       'exec-1', new Date().toISOString(), 0, 'group-1', '', queue
       // no abandon signal
     )

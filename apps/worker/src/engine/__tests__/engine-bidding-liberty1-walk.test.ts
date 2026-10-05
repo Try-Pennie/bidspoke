@@ -158,7 +158,7 @@ async function walk(def: Def = composed()) {
   const ctx = buildContext(payload, 'engine', 'da82a183-1a4a-417e-b0b8-5f3fe5e14840', 'trace-1', {}, 'org-1', 'exec-1')
   const queue: StepLogEntry[] = []
   const early: Array<{ status: number; body: unknown }> = []
-  await walkGraph(ctx, def2, 'exec-1', '2026-09-29T16:00:00.000Z', supabase, env, 'v1', queue, (r) => early.push({ status: r.status, body: r.body }))
+  await walkGraph(ctx, def2, 'exec-1', '2026-09-29T16:00:00.000Z', supabase, env, 'money', 'v1', queue, (r) => early.push({ status: r.status, body: r.body }))
   return { early, ran: queue.map((r) => r.step_namespace), writes: sfWrites, steps: ctx.steps as Record<string, { output: unknown }> }
 }
 

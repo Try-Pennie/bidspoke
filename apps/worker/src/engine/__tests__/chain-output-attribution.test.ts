@@ -176,7 +176,7 @@ describe('bid_group straggler does not corrupt the walk (#489)', () => {
     })
 
     const ctx = makeCtx()
-    const result = await walkGraph(ctx, definition, 'exec-1', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(ctx, definition, 'exec-1', new Date().toISOString(), supabase, env, 'money')
     return { ctx, result }
   }
 

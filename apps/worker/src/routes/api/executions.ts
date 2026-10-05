@@ -1,9 +1,10 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { executeWorkflow, moneyRuntime } from '../../engine/index'
+import { executeWorkflow, moneyRuntime, type ExecuteOptions } from '../../engine/index'
+import { dashboardLaneRefusal } from '../lane-refusal'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
@@ -621,6 +622,23 @@ executions.get('/:id/steps/:stepId', async (c) => {
   return c.json(rest)
 })
 
+// Resume and replay both start a run from a recorded one. A run the engine
+// refuses for its lane is answered by name (#1725); any other error is left to
+// the generic handler, as before.
+async function runFromDashboard(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  options: ExecuteOptions,
+  supabase: ReturnType<typeof createSupabaseClient>,
+) {
+  try {
+    return await executeWorkflow(options, c.env, moneyRuntime(supabase), c.executionCtx)
+  } catch (err) {
+    const refused = dashboardLaneRefusal(c, err)
+    if (refused) return refused
+    throw err
+  }
+}
+
 // POST /api/executions/:id/resume
 executions.post('/:id/resume', async (c) => {
   const { orgId } = c.get('user')
@@ -648,17 +666,13 @@ executions.post('/:id/resume', async (c) => {
   if (ownerBlocked) return ownerBlocked
   if (!owner) return c.json({ error: 'Execution not found' }, 404)
 
-  const result = await executeWorkflow(
-    {
-      workflowId: execution.workflow_id,
-      payload: execution.trigger_payload,
-      source: execution.source ?? 'resume',
-      resumeFromExecutionId: id,
-    },
-    c.env,
-    moneyRuntime(supabase),
-    c.executionCtx
-  )
+  const result = await runFromDashboard(c, {
+    workflowId: execution.workflow_id,
+    payload: execution.trigger_payload,
+    source: execution.source ?? 'resume',
+    resumeFromExecutionId: id,
+  }, supabase)
+  if (result instanceof Response) return result
 
   return c.json(result.response, result.status as 200 | 500, {
     'X-Trace-Id': result.traceId,
@@ -696,17 +710,13 @@ executions.post('/:id/replay', async (c) => {
   // Replay = fresh execution from start with original payload, linked back
   // to the original via parent_execution_id so both rows can show the
   // relationship in the UI.
-  const result = await executeWorkflow(
-    {
-      workflowId: execution.workflow_id,
-      payload: execution.trigger_payload,
-      source: execution.source ?? 'replay',
-      parentExecutionId: id,
-    },
-    c.env,
-    moneyRuntime(supabase),
-    c.executionCtx
-  )
+  const result = await runFromDashboard(c, {
+    workflowId: execution.workflow_id,
+    payload: execution.trigger_payload,
+    source: execution.source ?? 'replay',
+    parentExecutionId: id,
+  }, supabase)
+  if (result instanceof Response) return result
 
   return c.json(result.response, result.status as 200 | 500, {
     'X-Trace-Id': result.traceId,

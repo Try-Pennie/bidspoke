@@ -24,6 +24,7 @@
 import type { Context } from 'hono'
 import type { Env } from '../index'
 import { executeWorkflow, moneyRuntime, WorkflowLaneError } from '../engine/index'
+import { PUBLIC_WRONG_LANE_ERROR, WRONG_LANE_STATUS } from './lane-refusal'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 import { isNotFoundError } from '../lib/api-error'
@@ -223,7 +224,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     // rather than that the endpoint is gone. Forwarding to the ops Worker comes
     // with the ops lane (plan R5).
     if (err instanceof WorkflowLaneError) {
-      return c.json({ error: 'Workflow is not served on this host' }, 421)
+      return c.json({ error: PUBLIC_WRONG_LANE_ERROR }, WRONG_LANE_STATUS)
     }
     console.error('[custom-endpoint] execution error:', err)
     return c.json({ error: 'Internal error' }, 500)

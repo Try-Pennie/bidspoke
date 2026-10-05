@@ -164,7 +164,7 @@ async function click(payload: unknown) {
   ctx.execution = { ...(ctx.execution ?? {}), bidspoke_link: LINK } as ExecutionContext['execution']
   const queue: StepLogEntry[] = []
   const early: Array<{ status: number; body: unknown }> = []
-  const result = await walkGraph(ctx, definition, 'exec-1', NOW, supabase, env, 'v1', queue, (r) => early.push({ status: r.status, body: r.body }))
+  const result = await walkGraph(ctx, definition, 'exec-1', NOW, supabase, env, 'money', 'v1', queue, (r) => early.push({ status: r.status, body: r.body }))
   const ran = queue.map((r) => r.step_namespace)
   return { status: result.status, body: result.body, early, ran, writes: sfCalls.filter((c) => c.operation === 'update') }
 }

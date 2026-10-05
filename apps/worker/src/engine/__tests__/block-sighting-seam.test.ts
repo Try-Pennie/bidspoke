@@ -51,7 +51,7 @@ describe('walkGraph forwards partner block sightings (#1265)', () => {
       .mockResolvedValueOnce({ output: null })
     const seen: PartnerBlockSighting[] = []
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    await walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) })
+    await walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money', '', [], undefined, (s) => { seen.push(s) })
     expect(seen.map((s) => s.host)).toEqual(['oauth.prd.ffngcp.com'])
   })
 
@@ -62,7 +62,7 @@ describe('walkGraph forwards partner block sightings (#1265)', () => {
     const seen: PartnerBlockSighting[] = []
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
     await expect(
-      walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) }),
+      walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money', '', [], undefined, (s) => { seen.push(s) }),
     ).rejects.toThrow('Partner API returned 403')
     expect(seen.map((s) => s.host)).toEqual(['api.freedomfinancialnet.com'])
   })
@@ -72,7 +72,7 @@ describe('walkGraph forwards partner block sightings (#1265)', () => {
       .mockResolvedValueOnce({ output: 1, blockSightings: [sighting('oauth.prd.ffngcp.com')] })
       .mockResolvedValueOnce({ output: null })
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    const result = await walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, () => { throw new Error('reporter broke') })
+    const result = await walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money', '', [], undefined, () => { throw new Error('reporter broke') })
     expect(result).toBeDefined()
   })
 
@@ -81,7 +81,7 @@ describe('walkGraph forwards partner block sightings (#1265)', () => {
       .mockResolvedValueOnce({ output: 1, blockSightings: [sighting('oauth.prd.ffngcp.com')] })
       .mockResolvedValueOnce({ output: null })
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    await expect(walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env)).resolves.toBeDefined()
+    await expect(walkGraph(ctx, twoStepDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money')).resolves.toBeDefined()
   })
 })
 
@@ -108,7 +108,7 @@ describe('walkGraph forwards sightings from the bundled code chain path (#1265)'
     const definition = { nodes, edges: [{ id: 'e', source: 'a', target: 'b' }], trigger: { type: 'http_webhook', config: {} } } as unknown as WorkflowDefinition
     const seen: PartnerBlockSighting[] = []
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    await walkGraph(ctx, definition, 'exec-1', new Date().toISOString(), supabase, chainEnv, '', [], undefined, (s) => { seen.push(s) })
+    await walkGraph(ctx, definition, 'exec-1', new Date().toISOString(), supabase, chainEnv, 'money', '', [], undefined, (s) => { seen.push(s) })
     expect(seen).toHaveLength(1)
     expect(seen[0]).toMatchObject({ host: 'oauth.prd.ffngcp.com', vendor: 'cloudflare', seenIn: 'code:scout' })
     expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
@@ -131,7 +131,7 @@ describe('walkGraph forwards sightings from parallel children (#1265)', () => {
     })
     const seen: PartnerBlockSighting[] = []
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) })
+    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money', '', [], undefined, (s) => { seen.push(s) })
     expect(seen.map((s) => s.host)).toEqual(['oauth.prd.ffngcp.com'])
   })
 
@@ -141,7 +141,7 @@ describe('walkGraph forwards sightings from parallel children (#1265)', () => {
     vi.mocked(executeNode).mockRejectedValueOnce(err)
     const seen: PartnerBlockSighting[] = []
     const ctx = buildContext({}, 'src', 'wf-1', 'trace-1', {}, 'org-1')
-    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, '', [], undefined, (s) => { seen.push(s) })
+    await walkGraph(ctx, parallelDefinition(), 'exec-1', new Date().toISOString(), supabase, env, 'money', '', [], undefined, (s) => { seen.push(s) })
     expect(seen.map((s) => s.host)).toEqual(['pennie.my.salesforce.com'])
   })
 })

@@ -147,7 +147,7 @@ describe('engine bidding: happy path', () => {
       return_response:           successResponse,
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-engine-1', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-engine-1', new Date().toISOString(), supabase, env, 'money')
 
     const body = result.body as typeof successResponse
     expect(body).toHaveProperty('requestId')
@@ -197,7 +197,7 @@ describe('engine bidding: early-exit rejections', () => {
         exit_rejected:             exitOutput,
       })
 
-      const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), `exec-reject-${(exitOutput.reason as string).replace(/ /g, '-')}`, new Date().toISOString(), supabase, env)
+      const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), `exec-reject-${(exitOutput.reason as string).replace(/ /g, '-')}`, new Date().toISOString(), supabase, env, 'money')
       const body = result.body as Record<string, unknown>
       expect(body.status).toBe('rejected')
       expect(body.reason).toBe(exitOutput.reason)
@@ -218,7 +218,7 @@ describe('engine bidding: early-exit rejections', () => {
       exit_rejected:             { lead_id: 'lead-abc', status: 'rejected', reason: 'missing_credit_check' },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-credit-miss', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-credit-miss', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
     expect(body.status).toBe('rejected')
     expect(body.reason).toBe('missing_credit_check')
@@ -240,7 +240,7 @@ describe('engine bidding: early-exit rejections', () => {
       return_response:           { lead_id: 'lead-abc', status: 'rejected', reason: 'unqualified_lead' },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-unqualified', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-unqualified', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
     expect(body.status).toBe('rejected')
     expect(body.reason).toBe('unqualified_lead')
@@ -272,7 +272,7 @@ describe('engine bidding: Tripoint result code validation', () => {
       return_response:           { requestId: 'tr-1', offers: [{ rate: 50, offer_title: 'Pennie', offer_details: '' }] },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-1013', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-1013', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
     // Not a rejection
     expect(body.status).toBeUndefined()
@@ -295,7 +295,7 @@ describe('engine bidding: Tripoint result code validation', () => {
       return_response:           { lead_id: 'lead-abc', status: 'rejected', reason: 'unqualified_lead' },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-2018', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-2018', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
     expect(body.status).toBe('rejected')
   })
@@ -316,7 +316,7 @@ describe('engine bidding: Tripoint result code validation', () => {
       return_response:           { lead_id: 'lead-abc', status: 'rejected', reason: 'unqualified_lead' },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-2019', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-2019', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
     expect(body.status).toBe('rejected')
   })
@@ -357,7 +357,7 @@ describe('engine bidding: Tripoint lead ID Salesforce write-back', () => {
       return { output: null }
     })
 
-    await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-tripoint-writeback', new Date().toISOString(), supabase, env)
+    await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-tripoint-writeback', new Date().toISOString(), supabase, env, 'money')
 
     // patch_prospect must have been called (Tripoint lead ID write-back step)
     expect(patchCalls.length).toBeGreaterThan(0)
@@ -403,7 +403,7 @@ describe('engine bidding: response contract matches Pipedream return_response', 
       return_response:           pipedreamShape,
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-contract', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-contract', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
 
     // Must have these top-level keys
@@ -431,7 +431,7 @@ describe('engine bidding: response contract matches Pipedream return_response', 
       exit_rejected:             { lead_id: 'lead-abc', status: 'rejected', reason: 'bidding not active' },
     })
 
-    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-rej-contract', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), 'exec-rej-contract', new Date().toISOString(), supabase, env, 'money')
     const body = result.body as Record<string, unknown>
 
     expect(body).toHaveProperty('lead_id')

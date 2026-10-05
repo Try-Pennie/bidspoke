@@ -11,8 +11,8 @@ import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
-import { executeWorkflow, moneyRuntime } from '../../engine/index'
-import { executeNode } from '../../engine/nodes/index'
+import { executeWorkflow, moneyRuntime, nodeExecutorForLane } from '../../engine/index'
+import { dashboardLaneRefusal, refuseRowOutsideLane } from '../lane-refusal'
 import { buildContext } from '../../engine/context'
 import { formatCodeErrorMessage } from '../../engine/error-classifier'
 import { loadEnvVars } from '../../lib/env-loader'
@@ -862,7 +862,7 @@ workflows.post('/:id/test', async (c) => {
   // Verify ownership
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id')
+    .select('id, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -871,6 +871,11 @@ workflows.post('/:id/test', async (c) => {
   const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
   if (ownerBlocked) return ownerBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
+  // Another lane's workflow is refused before its test bundle is deployed here
+  // (#1725); the engine refuses it again before running anything.
+  const runtime = moneyRuntime(supabase)
+  const laneBlocked = refuseRowOutsideLane(c, id, owner.lane, runtime.lane)
+  if (laneBlocked) return laneBlocked
 
   // Deploy code nodes from the current (unsaved) definition to an ephemeral
   // content-hashed bundle so the test runs the EXACT canvas code, with no
@@ -911,20 +916,30 @@ workflows.post('/:id/test', async (c) => {
     )
   }
 
-  const result = await executeWorkflow(
-    {
-      workflowId: id,
-      payload: body.payload,
-      source: 'test_runner',
-      isTest: true,
-      executionId: body.execution_id,
-      ...(testBundleName ? { codeBundleName: testBundleName } : {}),
-      ...(body.definition ? { definitionOverride: body.definition as import('../../types').WorkflowDefinition } : {}),
-    },
-    c.env,
-    moneyRuntime(supabase),
-    c.executionCtx
-  )
+  let result: Awaited<ReturnType<typeof executeWorkflow>>
+  try {
+    result = await executeWorkflow(
+      {
+        workflowId: id,
+        payload: body.payload,
+        source: 'test_runner',
+        isTest: true,
+        executionId: body.execution_id,
+        ...(testBundleName ? { codeBundleName: testBundleName } : {}),
+        ...(body.definition ? { definitionOverride: body.definition as import('../../types').WorkflowDefinition } : {}),
+      },
+      c.env,
+      runtime,
+      c.executionCtx
+    )
+  } catch (err) {
+    // The engine's own lane refusals (#1725): the lane it loaded, or a step in
+    // the unsaved definition the lane cannot run. Anything else is a defect and
+    // goes to the generic handler.
+    const refused = dashboardLaneRefusal(c, err)
+    if (refused) return refused
+    throw err
+  }
 
   return c.json(result.response, result.status as 200 | 500, { 'X-Trace-Id': result.traceId })
 })
@@ -943,7 +958,7 @@ workflows.post('/:id/test-node', async (c) => {
   // 404 (not 403) to avoid leaking which ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id')
+    .select('id, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -951,6 +966,12 @@ workflows.post('/:id/test-node', async (c) => {
   const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
   if (ownerBlocked) return ownerBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
+  // No engine runs around this node, so this is the only lane check it gets
+  // (#1725): another lane's workflow is refused before its code is deployed or
+  // any node of it runs, and the node runs through this Worker's lane executor.
+  const runtime = moneyRuntime(supabase)
+  const laneBlocked = refuseRowOutsideLane(c, id, owner.lane, runtime.lane)
+  if (laneBlocked) return laneBlocked
 
   const body = await c.req.json<{
     namespace: string
@@ -1048,7 +1069,7 @@ workflows.post('/:id/test-node', async (c) => {
     // that from the walk; here the rebuilt ctx.steps IS the chain (one prior
     // execution, in order), so its last entry is the equivalent (#489).
     const chainOutput = Object.values(ctx.steps).at(-1)?.output ?? null
-    const result = await executeNode(node, ctx, c.env, supabase, undefined, chainOutput)
+    const result = await nodeExecutorForLane(runtime.lane)(node, ctx, c.env, supabase, undefined, chainOutput)
     // Mirror the engine's sentinel-failed check (engine/index.ts:825): a code
     // node that returns { response: { status: 4xx/5xx } } is signaling its own
     // failure. Without this, Re-run shows green for error responses.

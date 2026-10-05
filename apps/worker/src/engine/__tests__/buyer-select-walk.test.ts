@@ -67,7 +67,7 @@ const attempt = (slug: string, status: 'completed' | 'failed', over: Partial<Buy
 })
 
 const walk = (def: ReturnType<typeof definition>, queue: StepLogEntry[] = []) =>
-  walkGraph(buildContext({ leadUuid: 'lead-1', sellOff: true }, 'engine', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-20T15:30:00.000Z', supabase, env, 'v1', queue)
+  walkGraph(buildContext({ leadUuid: 'lead-1', sellOff: true }, 'engine', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1'), def, 'exec-1', '2027-09-20T15:30:00.000Z', supabase, env, 'money', 'v1', queue)
 
 beforeEach(() => {
   vi.mocked(executeBuyerSelectNode).mockReset()
