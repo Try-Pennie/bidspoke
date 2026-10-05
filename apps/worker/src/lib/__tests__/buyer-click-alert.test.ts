@@ -163,11 +163,45 @@ describe('a page claims only what the success line proves (#1547)', () => {
     }
   })
 
-  it('sold_mark_failed and count_failed say the buyer confirmed receipt of the lead', () => {
-    for (const reason of ['sold_mark_failed', 'count_failed'] as const) {
+  it('sold_mark_failed, count_failed and count_unknown say the buyer confirmed receipt of the lead', () => {
+    for (const reason of ['sold_mark_failed', 'count_failed', 'count_unknown'] as const) {
       expect(clickAlertMessage({ ...page, reason } as ClickAlert, 'https://app.example').body, reason).toMatch(/The buyer confirmed receipt of the lead/)
     }
     expect(clickAlertMessage({ ...page, reason: 'sold_mark_failed' } as ClickAlert, 'https://app.example').header).toMatch(/confirmed receipt of a click but the claim could not be marked sold/)
+  })
+})
+
+// #1766: a count with no answer may still have landed (on 2026-10-05 one landed 48 ms
+// after the caller gave up), so only a refusal the counter gave may say the count is low.
+describe('a count page says only what the counter answered (#1766)', () => {
+  const render = (reason: 'count_failed' | 'count_unknown') => {
+    const m = clickAlertMessage({ ...page, reason, hold_recorded: null }, 'https://app.example')
+    return { header: m.header, body: m.body }
+  }
+
+  it('count_unknown says the click may not have been counted, and never that the count reads low or that it could not be counted', () => {
+    const m = render('count_unknown')
+    expect(m.header).toBe('liberty1 sent a click that may not have been counted')
+    expect(m.body).toMatch(/The buyer confirmed receipt of the lead\. Today's click count did not say whether it took this click, so the click may not have been counted\./)
+    expect(`${m.header} ${m.body}`).not.toMatch(/reads? low|could not be counted|did not take it/)
+  })
+
+  it('count_failed, a refusal the counter gave, keeps saying the count reads low by this click', () => {
+    const m = render('count_failed')
+    expect(m.header).toBe('liberty1 sent a click that could not be counted')
+    expect(m.body).toMatch(/The buyer confirmed receipt of the lead, but today's click count did not take it, so the count reads low by this click until it is added\./)
+  })
+
+  it('the two have their own cooldowns, so a run of lost answers does not silence a refusal', () => {
+    expect(clickAlertKey({ ...page, reason: 'count_unknown' }).key).toBe(`buyer-click-page:${LIBERTY1}:count_unknown`)
+    expect(clickAlertKey({ ...page, reason: 'count_unknown' }).key).not.toBe(clickAlertKey({ ...page, reason: 'count_failed' }).key)
+  })
+
+  it('neither holds a claim, so neither points at the Held clicks list', () => {
+    for (const reason of ['count_failed', 'count_unknown'] as const) {
+      expect((HELD_CLICK_REASONS as readonly string[]).includes(reason), reason).toBe(false)
+      expect(render(reason).body, reason).not.toMatch(/Held clicks/)
+    }
   })
 })
 

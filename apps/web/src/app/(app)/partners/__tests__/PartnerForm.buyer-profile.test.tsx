@@ -9,7 +9,7 @@
  * relabelled so one word means one thing on the page (L118).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import type { BuyerProfileDocument, SaleWrites } from '@bidspoke/buyer-profile'
 
 vi.mock('@/lib/api', () => ({
@@ -24,7 +24,7 @@ vi.mock('@/lib/api', () => ({
 
 import PartnerForm from '../PartnerForm'
 import { api } from '@/lib/api'
-import type { Partner } from '@/lib/api'
+import type { MarkSentResult, Partner } from '@/lib/api'
 
 const partner: Partner = {
   id: 'p1', organization_id: 'org-1', name: 'Tripoint', slug: 'tripoint',
@@ -453,6 +453,32 @@ describe('how the buyer is sold', () => {
     await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, 'a0B5f00000XyZ12AAB'))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent as a0B5f00000XyZ12AAB. Counted in Liberty1's clicks for Sep 20 (Pacific). Salesforce updated: Prospect, Submission, Lead."))
     expect(within(row).queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+  })
+
+  // #1766: an add that got no answer may still have landed, so only a refusal the counter
+  // gave says the click could not be added; anything not known says it may not have been.
+  it('a count that failed after Mark sent says could not be added only for a refusal, and may not have been added otherwise', async () => {
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['refused', { count_failure: 'not_added', count_error: 'click counter add answered 400: bad_member' }, "It could not be added to Liberty1's clicks for Sep 20 (Pacific): click counter add answered 400: bad_member"],
+      ['unknown', { count_failure: 'unknown', count_error: 'click counter add did not answer within 5000 ms; asked again: click counter add did not answer within 5000 ms' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): click counter add did not answer within 5000 ms; asked again: click counter add did not answer within 5000 ms"],
+      // An older worker sends no count_failure, and its message cannot say which it was.
+      ['older worker', { count_error: 'click counter add did not answer within 5000 ms' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): click counter add did not answer within 5000 ms"],
+      // A platform message often ends in its own full stop, which must not be doubled.
+      ['own full stop', { count_failure: 'unknown', count_error: 'Network connection lost.' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific): Network connection lost. Salesforce updated"],
+      // No reason at all: the sentence ends where the colon would have been, never on a bare full stop.
+      ['no reason', { count_failure: 'unknown' }, "It may not have been added to Liberty1's clicks for Sep 20 (Pacific). Salesforce updated"],
+    ]
+    for (const [name, failure, sentence] of cases) {
+      cleanup()
+      vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+      vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: null, count_date: '2027-09-20', salesforce: allUpdated, audit_recorded: true, list_cleared: true, ...failure } as MarkSentResult)
+      await renderWith(clickDoc, { name: 'Liberty1' })
+      const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+      fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
+      fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+      fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
+      await waitFor(() => expect(within(row).getByRole('status'), name).toHaveTextContent(sentence))
+    }
   })
 
   it('a Salesforce update that fails after Mark sent is named on the row, the mark stands, and Retry writes again until every record lands', async () => {

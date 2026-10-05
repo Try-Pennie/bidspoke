@@ -210,7 +210,8 @@ export const CLICK_RECONCILE_REMEDY: AlertRemedy = {
   fixHint:
     'Counted but not Completed: the buyer took the prospect and the Salesforce write after it failed; read that click execution and ' +
     'write the prospect by hand. Completed but never counted: the prospect was sold outside this workflow (another flow, or by hand), ' +
-    "or the count failed; the day's count read low by that many.",
+    "or its add to the count was refused or never landed, so the day's count read low by that many. " +
+    'A click paged as possibly not counted is listed here only when its add never landed.',
   headlineVerb: 'found a click count that disagrees with Salesforce',
   itemNoun: { one: 'disagreement', many: 'disagreements' },
 }

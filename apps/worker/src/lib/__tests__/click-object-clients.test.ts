@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
+import { addAskingOnceMore, addFailureOf, addKnownRefused, CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -130,6 +130,79 @@ describe('ClickCounterClient', () => {
   it('an answer that is not the add shape is refused rather than read as a count', async () => {
     const { ns } = namespace(() => json({ added: 'yes' }))
     await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1')).rejects.toThrow(/click counter add answered an unreadable body/)
+  })
+
+  // The node retries an add that gave NO answer and never one that answered (#1766), so an
+  // answer it cannot read must be told apart from a lost call by its type, not its wording.
+  it('an answer it cannot read, the wrong shape or not JSON at all, is an ObjectAnswerUnreadableError: the counter answered', async () => {
+    for (const res of [() => json({ added: 'yes' }), () => new Response('<html>oops</html>', { status: 200 })]) {
+      const { ns } = namespace(res)
+      const err = await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ObjectAnswerUnreadableError)
+      expect((err as Error).message).toMatch(/click counter add answered an unreadable body/)
+    }
+  })
+
+  // L35: the node may retry only what is named as no answer, so a call lost in transit
+  // carries its own type rather than reaching the node as a bare Error like any bug.
+  it('a call the object never answered because it failed in transit is an ObjectCallLostError with the same message and its cause', async () => {
+    const lost = new TypeError('Network connection lost.')
+    const ns = { idFromName: (n: string) => ({ n }), get: () => ({ fetch: () => Promise.reject(lost) }) } as unknown as DurableObjectNamespace
+    const err = await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ObjectCallLostError)
+    expect((err as Error).message).toBe('Network connection lost.')
+    expect((err as Error).cause).toBe(lost)
+    expect(err).not.toBeInstanceOf(ObjectAnswerUnreadableError)
+    expect(err).not.toBeInstanceOf(ObjectCallError)
+  })
+
+  // The lost call is caught AFTER the deadline race, so the one catch sees the race's own
+  // DeadlineError too, and must pass it through; and it never sees a fetch that throws at once.
+  describe('how a call that gets no answer ends, each kept apart by its type', () => {
+    const add = (fetch: () => unknown, timers?: Timers) => {
+      const ns = { idFromName: (n: string) => ({ n }), get: () => ({ fetch }) } as unknown as DurableObjectNamespace
+      return new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0, timers ? { timers, deadlineMs: 50 } : {}).addMember('p-1').catch((e: unknown) => e)
+    }
+
+    it('a deadline that expires stays the DeadlineError the race raised, never a lost call', async () => {
+      const pending: Array<() => void> = []
+      const timers: Timers = { setTimeout: (fn) => { pending.push(fn); return pending.length }, clearTimeout: () => undefined }
+      const p = add(() => new Promise(() => undefined), timers)
+      await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0))
+      pending.forEach((fn) => fn())
+      const err = await p
+      expect(err).toBeInstanceOf(DeadlineError)
+      expect(err).not.toBeInstanceOf(ObjectCallLostError)
+    })
+
+    it('a rejection with no Error is a lost call named by its operation, because the race names it first', async () => {
+      // A rejection that is not an Error is the case under test, so the rule against one is set aside here.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      const err = await add(() => Promise.reject('socket closed'))
+      expect(err).toBeInstanceOf(ObjectCallLostError)
+      expect((err as Error).message).toBe('click counter add rejected with a non Error value')
+    })
+
+    it('a fetch that throws at once sent nothing, so it passes through untouched and the node would not ask again', async () => {
+      const thrown = new TypeError('Invalid URL')
+      const err = await add(() => { throw thrown })
+      expect(err).toBe(thrown)
+      expect(err).not.toBeInstanceOf(ObjectCallLostError)
+    })
+  })
+
+  it('a refusal stays an ObjectCallError and a call that never answers stays a DeadlineError, never an unreadable answer', async () => {
+    const refused = await new ClickCounterClient(namespace(() => json({ error: 'bad_member' }, 400)).ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+    expect(refused).toBeInstanceOf(ObjectCallError)
+    expect(refused).not.toBeInstanceOf(ObjectAnswerUnreadableError)
+    const pending: Array<() => void> = []
+    const timers: Timers = { setTimeout: (fn) => { pending.push(fn); return pending.length }, clearTimeout: () => undefined }
+    const hung = { idFromName: (n: string) => ({ n }), get: () => ({ fetch: () => new Promise(() => undefined) }) } as unknown as DurableObjectNamespace
+    const p = new ClickCounterClient(hung, memoryKv().kv, LIBERTY1, 0, { timers, deadlineMs: 50 }).addMember('p-1').catch((e: unknown) => e)
+    pending.forEach((fn) => fn())
+    const late = await p
+    expect(late).toBeInstanceOf(DeadlineError)
+    expect(late).not.toBeInstanceOf(ObjectAnswerUnreadableError)
   })
 
   it('carries a deadline, proven with timers fired by hand', async () => {
@@ -276,7 +349,9 @@ describe('the saved copy never moves down (#1632 review)', () => {
     const timers: Timers = { setTimeout: (fn, ms) => { deadlines.push(ms); pending.push(fn); return pending.length }, clearTimeout: () => undefined }
     const copy = memoryKv({ hangPut: true })
     const p = new ClickCounterClient(namespace(() => json({ added: true, count: 5 })).ns, copy.kv, LIBERTY1, AT, { timers }).addMember('p-1')
-    for (let i = 0; i < 10 && pending.length < 2; i++) await Promise.resolve()
+    // Waits on the copy's timer being set, never a fixed number of turns (L290): a fixed
+    // count failed in CI on 2026-10-05 when the call gained one turn (#1766).
+    await vi.waitFor(() => expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS))
     pending.splice(0).forEach((fn) => fn())
     expect(await p).toEqual({ added: true, count: 5 })
     expect(deadlines).toContain(CLICK_COUNT_COPY_WRITE_DEADLINE_MS)
@@ -294,5 +369,72 @@ describe('a copy that cannot be read while saving is said out loud', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+// #1766: the one rule for asking the click counter again, shared by buyer_click_send and the
+// held click Mark sent route, so the two cannot drift. Only an ask with NO answer is asked
+// again (the add is a set, so a second ask cannot count twice); an answer never is (L35).
+describe('addFailureOf: what a failed add says about the click', () => {
+  it('names each failure the client raises, and calls anything else unclassified', () => {
+    expect(addFailureOf(new DeadlineError('click counter add', 5000))).toEqual({ kind: 'no_answer', message: 'click counter add did not answer within 5000 ms' })
+    expect(addFailureOf(new ObjectCallLostError(new TypeError('Network connection lost.')))).toEqual({ kind: 'no_answer', message: 'Network connection lost.' })
+    expect(addFailureOf(new ObjectCallError('click counter add', 400, 'bad_member')).kind).toBe('refused')
+    expect(addFailureOf(new ObjectCallError('click counter add', 500, 'oops')).kind).toBe('error_status')
+    expect(addFailureOf(new ObjectAnswerUnreadableError('click counter add', '{}')).kind).toBe('unreadable')
+    expect(addFailureOf(new Error('something else'))).toEqual({ kind: 'unclassified', message: 'something else' })
+    expect(addFailureOf('a string')).toEqual({ kind: 'unclassified', message: 'non Error thrown' })
+  })
+})
+
+describe('addAskingOnceMore: the add, asked again only when it got no answer', () => {
+  const asks = (...script: Array<'answer' | Error>) => {
+    let n = 0
+    const add = vi.fn(async () => {
+      const step = script[n++] ?? 'answer'
+      if (step instanceof Error) throw step
+      return { added: true, count: 4 }
+    })
+    return add
+  }
+  const timeout = () => new DeadlineError('click counter add', 5000)
+
+  it('a first ask with no answer is asked again, and the retry that answers is the result', async () => {
+    const add = asks(timeout(), 'answer')
+    const out = await addAskingOnceMore(add)
+    expect(add).toHaveBeenCalledTimes(2)
+    expect(out).toEqual({ result: { added: true, count: 4 }, failed: [{ kind: 'no_answer', message: 'click counter add did not answer within 5000 ms' }], retryDeclined: false })
+    expect(addKnownRefused(out)).toBe(false)
+  })
+
+  it('no answer twice is two failures and no result, and is not known to be refused', async () => {
+    const out = await addAskingOnceMore(asks(timeout(), new ObjectCallLostError(new Error('Network connection lost.'))))
+    expect(out.result).toBeNull()
+    expect(out.failed.map((f) => f.kind)).toEqual(['no_answer', 'no_answer'])
+    expect(addKnownRefused(out)).toBe(false)
+  })
+
+  it('an answer the counter gave is never asked again, and only a refusal is known not to be counted', async () => {
+    for (const [err, refused] of [[new ObjectCallError('click counter add', 400, 'bad_member'), true], [new ObjectCallError('click counter add', 500, 'oops'), false], [new ObjectAnswerUnreadableError('click counter add', '{}'), false], [new Error('nobody classified this'), false]] as const) {
+      const add = asks(err)
+      const mayAskAgain = vi.fn(() => true)
+      const out = await addAskingOnceMore(add, mayAskAgain)
+      expect(add, err.message).toHaveBeenCalledTimes(1)
+      expect(mayAskAgain, err.message).not.toHaveBeenCalled()
+      expect(addKnownRefused(out), err.message).toBe(refused)
+    }
+  })
+
+  it('a second ask the caller declines is not made, and the outcome says it was declined', async () => {
+    const add = asks(timeout(), 'answer')
+    const out = await addAskingOnceMore(add, () => false)
+    expect(add).toHaveBeenCalledTimes(1)
+    expect(out).toMatchObject({ result: null, retryDeclined: true })
+  })
+
+  it('a first ask that answers is the result, and the caller is never asked about a retry', async () => {
+    const mayAskAgain = vi.fn(() => true)
+    expect(await addAskingOnceMore(asks('answer'), mayAskAgain)).toEqual({ result: { added: true, count: 4 }, failed: [], retryDeclined: false })
+    expect(mayAskAgain).not.toHaveBeenCalled()
   })
 })

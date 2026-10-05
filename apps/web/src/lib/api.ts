@@ -98,7 +98,16 @@ export interface HeldClick {
 
 export type MarkSentResult =
   | { outcome: 'sent'; generation: number; count: { added: boolean; count: number; date: string }; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
-  | { outcome: 'sent'; generation: number; count: null; count_error: string; count_date: string; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean }
+  | {
+      outcome: 'sent'; generation: number; count: null
+      /**
+       * not_added: the counter refused the add. unknown: nothing it answered says
+       * whether it took the click (#1766). Absent from a worker older than that,
+       * which the page reads as unknown, because its message cannot say which.
+       */
+      count_failure?: 'not_added' | 'unknown'
+      count_error: string; count_date: string; salesforce: SaleWrites; audit_recorded: boolean; list_cleared: boolean
+    }
 
 /** Writing a marked sent click's Salesforce updates again (#1659). */
 export interface SalesforceRetryResult {

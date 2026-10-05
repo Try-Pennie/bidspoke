@@ -40,12 +40,20 @@ export const CLICK_PAGE_COOLDOWN_SECONDS = 15 * 60
 export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
 
 /**
- * The send side's six, plus partner_not_click from buyer_click_check (#1557): a
- * buyer picked on the offer side check whose profile is sold on the offer. The
- * check routes not eligible rather than failing Engine's execution, so this page
- * is how a person hears about it.
+ * The send side's seven, plus two from buyer_click_check: partner_not_click
+ * (#1557), a buyer picked on the offer side check whose profile is sold on the
+ * offer, and click_url_has_no_prospect_id (#1546). The check routes not
+ * eligible rather than failing Engine's execution, so these pages are how a
+ * person hears about it.
+ *
+ * The count has two (#1766), split by what the counter answered: count_failed
+ * when it refused the add, so the click is known not to be counted, and
+ * count_unknown when nothing it answered says whether it took the click (no
+ * answer even after the one retry, an error status, an answer that cannot be
+ * read, or an error the node does not classify), because an add that timed out
+ * can still land.
  */
-export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id'] as const
+export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'count_unknown', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id'] as const
 export type ClickPageReason = (typeof CLICK_PAGE_REASONS)[number]
 
 export type ClickAlert =
@@ -119,6 +127,10 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
   count_failed: {
     header: 'sent a click that could not be counted',
     held: "The buyer confirmed receipt of the lead, but today's click count did not take it, so the count reads low by this click until it is added.",
+  },
+  count_unknown: {
+    header: 'sent a click that may not have been counted',
+    held: "The buyer confirmed receipt of the lead. Today's click count did not say whether it took this click, so the click may not have been counted.",
   },
   free_failed: {
     header: 'refused a click, and the claim could not be released',

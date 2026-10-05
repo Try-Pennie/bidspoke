@@ -19,8 +19,9 @@
  * buyer's system, then adds the prospect to the click count of the Pacific day
  * the click was HELD, which is the day the buyer received it, so a late release
  * never takes an offer from today's cap. The count is a set, so a click the node
- * already counted is not counted twice. A count that fails is reported on a sale
- * that stands (L33).
+ * already counted is not counted twice, and an add that got no answer is asked
+ * once more (#1766). A count that still fails is reported on a sale that stands
+ * (L33), as not_added only when the counter refused it, and as unknown otherwise.
  *
  * Mark sent then writes the click's Salesforce updates (#1659): the Prospect,
  * Submission and Lead bodies a live `sent` click writes, through
@@ -43,7 +44,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
-import { ClickCounterClient, CLICK_CLAIM_KIND, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from '../../lib/buyer-object-clients'
+import { addAskingOnceMore, addKnownRefused, ClickCounterClient, CLICK_CLAIM_KIND, isPartnerId, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from '../../lib/buyer-object-clients'
 import { GenerationMovedError, WrongStateError } from '../../lib/buyer-sale-attempt'
 import type { SaleState } from '../../durable-objects/lead-sale'
 import { notAttempted, writeHeldClickSale, type SaleWrites } from '../../lib/held-click-sale-writes'
@@ -309,16 +310,21 @@ heldClicks.post('/:id/mark-sent', async (c) => {
     return refusalOf(c, row, err)
   }
 
-  // The day the click was held is the day the buyer received it.
+  // The day the click was held is the day the buyer received it. An add with no answer is
+  // asked once more by the same rule buyer_click_send follows (#1766), because it may have
+  // landed and the count is a set; the page is told whether the count refused it or whether
+  // that is not known, so it never says the click was not added when nobody measured that.
   let count: { added: boolean; count: number; date: string } | null = null
   let countError: string | null = null
+  let countFailure: 'not_added' | 'unknown' = 'unknown'
   const counter = new ClickCounterClient(c.env.DAILY_CAP, c.env.WORKFLOW_CACHE, row.partner_id, Date.parse(row.held_at))
-  try {
-    const added = await withDeadline(counter.addMember(row.prospect_id), OBJECT_CALL_DEADLINE_MS, 'click counter add')
-    count = { ...added, date: counter.date }
-  } catch (err) {
-    countError = messageOf(err)
-    console.error(`[held-clicks] count after mark sent failed for ${row.id}: ${countError}`)
+  const added = await addAskingOnceMore(() => withDeadline(counter.addMember(row.prospect_id), OBJECT_CALL_DEADLINE_MS, 'click counter add'))
+  if (added.result) {
+    count = { ...added.result, date: counter.date }
+  } else {
+    countError = added.failed.map((f) => f.message).join('; asked again: ')
+    countFailure = addKnownRefused(added) ? 'not_added' : 'unknown'
+    console.error(`[held-clicks] count after mark sent failed for ${row.id} (${countFailure}): ${countError}`)
   }
 
   // The sale stands whatever Salesforce answers: the buyer has the lead.
@@ -337,7 +343,7 @@ heldClicks.post('/:id/mark-sent', async (c) => {
   const listCleared = salesforce.complete ? await clearEntry(c.env, row, orgId) : false
   return c.json(count
     ? { outcome: 'sent', generation: next, count, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared }
-    : { outcome: 'sent', generation: next, count: null, count_error: countError, count_date: counter.date, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
+    : { outcome: 'sent', generation: next, count: null, count_failure: countFailure, count_error: countError, count_date: counter.date, salesforce, audit_recorded: auditRecorded, list_cleared: listCleared })
 })
 
 heldClicks.post('/:id/free', async (c) => {

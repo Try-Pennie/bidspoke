@@ -39,7 +39,8 @@ vi.mock('../../../lib/buyer-object-clients', async () => {
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { recordAuditLog, writeAuditLog } from '../../../lib/audit'
-import { ClickCounterClient, LeadSaleClient } from '../../../lib/buyer-object-clients'
+import { ClickCounterClient, LeadSaleClient, ObjectCallError, ObjectCallLostError } from '../../../lib/buyer-object-clients'
+import { DeadlineError } from '@bidspoke/buyer-profile'
 import { GenerationMovedError, WrongStateError } from '../../../lib/buyer-sale-attempt'
 import { writeHeldClickSale, type SaleWrites } from '../../../lib/held-click-sale-writes'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
@@ -299,6 +300,52 @@ describe('POST /held-clicks/:id/mark-sent', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ outcome: 'sent', count: null, count_error: expect.stringMatching(/500/), count_date: '2027-09-20' })
     expect(vi.mocked(recordAuditLog)).toHaveBeenCalled()
+  })
+
+  // #1766: an add that got no answer may have landed, and the count is a set, so it is asked
+  // once more; the answer says whether the count refused it or whether that is not known.
+  describe('the count after Mark sent says only what the counter answered (#1766)', () => {
+    const markSent = async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+      const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2, buyer_lead_id: LEAD_ID })
+      expect(res.status).toBe(200)
+      return res.json() as Promise<Record<string, unknown>>
+    }
+
+    it('an add that times out once and then answers is counted, asked twice', async () => {
+      counterStub.addMember.mockRejectedValueOnce(new DeadlineError('click counter add', 5000)).mockResolvedValueOnce({ added: true, count: 12 })
+      expect(await markSent()).toMatchObject({ count: { added: true, count: 12, date: '2027-09-20' } })
+      expect(counterStub.addMember).toHaveBeenCalledTimes(2)
+    })
+
+    it('a call lost in transit is asked again too', async () => {
+      counterStub.addMember.mockRejectedValueOnce(new ObjectCallLostError(new TypeError('Network connection lost.'))).mockResolvedValueOnce({ added: false, count: 12 })
+      expect(await markSent()).toMatchObject({ count: { added: false, count: 12 } })
+      expect(counterStub.addMember).toHaveBeenCalledTimes(2)
+    })
+
+    it('no answer twice is reported as unknown, with both answers, never as not added', async () => {
+      counterStub.addMember.mockRejectedValue(new DeadlineError('click counter add', 5000))
+      const body = await markSent()
+      expect(counterStub.addMember).toHaveBeenCalledTimes(2)
+      expect(body).toMatchObject({ count: null, count_failure: 'unknown', count_date: '2027-09-20' })
+      expect(body.count_error).toBe('click counter add did not answer within 5000 ms; asked again: click counter add did not answer within 5000 ms')
+    })
+
+    it('a refusal the counter gave is not asked again, and is reported as not added', async () => {
+      counterStub.addMember.mockRejectedValue(new ObjectCallError('click counter add', 400, '{"error":"bad_member"}'))
+      const body = await markSent()
+      expect(counterStub.addMember).toHaveBeenCalledTimes(1)
+      expect(body).toMatchObject({ count: null, count_failure: 'not_added', count_error: 'click counter add answered 400: {"error":"bad_member"}' })
+    })
+
+    it('an error nobody classified is not asked again, and is reported as unknown', async () => {
+      counterStub.addMember.mockRejectedValue(new Error('click counter add answered 500'))
+      const body = await markSent()
+      expect(counterStub.addMember).toHaveBeenCalledTimes(1)
+      expect(body).toMatchObject({ count: null, count_failure: 'unknown' })
+    })
   })
 
   it('an entry a newer hold replaced is left on the list, and the answer says so', async () => {

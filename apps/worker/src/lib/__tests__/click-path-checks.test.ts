@@ -22,6 +22,7 @@ import {
   CLICK_CHECK_ERRORS_JOB,
   CLICK_PATH_CHECKS_JOB,
   CLICK_PATH_QUIET_JOB,
+  CLICK_RECONCILE_REMEDY,
   CLICK_RECONCILE_JOB,
   CLICK_SEND_REFUSALS_JOB,
   NO_CLICK_MIN_OFFERS,
@@ -420,6 +421,14 @@ describe('reconcile: the counted prospects against Salesforce, once per Pacific 
     const { d } = deps({ members: { [DAY]: ['a0X000000000001'] }, salesforce: [{ id: 'a0X000000000001', at: at(18) }], submissions: new Error('Salesforce query failed (503)') })
     const s = await runClickPathChecks(d)
     expect(s.subjects[0].reconcile).toMatchObject({ verdict: 'unmeasured' })
+  })
+
+  // #1766: buyer_click_send now pages "may not have been counted" when the counter gave no
+  // answer, because such an add can land late. This check is where that is settled, so its
+  // fix hint says which of those clicks it lists, and keeps "read low" for what it measured.
+  it('the fix hint says a click paged as possibly not counted is listed only when its add never landed', () => {
+    expect(CLICK_RECONCILE_REMEDY.fixHint).toMatch(/A click paged as possibly not counted is listed here only when its add never landed\./)
+    expect(CLICK_RECONCILE_REMEDY.fixHint).toMatch(/Completed but never counted: .* so the day's count read low by that many\./)
   })
 
   it('a Salesforce read that fails is reported as unreconciled, never as a match, and is retried on the next run', async () => {

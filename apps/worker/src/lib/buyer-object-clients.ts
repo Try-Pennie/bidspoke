@@ -8,7 +8,7 @@
  * anything else is an ObjectCallError naming the call and the status, so no
  * failure can read as an answer (L11).
  */
-import { isPartnerId, PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
+import { DeadlineError, isPartnerId, PACIFIC, withDeadline, zonedParts, type Timers, type LedgerKind, type Population, type SaleStatus } from '@bidspoke/buyer-profile'
 import type { AddMemberResult, MembersResult } from '../durable-objects/daily-cap'
 import type {
   CapLimits,
@@ -80,10 +80,48 @@ export class ObjectCallError extends Error {
   }
 }
 
+/**
+ * An object answered with a success status and a body the client cannot read
+ * (#1766). It is an ANSWER, so a caller must not read it as a call that was
+ * lost: buyer_click_send asks a lost add again, and an answer it cannot read
+ * is not asked again.
+ */
+export class ObjectAnswerUnreadableError extends Error {
+  readonly body: string
+  constructor(op: string, body: string) {
+    super(`${op} answered an unreadable body: ${body}`)
+    this.name = 'ObjectAnswerUnreadableError'
+    this.body = body
+  }
+}
+
+/**
+ * The call to the object failed in transit, so no answer came back (#1766): a
+ * lost connection, an object reset by a deploy, an overloaded object. The
+ * object may still have done what it was asked. The message is the platform's
+ * own, unchanged, and the platform's error is the cause.
+ */
+export class ObjectCallLostError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'the call to the object failed in transit with a non Error value', { cause })
+    this.name = 'ObjectCallLostError'
+  }
+}
+
 type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
-  const res = await withDeadline(stub.fetch(url, init), deadlineOf(opts, op), op, opts.timers)
+  // Only the request itself can be lost in transit; what happens after it arrived is an answer.
+  // Caught after the race rather than chained onto the fetch, so a call that answers pays no extra turn.
+  // Started outside the try: a fetch that throws at once sent nothing, so it is not a lost call.
+  const sent = stub.fetch(url, init)
+  let res: Response
+  try {
+    res = await withDeadline(sent, deadlineOf(opts, op), op, opts.timers)
+  } catch (err) {
+    if (err instanceof DeadlineError) throw err
+    throw new ObjectCallLostError(err)
+  }
   if (res.ok) return res.json<T>()
   const text = await res.text()
   if (res.status === 409 && refusal) {
@@ -265,10 +303,22 @@ export class ClickCounterClient {
    * Then writes the count the object answered to the copy. A copy that fails to
    * write never fails the add, because the click was counted; it is logged, and
    * the next offer check reads the object while the copy is missing.
+   *
+   * What a failure was is in its type (#1766): an ObjectCallError is a status the
+   * object answered with, an ObjectAnswerUnreadableError a success it answered
+   * with a body that is not an add result (the wrong shape, or not JSON at all),
+   * and a DeadlineError or an ObjectCallLostError is no answer at all.
    */
   async addMember(member: string): Promise<AddMemberResult> {
-    const r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
-    if (!isAddMemberResult(r)) throw new Error(`click counter add answered an unreadable body: ${JSON.stringify(r)}`)
+    let r: unknown
+    try {
+      r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
+    } catch (err) {
+      // Only reading a success body as JSON raises a SyntaxError here: the object answered.
+      if (err instanceof SyntaxError) throw new ObjectAnswerUnreadableError('click counter add', `a body that is not JSON (${err.message})`)
+      throw err
+    }
+    if (!isAddMemberResult(r)) throw new ObjectAnswerUnreadableError('click counter add', JSON.stringify(r))
     await this.writeCopy(r.count)
     return r
   }
@@ -316,6 +366,69 @@ export class ClickCounterClient {
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) throw new Error(`click counter count answered an unreadable body: ${JSON.stringify(r)}`)
     return count
   }
+}
+
+/**
+ * What a failed add says about the click (#1766), from the client's typed
+ * failures, in ONE place for every caller (L35):
+ *   no_answer     a deadline that expired, or a call lost in transit. The add
+ *                 may still have landed: on 2026-10-05 one landed 48 ms after
+ *                 its caller gave up.
+ *   refused       a 4xx: the object refused the add, so it did not take it.
+ *   error_status  another error status, which does not say whether it took it.
+ *   unreadable    a success whose body is not an add result.
+ *   unclassified  anything else, so what happened is not known.
+ */
+export type AddFailureKind = 'no_answer' | 'refused' | 'error_status' | 'unreadable' | 'unclassified'
+export interface AddFailure {
+  kind: AddFailureKind
+  message: string
+}
+
+export function addFailureOf(err: unknown): AddFailure {
+  const message = messageOf(err)
+  if (err instanceof DeadlineError || err instanceof ObjectCallLostError) return { kind: 'no_answer', message }
+  if (err instanceof ObjectCallError) return { kind: err.status >= 400 && err.status < 500 ? 'refused' : 'error_status', message }
+  if (err instanceof ObjectAnswerUnreadableError) return { kind: 'unreadable', message }
+  return { kind: 'unclassified', message }
+}
+
+export interface AddOutcome {
+  /** What the counter answered, when an ask got an answer. */
+  result: AddMemberResult | null
+  /** Every ask that failed, in order: the first, then the retry's when that failed too. */
+  failed: AddFailure[]
+  /** True when the first ask got no answer and the caller declined a second. */
+  retryDeclined: boolean
+}
+
+/**
+ * Adds a member, asking once more when the first ask got NO answer and
+ * `mayAskAgain` allows it (#1766). The add is a set, so a second ask cannot
+ * count a click twice. An answer the counter gave, and an error nobody
+ * classified, are never asked again. `add` is one bounded ask; `mayAskAgain`
+ * is consulted only when a second ask is otherwise due, so a caller under a
+ * time budget decides there (buyer_click_send), and one without asks again.
+ * Never rejects.
+ */
+export async function addAskingOnceMore(add: () => Promise<AddMemberResult>, mayAskAgain: () => boolean = () => true): Promise<AddOutcome> {
+  const failed: AddFailure[] = []
+  for (let ask = 0; ask < 2; ask++) {
+    try {
+      return { result: await add(), failed, retryDeclined: false }
+    } catch (err) {
+      const failure = addFailureOf(err)
+      failed.push(failure)
+      if (failure.kind !== 'no_answer' || ask === 1) break
+      if (!mayAskAgain()) return { result: null, failed, retryDeclined: true }
+    }
+  }
+  return { result: null, failed, retryDeclined: false }
+}
+
+/** True only when the counter refused the one ask: the click is known not to be counted. An ask with no answer may have landed. */
+export function addKnownRefused(outcome: AddOutcome): boolean {
+  return outcome.result === null && outcome.failed.length === 1 && outcome.failed[0].kind === 'refused'
 }
 
 // ── BuyerLedgerObject ──────────────────────────────────────────────────────────
