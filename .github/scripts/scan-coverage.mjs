@@ -26,7 +26,8 @@
 //
 // Exits 0 only when the scanner is proven to have covered its subject AND found
 // nothing. Every other outcome, including an unreadable report, exits 1.
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 /** @typedef {{ ok: boolean, reason: string }} Verdict */
 
@@ -182,6 +183,11 @@ function main(argv) {
 }
 
 // Only run the CLI when invoked directly, so the tests can import the checks.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+// Compared as real paths: import.meta.url is percent encoded, so set beside a
+// raw path it never matched in a folder with a space or a curly apostrophe, and
+// the CLI then exited 0 having checked nothing (#1739, L740). Node also
+// resolves symlinks in the main module's URL (macOS's /var is one), so the
+// argument is resolved the same way before comparing.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exit(main(process.argv.slice(2)))
 }
