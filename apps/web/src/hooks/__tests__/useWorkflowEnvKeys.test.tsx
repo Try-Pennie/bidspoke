@@ -30,11 +30,16 @@ describe('useWorkflowEnvKeys (#1774)', () => {
   // The canvas has no render harness, so its wiring is read from the source: it
   // takes its suggestions from this hook for its own workflow, and never lists
   // the organization's keys itself, which is how other workflows' keys got in.
+  // Comments are dropped first, so a note that names the hook cannot stand in for
+  // the call, and the hook's result must be the list the suggestions are built from.
   it("is where the canvas takes its env suggestions, for the open workflow's id", () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'components', 'canvas', 'WorkflowCanvas.tsx'), 'utf8')
+    const raw = readFileSync(join(__dirname, '..', '..', 'components', 'canvas', 'WorkflowCanvas.tsx'), 'utf8')
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((line) => !line.trim().startsWith('//')).join('\n')
 
-    expect(src).toContain('useWorkflowEnvKeys(workflow.id)')
-    expect(src).not.toContain('api.env.list(')
+    expect(code).toMatch(/const envKeys = useWorkflowEnvKeys\(workflow\.id\)/)
+    expect(code).toContain('...envKeys.map((k) => `env.${k}`)')
+    expect(code.match(/\benvKeys\b/g)).toHaveLength(2)
+    expect(code).not.toContain('api.env.list(')
   })
 
   it('offers no keys while the list cannot be read, and the canvas carries on', async () => {
