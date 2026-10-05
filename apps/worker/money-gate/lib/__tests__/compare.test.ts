@@ -158,6 +158,26 @@ describe('coverageReport', () => {
     expect(r.failures).toEqual(['Engine Bidding Workflow replayed no shadow dry_run fixture'])
   })
 
+  // #1780: a shadow run of a workflow carrying a code node is refused before
+  // any node runs. The refusal is the outcome measured, so it is reported, not
+  // read as a replay that checked nothing.
+  const refused = (f: FixtureRecord): FixtureRecord => ({
+    ...asKind({ ...f, nodes_executed: [], routes: [], outbound: [], code_dispatch: [] }, 'shadow_dry_run', 'shadow dry_run'),
+    error: 'ShadowRunRefusedError: A shadow run of this workflow is refused before anything runs. prep is a code node, and a reason.',
+  })
+
+  it('counts a shadow run the engine refused by name as measured, and says it was refused', () => {
+    const r = coverageReport(transcript('head', [fixture(), asKind(fixture(), 'test', 'test run'), refused(fixture())]))
+    expect(r.failures).toEqual([])
+    expect(r.text).toContain('  as shadow dry_run: tripoint_wins, refused before anything ran: A shadow run of this workflow is refused before anything runs. prep is a code node, and a reason.')
+  })
+
+  it('still fails a shadow run that executed no node for any other reason, a throw included', () => {
+    const threw = { ...refused(fixture()), error: 'Error: Failed to load workflow wf-1: timeout' }
+    const r = coverageReport(transcript('head', [fixture(), asKind(fixture(), 'test', 'test run'), threw]))
+    expect(r.failures).toEqual(['Engine Bidding Workflow executed no node as a shadow dry_run'])
+  })
+
   it('fails a workflow whose test runs executed no node, though its live runs did', () => {
     const r = coverageReport(transcript('head', [fixture(), asKind(fixture({ nodes_executed: [], routes: [] }), 'test', 'test run'), asKind(fixture(), 'shadow_dry_run', 'shadow dry_run')]))
     expect(r.failures).toEqual(['Engine Bidding Workflow executed no node as a test run'])

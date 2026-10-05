@@ -10,9 +10,15 @@ section 3.3 for the full plan.
 
 Pipedream (still the live system) fires a fire-and-forget copy of each request
 at `POST https://<worker-host>/shadow/<workflow_id>` with the same `X-API-Key`.
-Bidspoke returns `204` immediately so the mirror step never blocks Pipedream,
-then runs the workflow in the background with `shadow_mode: 'dry_run'`. Add
-`?mode=stand_in` to the URL to run the stand-in sub-mode instead (see below).
+Bidspoke checks the workflow first, then returns `204` immediately so the
+mirror step never blocks Pipedream, and runs the workflow in the background with
+`shadow_mode: 'dry_run'`. Add `?mode=stand_in` to the URL to run the stand-in
+sub-mode instead (see below).
+
+A workflow carrying a Code node is refused with `422` and a message naming the
+nodes, and nothing runs (#1780); see Code nodes below. A workflow that does not
+exist answers `404`, and one that cannot be read answers `503`, since whether
+the run would send anything is then unknown.
 
 The run is marked `is_test = true`, so it does not emit Slack alerts, does not
 write lead sightings, and is excluded from prod dashboards. Shadow runs carry a
@@ -36,19 +42,20 @@ Everything else — filters, branches, transforms, matrix lookups, bid evaluatio
 — runs for real. That is the point: the decision logic executes, the side
 effects do not.
 
-## Code nodes: author responsibility
+## Code nodes: refused until they can be sandboxed
 
-The engine cannot see inside a Code node's sandbox, so an outbound Code script
-must stub itself. Every code script receives a `shadow_mode` value (`'off'` or
-`'dry_run'`) alongside `payload`, `steps`, `env`, and `execution`. Any script
-that makes an outbound call (e.g. the Equifax credit pull, a partner submission)
-must short-circuit:
+A Code node's scripts make their real outbound calls on a shadow run. The
+sandbox request carries `shadow_mode`, but the bundled script never receives it
+and no script reads it, so nothing stubs them: a shadow run of Engine Bidding or
+Main Flow would pull a real person's credit report. So a shadow run of any
+workflow carrying a Code node is refused before anything is recorded or runs, by
+the shadow route (`422`) and again by the engine for any other caller (#1780).
 
-    if (shadow_mode === 'dry_run') {
-      return { /* a realistic stubbed success shape for this step */ }
-    }
-
-Pure-transform code nodes (no outbound call) need no change.
+The rule is the `shadowRun` trait every node type declares in
+`packages/node-types` (`sends_nothing`, `stubbed`, or `refused` with its
+reason), so a new node type has to say what a shadow run does with it. The
+refusal lifts when shadow runs dispatch to a compare namespace whose outbound
+Worker denies egress (#1708 part B).
 
 ## Stand-in bid sub-mode
 

@@ -267,8 +267,24 @@ export function formatDifferences(diffs: Difference[]): string {
     .join('\n')
 }
 
+/**
+ * The error name the engine gives a run it refuses, by its own rule, before any
+ * node runs: a shadow run of a workflow carrying a node it cannot stub (#1780).
+ * Such a fixture executed nothing because the refusal is its outcome, which the
+ * gate then compares like any other, so it is not a replay that measured nothing.
+ */
+const REFUSED_BEFORE_RUNNING = 'ShadowRunRefusedError: '
+
+function refusalOf(f: FixtureRecord): string | null {
+  return f.nodes_executed.length === 0 && typeof f.error === 'string' && f.error.startsWith(REFUSED_BEFORE_RUNNING)
+    ? f.error.slice(REFUSED_BEFORE_RUNNING.length)
+    : null
+}
+
 /** What one test or shadow fixture did, for the reader: the nodes, the requests and where its code went. */
 function describeRun(f: FixtureRecord): string {
+  const refusal = refusalOf(f)
+  if (refusal !== null) return `  as ${RUN_KIND_LABEL[f.run_kind]}: ${f.variant}, refused before anything ran: ${refusal}`
   const engine = f.outbound.filter((o) => o.via === 'engine').length
   const code = f.outbound.length - engine
   const sent = f.outbound.length === 0
@@ -304,7 +320,7 @@ export function coverageReport(t: Transcript): { text: string; failures: string[
     for (const kind of EXTRA_RUN_KINDS) {
       const ofKind = fixtures.filter((f) => f.run_kind === kind)
       if (ofKind.length === 0) failures.push(`${wf.workflow_name} replayed no ${RUN_KIND_LABEL[kind]} fixture`)
-      else if (executed.size > 0 && ofKind.every((f) => f.nodes_executed.length === 0)) failures.push(`${wf.workflow_name} executed no node as a ${RUN_KIND_LABEL[kind]}`)
+      else if (executed.size > 0 && ofKind.every((f) => f.nodes_executed.length === 0 && refusalOf(f) === null)) failures.push(`${wf.workflow_name} executed no node as a ${RUN_KIND_LABEL[kind]}`)
     }
   }
   if (t.unstubbed_hosts.length) lines.push(`hosts with no stub rule (answered 599): ${t.unstubbed_hosts.join(', ')}`)

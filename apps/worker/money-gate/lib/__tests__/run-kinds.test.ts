@@ -16,6 +16,11 @@ vi.mock('../../../src/engine/index', async (importOriginal) => ({
   executeWorkflow: vi.fn(),
 }))
 vi.mock('../../../src/lib/supabase')
+// The shadow route reads the workflow to check it before acknowledging (#1780).
+vi.mock('../../../src/engine/definition-loader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/engine/definition-loader')>()),
+  loadWorkflowDefinition: vi.fn(),
+}))
 vi.mock('../../../src/lib/jwt')
 vi.mock('../../../src/lib/code-node-deployer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/lib/code-node-deployer')>()),
@@ -26,6 +31,7 @@ import { executeWorkflow } from '../../../src/engine/index'
 import { createSupabaseClient } from '../../../src/lib/supabase'
 import { verifyJwt } from '../../../src/lib/jwt'
 import { deployTestCodeBundle } from '../../../src/lib/code-node-deployer'
+import { loadWorkflowDefinition } from '../../../src/engine/definition-loader'
 import shadow from '../../../src/routes/shadow'
 import { RUN_KINDS, fixtureId, runOptions } from '../run-kinds'
 
@@ -60,6 +66,10 @@ describe('fixtureId', () => {
 describe('a shadow run is replayed with exactly what POST /shadow/:workflow_id passes', () => {
   it('matches the route field for field', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue({} as ReturnType<typeof createSupabaseClient>)
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: { trigger: { id: 't', type: 'trigger', config: {} }, nodes: [{ id: 'n', namespace: 'reply', type: 'response', config: {} }], edges: [] },
+      workflow_version_id: 'v1', workflow_name: 'Shadow', org_id: ORG, slack_channel: null, lane: 'money',
+    } as never)
     const env = { API_KEY_MAP: JSON.stringify({ sk_test_key: 'website_form' }) } as unknown as Env
     const res = await shadow.request('/wf-1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'sk_test_key' }, body: JSON.stringify(payload) }, env, ctx)
     expect(res.status).toBe(204)

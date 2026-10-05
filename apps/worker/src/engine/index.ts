@@ -58,7 +58,7 @@ import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
-import { runRealityOfOptions, stampRunReality } from './run-reality'
+import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -155,6 +155,7 @@ export function moneyRuntime(supabase: SupabaseClient): EngineRuntime {
 }
 
 export { WorkflowLaneError, LaneRefusedNodeError }
+export { ShadowRunRefusedError } from './run-reality'
 
 /**
  * The node executor a walk runs under (#1725). The money lane's is
@@ -197,6 +198,10 @@ export async function executeWorkflow(
   // included) may carry only node types its lane can run.
   assertWorkflowServedInLane(workflowId, loaded.lane, runtime.lane)
   assertDefinitionRunsInLane(definition, runtime.lane)
+  // A shadow run must send nothing, so one carrying a node it cannot stub (a
+  // code node, whose scripts make their real calls) is refused here (#1780).
+  const shadowRefusal = shadowRunRefusal(definition, reality)
+  if (shadowRefusal) throw shadowRefusal
 
   if (options.enforceSourceAssignment) {
     await enforceSourceAssignment(configDb, org_id, source, workflowId)

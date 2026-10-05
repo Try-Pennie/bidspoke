@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
 import { executeWorkflow, moneyRuntime } from '../engine/index'
+import { loadWorkflowDefinition, WorkflowNotFoundError } from '../engine/definition-loader'
+import { runReality, shadowRunRefusal } from '../engine/run-reality'
 import { createSupabaseClient } from '../lib/supabase'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
@@ -13,6 +15,13 @@ import { createSupabaseClient } from '../lib/supabase'
 // filterable apart from manual test runs. Separate route from the eventual
 // cutover endpoint so removing the mirror at cutover touches nothing real.
 // See docs/engine-cutover-scope.md section 3.3.
+//
+// Before acknowledging, the route checks the workflow with the engine's own
+// rule (#1780): a workflow carrying a node a shadow run cannot stub (a code
+// node, whose scripts make their real calls) is refused by name with 422, so
+// the caller learns of it rather than a 204 for a run the engine then refuses.
+// A workflow that cannot be read is refused too, since whether the run would
+// send anything is then unknown.
 const shadow = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
@@ -31,6 +40,20 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
+
+  let definition
+  try {
+    // As the engine loads it for a test run: inactive workflows included.
+    definition = (await loadWorkflowDefinition(workflowId, c.env.WORKFLOW_CACHE, supabase, { allowInactive: true })).definition
+  } catch (err) {
+    if (err instanceof WorkflowNotFoundError) return c.json({ error: 'Workflow not found' }, 404)
+    console.error('[shadow] could not read the workflow to check it:', err instanceof Error ? err.message : 'non Error thrown')
+    return c.json({ error: 'The workflow could not be read, so whether a shadow run of it would send anything is unknown. Try again shortly.' }, 503)
+  }
+  const refusal = shadowRunRefusal(definition, runReality({ isTest: true, shadowMode }))
+  if (refusal) {
+    return c.json({ error: refusal.message, refused_nodes: refusal.nodes.map(({ namespace, type }) => ({ namespace, type })) }, 422)
+  }
 
   c.executionCtx.waitUntil(
     executeWorkflow(

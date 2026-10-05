@@ -243,10 +243,12 @@ export function codeSentinel(output: unknown): Pick<StepExecutionResult, 'earlyR
 }
 
 /**
- * Build the JSON request body sent to the code sandbox. Extracted so the
- * shadow_mode contract is unit-testable without dispatching a real isolate.
- * Outbound code scripts read `shadow_mode` and self-stub on 'dry_run' — the
- * engine can't introspect the sandbox. See docs/engine-cutover-scope.md 3.3.
+ * Build the JSON request body sent to the code sandbox. It carries
+ * `shadow_mode`, but no script reads it: the bundled chain never passes it on,
+ * so a code node makes its real calls on a shadow run. A shadow run of a
+ * workflow carrying a code node is therefore refused before anything runs
+ * (engine/run-reality.ts shadowRunRefusal, #1780) until shadow runs dispatch to
+ * a namespace that denies egress (#1708 part B).
  */
 export function buildCodeSandboxBody(
   ctx: ExecutionContext,

@@ -14,8 +14,8 @@
  * 2026-10-02). Where a node must behave differently on a test run, the
  * difference is a named `testRunException` in NODE_TRAITS with its reason.
  */
-import { NODE_TRAITS, type NodeType } from '@bidspoke/node-types'
-import type { ExecutionContext } from '../types'
+import { NODE_TRAITS, isNodeType, type NodeType } from '@bidspoke/node-types'
+import type { ExecutionContext, WorkflowDefinition } from '../types'
 
 export type ShadowMode = NonNullable<ExecutionContext['shadow_mode']>
 
@@ -98,4 +98,53 @@ export function nodeSkipsScreen(type: NodeType, reality: Pick<RunReality, 'isTes
 /** nodeSkipsScreen for a node not handed the env: the screen exception reads only the test flag. */
 export function nodeSkipsScreenOn(type: NodeType, ctx: ExecutionContext): boolean {
   return nodeSkipsScreen(type, { isTest: ctx.isTest === true })
+}
+
+/**
+ * A shadow run of a workflow carrying a node it cannot stub (#1780). Refused
+ * before anything is recorded or run: a shadow run exists to send nothing, and
+ * a code node's scripts would make their real calls, an Equifax credit pull
+ * among them. Lifts when shadow runs dispatch to a compare namespace that
+ * denies egress (#1708 part B).
+ */
+export class ShadowRunRefusedError extends Error {
+  /** Read by the retry classifier: a refusal is the same on every attempt. */
+  readonly permanent = true
+
+  constructor(readonly nodes: Array<{ namespace: string; type: NodeType; reason: string }>) {
+    super(shadowRefusalMessage(nodes))
+    this.name = 'ShadowRunRefusedError'
+  }
+}
+
+function shadowRefusalMessage(nodes: Array<{ namespace: string; type: NodeType; reason: string }>): string {
+  const byType = new Map<NodeType, { reason: string; namespaces: string[] }>()
+  for (const n of nodes) {
+    const group = byType.get(n.type) ?? { reason: n.reason, namespaces: [] }
+    group.namespaces.push(n.namespace)
+    byType.set(n.type, group)
+  }
+  const sentences = [...byType].map(([type, { reason, namespaces }]) => {
+    const names = namespaces.length === 1 ? namespaces[0] : `${namespaces.slice(0, -1).join(', ')} and ${namespaces[namespaces.length - 1]}`
+    const what = namespaces.length === 1 ? `is a ${type} node` : `are ${type} nodes`
+    return `${names} ${what}, and ${reason}.`
+  })
+  return `A shadow run of this workflow is refused before anything runs. ${sentences.join(' ')}`
+}
+
+/**
+ * The refusal for a shadow run of this definition, or null when the run may go
+ * ahead: it is no shadow run, or every node sends nothing or is stubbed. A type
+ * this build has never heard of is left to the executor, which refuses it by
+ * name, as the lane check does.
+ */
+export function shadowRunRefusal(definition: WorkflowDefinition, reality: Pick<RunReality, 'outboundStubbed'>): ShadowRunRefusedError | null {
+  if (!reality.outboundStubbed) return null
+  const refused: Array<{ namespace: string; type: NodeType; reason: string }> = []
+  for (const n of definition.nodes) {
+    if (!isNodeType(n.type)) continue
+    const trait = NODE_TRAITS[n.type].shadowRun
+    if (trait.kind === 'refused') refused.push({ namespace: n.namespace, type: n.type, reason: trait.reason })
+  }
+  return refused.length > 0 ? new ShadowRunRefusedError(refused) : null
 }
