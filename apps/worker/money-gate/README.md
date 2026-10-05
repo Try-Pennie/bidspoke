@@ -12,12 +12,43 @@ request did not change behaviour it did not mean to change.
 |---|---|
 | `executeWorkflow` and every node executor of the engine under test | Supabase: `lib/supabase-double.ts` serves `fixtures/config-snapshot.json`, records every write and applies it to a private copy |
 | Durable Objects and KV, in workerd through `@cloudflare/vitest-plugin` | Every outbound request: answered by `lib/stub-rules.ts`, the same rules on both sides |
-| Code nodes: each workflow's bundle is built by the engine's own `buildBundledWorkerScript` and hosted in a nested workerd (`harness/gate-io.ts`), so the production chain path runs | `DYNAMIC_WORKER_LOADER`: a fake that records the script name and namespaces each dispatch resolves to |
+| Code nodes: each workflow's bundle is built by the engine's own `buildBundledWorkerScript` and hosted in a nested workerd (`harness/gate-io.ts`), so the production chain path runs | Every dispatch namespace binding the engine's `wrangler.toml` declares (today `DYNAMIC_WORKER_LOADER`, read with wrangler's own config reader): a fake that records the binding, its dispatch namespace, the script name and the code nodes each dispatch resolves to |
 
 Network is off: the replay's global `fetch` is replaced, the runner's own
 outbound service refuses anything that slips past it, and each code bundle's
 outbound service answers from the stub rules. Clock, randomness, timezone and
 locale are pinned, in the engine and inside every code bundle.
+
+## Three kinds of run
+
+Every lead is replayed as a live run. The variants marked `"also_run_as": ["test",
+"shadow_dry_run"]` are replayed twice more, as the same lead (same payload, same
+randomness) started another way (#1730):
+
+* **test run**: the canvas Test Runner, `POST /api/workflows/:id/test`. It stays
+  live in everything it sends: real outbound calls, into the money namespace (Dan,
+  2026-10-02, on #1708). Before the run the gate calls the engine's own
+  `deployTestCodeBundle`, as the route does, answers its upload to Cloudflare
+  locally and hosts the script under the name it chose, so the test run dispatches
+  to its test bundle.
+* **shadow dry_run**: the shadow mirror, `POST /shadow/:workflow_id`, with every
+  outbound submission stubbed. #1708 part B moves these to a compare namespace
+  with deny mode egress.
+
+Each kind's options are what its route hands `executeWorkflow`, built in
+`lib/run-kinds.ts`; `lib/__tests__/run-kinds.test.ts` drives both routes and fails
+when either passes something else. Prior runs are always live, since they stand
+for traffic that came before. A workflow with no variant file replays its shape
+default as all three. Every workflow must be replayed as each kind: the verdict
+fails, by name, on a workflow with no fixture of a kind or whose fixtures of a
+kind executed no node, and `committed-fixtures.test.ts` fails on a variant file
+that marks no variant for one.
+
+A test or shadow fixture is compared base against head exactly as a live one is,
+with every check below. Its id names the kind (`Main Flow/bid_race_tripoint_wins
+as test run`), and the coverage report prints one line per test and shadow
+fixture: the nodes it executed, the requests it sent, and the binding, namespace
+and script its code dispatched to.
 
 ## What is compared, per fixture
 
@@ -43,7 +74,8 @@ by name and the nodes never executed. A workflow that executed no node fails.
   priority are kept: they decide which arm a lead takes, not what it is worth.
 * `fixtures/definitions/*.json`: the live definitions, from the
   `Try-Pennie/bidspoke-workflows` backup, refused unless equal to production.
-* `fixtures/variants/*.json`: per workflow, the arms to steer towards: payload
+* `fixtures/variants/*.json`: per workflow, the arms to steer towards (and, by
+  `also_run_as`, which variants also run as a test run and a shadow run): payload
   overrides by path, stub scenarios, env overrides, prior runs.
 * `lib/fixture-scan.ts` fails on an issuable SSN, a date of birth other than the
   first of January, a Luhn valid card number and a non zero account number, over
@@ -114,12 +146,24 @@ out), and `reason` says in words why. The rules (`lib/expected-changes.ts`):
   as inert, and it can be deleted in any later pull request.
 
 The gate also fails, by name, when it checked nothing: a transcript with no
-workflow or no fixture, or a committed definition the head did not replay.
+workflow or no fixture, a committed definition the head did not replay, or a
+workflow not replayed as a test run or as a shadow run.
 
 ## Known limits
 
 * The HTTP route (auth, body parsing, custom endpoints) is not exercised: the
   replay calls `executeWorkflow` directly, with the trigger the route would build.
+  For a test run and a shadow run the options come from `lib/run-kinds.ts`, which
+  a Node test holds to what the two routes pass; a route that changes them fails
+  that test, and the replay then drives both sides with the new options, so the
+  route change itself is never a base and head difference.
+* A dry_run shadow run's code nodes send their requests (an Equifax pull, Eligibility
+  Scout, Engine, Taktile) because no script receives the shadow mode: the engine
+  puts `shadow_mode` in the sandbox body, and the bundle never hands it to a
+  script. The shadow fixtures record exactly that, as today's behaviour. When #1708
+  part B moves shadow runs to the compare namespace, the gate shows that on the
+  shadow fixtures as differences to acknowledge: `code_namespace`, and
+  `outbound_request` once their egress is denied.
 * Responses are canned. A change that only matters against a real partner answer
   the stubs do not model is invisible here.
 * Arms no fixture reaches are listed by name in the coverage report rather than

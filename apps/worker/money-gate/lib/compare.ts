@@ -8,6 +8,7 @@
  * which of the things that move money moved (L154).
  */
 import type { RecordedWrite } from './supabase-double'
+import { EXTRA_RUN_KINDS, RUN_KINDS, RUN_KIND_LABEL, type RunKind } from './run-kinds'
 
 export interface RouteRecord { node: string; namespace: string; type: string; route: string }
 export interface OutboundRecord {
@@ -20,13 +21,20 @@ export interface OutboundRecord {
   headers: Record<string, string>
   body: unknown
 }
-export interface CodeDispatchRecord { binding: string; name: string; path: string; namespaces: string[] }
+/**
+ * One dispatch to a code bundle: the binding the engine called, the dispatch
+ * namespace that binding is declared on in wrangler.toml, the script name it
+ * resolved to, and the code nodes it ran.
+ */
+export interface CodeDispatchRecord { binding: string; dispatch_namespace: string; name: string; path: string; namespaces: string[] }
 
 export interface FixtureRecord {
   id: string
   workflow_id: string
   workflow_name: string
   variant: string
+  /** How the run was started (#1730): a live lead, a canvas test run, a dry_run shadow run. */
+  run_kind: RunKind
   trigger: unknown
   routes: RouteRecord[]
   nodes_executed: string[]
@@ -259,6 +267,18 @@ export function formatDifferences(diffs: Difference[]): string {
     .join('\n')
 }
 
+/** What one test or shadow fixture did, for the reader: the nodes, the requests and where its code went. */
+function describeRun(f: FixtureRecord): string {
+  const engine = f.outbound.filter((o) => o.via === 'engine').length
+  const code = f.outbound.length - engine
+  const sent = f.outbound.length === 0
+    ? 'no request sent'
+    : `${f.outbound.length} request${f.outbound.length === 1 ? '' : 's'} sent (${[engine ? `${engine} by the engine` : '', code ? `${code} by code` : ''].filter(Boolean).join(', ')})`
+  const targets = [...new Set(f.code_dispatch.map((d) => `${d.binding} (${d.dispatch_namespace}) ${d.name}`))].sort()
+  const dispatched = targets.length ? `code dispatched to ${targets.join('; ')}` : 'no code dispatched'
+  return `  as ${RUN_KIND_LABEL[f.run_kind]}: ${f.variant}, ${f.nodes_executed.length} nodes executed, ${sent}, ${dispatched}`
+}
+
 export function coverageReport(t: Transcript): { text: string; failures: string[] } {
   const lines: string[] = []
   const failures: string[] = []
@@ -270,13 +290,22 @@ export function coverageReport(t: Transcript): { text: string; failures: string[
     const hit = armNames.filter((a) => reached.has(a))
     const miss = armNames.filter((a) => !reached.has(a))
     const notExecuted = wf.nodes.filter((n) => !executed.has(n))
-    lines.push(`${wf.workflow_name}: ${fixtures.length} fixtures, nodes executed ${[...executed].filter((n) => wf.nodes.includes(n)).length} of ${wf.nodes.length}, arms reached ${hit.length} of ${armNames.length}`)
+    const byKind = RUN_KINDS.map((k) => `${fixtures.filter((f) => f.run_kind === k).length} ${RUN_KIND_LABEL[k]}`).join(', ')
+    lines.push(`${wf.workflow_name}: ${fixtures.length} fixtures (${byKind}), nodes executed ${[...executed].filter((n) => wf.nodes.includes(n)).length} of ${wf.nodes.length}, arms reached ${hit.length} of ${armNames.length}`)
     lines.push(`  reached: ${hit.join('; ') || '(none)'}`)
     lines.push(`  not reached: ${miss.join('; ') || '(none)'}`)
     lines.push(`  not executed: ${notExecuted.join(', ') || '(none)'}`)
+    for (const f of fixtures.filter((x) => x.run_kind !== 'live')) lines.push(describeRun(f))
     const errored = fixtures.filter((f) => f.error)
-    if (errored.length) lines.push(`  fixtures that threw: ${errored.map((f) => f.variant).join(', ')}`)
+    if (errored.length) lines.push(`  fixtures that threw: ${errored.map((f) => f.id.slice(wf.workflow_name.length + 1)).join(', ')}`)
     if (executed.size === 0) failures.push(`${wf.workflow_name} executed no node in any fixture`)
+    // A kind no fixture ran as compares equal on both sides, so its absence is
+    // named rather than passing as agreement (L98).
+    for (const kind of EXTRA_RUN_KINDS) {
+      const ofKind = fixtures.filter((f) => f.run_kind === kind)
+      if (ofKind.length === 0) failures.push(`${wf.workflow_name} replayed no ${RUN_KIND_LABEL[kind]} fixture`)
+      else if (executed.size > 0 && ofKind.every((f) => f.nodes_executed.length === 0)) failures.push(`${wf.workflow_name} executed no node as a ${RUN_KIND_LABEL[kind]}`)
+    }
   }
   if (t.unstubbed_hosts.length) lines.push(`hosts with no stub rule (answered 599): ${t.unstubbed_hosts.join(', ')}`)
   if (t.unsupported_queries?.length) lines.push(`queries the Supabase double answered loosely: ${t.unsupported_queries.join('; ')}`)

@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
+import { unstable_readConfig } from 'wrangler'
 import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
 
@@ -22,6 +23,19 @@ const repoRoot = resolve(here, '..', '..')
 const engineRoot = resolve(process.env.MONEY_GATE_ENGINE_ROOT ?? repoRoot)
 const engineWorker = resolve(engineRoot, 'apps', 'worker')
 
+/**
+ * Every dispatch namespace the engine under test's wrangler.toml declares, read
+ * with wrangler's own reader (#1730). The replay puts a recording fake on each of
+ * these bindings, so each dispatch records the namespace it went through, and a
+ * namespace added later (the compare namespace of #1708 part B) is faked and
+ * recorded without this file changing.
+ */
+const dispatchNamespaces = (unstable_readConfig({ config: resolve(engineWorker, 'wrangler.toml') }, { hideWarnings: true }).dispatch_namespaces ?? [])
+  .map((d) => ({ binding: d.binding, namespace: d.namespace }))
+if (dispatchNamespaces.length === 0) {
+  throw new Error(`money gate: ${resolve(engineWorker, 'wrangler.toml')} declares no dispatch namespace, so there is nothing for code nodes to dispatch through`)
+}
+
 const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS })
 
 export default defineConfig({
@@ -31,6 +45,9 @@ export default defineConfig({
       miniflare: {
         outboundService: refuseRunnerOutbound,
         serviceBindings: { GATE_IO: io.handler },
+        // A plain text binding: the replay's buildEnv passes no text binding on to
+        // the engine except the public vars, so the engine never sees it.
+        bindings: { MONEY_GATE_DISPATCH_NAMESPACES: JSON.stringify(dispatchNamespaces) },
       },
     }),
   ],

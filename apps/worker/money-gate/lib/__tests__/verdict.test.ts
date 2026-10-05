@@ -3,11 +3,15 @@ import { gateVerdict, staleness, STALE_WARN_DAYS, STALE_REMIND_DAYS } from '../v
 import type { FixtureRecord, Transcript } from '../compare'
 
 const fx = (route: string, nodes = ['a', 'b']): FixtureRecord => ({
-  id: 'W/x', workflow_id: 'w', workflow_name: 'W', variant: 'x', trigger: {}, routes: [{ node: 'b', namespace: 'b', type: 'branch', route }],
+  id: 'W/x', workflow_id: 'w', workflow_name: 'W', variant: 'x', run_kind: 'live', trigger: {}, routes: [{ node: 'b', namespace: 'b', type: 'branch', route }],
   nodes_executed: nodes, final_node: 'b', response: { status: 200, body: {} }, outbound: [], code_dispatch: [], supabase_writes: [], do_state: {}, kv_state: {},
 })
-const t = (side: 'base' | 'head', f: FixtureRecord[]): Transcript => ({
-  version: 1, side, fixtures: f, unstubbed_hosts: [], unknown_tables: [],
+// Every workflow is also replayed as a test run and a shadow run (#1730). These
+// twins are the same on both sides, so each test below differs only where it says.
+const twins = (f: FixtureRecord[]): FixtureRecord[] =>
+  f.length === 0 ? [] : (['test', 'shadow_dry_run'] as const).map((k) => ({ ...fx('yes', f[0].nodes_executed), id: `W/x as ${k}`, run_kind: k }))
+const t = (side: 'base' | 'head', f: FixtureRecord[], kinds = true): Transcript => ({
+  version: 1, side, fixtures: kinds ? [...f, ...twins(f)] : f, unstubbed_hosts: [], unknown_tables: [],
   workflows: [{ workflow_id: 'w', workflow_name: 'W', nodes: ['a', 'b'], arms: [{ node: 'b', namespace: 'b', handles: ['yes', 'else'] }] }],
 })
 const NOW = new Date('2026-10-01T00:00:00Z')
@@ -104,6 +108,13 @@ describe('gateVerdict', () => {
       expect(v.output).toContain(`money gate: the ${side} transcript holds no workflow`)
       expect(v.output).toContain(`money gate: the ${side} transcript holds no fixture`)
     }
+  })
+
+  it('fails when a workflow was replayed only live, naming each kind it was not replayed as', () => {
+    const v = verdict(t('base', [fx('yes')], false), t('head', [fx('yes')], false))
+    expect(v.exitCode).toBe(1)
+    expect(v.output).toContain('money gate: W replayed no test run fixture')
+    expect(v.output).toContain('money gate: W replayed no shadow dry_run fixture')
   })
 
   it('fails when the head replayed fewer workflows than are committed', () => {

@@ -3,7 +3,7 @@
   "workflow_name": "Liberty1 Click Handler",
   "common": { "source": "liberty1" },
   "variants": [
-    { "name": "prospect_sent", "purpose": "an open Liberty1 offer on a prospect: click_send sent, the patches", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" } },
+    { "name": "prospect_sent", "purpose": "an open Liberty1 offer on a prospect: click_send sent, the patches", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "success" }, "also_run_as": ["test", "shadow_dry_run"] },
     { "name": "prospect_refused", "purpose": "Liberty1 refuses the click: refused, the patches", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "refused" } },
     { "name": "prospect_unreadable", "purpose": "an answer no rule reads: unknown, unresolved response", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "unreadable" } },
     { "name": "prospect_outage", "purpose": "a 503 from the webhook", "unset": ["Submission__c"], "stubs": { "salesforce_query": "liberty1_open", "liberty1_click": "outage" } },

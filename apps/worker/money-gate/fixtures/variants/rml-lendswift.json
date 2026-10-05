@@ -15,7 +15,7 @@
     }
   },
   "variants": [
-    { "name": "bid", "purpose": "LendSwift accepts above the sub account floor: offer, patch_applicant Bid" },
+    { "name": "bid", "purpose": "LendSwift accepts above the sub account floor: offer, patch_applicant Bid", "also_run_as": ["test", "shadow_dry_run"] },
     { "name": "bid_unfloored_sub_account", "purpose": "a sub account with no floor", "set": { "subAccountUuid": "00000000-0000-4000-8000-00000000c0de" } },
     { "name": "below_floor", "purpose": "accepted under the sub account floor: bid_below_threshold, No Bid", "stubs": { "taktile_decide": "low_bid" } },
     { "name": "rejected", "purpose": "LendSwift rejects: unqualified_lead, No Bid", "stubs": { "taktile_decide": "rejected" } },
