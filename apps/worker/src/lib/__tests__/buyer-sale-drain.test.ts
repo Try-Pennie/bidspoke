@@ -180,6 +180,28 @@ describe('runBuyerSaleDrain', () => {
     expect(lines.join(' ')).toMatch(/partner_configs unreadable/)
   })
 
+  // The drain runs every minute and its line carries the oldest entry's age and
+  // the last error, both moving every tick, so each line names its problem for
+  // the alerter: the buyer and what is wrong (#1768).
+  it('names each paged line by its buyer and what is wrong, so a moving age or error is not a new problem', async () => {
+    const old = entry({ reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
+    const rpcFailing = vi.fn(async () => ({ data: null, error: { message: 'db down' } }))
+    const d = deps({
+      listBuyers: async () => [
+        { partner_id: PARTNER, organization_id: ORG, slug: 'tripoint' },
+        { partner_id: '44444444-4444-4444-8444-444444444444', organization_id: ORG, slug: 'acme' },
+      ],
+      ledger: (partnerId) => (partnerId === PARTNER ? fakeLedger([old]) : fakeLedger([], { unreadable: 'answered 500' })),
+      supabase: { rpc: rpcFailing } as never,
+    })
+    await runBuyerSaleDrain(d)
+    expect(vi.mocked(d.notify).mock.calls[0][1]).toEqual(['tripoint:backlog', 'acme:unmeasured'])
+
+    const unlisted = deps({ listBuyers: async () => { throw new Error('partner_configs unreadable') } })
+    await runBuyerSaleDrain(unlisted)
+    expect(vi.mocked(unlisted.notify).mock.calls[0][1]).toEqual(['buyers-unlisted'])
+  })
+
   it('does nothing in local dev, and says so, because the write would go to production (#669)', async () => {
     const d = deps({ localDev: true })
     const summary = await runBuyerSaleDrain(d)

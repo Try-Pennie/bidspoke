@@ -78,8 +78,13 @@ export interface DrainDeps {
   ledger(partnerId: string): DrainLedger
   readExistingRows(ids: string[]): Promise<Map<string, ExistingRowMeta>>
   supabase: SupabaseClient
-  /** Receives the page lines; an empty list clears the standing condition. */
-  notify(lines: string[]): Promise<void>
+  /**
+   * Receives the page lines; an empty list clears the standing condition.
+   * `keys` names each paged line's problem for the alerter (#1768): the buyer and
+   * what is wrong, never the age or the last error, which move every tick. An
+   * empty list, the clear, carries none.
+   */
+  notify(lines: string[], keys?: readonly string[]): Promise<void>
   now(): number
   localDev: boolean
   log(line: string): void
@@ -124,12 +129,13 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     buyers = await deps.listBuyers()
   } catch (err) {
     const reason = `the buyer list could not be read, so no ledger was drained: ${messageOf(err)}`
-    await deps.notify([reason])
+    await deps.notify([reason], ['buyers-unlisted'])
     return { unmeasured: reason, buyers: [], paged: [reason], errors: [reason] }
   }
 
   const summaries: DrainBuyerSummary[] = []
   const paged: string[] = []
+  const keys: string[] = []
   const errors: string[] = []
 
   for (const buyer of buyers) {
@@ -137,6 +143,7 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     summaries.push(summary)
     if (summary.unmeasured) {
       paged.push(`${buyer.slug}: the buyer ledger could not be read, so its backlog is unmeasured (${summary.unmeasured})`)
+      keys.push(`${buyer.slug}:unmeasured`)
     } else if (summary.remaining_oldest_age_ms !== null && summary.remaining_oldest_age_ms > OUTBOX_BACKLOG_MS) {
       // The page is about what is LEFT after this tick's attempts, so it is
       // judged on the oldest entry still undelivered, never on the age the
@@ -147,10 +154,13 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
           `oldest ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old` +
           (lastError ? `; last error: ${lastError.slice(buyer.slug.length + 2)}` : ''),
       )
+      keys.push(`${buyer.slug}:backlog`)
     }
   }
 
-  await deps.notify(paged)
+  // An empty list is the clear, and carries no keys.
+  if (paged.length === 0) await deps.notify(paged)
+  else await deps.notify(paged, keys)
   return { buyers: summaries, paged, errors }
 }
 
@@ -273,7 +283,7 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
     ledger: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
     readExistingRows: (ids) => readExistingBuyerSaleRows(supabase, ids),
     supabase,
-    notify: (lines) => notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, env.IDEMPOTENCY, BUYER_SALE_DRAIN_REMEDY),
+    notify: (lines, keys) => notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, env.IDEMPOTENCY, BUYER_SALE_DRAIN_REMEDY, undefined, { keys }),
     now: () => Date.now(),
     localDev: Boolean(env.LOCAL_DEV),
     log: (line) => console.log(line),

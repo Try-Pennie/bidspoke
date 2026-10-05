@@ -9,6 +9,11 @@ import {
   describeRepeat,
   touchCondition,
   backoffCooldownKey,
+  fingerprintAlert,
+  meaningOf,
+  nextFingerprint,
+  recurrenceOf,
+  MAX_REMEMBERED_KEYS,
 } from '../alert-backoff'
 
 const NOW = Date.parse('2026-09-13T12:00:00.000Z')
@@ -142,12 +147,12 @@ describe('clearCondition', () => {
 
 describe('describeRepeat', () => {
   it('says nothing for a first report, which is not a repeat', () => {
-    expect(describeRepeat(null, NOW)).toBeNull()
+    expect(describeRepeat(null, NOW, true)).toBeNull()
   })
 
   it('names which reminder this is, how long the condition has stood, and when the next one is due', () => {
     const standing = { since: new Date(NOW - 26 * H).toISOString(), alerts: 2 }
-    const text = describeRepeat(standing, NOW)
+    const text = describeRepeat(standing, NOW, true)
 
     expect(text).toContain('reminder 3')
     expect(text).toContain('26h')
@@ -156,8 +161,157 @@ describe('describeRepeat', () => {
   })
 
   it('does not claim an age it could not compute', () => {
-    const text = describeRepeat({ since: 'not a date', alerts: 1 }, NOW)
+    const text = describeRepeat({ since: 'not a date', alerts: 1 }, NOW, true)
     expect(text).not.toMatch(/NaN/)
+  })
+
+  it('says nothing has changed only when the caller measured that it has not (#1768, L641)', () => {
+    const standing = { since: new Date(NOW - 26 * H).toISOString(), alerts: 2 }
+    expect(describeRepeat(standing, NOW, true)).toContain('nothing about it has changed')
+
+    const changed = describeRepeat(standing, NOW, false)
+    expect(changed).not.toContain('nothing about it has changed')
+    expect(changed).toContain('same problem')
+    expect(changed).toContain('reminder 3')
+    expect(changed).toContain('26h')
+  })
+})
+
+// The Lead status check posted three different problems on Oct 3, 4 and 5, and
+// the second and third were labelled "(still)" and "nothing about it has
+// changed", because the standing condition was keyed on the job alone (#1768).
+describe('fingerprintAlert and recurrenceOf (#1768)', () => {
+  const TITLE = "Some sales aren't showing on their Salesforce Lead"
+  const OCT_3 = ['2 Tripoint sales from Sep 25 to Sep 27 are marked Completed on their Submission, but their Lead still says Fail.']
+  const OCT_4 = ['1 Tripoint sale from Sep 30 is marked Completed on its Submission, but its Lead still says Fail.']
+
+  const standingFor = async (title: string, findings: string[], keys?: string[]) => ({
+    since: new Date(NOW - 24 * H).toISOString(),
+    alerts: 1,
+    fingerprint: await fingerprintAlert({ title, findings, keys }),
+  })
+
+  it('ignores the order and repeats of the findings', async () => {
+    const a = await fingerprintAlert({ title: TITLE, findings: ['x', 'y'] })
+    const b = await fingerprintAlert({ title: TITLE, findings: ['y', 'x', 'y'] })
+    expect(a).toEqual(b)
+  })
+
+  it('reads nothing standing as a new condition', async () => {
+    expect(recurrenceOf(null, await fingerprintAlert({ title: TITLE, findings: OCT_3 }))).toEqual({ kind: 'new' })
+  })
+
+  it('reads the same title and findings as a reminder about an unchanged condition', async () => {
+    const standing = await standingFor(TITLE, OCT_3)
+    expect(recurrenceOf(standing, await fingerprintAlert({ title: TITLE, findings: OCT_3 }))).toEqual({ kind: 'reminder', standing, unchanged: true })
+  })
+
+  it('reads a different finding as a new condition, as Oct 4 should have been', async () => {
+    const standing = await standingFor(TITLE, OCT_3)
+    expect(recurrenceOf(standing, await fingerprintAlert({ title: TITLE, findings: OCT_4 })).kind).toBe('new')
+  })
+
+  it('reads a different title as a new condition, as Oct 5 should have been', async () => {
+    const standing = await standingFor(TITLE, OCT_3)
+    const oct5 = await fingerprintAlert({ title: "The Lead status check couldn't check everything", findings: OCT_3 })
+    expect(recurrenceOf(standing, oct5).kind).toBe('new')
+  })
+
+  it('reads findings that are all ones already posted as a reminder, never claiming nothing changed', async () => {
+    // One of the two cleared: nothing new to report, so the reminder schedule holds.
+    const standing = await standingFor(TITLE, ['a', 'b'])
+    expect(recurrenceOf(standing, await fingerprintAlert({ title: TITLE, findings: ['a'] }))).toEqual({ kind: 'reminder', standing, unchanged: false })
+  })
+
+  it('matches on the keys a caller gives, and still tells whether the words changed', async () => {
+    // The judged day moves every run while the problem stays the same.
+    const standing = await standingFor(TITLE, ['Liberty1 had no sales on Oct 5.'], ['zero:Liberty1'])
+    const nextDay = await fingerprintAlert({ title: TITLE, findings: ['Liberty1 had no sales on Oct 6.'], keys: ['zero:Liberty1'] })
+    expect(recurrenceOf(standing, nextDay)).toEqual({ kind: 'reminder', standing, unchanged: false })
+  })
+
+  it('reads a record written before fingerprints as unknown, never as a reminder (L50)', async () => {
+    const legacy = { since: new Date(NOW - 24 * H).toISOString(), alerts: 2 }
+    expect(recurrenceOf(legacy, await fingerprintAlert({ title: TITLE, findings: OCT_3 }))).toEqual({ kind: 'unknown', standing: legacy })
+  })
+
+  it('stores the fingerprint with the condition and reads it back', async () => {
+    const kv = fakeKv()
+    const fingerprint = await fingerprintAlert({ title: TITLE, findings: OCT_3 })
+    await recordAlert(kv, 'k', null, NOW, { fingerprint })
+    expect(await readCondition(kv, 'k')).toEqual({ since: new Date(NOW).toISOString(), alerts: 1, fingerprint })
+  })
+
+  it('reads a legacy record, and one whose fingerprint is damaged, with no fingerprint', async () => {
+    const legacy = fakeKv({ 'k:condition': JSON.stringify({ since: new Date(NOW).toISOString(), alerts: 3 }) })
+    expect(await readCondition(legacy, 'k')).toEqual({ since: new Date(NOW).toISOString(), alerts: 3 })
+
+    const damaged = fakeKv({ 'k:condition': JSON.stringify({ since: new Date(NOW).toISOString(), alerts: 3, fingerprint: { text: 7, keys: 'x' } }) })
+    expect(await readCondition(damaged, 'k')).toEqual({ since: new Date(NOW).toISOString(), alerts: 3 })
+  })
+
+  it('reads numbers, uuids and hex ids as one placeholder by default, so a ticking count is the same problem', async () => {
+    // Measured shapes: the buyer sale drain's age at minute resolution, a click
+    // check's counts and percent, a Snowflake statement handle in an error.
+    expect(meaningOf('3 sales waiting, the oldest 61 minutes old.')).toBe(meaningOf('4 sales waiting, the oldest 62 minutes old.'))
+    expect(meaningOf('Only 1,033 of 1,035 reached their Lead (99.8%).')).toBe(meaningOf('Only 7 of 63 reached their Lead (11%).'))
+    expect(meaningOf('statement 01b7c2a1-0003-0b38-0000-0001234ab5c6 failed')).toBe(meaningOf('statement 01b7c2f9-0003-0c11-0000-00019988aa01 failed'))
+    expect(meaningOf('request 8c1f2a3b4c5d6e7f timed out')).toBe(meaningOf('request 9d00e1f2a3b4c5d6 timed out'))
+    const standing = await standingFor(TITLE, ['3 sales waiting, the oldest 61 minutes old.'])
+    const later = await fingerprintAlert({ title: TITLE, findings: ['4 sales waiting, the oldest 62 minutes old.'] })
+    expect(recurrenceOf(standing, later)).toEqual({ kind: 'reminder', standing, unchanged: false })
+  })
+
+  it('keeps the digits inside a name, so two numbered partners are two problems', () => {
+    // Partner names carry digits (Liberty1, Dot818, M1): only a number standing on
+    // its own is a count or a time that moves.
+    expect(meaningOf('Liberty1 had no sales')).not.toBe(meaningOf('Liberty2 had no sales'))
+    expect(meaningOf('Dot818 refused 3 clicks')).toBe(meaningOf('Dot818 refused 4 clicks'))
+    expect(meaningOf('Dot818 refused 3 clicks')).not.toBe(meaningOf('M1 refused 3 clicks'))
+  })
+
+  it('reads a timestamp as one moving time, though its hour follows a letter', () => {
+    // The sightings buffer names its oldest row's time; the archive names the hour it stopped on.
+    expect(meaningOf('lead_sightings: 12 rows have waited (oldest from 2026-10-05T13:02:11.000Z UTC)'))
+      .toBe(meaningOf('lead_sightings: 40 rows have waited (oldest from 2026-10-06T09:41:07.123Z UTC)'))
+    expect(meaningOf('archive run stopped on fetch: hour 2026-10-05T13:00:00Z: timeout'))
+      .toBe(meaningOf('archive run stopped on fetch: hour 2026-10-05T14:00:00Z: timeout'))
+  })
+
+  it('reads a duration in any of its phrasings as one, so an age that grows is the same problem', () => {
+    // describeDuration's forms, as the buyer sale drain words its oldest entry,
+    // and the compact forms other checks use.
+    const age = (d: string) => meaningOf(`liberty1: 3 entries not yet copied to buyer_sales, oldest ${d} old`)
+    const forms = ['under a minute', '1 minute', '59 minutes', '1 hour', '2 hours', '1 hour 1 minute', '3 hours 12 minutes', '26h', '45m']
+    expect(new Set(forms.map(age)).size).toBe(1)
+  })
+
+  it('reads a count with its noun in the singular or the plural as one', () => {
+    expect(meaningOf('1 sale waiting')).toBe(meaningOf('2 sales waiting'))
+    expect(meaningOf('1 row set aside')).toBe(meaningOf('40 rows set aside'))
+  })
+
+  it('keeps the words, so findings about two partners stay two problems', () => {
+    expect(meaningOf('Liberty1 had no sales.')).not.toBe(meaningOf('Dot818 had no sales.'))
+    expect(meaningOf('Tripoint had no sales.')).not.toBe(meaningOf('AmOne had no sales.'))
+  })
+
+  it('remembers every problem posted while the condition stood, so a finding that comes back is not new again', async () => {
+    const first = await fingerprintAlert({ title: TITLE, findings: ['a'] })
+    const second = await fingerprintAlert({ title: TITLE, findings: ['b'] })
+    // b was new; posting it keeps a too.
+    const standing = { since: new Date(NOW).toISOString(), alerts: 1, fingerprint: nextFingerprint({ since: '', alerts: 1, fingerprint: first }, second) }
+    expect(recurrenceOf(standing, first).kind).toBe('reminder')
+    expect(recurrenceOf(standing, second).kind).toBe('reminder')
+    expect(recurrenceOf(standing, await fingerprintAlert({ title: TITLE, findings: ['c'] })).kind).toBe('new')
+  })
+
+  it('always keeps the current post whole, however many older problems it remembers', async () => {
+    const many = await fingerprintAlert({ title: TITLE, findings: Array.from({ length: MAX_REMEMBERED_KEYS + 50 }, (_, i) => `finding ${'x'.repeat(i + 1)}`) })
+    const older = await fingerprintAlert({ title: TITLE, findings: Array.from({ length: MAX_REMEMBERED_KEYS + 50 }, (_, i) => `older ${'y'.repeat(i + 1)}`) })
+    const next = nextFingerprint({ since: '', alerts: 1, fingerprint: older }, many)
+    expect(next.keys.slice(0, many.keys.length)).toEqual(many.keys)
+    expect(next.keys.length).toBe(many.keys.length + MAX_REMEMBERED_KEYS)
   })
 })
 

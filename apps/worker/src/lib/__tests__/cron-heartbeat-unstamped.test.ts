@@ -226,6 +226,54 @@ describe('a standing condition', () => {
     expect(repeat.since).toBe(iso(NOW))
   })
 
+  // The condition is keyed on the job, while the alert's header and fix depend on
+  // the status, so a job that went from never ran to unstamped was posted as
+  // "still" with "nothing about it has changed" (#1768).
+  it('posts a change of status under the same job at once, as a new condition', async () => {
+    const kv = fakeKv({
+      ...allFreshExcept(JOB, NOW),
+      [firstSeenKey(JOB)]: iso(NOW - 48 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase({}), kv, NOW)
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0]?.[3]).toBe('never_ran')
+
+    // Inside the cooldown, the job is seen finishing runs without stamping.
+    refreshOthers(kv, JOB, NOW + H)
+    await runHeartbeatChecks(fakeSupabase({ [JOB]: iso(NOW + H - 60_000) }), kv, NOW + H)
+
+    expect(vi.mocked(sendCronHeartbeatAlert)).toHaveBeenCalledTimes(2)
+    const second = vi.mocked(sendCronHeartbeatAlert).mock.calls[1]
+    expect(second?.[3]).toBe('unstamped')
+    expect(second?.[5]).toBeNull()
+    expect(await readCondition(kv, `cron-heartbeat:${JOB}`)).toMatchObject({ alerts: 1, since: iso(NOW + H) })
+  })
+
+  it('tells the alert nothing has changed only when the status is the one already posted', async () => {
+    const kv = fakeKv({
+      ...allFreshExcept(JOB, NOW),
+      [firstSeenKey(JOB)]: iso(NOW - 48 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase({}), kv, NOW)
+    kv.store.delete(`cron-heartbeat:${JOB}:cooldown`)
+    refreshOthers(kv, JOB, NOW + 7 * H)
+    await runHeartbeatChecks(fakeSupabase({}), kv, NOW + 7 * H)
+
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0]?.[7]).toBe(false)
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[1]?.[7]).toBe(true)
+  })
+
+  it('posts a condition stored before fingerprints as new once its cooldown has passed', async () => {
+    const kv = fakeKv({
+      ...allFreshExcept(JOB, NOW),
+      [firstSeenKey(JOB)]: iso(NOW - 48 * H),
+      [`cron-heartbeat:${JOB}:condition`]: JSON.stringify({ since: iso(NOW - 30 * H), alerts: 3 }),
+    })
+    await runHeartbeatChecks(fakeSupabase({}), kv, NOW)
+
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0]?.[5]).toBeNull()
+    expect(await readCondition(kv, `cron-heartbeat:${JOB}`)).toMatchObject({ alerts: 1, since: iso(NOW) })
+  })
+
   it('forgets the condition once the job reports healthy, so a recurrence is reported at once', async () => {
     const kv = fakeKv({
       ...allFreshExcept(JOB, NOW),

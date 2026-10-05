@@ -488,6 +488,41 @@ describe('when the probe itself cannot fetch', () => {
     expect(sent.filter((s) => s.kind === 'control')).toHaveLength(0)
     expect(claims.claimed).toContain(PROBE_CONTROL_KEY)
   })
+
+  // Two different alerts share the control key, so a control failing after the
+  // probe had been unable to fetch was held for the probe alert's cooldown and
+  // then posted as its reminder, "nothing about it has changed" included (#1768).
+  it('posts the control failing after a probe that could not fetch as a new alert, not a reminder of it', async () => {
+    const { ticksFor, sent, kv } = makeDeps()
+    await ticksFor(PROBE_BROKEN_AFTER_MS + 5 * MIN, { [CONTROL_HOST]: { kind: 'throw', error: 'fetch failed' } })
+    expect(sent.filter((s) => s.kind === 'probe-broken')).toHaveLength(1)
+
+    await ticksFor(CONTROL_ALERT_AFTER_MS + 10 * MIN, { [CONTROL_HOST]: { kind: 'ok', status: 200 } })
+
+    const control = sent.filter((s) => s.kind === 'control')
+    expect(control).toHaveLength(1)
+    expect((control[0].payload as { repeat: string | null }).repeat).toBeNull()
+    expect((await readCondition(kv, PROBE_CONTROL_KEY))?.alerts).toBe(1)
+  })
+})
+
+describe('a reminder about a host that does not answer (#1768)', () => {
+  it('says nothing has changed only when the reason is the one already posted', async () => {
+    const { ticksFor, tick, sent, kv } = makeDeps()
+    const p = (error: string): Plan => ({ ...healthy(), 'oauth.prd.ffngcp.com': { kind: 'throw', error } })
+    await ticksFor(UNREACHABLE_ALERT_AFTER_MS + 5 * MIN, p('connect ECONNRESET'))
+    kv.store.delete(`${unreachableKey('oauth.prd.ffngcp.com')}:cooldown`)
+    await tick(p('connect ECONNRESET'))
+    kv.store.delete(`${unreachableKey('oauth.prd.ffngcp.com')}:cooldown`)
+    await tick(p('connect ETIMEDOUT'))
+
+    const repeats = sent.filter((s) => s.kind === 'unreachable').map((s) => (s.payload as { repeat: string | null }).repeat)
+    expect(repeats).toHaveLength(3)
+    expect(repeats[0]).toBeNull()
+    expect(repeats[1]).toContain('nothing about it has changed')
+    expect(repeats[2]).toContain('same problem as before')
+    expect(repeats[2]).not.toContain('nothing about it has changed')
+  })
 })
 
 describe('failures of the probe\'s own machinery', () => {

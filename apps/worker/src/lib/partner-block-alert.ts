@@ -25,7 +25,7 @@
  */
 import type { PartnerBlockSighting } from '../types'
 import type { AlertClaims } from './alert-claim'
-import { inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, type BackoffKv } from './alert-backoff'
+import { inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, fingerprintAlert, nextFingerprint, recurrenceOf, type BackoffKv } from './alert-backoff'
 import { keepAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { sendPartnerBlockAlert, type PartnerBlockAlertPayload } from './slack'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
@@ -159,6 +159,23 @@ export async function reportPartnerBlock(
     if ((await readCondition(deps.kv, partnerBlockKey(sibling))) !== null) alsoBlocked.push(sibling)
   }
 
+  // What this post says, against what the last one said (#1768). A block on this
+  // host is one problem, so its key never reads as new while a record stands; the
+  // status, vendor, Ray IDs and the run that saw it are details, and they differ
+  // on almost every sighting, so a reminder says nothing changed only when they
+  // do not. A record from before fingerprints is posted as new.
+  const print = await fingerprintAlert({
+    title: 'partner-block',
+    findings: [`${sighting.host} is serving a block page`],
+    keys: ['blocked'],
+    alsoShown: [
+      String(sighting.status), sighting.vendor, ...sighting.markers, sighting.bodyRayId ?? '', sighting.edgeRayId ?? '',
+      sighting.seenIn, run.workflowId ?? '', run.workflowName ?? '', run.traceId ?? '', ...alsoBlocked,
+    ],
+  })
+  const recurrence = recurrenceOf(standing, print)
+  const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
+
   const payload: PartnerBlockAlertPayload = {
     host: sighting.host,
     status: sighting.status,
@@ -171,7 +188,7 @@ export async function reportPartnerBlock(
     workflowName: run.workflowName,
     traceId: run.traceId,
     appUrl: deps.appUrl,
-    repeat: describeRepeat(standing, nowMs),
+    repeat: describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged),
     alsoBlocked,
     ownProxy: isOwnProxyHost(sighting.host),
     at: nowMs,
@@ -190,7 +207,10 @@ export async function reportPartnerBlock(
     return 'post_failed'
   }
 
-  const next = await recordAlert(deps.kv, key, standing, nowMs, { conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS })
+  const next = await recordAlert(deps.kv, key, reminderOf, nowMs, {
+    conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
+    fingerprint: nextFingerprint(standing, print),
+  })
   await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since)
   return 'posted'
 }

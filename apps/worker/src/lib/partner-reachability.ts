@@ -34,7 +34,7 @@
  */
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
-import { clearCondition, inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, backoffCooldownKey, type BackoffKv } from './alert-backoff'
+import { clearCondition, inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, backoffCooldownKey, fingerprintAlert, nextFingerprint, recurrenceOf, type BackoffKv } from './alert-backoff'
 import { keepAlerted, markSpikeSeen, recoveryDue, settleRecovery, type RecoveryKv } from './alert-recovery'
 import { detectBlockPage, cloudflareErrorCode, type BlockPage } from './html-error-summary'
 import { reportPartnerBlock, partnerBlockKey, PARTNER_BLOCK_CONDITION_TTL_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN } from './partner-block-alert'
@@ -365,7 +365,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
         // The probe itself cannot fetch: one line about the probe, under the control key.
         await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
         if (heldForMs >= PROBE_BROKEN_AFTER_MS) {
-          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, (s, repeat) =>
+          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, { problem: 'probe-broken', details: [reading.reason] }, (s, repeat) =>
             senders.probeBroken(s, s.default_channel, { reason: reading.reason, since: state.since, repeat, at: nowMs }))
             .then((posted) => { if (posted) summary.alerts.push(`probe-broken:${host}`) })
           await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
@@ -373,7 +373,8 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       } else {
         await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
         if (heldForMs >= CONTROL_ALERT_AFTER_MS) {
-          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, (s, repeat) =>
+          const control = { problem: 'control-failing' as const, details: [String(state.controlPassedAt !== undefined), String(reading.status), reading.bodyHead] }
+          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, control, (s, repeat) =>
             senders.control(s, s.default_channel, {
               host, everPassed: state.controlPassedAt !== undefined, status: reading.status, bodyHead: reading.bodyHead, since: state.since, repeat, at: nowMs,
             }))
@@ -396,7 +397,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
     } else if (reading.state === 'unreachable') {
       await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
       if (heldForMs >= UNREACHABLE_ALERT_AFTER_MS) {
-        await postStanding(deps, unreachableKey(host), claim, release, targetsSlack, nowMs, (s, repeat) =>
+        await postStanding(deps, unreachableKey(host), claim, release, targetsSlack, nowMs, { problem: 'unreachable', details: [reading.reason] }, (s, repeat) =>
           senders.unreachable(s, s.default_channel, { host, reason: reading.reason, since: state.since, repeat, at: nowMs }))
           .then((posted) => { if (posted) summary.alerts.push(`unreachable:${host}`) })
         await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
@@ -454,10 +455,20 @@ async function deliverAll(targets: SlackTarget[], send: (s: SlackTarget) => Prom
   return delivered
 }
 
+/** What one standing post is about (#1768): the problem, and the details it shows beside it. */
+interface StandingAlert {
+  /** Names the problem. The control key carries two, the probe failing to fetch and the control failing. */
+  problem: 'unreachable' | 'probe-broken' | 'control-failing'
+  /** What the post shows about it, such as the reason; a reminder says nothing changed only when these match. */
+  details: readonly string[]
+}
+
 /**
  * Post under the standing-condition backoff with a claim: quiet inside the cooldown, one
  * poster across isolates, the condition recorded only after delivery, re-armed on every
- * tick it stands. Returns whether a post went out.
+ * tick it stands. A problem not posted while the condition stood (the control key's other
+ * alert) is posted at once as new, never as a reminder of the first (#1768). Returns
+ * whether a post went out.
  */
 async function postStanding(
   deps: ReachabilityDeps,
@@ -466,24 +477,32 @@ async function postStanding(
   release: (key: string) => Promise<void>,
   targets: SlackTarget[],
   nowMs: number,
+  alert: StandingAlert,
   send: (s: SlackTarget, repeat: string | null) => Promise<string | null>,
 ): Promise<boolean> {
   const standing = await readCondition(deps.kv, key)
   if (standing) await touchCondition(deps.kv, key, standing, PARTNER_BLOCK_CONDITION_TTL_SECONDS)
-  if (await inCooldown(deps.kv, key)) return false
+  const print = await fingerprintAlert({ title: key, findings: [alert.problem], alsoShown: alert.details })
+  const recurrence = recurrenceOf(standing, print)
+  const different = recurrence.kind === 'new' && standing !== null
+  if (!different && (await inCooldown(deps.kv, key))) return false
   if (!(await claim(key))) return false
   if (targets.length === 0) {
     deps.log(`[partner-reachability] no Slack connection, so ${key} was logged but not posted`)
     await release(key)
     return false
   }
-  const repeat = describeRepeat(standing, nowMs)
+  const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
+  const repeat = describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged)
   const delivered = await deliverAll(targets, (s) => send(s, repeat))
   if (!delivered) {
     await release(key)
     return false
   }
-  await recordAlert(deps.kv, key, standing, nowMs, { conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS })
+  await recordAlert(deps.kv, key, reminderOf, nowMs, {
+    conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
+    fingerprint: nextFingerprint(standing, print),
+  })
   return true
 }
 

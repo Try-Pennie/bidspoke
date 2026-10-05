@@ -1192,6 +1192,9 @@ export async function sendCronHeartbeatAlert(
   ageMs: number | null,
   standing: StandingCondition | null = null,
   nowMs: number = Date.now(),
+  // True only when the caller measured that the status is the one already
+  // posted (#1768); the default never claims nothing changed.
+  unchanged: boolean = false,
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
@@ -1200,7 +1203,7 @@ export async function sendCronHeartbeatAlert(
   // A reminder that reads as a fresh discovery is the whole complaint behind
   // #1334: three identical messages, each looking like a new incident. Every
   // shape below carries this sentence, and the header says "still" (#1334).
-  const repeat = describeRepeat(standing, nowMs)
+  const repeat = describeRepeat(standing, nowMs, unchanged)
   const again = repeat ? ' still' : ''
   const withRepeat = (blocks: object[]): object[] =>
     repeat ? [...blocks, { type: 'section', text: { type: 'mrkdwn', text: repeat } }] : blocks

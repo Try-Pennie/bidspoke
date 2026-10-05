@@ -193,6 +193,9 @@ describe('runHeartbeatChecks: a run that started and never finished (#985)', () 
       expect.any(Number),
       // No standing condition on the first report: this is not a reminder (#1334).
       null,
+      expect.any(Number),
+      // Nor can a first report say nothing has changed (#1768).
+      false,
     )
     expect(results.filter((x) => x.jobId !== archive.id).every((x) => x.status === 'healthy')).toBe(true)
   })
