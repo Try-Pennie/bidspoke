@@ -8,8 +8,8 @@ import { createSupabaseClient } from '../lib/supabase'
 import { deployCompareCodeBundle } from '../lib/code-node-deployer'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
-// each real engine request here. We acknowledge with 204 immediately so the
-// mirror step never blocks Pipedream, then run the workflow in the background as
+// each real engine request here. We acknowledge with 204 once the checks below
+// pass, without waiting for the run, then run the workflow in the background as
 // a dry-run shadow: all logic runs, every outbound call is stubbed. Marked
 // isTest so it reuses the existing suppression (no sightings, no Slack alerts)
 // and stays out of prod dashboards; a __shadow source suffix keeps shadow runs
@@ -17,7 +17,10 @@ import { deployCompareCodeBundle } from '../lib/code-node-deployer'
 // cutover endpoint so removing the mirror at cutover touches nothing real.
 // See docs/engine-cutover-scope.md section 3.3.
 //
-// Before acknowledging, the route reads the workflow. A code node's scripts make
+// Before acknowledging, the route reads the workflow (KV cached), and for a
+// workflow carrying code makes sure its compare bundle is deployed, which is a
+// Cloudflare upload only the first time a given version of the code is shadowed,
+// so the acknowledgement waits on that and nothing else. A code node's scripts make
 // their real calls, so a shadow run's code runs only in the compare namespace,
 // whose outbound Worker refuses every request (#1708 part B): the route deploys
 // the workflow's compare bundle there, by content hash, and hands its name to
@@ -60,7 +63,10 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
     if (!c.env.COMPARE_CODE_LOADER) {
       return c.json({ error: 'The compare namespace is not bound to this Worker, so a shadow run has nowhere to run its code that refuses its outside calls.' }, 503)
     }
+    // A throw (the upload's fetch failing on the network) is a failed deploy too,
+    // answered with the same named 503, never an unnamed 500.
     const deployed = await deployCompareCodeBundle(workflowId, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
+      .catch((err: unknown) => ({ bundleName: null, error: err instanceof Error ? err.message : 'the upload threw' }))
     if (deployed.error) {
       return c.json({ error: `The compare bundle could not be deployed: ${deployed.error}. The shadow run did not start.` }, 503)
     }

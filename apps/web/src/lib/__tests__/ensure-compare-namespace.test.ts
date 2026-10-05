@@ -105,6 +105,13 @@ describe('ensure-compare-namespace', () => {
     expect(r.stderr).toContain('namespace limit reached')
   })
 
+  it('refuses by name, asking Cloudflare nothing, when the API token is unset and no fake stands in', () => {
+    const r = spawnSync('bash', [SCRIPT, ACCOUNT, NAMESPACE, OUTBOUND], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', NODE_ENV: 'test' } as NodeJS.ProcessEnv })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('CLOUDFLARE_API_TOKEN is unset')
+    expect(r.stderr).not.toContain('does not exist')
+  })
+
   it('refuses by name when an argument is missing', () => {
     const r = run([ACCOUNT, NAMESPACE])
     expect(r.status).toBe(1)

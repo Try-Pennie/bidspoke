@@ -113,6 +113,16 @@ describe('POST /shadow/:workflow_id', () => {
     expect(mockCtx.waitUntil).not.toHaveBeenCalled()
   })
 
+  it('refuses with a named 503, not an unnamed 500, when the compare deploy throws on the network', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definitionWith('code')))
+    vi.mocked(deployCompareCodeBundle).mockRejectedValue(new TypeError('Network connection lost.'))
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 })
+
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { error: string }).error).toContain('compare bundle could not be deployed: Network connection lost.')
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
   it('refuses with a named 503 when the compare namespace is not bound, deploying and running nothing', async () => {
     vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded(definitionWith('code')))
     const unbound = { ...testEnv, COMPARE_CODE_LOADER: undefined } as unknown as Env

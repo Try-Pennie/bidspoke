@@ -35,13 +35,15 @@ fail() {
 [ -n "$ACCOUNT" ] && [ -n "$NAMESPACE" ] && [ -n "$OUTBOUND" ] \
   || fail "usage: ensure-compare-namespace.sh <account_id> <namespace> <outbound_worker>"
 command -v jq >/dev/null 2>&1 || fail "jq is not installed, so no Cloudflare answer can be read"
+# Checked here, not inside cf: cf runs in a command substitution, where a fail
+# would end only that subshell and the script would report the wrong reason.
+[ -n "${CF_API:-}" ] || [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || fail "CLOUDFLARE_API_TOKEN is unset, so Cloudflare cannot be asked"
 
 cf() {
   if [ -n "${CF_API:-}" ]; then
     "$CF_API" "$@"
     return
   fi
-  [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || fail "CLOUDFLARE_API_TOKEN is unset, so Cloudflare cannot be asked"
   local args=(-sS --max-time 30 -X "$1" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
   [ -n "${3-}" ] && args+=(--data "$3")
   curl "${args[@]}" "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}$2"
