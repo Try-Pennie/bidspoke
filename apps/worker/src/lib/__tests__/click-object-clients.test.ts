@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectCallError } from '../buyer-object-clients'
+import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -130,6 +130,31 @@ describe('ClickCounterClient', () => {
   it('an answer that is not the add shape is refused rather than read as a count', async () => {
     const { ns } = namespace(() => json({ added: 'yes' }))
     await expect(new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1')).rejects.toThrow(/click counter add answered an unreadable body/)
+  })
+
+  // The node retries an add that gave NO answer and never one that answered (#1766), so an
+  // answer it cannot read must be told apart from a lost call by its type, not its wording.
+  it('an answer it cannot read, the wrong shape or not JSON at all, is an ObjectAnswerUnreadableError: the counter answered', async () => {
+    for (const res of [() => json({ added: 'yes' }), () => new Response('<html>oops</html>', { status: 200 })]) {
+      const { ns } = namespace(res)
+      const err = await new ClickCounterClient(ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ObjectAnswerUnreadableError)
+      expect((err as Error).message).toMatch(/click counter add answered an unreadable body/)
+    }
+  })
+
+  it('a refusal stays an ObjectCallError and a call that never answers stays a DeadlineError, never an unreadable answer', async () => {
+    const refused = await new ClickCounterClient(namespace(() => json({ error: 'bad_member' }, 400)).ns, memoryKv().kv, LIBERTY1, 0).addMember('p-1').catch((e: unknown) => e)
+    expect(refused).toBeInstanceOf(ObjectCallError)
+    expect(refused).not.toBeInstanceOf(ObjectAnswerUnreadableError)
+    const pending: Array<() => void> = []
+    const timers: Timers = { setTimeout: (fn) => { pending.push(fn); return pending.length }, clearTimeout: () => undefined }
+    const hung = { idFromName: (n: string) => ({ n }), get: () => ({ fetch: () => new Promise(() => undefined) }) } as unknown as DurableObjectNamespace
+    const p = new ClickCounterClient(hung, memoryKv().kv, LIBERTY1, 0, { timers, deadlineMs: 50 }).addMember('p-1').catch((e: unknown) => e)
+    pending.forEach((fn) => fn())
+    const late = await p
+    expect(late).toBeInstanceOf(DeadlineError)
+    expect(late).not.toBeInstanceOf(ObjectAnswerUnreadableError)
   })
 
   it('carries a deadline, proven with timers fired by hand', async () => {

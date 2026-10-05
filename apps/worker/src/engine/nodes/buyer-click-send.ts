@@ -15,8 +15,10 @@
  *        confirmed  a 2xx whose body is exactly the buyer's success line, the
  *                   buyer profile's success reply with an `id` group, matched
  *                   anchored. Mark the claim sold (payout 0, the partner lead id),
- *                   then add the prospect to today's distinct count. A mark or an
- *                   add that fails pages; the route is still `sent`.
+ *                   then add the prospect to today's distinct count. An add with
+ *                   no answer is asked once more inside CLICK_RUN_BUDGET_MS
+ *                   (#1766). A mark or an add that fails pages, the add saying
+ *                   only what the counter answered; the route is still `sent`.
  *        refused    a 4xx carrying the buyer's own error (not an HTML page, not
  *                   empty, not 408 or 429): free the claim so a later click retries.
  *        unknown    everything else: a timeout, a network error, a 5xx, an HTML
@@ -78,7 +80,7 @@ import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError, type ClickClaimKey } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
@@ -103,18 +105,38 @@ export const CLICK_POST_TIMEOUT_MS = 20_000
  * worst case of one node run instead: the post can take at most
  * CLICK_POST_TIMEOUT_MS (the node ends it there itself), and after it come two
  * object calls (mark sold, then add to the count) at OBJECT_CALL_DEADLINE_MS
- * each, plus 10 s of margin. A deadline shorter than that would let a second
- * click find the claim in doubt while the first is still legitimately
- * finishing. Replace the reasoning with the measured p99 from the first week of
- * live clicks (the step rows carry duration_ms).
+ * each, plus CLICK_CLAIM_MARGIN_MS. A deadline shorter than that would let a
+ * second click find the claim in doubt while the first is still legitimately
+ * finishing. The count's one retry (#1766) does not lengthen it: the retry is
+ * asked only inside CLICK_RUN_BUDGET_MS, which stops short of the margin.
+ * Replace the reasoning with the measured p99 from the first week of live
+ * clicks (the step rows carry duration_ms).
  */
-export const CLICK_CLAIM_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 2 * OBJECT_CALL_DEADLINE_MS + 10_000
+export const CLICK_CLAIM_MARGIN_MS = 10_000
+export const CLICK_CLAIM_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 2 * OBJECT_CALL_DEADLINE_MS + CLICK_CLAIM_MARGIN_MS
 
 /** The node's own bound on the post, a second past the post's timeout, so a fetch that ignores its abort still ends. */
 export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 
 /** How long the node waits on one Slack alert before recording it as failed. */
 export const CLICK_ALERT_DEADLINE_MS = 5_000
+
+/**
+ * The node's whole run, measured on its own clock from just before the claim
+ * (#1766): the claim deadline less its margin, so nothing this budget decides
+ * can still be running when a later click is entitled to find the claim in
+ * doubt. One call is decided by it: the count's retry, which is asked only when
+ * CLICK_COUNT_RETRY_COST_MS still fits, and then with its full deadline, never
+ * with what is left, so a retry is a real second ask or none at all.
+ */
+export const CLICK_RUN_BUDGET_MS = CLICK_CLAIM_DEADLINE_MS - CLICK_CLAIM_MARGIN_MS
+
+/**
+ * What asking the count again can take: the add at its full deadline, then the
+ * page that follows when it still gives no answer. Nothing comes after the
+ * page, so a retry that fits ends the run inside CLICK_RUN_BUDGET_MS.
+ */
+export const CLICK_COUNT_RETRY_COST_MS = OBJECT_CALL_DEADLINE_MS + CLICK_ALERT_DEADLINE_MS
 
 /**
  * How long the node waits on the buyer profile, read once before anything is
@@ -203,10 +225,19 @@ export interface BuyerClickSendOutput {
   /** The buyer's HTTP status under the canonical key (status-key-contract), null when no answer arrived. */
   status: number | null
   partner_lead_id: string | null
-  /** The distinct count after this click, null when it was not counted. */
+  /** The distinct count after this click, null when the counter's answer did not give one. */
   count: number | null
-  /** True when this click added the prospect to the count, false when it was already there or the add failed. */
+  /**
+   * True when the counter answered that this ask added the prospect; false when
+   * it answered the prospect was already there, or gave no count. After a retry
+   * (count_retried), false can also mean the first ask landed late, because the
+   * count takes each prospect once.
+   */
   counted: boolean
+  /** Present only when the add was asked a second time (#1766): why the first ask gave no answer. */
+  count_retried?: string
+  /** Present only when no count was read: the same detail the count page carries. */
+  count_error?: string
   count_date: string | null
   over_cap: OverCapState | null
   /** The profile's daily cap the notice was judged against, null when it was not read or there was none. */
@@ -545,6 +576,8 @@ class Run {
     // 1. claim
     const sale = this.deps.saleClient({ kind: 'click', partner_id: v.partnerId, prospect_id: v.prospectId })
     const executionId = this.executionId()
+    // CLICK_RUN_BUDGET_MS runs from here, a moment before the object starts the claim's deadline.
+    const claimStartedAt = this.deps.clock()
     let claim: ClaimResult
     try {
       claim = await sale.claim({ partner_id: v.partnerId, execution_id: executionId, deadline_ms: CLICK_CLAIM_DEADLINE_MS })
@@ -604,24 +637,50 @@ class Run {
       const detail = `the buyer confirmed receipt with id ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
       await this.holdAndPage(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
     }
-    await this.count(v)
+    await this.count(v, claimStartedAt)
     return this.done('sent', 'sent', `the buyer confirmed receipt with id ${verdict.partnerLeadId}`)
   }
 
-  /** Adds the prospect to today's distinct count, then judges the over cap notice. */
-  private async count(v: Validated): Promise<void> {
+  /**
+   * Adds the prospect to today's distinct count, then judges the over cap notice.
+   *
+   * An ask with no answer may still have landed (#1766: on 2026-10-05 one landed
+   * 48 ms after the caller gave up), and the count is a set, so it is asked once
+   * more when the run budget still holds the retry and its page. An answer the
+   * counter gave is never asked again. The page then says only what was answered:
+   * count_failed for a refusal, count_unknown when nothing says whether it took it.
+   */
+  private async count(v: Validated, claimStartedAt: number): Promise<void> {
     const now = this.deps.clock()
     let counter: ClickCounterApi
-    let added: AddMemberResult
     try {
       counter = this.deps.counter(v.partnerId, now)
-      this.out.count_date = counter.date
-      added = await counter.addMember(v.prospectId)
     } catch (err) {
-      this.out.over_cap = 'not_counted'
-      await this.page(v, 'count_failed', `the buyer confirmed receipt with id ${this.out.partner_lead_id}, and adding it to the day's count failed: ${messageOf(err)}`, null)
+      await this.countFailed(v, [{ ok: false, answer: 'not_asked', message: messageOf(err) }], false)
       return
     }
+    this.out.count_date = counter.date
+    let ask = await this.addOnce(counter, v.prospectId)
+    if (!ask.ok && ask.answer === 'none') {
+      const first = ask
+      const elapsed = this.deps.clock() - claimStartedAt
+      const retry = elapsed + CLICK_COUNT_RETRY_COST_MS <= CLICK_RUN_BUDGET_MS
+      this.deps.log({ event: 'buyer_click_count_no_answer', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, retried: retry, elapsed_since_claim_ms: elapsed, error_message: first.message })
+      if (!retry) {
+        await this.countFailed(v, [first], true)
+        return
+      }
+      this.out.count_retried = first.message
+      ask = await this.addOnce(counter, v.prospectId)
+      if (!ask.ok) {
+        await this.countFailed(v, [first, ask], false)
+        return
+      }
+    } else if (!ask.ok) {
+      await this.countFailed(v, [ask], false)
+      return
+    }
+    const added = ask.result
     this.out.count = added.count
     this.out.counted = added.added
 
@@ -651,6 +710,31 @@ class Run {
       kind: 'over_cap', partner_id: v.partnerId, partner_slug: v.slug, date: counter.date, count: added.count, daily_lead_cap: cap,
       alert_over_percent: v.percent, threshold, workflow_id: this.ctx.trigger.workflow_id, at: now,
     })
+  }
+
+  /** One ask of the counter, bounded by the node itself, so the run budget does not rest on the client's own deadline. */
+  private async addOnce(counter: ClickCounterApi, member: string): Promise<CountAsk> {
+    try {
+      return { ok: true, result: await withDeadline(counter.addMember(member), OBJECT_CALL_DEADLINE_MS, 'click counter add', this.deps.timers) }
+    } catch (err) {
+      return { ok: false, answer: countAnswerOf(err), message: messageOf(err) }
+    }
+  }
+
+  /**
+   * The count page, saying what the counter answered and nothing more (L11). The
+   * click is known not to be counted only when the one ask was refused or never
+   * made; an ask with no answer may have landed, so any run holding one pages
+   * count_unknown, whatever a retry then answered.
+   */
+  private async countFailed(v: Validated, asks: FailedAsk[], notRetried: boolean): Promise<void> {
+    this.out.over_cap = 'not_counted'
+    const known = asks.length === 1 && (asks[0].answer === 'refused' || asks[0].answer === 'not_asked')
+    let detail = `the buyer confirmed receipt with id ${this.out.partner_lead_id}, and the day's count ${describeAsk(asks[0])}`
+    if (asks[1]) detail += `; asked again, it ${describeAsk(asks[1])}`
+    if (notRetried) detail += ". It was not asked again, because too little of this click's time was left"
+    this.out.count_error = detail
+    await this.page(v, known ? 'count_failed' : 'count_unknown', detail, null)
   }
 
   /** A held claim: record it for the partner page, then page with whether that record landed. */
@@ -768,4 +852,35 @@ class Run {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : 'non Error thrown'
+}
+
+/**
+ * One ask of the click counter (#1766), by what the counter answered:
+ *   none          no answer at all: the deadline passed or the call failed in
+ *                 transit. The add may still have landed.
+ *   refused       a 4xx: the object refused the add, so it did not take it.
+ *   error_status  another error status, which does not say whether it took it.
+ *   unreadable    a success whose body is not an add result.
+ *   not_asked     the counter could not be opened, so nothing was asked.
+ */
+type CountAsk =
+  | { ok: true; result: AddMemberResult }
+  | { ok: false; answer: 'none' | 'refused' | 'error_status' | 'unreadable' | 'not_asked'; message: string }
+type FailedAsk = Extract<CountAsk, { ok: false }>
+
+/** The client's typed failures (buyer-object-clients). Anything it does not name is no answer, which is safe to ask again because the count is a set. */
+function countAnswerOf(err: unknown): FailedAsk['answer'] {
+  if (err instanceof ObjectCallError) return err.status >= 400 && err.status < 500 ? 'refused' : 'error_status'
+  if (err instanceof ObjectAnswerUnreadableError) return 'unreadable'
+  return 'none'
+}
+
+function describeAsk(ask: FailedAsk): string {
+  switch (ask.answer) {
+    case 'none': return `did not answer: ${ask.message}`
+    case 'refused': return `refused to add it: ${ask.message}`
+    case 'error_status': return `answered with an error that does not say whether it took it: ${ask.message}`
+    case 'unreadable': return `answered, but its answer could not be read: ${ask.message}`
+    case 'not_asked': return `could not be asked: ${ask.message}`
+  }
 }

@@ -9,18 +9,22 @@
  * every object are injected, so nothing waits and nothing leaves the process.
  */
 import { describe, expect, it, vi } from 'vitest'
-import type { ClickDelivery, Timers } from '@bidspoke/buyer-profile'
+import { DeadlineError, type ClickDelivery, type Timers } from '@bidspoke/buyer-profile'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { PartnerCallResult } from '../../../lib/post-to-partner'
-import type { ClickAlert, ClickAlertOutcome } from '../../../lib/buyer-click-alert'
+import { clickAlertMessage, type ClickAlert, type ClickAlertOutcome } from '../../../lib/buyer-click-alert'
 import { NODE_TRAITS } from '@bidspoke/node-types'
 import { buildContext } from '../../context'
 import {
   BUYER_CLICK_SEND_ROUTES,
+  CLICK_ALERT_DEADLINE_MS,
   CLICK_CLAIM_DEADLINE_MS,
+  CLICK_CLAIM_MARGIN_MS,
+  CLICK_COUNT_RETRY_COST_MS,
   CLICK_POST_TIMEOUT_MS,
+  CLICK_RUN_BUDGET_MS,
   classifyClickAnswer,
   executeBuyerClickSendNode,
   readClickProfile,
@@ -28,7 +32,7 @@ import {
   type ProfileRead,
   type HeldClickRecord,
 } from '../buyer-click-send'
-import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS } from '../../../lib/buyer-object-clients'
+import { clickCounterObjectName, leadSaleObjectName, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError } from '../../../lib/buyer-object-clients'
 
 // A buyer's success line lives on its buyer PROFILE (#1639, #1671), never in the node's code or config.
 const LIBERTY1_PATTERN = 'Records created successfully : (?<id>[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)'
@@ -69,8 +73,22 @@ const answer = (status: number, text: string, isHtml = false): PartnerCallResult
   return { status, text, json, isHtml, headers: {} }
 }
 
+/**
+ * One ask of the click counter, as the double answers it (#1766). `answer` is the
+ * real set: a prospect already there answers added false. `timeout` and
+ * `transport` are no answer at all, and `lands` says whether the add was taken
+ * anyway, as on 2026-10-05 when it landed 48 ms after the caller gave up.
+ * `refused` (a 4xx), `error_status` (a 5xx) and `unreadable` are answers the
+ * counter gave. `hang` never settles. `takesMs` moves the clock by that much.
+ */
+type CounterAsk = { kind: 'answer' | 'timeout' | 'transport' | 'refused' | 'error_status' | 'unreadable' | 'hang'; lands?: boolean; takesMs?: number }
+
 interface Harness {
   deps: BuyerClickSendDeps
+  /** Every ask of the click counter, in order. */
+  adds: string[]
+  /** Moves the clock the node reads. */
+  advance: (ms: number) => void
   sold: Array<{ generation: number; outcome: SaleOutcomeRecord }>
   freed: number[]
   posts: Array<{ url: string; body: unknown; timeoutMs: number }>
@@ -90,7 +108,14 @@ function harness(opts: {
   post?: PartnerCallResult | (() => Promise<PartnerCallResult>)
   soldFails?: boolean
   freeFails?: boolean
+  /** The counter refuses the add (a 4xx), so the click is known not to be counted. */
   addFails?: boolean
+  /** The counter's answer to each ask in turn; an ask past the end answers. */
+  counter?: CounterAsk[]
+  /** How long the post takes on the node's clock. */
+  postTakesMs?: number
+  /** The counter cannot even be opened, so nothing is asked. */
+  counterOpenFails?: boolean
   alert?: (a: ClickAlert) => Promise<ClickAlertOutcome>
   members?: string[]
   timers?: Timers
@@ -108,10 +133,12 @@ function harness(opts: {
   delivery?: ClickDelivery | null
 } = {}): Harness {
   const slug = opts.slug ?? (typeof opts.partner === 'string' ? opts.partner : 'liberty1')
+  let now = NOW
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
   }
+  const script: CounterAsk[] = opts.counter ?? (opts.addFails ? [{ kind: 'refused' }] : [])
   h.deps = {
     readProfile: async (partnerId) => {
       expect(partnerId).toBe(PARTNER_ID)
@@ -149,16 +176,35 @@ function harness(opts: {
       }
     },
     counter: (partnerId, nowMs) => {
+      if (opts.counterOpenFails) throw new Error('click counter name: "x" is not a partner id')
       h.counterNames.push(clickCounterObjectName(partnerId, nowMs).name)
       expect(partnerId).toBe(PARTNER_ID)
-      expect(nowMs).toBe(NOW)
+      // Named from the clock as the count starts, so a retry counts on the same day.
+      expect(nowMs).toBe(now)
       return {
         date: '2027-09-20',
         addMember: async (m) => {
-          if (opts.addFails) throw new Error('click counter add answered 500')
-          const added = !h.members.has(m)
-          h.members.add(m)
-          return { added, count: h.members.size }
+          const ask = script[h.adds.length] ?? { kind: 'answer' }
+          h.adds.push(m)
+          if (ask.takesMs) h.advance(ask.takesMs)
+          const take = () => {
+            const added = !h.members.has(m)
+            h.members.add(m)
+            return { added, count: h.members.size }
+          }
+          switch (ask.kind) {
+            case 'answer': return take()
+            case 'timeout':
+              if (ask.lands) take()
+              throw new DeadlineError('click counter add', OBJECT_CALL_DEADLINE_MS)
+            case 'transport':
+              if (ask.lands) take()
+              throw new Error('Network connection lost.')
+            case 'refused': throw new ObjectCallError('click counter add', 400, '{"error":"bad_member"}')
+            case 'error_status': throw new ObjectCallError('click counter add', 500, 'internal error')
+            case 'unreadable': throw new ObjectAnswerUnreadableError('click counter add', '{"added":"yes"}')
+            case 'hang': return new Promise<never>(() => undefined)
+          }
         },
       }
     },
@@ -166,6 +212,7 @@ function harness(opts: {
       // The buyer's own slug, so an error or a log names the buyer that answered.
       expect(target.slug).toBe(slug)
       h.posts.push({ url: target.url, body, timeoutMs: o.timeoutMs })
+      if (opts.postTakesMs) h.advance(opts.postTakesMs)
       const p = opts.post ?? answer(200, `Records created successfully : ${SF_ID}`)
       return typeof p === 'function' ? p() : p
     },
@@ -177,7 +224,7 @@ function harness(opts: {
       if (opts.holdFails) throw new Error('record_held_click failed: relation does not exist')
       h.holds.push(hold)
     },
-    clock: () => NOW,
+    clock: () => now,
     timers: opts.timers,
     log: (fields) => h.logs.push(fields),
     localDev: false,
@@ -191,6 +238,15 @@ describe('the deadline constants carry their reasoning', () => {
   it('the claim deadline outlives the post and the two object calls after it, with margin', () => {
     expect(CLICK_POST_TIMEOUT_MS).toBe(20_000)
     expect(CLICK_CLAIM_DEADLINE_MS).toBeGreaterThan(CLICK_POST_TIMEOUT_MS + 2 * OBJECT_CALL_DEADLINE_MS)
+  })
+
+  // #1766: the count's one retry lives inside the run's budget, which stops short of
+  // the claim deadline by its whole margin, so a retry can never eat into the margin.
+  it('the run budget is the claim deadline less its margin, and a retry costs the add at its full deadline plus the page after it', () => {
+    expect(CLICK_RUN_BUDGET_MS + CLICK_CLAIM_MARGIN_MS).toBe(CLICK_CLAIM_DEADLINE_MS)
+    expect(CLICK_CLAIM_MARGIN_MS).toBeGreaterThan(0)
+    expect(CLICK_COUNT_RETRY_COST_MS).toBe(OBJECT_CALL_DEADLINE_MS + CLICK_ALERT_DEADLINE_MS)
+    expect(CLICK_COUNT_RETRY_COST_MS).toBeLessThan(CLICK_RUN_BUDGET_MS)
   })
 
   it('routes are exactly the handles the node type declares, so the two lists cannot drift', () => {
@@ -221,7 +277,7 @@ describe('a confirmed send', () => {
     expect((await run(h)).output).toMatchObject({ _route: 'sent', count: 1, counted: false })
   })
 
-  it('a count that fails after the sale pages count_failed and still routes sent', async () => {
+  it('a count the counter refuses after the sale pages count_failed and still routes sent', async () => {
     const h = harness({ addFails: true })
     const r = await run(h)
     expect(r.failure).toBeUndefined()
@@ -249,6 +305,162 @@ describe('a confirmed send', () => {
       expect(page.kind === 'page' && page.detail).toMatch(new RegExp(`^the buyer confirmed receipt with id ${SF_ID}, and `))
       expect(page.kind === 'page' && page.detail).not.toMatch(/created/)
     }
+  })
+})
+
+describe('a count with no answer is asked once more, and a page says only what it measured (#1766)', () => {
+  /** The page as Slack would render it, from the alert the node raised. */
+  const rendered = (h: Harness) => {
+    const page = h.alerts.find((a) => a.kind === 'page')
+    if (!page) throw new Error('no page was raised')
+    const m = clickAlertMessage(page, 'https://app.test')
+    return `${m.header}\n${m.body}`
+  }
+
+  it('an add that times out once and then answers is counted, pages nothing, and the step says it was asked twice', async () => {
+    const h = harness({ counter: [{ kind: 'timeout' }, { kind: 'answer' }] })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(h.adds).toEqual(['a0B000000000001AAA', 'a0B000000000001AAA'])
+    expect(r.output).toMatchObject({ _route: 'sent', reason: 'sent', count: 1, counted: true, count_date: '2027-09-20', over_cap: 'not_due' })
+    expect(r.output.count_retried).toMatch(/click counter add did not answer within 5000 ms/)
+    expect(r.output.count_error).toBeUndefined()
+    expect(h.alerts).toEqual([])
+    expect(r.output.pages).toEqual([])
+    expect(h.logs.some((l) => l.event === 'buyer_click_count_no_answer' && l.retried === true)).toBe(true)
+  })
+
+  // The shape measured on 2026-10-05: the first add landed 48 ms after the caller gave up.
+  // The set takes it once, so the retry reads the count the late add left and nothing pages.
+  it('an add that landed after its deadline is not counted twice: the retry reads the same count and nothing pages', async () => {
+    const h = harness({ counter: [{ kind: 'timeout', lands: true }, { kind: 'answer' }], members: ['a0B000000000009AAA'] })
+    const r = await run(h)
+    expect(h.members.size).toBe(2)
+    expect(r.output).toMatchObject({ _route: 'sent', count: 2, counted: false })
+    expect(r.output.count_retried).toMatch(/did not answer/)
+    expect(h.alerts).toEqual([])
+  })
+
+  it('a transport error is no answer too, and is asked again', async () => {
+    const h = harness({ counter: [{ kind: 'transport' }, { kind: 'answer' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(2)
+    expect(r.output).toMatchObject({ count: 1, counted: true })
+    expect(r.output.count_retried).toMatch(/Network connection lost/)
+    expect(h.alerts).toEqual([])
+  })
+
+  it('an add that times out twice pages count_unknown, saying the click may not have been counted and never that the count reads low', async () => {
+    const h = harness({ counter: [{ kind: 'timeout' }, { kind: 'timeout' }] })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(h.adds).toHaveLength(2)
+    expect(r.output).toMatchObject({ _route: 'sent', reason: 'sent', count: null, counted: false, over_cap: 'not_counted' })
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    const page = h.alerts[0]
+    expect(page).toMatchObject({ kind: 'page', reason: 'count_unknown', hold_recorded: null })
+    expect(page.kind === 'page' && page.detail).toBe(
+      `the buyer confirmed receipt with id ${SF_ID}, and the day's count did not answer: click counter add did not answer within 5000 ms; asked again, it did not answer: click counter add did not answer within 5000 ms`,
+    )
+    expect(r.output.count_error).toBe(page.kind === 'page' && page.detail)
+    const text = rendered(h)
+    expect(text).toMatch(/liberty1 sent a click that may not have been counted/)
+    expect(text).toMatch(/Today's click count did not say whether it took this click, so the click may not have been counted\./)
+    expect(text).not.toMatch(/reads? low|could not be counted|did not take it/)
+  })
+
+  it('a counter that refuses the add is an answer: it is not asked again, and the page keeps saying the count reads low by this click', async () => {
+    const h = harness({ counter: [{ kind: 'refused' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(1)
+    expect(r.output.count_retried).toBeUndefined()
+    expect(r.output.pages).toEqual([{ reason: 'count_failed', outcome: 'posted' }])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count refused to add it: click counter add answered 400: {"error":"bad_member"}`)
+    const text = rendered(h)
+    expect(text).toMatch(/liberty1 sent a click that could not be counted/)
+    expect(text).toMatch(/the count reads low by this click until it is added/)
+    expect(text).not.toMatch(/may not have been counted/)
+  })
+
+  it('an answer the counter gave that cannot be read is not asked again, and the page says what is known: it answered, and whether it took the click is not', async () => {
+    const h = harness({ counter: [{ kind: 'unreadable' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(1)
+    expect(r.output.count_retried).toBeUndefined()
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count answered, but its answer could not be read: click counter add answered an unreadable body: {"added":"yes"}`)
+    const text = rendered(h)
+    expect(text).toMatch(/did not say whether it took this click/)
+    expect(text).not.toMatch(/reads? low/)
+  })
+
+  it('an error status from the counter is an answer that does not say whether it took the click: not asked again, paged as possibly not counted', async () => {
+    const h = harness({ counter: [{ kind: 'error_status' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(1)
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count answered with an error that does not say whether it took it: click counter add answered 500: internal error`)
+  })
+
+  it('a counter that cannot be opened was never asked, so the click is known not to be counted: count_failed, and no retry', async () => {
+    const h = harness({ counterOpenFails: true })
+    const r = await run(h)
+    expect(h.adds).toEqual([])
+    expect(r.output).toMatchObject({ _route: 'sent', count: null, counted: false, count_date: null, over_cap: 'not_counted' })
+    expect(r.output.pages).toEqual([{ reason: 'count_failed', outcome: 'posted' }])
+    expect(r.output.count_error).toBe(`the buyer confirmed receipt with id ${SF_ID}, and the day's count could not be asked: click counter name: "x" is not a partner id`)
+  })
+
+  it('a retry the counter refuses still pages count_unknown, because the first ask may have landed', async () => {
+    const h = harness({ counter: [{ kind: 'timeout' }, { kind: 'refused' }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(2)
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    expect(rendered(h)).not.toMatch(/reads? low/)
+  })
+
+  // The whole run after the claim is CLICK_RUN_BUDGET_MS. The retry is asked only
+  // when it and the page after it both fit in what is left, so it is never the step
+  // that carries the run past its budget.
+  it('no retry is asked once the run budget cannot hold it: the post and the first add used the time, and the page says so', async () => {
+    const h = harness({ postTakesMs: CLICK_POST_TIMEOUT_MS, counter: [{ kind: 'timeout', takesMs: OBJECT_CALL_DEADLINE_MS }] })
+    const r = await run(h)
+    expect(h.adds).toHaveLength(1)
+    expect(r.output.count_retried).toBeUndefined()
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    const page = h.alerts[0]
+    expect(page.kind === 'page' && page.detail).toBe(
+      `the buyer confirmed receipt with id ${SF_ID}, and the day's count did not answer: click counter add did not answer within 5000 ms. It was not asked again, because too little of this click's time was left`,
+    )
+    expect(rendered(h)).toMatch(/may not have been counted/)
+    expect(h.logs.some((l) => l.event === 'buyer_click_count_no_answer' && l.retried === false)).toBe(true)
+  })
+
+  it('the retry is asked when exactly its cost is left, and not one millisecond later', async () => {
+    const elapsedAtRetry = CLICK_RUN_BUDGET_MS - CLICK_COUNT_RETRY_COST_MS
+    const fits = harness({ postTakesMs: elapsedAtRetry - OBJECT_CALL_DEADLINE_MS, counter: [{ kind: 'timeout', takesMs: OBJECT_CALL_DEADLINE_MS }, { kind: 'answer' }] })
+    expect((await run(fits)).output).toMatchObject({ counted: true })
+    expect(fits.adds).toHaveLength(2)
+    const late = harness({ postTakesMs: elapsedAtRetry - OBJECT_CALL_DEADLINE_MS + 1, counter: [{ kind: 'timeout', takesMs: OBJECT_CALL_DEADLINE_MS }, { kind: 'answer' }] })
+    expect((await run(late)).output).toMatchObject({ counted: false, count: null })
+    expect(late.adds).toHaveLength(1)
+  })
+
+  it('a retry that never settles is ended by the node at the object call deadline, proven with timers fired by hand', async () => {
+    const pending: Array<{ fn: () => void; ms: number }> = []
+    const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
+    const h = harness({ counter: [{ kind: 'timeout' }, { kind: 'hang' }], timers })
+    const p = run(h)
+    await vi.waitFor(() => expect(h.adds).toHaveLength(2))
+    const retryBound = pending[pending.length - 1]
+    expect(retryBound.ms).toBe(OBJECT_CALL_DEADLINE_MS)
+    retryBound.fn()
+    const r = await p
+    expect(r.output.pages).toEqual([{ reason: 'count_unknown', outcome: 'posted' }])
+    expect(r.output.count_error).toMatch(/asked again, it did not answer: click counter add did not answer within 5000 ms/)
   })
 })
 

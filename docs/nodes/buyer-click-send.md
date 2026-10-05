@@ -90,13 +90,20 @@ The claims a buyer holds and the day's click count are named by the partner id, 
 
 One counter per buyer per **Pacific** day, named `clicks-{partner_id}-{YYYY-MM-DD}`, resetting at midnight Pacific. Clicks arrive after offers, so an Eastern day would push a late evening click into the next day's count. The counter holds the set of prospect ids sent that day, and the count is the number of distinct ids: adding the same prospect twice never counts it twice.
 
-A count that fails after a confirmed send pages `count_failed`; the route is still `sent`.
+An add that gives no answer, because it timed out or failed in transit, may still have landed: on 2026-10-05 one landed 48 ms after the node gave up on it (#1766). Because the count takes each prospect once, the node asks it once more, and a retry that answers is the count, with nothing paged. The step then carries `count_retried`, why the first ask gave no answer. The retry is asked only while the run still has room for it: the node's whole run, from just before the claim, is the claim deadline less its 10 second margin (`CLICK_RUN_BUDGET_MS`, 30 seconds), and the retry is asked only when the add at its full 5 second deadline and the page after it both fit in what is left. It is never given a shorter deadline.
+
+A count that still fails pages, saying only what the counter answered, and the route is still `sent`:
+
+- `count_failed`: the counter refused the add, so the click is known not to be counted and the count reads low by it.
+- `count_unknown`: nothing the counter answered says whether it took the click. That is no answer even after the retry, a retry the run had no room for, an error status, or an answer that cannot be read. The page says the click may not have been counted.
+
+Once the counter has answered, whatever it answered, it is not asked again. The step carries the page's detail as `count_error`. The click path reconcile after the Pacific day lists a `count_unknown` prospect as Completed but never counted only when its add never landed.
 
 ## Pages and the over cap notice
 
 The node posts to the org's Slack connection for two things:
 
-- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed`, `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. Buyer Click Check pages through the same path as `partner_not_click`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
+- **A page** when a click needs a person: `outcome_unknown`, `claim_in_doubt`, `sold_mark_failed` (the buyer confirmed but the claim could not be marked sold), `count_failed` and `count_unknown` (above), `free_failed` (a refusal whose claim could not be released) and `cap_unreadable`. Buyer Click Check pages through the same path as `partner_not_click`. One page per buyer (by partner id) per reason per 15 minutes, so a burst of one fault is one page; the executions list holds every occurrence.
 - **The over cap notice** when the count after an add reaches the profile's clicks per day times `alert_over_percent / 100`, once per buyer per Pacific day. The profile is the one read made before the claim (step 4), so the address and the cap come from the same snapshot. An enabled click profile holding no clicks per day (or a cap that is not a whole number above zero) pages `cap_unreadable`. A profile switched off while offers were still out is recorded as `no_enabled_profile` and pages nothing, because no more offers are being made. A buyer with no profile, or one sold on the offer, never reaches the count: step 4 refused the click.
 
 Both are decided by the alert claim object, so two clicks that page together post once. A Slack failure is logged and recorded on the step (`pages[].outcome`, `over_cap`), and never fails the node, because the click it reports on has already happened.

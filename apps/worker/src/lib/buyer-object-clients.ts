@@ -80,6 +80,21 @@ export class ObjectCallError extends Error {
   }
 }
 
+/**
+ * An object answered with a success status and a body the client cannot read
+ * (#1766). It is an ANSWER, so a caller must not read it as a call that was
+ * lost: buyer_click_send asks a lost add again, and an answer it cannot read
+ * is not asked again.
+ */
+export class ObjectAnswerUnreadableError extends Error {
+  readonly body: string
+  constructor(op: string, body: string) {
+    super(`${op} answered an unreadable body: ${body}`)
+    this.name = 'ObjectAnswerUnreadableError'
+    this.body = body
+  }
+}
+
 type Refusal = (body: unknown) => Error | null
 
 async function call<T>(stub: DurableObjectStub, op: string, url: string, init: RequestInit | undefined, opts: ClientOptions, refusal?: Refusal): Promise<T> {
@@ -265,10 +280,22 @@ export class ClickCounterClient {
    * Then writes the count the object answered to the copy. A copy that fails to
    * write never fails the add, because the click was counted; it is logged, and
    * the next offer check reads the object while the copy is missing.
+   *
+   * What a failure was is in its type (#1766): an ObjectCallError is a status the
+   * object answered with, an ObjectAnswerUnreadableError a success it answered
+   * with a body that is not an add result (the wrong shape, or not JSON at all),
+   * and anything else, a DeadlineError included, is no answer at all.
    */
   async addMember(member: string): Promise<AddMemberResult> {
-    const r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
-    if (!isAddMemberResult(r)) throw new Error(`click counter add answered an unreadable body: ${JSON.stringify(r)}`)
+    let r: unknown
+    try {
+      r = await call<unknown>(this.stub, 'click counter add', 'http://do/add-member', postJson({ member }), this.opts)
+    } catch (err) {
+      // Only reading a success body as JSON raises a SyntaxError here: the object answered.
+      if (err instanceof SyntaxError) throw new ObjectAnswerUnreadableError('click counter add', `a body that is not JSON (${err.message})`)
+      throw err
+    }
+    if (!isAddMemberResult(r)) throw new ObjectAnswerUnreadableError('click counter add', JSON.stringify(r))
     await this.writeCopy(r.count)
     return r
   }
