@@ -82,7 +82,14 @@ function moneyCalls(): number {
 // anyone remembering to list it.
 const MONEY_TYPES: NodeType[] = NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'money')
 
-const ctxFor = () => buildContext({ lead: 'L-1' }, 'engine', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1')
+// Every retry delay the walk asks for, recorded rather than waited out (L524),
+// so a refusal that were retried shows here as a delay instead of a slow test.
+let retryDelays: number[] = []
+const ctxFor = () => {
+  const ctx = buildContext({ lead: 'L-1' }, 'engine', 'wf-1', 'trace-1', {}, 'org-1', 'exec-1')
+  ctx.retrySleep = async (ms) => { retryDelays.push(ms) }
+  return ctx
+}
 
 const node = (id: string, namespace: string, type: string, config: Record<string, unknown> = {}): NodeDefinition =>
   ({ id, namespace, type, config } as NodeDefinition)
@@ -99,6 +106,7 @@ function lineThrough(type: string, config: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   for (const d of MONEY_DOUBLES) vi.mocked(d).mockClear()
+  retryDelays = []
 })
 
 describe('the walk runs every node through its own lane executor (#1725)', () => {
@@ -139,13 +147,10 @@ describe('an ops walk that reaches a money node refuses it by name (#1725)', () 
 
   it('the refusal is not something on_error can skip or route around, and it is never retried', async () => {
     for (const config of [{ on_error: 'skip' }, { on_error: 'fallback', fallback_node: 'n-done' }]) {
-      const ctx = ctxFor()
-      const sleeps: number[] = []
-      ctx.retrySleep = async (ms) => { sleeps.push(ms) }
       await expect(
-        walkGraph(ctx, lineThrough('partner_bid', config), 'exec-1', '2027-10-05T12:00:00.000Z', supabase, env, 'ops', 'v1', []),
+        walkGraph(ctxFor(), lineThrough('partner_bid', config), 'exec-1', '2027-10-05T12:00:00.000Z', supabase, env, 'ops', 'v1', []),
       ).rejects.toThrow('Node type partner_bid cannot run in the ops lane')
-      expect(sleeps, JSON.stringify(config)).toEqual([])
+      expect(retryDelays, JSON.stringify(config)).toEqual([])
     }
     expect(moneyCalls()).toBe(0)
   })
@@ -213,6 +218,8 @@ describe('runParallelChild holds its lane on its own (#1725)', () => {
       errorType: 'permanent',
     })
     expect(moneyCalls()).toBe(0)
+    // Refused through the executor here, so this is what proves it is not retried.
+    expect(retryDelays).toEqual([])
     expect(queue.map((r) => [r.step_namespace, r.status, r.error_message])).toEqual([
       ['subject', 'failed', `Node type ${type} cannot run in the ops lane`],
     ])
