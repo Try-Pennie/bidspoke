@@ -106,6 +106,56 @@ function pinRandomness(seed: string) {
 
 // ── Durable Object and KV state ─────────────────────────────────────────────
 
+/**
+ * Durable Object alarms, held rather than scheduled (#1789).
+ *
+ * An object arms its alarm from the pinned clock, so the time it asks for is long
+ * past in real time. workerd moves such an alarm to the real now and fires it at
+ * once, and an object that re-arms on every firing (the buyer ledger, while a
+ * reservation is pending) fires for ever. Each firing that met the real clock moved
+ * the run's state on (reserved to unresolved), and the captured alarm time was
+ * whatever real instant the loop had reached, so base and head could differ with
+ * nothing changed.
+ *
+ * So the replay stands in for the scheduler, as it does for Supabase and every
+ * outbound call: an alarm an object sets is recorded against its storage and never
+ * fires, getAlarm answers with the time the object asked for, and the capture reads
+ * exactly that. An alarm is a later event, never part of the run being replayed.
+ */
+const heldAlarms = new WeakMap<object, number | null>()
+/** The platform's own getAlarm, kept so a capture can confirm nothing was scheduled with it. */
+let platformGetAlarm: ((this: DurableObjectStorage) => Promise<number | null>) | null = null
+async function holdAlarms(e: Record<string, unknown>): Promise<void> {
+  for (const name of Object.keys(e).sort()) {
+    if (name === 'GATE_IO' || DISPATCH_BINDINGS.has(name)) continue
+    const ns = e[name] as DurableObjectNamespace
+    if (!ns || typeof (ns as { idFromName?: unknown }).idFromName !== 'function') continue
+    // Any object's storage reaches the prototype every object's storage shares; the
+    // probe object it creates is gone with the first fixture's reset.
+    await runInDurableObject(ns.get(ns.idFromName('money-gate-alarm-probe')), async (_instance: unknown, state: DurableObjectState) => {
+      const proto = Object.getPrototypeOf(state.storage) as Record<string, unknown>
+      platformGetAlarm ??= proto.getAlarm as typeof platformGetAlarm
+      proto.setAlarm = async function (this: object, at: number | Date) {
+        heldAlarms.set(this, typeof at === 'number' ? at : at.getTime())
+      }
+      proto.getAlarm = async function (this: object) {
+        return heldAlarms.get(this) ?? null
+      }
+      proto.deleteAlarm = async function (this: object) {
+        heldAlarms.set(this, null)
+      }
+      // The stand in must be what an object reaches: an alarm set through storage is
+      // answered back as asked, and the platform holds none.
+      await state.storage.setAlarm(FIXED_TIME_MS)
+      expect(await state.storage.getAlarm(), 'money gate: an alarm set through storage was not held by the replay').toBe(FIXED_TIME_MS)
+      expect(await platformGetAlarm!.call(state.storage), 'money gate: an alarm set through storage reached the platform scheduler').toBeNull()
+      await state.storage.deleteAlarm()
+    })
+    return
+  }
+  throw new Error('money gate: no Durable Object namespace reached the replay, so alarms cannot be held')
+}
+
 async function dumpDurableObjects(e: Record<string, unknown>): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {}
   for (const name of Object.keys(e).sort()) {
@@ -132,6 +182,10 @@ async function dumpDurableObjects(e: Record<string, unknown>): Promise<Record<st
           }
         } catch {
           // A key value object has no SQL storage; its state is the list above.
+        }
+        // Nothing may be scheduled with the platform, or it fires during the replay.
+        if (platformGetAlarm && (await platformGetAlarm.call(state.storage)) !== null) {
+          throw new Error(`money gate: ${name} ${id.toString()} holds an alarm with the platform scheduler, which fires during the replay; set alarms through storage so the replay holds them`)
         }
         return { kv, tables, alarm: await state.storage.getAlarm() }
       })
@@ -229,6 +283,7 @@ async function replayAll(e: GateEnv): Promise<void> {
   }
   const hosted = await e.GATE_IO.fetch('https://gate/bundles', { method: 'POST', body: JSON.stringify({ bundles }) })
   expect(hosted.status, await hosted.clone().text()).toBe(200)
+  await holdAlarms(e)
 
   const fixtures: FixtureRecord[] = []
   const unstubbed = new Set<string>()
