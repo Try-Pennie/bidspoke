@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { instrumentWorkflow, CAPTURE_STEP_PREFIX, type PipedreamStep, type PipedreamWorkflow } from '../index.ts'
-import { fixtureWorkflow, codeStep, registryStep } from './fixture.ts'
+import {
+  DOLLAR_KEPT_UNDER_ANOTHER_NAME,
+  DOLLAR_TO_AXIOS_ONLY,
+  HELPER_EXIT_AT_MODULE_LEVEL,
+  HELPER_RESPOND_AT_MODULE_LEVEL,
+  HELPER_THROUGH_RUN_CONTEXT,
+  HELPER_WITH_A_BARE_CATCH,
+  HELPERS_INSIDE_RUN,
+  HELPERS_OUTSIDE_RUN,
+  RESPOND_AND_EXIT_AS_VALUES,
+  RESPOND_ON_AN_UNTRACED_RECEIVER,
+  RUN_PARAMETER_SHADOWED,
+  codeStep,
+  fixtureWorkflow,
+  registryStep,
+} from './fixture.ts'
 
 const OPTS = { receiverBaseUrl: 'https://ops.example.test' }
 
@@ -164,6 +179,114 @@ describe('instrumentWorkflow: code sites', () => {
   it('does not instrument the control flow routing steps', () => {
     const { workflow } = instrumentWorkflow(fixtureWorkflow(), OPTS)
     expect(workflow.steps.find((s) => s.namespace === 'route')).toEqual(fixtureWorkflow().steps.find((s) => s.namespace === 'route'))
+  })
+})
+
+// #1717: a `$` handed to a helper defined in the step, which responds or exits
+// through its own parameter name, was neither captured nor refused.
+describe('instrumentWorkflow: helpers that receive the run $ under another name', () => {
+  const only = (code: string) => {
+    const wf = fixtureWorkflow()
+    wf.steps = [codeStep('helper', code)]
+    const result = instrumentWorkflow(wf, OPTS)
+    return {
+      ...result,
+      code: result.workflow.steps.find((s) => s.namespace === 'helper')!.uses.code!,
+      captured: result.sites.filter((s) => s.step === 'helper' && s.how === 'code_call'),
+      refusedHere: result.refused.filter((r) => r.step === 'helper'),
+    }
+  }
+
+  it('refuses by name a respond made in a module level helper through its own parameter', () => {
+    const { captured, refusedHere } = only(HELPER_RESPOND_AT_MODULE_LEVEL)
+    expect(captured).toEqual([])
+    expect(refusedHere.map((r) => [r.reason, r.line])).toEqual([['respond_outside_run', 2]])
+    expect(refusedHere[0].siteId).toMatch(/^main\/helper\/respond:2:/)
+  })
+
+  it('refuses by name an exit made in a module level helper through its own parameter', () => {
+    const { captured, refusedHere } = only(HELPER_EXIT_AT_MODULE_LEVEL)
+    expect(captured).toEqual([])
+    expect(refusedHere.map((r) => [r.reason, r.line])).toEqual([['exit_outside_run', 2]])
+    expect(refusedHere[0].siteId).toMatch(/^main\/helper\/exit:2:/)
+  })
+
+  it('captures responds and exits in helpers defined inside run: arrows, function expressions, object methods, nested helpers', () => {
+    const { captured, refusedHere, code } = only(HELPERS_INSIDE_RUN)
+    expect(refusedHere).toEqual([])
+    const responded = captured.filter((s) => s.kind === 'responded').map((s) => s.siteId)
+    expect(responded.sort()).toEqual(['main/helper/respond:11:14', 'main/helper/respond:18:12', 'main/helper/respond:4:12'])
+    expect(captured.filter((s) => s.kind === 'terminal').map((s) => s.siteId)).toEqual(['main/helper/exit:7:13'])
+    for (const name of ['d', 'r', 'i']) {
+      expect(code).toMatch(new RegExp(`await ${name}\\.respond\\(__portingResponse_\\d+_\\d+\\)\\s*await __portingCapture\\(\\s*__portingSteps,\\s*"responded"`))
+    }
+  })
+
+  it('refuses responds in helpers outside run: object literal methods, component methods, a destructured $', () => {
+    const { captured, refusedHere } = only(HELPERS_OUTSIDE_RUN)
+    expect(captured).toEqual([])
+    expect(refusedHere.map((r) => [r.reason, r.line])).toEqual([
+      ['respond_outside_run', 3],
+      ['respond_outside_run', 8],
+      ['respond_outside_run', 14],
+    ])
+  })
+
+  it('captures a respond through a helper that was given the run context', () => {
+    const { captured, refusedHere, code } = only(HELPER_THROUGH_RUN_CONTEXT)
+    expect(refusedHere).toEqual([])
+    expect(captured).toEqual([expect.objectContaining({ kind: 'responded', siteId: 'main/helper/respond:4:12' })])
+    expect(code).toMatch(/__portingCapture\(\s*ctx\.steps,\s*["']responded["']/)
+  })
+
+  it('captures a respond through a local name for $', () => {
+    const { captured, refusedHere } = only(DOLLAR_KEPT_UNDER_ANOTHER_NAME)
+    expect(refusedHere).toEqual([])
+    expect(captured).toEqual([expect.objectContaining({ kind: 'responded', siteId: 'main/helper/respond:4:10' })])
+  })
+
+  it('leaves a $ handed to axios, directly or through a helper, unrefused and the step untouched', () => {
+    const { captured, refusedHere, code } = only(DOLLAR_TO_AXIOS_ONLY)
+    expect(captured).toEqual([])
+    expect(refusedHere).toEqual([])
+    expect(code).toBe(DOLLAR_TO_AXIOS_ONLY)
+  })
+
+  it('does not raise the refusal count of a workflow when a step hands $ only to axios', () => {
+    const base = instrumentWorkflow(fixtureWorkflow(), OPTS).refused.length
+    const wf = fixtureWorkflow()
+    wf.steps.push(codeStep('axios_only', DOLLAR_TO_AXIOS_ONLY))
+    expect(instrumentWorkflow(wf, OPTS).refused).toHaveLength(base)
+  })
+
+  it('refuses $.respond and flow taken as values, whose later calls cannot be found', () => {
+    const { captured, refusedHere } = only(RESPOND_AND_EXIT_AS_VALUES)
+    expect(captured).toEqual([])
+    expect(refusedHere.map((r) => [r.reason, r.line])).toEqual([
+      ['respond_alias', 3],
+      ['exit_alias', 4],
+    ])
+  })
+
+  it('refuses a respond on a receiver it cannot trace to $, rather than leaving a silent gap', () => {
+    const { captured, refusedHere } = only(RESPOND_ON_AN_UNTRACED_RECEIVER)
+    expect(captured).toEqual([])
+    expect(refusedHere).toEqual([expect.objectContaining({ reason: 'respond_unresolved_receiver', line: 6 })])
+  })
+
+  it('follows $ into a helper whose respond sits in a catch block with no binding', () => {
+    const { captured, refusedHere } = only(HELPER_WITH_A_BARE_CATCH)
+    expect(refusedHere).toEqual([])
+    expect(captured.map((s) => s.siteId)).toEqual(['main/helper/respond:7:14', 'main/helper/respond:10:12'])
+  })
+
+  it('refuses a site where a helper parameter hides the run context the capture reads steps from', () => {
+    const { captured, refusedHere } = only(RUN_PARAMETER_SHADOWED)
+    expect(captured).toEqual([])
+    expect(refusedHere.map((r) => [r.reason, r.line])).toEqual([
+      ['respond_run_parameter_shadowed', 4],
+      ['exit_run_parameter_shadowed', 7],
+    ])
   })
 })
 
