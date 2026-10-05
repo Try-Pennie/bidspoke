@@ -262,6 +262,19 @@ describe('fingerprintAlert and recurrenceOf (#1768)', () => {
     expect(recurrenceOf(standing, later)).toEqual({ kind: 'reminder', standing, unchanged: false })
   })
 
+  it('reads a duration in any of its phrasings as one, so an age that grows is the same problem', () => {
+    // describeDuration's forms, as the buyer sale drain words its oldest entry,
+    // and the compact forms other checks use.
+    const age = (d: string) => meaningOf(`liberty1: 3 entries not yet copied to buyer_sales, oldest ${d} old`)
+    const forms = ['under a minute', '1 minute', '59 minutes', '1 hour', '2 hours', '1 hour 1 minute', '3 hours 12 minutes', '26h', '45m']
+    expect(new Set(forms.map(age)).size).toBe(1)
+  })
+
+  it('reads a count with its noun in the singular or the plural as one', () => {
+    expect(meaningOf('1 sale waiting')).toBe(meaningOf('2 sales waiting'))
+    expect(meaningOf('1 row set aside')).toBe(meaningOf('40 rows set aside'))
+  })
+
   it('keeps the words, so findings about two partners stay two problems', () => {
     expect(meaningOf('Liberty1 had no sales.')).not.toBe(meaningOf('Dot818 had no sales.'))
     expect(meaningOf('Tripoint had no sales.')).not.toBe(meaningOf('AmOne had no sales.'))

@@ -157,19 +157,38 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
 const HEX_ID = /\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/gi
 /** A number, with any thousands separators or decimal point inside it. */
 const NUMBER = /\d(?:[\d,.]*\d)?/g
+const UNIT = '(?:millisecond|second|minute|hour|day|week)s?'
+/**
+ * A duration once its numbers are folded: as describeDuration words one ("under
+ * a minute", "# hour # minutes"), or compactly ("#h", "#m", "#ms"). An age that
+ * grows walks through nine of describeDuration's phrasings in its first hours.
+ */
+const DURATION = new RegExp(`\\bunder a minute\\b|#(?:ms|s|m|h|d)\\b|# ${UNIT}(?: (?:and )?# ${UNIT})*`, 'g')
+/** A noun after a count, in the plural: "# entries", "# sales". */
+const PLURAL_IES = /# ([a-z]+)ies\b/gi
+const PLURAL_S = /# ([a-z]{2,}?)s\b/gi
 
 /**
  * A finding's meaning when its caller names none (#1768): its words, with every
- * number, uuid and hex id read as one placeholder. Most checks that alert
- * through the export alerter put a count, an age, a time or a day of the month
- * in their findings, which moves on every run while the problem stays the same,
- * and eleven of them run every hour or more often, so matching on the raw words
- * would post every run as new. Words are kept, so a partner named in a finding
- * still tells it apart ("Liberty1" and "Dot818" read differently). A caller
- * whose distinct problems differ only in their numbers passes its own keys.
+ * number, uuid and hex id read as one placeholder, every duration as one, and a
+ * noun after a count in the singular. Most checks that alert through the export
+ * alerter put a count, an age, a time or a day of the month in their findings,
+ * which moves on every run while the problem stays the same, and eleven of them
+ * run every hour or more often, so matching on the raw words would post every
+ * run as new. Words are kept, so a partner named in a finding still tells it
+ * apart ("Liberty1" and "Dot818" read differently). What is left, such as
+ * "is" turning to "are" beside a count, is a phrasing the union of posted
+ * problems lets through once per stretch. A caller whose distinct problems
+ * differ only in their numbers passes its own keys.
  */
 export function meaningOf(finding: string): string {
-  return finding.replace(UUID, '#').replace(HEX_ID, '#').replace(NUMBER, '#')
+  return finding
+    .replace(UUID, '#')
+    .replace(HEX_ID, '#')
+    .replace(NUMBER, '#')
+    .replace(DURATION, '#t')
+    .replace(PLURAL_IES, '# $1y')
+    .replace(PLURAL_S, '# $1')
 }
 
 /**
