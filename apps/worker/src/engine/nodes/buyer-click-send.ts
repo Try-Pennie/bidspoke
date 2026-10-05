@@ -74,13 +74,13 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, DeadlineError, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
+import { alertOverPercentOf, canonicalBodySha256, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { addAskingOnceMore, addKnownRefused, ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type AddFailure, type ClickClaimKey } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
@@ -646,8 +646,9 @@ class Run {
    *
    * An ask with no answer may still have landed (#1766: on 2026-10-05 one landed
    * 48 ms after the caller gave up), and the count is a set, so it is asked once
-   * more when the run budget still holds the retry and its page. An answer the
-   * counter gave is never asked again. The page then says only what was answered:
+   * more when the run budget still holds the retry and its page. Which failures
+   * are asked again is the shared rule (addAskingOnceMore), the same one the held
+   * click Mark sent route follows. The page then says only what was answered:
    * count_failed for a refusal, count_unknown when nothing says whether it took it.
    */
   private async count(v: Validated, claimStartedAt: number): Promise<void> {
@@ -656,31 +657,30 @@ class Run {
     try {
       counter = this.deps.counter(v.partnerId, now)
     } catch (err) {
-      await this.countFailed(v, [{ ok: false, answer: 'not_asked', message: messageOf(err) }], false)
+      await this.countFailed(v, [{ kind: 'not_asked', message: messageOf(err) }], false, true)
       return
     }
     this.out.count_date = counter.date
-    let ask = await this.addOnce(counter, v.prospectId)
-    if (!ask.ok && ask.answer === 'none') {
-      const first = ask
-      const elapsed = this.deps.clock() - claimStartedAt
-      const retry = elapsed + CLICK_COUNT_RETRY_COST_MS <= CLICK_RUN_BUDGET_MS
-      this.deps.log({ event: 'buyer_click_count_no_answer', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, retried: retry, elapsed_since_claim_ms: elapsed, error_message: first.message })
-      if (!retry) {
-        await this.countFailed(v, [first], true)
-        return
-      }
-      this.out.count_retried = first.message
-      ask = await this.addOnce(counter, v.prospectId)
-      if (!ask.ok) {
-        await this.countFailed(v, [first, ask], false)
-        return
-      }
-    } else if (!ask.ok) {
-      await this.countFailed(v, [ask], false)
+    let elapsed = 0
+    // Each ask is bounded by the node itself, so the run budget does not rest on the client's own deadline.
+    const outcome = await addAskingOnceMore(
+      () => withDeadline(counter.addMember(v.prospectId), OBJECT_CALL_DEADLINE_MS, 'click counter add', this.deps.timers),
+      () => {
+        elapsed = this.deps.clock() - claimStartedAt
+        return elapsed + CLICK_COUNT_RETRY_COST_MS <= CLICK_RUN_BUDGET_MS
+      },
+    )
+    const first = outcome.failed[0]
+    if (first?.kind === 'no_answer') {
+      const retried = !outcome.retryDeclined
+      this.deps.log({ event: 'buyer_click_count_no_answer', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, retried, elapsed_since_claim_ms: elapsed, error_message: first.message })
+      if (retried) this.out.count_retried = first.message
+    }
+    if (!outcome.result) {
+      await this.countFailed(v, outcome.failed, outcome.retryDeclined, addKnownRefused(outcome))
       return
     }
-    const added = ask.result
+    const added = outcome.result
     this.out.count = added.count
     this.out.counted = added.added
 
@@ -712,24 +712,14 @@ class Run {
     })
   }
 
-  /** One ask of the counter, bounded by the node itself, so the run budget does not rest on the client's own deadline. */
-  private async addOnce(counter: ClickCounterApi, member: string): Promise<CountAsk> {
-    try {
-      return { ok: true, result: await withDeadline(counter.addMember(member), OBJECT_CALL_DEADLINE_MS, 'click counter add', this.deps.timers) }
-    } catch (err) {
-      return { ok: false, answer: countAnswerOf(err), message: messageOf(err) }
-    }
-  }
-
   /**
    * The count page, saying what the counter answered and nothing more (L11). The
    * click is known not to be counted only when the one ask was refused or never
-   * made; an ask with no answer may have landed, so any run holding one pages
-   * count_unknown, whatever a retry then answered.
+   * made (`known`); an ask with no answer may have landed, so any run holding one
+   * pages count_unknown, whatever a retry then answered.
    */
-  private async countFailed(v: Validated, asks: FailedAsk[], notRetried: boolean): Promise<void> {
+  private async countFailed(v: Validated, asks: CountFailure[], notRetried: boolean, known: boolean): Promise<void> {
     this.out.over_cap = 'not_counted'
-    const known = asks.length === 1 && (asks[0].answer === 'refused' || asks[0].answer === 'not_asked')
     let detail = `the buyer confirmed receipt with id ${this.out.partner_lead_id}, and the day's count ${describeAsk(asks[0])}`
     if (asks[1]) detail += `; asked again, it ${describeAsk(asks[1])}`
     if (notRetried) detail += ". It was not asked again, because too little of this click's time was left"
@@ -855,37 +845,15 @@ function messageOf(err: unknown): string {
 }
 
 /**
- * One ask of the click counter (#1766), by what the counter answered:
- *   none          no answer at all: the deadline passed or the call failed in
- *                 transit. The add may still have landed.
- *   refused       a 4xx: the object refused the add, so it did not take it.
- *   error_status  another error status, which does not say whether it took it.
- *   unreadable    a success whose body is not an add result.
- *   not_asked     the counter could not be opened, so nothing was asked.
- *   unclassified  an error none of the above names, so what happened is not
- *                 known and it is not asked again (L35).
+ * A failed ask of the click counter (#1766): what the shared rule names
+ * (AddFailure in buyer-object-clients), plus the node's own not_asked, a
+ * counter that could not even be opened, so nothing was asked.
  */
-type CountAsk =
-  | { ok: true; result: AddMemberResult }
-  | { ok: false; answer: 'none' | 'refused' | 'error_status' | 'unreadable' | 'not_asked' | 'unclassified'; message: string }
-type FailedAsk = Extract<CountAsk, { ok: false }>
+type CountFailure = AddFailure | { kind: 'not_asked'; message: string }
 
-/**
- * The client's typed failures (buyer-object-clients). Only `none`, a deadline
- * that expired or a call lost in transit, is asked again: the add is a set, so a
- * second ask cannot count the click twice. An answer the counter gave, and an
- * error nobody classified, are never asked again.
- */
-function countAnswerOf(err: unknown): FailedAsk['answer'] {
-  if (err instanceof DeadlineError || err instanceof ObjectCallLostError) return 'none'
-  if (err instanceof ObjectCallError) return err.status >= 400 && err.status < 500 ? 'refused' : 'error_status'
-  if (err instanceof ObjectAnswerUnreadableError) return 'unreadable'
-  return 'unclassified'
-}
-
-function describeAsk(ask: FailedAsk): string {
-  switch (ask.answer) {
-    case 'none': return `did not answer: ${ask.message}`
+function describeAsk(ask: CountFailure): string {
+  switch (ask.kind) {
+    case 'no_answer': return `did not answer: ${ask.message}`
     case 'refused': return `refused to add it: ${ask.message}`
     case 'error_status': return `answered with an error that does not say whether it took it: ${ask.message}`
     case 'unreadable': return `answered, but its answer could not be read: ${ask.message}`

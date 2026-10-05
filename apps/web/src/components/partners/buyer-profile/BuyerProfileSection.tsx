@@ -149,7 +149,10 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
     ? result.count.added
       ? ` Counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
       : ` It was already counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
-    : ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}`
+    : result.count_failure === 'not_added'
+      ? ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}.`
+      // An add that got no answer may still have landed (#1766), so only a refusal says it was not added.
+      : ` It may not have been added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific): ${result.count_error}.`
   // An entry kept for its Salesforce retry is kept on purpose, so the not-removed note is only for a complete one.
   const notCleared = !result.list_cleared && result.salesforce.complete ? LIST_NOT_CLEARED : ''
   return `${base}${counted}${salesforceSentence(result.salesforce)}${result.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notCleared}`

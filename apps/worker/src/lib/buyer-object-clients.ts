@@ -368,6 +368,69 @@ export class ClickCounterClient {
   }
 }
 
+/**
+ * What a failed add says about the click (#1766), from the client's typed
+ * failures, in ONE place for every caller (L35):
+ *   no_answer     a deadline that expired, or a call lost in transit. The add
+ *                 may still have landed: on 2026-10-05 one landed 48 ms after
+ *                 its caller gave up.
+ *   refused       a 4xx: the object refused the add, so it did not take it.
+ *   error_status  another error status, which does not say whether it took it.
+ *   unreadable    a success whose body is not an add result.
+ *   unclassified  anything else, so what happened is not known.
+ */
+export type AddFailureKind = 'no_answer' | 'refused' | 'error_status' | 'unreadable' | 'unclassified'
+export interface AddFailure {
+  kind: AddFailureKind
+  message: string
+}
+
+export function addFailureOf(err: unknown): AddFailure {
+  const message = messageOf(err)
+  if (err instanceof DeadlineError || err instanceof ObjectCallLostError) return { kind: 'no_answer', message }
+  if (err instanceof ObjectCallError) return { kind: err.status >= 400 && err.status < 500 ? 'refused' : 'error_status', message }
+  if (err instanceof ObjectAnswerUnreadableError) return { kind: 'unreadable', message }
+  return { kind: 'unclassified', message }
+}
+
+export interface AddOutcome {
+  /** What the counter answered, when an ask got an answer. */
+  result: AddMemberResult | null
+  /** Every ask that failed, in order: the first, then the retry's when that failed too. */
+  failed: AddFailure[]
+  /** True when the first ask got no answer and the caller declined a second. */
+  retryDeclined: boolean
+}
+
+/**
+ * Adds a member, asking once more when the first ask got NO answer and
+ * `mayAskAgain` allows it (#1766). The add is a set, so a second ask cannot
+ * count a click twice. An answer the counter gave, and an error nobody
+ * classified, are never asked again. `add` is one bounded ask; `mayAskAgain`
+ * is consulted only when a second ask is otherwise due, so a caller under a
+ * time budget decides there (buyer_click_send), and one without asks again.
+ * Never rejects.
+ */
+export async function addAskingOnceMore(add: () => Promise<AddMemberResult>, mayAskAgain: () => boolean = () => true): Promise<AddOutcome> {
+  const failed: AddFailure[] = []
+  for (let ask = 0; ask < 2; ask++) {
+    try {
+      return { result: await add(), failed, retryDeclined: false }
+    } catch (err) {
+      const failure = addFailureOf(err)
+      failed.push(failure)
+      if (failure.kind !== 'no_answer' || ask === 1) break
+      if (!mayAskAgain()) return { result: null, failed, retryDeclined: true }
+    }
+  }
+  return { result: null, failed, retryDeclined: false }
+}
+
+/** True only when the counter refused the one ask: the click is known not to be counted. An ask with no answer may have landed. */
+export function addKnownRefused(outcome: AddOutcome): boolean {
+  return outcome.result === null && outcome.failed.length === 1 && outcome.failed[0].kind === 'refused'
+}
+
 // ── BuyerLedgerObject ──────────────────────────────────────────────────────────
 
 export function buyerLedgerObjectName(partnerId: string): string {

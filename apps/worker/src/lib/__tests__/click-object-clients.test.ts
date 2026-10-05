@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DeadlineError, LEDGER_KINDS, isPartnerId as packageIsPartnerId, type Timers } from '@bidspoke/buyer-profile'
-import { CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError } from '../buyer-object-clients'
+import { addAskingOnceMore, addFailureOf, addKnownRefused, CLICK_CLAIM_KIND, CLICK_COUNT_COPY_WRITE_DEADLINE_MS, ClickCounterClient, clickCountCopyKey, clickCounterObjectName, isPartnerId as workerIsPartnerId, LeadSaleClient, leadSaleObjectName, ObjectAnswerUnreadableError, ObjectCallError, ObjectCallLostError } from '../buyer-object-clients'
 
 beforeAll(() => {
   // Far from Pacific, so a local Date getter would show up as the wrong day (L504).
@@ -369,5 +369,72 @@ describe('a copy that cannot be read while saving is said out loud', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+// #1766: the one rule for asking the click counter again, shared by buyer_click_send and the
+// held click Mark sent route, so the two cannot drift. Only an ask with NO answer is asked
+// again (the add is a set, so a second ask cannot count twice); an answer never is (L35).
+describe('addFailureOf: what a failed add says about the click', () => {
+  it('names each failure the client raises, and calls anything else unclassified', () => {
+    expect(addFailureOf(new DeadlineError('click counter add', 5000))).toEqual({ kind: 'no_answer', message: 'click counter add did not answer within 5000 ms' })
+    expect(addFailureOf(new ObjectCallLostError(new TypeError('Network connection lost.')))).toEqual({ kind: 'no_answer', message: 'Network connection lost.' })
+    expect(addFailureOf(new ObjectCallError('click counter add', 400, 'bad_member')).kind).toBe('refused')
+    expect(addFailureOf(new ObjectCallError('click counter add', 500, 'oops')).kind).toBe('error_status')
+    expect(addFailureOf(new ObjectAnswerUnreadableError('click counter add', '{}')).kind).toBe('unreadable')
+    expect(addFailureOf(new Error('something else'))).toEqual({ kind: 'unclassified', message: 'something else' })
+    expect(addFailureOf('a string')).toEqual({ kind: 'unclassified', message: 'non Error thrown' })
+  })
+})
+
+describe('addAskingOnceMore: the add, asked again only when it got no answer', () => {
+  const asks = (...script: Array<'answer' | Error>) => {
+    let n = 0
+    const add = vi.fn(async () => {
+      const step = script[n++] ?? 'answer'
+      if (step instanceof Error) throw step
+      return { added: true, count: 4 }
+    })
+    return add
+  }
+  const timeout = () => new DeadlineError('click counter add', 5000)
+
+  it('a first ask with no answer is asked again, and the retry that answers is the result', async () => {
+    const add = asks(timeout(), 'answer')
+    const out = await addAskingOnceMore(add)
+    expect(add).toHaveBeenCalledTimes(2)
+    expect(out).toEqual({ result: { added: true, count: 4 }, failed: [{ kind: 'no_answer', message: 'click counter add did not answer within 5000 ms' }], retryDeclined: false })
+    expect(addKnownRefused(out)).toBe(false)
+  })
+
+  it('no answer twice is two failures and no result, and is not known to be refused', async () => {
+    const out = await addAskingOnceMore(asks(timeout(), new ObjectCallLostError(new Error('Network connection lost.'))))
+    expect(out.result).toBeNull()
+    expect(out.failed.map((f) => f.kind)).toEqual(['no_answer', 'no_answer'])
+    expect(addKnownRefused(out)).toBe(false)
+  })
+
+  it('an answer the counter gave is never asked again, and only a refusal is known not to be counted', async () => {
+    for (const [err, refused] of [[new ObjectCallError('click counter add', 400, 'bad_member'), true], [new ObjectCallError('click counter add', 500, 'oops'), false], [new ObjectAnswerUnreadableError('click counter add', '{}'), false], [new Error('nobody classified this'), false]] as const) {
+      const add = asks(err)
+      const mayAskAgain = vi.fn(() => true)
+      const out = await addAskingOnceMore(add, mayAskAgain)
+      expect(add, err.message).toHaveBeenCalledTimes(1)
+      expect(mayAskAgain, err.message).not.toHaveBeenCalled()
+      expect(addKnownRefused(out), err.message).toBe(refused)
+    }
+  })
+
+  it('a second ask the caller declines is not made, and the outcome says it was declined', async () => {
+    const add = asks(timeout(), 'answer')
+    const out = await addAskingOnceMore(add, () => false)
+    expect(add).toHaveBeenCalledTimes(1)
+    expect(out).toMatchObject({ result: null, retryDeclined: true })
+  })
+
+  it('a first ask that answers is the result, and the caller is never asked about a retry', async () => {
+    const mayAskAgain = vi.fn(() => true)
+    expect(await addAskingOnceMore(asks('answer'), mayAskAgain)).toEqual({ result: { added: true, count: 4 }, failed: [], retryDeclined: false })
+    expect(mayAskAgain).not.toHaveBeenCalled()
   })
 })
