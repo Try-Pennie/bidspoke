@@ -3,9 +3,17 @@
  *
  * The export holds partner code and configuration and is never committed, so
  * this reads it from the machine it lives on: `PIPEDREAM_EXPORT_DIR`, else the
- * folder the 2026-09-30 export was saved to. Where neither exists (CI) the suite
- * is reported as SKIPPED by name, never as passed (L411): the committed fixture
- * suites cover the same rules on a hand written workflow.
+ * folder the 2026-09-30 export sits in on Dan's Mac. Where it is missing:
+ * - with `PIPEDREAM_EXPORT_DIR` set, the suite FAILS: a measurement was asked
+ *   for and cannot be taken (L320);
+ * - otherwise (CI, or another machine) one test is reported as SKIPPED with an
+ *   UNMEASURED note naming the path it looked at, and the same line goes to
+ *   stderr, so a run that measured nothing never reads as a run that passed
+ *   (L411, L98). It does not fail, because CI never holds the export: the
+ *   committed fixture suites cover the same rules on hand written workflows.
+ * Until #1717 the default still named the folder the export left on
+ * 2026-10-02, so on the one machine holding it the suite skipped with nothing
+ * saying why.
  *
  * What it proves on all 346 workflows: every run end the plan names has a
  * capture, every code exit and respond is either rewritten or refused by name
@@ -19,31 +27,80 @@ import { parse as babelParse, type ParserOptions } from '@babel/parser'
 import { describe, expect, it } from 'vitest'
 import { CAPTURE_STEP_PREFIX, exportFiles, instrumentWorkflow, type PipedreamStep, type PipedreamWorkflow } from '../index.ts'
 
-const EXPORT_DIR = process.env.PIPEDREAM_EXPORT_DIR ?? path.join(homedir(), 'Documents', 'Pipedream export', 'Pipedream export 26-09-30')
+const REQUESTED_DIR = process.env.PIPEDREAM_EXPORT_DIR
+// Moved here with the Documents folder on 2026-10-02. The apostrophe in the
+// folder name is U+2019, written as an escape so the source holds no curly quote.
+const DEFAULT_DIR = path.join(homedir(), 'Documents', 'Documents - Dan\u2019s MacBook Pro', 'Pipedream export', 'Pipedream export 26-09-30')
+const EXPORT_DIR = REQUESTED_DIR ?? DEFAULT_DIR
 const present = existsSync(EXPORT_DIR)
+
+if (!present && REQUESTED_DIR !== undefined) {
+  describe('the real export named by PIPEDREAM_EXPORT_DIR', () => {
+    it('exists', () => {
+      throw new Error(`PIPEDREAM_EXPORT_DIR names ${EXPORT_DIR}, which does not exist, so the measurement it asks for cannot be taken`)
+    })
+  })
+} else if (!present) {
+  const note = `UNMEASURED: no Pipedream export at ${EXPORT_DIR}, so the instrumenter was not run over the real export. Set PIPEDREAM_EXPORT_DIR to measure it.`
+  process.stderr.write(`\n${note}\n\n`)
+  describe('instrumenter over the real export', () => {
+    it('is unmeasured on this machine', (ctx) => ctx.skip(note))
+  })
+}
 
 const parseOpts: ParserOptions = { sourceType: 'module', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, plugins: ['jsx', 'topLevelAwait'] }
 
-/** Counts calls of `X.flow.exit(` and `$.respond(` by walking a plain babel tree: an independent witness. */
-function rawCounts(code: string): { exits: number; responds: number } {
+type Raw = Record<string, unknown>
+const isMember = (x: unknown): x is Raw => (x as Raw | undefined)?.type === 'MemberExpression' || (x as Raw | undefined)?.type === 'OptionalMemberExpression'
+const isCallNode = (x: unknown): x is Raw => (x as Raw | undefined)?.type === 'CallExpression' || (x as Raw | undefined)?.type === 'OptionalCallExpression'
+const propOf = (x: Raw) => (x.computed ? undefined : (x.property as { name?: string } | undefined)?.name)
+const isFlowExit = (x: unknown) => isMember(x) && propOf(x) === 'exit' && isMember(x.object) && propOf(x.object) === 'flow'
+const isRespond = (x: unknown) => isMember(x) && propOf(x) === 'respond'
+/** `$` spelled out, or `<anything>.$`: the receivers a respond taken as a value is counted on. */
+const isDollarSpelled = (x: unknown) => ((x as Raw | undefined)?.type === 'Identifier' && (x as Raw).name === '$') || (isMember(x) && propOf(x) === '$')
+
+/**
+ * An independent witness over a plain babel tree, sharing no code with the
+ * instrumenter:
+ * - `exits`: calls of `X.flow.exit(` on any receiver;
+ * - `responds`: calls of `X.respond(` on ANY receiver, so a respond through a
+ *   helper parameter, a local name or something untraceable is counted too
+ *   (#1717), not only one spelled `$.respond(`;
+ * - `aliases`: `respond` or `flow.exit` taken as a value: `.bind`, `.call` or
+ *   `.apply` on either, a `$.respond` or `X.flow.exit` stored, passed, returned
+ *   or put in an object or array, and `respond` or `flow` destructured from `$`.
+ */
+function rawCounts(code: string): { exits: number; responds: number; aliases: number } {
   let exits = 0
   let responds = 0
-  const walk = (node: unknown) => {
+  let aliases = 0
+  const walk = (node: unknown, parent: Raw | null) => {
     if (!node || typeof node !== 'object') return
-    if (Array.isArray(node)) return node.forEach(walk)
-    const o = node as Record<string, unknown>
-    if (o.type === 'CallExpression' || o.type === 'OptionalCallExpression') {
-      const callee = o.callee as Record<string, unknown>
-      const prop = (callee.property as { name?: string } | undefined)?.name
-      const obj = callee.object as Record<string, unknown> | undefined
-      const isMember = (x: Record<string, unknown> | undefined) => x?.type === 'MemberExpression' || x?.type === 'OptionalMemberExpression'
-      if (isMember(callee) && prop === 'exit' && isMember(obj) && (obj!.property as { name?: string }).name === 'flow') exits++
-      if (isMember(callee) && prop === 'respond' && obj?.type === 'Identifier' && obj.name === '$') responds++
+    if (Array.isArray(node)) return node.forEach((x) => walk(x, parent))
+    const o = node as Raw
+    if (isCallNode(o) && isFlowExit(o.callee)) exits++
+    if (isCallNode(o) && isRespond(o.callee)) responds++
+    const exitOrRespond = isFlowExit(o) || (isRespond(o) && isDollarSpelled(o.object))
+    if ((isFlowExit(o) || isRespond(o)) && parent && isMember(parent) && parent.object === o && ['bind', 'call', 'apply'].includes(propOf(parent) ?? '')) aliases++
+    else if (exitOrRespond && parent) {
+      const p = parent
+      const stored =
+        (p.type === 'VariableDeclarator' && p.init === o) ||
+        (p.type === 'AssignmentExpression' && p.right === o) ||
+        (isCallNode(p) && (p.arguments as unknown[]).includes(o)) ||
+        ((p.type === 'ObjectProperty' || p.type === 'Property') && p.value === o) ||
+        (p.type === 'ReturnStatement' && p.argument === o) ||
+        (p.type === 'ArrowFunctionExpression' && p.body === o) ||
+        p.type === 'ArrayExpression'
+      if (stored) aliases++
     }
-    for (const [k, v] of Object.entries(o)) if (k !== 'loc' && k !== 'start' && k !== 'end') walk(v)
+    if (o.type === 'VariableDeclarator' && isDollarSpelled(o.init) && (o.id as Raw).type === 'ObjectPattern') {
+      for (const p of (o.id as Raw).properties as Raw[]) if (['respond', 'flow'].includes(((p.key as Raw | undefined)?.name as string | undefined) ?? '')) aliases++
+    }
+    for (const [k, v] of Object.entries(o)) if (k !== 'loc' && k !== 'start' && k !== 'end') walk(v, o)
   }
-  walk(babelParse(code, parseOpts).program)
-  return { exits, responds }
+  walk(babelParse(code, parseOpts).program, null)
+  return { exits, responds, aliases }
 }
 
 const pipelinesOf = (wf: PipedreamWorkflow): Array<[string, PipedreamStep[]]> => [
@@ -111,28 +168,38 @@ describe.skipIf(!present)(`instrumenter over the real export at ${EXPORT_DIR}`, 
     }
   })
 
-  it('accounts for every $.flow.exit and $.respond in enabled code: rewritten or refused by name', () => {
-    let exits = 0
-    let responds = 0
-    let handledExits = 0
-    let handledResponds = 0
+  it('accounts for every flow.exit and respond in enabled code, on any receiver: rewritten or refused by name', () => {
+    // A step refused as a whole (no run method, unparseable, ...) is one hand
+    // item covering every site in it, so its sites are counted there instead.
+    const WHOLE_STEP = new Set(['no_run_method', 'unsupported_run_parameters', 'unparseable_code', 'already_instrumented'])
+    const isAlias = (reason: string) => reason === 'exit_alias' || reason === 'respond_alias'
+    const totals = { exits: 0, responds: 0 }
+    const mismatches: string[] = []
     for (const r of results) {
-      for (const [, steps] of pipelinesOf(r.original)) {
+      for (const [pipeline, steps] of pipelinesOf(r.original)) {
         for (const s of steps) {
           if (s.disabled || typeof s.uses?.code !== 'string' || s.uses.registry === true || (s.props && '_controlFlow' in s.props)) continue
-          const c = rawCounts(s.uses.code)
-          exits += c.exits
-          responds += c.responds
+          const witness = rawCounts(s.uses.code)
+          const here = (x: { pipeline: string; step: string }) => x.pipeline === pipeline && x.step === s.namespace
+          const refused = r.refused.filter(here)
+          if (refused.some((x) => WHOLE_STEP.has(x.reason))) continue
+          const captured = r.sites.filter((x) => here(x) && x.how === 'code_call')
+          const handled = {
+            exits: captured.filter((x) => x.kind === 'terminal').length + refused.filter((x) => x.reason.startsWith('exit_') && !isAlias(x.reason)).length,
+            responds: captured.filter((x) => x.kind === 'responded').length + refused.filter((x) => x.reason.startsWith('respond_') && !isAlias(x.reason)).length,
+            aliases: refused.filter((x) => isAlias(x.reason)).length,
+          }
+          totals.exits += witness.exits
+          totals.responds += witness.responds
+          if (handled.exits !== witness.exits || handled.responds !== witness.responds || handled.aliases !== witness.aliases) {
+            mismatches.push(`${r.file} ${pipeline}/${s.namespace}: witness ${JSON.stringify(witness)}, handled ${JSON.stringify(handled)}`)
+          }
         }
       }
-      handledExits += r.sites.filter((x) => x.how === 'code_call' && x.kind === 'terminal').length
-      handledExits += r.refused.filter((x) => x.reason.startsWith('exit_') && x.reason !== 'exit_alias').length
-      handledResponds += r.sites.filter((x) => x.how === 'code_call' && x.kind === 'responded').length
-      handledResponds += r.refused.filter((x) => x.reason.startsWith('respond_')).length
     }
-    expect(exits).toBeGreaterThan(0)
-    expect(handledExits).toBe(exits)
-    expect(handledResponds).toBe(responds)
+    expect(totals.exits).toBeGreaterThan(0)
+    expect(totals.responds).toBeGreaterThan(0)
+    expect(mismatches).toEqual([])
   })
 
   it('leaves every rewritten code step parseable', () => {

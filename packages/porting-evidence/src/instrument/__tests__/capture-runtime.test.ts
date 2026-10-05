@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deriveWorkflowKey, verifyBodySignature } from '../../signature.ts'
 import { instrumentWorkflow, keyEnvName, type PipedreamWorkflow } from '../index.ts'
-import { codeStep, registryStep } from './fixture.ts'
+import { HELPERS_INSIDE_RUN, codeStep, registryStep } from './fixture.ts'
 
 const HASHID = 'p_RUNTIME'
 const MASTER = 'runtime-test-master-secret'
@@ -203,6 +203,32 @@ describe('what a capture sends', () => {
     const payload = envelope(sent[0]).payload as { truncated?: boolean; bytes?: number }
     expect(payload.truncated).toBe(true)
     expect(payload.bytes).toBeGreaterThan(name.length * 3)
+  })
+
+  // #1717: a respond made in a helper inside run, through the helper's own
+  // parameter name, is captured with the run's event id, and the workflow's own
+  // return value and `$` calls are unchanged.
+  it('captures a respond and an exit made inside helpers under the run event id, changing nothing the step does', async () => {
+    const sent = capturing()
+    const wf: PipedreamWorkflow = { id: HASHID, steps: [codeStep('helpers', HELPERS_INSIDE_RUN)], deployments: {} }
+    const original = await loadStep(HELPERS_INSIDE_RUN)
+    const instrumented = await loadStep(instrumentWorkflow(wf, { receiverBaseUrl: 'https://ops.test' }).workflow.steps.find((s) => s.namespace === 'helpers')!.uses.code!)
+    const cases: Array<[Record<string, unknown>, string[]]> = [
+      [{ bad: true }, ['responded', 'responded']],
+      [{ later: true }, ['responded', 'responded']],
+      [{ test: true }, ['terminal', 'responded']],
+      [{}, ['responded']],
+    ]
+    for (const [body, kinds] of cases) {
+      sent.length = 0
+      const a = fakeDollar()
+      const b = fakeDollar()
+      const before = await original.run({ steps: stepsFor(body), $: a.$ })
+      const after = await instrumented.run({ steps: stepsFor(body), $: b.$ })
+      expect(after).toEqual(before)
+      expect(b.calls).toEqual(a.calls)
+      expect(sent.map(envelope).map((e) => [e.kind, e.event_id])).toEqual(kinds.map((k) => [k, 'evt_123']))
+    }
   })
 
   it("runs the error listener: captures this workflow's failed run under its id and ignores other workflows", async () => {
