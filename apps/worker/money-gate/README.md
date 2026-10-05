@@ -19,6 +19,16 @@ outbound service refuses anything that slips past it, and each code bundle's
 outbound service answers from the stub rules. Clock, randomness, timezone and
 locale are pinned, in the engine and inside every code bundle.
 
+Durable Object alarms are held, never scheduled (#1789). An object arms its alarm
+from the pinned clock, a time long past in real time, and workerd fires such an
+alarm at once on the real clock, so a pending buyer reservation used to turn
+`unresolved` before or after the capture by chance, and base and head disagreed
+with nothing changed. The replay replaces storage's `setAlarm`, `getAlarm` and
+`deleteAlarm`: the time an object asks for is recorded and reported in
+`do_state`, and nothing fires. An alarm is a later event, not part of the run. The
+replay checks the stand in works before the first fixture, and every capture
+refuses an object holding an alarm with the platform scheduler.
+
 ## Three kinds of run
 
 Every lead is replayed as a live run. The variants marked `"also_run_as": ["test",
