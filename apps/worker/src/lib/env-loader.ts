@@ -42,11 +42,17 @@
 // - An org WITH workflow values also gets a pair beside them,
 //   `env-vars-<org>-workflow-scoped` and its last-good copy, and the org entry
 //   carries one extra value, under a key no stored variable can have (MARKER),
-//   naming the load that wrote that pair. So the org entry itself says whether
-//   there is anything beside it, and a run is served from the cache only when
-//   the pair it names is there and came from the same load. A missing or
-//   mismatched pair reloads, so a run is never handed the org values alone
-//   because its own copy expired, was deleted, or lost a race a moment earlier.
+//   naming the load that wrote that pair and, for each workflow, the NAMES of
+//   its own keys (never a value). So the org entry itself says whether there is
+//   anything beside it, and a run is served from the cache only when the pair it
+//   names is there and came from the same load. A missing or mismatched pair
+//   reloads, so a run is never handed the org values alone because its own copy
+//   expired, was deleted, or lost a race a moment earlier.
+// - While the database is down, a workflow last-good copy that is missing or
+//   unreadable cannot be reloaded. The org values are served, but every key the
+//   marker names for a workflow is withheld from that workflow's runs, exactly as
+//   an undecryptable workflow secret is: the org's credential is never sent where
+//   a workflow saved its own, and nothing else goes blank (#391).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
@@ -97,12 +103,35 @@ interface OrgEnv {
 }
 
 /**
- * The key, inside the org entry, naming the load that also wrote the workflow
- * copies. It starts with a NUL, which a Postgres text column cannot hold, so no
+ * The key, inside the org entry, holding the marker: a JSON string naming the
+ * load that also wrote the workflow copies and, per workflow, the names of its
+ * own keys. It starts with a NUL, which a Postgres text column cannot hold, so no
  * stored variable can ever collide with it. The release before this one would
- * see it as one more env value holding a random id, which nothing reads.
+ * see it as one more env value holding ids and names, which nothing reads.
  */
 const MARKER = '\u0000workflow-scoped-load'
+
+interface Marker {
+  load: string
+  /** Workflow id to the names of the keys that workflow saved its own value for. */
+  keys: Record<string, string[]>
+}
+
+function parseMarker(raw: unknown): Marker | null {
+  if (typeof raw !== 'string') return null
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (!isPlainObject(v) || typeof v.load !== 'string' || !isPlainObject(v.keys)) return null
+    const keys: Record<string, string[]> = {}
+    for (const [workflowId, names] of Object.entries(v.keys)) {
+      if (!Array.isArray(names) || !names.every((n) => typeof n === 'string')) return null
+      keys[workflowId] = names as string[]
+    }
+    return { load: v.load, keys }
+  } catch {
+    return null
+  }
+}
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -134,9 +163,12 @@ async function readEncrypted(
  * load the org entry names, and otherwise reports a miss so the caller reloads.
  * `lenient` (last-good, read while the database is down) takes whatever workflow
  * copy is there: two last-good copies disagree only when two successful loads
- * raced moments apart, and either is better than nothing during an outage.
+ * raced moments apart, and either is better than nothing during an outage. When
+ * there is no readable workflow copy at all, it withholds every key the marker
+ * names for each workflow rather than letting the org value stand in for it.
  */
 async function readCopies(
+  orgId: string,
   kv: KVNamespace,
   keys: { org: string; workflows: string },
   secretEncryptionKey: SecretKeyInput,
@@ -144,17 +176,34 @@ async function readCopies(
 ): Promise<OrgEnv | null> {
   const entry = await readEncrypted(kv, keys.org, secretEncryptionKey)
   if (!entry) return null
-  const load = typeof entry[MARKER] === 'string' ? entry[MARKER] : null
   const global = Object.fromEntries(
     Object.entries(entry).filter((pair): pair is [string, string] => pair[0] !== MARKER && typeof pair[1] === 'string')
   )
   // The load that wrote this entry found no workflow values, and says so itself.
-  if (load === null) return { global, workflows: {} }
+  if (!Object.hasOwn(entry, MARKER)) return { global, workflows: {} }
 
+  const marker = parseMarker(entry[MARKER])
   const copy = await readEncrypted(kv, keys.workflows, secretEncryptionKey)
   const workflows = copy && isPlainObject(copy.workflows) ? (copy.workflows as WorkflowScoped) : null
-  if (match === 'exact') return workflows && copy?.load === load ? { global, workflows } : null
-  return { global, workflows: workflows ?? {} }
+  if (match === 'exact') return marker && workflows && copy?.load === marker.load ? { global, workflows } : null
+  if (workflows) return { global, workflows }
+
+  // The database is down and the workflow copy is missing or unreadable. The org
+  // values are served (blanking them is the #391 outage), and each workflow's own
+  // keys are withheld, as an undecryptable workflow secret is, so the org's value
+  // is never sent where a workflow saved its own.
+  if (!marker) {
+    // Only a fault in this file's own writer gets here: the entry is encrypted
+    // with an authenticated cipher, so a marker it wrote cannot arrive garbled.
+    console.error(`[env-loader] the last-good copy for org ${orgId} names workflow values, but neither they nor their key names can be read; serving the org values only`)
+    return { global, workflows: {} }
+  }
+  const withheld: WorkflowScoped = {}
+  for (const [workflowId, names] of Object.entries(marker.keys)) {
+    withheld[workflowId] = Object.fromEntries(names.map((name) => [name, null]))
+    console.error(`[env-loader] the workflow scoped last-good copy for org ${orgId} is missing or unreadable; withholding ${names.join(', ')} for workflow ${workflowId} until the database answers`)
+  }
+  return { global, workflows: withheld }
 }
 
 /** The org values with one workflow's own laid over them, or the org values alone. */
@@ -182,7 +231,7 @@ async function loadOrgEnv(
   supabase: SupabaseClient,
   secretEncryptionKey: SecretKeyInput
 ): Promise<OrgEnv> {
-  const cached = await readCopies(kv, { org: cacheKey(orgId), workflows: workflowCacheKey(orgId) }, secretEncryptionKey, 'exact')
+  const cached = await readCopies(orgId, kv, { org: cacheKey(orgId), workflows: workflowCacheKey(orgId) }, secretEncryptionKey, 'exact')
   if (cached) return cached
 
   // Load ALL user env vars, including is_secret ones, so nodes (code-node `env`
@@ -223,7 +272,7 @@ async function loadOrgEnv(
     // gracefully instead of blanking creds; empty only if we never had a good load.
     // A failure on any page is the same failure, so a partial read is never used.
     console.error(`[env-loader] load failed for org ${orgId}, not caching: ${formatErr(e)}`)
-    const lastGood = await readCopies(kv, { org: lastGoodKey(orgId), workflows: workflowLastGoodKey(orgId) }, secretEncryptionKey, 'lenient')
+    const lastGood = await readCopies(orgId, kv, { org: lastGoodKey(orgId), workflows: workflowLastGoodKey(orgId) }, secretEncryptionKey, 'lenient')
     return lastGood ?? { global: {}, workflows: {} }
   }
 
@@ -287,7 +336,13 @@ async function loadOrgEnv(
   }
 
   const load = crypto.randomUUID()
-  const orgBlob = await encryptSecret(JSON.stringify({ ...global, [MARKER]: load }), secretEncryptionKey)
+  // The marker carries each workflow's key NAMES, never a value, so the org entry
+  // holds no workflow credential however it is read.
+  const marker: Marker = {
+    load,
+    keys: Object.fromEntries(Object.entries(workflows).map(([workflowId, values]) => [workflowId, Object.keys(values)])),
+  }
+  const orgBlob = await encryptSecret(JSON.stringify({ ...global, [MARKER]: JSON.stringify(marker) }), secretEncryptionKey)
   const workflowsBlob = await encryptSecret(JSON.stringify({ load, workflows }), secretEncryptionKey)
   // The workflow copies first, so an org entry naming this load is never held
   // before the copy it names.

@@ -455,7 +455,61 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
       expect(extra, k).toHaveLength(1)
       expect(extra[0].startsWith('\u0000'), k).toBe(true)
       expect(Object.values(parsed).every((v) => typeof v === 'string'), k).toBe(true)
+      // The marker names each workflow's own keys, and never carries a value.
+      const marker = parsed[extra[0]] as string
+      expect(JSON.parse(marker).keys, k).toEqual({ [WF_A]: ['API_URL', 'ONLY_A'], [WF_B]: ['ONLY_B'] })
+      expect(marker, k).not.toMatch(/a\.example|a-only|b-only/)
     }
+  })
+
+  // The last-good pair can lose its workflow copy (a delete that landed, a copy
+  // that will not decrypt after a key change) while the database is down. Serving
+  // the org values alone would hand a workflow the org's credential where it saved
+  // its own, the substitution the withhold rule refuses; serving nothing would
+  // reopen the #391 outage. So the org entry names each workflow's own keys, and
+  // those, and only those, are withheld.
+  describe('when the database is down and the workflow last-good copy is gone', () => {
+    const WF_C = 'wf-c'
+    async function outage(spoil: (kv: KVNamespace & { store: Map<string, string> }) => void) {
+      const kv = fakeKv()
+      await loadEnvVars(ORG, kv, filteringSupabase(ROWS), KEY, { workflowId: WF_A })
+      for (const k of [...kv.store.keys()]) if (!k.endsWith('-lastgood')) kv.store.delete(k)
+      spoil(kv)
+      return { kv, down: filteringSupabase([], { message: 'pool exhausted' }) }
+    }
+
+    it("withholds that workflow's own keys, leaves its other keys at the org value, and says so naming the workflow", async () => {
+      const { kv, down } = await outage((kv) => kv.store.delete(`env-vars-${ORG}-workflow-scoped-lastgood`))
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_A })).toEqual({ API_URL: '', SHARED: 'org-shared', ONLY_A: '' })
+        expect(logged.mock.calls.flat().join(' ')).toMatch(new RegExp(`withholding API_URL, ONLY_A for workflow ${WF_A}`))
+      } finally {
+        logged.mockRestore()
+      }
+    })
+
+    it('leaves a sibling workflow with no own keys at the org values, and withholds only a sibling\'s own', async () => {
+      const { kv, down } = await outage((kv) => kv.store.delete(`env-vars-${ORG}-workflow-scoped-lastgood`))
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_C })).toEqual({ API_URL: 'https://org.example', SHARED: 'org-shared' })
+        expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_B })).toEqual({ API_URL: 'https://org.example', SHARED: 'org-shared', ONLY_B: '' })
+        expect(await loadEnvVars(ORG, kv, down, KEY, 'global-only')).toEqual({ API_URL: 'https://org.example', SHARED: 'org-shared' })
+      } finally {
+        logged.mockRestore()
+      }
+    })
+
+    it('treats a workflow copy it cannot read the same as a missing one', async () => {
+      const { kv, down } = await outage((kv) => kv.store.set(`env-vars-${ORG}-workflow-scoped-lastgood`, 'not-ciphertext'))
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_A })).toEqual({ API_URL: '', SHARED: 'org-shared', ONLY_A: '' })
+      } finally {
+        logged.mockRestore()
+      }
+    })
   })
 
   // Every organization in production has no workflow scoped variable today, so
