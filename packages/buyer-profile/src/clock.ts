@@ -142,3 +142,23 @@ export function isOpen(windows: readonly OperatingWindow[], blackoutDates: reado
     (w) => w.dayOfWeek === parts.dayOfWeek && parts.minuteOfDay >= w.opensMinute && parts.minuteOfDay < w.closesMinute
   )
 }
+
+const MINUTE_MS = 60_000
+
+/**
+ * Open at some minute of [fromMs, toMs) (#1767): whether a buyer could have
+ * been offered a lead at any time in the span, by the same isOpen every
+ * evaluator judges one instant with, so the hours and blackout dates a span is
+ * judged by cannot drift from the ones a lead is. Eastern offsets are whole
+ * hours, so a span starting on a whole UTC minute is walked minute by minute
+ * exactly; one that does not is refused rather than rounded (L50).
+ */
+export function isOpenDuring(windows: readonly OperatingWindow[], blackoutDates: readonly string[], fromMs: number, toMs: number): boolean {
+  if (!Number.isInteger(fromMs) || fromMs % MINUTE_MS !== 0) {
+    throw new Error(`${new Date(fromMs).toISOString()} does not start on a whole minute`)
+  }
+  for (let t = fromMs; t < toMs; t += MINUTE_MS) {
+    if (isOpen(windows, blackoutDates, t)) return true
+  }
+  return false
+}

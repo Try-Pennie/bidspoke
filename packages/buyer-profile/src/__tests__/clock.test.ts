@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { easternParts, hourBucket, isOpen, type OperatingWindow } from '../clock'
+import { easternParts, hourBucket, isOpen, isOpenDuring, type OperatingWindow } from '../clock'
 
 // The machine clock is deliberately set far from Eastern (L504), so any code
 // path that reads a local Date getter instead of the named zone shows up as a
@@ -92,5 +92,47 @@ describe('isOpen over operating windows and blackout dates, all Eastern', () => 
     expect(isOpen(overnight, [], ms('2026-09-22T03:30:00Z'))).toBe(true) // Monday 23:30 EDT
     expect(isOpen(overnight, [], ms('2026-09-22T05:30:00Z'))).toBe(true) // Tuesday 01:30 EDT
     expect(isOpen(overnight, [], ms('2026-09-22T06:30:00Z'))).toBe(false) // Tuesday 02:30 EDT
+  })
+})
+
+describe('isOpenDuring: open at some minute of a span, judged by isOpen (#1767)', () => {
+  // Liberty1 since 2026-10-01: Monday to Friday, 09:00 to 21:00 Eastern.
+  const weekdays: OperatingWindow[] = [1, 2, 3, 4, 5].map((dayOfWeek) => ({ dayOfWeek, opensMinute: 9 * 60, closesMinute: 21 * 60 }))
+  const utcDay = (date: string): [number, number] => [ms(`${date}T00:00:00Z`), ms(`${date}T00:00:00Z`) + 86_400_000]
+
+  it('is closed for the whole of a Sunday UTC day, which runs Saturday 20:00 to Sunday 20:00 Eastern', () => {
+    expect(isOpenDuring(weekdays, [], ...utcDay('2026-10-04'))).toBe(false)
+  })
+  it('is open on a Saturday UTC day, whose first hour is Friday evening Eastern', () => {
+    expect(isOpenDuring(weekdays, [], ...utcDay('2026-10-03'))).toBe(true)
+  })
+  it('is open on a weekday inside the hours', () => {
+    expect(isOpenDuring(weekdays, [], ...utcDay('2026-10-07'))).toBe(true)
+  })
+  it('is closed on a Monday blackout date, since the rest of that UTC day is Sunday evening', () => {
+    expect(isOpenDuring(weekdays, ['2026-10-12'], ...utcDay('2026-10-12'))).toBe(false)
+  })
+  it('is still open on a Wednesday blackout date, because its UTC day begins in Tuesday evening hours', () => {
+    expect(isOpenDuring(weekdays, ['2026-10-07'], ...utcDay('2026-10-07'))).toBe(true)
+  })
+  it('finds a single open minute at the very end of the span', () => {
+    // Sunday 19:59 to 20:00 EDT is 23:59 to 00:00 UTC, the last minute of the UTC Sunday.
+    const lastMinute: OperatingWindow[] = [{ dayOfWeek: 0, opensMinute: 19 * 60 + 59, closesMinute: 20 * 60 }]
+    expect(isOpenDuring(lastMinute, [], ...utcDay('2026-10-04'))).toBe(true)
+    expect(isOpenDuring(lastMinute, [], ms('2026-10-04T00:00:00Z'), ms('2026-10-04T23:59:00Z'))).toBe(false)
+  })
+  it('follows the real offset across the autumn clock change', () => {
+    // Sunday 19:00 to 20:00 Eastern. Before the change it is 23:00 UTC that Sunday;
+    // on 2026-11-01 the clocks fall back, so it is 00:00 UTC on the Monday.
+    const sundayEvening: OperatingWindow[] = [{ dayOfWeek: 0, opensMinute: 19 * 60, closesMinute: 20 * 60 }]
+    expect(isOpenDuring(sundayEvening, [], ...utcDay('2026-10-25'))).toBe(true)
+    expect(isOpenDuring(sundayEvening, [], ...utcDay('2026-11-01'))).toBe(false)
+    expect(isOpenDuring(sundayEvening, [], ...utcDay('2026-11-02'))).toBe(true)
+  })
+  it('is never open with no windows (L72)', () => {
+    expect(isOpenDuring([], [], ...utcDay('2026-10-07'))).toBe(false)
+  })
+  it('refuses a span that does not start on a whole minute, rather than rounding it (L50)', () => {
+    expect(() => isOpenDuring(weekdays, [], ms('2026-10-07T00:00:30Z'), ms('2026-10-08T00:00:00Z'))).toThrow(/whole minute/)
   })
 })
