@@ -51,6 +51,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { isOrgOnlyEnvKey } from './org-only-env-keys'
+import { fetchAllPaged } from './paginate'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 
 const TTL = 300
@@ -58,6 +59,21 @@ const cacheKey = (orgId: string) => `env-vars-${orgId}`
 const lastGoodKey = (orgId: string) => `env-vars-${orgId}-lastgood`
 const workflowCacheKey = (orgId: string) => `env-vars-${orgId}-workflow-scoped`
 const workflowLastGoodKey = (orgId: string) => `env-vars-${orgId}-workflow-scoped-lastgood`
+
+/**
+ * The most pages of 1,000 rows one organization's read may take: 50,000 rows.
+ * Production held 60 on 2026-10-05; the bound only stops a read that never ends
+ * from running unbounded, and such a read is refused, never cached.
+ */
+export const ENV_READ_MAX_PAGES = 50
+
+interface EnvRow {
+  key: string
+  value: string | null
+  is_secret: boolean
+  scope: string
+  workflow_id: string | null
+}
 
 /**
  * Which values a load is for (#1681). A run names its workflow, so it gets that
@@ -180,24 +196,39 @@ async function loadOrgEnv(
   // Platform master secrets (worker bindings) are blocked separately in
   // lib/sandbox-env.ts.
   //
-  // Every scope in one read (#1681); the rows are split by scope below.
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('key, value, is_secret, scope, workflow_id')
-    .eq('organization_id', orgId)
-
-  if (error) {
+  // Every scope in one read (#1681); the rows are split by scope below. What is
+  // read is cached as the organization's whole set, so it is every row or none:
+  // PostgREST answers at most 1,000 rows and says nothing, so the read pages on
+  // a unique key (created_at first, so of two org rows sharing a key the newer
+  // wins, then id, so no row is skipped or read twice between pages, L746) and
+  // a read not finished within the bound is refused rather than returned short.
+  let data: EnvRow[]
+  try {
+    data = await fetchAllPaged<EnvRow>(
+      (from, to) =>
+        supabase
+          .from('environment_variables')
+          .select('key, value, is_secret, scope, workflow_id')
+          .eq('organization_id', orgId)
+          .order('created_at')
+          .order('id')
+          .range(from, to),
+      `environment_variables read for org ${orgId}`,
+      { maxPages: ENV_READ_MAX_PAGES }
+    )
+  } catch (e) {
     // Do NOT cache on error: that is the #391 outage. Fall back to the last-good
     // copy (the config vars rarely change) so a transient blip degrades
     // gracefully instead of blanking creds; empty only if we never had a good load.
-    console.error(`[env-loader] load failed for org ${orgId}, not caching: ${error.message}`)
+    // A failure on any page is the same failure, so a partial read is never used.
+    console.error(`[env-loader] load failed for org ${orgId}, not caching: ${formatErr(e)}`)
     const lastGood = await readCopies(kv, { org: lastGoodKey(orgId), workflows: workflowLastGoodKey(orgId) }, secretEncryptionKey, 'lenient')
     return lastGood ?? { global: {}, workflows: {} }
   }
 
   const global: Record<string, string> = {}
   const workflows: WorkflowScoped = {}
-  for (const row of (data ?? []) as Array<{ key: string; value: string | null; is_secret: boolean; scope: string; workflow_id: string | null }>) {
+  for (const row of data) {
     if (!row.value) continue
     // A workflow scoped row that names no workflow belongs to no run.
     const workflowId = row.scope === 'workflow' ? row.workflow_id : null

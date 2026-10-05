@@ -52,6 +52,9 @@ function filteringSupabase(data: Array<Record<string, unknown>>): SupabaseClient
       const filters: Array<[string, unknown]> = []
       const chain = {
         select: () => chain,
+        // Accepted, not applied: these cases hold far fewer rows than one page.
+        order: () => chain,
+        range: () => chain,
         eq: (col: string, val: unknown) => { filters.push([col, val]); return chain },
         then: (resolve: (r: unknown) => void) => resolve({ data: data.filter((r) => filters.every(([c, v]) => r[c] === v)), error: null }),
       }

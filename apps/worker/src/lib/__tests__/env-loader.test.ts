@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { loadEnvVars, invalidateEnvCache } from '../env-loader'
+import { ENV_READ_MAX_PAGES, loadEnvVars, invalidateEnvCache } from '../env-loader'
 import { decryptSecret, encryptSecret } from '../secret-crypto'
 import { buildSandboxEnv } from '../sandbox-env'
 import type { Env } from '../../index'
@@ -39,6 +39,9 @@ function kvContents(kv: KVNamespace & { store: Map<string, string> }): string {
 function fakeSupabase(result: { data: unknown; error: unknown }): SupabaseClient {
   const chain = {
     select: () => chain,
+    // Accepted, not applied: these cases hold far fewer rows than one page.
+    order: () => chain,
+    range: () => chain,
     eq: () => chain,
     is: () => chain,
     then: (resolve: (r: unknown) => void) => resolve(result),
@@ -272,6 +275,9 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
         const filters: Array<[string, unknown]> = []
         const chain = {
           select: () => chain,
+          // Accepted, not applied: these cases hold far fewer rows than one page.
+          order: () => chain,
+          range: () => chain,
           eq: (col: string, val: unknown) => {
             filters.push([col, val])
             return chain
@@ -509,5 +515,132 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
     kv.store.set(`env-vars-${ORG}-workflow-scoped`, staleWorkflowCopy)
 
     expect(await loadEnvVars(ORG, kv, filteringSupabase(now), KEY, { workflowId: WF_A })).toEqual({ API_URL: 'v2' })
+  })
+})
+
+// #1681. The loader reads every row for an organization, its own and every
+// workflow's, and caches what it read as the whole set. PostgREST answers at
+// most 1,000 rows however many match, and says nothing, so an unpaged read
+// would quietly drop the rest, and cache the short read as complete (L211).
+// Porting the Pipedream workflows that keep their own settings can pass 1,000.
+describe('loadEnvVars: every row or none (#1681)', () => {
+  const ORG = 'org1'
+  const WF_A = 'wf-a'
+  const CAP = 1000
+
+  interface PagedRow {
+    id: string
+    created_at: string
+    organization_id: string
+    key: string
+    value: string
+    is_secret: boolean
+    scope: string
+    workflow_id: string | null
+  }
+
+  // created_at runs in row order; ids are unique and sort the same way.
+  const orgRows = (n: number): PagedRow[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `id-${String(i).padStart(5, '0')}`,
+      created_at: `2026-10-01T00:00:${String(i % 60).padStart(2, '0')}.${String(i).padStart(5, '0')}Z`,
+      organization_id: ORG,
+      key: `ORG_${i}`,
+      value: `v${i}`,
+      is_secret: false,
+      scope: 'global',
+      workflow_id: null,
+    }))
+  const lastRow = (n: number, key: string, value: string, workflowId: string | null): PagedRow => ({
+    id: `id-${String(n).padStart(5, '0')}`,
+    created_at: '2026-10-02T00:00:00.00000Z',
+    organization_id: ORG,
+    key,
+    value,
+    is_secret: false,
+    scope: workflowId ? 'workflow' : 'global',
+    workflow_id: workflowId,
+  })
+
+  // A double that behaves as PostgREST does: equality filters, ordering, a range,
+  // and never more than 1,000 rows in one answer. `failPage` fails that page;
+  // `endless` answers every page full, as a table that never ends would.
+  function pagedSupabase(rows: PagedRow[], opts: { failPage?: number; endless?: boolean } = {}) {
+    const seen = { pages: 0, orders: [] as string[][] }
+    const sb = {
+      from: () => {
+        const filters: Array<[string, unknown]> = []
+        const order: string[] = []
+        let range: [number, number] | null = null
+        const chain = {
+          select: () => chain,
+          eq: (col: string, val: unknown) => { filters.push([col, val]); return chain },
+          order: (col: string) => { order.push(col); return chain },
+          range: (from: number, to: number) => { range = [from, to]; return chain },
+          then: (resolve: (r: unknown) => void) => {
+            seen.pages++
+            seen.orders.push([...order])
+            if (opts.failPage === seen.pages) return resolve({ data: null, error: { message: 'canceling statement due to statement timeout' } })
+            if (opts.endless) return resolve({ data: orgRows(CAP), error: null })
+            const matched = rows
+              .filter((r) => filters.every(([c, v]) => (r as unknown as Record<string, unknown>)[c] === v))
+              .sort((a, b) => {
+                for (const col of order) {
+                  const x = String((a as unknown as Record<string, unknown>)[col])
+                  const y = String((b as unknown as Record<string, unknown>)[col])
+                  if (x !== y) return x < y ? -1 : 1
+                }
+                return 0
+              })
+            const [from, to] = range ?? [0, CAP - 1]
+            resolve({ data: matched.slice(from, Math.min(to + 1, from + CAP)), error: null })
+          },
+        }
+        return chain
+      },
+    } as unknown as SupabaseClient
+    return { sb, seen }
+  }
+
+  it("hands a run its own value when it is the 1,001st row, and every org value before it", async () => {
+    const { sb, seen } = pagedSupabase([...orgRows(CAP), lastRow(CAP, 'A_ONLY', 'a-value', WF_A)])
+    const r = await loadEnvVars(ORG, fakeKv(), sb, KEY, { workflowId: WF_A })
+    expect(r.A_ONLY).toBe('a-value')
+    expect(Object.keys(r)).toHaveLength(CAP + 1)
+    // Paged on a unique key, so no row is skipped or read twice between pages (L746).
+    expect(seen.orders[0].at(-1)).toBe('id')
+    expect(seen.pages).toBe(2)
+  })
+
+  it('serves last-good and caches nothing when the second page fails', async () => {
+    const kv = fakeKv()
+    await loadEnvVars(ORG, kv, pagedSupabase([lastRow(0, 'A_ONLY', 'good', WF_A)]).sb, KEY, { workflowId: WF_A })
+    for (const k of [...kv.store.keys()]) if (!k.endsWith('-lastgood')) kv.store.delete(k)
+    const lastGoodBefore = new Map([...kv.store.entries()])
+
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { sb, seen } = pagedSupabase([...orgRows(CAP), lastRow(CAP, 'A_ONLY', 'new', WF_A)], { failPage: 2 })
+      expect(await loadEnvVars(ORG, kv, sb, KEY, { workflowId: WF_A })).toEqual({ A_ONLY: 'good' })
+      expect(seen.pages).toBe(2)
+    } finally {
+      logged.mockRestore()
+    }
+    // The first page's 1,000 rows were not cached as the organization's set.
+    expect(new Map([...kv.store.entries()])).toEqual(lastGoodBefore)
+  })
+
+  it('refuses a read that has not ended at the page bound, rather than caching it as complete', async () => {
+    const kv = fakeKv()
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { sb, seen } = pagedSupabase([], { endless: true })
+      expect(await loadEnvVars(ORG, kv, sb, KEY, { workflowId: WF_A })).toEqual({})
+      expect(seen.pages).toBe(ENV_READ_MAX_PAGES)
+      expect(logged.mock.calls.flat().join(' ')).toContain(`within ${ENV_READ_MAX_PAGES} pages`)
+    } finally {
+      logged.mockRestore()
+    }
+    expect(kv.store.size).toBe(0)
   })
 })

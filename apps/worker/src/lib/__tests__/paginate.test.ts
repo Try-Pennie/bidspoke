@@ -54,4 +54,22 @@ describe('fetchAllPaged', () => {
       fetchAllPaged(async () => ({ data: null, error: { message: 'boom' } }), 'snapshot read'),
     ).rejects.toThrow('snapshot read failed: boom')
   })
+
+  // #1681: a caller that must have every row or none (the env loader caches what
+  // it read as the whole set) names a page bound, and a read still full at the
+  // bound is refused rather than handed back short (L211).
+  it('refuses a read still returning full pages at a named page bound', async () => {
+    let n = 0
+    await expect(
+      fetchAllPaged(async () => { n++; return { data: page(PAGE_SIZE, n * PAGE_SIZE), error: null } }, 'env read', { maxPages: 3 }),
+    ).rejects.toThrow('env read did not reach its last row within 3 pages')
+    expect(n).toBe(3)
+  })
+
+  it('returns every row when the end arrives within the named bound', async () => {
+    const pages = [page(PAGE_SIZE, 0), page(PAGE_SIZE, PAGE_SIZE), page(1, 2 * PAGE_SIZE)]
+    let n = 0
+    const rows = await fetchAllPaged<{ id: string }>(async () => ({ data: pages[n++] ?? [], error: null }), 'env read', { maxPages: 3 })
+    expect(rows).toHaveLength(2 * PAGE_SIZE + 1)
+  })
 })

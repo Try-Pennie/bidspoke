@@ -72,6 +72,9 @@ const client = {
     const filters: Array<[string, unknown]> = []
     const chain = {
       select: () => chain,
+      // Accepted, not applied: these cases hold far fewer rows than one page.
+      order: () => chain,
+      range: () => chain,
       eq: (col: string, val: unknown) => { filters.push([col, val]); return chain },
       then: (resolve: (r: unknown) => void) =>
         resolve({ data: ROWS.filter((r) => filters.every(([c, v]) => (r as Record<string, unknown>)[c] === v)), error: null }),
