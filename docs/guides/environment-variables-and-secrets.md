@@ -19,8 +19,9 @@ Both are read the same way inside a node, as `env.<KEY>`. The only difference is
 2. Open the New variable form (it can be opened at the top level or inside a folder).
 3. Enter the Key (for example `GIGFI_API_KEY`). Keys are uppercase by convention.
 4. Enter the Value.
-5. Check "Secret. Value encrypted and synced to Cloudflare Worker." if the value is sensitive.
-6. Save.
+5. Leave Used by on All workflows, or pick the one workflow whose runs should read this value (see below).
+6. Check Secret if the value is sensitive. For all workflows the box reads "Secret. Value encrypted and synced to Cloudflare Worker."; for one workflow it reads "Secret. Value encrypted.", because that copy is never synced.
+7. Save.
 
 ## Reveal a secret
 
@@ -36,7 +37,9 @@ Variables can be organized into folders. You can create folders (including neste
 
 A variable can also be saved against a single workflow, for a workflow that keeps its own settings (#1681). That workflow's runs read it as `env.<KEY>` in place of the organization value of the same key; every other workflow keeps reading the organization value and never sees it. Re-running a single node from the canvas reads the same values as the workflow's runs.
 
-- It is created through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)). The page lists such a variable like any other; creating one there and showing which workflow it belongs to is #1774.
+- Create one on the page by picking the workflow under Used by, or through the API (`POST /api/env` with a `workflow_id`, see the [API reference](../reference/api.md)).
+- The Used by column says which runs read each row (#1774): a workflow's own row names its workflow, and a row for all workflows names the workflows that read their own value of that key instead ("All workflows except Main Flow", or a count once more than two do). A workflow that has been deleted is left out, since it has no runs, and its own rows say "A deleted workflow".
+- The canvas suggests `env.<KEY>` references from the keys that workflow's runs can read: every key for all workflows plus its own, never another workflow's.
 - Every node reads the same values: Code, Webhook and Salesforce nodes all prefer the run's own value over a Cloudflare Worker secret of the same name.
 - A workflow's own secret is stored encrypted like any other, but it is not synced to the Cloudflare Worker, because the Worker holds one value per name for every workflow.
 - If a workflow's own secret cannot be decrypted, that workflow's runs get an empty value for the key. The organization value is deliberately not used in its place, so a workflow saved with, say, a sandbox credential never sends the production one. The daily decrypt check names the secret and its workflow.

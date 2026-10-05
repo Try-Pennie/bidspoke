@@ -29,6 +29,7 @@ import { computeWarningVariants } from '@/lib/minimap-warnings'
 import { isDuplicateConnection } from '@/lib/connect-rules'
 import { minimapNodeColor } from './nodes/node-colors'
 import { usePanelWidths } from '@/hooks/usePanelWidths'
+import { useWorkflowEnvKeys } from '@/hooks/useWorkflowEnvKeys'
 import { configPanelKind } from '@/lib/panel-widths'
 import {
   NODE_WARNING_COLOR,
@@ -933,7 +934,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // switch; the newly-opened editor re-reports its own validity.
   const [configKeyError, setConfigKeyError] = useState(false)
   const handleKeyEditorValidity = useCallback((valid: boolean) => setConfigKeyError(!valid), [])
-  const [envKeys, setEnvKeys] = useState<string[]>([])
+  // Only the keys this workflow's runs can read (#1774).
+  const envKeys = useWorkflowEnvKeys(workflow.id)
   const [replaying, setReplaying] = useState(false)
   const [refreshSignal, setRefreshSignal] = useState(0)
   const [showTest, setShowTest] = useState(false)
@@ -1199,10 +1201,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     prevErrorIdsRef.current = signature
     setNodes((ns) => applyValidationToNodes(ns, flaggedNodes))
   }, [flaggedNodes, setNodes])
-
-  useEffect(() => {
-    api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
-  }, [])
 
   // Derive isDirty from the content signature (#212). This is the ONLY place dirty
   // is decided: compute the signature of exactly what handleSave serializes
