@@ -16,6 +16,9 @@
 - `apps/web` — Next.js frontend
 - `apps/worker` — Cloudflare Worker (API + execution engine)
 - `apps/worker-tail`: tail consumer that writes per-execution cost
+- `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
+  dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
+  every request a script makes, so a shadow run sends nothing. Its own deploy leg.
 - `packages/*`: code both apps import, so there is one implementation rather than
   a copy per app. Plain TypeScript source with no build step, listed in
   `transpilePackages` for Next. A package with tests must also be named in the CI
