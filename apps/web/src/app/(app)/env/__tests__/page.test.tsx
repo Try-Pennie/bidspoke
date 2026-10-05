@@ -185,6 +185,19 @@ describe('Env page: a variable for one workflow (#1774)', () => {
     expect(await screen.findByText('Main Flow')).toBeInTheDocument()
   })
 
+  it('keeps the chosen workflow for the next variable after Save & add another', async () => {
+    vi.mocked(api.env.create).mockResolvedValue({ ...mainChannel, id: 'var-9' } as never)
+    await openForm()
+
+    fireEvent.change(screen.getByLabelText('Used by'), { target: { value: 'wf-main' } })
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save & add another' }))
+
+    await waitFor(() => expect(api.env.create).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByLabelText('Key')).toHaveValue(''))
+    expect(screen.getByLabelText('Used by')).toHaveValue('wf-main')
+  })
+
   it('saves a variable for all workflows without naming one', async () => {
     vi.mocked(api.env.create).mockResolvedValue({ ...companyChannel, id: 'var-9' } as never)
     await openForm()
