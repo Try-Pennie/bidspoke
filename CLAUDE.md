@@ -22,8 +22,10 @@
 - `apps/ops-outbound`: the outbound Worker of the `bidspoke-code-nodes-ops` dispatch
   namespace the ops Worker binds (#1709). It refuses every request until Phase 2
   defines what ops code may reach. A separate Worker from compare-outbound, which
-  must refuse for ever. Its deploy leg is held off until `OPS_WORKER_DEPLOYED` in
-  `apps/worker/src/lib/secret-lists.ts` is true.
+  must refuse for ever. Deployed by its own leg, Deploy Ops Outbound, since the ops
+  lane went live on 2026-10-06 (`OPS_WORKER_DEPLOYED` in
+  `apps/worker/src/lib/secret-lists.ts`); Deploy Ops Worker then deploys
+  `bidspoke-worker-ops` and proves `ops.trypennie.dev` answers as it.
 - `packages/*`: code both apps import, so there is one implementation rather than
   a copy per app. Plain TypeScript source with no build step, listed in
   `transpilePackages` for Next. A package with tests must also be named in the CI

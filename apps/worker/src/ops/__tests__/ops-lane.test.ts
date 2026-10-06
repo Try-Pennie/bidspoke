@@ -10,7 +10,7 @@
  * apps/web/src/lib/__tests__/ops-worker-config.test.ts, which can read files.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { createOpsHandler, type OpsEnv } from '../index'
+import { createOpsHandler, OPS_IDENTITY_HEADER, type OpsEnv } from '../index'
 
 function setup(lane: string | undefined) {
   const bucket = { put: vi.fn(), head: vi.fn() }
@@ -49,5 +49,27 @@ describe('the ops Worker lane', () => {
     const res = await handle(new Request('https://ops.test/nowhere'), env)
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'not_found' })
+  })
+})
+
+/**
+ * The ops Worker names itself on every response (#1709 part 4), refusals
+ * included, so the deploy's proof request can tell it answered rather than the
+ * bidding Worker, whose *.trypennie.dev route covers the same host.
+ */
+describe('the ops Worker identity header', () => {
+  it('is on a lane refusal, a route miss, a wrong method and an unenrolled capture alike', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const refused = setup('money')
+    const ok = setup('ops')
+    const responses = [
+      await refused.handle(capture(), refused.env),
+      await ok.handle(new Request('https://ops.test/anything-else'), ok.env),
+      await ok.handle(new Request('https://ops.test/porting/capture/p_ANY'), ok.env),
+      await ok.handle(capture(), ok.env),
+    ]
+    expect(responses.map((r) => r.status)).toEqual([503, 404, 405, 404])
+    for (const r of responses) expect(r.headers.get(OPS_IDENTITY_HEADER)).toBe('ops')
+    log.mockRestore()
   })
 })

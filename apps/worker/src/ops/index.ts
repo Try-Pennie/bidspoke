@@ -69,8 +69,16 @@ const SAFE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/
 const SAFE_SEQ = /^[A-Za-z0-9._-]{1,64}$/
 const ROUTE = /^\/porting\/capture\/([^/]+)$/
 
+/**
+ * Set on every response (#1709 part 4), refusals included, so the deploy's proof
+ * request (.github/scripts/prove-ops-host.sh) can tell the ops Worker answered
+ * ops.trypennie.dev rather than the bidding Worker, whose *.trypennie.dev route
+ * covers the same host. Its value is the lane.
+ */
+export const OPS_IDENTITY_HEADER = 'x-bidspoke-worker'
+
 const json = (status: number, body: Record<string, unknown>) =>
-  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', [OPS_IDENTITY_HEADER]: 'ops' } })
 
 function log(outcome: string, fields: Record<string, string | number> = {}) {
   console.log(JSON.stringify({ event: 'porting_capture', outcome, ...fields }))

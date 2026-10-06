@@ -5,8 +5,10 @@
  * OPS_WORKER_DEPLOYED in apps/worker/src/lib/secret-lists.ts is true, reading that
  * line as text. A reshaped line would leave the ops outbound Worker held back
  * with only a warning, so this fails first: the line is in the shape the script
- * reads, the script reads it by default without a warning, and today it says the
- * lane is not live, so merging ops code deploys nothing new.
+ * reads, and the script reads it by default without a warning. Since #1709 part 4
+ * the lane is live (the ops Worker was first deployed 2026-10-06), so the
+ * committed switch lets both ops deploy legs run; the test asserting the opposite
+ * was inverted in that change, whose premise it was (L373).
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -24,15 +26,16 @@ describe('the ops lane deploy switch (#1709)', () => {
     expect(lines).toEqual([`export const OPS_WORKER_DEPLOYED = ${String(OPS_WORKER_DEPLOYED)}`])
   })
 
-  it('is read by default, without a warning, and holds the ops outbound Worker back while the lane is not live', () => {
-    expect(OPS_WORKER_DEPLOYED).toBe(false)
+  it('is read by default, without a warning, and now lets both ops deploy legs run (#1709 part 4)', () => {
+    expect(OPS_WORKER_DEPLOYED).toBe(true)
     const run = spawnSync('bash', [SCRIPT, 'workflow_dispatch', 'refs/heads/main', 'true', 'true', 'true', 'true', 'true'], {
       encoding: 'utf8',
       env: { ...process.env, OPS_LIVE_FLAG_FILE: '' },
     })
     expect(run.status).toBe(0)
     expect(run.stderr).not.toMatch(/::warning::/)
-    expect(run.stdout).toMatch(/^ops_outbound=false$/m)
+    expect(run.stdout).toMatch(/^ops_outbound=true$/m)
+    expect(run.stdout).toMatch(/^ops_worker=true$/m)
     expect(run.stdout).toMatch(/^compare_outbound=true$/m)
   })
 })
