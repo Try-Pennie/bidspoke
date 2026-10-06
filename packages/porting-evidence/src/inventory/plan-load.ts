@@ -57,7 +57,12 @@ export interface LoadPlan {
 }
 
 const byHashid = (a: { pipedream_hashid: string }, b: { pipedream_hashid: string }) => (a.pipedream_hashid < b.pipedream_hashid ? -1 : a.pipedream_hashid > b.pipedream_hashid ? 1 : 0)
-const time = (iso: string) => Date.parse(iso)
+/** An instant from stored or exported text; refuses rather than letting NaN compare false (L50). */
+const time = (iso: string, what: string) => {
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) throw new Error(`${what} is ${JSON.stringify(iso)}, which is not a time`)
+  return t
+}
 
 export function stateOf(w: ExportedWorkflow): PipedreamState {
   if (w.status === 'skipped_never_deployed') return 'never_deployed'
@@ -84,7 +89,7 @@ export function planLoad(stored: StoredRow[], projects: ExportedProject[], organ
   for (const p of projects) {
     for (const r of stored) {
       const inProject = r.project_hashid === p.projectHashid || listed.get(r.pipedream_hashid)?.w.projectHashid === p.projectHashid
-      if (inProject && time(r.last_seen_export_at) > time(p.exportedAt)) {
+      if (inProject && time(r.last_seen_export_at, `the stored last_seen_export_at of ${r.pipedream_hashid}`) > time(p.exportedAt, `the export time of ${p.projectHashid}`)) {
         throw new Error(`the export of ${p.projectHashid} (${p.exportedAt}) is older than what is stored for ${r.pipedream_hashid} (${r.last_seen_export_at}); load the newer export`)
       }
     }

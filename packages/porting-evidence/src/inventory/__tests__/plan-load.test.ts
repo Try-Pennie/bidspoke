@@ -98,6 +98,11 @@ describe('planLoad (#1710)', () => {
     expect(() => planLoad([stored({ pipedream_hashid: 'p_one', last_seen_export_at: OCT })], projects, ORG)).toThrow(/proj_A.*older/)
   })
 
+  it('refuses a stored time it cannot read rather than treating the export as newer (L50)', () => {
+    const projects = readExport(writeExport([{ projectHashid: 'proj_A', workflows: [{ hashid: 'p_one' }] }]))
+    expect(() => planLoad([stored({ pipedream_hashid: 'p_one', last_seen_export_at: 'not a time' })], projects, ORG)).toThrow(/last_seen_export_at of p_one.*not a time/)
+  })
+
   it('reloading the same export changes nothing it reports', () => {
     const projects = readExport(writeExport([{ projectHashid: 'proj_A', workflows: [{ hashid: 'p_one' }] }]))
     const first = planLoad([], projects, ORG)
