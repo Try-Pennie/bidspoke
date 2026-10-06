@@ -819,13 +819,60 @@ BEGIN
 END
 $do$;
 
+-- ── 29. upsert_buyer_select_parity_day writes the Stage B report (#1809): as sent, NULL when absent, refused when not an object, and outside the sign off ──
+DO $do$
+DECLARE
+  r jsonb;
+  msg text;
+  base jsonb;
+BEGIN
+  INSERT INTO public.workflows (id, organization_id, name) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'Suite Engine Flow')
+  ON CONFLICT (id) DO NOTHING;
+  base := '{"workflow_id": "44444444-4444-4444-4444-444444444444", "et_day": "2026-10-02", "organization_id": "11111111-1111-1111-1111-111111111111",
+    "sell_off_agree": 5, "sell_off_disagree": 0, "hash_match": 0, "hash_mismatch": 0, "hash_unmeasured": 0, "classification_agree": 0, "classification_disagree": 0,
+    "outcome_unknown_count": 0, "state_resolved": 0, "state_unresolved": 0, "rehearsal_in_doubt_heals": 0, "rehearsal_expired_in_flight": 0,
+    "decide_only_latency_p50_ms": null, "decide_only_latency_p95_ms": null, "disagreement_execution_ids": [],
+    "window_complete": true, "counts_hash": "hash-b", "executions_unpaired": 0, "unmeasured": [],
+    "refusal_counts": {"hourly_lead_cap": 0, "daily_lead_cap": 0, "hourly_spend_cap": 0, "daily_spend_cap": 0, "rehearsal_deadline": 0, "object_deadline": 0, "cap_check_error": 0, "breaker_unreadable": 0, "circuit_open": 0}}'::jsonb;
+  -- An older Worker sends no stage_b: written NULL, never an invented empty report (L90).
+  r := public.upsert_buyer_select_parity_day(base);
+  IF r ? 'stage_b' IS NOT TRUE OR r->'stage_b' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'an absent stage_b was not NULL: %', r; END IF;
+  -- Sent, it is written as given.
+  r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 13, "accepted": 10}, "added_p50_ms": 500}}'::jsonb);
+  IF (r->'stage_b'->'canary'->>'attempts')::int IS DISTINCT FROM 13 THEN RAISE EXCEPTION 'stage_b not written: %', r; END IF;
+  -- A sign off on the day stands when only the Stage B report moves, because it approves the counts hash.
+  PERFORM public.sign_off_buyer_select_parity_day('44444444-4444-4444-4444-444444444444', '2026-10-02', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'hash-b', 'counts approved');
+  r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 14, "accepted": 10}, "added_p50_ms": 650}}'::jsonb);
+  IF (r->'stage_b'->'canary'->>'attempts')::int IS DISTINCT FROM 14 THEN RAISE EXCEPTION 'stage_b not updated: %', r; END IF;
+  IF r->>'signed_off_at' IS NULL THEN RAISE EXCEPTION 'a Stage B change cleared the sign off: %', r; END IF;
+  -- A measured bid check survives a later run that could not measure it (the day's bid rows drained),
+  -- and the rest of that run's report is still written.
+  r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 14}, "bid_rows": {"canary_missing": 0, "canary_multiple": 0, "legacy_missing": 1, "legacy_multiple": 0, "settling": 0, "window_complete": true}}}'::jsonb);
+  r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 15}, "bid_rows": {"unmeasured": "the bid rows for this day have already been exported and removed"}}}'::jsonb);
+  IF (r->'stage_b'->'bid_rows'->>'legacy_missing')::int IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'a drained run erased the measured bid check: %', r; END IF;
+  IF (r->'stage_b'->'canary'->>'attempts')::int IS DISTINCT FROM 15 THEN RAISE EXCEPTION 'the rest of the report was not written: %', r; END IF;
+  -- A new measurement replaces it.
+  r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 15}, "bid_rows": {"canary_missing": 0, "canary_multiple": 0, "legacy_missing": 0, "legacy_multiple": 0, "settling": 0, "window_complete": true}}}'::jsonb);
+  IF (r->'stage_b'->'bid_rows'->>'legacy_missing')::int IS DISTINCT FROM 0 THEN RAISE EXCEPTION 'a new measurement did not replace the old: %', r; END IF;
+  -- Not an object: refused by name.
+  BEGIN
+    PERFORM public.upsert_buyer_select_parity_day(base || '{"stage_b": [1, 2]}'::jsonb);
+    RAISE EXCEPTION 'a non object stage_b was written';
+  EXCEPTION WHEN SQLSTATE 'BP422' THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    IF msg IS DISTINCT FROM 'stage_b_not_object' THEN RAISE EXCEPTION 'wrong refusal: %', msg; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('parity upsert writes the Stage B report outside the sign off');
+END
+$do$;
+
 -- ── The count. Every case above inserts its name; this is the number of blocks. ──
 DO $do$
 DECLARE
   n int;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 28 THEN RAISE EXCEPTION 'ran % of 28 cases', n; END IF;
-  RAISE NOTICE 'buyer_profiles.test.sql: % of 28 cases passed', n;
+  IF n IS DISTINCT FROM 29 THEN RAISE EXCEPTION 'ran % of 29 cases', n; END IF;
+  RAISE NOTICE 'buyer_profiles.test.sql: % of 29 cases passed', n;
 END
 $do$;
