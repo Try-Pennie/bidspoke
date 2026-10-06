@@ -8,6 +8,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AlertingStatus } from './pg-cron-watch'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
+import { stripUrlQueriesInText } from './url-redact'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
@@ -114,6 +115,9 @@ export async function sendFailureAlert(
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
   const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}` +
     (payload.node_id ? `&node=${payload.node_id}` : '')
+  // The step's error text, never our own link above: an address inside it loses its
+  // query string, which a script's fetch failure names in full (L741, #1740).
+  const errorText = stripUrlQueriesInText(payload.error_message)
 
   // Only show the retry line when at least one retry actually happened — a step
   // that failed on its first attempt shouldn't add noise claiming "0 retries".
@@ -148,7 +152,7 @@ export async function sendFailureAlert(
         // fence) and let Slack's native "Show more" collapse it. Anything past
         // the cap gets a trailing note pointing at the execution.
         text: (() => {
-          const full = payload.error_message
+          const full = errorText
           const shown = full.length > 2900
             ? `${full.slice(0, 2900)}\n… (truncated, full error in execution detail)`
             : full
@@ -165,7 +169,7 @@ export async function sendFailureAlert(
     },
   ]
 
-  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
+  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${errorText}`)
   return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
 

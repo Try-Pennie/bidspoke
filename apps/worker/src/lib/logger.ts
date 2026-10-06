@@ -8,6 +8,8 @@
  * without custom parsing. Search by trace_id to trace a single lead end-to-end.
  */
 
+import { stripUrlQueriesInText } from './url-redact'
+
 export type LogEvent =
   | 'execution_start'
   | 'execution_complete'
@@ -53,6 +55,11 @@ export interface LogFields {
   [key: string]: unknown
 }
 
+/**
+ * Every address in the line loses its query string and fragment before it is
+ * written (L741, #1740): an error text such as a fetch failure names the full
+ * address it called, and a query string can carry lead data no scrub can read.
+ */
 export function log(fields: LogFields): void {
-  console.log(JSON.stringify(fields))
+  console.log(stripUrlQueriesInText(JSON.stringify(fields)))
 }

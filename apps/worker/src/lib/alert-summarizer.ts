@@ -5,6 +5,7 @@
 
 import type { StepStatus, ErrorType } from '../types'
 import { parseJson } from './json'
+import { stripUrlQueriesInText } from './url-redact'
 
 export interface AlertSummaryStep {
   step_namespace: string
@@ -44,7 +45,8 @@ export async function draftAlertSummary(
 ): Promise<string | null> {
   if (!apiKey) return null
 
-  const userMsg = JSON.stringify(input, null, 2)
+  // Sent to an outside service: an address in a step error loses its query string first (L741, #1740).
+  const userMsg = stripUrlQueriesInText(JSON.stringify(input, null, 2))
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',

@@ -57,6 +57,14 @@ describe('sendFailureAlert', () => {
     vi.unstubAllGlobals()
   })
 
+  it('strips the query string from any address in the error before it reaches Slack (L741, #1740)', async () => {
+    const leaky = { ...payload, error_message: 'TypeError: Fetch API cannot load: https://p.example/x?email=jo%40example.com&phone=%28201%29' }
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, leaky, 'https://app.example.com')
+    const body = fetchMock.mock.calls[0][1].body as string
+    expect(body).not.toMatch(/%40|%28201%29|email=/)
+    expect(body).toContain('https://p.example/x')
+  })
+
   it('does nothing when Slack is not configured', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(null) as any, 'org-1', null, payload, 'https://app.example.com')
