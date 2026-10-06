@@ -17,6 +17,11 @@
  *   inside serialised text (JSON held as a string, doubly encoded JSON, form
  *   bodies) (Dan, 2026-10-01: those three are scrambled; name, address,
  *   phone and email stay readable for debugging);
+ * - reads serialised text percent decoded too, layer by layer, so a query
+ *   string or a nested address encoded once or more is scrubbed like plain
+ *   text, and replaces any nine digit form value whatever its name, the shape
+ *   of an unformatted SSN in a URL (#1816). Replacements land on the text as
+ *   written, so the rest of an address keeps its encoding;
  * - treats the ambiguous name `token` (and `key`, `auth`, `signature`) by its
  *   value: a credential shaped value is replaced, a real non credential field
  *   such as a campaign token is kept.
@@ -31,6 +36,10 @@
  * The input is never mutated. An unusable key throws by name: a caller must
  * refuse the write rather than store a document it could not redact.
  */
+
+// Extensionless, like the package entry: the Worker typechecks this file with
+// its own tsconfig, which does not allow `.ts` import paths.
+import { MAX_DECODE_LEVELS, decodeFully, decodeLayer, mergeLayeredSplices, type LayeredSplice, type Splice } from './percent'
 
 export interface RedactionResult {
   value: unknown
@@ -81,21 +90,31 @@ function tokenHoldsSensitiveWord(token: string): boolean {
 }
 
 /**
- * Splits a field name into lower case tokens: on underscores, hyphens, spaces
- * and dots, at camelCase and letter to digit boundaries, after removing a
- * trailing Salesforce `__c` or `_SO__c`.
+ * Splits a field name into lower case tokens: on underscores, hyphens, spaces,
+ * dots and square brackets, at camelCase and letter to digit boundaries, after
+ * removing a trailing Salesforce `__c` or `_SO__c`. A percent encoded name is
+ * decoded first (`date%20of%20birth`, `lead%5Bssn%5D`, `date+of+birth`), so a
+ * name means the same thing however a query string spelled it (#1816).
  */
 export function nameTokens(name: string): string[] {
-  return name
+  return decodeFully(name)
     .replace(/(?:_SO)?__c$/i, '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .replace(/([A-Za-z])([0-9])/g, '$1 $2')
     .replace(/([0-9])([A-Za-z])/g, '$1 $2')
     .toLowerCase()
-    .split(/[\s_.-]+/)
+    .split(/[\s_.[\]-]+/)
     .filter((t) => t.length > 0)
 }
+
+/**
+ * Names whose value is a postal code. A nine digit ZIP+4 written without its
+ * hyphen has the shape of an SSN, and an address stays readable (Dan,
+ * 2026-10-01), so the bare nine digit rule below leaves these alone.
+ */
+const POSTAL_TOKENS = new Set(['zip', 'zipcode', 'postal', 'postcode'])
+const isPostalName = (name: string) => nameTokens(name).some((t) => POSTAL_TOKENS.has(t))
 
 /** True when the name's tokens, or a word run together inside one of them, name a sensitive personal field. */
 export function isSensitivePersonalName(name: string): boolean {
@@ -119,9 +138,11 @@ const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
  *
  * It walks the text once, stopping at each `:` or `=`. From each it reads the
  * key BACK (a quoted key, escaped quotes allowed, or a bare run of key
- * characters) and judges it with the same token rule the object path uses, so
- * `date-of-birth=`, `X-SSN=` and `"account number":` are caught. Only for a
- * sensitive key does it read the value FORWARD:
+ * characters, square brackets included, and spaces too before an `=`, where a
+ * decoded form key such as `date of birth` holds them) and judges it with the
+ * same token rule the object path uses, so `date-of-birth=`, `X-SSN=`,
+ * `lead[ssn]=` and `"account number":` are caught. Only for a sensitive key
+ * does it read the value FORWARD:
  * - a quoted value is taken whole, to its closing quote at the same escaping
  *   depth, spaces, commas and escaped quotes included;
  * - `null`, `true`, `false` and `undefined` are left alone, so a JSON body
@@ -141,6 +162,11 @@ const SSN_FORMATTED = /\b\d{3}-\d{2}-\d{4}\b/g
  *   semicolon and is replaced only when it holds a digit, so `dob: unknown`
  *   stays readable.
  *
+ * Under any other key, a form value that is exactly nine digits (`ref=123456789`)
+ * is replaced as well, because that is an unformatted SSN's shape and a query
+ * string carries no format to tell it apart (#1816). A postal code name is the
+ * one exception, since ZIP+4 has the same shape and an address stays readable.
+ *
  * Built to run in time linear in the text (a review of #1711 found the earlier
  * regex, which opened with an unbounded letter run, quadratic: a 1 MiB body of
  * letters did not finish in 200 seconds). Reading a key back is bounded, and
@@ -153,6 +179,8 @@ const COLON = 58
 const EQUALS = 61
 const isKeyCode = (c: number) =>
   (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 45 || c === 46
+/** A bare key's characters: key characters and square brackets, plus a space before an `=`. */
+const isBareKeyCode = (c: number, equals: boolean) => isKeyCode(c) || c === 91 || c === 93 || (equals && c === 32)
 const isQuoteCode = (c: number) => c === 34 || c === 39
 const isPadding = (c: number) => c === 32 || c === 9
 const LITERALS = ['null', 'true', 'false', 'undefined']
@@ -211,8 +239,6 @@ async function replaceValue(key: CryptoKey, value: string, prefix: string): Prom
 
 type Replacer = (value: string, prefix: string) => Promise<string>
 
-/** One span of text to replace: [start, end) becomes the replacement. */
-interface Splice { start: number; end: number; text: string }
 
 /**
  * Rewrites every span in one pass. Building the output once keeps the cost
@@ -265,10 +291,29 @@ function keyBefore(s: string, sep: number): KeyBefore | null {
     }
     return null
   }
+  const equals = s.charCodeAt(sep) === EQUALS
   const limit = Math.max(0, i + 1 - MAX_KEY_CHARS)
   let j = i
-  while (j >= limit && isKeyCode(s.charCodeAt(j))) j--
+  while (j >= limit && isBareKeyCode(s.charCodeAt(j), equals)) j--
   return j === i ? null : { name: s.slice(j + 1, i + 1), quoted: false, depth: 0 }
+}
+
+/**
+ * Exactly nine digits after the `=` at `sep`, ending where the value ends, or
+ * null. Looks at no more than the padding and ten characters, so it stays
+ * linear however many separators the text holds.
+ */
+function bareNineDigits(s: string, sep: number): { start: number; end: number } | null {
+  let i = sep + 1
+  const ceiling = Math.min(s.length, sep + 1 + MAX_PADDING)
+  while (i < ceiling && isPadding(s.charCodeAt(i))) i++
+  const end = i + 9
+  if (end > s.length) return null
+  for (let k = i; k < end; k++) {
+    const c = s.charCodeAt(k)
+    if (c < 48 || c > 57) return null
+  }
+  return end < s.length && isKeyCode(s.charCodeAt(end)) ? null : { start: i, end }
 }
 
 interface ValueSpan { start: number; end: number; kind: 'text' | 'number' | 'skip' | 'container'; parts?: Part[] }
@@ -412,7 +457,14 @@ async function replaceKeyed(s: string, replaceText: Replacer, replaceNumber: (va
     const c = s.charCodeAt(i)
     if (c !== COLON && c !== EQUALS) continue
     const key = keyBefore(s, i)
-    if (key === null || !isSensitivePersonalName(key.name)) continue
+    if (key === null || !isSensitivePersonalName(key.name)) {
+      const digits = c === EQUALS && (key === null || !isPostalName(key.name)) ? bareNineDigits(s, i) : null
+      if (digits !== null) {
+        splices.push({ start: digits.start, end: digits.end, text: await replaceText(s.slice(digits.start, digits.end), '') })
+        i = digits.end - 1
+      }
+      continue
+    }
     const value = valueAfter(s, i, key)
     if (value === null) continue
     if (value.kind === 'skip') {
@@ -510,7 +562,7 @@ async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> 
   }
   pass(await replaceJwts(out, replace))
   for (const shape of SHAPES) pass(await replaceMatches(out, shape, replace))
-  pass(await replaceKeyed(out, replace, async (value) => {
+  pass(await replacePersonal(out, replace, async (value) => {
     const id = JSON.stringify(['number', value])
     let num = memo.get(id)
     if (num === undefined) {
@@ -519,8 +571,48 @@ async function replaceShapes(key: CryptoKey, s: string): Promise<string | null> 
     }
     return num
   }))
-  pass(await replaceMatches(out, SSN_FORMATTED, (value) => replace(value, '')))
   return changed ? out : null
+}
+
+/**
+ * The sensitive personal values in `s`: keyed fields, bare nine digit form
+ * values and formatted SSNs, found in the text as written AND in each percent
+ * decoded layer of it (#1816), every one placed on the text as written.
+ *
+ * Every layer is read from the same text, and the splices are applied once,
+ * so a value is never scrambled twice (scrambling layer by layer would hash an
+ * already scrambled `ssn=` value again in the next layer). Overlaps are
+ * resolved by mergeLayeredSplices: the deepest layer wins a shared span, so a
+ * capture holding a value encoded on one side and plain on the other still
+ * compares equal.
+ */
+async function replacePersonal(s: string, replaceText: Replacer, replaceNumber: (value: string) => Promise<string>): Promise<Splice[]> {
+  const found: LayeredSplice[] = []
+  const collect = async (view: string, level: number, map: Int32Array | null) => {
+    const local = [
+      ...(await replaceKeyed(view, replaceText, replaceNumber)),
+      ...(await replaceMatches(view, SSN_FORMATTED, (value) => replaceText(value, ''))),
+    ]
+    for (const sp of local) {
+      found.push(map === null ? { ...sp, level } : { start: map[sp.start], end: map[sp.end], text: sp.text, level })
+    }
+  }
+
+  await collect(s, 0, null)
+  let view = s
+  let map: Int32Array | null = null
+  for (let level = 1; level <= MAX_DECODE_LEVELS; level++) {
+    const layer = decodeLayer(view)
+    if (layer === null) break
+    if (map !== null) for (let k = 0; k < layer.map.length; k++) layer.map[k] = map[layer.map[k]]
+    map = layer.map
+    view = layer.text
+    await collect(view, level, map)
+  }
+
+  const merged = mergeLayeredSplices(found)
+  for (const sp of merged) if (sp.rehash) sp.text = await replaceText(s.slice(sp.start, sp.end), '')
+  return merged
 }
 
 async function replaceWhole(key: CryptoKey, value: unknown): Promise<string> {
