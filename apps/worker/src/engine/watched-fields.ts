@@ -295,9 +295,10 @@ export interface WatchedField {
  * that run only when Salesforce returned an id, so gated on them it read 1.00
  * instead of 0.67, and a total collapse would have removed its rows rather than
  * lowered its rate, which pages nothing. An ending step reads a field to report
- * it, never to decide whether the run continues, and a field that steers the
- * run has a router among its readers (an edge condition is read by its source),
- * which keeps it ungated.
+ * it, not to decide whether the run continues. A field any edge condition reads
+ * steers the run and is never gated, even when the edge leaves a Response, and
+ * nothing is gated in a workflow holding a script this cannot fully read,
+ * because that script may read the field too.
  */
 const ENDING_NODE_TYPES = new Set(['response', 'exit'])
 
@@ -386,10 +387,17 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
     found.forEach((p) => structured.add(p))
     noteReads(found, node.namespace)
   }
+  // A field an edge condition reads steers the run, whatever kind of node the
+  // edge leaves from (a Response with continue_after_response can be one), so it
+  // is never gated.
+  const routed = new Set<string>()
   for (const edge of definition.edges) {
     const found = new Set<string>()
     collectStructuredRefs(edge, found)
-    found.forEach((p) => structured.add(p))
+    found.forEach((p) => {
+      structured.add(p)
+      routed.add(p)
+    })
     noteReads(found, namespaceById.get(edge.source) ?? null)
   }
 
@@ -410,8 +418,17 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
     return known ? [...known].sort() : null
   }
   const typeOf = new Map(definition.nodes.map((n) => [n.namespace, n.type as string]))
-  const gateOf = (named: string[] | null): string[] | null =>
-    named && named.length > 0 && named.every((ns) => ENDING_NODE_TYPES.has(typeOf.get(ns) ?? '')) ? named : null
+  // A script this cannot fully read may read any field, so nothing in its
+  // workflow can be said to be read only by ending steps.
+  const everyReadKnown = unreadableNodes.length === 0 && aliasOnlyNodes.length === 0
+  const gateOf = (path: string, named: string[] | null): string[] | null =>
+    everyReadKnown &&
+    !routed.has(path) &&
+    named &&
+    named.length > 0 &&
+    named.every((ns) => ENDING_NODE_TYPES.has(typeOf.get(ns) ?? ''))
+      ? named
+      : null
 
   // Applied to both sources at the point the map is built, so a dropped field
   // is absent from the manifest the coverage page renders as well as from the
@@ -423,14 +440,14 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
   for (const path of [...structured].sort()) {
     if (isGuaranteedConstant(path, guaranteed)) continue
     const named = readersOf(path)
-    fields.push({ path, source: 'structured', readers: named, gate: gateOf(named) })
+    fields.push({ path, source: 'structured', readers: named, gate: gateOf(path, named) })
     seen.add(path)
   }
   for (const path of [...code].sort()) {
     if (seen.has(path)) continue
     if (isGuaranteedConstant(path, guaranteed)) continue
     const named = readersOf(path)
-    fields.push({ path, source: 'code', readers: named, gate: gateOf(named) })
+    fields.push({ path, source: 'code', readers: named, gate: gateOf(path, named) })
     seen.add(path)
   }
   return { fields, unreadableNodes, aliasOnlyNodes }

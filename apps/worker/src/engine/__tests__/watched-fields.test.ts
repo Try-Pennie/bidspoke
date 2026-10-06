@@ -709,8 +709,8 @@ describe('a field is gated on its readers only when every reader is an ending st
   })
 
   it('does not gate a field one of whose readers cannot be named', () => {
-    // Nodes are walked before code scripts, so a nameless edge reader seen first
-    // must not be overwritten by a Response reader seen later.
+    // Nodes are walked before edges, so the Response reader is seen first here
+    // and the nameless edge reader second.
     const d = def({
       nodes: [
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -722,5 +722,53 @@ describe('a field is gated on its readers only when every reader is an ending st
       ],
     })
     expect(gateOf(d, 'y.ok')).toBeNull()
+  })
+
+  it('keeps a nameless reader nameless when a code node reading the field is seen after it', () => {
+    // Edges are walked before code scripts, so here the null comes first and a
+    // later named reader must not replace it.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'c', type: 'code', config: { script: 'return steps.y.output.ok;' } } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'missing', target: 'n1', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(deriveWatchedFieldMap(d).fields.find((f) => f.path === 'y.ok')?.readers).toBeNull()
+  })
+
+  it('does not gate a field a Response routes onward on, though the Response reads it', () => {
+    // A Response with continue_after_response can be the source of an edge, and
+    // then it steers the run on the field rather than only reporting it.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'r1', namespace: 'reply', type: 'response', config: { body: '{{steps.y.output.ok}}', continue_after_response: true } } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'r1', target: 'b', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(gateOf(d, 'y.ok')).toBeNull()
+  })
+
+  it('gates nothing in a workflow with a code node it cannot fully read', () => {
+    // Such a node may read any field, so no field can be said to be read only
+    // by ending steps.
+    for (const script of ['const all = steps; return all.input.reason', 'const m = steps.q.output.map[k];\nreturn m.reason;\n']) {
+      const d = def({
+        nodes: [
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          { id: 'n1', namespace: 'respond_bad', type: 'response', config: { body: '{{steps.input.output.reason}}' } } as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          { id: 'n2', namespace: 'c', type: 'code', config: { script } } as any,
+        ],
+      })
+      expect(gateOf(d, 'input.reason')).toBeNull()
+    }
   })
 })
