@@ -269,7 +269,11 @@ export function buildCodeSandboxBody(
   })
 }
 
-/** A shadow run's code cannot be dispatched to the compare namespace, so it runs nowhere. */
+/**
+ * A shadow run's code cannot be dispatched to the compare namespace, so it runs
+ * nowhere: the namespace is unbound, no compare bundle was deployed, or the bundle
+ * answered 404 or "Worker not found". A 503 is not this error (#1798).
+ */
 export class CompareDispatchUnavailableError extends Error {
   /** Read by the retry classifier: the same on every attempt. */
   readonly permanent = true
@@ -325,6 +329,19 @@ export function codeDispatchTarget(env: Env, ctx: ExecutionContext, opts: { chai
   }
 }
 
+/**
+ * Whether a bundle that could not be reached is gone for good, given the status it
+ * answered with (undefined for a "Worker not found" throw, the only throw that
+ * reaches this point). A 404 or that throw means the bundle is not deployed,
+ * which is the same on every attempt. A 503 is the platform briefly unable to
+ * serve, so on the compare namespace it is not a permanent refusal and takes the
+ * ordinary transient classification (#1798). The money namespace still reads a
+ * 503 as a missing bundle for its legacy fallback; this only decides permanence.
+ */
+export function bundleMissingForGood(status: number | undefined): boolean {
+  return status === undefined || status === 404
+}
+
 /** Why a bundle with no legacy fallback could not be reached, naming the kind of bundle. */
 export function bundleUnreachableMessage(target: CodeDispatchTarget, namespace: string, status: number | undefined): string {
   const seen = status ?? 'binding error'
@@ -338,7 +355,10 @@ export function bundleUnreachableMessage(target: CodeDispatchTarget, namespace: 
  * the saved bundle, falls back to the legacy per-node worker if the bundle is
  * missing (503) or the namespace isn't in the bundle (404). Any other status
  * (including 500 from a user script error) is returned directly: we do NOT
- * fall back on script errors, since that could silently run stale code.
+ * fall back on script errors, since that could silently run stale code. With
+ * no fallback, a 404 or "Worker not found" on the compare namespace refuses
+ * permanently, while a 503 there fails as a transient error so it is retried
+ * (#1798).
  */
 async function dispatchWithFallback(
   env: Env,
@@ -385,8 +405,12 @@ async function dispatchWithFallback(
   // where its calls go out. Surface the miss instead.
   if (!target.legacyFallback) {
     const message = bundleUnreachableMessage(target, namespace, bundleRes?.status)
-    // A missing compare bundle is the same on every attempt, as the chain path records it.
-    throw target.namespace === 'compare' ? new CompareDispatchUnavailableError(message) : new Error(message)
+    // A missing compare bundle is the same on every attempt, as the chain path
+    // records it. A compare 503 is not missing, so it stays a plain error the
+    // retry classifier reads as transient (#1798).
+    throw target.namespace === 'compare' && bundleMissingForGood(bundleRes?.status)
+      ? new CompareDispatchUnavailableError(message)
+      : new Error(message)
   }
 
   console.log(`[code-node] Bundle miss for "${namespace}" on workflow ${workflowId.slice(0, 8)}, falling back to per-node worker`)

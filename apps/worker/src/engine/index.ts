@@ -20,7 +20,7 @@ import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
-import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, type CodeDispatchTarget } from './nodes/code'
+import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -2370,8 +2370,12 @@ export async function executeCodeChain(
     bundleRes?.status === 404 ||
     bundleRes?.status === 503
 
+  // With no legacy fallback (a shadow run's compare bundle), the chain fails. Only
+  // a bundle gone for good (404 or "Worker not found") is permanent; a 503 is the
+  // platform briefly unable to serve, so it is left transient (#1798).
   if ((chainUnsupported || !bundleRes) && !target.legacyFallback) {
-    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0, permanent: true }] }
+    const permanent = bundleMissingForGood(bundleRes?.status) ? { permanent: true as const } : {}
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: bundleUnreachableMessage(target, chain[0].namespace, bundleRes?.status), durationMs: 0, ...permanent }] }
   }
 
   if (chainUnsupported || !bundleRes) {
