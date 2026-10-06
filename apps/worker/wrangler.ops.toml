@@ -12,6 +12,11 @@
 #
 # Deploy by hand, from apps/worker, once the go-live list is done:
 #   npx wrangler deploy --config wrangler.ops.toml
+#
+# Plan 0.E (#1709 part 3) adds the lane, the ops code namespace and the tail
+# consumer below. A deploy now also needs the namespace and its outbound Worker
+# to exist (wrangler refuses a binding to a missing namespace): see the go-live
+# list in the pull request for #1709 part 3.
 name = "bidspoke-worker-ops"
 main = "src/ops/index.ts"
 compatibility_date = "2024-09-23"
@@ -34,6 +39,27 @@ workers_dev = false
 binding = "PORTING_TEE"
 bucket_name = "bidspoke-porting-tee"
 
+# The lane this Worker serves. src/ops/index.ts refuses every request, by name,
+# when this is unset or names another lane (#1709).
+[vars]
+LANE = "ops"
+
+# The ops code namespace (#1709, plan 0.E): where ops workflows' code nodes will
+# run, apart from the bidding namespace (bidspoke-code-nodes) and the compare
+# one. Every request a script there makes goes to bidspoke-ops-outbound
+# (apps/ops-outbound), which refuses it until Phase 2 defines what ops code may
+# reach. Nothing dispatches here yet.
+[[dispatch_namespaces]]
+binding = "CODE_NODES_OPS"
+namespace = "bidspoke-code-nodes-ops"
+outbound = { service = "bidspoke-ops-outbound" }
+
+# Traces go to the tail consumer, which skips this Worker's traces until Phase 1
+# points it at the ops database (apps/worker-tail, #1709): an ops execution id
+# names nothing in the bidding database's workflow_executions.
+[[tail_consumers]]
+service = "bidspoke-worker-tail"
+
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
@@ -43,3 +69,8 @@ invocation_logs = true
 #   PORTING_CAPTURE_MASTER  derives each workflow's capture key (HMAC of the
 #                           hashid) and the redaction key. Cannot be re derived
 #                           if lost: escrow it with the other recovery keys.
+#   OPS_SUPABASE_URL        the ops database ("Bidspoke Ops"), and
+#   OPS_SUPABASE_SECRET_KEY its service role key (src/ops/ops-db.ts). Allowed,
+#                           not required: nothing reads the ops database until
+#                           Phase 1. Never the bidding database's URL or key,
+#                           which the client refuses.

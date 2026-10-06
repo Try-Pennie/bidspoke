@@ -22,8 +22,9 @@ import { REPO_ROOT } from './_scan-utils'
  *
  * It lives with the general guards rather than in the worker guard directory,
  * whose rule is guards about `apps/worker/src` specifically. `apps/worker-tail`
- * is a different package, and it has no test scope of its own yet (#499), so this
- * runs in the web suite. The placement guard from #502 caught the mistake, which
+ * is a different package, and this reads files across the repo, so it runs in
+ * the web suite. The tail's own behaviour is tested in apps/worker-tail since
+ * #1709 part 3. The placement guard from #502 caught the mistake, which
  * is now twice in one session that it has earned its keep.
  *
  * What is asserted here is the DELIVERY, which is the half that failed for the

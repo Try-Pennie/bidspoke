@@ -18,7 +18,7 @@ import { sendRequiredSecretsAlert } from './slack'
 // The lists live in ./secret-lists, a module with no runtime imports, so the CI
 // parity check (.github/scripts/worker-secret-parity.mjs) reads the same lists
 // the daily guard does (#1709).
-import { OPS_REQUIRED_SECRETS, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from './secret-lists'
+import { OPS_OPTIONAL_SECRETS, OPS_REQUIRED_SECRETS, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from './secret-lists'
 import type { OpsEnv } from '../ops/index'
 export { REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS }
 
@@ -26,8 +26,10 @@ export { REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS }
 // typo or a renamed binding fails the typecheck rather than the daily alert.
 const moneyBindings: readonly (keyof Env)[] = REQUIRED_SECRETS
 const opsBindings: readonly (keyof OpsEnv)[] = OPS_REQUIRED_SECRETS
+const opsOptionalBindings: readonly (keyof OpsEnv)[] = OPS_OPTIONAL_SECRETS
 void moneyBindings
 void opsBindings
+void opsOptionalBindings
 
 /** Required secrets (core + partner) that are absent, empty, or whitespace-only, in declared order. */
 export function findMissingRequiredSecrets(env: Env): string[] {

@@ -125,6 +125,8 @@ jobs:
           pnpm --filter @bidspoke/node-types test
           pnpm --filter @bidspoke/porting-evidence test
           pnpm --filter compare-outbound test
+          pnpm --filter ops-outbound test
+          pnpm --filter worker-tail test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the worker guards, which the web leg below
@@ -275,6 +277,7 @@ jobs:
       worker_tail: ${{ steps.targets.outputs.worker_tail }}
       pages: ${{ steps.targets.outputs.pages }}
       compare_outbound: ${{ steps.targets.outputs.compare_outbound }}
+      ops_outbound: ${{ steps.targets.outputs.ops_outbound }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -315,6 +318,15 @@ jobs:
               - 'packages/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
+            # secret-lists.ts holds OPS_WORKER_DEPLOYED, the switch that lets this
+            # target deploy at all (deploy-targets-decision.sh), so flipping it
+            # deploys the ops outbound Worker in the same push (#1709).
+            ops_outbound:
+              - 'apps/ops-outbound/**'
+              - 'apps/worker/src/lib/secret-lists.ts'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
 
       # On a push, the filter's answer. On a dispatched run (or an event this
       # does not know), every target, because there is no previous push to diff
@@ -332,7 +344,8 @@ jobs:
           WORKER_TAIL: ${{ steps.filter.outputs.worker_tail }}
           PAGES: ${{ steps.filter.outputs.pages }}
           COMPARE_OUTBOUND: ${{ steps.filter.outputs.compare_outbound }}
-        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$REF" "$WORKER" "$WORKER_TAIL" "$PAGES" "$COMPARE_OUTBOUND" >> "$GITHUB_OUTPUT"
+          OPS_OUTBOUND: ${{ steps.filter.outputs.ops_outbound }}
+        run: bash .github/scripts/deploy-targets-decision.sh "$EVENT_NAME" "$REF" "$WORKER" "$WORKER_TAIL" "$PAGES" "$COMPARE_OUTBOUND" "$OPS_OUTBOUND" >> "$GITHUB_OUTPUT"
 
   deploy-worker-tail:
     name: Deploy Worker Tail
@@ -393,6 +406,38 @@ jobs:
       # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker Tail.
       - name: Deploy Compare Outbound
         run: pnpm --filter=compare-outbound exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  # The ops namespace's outbound Worker (#1709 part 3): every request a code
+  # bundle makes in the bidspoke-code-nodes-ops namespace is routed to it and
+  # refused until Phase 2 defines what ops code may reach. Wired like Deploy
+  # Compare Outbound, and held off until the ops lane goes live: the decision
+  # script answers false for it while OPS_WORKER_DEPLOYED is false, on every
+  # event, so merging ops code creates no Cloudflare resource before part 4.
+  deploy-ops-outbound:
+    name: Deploy Ops Outbound
+    runs-on: ubuntu-latest
+    # conditional and rarely run; sized like Deploy Compare Outbound, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
+    needs: [verify, changes]
+    if: needs.changes.outputs.ops_outbound == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker Tail.
+      - name: Deploy Ops Outbound
+        run: pnpm --filter=ops-outbound exec wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 

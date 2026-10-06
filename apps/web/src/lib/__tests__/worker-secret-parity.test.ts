@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
 import { accountIdFrom, listSecretNames, parityVerdict } from '../../../../../.github/scripts/worker-secret-parity.mjs'
-import { OPS_ALLOWED_SECRETS, REQUIRED_PARTNER_SECRETS, REQUIRED_SECRETS } from '../../../../worker/src/lib/secret-lists'
+import { OPS_ALLOWED_SECRETS, OPS_REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS, REQUIRED_SECRETS } from '../../../../worker/src/lib/secret-lists'
 
 /**
  * Worker secret parity (#1709, plan 0.E): the money Worker holds every secret it
@@ -92,6 +92,14 @@ describe('parityVerdict (#1709)', () => {
 describe('the committed lists (#1709)', () => {
   it('allow no money Worker secret on the ops Worker', () => {
     expect(OPS_ALLOWED_SECRETS.filter((n) => (MONEY_ALL as readonly string[]).includes(n))).toEqual([])
+  })
+
+  it('allow the ops database secrets on the ops Worker without requiring them, since nothing reads them before Phase 1 (#1709 part 3)', () => {
+    expect(OPS_ALLOWED_SECRETS).toEqual(expect.arrayContaining(['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY']))
+    expect(OPS_REQUIRED_SECRETS).not.toContain('OPS_SUPABASE_URL')
+    expect(OPS_REQUIRED_SECRETS).not.toContain('OPS_SUPABASE_SECRET_KEY')
+    // Every required ops secret is allowed, or parity would fail a Worker for holding it.
+    for (const name of OPS_REQUIRED_SECRETS) expect(OPS_ALLOWED_SECRETS).toContain(name)
   })
 
   it('reads the account id from the money Worker\'s wrangler.toml', () => {

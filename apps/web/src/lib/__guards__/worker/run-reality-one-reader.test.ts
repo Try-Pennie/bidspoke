@@ -6,8 +6,9 @@
  * and this scan fails on a direct read anywhere else in the engine, so a new
  * node cannot quietly decide for itself again (L621, L613).
  *
- * Out of scope on purpose: lib/supabase.ts and lib/salesforce-write.ts read
- * LOCAL_DEV to refuse writes to production from a laptop. That is a guard on
+ * Out of scope on purpose: lib/local-dev-write-guard.ts (behind lib/supabase.ts
+ * and ops/ops-db.ts) and lib/salesforce-write.ts read LOCAL_DEV to refuse writes
+ * to production from a laptop. That is a guard on
  * the client, true of every caller whatever the run, not a conclusion about a
  * run, and they sit outside the engine.
  */
