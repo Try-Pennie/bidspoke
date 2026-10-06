@@ -235,3 +235,27 @@ describe('formatErr: object with a blank message', () => {
     expect(formatErr({ message: '', code: 'PGRST002' })).toContain('PGRST002')
   })
 })
+
+/**
+ * L741 (#1740): every error rendered for an alert, a log line or a stored detail
+ * passes through here, and an upstream's error text can name the full address it
+ * was called on, query string and all. The query string goes, so a lead's
+ * percent-encoded email or phone cannot ride an error into Slack or the logs.
+ */
+describe('addresses in rendered errors lose their query string (#1740)', () => {
+  const leaky = 'Fetch API cannot load: https://p.example/x?email=jo%40example.com&phone=%28201%29'
+
+  it('formatErr strips it from an Error message', () => {
+    expect(formatErr(new Error(leaky))).toBe('Fetch API cannot load: https://p.example/x')
+  })
+
+  it('formatErr strips it from a PostgREST shaped object\'s details', () => {
+    const out = formatErr({ message: 'request failed', details: leaky, code: 'PGRST000' })
+    expect(out).not.toMatch(/%40|email=/)
+    expect(out).toContain('https://p.example/x')
+  })
+
+  it('truncateErrorForAlert strips it from text that never went through formatErr', () => {
+    expect(truncateErrorForAlert(leaky)).toBe('Fetch API cannot load: https://p.example/x')
+  })
+})

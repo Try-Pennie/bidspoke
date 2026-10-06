@@ -63,4 +63,11 @@ describe('log()', () => {
     expect(parsed.error_type).toBe('transient')
     expect(parsed.error_message).toBe('timeout')
   })
+
+  it('strips the query string from any address in a line, so a fetch error cannot carry lead data into the logs (L741, #1740)', () => {
+    log({ event: 'step_error', trace_id: 'tr-9', error_message: 'TypeError: Fetch API cannot load: https://p.example/x?email=jo%40example.com' })
+    expect(captured[0]).not.toMatch(/%40|example\.com\?|email=/)
+    expect((JSON.parse(captured[0]) as LogFields).error_message).toBe('TypeError: Fetch API cannot load: https://p.example/x')
+  })
 })
+

@@ -299,21 +299,30 @@ function toSummaryStep(step: unknown): Record<string, unknown> {
 // input/output via /:id/steps/:stepId when a node is clicked. Heavy step
 // payloads (Equifax response, SF blobs) added up to multi-MB responses on
 // every click before this — see TODO 4.x notes.
-// GET /api/executions/archive-search?trace_id=... | ?ssn=...
+// GET  /api/executions/archive-search?trace_id=...
+// POST /api/executions/archive-search  { "trace_id"?: string, "ssn"?: string }
 //
 // The way back to a run when nobody has the link (#874). The list endpoint is
 // Postgres only and has no identity filter, so past the retention window an
 // operator holding a lead and no URL has no starting point at all.
 //
+// An SSN is taken from a POST body only (L741, #1740): the platform's invocation
+// logs record every request address in full, query string included, so an SSN in
+// the address would sit in Cloudflare's logs whatever this code did with it. A GET
+// carrying one is refused by name without searching, so a caller still building
+// the old address learns the rule rather than leaking quietly.
+//
 // Registered ahead of `/:id` deliberately: Hono matches in order, and
 // "archive-search" would otherwise be read as an execution id.
-executions.get('/archive-search', async (c) => {
+type ArchiveSearchContext = Context<{ Bindings: Env; Variables: Variables }>
+
+async function answerArchiveSearch(c: ArchiveSearchContext, terms: { traceId?: string; ssn?: string }) {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
   const result = await searchArchive(c.env, supabase, {
-    traceId: c.req.query('trace_id'),
-    ssn: c.req.query('ssn'),
+    traceId: terms.traceId,
+    ssn: terms.ssn,
     orgId,
     readBy: userId,
   })
@@ -334,6 +343,25 @@ executions.get('/archive-search', async (c) => {
   // part of the answer rather than a note beside it. An SSN search that finds
   // nothing is only truthful when it also says what it could not look at.
   return c.json({ results: result.results, coverage: result.coverage })
+}
+
+executions.get('/archive-search', async (c) => {
+  if (c.req.query('ssn') !== undefined) {
+    return c.json({ error: 'Send an SSN in the request body of a POST to this address, never in the address itself: addresses are logged in full.' }, 400)
+  }
+  return answerArchiveSearch(c, { traceId: c.req.query('trace_id') })
+})
+
+executions.post('/archive-search', async (c) => {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'The request body must be JSON with a trace_id or an ssn.' }, 400)
+  }
+  const fields = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  const text = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  return answerArchiveSearch(c, { traceId: text(fields.trace_id), ssn: text(fields.ssn) })
 })
 
 executions.get('/:id', async (c) => {

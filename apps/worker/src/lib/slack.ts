@@ -8,6 +8,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AlertingStatus } from './pg-cron-watch'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
+import { stripUrlQueriesInText } from './url-redact'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
@@ -114,6 +115,9 @@ export async function sendFailureAlert(
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
   const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}` +
     (payload.node_id ? `&node=${payload.node_id}` : '')
+  // The step's error text, never our own link above: an address inside it loses its
+  // query string, which a script's fetch failure names in full (L741, #1740).
+  const errorText = stripUrlQueriesInText(payload.error_message)
 
   // Only show the retry line when at least one retry actually happened — a step
   // that failed on its first attempt shouldn't add noise claiming "0 retries".
@@ -148,7 +152,7 @@ export async function sendFailureAlert(
         // fence) and let Slack's native "Show more" collapse it. Anything past
         // the cap gets a trailing note pointing at the execution.
         text: (() => {
-          const full = payload.error_message
+          const full = errorText
           const shown = full.length > 2900
             ? `${full.slice(0, 2900)}\n… (truncated, full error in execution detail)`
             : full
@@ -165,7 +169,7 @@ export async function sendFailureAlert(
     },
   ]
 
-  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
+  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${errorText}`)
   return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
 
@@ -422,7 +426,7 @@ export async function sendFailureSaturationAlert(
   const shapesLine = shapes.length > 0
     ? [
         '*What they failed on:*',
-        ...shapes.map((sh) => `- ${sh.count} x \`${sh.sample.replace(/`/g, "'")}\``),
+        ...shapes.map((sh) => `- ${sh.count} x \`${stripUrlQueriesInText(sh.sample).replace(/`/g, "'")}\``),
         ...((payload.other_shape_count ?? 0) > 0
           ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
           : []),
@@ -489,7 +493,7 @@ export async function sendUpstreamOutageAlert(
   const shapesLine = shapes.length > 0
     ? [
         '*What they failed on:*',
-        ...shapes.map((s) => `- ${s.count} x \`${s.sample.replace(/`/g, "'")}\``),
+        ...shapes.map((s) => `- ${s.count} x \`${stripUrlQueriesInText(s.sample).replace(/`/g, "'")}\``),
         ...((payload.other_shape_count ?? 0) > 0
           ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
           : []),
@@ -982,7 +986,7 @@ function upstreamSaid(error: string): string {
       const messages = parsed
         .map((e: unknown) => (e as { message?: unknown } | null)?.message)
         .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
-      if (messages.length > 0) return messages.map((m) => (/[.!?]$/.test(m) ? m : `${m}.`)).join(' ')
+      if (messages.length > 0) return stripUrlQueriesInText(messages.map((m) => (/[.!?]$/.test(m) ? m : `${m}.`)).join(' '))
     }
   } catch {
     // Not JSON: an HTML page or plain text, passed on as written.
@@ -1722,6 +1726,8 @@ export async function sendExportFailureAlert(
   },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
+  // An error line is upstream text and can name an address with its query (L741, #1740).
+  payload = { ...payload, errors: payload.errors.map(stripUrlQueriesInText) }
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
   if (payload.title) return sendTitledAlert(connection, channelOverride, payload as typeof payload & { title: string })
@@ -2340,7 +2346,7 @@ export async function sendPartnerUnreachableAlert(
 ): Promise<string | null> {
   const header = `${payload.host} is not answering Bidspoke's calls`
   const lines = [
-    `The scheduled reachability probe has had no answer from \`${payload.host}\` since ${etTime(Date.parse(payload.since))}. The last look failed with: \`${payload.reason}\`. Leads that call this host are failing the same way while this lasts.`,
+    `The scheduled reachability probe has had no answer from \`${payload.host}\` since ${etTime(Date.parse(payload.since))}. The last look failed with: \`${stripUrlQueriesInText(payload.reason)}\`. Leads that call this host are failing the same way while this lasts.`,
   ]
   if (payload.repeat) lines.push(payload.repeat)
   lines.push(`Seen at ${etTime(payload.at)}.`)
@@ -2380,7 +2386,7 @@ export async function sendProbeControlAlert(
   channel: string,
   payload: ProbeControlAlertPayload,
 ): Promise<string | null> {
-  const measured = `It answered ${payload.status === null ? 'nothing' : `HTTP ${payload.status}`} with: \`${payload.bodyHead.slice(0, 120) || '(empty)'}\`.`
+  const measured = `It answered ${payload.status === null ? 'nothing' : `HTTP ${payload.status}`} with: \`${stripUrlQueriesInText(payload.bodyHead).slice(0, 120) || '(empty)'}\`.`
   const header = payload.everPassed
     ? 'The block detector stopped seeing the block it should see'
     : 'The block detector has never seen the block it should see'
@@ -2420,7 +2426,7 @@ export async function sendProbeBrokenAlert(
 ): Promise<string | null> {
   const header = 'The partner reachability probe cannot fetch'
   const lines = [
-    `Since ${etTime(Date.parse(payload.since))} the probe's own control host has not answered at all, so nothing it reports about the partners can be trusted and their readings are being held. The last look failed with: \`${payload.reason}\`.`,
+    `Since ${etTime(Date.parse(payload.since))} the probe's own control host has not answered at all, so nothing it reports about the partners can be trusted and their readings are being held. The last look failed with: \`${stripUrlQueriesInText(payload.reason)}\`.`,
   ]
   if (payload.repeat) lines.push(payload.repeat)
   lines.push(`Seen at ${etTime(payload.at)}.`)

@@ -57,6 +57,14 @@ describe('sendFailureAlert', () => {
     vi.unstubAllGlobals()
   })
 
+  it('strips the query string from any address in the error before it reaches Slack (L741, #1740)', async () => {
+    const leaky = { ...payload, error_message: 'TypeError: Fetch API cannot load: https://p.example/x?email=jo%40example.com&phone=%28201%29' }
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, leaky, 'https://app.example.com')
+    const body = fetchMock.mock.calls[0][1].body as string
+    expect(body).not.toMatch(/%40|%28201%29|email=/)
+    expect(body).toContain('https://p.example/x')
+  })
+
   it('does nothing when Slack is not configured', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(null) as any, 'org-1', null, payload, 'https://app.example.com')
@@ -509,6 +517,19 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(text).toContain('not exported')
   })
 
+  it('cuts an address in an error line at its query string, titled or not (L741, #1740)', async () => {
+    const leaky = 'sightings export: 401 from https://p.example/x?email=jo%40example.com'
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'Lead sightings export', errors: [leaky] })
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [leaky], title: 'Export failed' })
+    for (const call of fetchMock.mock.calls) {
+      const body = JSON.parse(call[1].body)
+      const text = [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
+      expect(text).not.toMatch(/%40|email=/)
+      expect(text).toContain('https://p.example/x')
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('a titled alert is the title, the findings, an optional context line and a short fix, nothing else', async () => {
     // Dan, 2026-10-01, on the Tripoint pricing alert: "It's so hard to understand
     // right now". A check that names itself and explains itself buries the one
@@ -870,6 +891,13 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
     await send({ error_message: 'Salesforce API error (503): Service Unavailable' })
     expect(textOf()).toContain('Salesforce said: Service Unavailable')
   })
+
+  it('cuts an address in a Salesforce message at its query string, so a SOQL filter on an email cannot reach Slack (L741, #1740)', async () => {
+    await send({ error_message: 'Salesforce API error (400): [{"message":"Bad query at https://pennie.my.salesforce.com/services/data/v60.0/query?q=SELECT+Id+FROM+Lead+WHERE+Email%3D%27jo%40example.com%27","errorCode":"MALFORMED_QUERY"}]' })
+    const text = textOf()
+    expect(text).not.toMatch(/%40|Email%3D|q=SELECT/)
+    expect(text).toContain('https://pennie.my.salesforce.com/services/data/v60.0/query')
+  })
 })
 
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
@@ -1187,6 +1215,18 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     expect(text).toContain('Check concurrent in-flight calls')
     // And it no longer steers towards the vendor status page for this case.
     expect(text).not.toContain('status page')
+  })
+
+  it('cuts an address in an error sample at its query string (L741, #1740)', async () => {
+    await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      { ...outagePayload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?phone=%28201%29555', count: 4 }] },
+      'https://app.example.com',
+    )
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).not.toMatch(/%28201%29|phone=/)
+    expect(text).toContain('https://p.example/x')
   })
 
   // The failure path the issue asks for by name. Losing the page is worse than
@@ -1589,6 +1629,14 @@ describe('sendFailureSaturationAlert', () => {
   it('does not ping the channel', async () => {
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
     expect(sentText()).not.toContain('!here')
+  })
+
+  it('cuts an address in an error sample at its query string (L741, #1740)', async () => {
+    const leaky = { ...payload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?email=jo%40example.com', count: 17 }] }
+    await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', leaky, 'https://app.example.com')
+    const text = sentText()
+    expect(text).not.toMatch(/%40|email=/)
+    expect(text).toContain('https://p.example/x')
   })
 
   // Not just an absence: the message still has to carry what it measured, or a

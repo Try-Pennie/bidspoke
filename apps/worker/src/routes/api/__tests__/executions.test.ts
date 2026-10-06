@@ -651,7 +651,7 @@ describe('archived lineage on the detail route (#874)', () => {
   })
 })
 
-describe('GET /executions/archive-search (#874)', () => {
+describe('the archive search (#874)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
   beforeEach(async () => {
@@ -686,12 +686,45 @@ describe('GET /executions/archive-search (#874)', () => {
       coverage: { complete: false, completeFrom: '2026-08-20', note: 'Runs before 2026-08-20 may be missing.' },
     })
 
-    const res = await request(app, 'GET', '/executions/archive-search?ssn=123-45-6789')
+    const res = await request(app, 'POST', '/executions/archive-search', { body: { ssn: '123-45-6789' } })
     const body = await res.json() as { results: unknown[]; coverage: { complete: boolean; note: string } }
 
     expect(body.results).toHaveLength(1)
     expect(body.coverage.complete).toBe(false)
     expect(body.coverage.note).toContain('2026-08-20')
+  })
+
+  /**
+   * L741 (#1740): an address is logged in full by the platform's invocation logs,
+   * query string included, so an SSN must never travel in one. The search takes it
+   * from a POST body, and a GET carrying one is refused by name without searching,
+   * so a caller that still builds the old address learns the rule.
+   */
+  it('searches by an SSN sent in a POST body, passing it on and keeping it out of the address', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({ kind: 'ok', results: [], coverage: { complete: true, completeFrom: null, note: null } })
+
+    const res = await request(app, 'POST', '/executions/archive-search', { body: { ssn: '123-45-6789' } })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(searchArchive).mock.calls[0][2]).toMatchObject({ ssn: '123-45-6789' })
+  })
+
+  it('refuses a GET that carries an SSN in the address, and does not search', async () => {
+    const res = await request(app, 'GET', '/executions/archive-search?ssn=123-45-6789')
+    const body = await res.json() as { error: string }
+
+    expect(res.status).toBe(400)
+    expect(body.error).toMatch(/request body/)
+    expect(vi.mocked(searchArchive)).not.toHaveBeenCalled()
+  })
+
+  it('still searches by trace id from the address, which carries nothing personal', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({ kind: 'ok', results: [], coverage: { complete: true, completeFrom: null, note: null } })
+
+    const res = await request(app, 'GET', '/executions/archive-search?trace_id=abc')
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(searchArchive).mock.calls[0][2]).toMatchObject({ traceId: 'abc' })
   })
 
   it('refuses a search with no term', async () => {
