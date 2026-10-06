@@ -878,6 +878,13 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
     await send({ error_message: 'Salesforce API error (503): Service Unavailable' })
     expect(textOf()).toContain('Salesforce said: Service Unavailable')
   })
+
+  it('cuts an address in a Salesforce message at its query string, so a SOQL filter on an email cannot reach Slack (L741, #1740)', async () => {
+    await send({ error_message: 'Salesforce API error (400): [{"message":"Bad query at https://pennie.my.salesforce.com/services/data/v60.0/query?q=SELECT+Id+FROM+Lead+WHERE+Email%3D%27jo%40example.com%27","errorCode":"MALFORMED_QUERY"}]' })
+    const text = textOf()
+    expect(text).not.toMatch(/%40|Email%3D|q=SELECT/)
+    expect(text).toContain('https://pennie.my.salesforce.com/services/data/v60.0/query')
+  })
 })
 
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
