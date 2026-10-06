@@ -47,3 +47,4 @@ test-results/
 # apps/web/public/ and must stay tracked.
 .playwright-mcp/
 /*.png
+supabase-ops/supabase/.temp/

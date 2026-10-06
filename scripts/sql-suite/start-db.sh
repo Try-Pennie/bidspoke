@@ -12,12 +12,15 @@
 # Usage:
 #   bash scripts/sql-suite/start-db.sh          # start if not running, keep its data
 #   bash scripts/sql-suite/start-db.sh --reset  # remove the container and start empty
-# Env: SQL_SUITE_CONTAINER (default bidspoke-sql-suite), SQL_SUITE_PORT (default 54329).
+# Env: SQL_SUITE_PROJECT (main or ops, see project.sh), SQL_SUITE_CONTAINER and
+# SQL_SUITE_PORT (each project's own by default).
 set -uo pipefail
 
 IMAGE="supabase/postgres:17.6.1.175"
-CONTAINER="${SQL_SUITE_CONTAINER:-bidspoke-sql-suite}"
-PORT="${SQL_SUITE_PORT:-54329}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=project.sh
+. "$HERE/project.sh"
 
 if ! docker info >/dev/null 2>&1; then
   echo "SQL SUITE DID NOT RUN: the Docker daemon is not running. Start Docker Desktop (open -a Docker) and retry." >&2
