@@ -15,12 +15,14 @@
 # the first unapplied one; `start-db.sh --reset` starts from nothing again.
 #
 # Usage: bash scripts/sql-suite/replay.sh
-# Env: SQL_SUITE_CONTAINER (default bidspoke-sql-suite).
+# Env: SQL_SUITE_PROJECT (main or ops, see project.sh), SQL_SUITE_CONTAINER.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CONTAINER="${SQL_SUITE_CONTAINER:-bidspoke-sql-suite}"
+# shellcheck source=project.sh
+. "$HERE/project.sh"
+MIGRATIONS_LABEL="${SUITE_MIGRATIONS#"$ROOT"/}"
 
 # The image's `postgres` database on purpose: pg_cron is preloaded with
 # cron.database_name = postgres, and the auth schema and roles live there.
@@ -37,18 +39,18 @@ fi
 
 bootstrapped="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.replayed') IS NOT NULL")"
 if [ "$bootstrapped" != "t" ]; then
-  if ! out="$(psql_as supabase_admin -f - < "$HERE/bootstrap.sql" 2>&1)"; then
-    echo "REPLAY FAILED in scripts/sql-suite/bootstrap.sql:" >&2
+  if ! out="$(psql_as supabase_admin -f - < "$SUITE_BOOTSTRAP" 2>&1)"; then
+    echo "REPLAY FAILED in ${SUITE_BOOTSTRAP#"$ROOT"/}:" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
     exit 1
   fi
 fi
 
 files=()
-while IFS= read -r f; do files+=("$f"); done < <(ls "$ROOT"/supabase/migrations/*.sql | sort)
+while IFS= read -r f; do files+=("$f"); done < <(ls "$SUITE_MIGRATIONS"/*.sql 2>/dev/null | sort)
 total="${#files[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "REPLAY DID NOT RUN: no migrations found under supabase/migrations" >&2
+  echo "REPLAY DID NOT RUN: no migrations found under $MIGRATIONS_LABEL" >&2
   exit 2
 fi
 
@@ -60,10 +62,10 @@ for f in "${files[@]}"; do
   done_already="$(psql_as postgres -Atc "SELECT 1 FROM sql_suite.replayed WHERE version = '$name'")"
   if [ "$done_already" = "1" ]; then skipped=$((skipped + 1)); continue; fi
   if ! out="$(psql_as postgres -f - < "$f" 2>&1)"; then
-    echo "REPLAY FAILED at $n of $total: supabase/migrations/$name" >&2
+    echo "REPLAY FAILED at $n of $total: $MIGRATIONS_LABEL/$name" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
     exit 1
   fi
   psql_as postgres -Atc "INSERT INTO sql_suite.replayed(version) VALUES ('$name')" >/dev/null
 done
-echo "REPLAY OK: $total migrations present, $((total - skipped)) applied now, $skipped already applied, in container $CONTAINER"
+echo "REPLAY OK ($SQL_SUITE_PROJECT): $total migrations present, $((total - skipped)) applied now, $skipped already applied, in container $CONTAINER"

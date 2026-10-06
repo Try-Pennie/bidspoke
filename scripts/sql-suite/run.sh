@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/sql-suite/run.sh: the SQL suite. Starts the throwaway Postgres if it is
 # not running, replays every migration onto it (incrementally), then runs each
-# supabase/tests/*.test.sql with psql, one statement at a time, and stops at the
+# project's tests (supabase/tests/*.test.sql for main) with psql, one statement at a time, and stops at the
 # first that errors (#1409).
 #
 # It never exits 0 on finding nothing to run (L98): no Docker, no migrations, or
@@ -13,11 +13,14 @@
 # container, and the tests carry no real identity (L222).
 #
 # Usage: bash scripts/sql-suite/run.sh [--reset]
+#        SQL_SUITE_PROJECT=ops bash scripts/sql-suite/run.sh   (the ops database, #1709)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CONTAINER="${SQL_SUITE_CONTAINER:-bidspoke-sql-suite}"
+# shellcheck source=project.sh
+. "$HERE/project.sh"
+TESTS_LABEL="${SUITE_TESTS#"$ROOT"/}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "SQL SUITE DID NOT RUN: docker is not installed. Install Docker Desktop, or push with SKIP_SQL_SUITE=1 after saying why." >&2
@@ -31,9 +34,9 @@ if ! bash "$HERE/replay.sh"; then
 fi
 
 tests=()
-while IFS= read -r f; do tests+=("$f"); done < <(ls "$ROOT"/supabase/tests/*.test.sql 2>/dev/null | sort)
+while IFS= read -r f; do tests+=("$f"); done < <(ls "$SUITE_TESTS"/*.test.sql 2>/dev/null | sort)
 if [ "${#tests[@]}" -eq 0 ]; then
-  echo "SQL SUITE DID NOT RUN: no *.test.sql files under supabase/tests" >&2
+  echo "SQL SUITE DID NOT RUN: no *.test.sql files under $TESTS_LABEL" >&2
   exit 2
 fi
 
@@ -58,7 +61,7 @@ for t in "${tests[@]}"; do
 done
 
 if [ "$status" -ne 0 ]; then
-  echo "SQL SUITE FAILED" >&2
+  echo "SQL SUITE FAILED ($SQL_SUITE_PROJECT)" >&2
   exit 1
 fi
-echo "SQL SUITE OK"
+echo "SQL SUITE OK ($SQL_SUITE_PROJECT)"

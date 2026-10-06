@@ -699,6 +699,26 @@ jobs:
           fi
           echo "DB types freshness check passed."
 
+      # Live database privileges (#1709, plan 0.E). Asks both Supabase projects,
+      # through the Management API and read only, for anything the browser roles
+      # (anon, authenticated) can reach that they should not: in the bidding
+      # project a reachable table or view without row level security, or anything
+      # in the porting schema; in the ops project anything at all, a table without
+      # RLS or organization_id uuid NOT NULL, or a default grant to them. The rules
+      # and their red and green runs are in .github/scripts/db-privilege-check.mjs.
+      #
+      # Push to main only: it reads the LIVE databases, which a pull request has
+      # not changed yet (migrations are applied by hand before merge), so on a pull
+      # request it would only report drift the pull request did not cause. A run
+      # whose token is missing fails by name rather than passing on nothing (L98).
+      - name: Database privileges (live, both projects)
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          MAIN_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_ID }}
+          OPS_PROJECT_REF: ${{ vars.SUPABASE_OPS_PROJECT_ID }}
+        run: node .github/scripts/db-privilege-check.mjs
+
       # Push to main only. On a pull request the head commit legitimately has no
       # merged PR yet, so running there would fail every single PR, and a guard
       # that is always red is a guard nobody reads.
