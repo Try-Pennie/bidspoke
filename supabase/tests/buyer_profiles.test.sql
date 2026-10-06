@@ -854,6 +854,9 @@ BEGIN
   -- A new measurement replaces it.
   r := public.upsert_buyer_select_parity_day(base || '{"stage_b": {"canary": {"attempts": 15}, "bid_rows": {"canary_missing": 0, "canary_multiple": 0, "legacy_missing": 0, "legacy_multiple": 0, "settling": 0, "window_complete": true}}}'::jsonb);
   IF (r->'stage_b'->'bid_rows'->>'legacy_missing')::int IS DISTINCT FROM 0 THEN RAISE EXCEPTION 'a new measurement did not replace the old: %', r; END IF;
+  -- A row sent without a report (an older Worker mid deploy, or a row re-sent as read) keeps the stored one.
+  r := public.upsert_buyer_select_parity_day(base);
+  IF (r->'stage_b'->'canary'->>'attempts')::int IS DISTINCT FROM 15 THEN RAISE EXCEPTION 'a row without a report erased the stored one: %', r; END IF;
   -- Not an object: refused by name.
   BEGIN
     PERFORM public.upsert_buyer_select_parity_day(base || '{"stage_b": [1, 2]}'::jsonb);
