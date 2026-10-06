@@ -17,14 +17,19 @@ main = "src/ops/index.ts"
 compatibility_date = "2024-09-23"
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
-# No workers.dev address: the only way in is the route below.
+# No workers.dev address: the only way in is the route described below.
 workers_dev = false
 
-# The ops Worker's only way in. The bidding Worker's `*.trypennie.dev/*` custom
-# endpoint route covers the same host, and this more specific route wins over the
-# wildcard. `ops` is in RESERVED_SUBDOMAINS (routes/api/endpoints.ts) and no
-# webhook_endpoints row used it (checked 2026-10-06), so no endpoint is taken.
-routes = [{ pattern = "ops.trypennie.dev/porting/*", zone_name = "trypennie.dev" }]
+# The ops Worker's only way in is the route ops.trypennie.dev/porting/*, and it is
+# NOT declared here: CI's Cloudflare token cannot manage zone routes (the first
+# Deploy Ops Worker run, 37535186964 on 2026-10-06, uploaded the Worker and then
+# failed on /zones/.../workers/routes). The route was created on 2026-10-06 by a
+# local deploy and lives in Cloudflare, like the bidding Worker's *.trypennie.dev
+# route: see docs/disaster-recovery.md, configuration that exists only in a
+# dashboard. A deploy without routes leaves an existing route in place, and every
+# Deploy Ops Worker run proves it still answers (.github/scripts/prove-ops-host.sh).
+# It wins over the bidding Worker's wildcard because it is more specific. `ops` is
+# in RESERVED_SUBDOMAINS (routes/api/endpoints.ts), so no endpoint can take it.
 
 # Captures, redacted before they are written. A bucket lifecycle rule deletes
 # every object 90 days after it was written (the retention ceiling, plan 0.R);
