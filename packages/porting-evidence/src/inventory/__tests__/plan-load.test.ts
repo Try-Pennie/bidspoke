@@ -62,6 +62,11 @@ describe('planLoad (#1710)', () => {
     expect(plan.rows.find((r) => r.pipedream_hashid === 'p_gone')).toEqual({ ...gone, absent_since_export_at: OCT })
   })
 
+  it('refuses to mark absent from an export no newer than the one that listed it, since the two disagree', () => {
+    const projects = readExport(writeExport([{ projectHashid: 'proj_A', exportedAt: SEPT, workflows: [{ hashid: 'p_kept' }] }]))
+    expect(() => planLoad([stored({ pipedream_hashid: 'p_kept' }), stored({ pipedream_hashid: 'p_gone' })], projects, ORG)).toThrow(/p_gone.*same time.*disagree/)
+  })
+
   it('judges absence only inside the projects this export holds', () => {
     const projects = readExport(writeExport([{ projectHashid: 'proj_A', exportedAt: OCT, workflows: [{ hashid: 'p_kept' }] }]))
     const plan = planLoad([stored({ pipedream_hashid: 'p_other', project_hashid: 'proj_B' })], projects, ORG)

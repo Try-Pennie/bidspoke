@@ -130,6 +130,9 @@ export function planLoad(stored: StoredRow[], projects: ExportedProject[], organ
     if (r.organization_id !== organizationId) {
       throw new Error(`${r.pipedream_hashid} is stored for organization ${r.organization_id}, not ${organizationId}; refusing to mark it absent`)
     }
+    if (time(exportedAt, `the export time of ${r.project_hashid}`) <= time(r.last_seen_export_at, `the stored last_seen_export_at of ${r.pipedream_hashid}`)) {
+      throw new Error(`${r.pipedream_hashid} was stored from an export of ${r.project_hashid} at ${r.last_seen_export_at}, and this export of the same time does not list it; the two exports disagree, so neither can say it is gone`)
+    }
     plan.newlyAbsent.push(r.pipedream_hashid)
     const row = {} as Record<string, unknown>
     for (const c of INVENTORY_COLUMNS) row[c] = r[c]
