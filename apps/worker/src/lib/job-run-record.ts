@@ -97,6 +97,44 @@ export async function finishJobRun(
 }
 
 /**
+ * Writes one already finished run in a single insert (#1810). Never throws.
+ *
+ * For a job that runs every minute, where opening a row per tick would write
+ * 1,440 rows a day that mostly say nothing happened: the job calls this only on
+ * a tick that did something, after the work. The trade is that a killed tick
+ * leaves no row, so a job using this must have its kills covered elsewhere (the
+ * buyer sale drain has its heartbeat and its backlog page).
+ */
+export async function recordFinishedJobRun(
+  supabase: SupabaseClient,
+  job: string,
+  startedAtMs: number,
+  ending: JobRunEnding,
+): Promise<void> {
+  try {
+    // Read back, as the close is: an insert that came back with no row is not a recorded run (#583).
+    const { error } = await requireRowsAffected(
+      `job_runs record ${job}`,
+      () =>
+        supabase
+          .from('job_runs')
+          .insert({
+            job,
+            started_at: new Date(startedAtMs).toISOString(),
+            finished_at: new Date().toISOString(),
+            outcome: ending.outcome,
+            detail: ending.detail ?? null,
+            summary: ending.summary ?? null,
+          })
+          .select('id'),
+    )
+    if (error) throw new Error(formatErr(error))
+  } catch (err) {
+    console.error(`[job-runs] could not record a finished ${job} run: ${formatErr(err)}`)
+  }
+}
+
+/**
  * Keeps the OPEN row current, without closing it (#1034).
  *
  * A run the platform kills cannot run its `finally`, so it writes no ending, and

@@ -60,6 +60,7 @@ function deps(over: Partial<DrainDeps> = {}): DrainDeps & { rpc: ReturnType<type
     ledger: () => fakeLedger([entry()]),
     readExistingRows: async () => new Map(),
     supabase: { rpc } as never,
+    recordRun: vi.fn(async () => {}),
     now: () => NOW,
     localDev: false,
     log: (line: string) => lines.push(line),
@@ -283,5 +284,88 @@ describe('productionDrainDeps lists offer buyers only', () => {
     ])
     const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
     expect(buyers).toEqual([{ partner_id: 'p-offer', organization_id: ORG, slug: 'tripoint' }])
+  })
+})
+
+/**
+ * The drain recorded nothing durable, so whether it wrote a row, and when, could
+ * only be inferred (8 of the first 118 live rows, #1805). A tick that had work
+ * now records one finished run naming the rows it delivered; a quiet tick
+ * records nothing, because the job runs every minute (#1810).
+ */
+describe('the run record of a tick that had work (#1810)', () => {
+  const recorded = (d: DrainDeps) => vi.mocked(d.recordRun).mock.calls
+
+  it('records one ok run with each buyer\'s counts and the rows it delivered', async () => {
+    const d = deps()
+    await runBuyerSaleDrain(d)
+    expect(recorded(d)).toHaveLength(1)
+    const [startedAt, ending] = recorded(d)[0]
+    expect(startedAt).toBe(NOW)
+    expect(ending.outcome).toBe('ok')
+    expect(ending.summary).toMatchObject({
+      buyers: [{ slug: 'tripoint', pending: 1, delivered: 1, failed: 0, delivered_row_ids: [await buyerSaleRowId(PARTNER, entry())] }],
+    })
+  })
+
+  it('a quiet tick, nothing pending anywhere, records nothing', async () => {
+    const d = deps({ ledger: () => fakeLedger([]) })
+    await runBuyerSaleDrain(d)
+    expect(recorded(d)).toHaveLength(0)
+  })
+
+  it('a tick with a failed delivery records partial and names the error', async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { message: 'db down' } }))
+    const d = deps({ supabase: { rpc } as never })
+    await runBuyerSaleDrain(d)
+    const [, ending] = recorded(d)[0]
+    expect(ending.outcome).toBe('partial')
+    expect(ending.detail).toMatch(/lead-1.*db down/)
+    expect(ending.summary).toMatchObject({ buyers: [{ pending: 1, delivered: 0, failed: 1, delivered_row_ids: [] }] })
+  })
+
+  it('a ledger that could not be read records unmeasured, never ok', async () => {
+    const d = deps({ ledger: () => fakeLedger([], { unreadable: 'object gone' }) })
+    await runBuyerSaleDrain(d)
+    const [, ending] = recorded(d)[0]
+    expect(ending.outcome).toBe('unmeasured')
+    expect(ending.detail).toMatch(/object gone/)
+  })
+
+  it('a buyer list that could not be read records unmeasured', async () => {
+    const d = deps({ listBuyers: async () => { throw new Error('profiles unreadable') } })
+    await runBuyerSaleDrain(d)
+    const [, ending] = recorded(d)[0]
+    expect(ending.outcome).toBe('unmeasured')
+    expect(ending.detail).toMatch(/profiles unreadable/)
+  })
+
+  it('caps the delivered ids it records and says how many there were', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => entry({ lead_key: `lead-${i}` }))
+    const d = deps({ ledger: () => fakeLedger(many) })
+    await runBuyerSaleDrain(d)
+    const [, ending] = recorded(d)[0]
+    const b = (ending.summary as { buyers: Array<{ delivered: number; delivered_row_ids: string[] }> }).buyers[0]
+    expect(b.delivered).toBe(60)
+    expect(b.delivered_row_ids).toHaveLength(50)
+  })
+
+  it('an alerter that throws cannot swallow the run record, because the record is written before the page', async () => {
+    const d = deps({ notify: vi.fn(async () => { throw new Error('KV unavailable') }) })
+    await expect(runBuyerSaleDrain(d)).rejects.toThrow(/KV unavailable/)
+    expect(recorded(d)).toHaveLength(1)
+    expect(recorded(d)[0][1].outcome).toBe('ok')
+  })
+
+  it('a buyer list failure whose page throws still records the tick as unmeasured', async () => {
+    const d = deps({ listBuyers: async () => { throw new Error('profiles unreadable') }, notify: vi.fn(async () => { throw new Error('KV unavailable') }) })
+    await expect(runBuyerSaleDrain(d)).rejects.toThrow(/KV unavailable/)
+    expect(recorded(d)[0][1].outcome).toBe('unmeasured')
+  })
+
+  it('a run record that throws never fails the drain or skips its page', async () => {
+    const d = deps({ recordRun: vi.fn(async () => { throw new Error('job_runs refused') }) })
+    await expect(runBuyerSaleDrain(d)).resolves.toMatchObject({ buyers: [{ delivered: 1 }] })
+    expect(d.notify).toHaveBeenCalledWith([])
   })
 })
