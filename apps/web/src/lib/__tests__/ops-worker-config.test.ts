@@ -69,3 +69,23 @@ describe('wrangler.ops.toml (#1709)', () => {
     }
   })
 })
+
+/**
+ * The ops Worker's route lives in Cloudflare, not in its config (#1709). CI's
+ * Cloudflare token cannot manage zone routes: the first Deploy Ops Worker run
+ * (37535186964, 2026-10-06) uploaded the Worker and then failed on
+ * /zones/.../workers/routes. The bidding Worker's route is held the same way
+ * (docs/disaster-recovery.md, configuration that exists only in a dashboard),
+ * and every Deploy Ops Worker run proves the route still answers with
+ * .github/scripts/prove-ops-host.sh.
+ */
+describe('the ops Worker route (#1709)', () => {
+  it('is not declared in wrangler.ops.toml, where CI would fail trying to manage it', () => {
+    const toml = read('apps/worker/wrangler.ops.toml')
+    expect(toml.split('\n').filter((l) => /^\s*(routes?|\[\[routes\]\])\s*(=|$)/.test(l))).toEqual([])
+  })
+
+  it('is listed among the configuration that exists only in a dashboard', () => {
+    expect(read('docs/disaster-recovery.md')).toContain('Worker route `ops.trypennie.dev/porting/*` to `bidspoke-worker-ops`')
+  })
+})
