@@ -195,7 +195,7 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
 export interface StageBBidReadDeps {
   /** The attempted_at of the oldest Tripoint bid row still held, as a UTC ISO instant; null when none is held. */
   earliestBidRowIso(): Promise<string | null>
-  /** One execution id per attempted (not skipped) Tripoint bid row inside [fromIso, toIso), every page. */
+  /** One execution id per attempted Tripoint bid row (one with a classification) inside [fromIso, toIso), every page. */
   listBidExecutions(fromIso: string, toIso: string): Promise<string[]>
 }
 
@@ -240,7 +240,10 @@ export function productionStageBBidDeps(supabase: SupabaseClient): StageBBidRead
           .from('lead_sighting_bids')
           .select('execution_id')
           .eq('partner_slug', STAGE_B_BUYER_SLUG)
-          .is('skip_reason', null)
+          // An attempt is a row with a classification. A bail row has none (skip_reason
+          // 'skipped'), but the legacy arm's declines carry a skip_reason too ('duplicate',
+          // 'rejected'), so keying on skip_reason would count them as missing (2026-10-06).
+          .not('classification', 'is', null)
           .not('is_test', 'is', true)
           .gte('attempted_at_utc', fromIso)
           .lt('attempted_at_utc', toIso)
