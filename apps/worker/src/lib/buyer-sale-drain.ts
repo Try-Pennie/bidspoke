@@ -145,9 +145,10 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     buyers = await deps.listBuyers()
   } catch (err) {
     const reason = `the buyer list could not be read, so no ledger was drained: ${messageOf(err)}`
-    await deps.notify([reason], ['buyers-unlisted'])
     const result: DrainSummary = { unmeasured: reason, buyers: [], paged: [reason], errors: [reason] }
+    // Recorded before the page, so an alerter that throws cannot take the record with it.
     await recordTick(deps, startedAtMs, result)
+    await deps.notify([reason], ['buyers-unlisted'])
     return result
   }
 
@@ -176,11 +177,13 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     }
   }
 
+  const result: DrainSummary = { buyers: summaries, paged, errors }
+  // Recorded before the page, so an alerter that throws cannot take the record
+  // with it; recordTick never throws, so it cannot hold the page back either.
+  await recordTick(deps, startedAtMs, result)
   // An empty list is the clear, and carries no keys.
   if (paged.length === 0) await deps.notify(paged)
   else await deps.notify(paged, keys)
-  const result: DrainSummary = { buyers: summaries, paged, errors }
-  await recordTick(deps, startedAtMs, result)
   return result
 }
 

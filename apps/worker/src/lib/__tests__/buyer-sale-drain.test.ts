@@ -350,6 +350,19 @@ describe('the run record of a tick that had work (#1810)', () => {
     expect(b.delivered_row_ids).toHaveLength(50)
   })
 
+  it('an alerter that throws cannot swallow the run record, because the record is written before the page', async () => {
+    const d = deps({ notify: vi.fn(async () => { throw new Error('KV unavailable') }) })
+    await expect(runBuyerSaleDrain(d)).rejects.toThrow(/KV unavailable/)
+    expect(recorded(d)).toHaveLength(1)
+    expect(recorded(d)[0][1].outcome).toBe('ok')
+  })
+
+  it('a buyer list failure whose page throws still records the tick as unmeasured', async () => {
+    const d = deps({ listBuyers: async () => { throw new Error('profiles unreadable') }, notify: vi.fn(async () => { throw new Error('KV unavailable') }) })
+    await expect(runBuyerSaleDrain(d)).rejects.toThrow(/KV unavailable/)
+    expect(recorded(d)[0][1].outcome).toBe('unmeasured')
+  })
+
   it('a run record that throws never fails the drain or skips its page', async () => {
     const d = deps({ recordRun: vi.fn(async () => { throw new Error('job_runs refused') }) })
     await expect(runBuyerSaleDrain(d)).resolves.toMatchObject({ buyers: [{ delivered: 1 }] })
