@@ -203,7 +203,23 @@ export interface BuyerSelectOutput {
    */
   rehearsal_expired_in_flight?: number
   rehearsal_in_doubt_heals?: number
+  /**
+   * The total time spent inside buyer calls, in milliseconds, so the node's own cost is
+   * duration_ms minus this on one row (#1804). Each attempt row carries its own split as
+   * `timing`. Left out when no buyer was called, so an unmeasured lead is never a zero (L90).
+   */
+  buyer_call_ms?: number
   duration_ms: number
+}
+
+/** One live attempt's time, split at the buyer call (#1804). */
+export interface AttemptTiming {
+  /** From the attempt's start to the request leaving: the claim and the reservation. */
+  before_call_ms: number
+  /** The buyer call alone, up to its answer or its throw. */
+  call_ms: number
+  /** From the answer to the attempt's end: the breaker record, commit, mark sold and the mirror. */
+  after_call_ms: number
 }
 
 /** One `partner_bid` child step row, written by the walker under the node's id. */
@@ -599,6 +615,8 @@ class Run {
     // What the buyer call saw, for the breaker and for deciding whether an unknown outcome fails the step.
     let lastCall: { status: number | null; thrown: boolean } | null = null
     let buyerCalled = false
+    // When the request left and when it answered or threw, read on the node's clock (#1804).
+    let callWindow: { startMs: number; endMs: number } | null = null
     // What the buyer answered, kept beside the outcome so a decline's sale can name
     // the code and the class Salesforce records (#1416). Null until an answer arrives.
     let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null = null
@@ -611,10 +629,13 @@ class Run {
       this.buyerCallStarted = true
       const target: PartnerCallTarget = { slug: partner.slug, api_endpoint: partner.api_endpoint, cf_secret_key: partner.cf_secret_key }
       let res: PartnerCallResult
+      const callStartMs = this.deps.clock()
       try {
         res = await this.deps.callBuyer(target, body, { traceId: this.ctx.trigger.trace_id, timeoutMs: BUYER_CALL_TIMEOUT_MS })
       } catch (err) {
+        callWindow = { startMs: callStartMs, endMs: this.deps.clock() }
         if (err instanceof PartnerApiError && err.isConfigError) {
+          callWindow = null
           // Never sent: our configuration, not the buyer. The breaker does not count it (#417).
           lastCall = { status: null, thrown: false }
           buyerCalled = false
@@ -625,6 +646,8 @@ class Run {
         await this.breakerOutcome(breaker, 'error', partner.slug)
         return { outcome: 'outcome_unknown', record: { buyer_reference: null, result_code: err instanceof Error ? err.name : 'thrown', http_status: null, payout_cents: c.payoutCents } }
       }
+      // Stopped before the breaker is told, so our own bookkeeping never counts as the buyer's time.
+      callWindow = { startMs: callStartMs, endMs: this.deps.clock() }
       lastCall = { status: res.status, thrown: false }
       await this.breakerOutcome(breaker, res.status >= 500 ? 'error' : 'success', partner.slug)
       const decline = partner.response_classification?.rejection_signals ?? []
@@ -706,6 +729,7 @@ class Run {
 
     const completedAt = new Date(this.deps.clock())
     const status = lastCall === null ? null : (lastCall as { status: number | null }).status
+    const timing = this.timeAttempt(c, startedAt, completedAt, callWindow, result.result === 'sold' ? 'accepted' : result.reason)
 
     if (result.result === 'sold') {
       // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
@@ -713,7 +737,7 @@ class Run {
       this.out.mirrored = result.mirrored
       this.out.replay = result.replay
       this.consider(c, live ? 'sold' : 'rehearsed', undefined, result.replay ? 'replay of an earlier sale' : undefined)
-      this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code }, null, null))
+      this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code }, null, null))
       if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'accept', null)
       return { kind: 'sold', result: this.done(live ? 'sold' : 'deferred', live ? 'sold' : 'decide_only') }
     }
@@ -727,7 +751,7 @@ class Run {
         const answer = lastAnswer as { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null
         this.out.sale = saleOf(false, answer?.record ?? null, answer?.response_class ?? null)
         this.consider(c, reason, reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: reason, detail, http_status: status }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: reason, detail, http_status: status }, null, null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'decline', detail ?? reason)
         return { kind: 'next', reason, detail }
       }
@@ -736,7 +760,7 @@ class Run {
         this.out.sale = saleOf(false, null, null)
         this.consider(c, 'outcome_unknown', 'outcome_unknown', detail)
         const failing = lastCall === null || (lastCall as { thrown: boolean }).thrown || status === null || status >= 500
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'transient', detail ?? 'outcome_unknown')
         if (failing) return { kind: 'stop', result: this.refuse('outcome_unknown', detail ?? 'the buyer answer could not be classified', 'transient') }
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', 'outcome_unknown', detail) }
@@ -749,7 +773,7 @@ class Run {
       case 'rehearsal_deadline': {
         // The rehearsal budget ran out inside this buyer's attempt; the attempt let go of what it held.
         this.consider(c, 'not_reached', reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'not_reached', detail }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'not_reached', detail }, null, null))
         return { kind: 'stop', result: this.done('deferred', reason, detail) }
       }
       case 'object_deadline': {
@@ -757,7 +781,7 @@ class Run {
         // (#1508): the attempt released and freed what it held, the buyer was never contacted, and the
         // cascade stops because the time is gone for every buyer after this one too.
         this.consider(c, 'skipped', reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, 'completed', { outcome: 'skipped', detail }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'skipped', detail }, null, null))
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', reason, detail) }
       }
       default: {
@@ -777,14 +801,30 @@ class Run {
     this.out.considered.push(entry)
   }
 
-  private row(c: Candidate, kind: LedgerKind, startedAt: Date, completedAt: Date, status: 'completed' | 'failed', output: Record<string, unknown>, error: string | null, errorType: 'transient' | 'permanent' | null): BuyerAttemptRow {
+  /**
+   * Splits a live attempt at its buyer call, adds the call to the output's total and logs the
+   * split (#1804). Null when no request left, which includes decide_only and a config error.
+   */
+  private timeAttempt(c: Candidate, startedAt: Date, completedAt: Date, callWindow: { startMs: number; endMs: number } | null, outcome: string): AttemptTiming | null {
+    if (callWindow === null) return null
+    const timing: AttemptTiming = {
+      before_call_ms: callWindow.startMs - startedAt.getTime(),
+      call_ms: callWindow.endMs - callWindow.startMs,
+      after_call_ms: completedAt.getTime() - callWindow.endMs,
+    }
+    this.out.buyer_call_ms = (this.out.buyer_call_ms ?? 0) + timing.call_ms
+    this.deps.log({ event: 'buyer_select_attempt_timing', step_namespace: this.node.namespace, partner_slug: c.buyer.partner.slug, outcome, ...timing })
+    return timing
+  }
+
+  private row(c: Candidate, kind: LedgerKind, startedAt: Date, completedAt: Date, timing: AttemptTiming | null, status: 'completed' | 'failed', output: Record<string, unknown>, error: string | null, errorType: 'transient' | 'permanent' | null): BuyerAttemptRow {
     return {
       partner_slug: c.buyer.partner.slug,
       namespace: `${this.node.namespace}.${c.buyer.partner.slug}`,
       status,
       // Never the payload: it carries the lead's identity (L222).
       input: { partner_slug: c.buyer.partner.slug, kind, lead_key: this.leadKey, payout_cents: c.payoutCents, priority: c.buyer.profile.priority },
-      output: { ...output, partner_slug: c.buyer.partner.slug, payout_cents: c.payoutCents, kind },
+      output: { ...output, partner_slug: c.buyer.partner.slug, payout_cents: c.payoutCents, kind, ...(timing ? { timing } : {}) },
       error,
       error_type: errorType,
       started_at: startedAt,
