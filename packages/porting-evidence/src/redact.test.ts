@@ -488,3 +488,162 @@ describe('redactCapture: a sensitive key holding an object or a list', () => {
     expect(performance.now() - started).toBeLessThan(1000)
   })
 })
+
+// #1816: the recorder captures Pipedream's `steps.trigger.event`, whose `url`
+// carries the inbound query raw. The keyed text pass read a key back from `=`
+// over key characters only, so a percent encoded name (`lead%5Bssn%5D=`,
+// `date%20of%20birth=`) was not recognised, and a fully encoded nested address
+// had no `=` at all. The text is now also read percent decoded, layer by layer,
+// and every replacement lands on the ORIGINAL text, so the rest of the address
+// keeps its encoding byte for byte.
+describe('redactCapture: percent encoded query strings', () => {
+  const bodyOf = async (body: string) => ((await redactCapture({ body }, KEY)).value as { body: string }).body
+
+  // The date of birth case matters on its own: a nine digit SSN is also caught
+  // by the bare nine digit rule, so only a value of another shape proves the
+  // bracketed key itself is recognised.
+  it.each([
+    ['lead%5Bssn%5D', '123456789'],
+    ['lead%5Bdob%5D', '1990-04-12'],
+    ['lead%5bdate_of_birth%5d', '04/12/1990'],
+  ])('scrambles a value under the bracketed, percent encoded key %s and keeps the key as written', async (key, secret) => {
+    const out = await bodyOf(`https://in.example/lead?${key}=${secret}&zip=73301`)
+    expect(out).not.toContain(secret)
+    expect(out).toContain(`${key}=`)
+    expect(out.endsWith('&zip=73301')).toBe(true)
+  })
+
+  it('scrambles a value under a plain bracketed key', async () => {
+    const out = await bodyOf('lead[applicant][dob]=1990-04-12&zip=73301')
+    expect(out).not.toContain('1990-04-12')
+    expect(out).toContain('zip=73301')
+  })
+
+  it.each([
+    ['%20', 'date%20of%20birth=1990-04-12&zip=73301'],
+    ['+', 'date+of+birth=1990-04-12&zip=73301'],
+    ['%20 in an account number', 'bank%20account%20number=000123456789&zip=73301'],
+  ])('scrambles a value under a key spaced with %s', async (_label, body) => {
+    const out = await bodyOf(body)
+    expect(out).not.toMatch(/1990-04-12|000123456789/)
+    expect(out.endsWith('&zip=73301')).toBe(true)
+  })
+
+  it('scrambles a value inside a fully encoded nested address, which has no = of its own', async () => {
+    const nested = encodeURIComponent('https://x.example/p?ssn=123456789&zip=73301')
+    const body = `https://in.example/go?next=${nested}&first=Ada`
+    expect(body).not.toMatch(/ssn=/)
+    const out = await bodyOf(body)
+    expect(out).not.toContain('123456789')
+    expect(out).toContain('ssn%3D')
+    expect(out).toContain('zip%3D73301')
+    expect(out.endsWith('&first=Ada')).toBe(true)
+  })
+
+  it('scrambles a value inside a doubly encoded nested address', async () => {
+    const nested = encodeURIComponent(encodeURIComponent('https://x.example/p?dob=1990-04-12&zip=73301'))
+    const out = await bodyOf(`next=${nested}&first=Ada`)
+    expect(out).not.toContain('1990-04-12')
+    expect(out).toContain('dob%253D')
+    expect(out).toContain('zip%253D73301')
+  })
+
+  it('reaches a value under five levels of encoding', async () => {
+    let nested = 'ssn=123456789&zip=73301'
+    for (let i = 0; i < 5; i++) nested = encodeURIComponent(nested)
+    const out = await bodyOf(`next=${nested}`)
+    expect(out).not.toContain('123456789')
+    expect(out).toContain('73301')
+  })
+
+  it('scrambles a percent encoded value the same way as the same value written plainly', async () => {
+    const encoded = await bodyOf('ssn=123%2D45%2D6789&zip=73301')
+    const plain = await bodyOf('ssn=123-45-6789&zip=73301')
+    expect(encoded).not.toContain('6789')
+    expect(encoded).toBe(plain)
+  })
+
+  it('scrambles a percent encoded formatted SSN in a free text query value', async () => {
+    const out = await bodyOf('note=applicant%20123%2D45%2D6789%20called&zip=73301')
+    expect(out).not.toContain('6789')
+    expect(out).toContain('note=applicant%20')
+    expect(out).toContain('%20called&zip=73301')
+  })
+
+  it('scrambles a bare nine digit value in an address whatever its name', async () => {
+    const out = await bodyOf('https://in.example/lead?ref=123456789&first=Ada')
+    expect(out).not.toContain('123456789')
+    expect(out.endsWith('&first=Ada')).toBe(true)
+  })
+
+  it('scrambles a bare nine digit value under an ordinary name inside a nested address', async () => {
+    const nested = encodeURIComponent('https://x.example/p?applicant=123456789&zip=73301')
+    const out = await bodyOf(`next=${nested}`)
+    expect(out).not.toContain('123456789')
+    expect(out).toContain('zip%3D73301')
+  })
+
+  it('keeps a nine digit ZIP+4, a phone number and longer or shorter digit runs readable', async () => {
+    const body = 'zip=733011234&postal_code=733011234&phone=5125550142&lead_id=1234567890&amount=12345678'
+    const { value, redactedCount } = await redactCapture({ body }, KEY)
+    expect((value as { body: string }).body).toBe(body)
+    expect(redactedCount).toBe(0)
+  })
+
+  it('keeps name, address, phone and email readable in an encoded query', async () => {
+    const body = 'https://in.example/lead?first=Ada%20Lovelace&address=12+Main+St&phone=%2B1%20512%20555%200142&email=ada%40example.com&state=TX'
+    const { value, redactedCount } = await redactCapture({ body }, KEY)
+    expect((value as { body: string }).body).toBe(body)
+    expect(redactedCount).toBe(0)
+  })
+
+  it.each([
+    ['a truncated multibyte sequence', 'ssn=%E0%A4%A&first=Ada'],
+    ['a percent with no hex after it', 'ssn=%zz9&first=Ada'],
+    ['a trailing percent', 'first=Ada&ssn=12%'],
+    ['a lone surrogate encoding', 'ssn=%ED%A0%80&first=Ada'],
+  ])('does not throw on %s, and still scrambles the value', async (_label, body) => {
+    const out = await bodyOf(body)
+    expect(out).toContain('first=Ada')
+    expect(out).not.toBe(body)
+  })
+
+  it('scrambles an object field whose name is percent encoded or bracketed', async () => {
+    const input = { 'date%20of%20birth': '1990-04-12', 'lead[ssn]': '123456789', 'first+name': 'Ada' }
+    const { value } = await redactCapture(input, KEY)
+    const out = value as Record<string, string>
+    expect(out['date%20of%20birth']).not.toBe('1990-04-12')
+    expect(out['lead[ssn]']).not.toBe('123456789')
+    expect(out['first+name']).toBe('Ada')
+  })
+
+  it('scrubs the shape Pipedream records for an HTTP trigger', async () => {
+    const event = {
+      method: 'GET',
+      path: '/',
+      query: { 'lead[ssn]': '123456789', first: 'Ada' },
+      url: 'https://abc.m.pipedream.net/?lead%5Bssn%5D=123456789&first=Ada&next=' + encodeURIComponent('https://x.example/?dob=1990-04-12'),
+    }
+    const { value } = await redactCapture({ trigger: { event } }, KEY)
+    const text = JSON.stringify(value)
+    expect(text).not.toMatch(/123456789|1990-04-12/)
+    expect(text).toContain('first=Ada')
+  })
+})
+
+describe('redactCapture: percent decoding stays linear', () => {
+  const MIB = 1024 * 1024
+  it.each([
+    ['encoded percents', '%25'.repeat(Math.floor(MIB / 3))],
+    ['one deeply encoded percent', '%' + '25'.repeat(Math.floor(MIB / 2))],
+    ['plus signs', 'a+'.repeat(MIB / 2)],
+    ['encoded sensitive pairs', 'lead%5Bssn%5D=123456789&'.repeat(Math.floor(MIB / 24))],
+    ['encoded separators', '%3D'.repeat(Math.floor(MIB / 3))],
+    ['bare nine digit values', 'a=123456789&'.repeat(Math.floor(MIB / 12))],
+    ['spaced keys before separators', ('k '.repeat(100) + '=').repeat(Math.floor(MIB / 201))],
+  ])('redacts 1 MiB of %s in well under a second', async (_label, body) => {
+    const started = performance.now()
+    await redactCapture({ body }, KEY)
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})
