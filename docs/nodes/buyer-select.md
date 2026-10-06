@@ -79,9 +79,12 @@ A cap refusal, an open breaker or a ledger that cannot be read skips the buyer b
   "caps_in_force": [{ "partner": "tripoint", "hourly_lead_cap": null, "daily_lead_cap": 500, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null }],
   "rehearsal_expired_in_flight": 0,
   "rehearsal_in_doubt_heals": 0,
-  "duration_ms": 412
+  "buyer_call_ms": 3104,
+  "duration_ms": 3518
 }
 ```
+
+`buyer_call_ms` is the time spent inside buyer calls, summed over every buyer called, so the node's own cost on a lead is `duration_ms` minus `buyer_call_ms` (#1804). It is absent when no request left (decide only, report only, no eligible buyer, every buyer skipped), so a lead that measured nothing never reads as zero.
 
 `rehearsal_expired_in_flight` counts the lead sale claims this execution made that found an earlier holder past its deadline and moved the claim to in doubt; `rehearsal_in_doubt_heals` counts the in doubt claims its attempts settled as sold from the buyer ledger (#1643). Both are present, as 0 when nothing happened, whenever at least one claim answered, and absent when none did (a lead not for sale, no eligible buyer, a claim call that never answered), so the daily parity row reads a lead that never claimed as unmeasured rather than as zero. The names are the parity row's; a live node records the same facts under them. The Phase 3 drill runs once a day in the 13:00 UTC batch under a `buyer-objects-drill` row in `job_runs`, whose summary carries its own expiries and heals separately from these organic counts.
 
@@ -90,6 +93,8 @@ A cap refusal, an open breaker or a ledger that cannot be read skips the buyer b
 ## Step rows
 
 The execution detail shows one `buyer_select` row for the node plus one `partner_bid` row per buyer that was actually contacted, linked to the parent. Buyers that were filtered out before a call appear only in `considered`. The rows never carry the sale payload.
+
+A row whose buyer was called carries `timing`, the attempt split at the call (#1804): `before_call_ms` (the claim and the reservation), `call_ms` (the buyer call alone, up to its answer or its throw) and `after_call_ms` (the breaker record, commit, mark sold and the mirror). The same three figures are logged per attempt as `buyer_select_attempt_timing`. The row's own start and end, and the bid row in `lead_sighting_bids`, span the whole attempt, so the buyer's share of the time is read from `call_ms`.
 
 ## Save time rules
 

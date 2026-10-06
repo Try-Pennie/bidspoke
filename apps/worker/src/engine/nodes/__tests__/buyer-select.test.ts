@@ -194,6 +194,10 @@ function harness(opts: {
   mirrorError?: Error
   ledgerError?: Error
   advanceOnBuyerCall?: number
+  /** Time the breaker takes to record the call's result, after the buyer answered (#1804). */
+  advanceOnBreakerRecord?: number
+  /** Time the buyer_sales copy takes (#1804). */
+  advanceOnMirror?: number
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
@@ -256,11 +260,12 @@ function harness(opts: {
         if (unreadable) throw unreadable
         return { allowed: !(opts.breakerOpen ?? []).includes(slug), state: (opts.breakerOpen ?? []).includes(slug) ? 'open' : 'closed' }
       },
-      recordSuccess: async () => { h.breakerCalls.push(`success:${slug}`) },
-      recordError: async () => { h.breakerCalls.push(`error:${slug}`) },
+      recordSuccess: async () => { h.breakerCalls.push(`success:${slug}`); h.clockMs += opts.advanceOnBreakerRecord ?? 0 },
+      recordError: async () => { h.breakerCalls.push(`error:${slug}`); h.clockMs += opts.advanceOnBreakerRecord ?? 0 },
       releaseProbe: async () => { h.breakerCalls.push(`release:${slug}`) },
     }),
     mirror: async (row) => {
+      h.clockMs += opts.advanceOnMirror ?? 0
       if (opts.mirrorError) throw opts.mirrorError
       h.mirrored.push(row)
     },
@@ -879,5 +884,61 @@ describe('the claim heals and expirations the parity reader sums (#1643)', () =>
     expect(counts.rehearsal_expired_in_flight).toBe(1)
     expect(counts.unmeasured).not.toContain('rehearsal_in_doubt_heals')
     expect(counts.unmeasured).not.toContain('rehearsal_expired_in_flight')
+  })
+})
+
+/**
+ * The live arm's added latency could not be attributed at Stage B 1 percent, because the step's
+ * duration and the bid row both span claim, reserve, the call, commit, mark sold and the mirror
+ * together (#1804). Each live attempt therefore records the buyer call by itself and the time
+ * spent before and after it, and the output carries the calls' total, so the node's own cost is
+ * duration_ms minus buyer_call_ms on one row.
+ */
+describe('the time of each phase of a live attempt (#1804)', () => {
+  it('records the time before the call, the call itself, and the time after it, on the attempt row, the output and a log line', async () => {
+    const h = harness({ slowReserveMs: 300, advanceOnBuyerCall: 2500, advanceOnBreakerRecord: 40, advanceOnMirror: 200 })
+    const r = await run(h)
+    expect(out(r)._route).toBe('sold')
+    // The breaker's record of the answer is our work, so it counts after the call, never inside it.
+    expect(r.attempts[0].output.timing).toEqual({ before_call_ms: 300, call_ms: 2500, after_call_ms: 240 })
+    expect(out(r).buyer_call_ms).toBe(2500)
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_attempt_timing', partner_slug: 'tripoint', outcome: 'accepted', before_call_ms: 300, call_ms: 2500, after_call_ms: 240 }))
+  })
+
+  it('a call that throws is still timed up to the throw, so a slow failure is visible as the buyer\'s time', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError')
+    const h = harness({ answers: { tripoint: [abort] }, advanceOnBuyerCall: 5000 })
+    const r = await run(h)
+    expect(r.failure).toMatchObject({ errorType: 'transient' })
+    expect(r.attempts[0].output.timing).toMatchObject({ call_ms: 5000 })
+    expect(out(r).buyer_call_ms).toBe(5000)
+  })
+
+  it('a decline is timed the same way as a sale', async () => {
+    const h = harness({ answers: { tripoint: [DUPLICATE] }, advanceOnBuyerCall: 1800 })
+    const r = await run(h)
+    expect(out(r)._route).toBe('no_sale')
+    expect(r.attempts[0].output.timing).toMatchObject({ call_ms: 1800 })
+    expect(out(r).buyer_call_ms).toBe(1800)
+  })
+
+  it('a cascade adds every buyer\'s call into buyer_call_ms and keeps each attempt\'s own figure', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-2', 'liberty', 2), buyer('p-1', 'tripoint', 1)), answers: { tripoint: [DUPLICATE], liberty: [ACCEPTED] }, advanceOnBuyerCall: 1000 })
+    const r = await run(h)
+    expect(r.attempts.map((a) => (a.output.timing as { call_ms: number }).call_ms)).toEqual([1000, 1000])
+    expect(out(r).buyer_call_ms).toBe(2000)
+  })
+
+  it('records nothing when no buyer was called, so an unmeasured lead is never read as a zero (L90)', async () => {
+    const decide = harness()
+    const rehearsed = await run(decide, ctx(), node({ mode: 'decide_only' }))
+    expect(out(rehearsed).buyer_call_ms).toBeUndefined()
+    expect(rehearsed.attempts[0].output.timing).toBeUndefined()
+
+    const counts = { hour_leads: 50, day_leads: 50, hour_spend_cents: 0, day_spend_cents: 0, et_day: '2027-09-20', hour_bucket: 0 }
+    const capped = harness({ refuse: { 'p-1': { reserved: false, reason: 'hourly_lead_cap', limit: 50, counts } } })
+    const refused = await run(capped)
+    expect(out(refused).buyer_call_ms).toBeUndefined()
+    expect(capped.logs.filter((l) => l.event === 'buyer_select_attempt_timing')).toEqual([])
   })
 })
