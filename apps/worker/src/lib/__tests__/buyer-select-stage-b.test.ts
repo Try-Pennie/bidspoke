@@ -236,13 +236,21 @@ describe('productionStageBBidDeps', () => {
     return { client, calls }
   }
 
-  it('reads only Tripoint rows that were really attempted, outside test runs, inside the window, every page in a stable order', async () => {
+  /**
+   * "Attempted" is a row with a classification. Measured on production 2026-10-06 (Tripoint rows,
+   * 04:00 to 16:00 UTC): the bail rows are classification null with skip_reason 'skipped' (11,150);
+   * every attempt carries a classification, accept (806), decline (714) or unknown (2), and the
+   * legacy arm's declines ALSO carry a skip_reason, 'duplicate' (614) or 'rejected' (95). Keying on
+   * skip_reason being null counted those 709 declines as missing bid rows.
+   */
+  it('reads only Tripoint rows that were really attempted (a classification, whatever the skip reason), outside test runs, inside the window, every page in a stable order', async () => {
     const db = double(PAGE_SIZE + 5)
     const ids = await productionStageBBidDeps(db.client).listBidExecutions('2027-09-20T04:00:00.000Z', '2027-09-21T04:10:00.000Z')
     expect(ids).toHaveLength(PAGE_SIZE + 5)
     const first = db.calls[0]
     expect(first.table).toBe('lead_sighting_bids')
-    expect(first.filters).toEqual(expect.arrayContaining(['partner_slug=tripoint', 'skip_reason is null', 'is_test not is true', 'attempted_at_utc>=2027-09-20T04:00:00.000Z', 'attempted_at_utc<2027-09-21T04:10:00.000Z']))
+    expect(first.filters).toEqual(expect.arrayContaining(['partner_slug=tripoint', 'classification not is null', 'is_test not is true', 'attempted_at_utc>=2027-09-20T04:00:00.000Z', 'attempted_at_utc<2027-09-21T04:10:00.000Z']))
+    expect(first.filters).not.toContain('skip_reason is null')
     expect(first.order).toEqual(['attempted_at_utc', 'id'])
   })
 
