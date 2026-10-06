@@ -20,6 +20,11 @@ describe('workflowNeeds (#1710)', () => {
     expect(caps(wf({ steps: [codeStep('a', 'import axios from "axios"\nimport { axios as ax } from "@pipedream/platform"')] }))).toEqual([])
   })
 
+  it('counts a convertible import written with a version as convertible too', () => {
+    expect(caps(wf({ steps: [codeStep('a', 'import axios from "axios@1.6.0"\nimport { axios as ax } from "@pipedream/platform@3.0.3"')] }))).toEqual([])
+    expect(caps(wf({ steps: [codeStep('a', 'import p from "papaparse@5.4.1"')] }))).toEqual(['code_runtime'])
+  })
+
   it('needs the code runtime for any other library, a Node built in, or Buffer', () => {
     for (const code of ['import Papa from "papaparse"', 'const c = require("crypto")', 'import fs from "fs"', 'const b = Buffer.from(x, "base64")', 'const m = await import("luxon")']) {
       expect(caps(wf({ steps: [codeStep('a', code)] })), code).toEqual(['code_runtime'])

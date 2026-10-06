@@ -69,6 +69,12 @@ const BIDDING_KEY = /^(equifax-|tripoint$|eligibility_scout$|gigfi-|lendswift-|p
 const BIDDING_NAME = /\bbid(s|ding)?\b/i
 const REQUEST_PARTS = /\btrigger\.event\.(headers|query|method|bodyRaw|url)\b/
 
+/** A module name without a trailing @version, which Pipedream accepts (`axios@1.6.0`, `@pipedream/platform@3.0.3`). */
+const withoutVersion = (mod: string): string => {
+  const at = mod.indexOf('@', mod.startsWith('@') ? 1 : 0)
+  return at === -1 ? mod : mod.slice(0, at)
+}
+
 const codeOf = (s: PipedreamStep): string | null => {
   const uses = (s as { uses?: unknown }).uses
   return uses && typeof uses === 'object' && typeof (uses as { code?: unknown }).code === 'string' ? (uses as { code: string }).code : null
@@ -126,7 +132,7 @@ export function workflowNeeds(wf: PipedreamWorkflow): WorkflowNeeds {
     if (code === null) continue
     for (const m of code.matchAll(IMPORT)) {
       const mod = m[1]
-      if (CONVERTIBLE_IMPORTS.has(mod)) continue
+      if (CONVERTIBLE_IMPORTS.has(withoutVersion(mod))) continue
       if (RUNNER_IMPORT.test(mod)) need('runner', `imports ${mod}`)
       else need('code_runtime', `imports ${mod}`)
     }
