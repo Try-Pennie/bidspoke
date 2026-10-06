@@ -74,7 +74,7 @@ afterEach(() => vi.restoreAllMocks())
 
 function setup(over: Partial<OpsEnv> = {}, deps: Parameters<typeof createOpsHandler>[0] extends infer D ? Partial<D> : never = {}) {
   const { bucket, objects } = fakeBucket()
-  const env = { PORTING_CAPTURE_MASTER: MASTER, PORTING_TEE: bucket as unknown as R2Bucket, ...over } as OpsEnv
+  const env = { LANE: 'ops', PORTING_CAPTURE_MASTER: MASTER, PORTING_TEE: bucket as unknown as R2Bucket, ...over } as OpsEnv
   const handler = createOpsHandler({ registry, now: () => NOW, ...deps })
   return { env, bucket, objects, call: (req: Request) => handler(req, env) }
 }

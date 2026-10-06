@@ -12,6 +12,11 @@
  *
  * The step-based slice (partner + code + Supabase) is already written by the
  * main worker. This consumer only adds the CF request + CPU portion.
+ *
+ * The ops Worker (bidspoke-worker-ops) sends its traces here too, and they are
+ * skipped (#1709): its executions live in the ops database, so their ids name
+ * nothing in this one's workflow_executions. Phase 1 points ops cost
+ * attribution at the ops database.
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -27,6 +32,9 @@ interface Env {
    */
   DEPLOYED_SHA?: string
 }
+
+/** The ops Worker's script name: its traces are skipped until Phase 1 (#1709). */
+export const OPS_WORKER_SCRIPT = 'bidspoke-worker-ops'
 
 // Keep in sync with apps/worker/src/engine/cost-rates.ts.
 const CF_REQUEST_USD = 0.0000003
@@ -122,6 +130,7 @@ export default {
     })
 
     for (const trace of events) {
+      if (trace.scriptName === OPS_WORKER_SCRIPT) continue
       if (trace.outcome !== 'ok' && trace.outcome !== 'canceled') continue
       const cpuMs = typeof trace.cpuTime === 'number' ? trace.cpuTime : null
       if (cpuMs == null) continue

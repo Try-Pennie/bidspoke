@@ -111,6 +111,8 @@ jobs:
           pnpm --filter @bidspoke/node-types test
           pnpm --filter @bidspoke/porting-evidence test
           pnpm --filter compare-outbound test
+          pnpm --filter ops-outbound test
+          pnpm --filter worker-tail test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the 27 guard files that scan worker source.

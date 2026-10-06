@@ -98,13 +98,26 @@ export const OPS_REQUIRED_SECRETS = [
   'PORTING_CAPTURE_MASTER',
 ] as const
 
+/**
+ * Secrets the ops Worker may hold but does not need yet (#1709 part 3). The ops
+ * database's URL and service key (src/ops/ops-db.ts): nothing reads the ops
+ * database until Phase 1, so requiring them now would alert on two secrets no
+ * code uses. They move to OPS_REQUIRED_SECRETS in the change that first reads them.
+ */
+export const OPS_OPTIONAL_SECRETS = ['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const
+
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
-export const OPS_ALLOWED_SECRETS: readonly string[] = [...OPS_REQUIRED_SECRETS]
+export const OPS_ALLOWED_SECRETS: readonly string[] = [...OPS_REQUIRED_SECRETS, ...OPS_OPTIONAL_SECRETS]
 
 /**
  * Whether bidspoke-worker-ops is deployed yet. Until it is, the parity check
  * reports the ops side as not measured rather than failing on a Worker that does
  * not exist; once true, a missing ops Worker fails. Set to true in the change that
  * first deploys it (#1709 part 4).
+ *
+ * It is also the one switch for the ops lane's deploys: until it is true,
+ * .github/scripts/deploy-targets-decision.sh holds back Deploy Ops Outbound on
+ * every event (#1709 part 3). The script reads this line as written, so keep it
+ * on one line in exactly this shape; a test fails if it changes.
  */
 export const OPS_WORKER_DEPLOYED = false

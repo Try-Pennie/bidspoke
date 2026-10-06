@@ -1,0 +1,13 @@
+# The ops namespace's outbound Worker (#1709 part 3, plan 0.E). Every request a
+# code bundle in the bidspoke-code-nodes-ops dispatch namespace makes is routed
+# here by the platform, and refused until Phase 2 defines what ops code may
+# reach. It is reached only as that outbound service, so it has no route and no
+# workers.dev address.
+#
+# NOT DEPLOYED yet: its Deploy leg is held off until the ops Worker goes live
+# (#1709 part 4), see .github/scripts/deploy-targets-decision.sh.
+name = "bidspoke-ops-outbound"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
+workers_dev = false

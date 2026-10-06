@@ -29,14 +29,32 @@
  *
  * Logs carry an outcome code and the enrolled hashid only. Never a body, a
  * payload value or an error message (L658): a catch here binds nothing.
+ *
+ * Before any of that, the Worker checks its lane (#1709, plan 0.E): LANE must
+ * be "ops", set in wrangler.ops.toml, or every request is refused by name. A
+ * deploy that lost or swapped its config must not answer as the ops Worker.
+ * The bidding Worker's lane is fixed in code instead (moneyRuntime, #1707).
  */
+import type { WorkflowLane } from '@bidspoke/node-types'
 import { SIGNATURE_HEADER, deriveHexKey, deriveWorkflowKey, redactCapture, verifyBodySignature } from '@bidspoke/porting-evidence'
+import type { OpsDbEnv } from './ops-db'
 import { PORTING_REGISTRY, type PortingRegistry } from './porting-registry'
 
-export interface OpsEnv {
+export interface OpsEnv extends OpsDbEnv {
+  /** The lane this Worker serves: "ops", from wrangler.ops.toml [vars]. */
+  LANE?: string
   PORTING_CAPTURE_MASTER?: string
   PORTING_TEE: R2Bucket
+  /**
+   * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,
+   * bidspoke-ops-outbound, refuses every request a script there makes until
+   * Phase 2 defines what ops code may reach. Nothing dispatches to it yet.
+   */
+  CODE_NODES_OPS: DispatchNamespace
 }
+
+/** The one lane this Worker serves. */
+export const OPS_LANE: WorkflowLane = 'ops'
 
 export interface OpsDeps {
   registry: PortingRegistry
@@ -101,6 +119,16 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
   const redact = deps.redact ?? redactCapture
 
   return async function handle(req: Request, env: OpsEnv): Promise<Response> {
+    if (env.LANE !== OPS_LANE) {
+      const lane = env.LANE
+      if (lane === undefined || lane === '') {
+        console.log(JSON.stringify({ event: 'ops_lane', outcome: 'lane_unset' }))
+        return json(503, { error: 'lane_unset' })
+      }
+      console.log(JSON.stringify({ event: 'ops_lane', outcome: 'lane_not_ops', lane }))
+      return json(503, { error: 'lane_not_ops', lane })
+    }
+
     const url = new URL(req.url)
     const match = ROUTE.exec(url.pathname)
     if (!match) return json(404, { error: 'not_found' })

@@ -1,4 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
@@ -22,7 +24,22 @@ const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-targets-decision.sh'
 
 const MAIN = 'refs/heads/main'
 
-/** The decision for a run on main: the event, then the four filter values. */
+/**
+ * The ops outbound Worker deploys only once the ops lane is live, which the
+ * script reads from OPS_WORKER_DEPLOYED in apps/worker/src/lib/secret-lists.ts
+ * (#1709 part 3). Each test points it at a flag file of its own through
+ * OPS_LIVE_FLAG_FILE, so no test depends on the committed value.
+ */
+const FLAG_DIR = mkdtempSync(path.join(tmpdir(), 'ops-live-'))
+const flagFile = (name: string, text: string) => {
+  const file = path.join(FLAG_DIR, name)
+  writeFileSync(file, text)
+  return file
+}
+const OPS_OFF = flagFile('off.ts', 'export const OPS_WORKER_DEPLOYED = false\n')
+const OPS_ON = flagFile('on.ts', '// a comment\nexport const OPS_WORKER_DEPLOYED = true\n')
+
+/** The decision for a run on main: the event, then the five filter values, with the ops lane not live. */
 const decide = (event: string, ...filters: string[]): Record<string, string> => decideOn(event, MAIN, ...filters)
 
 const parse = (out: string): Record<string, string> =>
@@ -33,29 +50,33 @@ const parse = (out: string): Record<string, string> =>
       .map((line) => line.split('=') as [string, string]),
   )
 
+const runWith = (flag: string, args: string[]) =>
+  spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, OPS_LIVE_FLAG_FILE: flag } })
+
 const decideOn = (event: string, ref: string, ...filters: string[]): Record<string, string> =>
-  parse(execFileSync('bash', [SCRIPT, event, ref, ...filters], { encoding: 'utf8' }))
+  parse(execFileSync('bash', [SCRIPT, event, ref, ...filters], { encoding: 'utf8', env: { ...process.env, OPS_LIVE_FLAG_FILE: OPS_OFF } }))
 
 describe('deploy-targets-decision', () => {
   it('deploys every target on a dispatched run, whatever the filter said', () => {
-    expect(decide('workflow_dispatch', '', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true' })
-    expect(decide('workflow_dispatch', 'false', 'false', 'false', 'false')).toEqual({
+    expect(decide('workflow_dispatch', '', '', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(decide('workflow_dispatch', 'false', 'false', 'false', 'false', 'false')).toEqual({
       worker: 'true',
       worker_tail: 'true',
       pages: 'true',
       compare_outbound: 'true',
+      ops_outbound: 'false',
     })
   })
 
   it('passes the paths filter through on a push', () => {
-    expect(decide('push', 'true', 'false', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false', compare_outbound: 'false' })
-    expect(decide('push', 'false', 'true', 'true', 'false')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true', compare_outbound: 'false' })
+    expect(decide('push', 'true', 'false', 'false', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false' })
+    expect(decide('push', 'false', 'true', 'true', 'false', 'false')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true', compare_outbound: 'false', ops_outbound: 'false' })
     // #1708 part B: the compare namespace's outbound Worker ships on its own path.
-    expect(decide('push', 'false', 'false', 'false', 'true')).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'true' })
+    expect(decide('push', 'false', 'false', 'false', 'true', 'false')).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'true', ops_outbound: 'false' })
   })
 
   it('deploys a target whose filter value on a push is empty or malformed, because a value nobody measured must not skip a deploy', () => {
-    expect(decide('push', '', 'yes', 'false', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false', compare_outbound: 'true' })
+    expect(decide('push', '', 'yes', 'false', '', 'false')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false', compare_outbound: 'true', ops_outbound: 'false' })
   })
 
   it.each([
@@ -68,21 +89,52 @@ describe('deploy-targets-decision', () => {
     // production whatever branch the run is on, and the worker drift check skips a
     // commit that is not in main's history, so a branch deploy would run unreviewed
     // code with nothing reporting it.
-    const run = spawnSync('bash', [SCRIPT, event, ref, 'true', 'true', 'true', 'true'], { encoding: 'utf8' })
-    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'false' })
+    // With the ops lane live, so ops_outbound is refused by the ref, not the flag.
+    const run = runWith(OPS_ON, [event, ref, 'true', 'true', 'true', 'true', 'true'])
+    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false' })
     expect(run.status).toBe(1)
     expect(run.stderr).toMatch(/::error::/)
     expect(run.stderr).toContain(`'${ref}'`)
   })
 
   it('deploys everything on an event it does not know', () => {
-    expect(decide('repository_dispatch', 'false', 'false', 'false', 'false')).toEqual({
+    expect(decide('repository_dispatch', 'false', 'false', 'false', 'false', 'false')).toEqual({
       worker: 'true',
       worker_tail: 'true',
       pages: 'true',
       compare_outbound: 'true',
+      ops_outbound: 'false',
     })
   })
+})
+
+describe('the ops outbound Worker deploys only once the ops lane is live (#1709 part 3)', () => {
+  it('is never deployed while OPS_WORKER_DEPLOYED is false, on a push or a dispatched run', () => {
+    expect(decide('push', 'false', 'false', 'false', 'false', 'true').ops_outbound).toBe('false')
+    expect(decide('workflow_dispatch', 'true', 'true', 'true', 'true', 'true').ops_outbound).toBe('false')
+  })
+
+  it('follows its filter on a push, and deploys on a dispatched run, once the lane is live', () => {
+    const on = (event: string, filter: string) => parse(runWith(OPS_ON, [event, MAIN, 'false', 'false', 'false', 'false', filter]).stdout)
+    expect(on('push', 'true').ops_outbound).toBe('true')
+    expect(on('push', 'false').ops_outbound).toBe('false')
+    expect(on('push', '').ops_outbound).toBe('true')
+    expect(on('workflow_dispatch', 'false').ops_outbound).toBe('true')
+  })
+
+  it.each([
+    ['missing', path.join(FLAG_DIR, 'nowhere.ts')],
+    ['malformed', flagFile('odd.ts', 'export const OPS_WORKER_DEPLOYED = maybe\n')],
+    ['absent from the file', flagFile('none.ts', 'export const SOMETHING_ELSE = true\n')],
+  ])('holds it back with a warning, and fails no other deploy, when the flag is %s', (_label, flag) => {
+    const run = runWith(flag, ['push', MAIN, 'true', 'true', 'true', 'true', 'true'])
+    expect(run.status).toBe(0)
+    expect(parse(run.stdout)).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(run.stderr).toMatch(/::warning::.*OPS_WORKER_DEPLOYED/)
+  })
+
+  // That the committed flag is in the shape this reads, and is read by default,
+  // is a worker source check: __guards__/worker/ops-deploy-switch.test.ts.
 })
 
 describe('deploy.yml routes its targets through the script (#1761)', () => {
@@ -101,7 +153,7 @@ describe('deploy.yml routes its targets through the script (#1761)', () => {
 
   it('takes every output from the decision script, never straight from the filter', () => {
     const outputs = changes.slice(changes.indexOf('outputs:'), changes.indexOf('steps:'))
-    for (const target of ['worker', 'worker_tail', 'pages', 'compare_outbound']) {
+    for (const target of ['worker', 'worker_tail', 'pages', 'compare_outbound', 'ops_outbound']) {
       expect(outputs).toContain(`${target}: \${{ steps.targets.outputs.${target} }}`)
     }
     expect(outputs).not.toContain('steps.filter.outputs')
