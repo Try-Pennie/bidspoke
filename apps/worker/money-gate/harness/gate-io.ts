@@ -70,6 +70,13 @@ export interface GateIoOptions {
   fixedTimeMs: number
   /** The engine under test's dispatch namespaces, from its wrangler.toml. */
   dispatchNamespaces: GateNamespace[]
+  /**
+   * Holds every code dispatch this long before forwarding it (MONEY_GATE_DISPATCH_DELAY_MS,
+   * default 0). A busy runner made a dispatch slow enough to trip a code node's step
+   * timeout on one side only (#1796); this reproduces that on purpose, so a replay can
+   * be shown to give the same transcript however slow its dispatches are.
+   */
+  dispatchDelayMs?: number
 }
 
 export function createGateIo(opts: GateIoOptions) {
@@ -161,6 +168,7 @@ export function createGateIo(opts: GateIoOptions) {
         dispatchNode = url.searchParams.get('node') ?? ''
         const workerName = hosted.get(bundleKey(namespace, name))
         if (!mf || !workerName) return new Response('not found', { status: 404, headers: { 'x-money-gate': 'worker-not-found' } })
+        if (opts.dispatchDelayMs) await new Promise((resolve) => setTimeout(resolve, opts.dispatchDelayMs))
         const worker = await mf.getWorker(workerName)
         const res = await worker.fetch(`https://worker${path}`, {
           method: request.method,

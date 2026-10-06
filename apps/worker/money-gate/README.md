@@ -29,6 +29,17 @@ with nothing changed. The replay replaces storage's `setAlarm`, `getAlarm` and
 replay checks the stand in works before the first fixture, and every capture
 refuses an object holding an alarm with the platform scheduler.
 
+Step timeouts are lifted, never raced (#1796). A node's `timeout_ms` (and a bid
+group's `cascade_total_timeout_ms`) is a wall clock timer, and live definitions give
+code nodes 150 to 250 ms, which a dispatch into the nested workerd can exceed on a
+busy runner. The step then retried on one side only and the gate went red with
+nothing changed. The replay raises every timer a definition already sets to
+`GATE_STEP_DEADLINE_MS` (`lib/step-deadlines.ts`), on both sides alike, and never
+adds one a node lacks, since a custom timeout keeps a code node out of a chain. To
+check a replay does not depend on how fast it runs, set
+`MONEY_GATE_DISPATCH_DELAY_MS` to hold every code dispatch that long, and compare
+the transcript with one replayed without it: they must have no difference.
+
 ## Three kinds of run
 
 Every lead is replayed as a live run. The variants marked `"also_run_as": ["test",
