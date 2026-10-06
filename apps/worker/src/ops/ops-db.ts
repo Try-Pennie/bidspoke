@@ -143,7 +143,26 @@ export interface OpsReadResult<Row> {
   reachedLimit: boolean
 }
 
-const NAMES_ORGANIZATION_ID = /(^|,)\s*organization_id\s*(,|$)/
+/**
+ * Whether the row's OWN columns name organization_id: the select list split at
+ * the top level only, so a name inside an embedded resource such as
+ * `steps(id,organization_id)` does not count. A renamed column
+ * (`org:organization_id`) does not count either, so the plain column is added
+ * and every row still carries the key the check below reads.
+ */
+function namesOwnOrganizationId(columns: string): boolean {
+  const top: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of columns) {
+    if (ch === '(') depth++
+    if (ch === ')') depth = Math.max(0, depth - 1)
+    if (ch === ',' && depth === 0) { top.push(current); current = ''; continue }
+    if (depth === 0 && ch !== ')') current += ch
+  }
+  top.push(current)
+  return top.some((c) => c.trim() === 'organization_id')
+}
 
 /**
  * The only read of the ops database (L18). Filters on the organization, refuses
@@ -163,7 +182,7 @@ export async function readOpsRows<Row extends object>(
     throw new OpsReadError(`An ops read of ${read.table}: limit must be a whole number from 1 to ${OPS_READ_ROW_CAP}, not ${read.limit}`)
   }
 
-  const columns = read.columns.trim() === '*' || NAMES_ORGANIZATION_ID.test(read.columns) ? read.columns : `${read.columns},organization_id`
+  const columns = read.columns.trim() === '*' || namesOwnOrganizationId(read.columns) ? read.columns : `${read.columns},organization_id`
   let query: OpsQuery = client.from(read.table).select(columns as '*').eq('organization_id', organizationId)
   if (read.refine) query = read.refine(query)
   const { data, error } = await query.limit(read.limit)

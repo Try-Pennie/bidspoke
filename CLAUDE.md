@@ -19,6 +19,11 @@
 - `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
   dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
   every request a script makes, so a shadow run sends nothing. Its own deploy leg.
+- `apps/ops-outbound`: the outbound Worker of the `bidspoke-code-nodes-ops` dispatch
+  namespace the ops Worker binds (#1709). It refuses every request until Phase 2
+  defines what ops code may reach. A separate Worker from compare-outbound, which
+  must refuse for ever. Its deploy leg is held off until `OPS_WORKER_DEPLOYED` in
+  `apps/worker/src/lib/secret-lists.ts` is true.
 - `packages/*`: code both apps import, so there is one implementation rather than
   a copy per app. Plain TypeScript source with no build step, listed in
   `transpilePackages` for Next. A package with tests must also be named in the CI
@@ -157,6 +162,8 @@ Migrations must be **backward-compatible (expand/contract)** so schema and code 
 **The `porting` schema** holds the Pipedream move's inventory (`pipedream_inventory`, `pipedream_workflow_map`, #1710): service role only, RLS on with no policy, anon and authenticated revoked. `node scripts/porting/load-inventory.ts <export dir> --org <uuid> [--apply]` loads an export (it prints its plan and writes nothing without `--apply`); `node scripts/porting/unlock-table.ts <export dir>` prints the unlock table and the derived build order. Both read the export through `packages/porting-evidence/src/inventory/`.
 
 **The ops database is a separate Supabase project** (#1709, decision D8): "Bidspoke Ops", ref `zwihpjxouklvkvngkvmw` (repo variable `SUPABASE_OPS_PROJECT_ID`), us-west-2, Micro. It holds run data of workflows ported off Pipedream and serves no browser. Its migrations live in `supabase-ops/supabase/migrations` and its tests in `supabase-ops/supabase/tests`; prove them with `SQL_SUITE_PROJECT=ops bash scripts/sql-suite/run.sh` (its own container on port 54330, bootstrapped to the live project's measured grants), which the pre push hook runs when `supabase-ops/` changes. Apply them with `supabase --workdir supabase-ops link --project-ref zwihpjxouklvkvngkvmw` once, then `supabase --workdir supabase-ops db push --linked`, never from the repo root, which is linked to the bidding project. Every ops table carries `organization_id uuid NOT NULL` and RLS, and anon and authenticated reach nothing: the first migration revokes the platform's default grants.
+
+**The ops Worker** (`apps/worker/wrangler.ops.toml`, `src/ops/`) serves only when its `LANE` var is `ops`. Its database client and its one read live in `src/ops/ops-db.ts`: every ops query goes through `readOpsRows`, which takes an `OrganizationId` by type, filters on it and refuses a row of any other organization, and `apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts` fails on any other `.from(`, `.rpc(` or `.schema(` against the ops client. Both database clients carry the local dev write guard in `src/lib/local-dev-write-guard.ts`.
 
 **Live privilege check** (`.github/scripts/db-privilege-check.mjs`, a step of CI's Security scans job on push to main): both projects are asked through the Management API, read only, for anything anon or authenticated can reach that they should not, and the step fails naming each one.
 

@@ -146,6 +146,20 @@ describe('readOpsRows', () => {
     expect(urls[0].searchParams.get('select')).toBe('id,status,organization_id')
   })
 
+  it('adds organization_id when only an embedded resource names it, since that is not the row\'s own column', async () => {
+    const { f, urls } = recordingFetch({ rows: [{ id: 'r1', organization_id: ORG, steps: [] }] })
+    const db = createOpsSupabaseClient(envWith(), { fetch: f })
+    await readOpsRows(db, orgId, { table: 'ops_runs', columns: 'id,steps(id,organization_id,status)', limit: 10 })
+    expect(urls[0].searchParams.get('select')).toBe('id,steps(id,organization_id,status),organization_id')
+  })
+
+  it('does not add organization_id again when the row\'s own columns name it beside an embedded resource', async () => {
+    const { f, urls } = recordingFetch({ rows: [{ id: 'r1', organization_id: ORG, steps: [] }] })
+    const db = createOpsSupabaseClient(envWith(), { fetch: f })
+    await readOpsRows(db, orgId, { table: 'ops_runs', columns: 'steps(id), organization_id ,id', limit: 10 })
+    expect(urls[0].searchParams.get('select')).toBe('steps(id),organization_id,id')
+  })
+
   it('applies the caller\'s filters after the organization filter, which they cannot remove', async () => {
     const { f, urls } = recordingFetch({ rows: [] })
     const db = createOpsSupabaseClient(envWith(), { fetch: f })
