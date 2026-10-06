@@ -55,10 +55,14 @@ fi
   # a table must commit the types for it in the same change (CI's DB types step).
   # The nightly drift check still regenerates from the hosted project, so a
   # difference between the two generators is noticed there, on purpose (L552).
+  #
+  # Schemas: public, and porting (#1710), which the Pipedream move's scripts and
+  # Worker read through the typed client's .schema('porting'). The generator's
+  # default is public alone, so each schema the client reads is named here.
   if [ -n "${SUPABASE_DB_URL:-}" ]; then
-    supabase gen types typescript --db-url "$SUPABASE_DB_URL"
+    supabase gen types typescript --db-url "$SUPABASE_DB_URL" --schema public --schema porting
   else
-    supabase gen types typescript --project-id "$PROJECT_ID"
+    supabase gen types typescript --project-id "$PROJECT_ID" --schema public --schema porting
   fi \
     | grep -vF '// Allows to automatically instantiate createClient with right options' \
     | grep -vF "// instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)" \

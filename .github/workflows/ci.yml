@@ -809,6 +809,19 @@ jobs:
           esac
           echo "OK: every issue this title names is closed by a keyword or marked as a reference only."
 
+      # Worker secret parity (#1709, plan 0.E). Reads the NAMES of the secrets set
+      # on the money Worker and the ops Worker through the Cloudflare API and fails
+      # when the money Worker lacks a required secret, or the ops Worker holds one
+      # its allowlist does not name (above all a money Worker secret) or lacks one
+      # it requires. The lists are apps/worker/src/lib/secret-lists.ts, the same the
+      # daily guard reads. Push to main only: it reads live Workers, which a pull
+      # request has not changed.
+      - name: Worker secret parity (live)
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/worker-secret-parity.mjs
+
       # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
       #
       # This job reported success on every run from 2026-07-27 to 2026-08-14 while

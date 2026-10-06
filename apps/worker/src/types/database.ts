@@ -14,6 +14,111 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
+  porting: {
+    Tables: {
+      pipedream_inventory: {
+        Row: {
+          absent_since_export_at: string | null
+          definition_sha256: string | null
+          deployment_count: number
+          first_seen_export_at: string
+          last_seen_export_at: string
+          name: string
+          organization_id: string
+          pipedream_hashid: string
+          pipedream_state: string
+          porting_stage: string
+          project_hashid: string
+          step_count: number
+          trigger_types: string[]
+          updated_at: string
+        }
+        Insert: {
+          absent_since_export_at?: string | null
+          definition_sha256?: string | null
+          deployment_count: number
+          first_seen_export_at: string
+          last_seen_export_at: string
+          name: string
+          organization_id: string
+          pipedream_hashid: string
+          pipedream_state: string
+          porting_stage?: string
+          project_hashid: string
+          step_count: number
+          trigger_types?: string[]
+          updated_at?: string
+        }
+        Update: {
+          absent_since_export_at?: string | null
+          definition_sha256?: string | null
+          deployment_count?: number
+          first_seen_export_at?: string
+          last_seen_export_at?: string
+          name?: string
+          organization_id?: string
+          pipedream_hashid?: string
+          pipedream_state?: string
+          porting_stage?: string
+          project_hashid?: string
+          step_count?: number
+          trigger_types?: string[]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      pipedream_workflow_map: {
+        Row: {
+          created_at: string
+          id: string
+          pipedream_hashid: string
+          role: string
+          trigger_index: number
+          updated_at: string
+          workflow_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          pipedream_hashid: string
+          role: string
+          trigger_index: number
+          updated_at?: string
+          workflow_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          pipedream_hashid?: string
+          role?: string
+          trigger_index?: number
+          updated_at?: string
+          workflow_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pipedream_workflow_map_pipedream_hashid_fkey"
+            columns: ["pipedream_hashid"]
+            isOneToOne: false
+            referencedRelation: "pipedream_inventory"
+            referencedColumns: ["pipedream_hashid"]
+          },
+        ]
+      }
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      [_ in never]: never
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
       achieve_evaluations: {
@@ -3080,6 +3185,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  porting: {
+    Enums: {},
+  },
   public: {
     Enums: {},
   },
