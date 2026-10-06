@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config'
 import { unstable_readConfig } from 'wrangler'
 import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
+import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
 
 /**
  * The money gate replay (#1704). Runs the harness in this checkout against the
@@ -40,10 +41,7 @@ if (dispatchNamespaces.length === 0) {
   throw new Error(`money gate: ${resolve(engineWorker, 'wrangler.toml')} declares no dispatch namespace, so there is nothing for code nodes to dispatch through`)
 }
 
-const dispatchDelayMs = Number(process.env.MONEY_GATE_DISPATCH_DELAY_MS ?? 0)
-if (!Number.isFinite(dispatchDelayMs) || dispatchDelayMs < 0) {
-  throw new Error(`money gate: MONEY_GATE_DISPATCH_DELAY_MS must be a number of milliseconds, not ${process.env.MONEY_GATE_DISPATCH_DELAY_MS}`)
-}
+const dispatchDelayMs = parseDispatchDelay(process.env.MONEY_GATE_DISPATCH_DELAY_MS)
 
 const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS, dispatchNamespaces, dispatchDelayMs })
 

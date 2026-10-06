@@ -41,6 +41,8 @@ const OUTBOUND_WORKERS: Record<string, (request: Request) => Response | Promise<
   'bidspoke-compare-outbound': (request) => compareOutbound.fetch(request),
 }
 
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
 export interface GateNamespace { binding: string; namespace: string; outbound: string | null }
 
 /** One hosted script per namespace and name: the same name in two namespaces is two scripts. */
@@ -77,6 +79,8 @@ export interface GateIoOptions {
    * be shown to give the same transcript however slow its dispatches are.
    */
   dispatchDelayMs?: number
+  /** How the delay is waited out; the real timer unless a test records it (L524). */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export function createGateIo(opts: GateIoOptions) {
@@ -166,9 +170,9 @@ export function createGateIo(opts: GateIoOptions) {
         const namespace = url.searchParams.get('namespace') ?? ''
         const path = url.searchParams.get('path') ?? '/'
         dispatchNode = url.searchParams.get('node') ?? ''
+        if (opts.dispatchDelayMs) await (opts.sleep ?? realSleep)(opts.dispatchDelayMs)
         const workerName = hosted.get(bundleKey(namespace, name))
         if (!mf || !workerName) return new Response('not found', { status: 404, headers: { 'x-money-gate': 'worker-not-found' } })
-        if (opts.dispatchDelayMs) await new Promise((resolve) => setTimeout(resolve, opts.dispatchDelayMs))
         const worker = await mf.getWorker(workerName)
         const res = await worker.fetch(`https://worker${path}`, {
           method: request.method,
