@@ -34,12 +34,15 @@ import { fixtureId, runOptions, type RunKind } from '../lib/run-kinds'
 import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, runPlan, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
+import { liftStepDeadlines } from '../lib/step-deadlines'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
 
 interface DefinitionFile { id: string; name: string; definition: { nodes: Array<{ id: string; namespace: string; type: string; config?: Record<string, unknown> }>; edges: Array<{ source: string; target: string; source_handle?: string }> } }
 
-const definitions = Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' }))
+// Every timer a definition sets is lifted far above any real step, on both sides
+// alike, so a slow runner can never time a step out on one side only (#1796).
+const definitions = Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' })).map(liftStepDeadlines)
 const variantFiles = Object.values(import.meta.glob<VariantFile>('../fixtures/variants/*.json', { eager: true, import: 'default' }))
 const shapes = shapesFile as unknown as ShapesFile
 const snapshot = snapshotFile as unknown as ConfigSnapshot

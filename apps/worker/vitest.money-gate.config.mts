@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config'
 import { unstable_readConfig } from 'wrangler'
 import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
+import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
 
 /**
  * The money gate replay (#1704). Runs the harness in this checkout against the
@@ -15,6 +16,8 @@ import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
  *   MONEY_GATE_ENGINE_ROOT  repository root of the side under test
  *   MONEY_GATE_OUT          where the transcript is written
  *   MONEY_GATE_SIDE         base or head, recorded in the transcript
+ *   MONEY_GATE_DISPATCH_DELAY_MS  holds every code dispatch this long (default 0),
+ *                           to prove a replay does not depend on how fast it runs (#1796)
  *
  * .github/scripts/money-gate.sh runs it twice and compares; see money-gate/README.md.
  */
@@ -38,7 +41,9 @@ if (dispatchNamespaces.length === 0) {
   throw new Error(`money gate: ${resolve(engineWorker, 'wrangler.toml')} declares no dispatch namespace, so there is nothing for code nodes to dispatch through`)
 }
 
-const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS, dispatchNamespaces })
+const dispatchDelayMs = parseDispatchDelay(process.env.MONEY_GATE_DISPATCH_DELAY_MS)
+
+const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS, dispatchNamespaces, dispatchDelayMs })
 
 export default defineConfig({
   plugins: [
