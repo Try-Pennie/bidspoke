@@ -38,4 +38,9 @@ if [ -z "$SKIP_SQL_SUITE" ]; then
      || ! git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
     bash scripts/sql-suite/run.sh
   fi
+  # The ops database (#1709) has its own migrations, tests and container.
+  if git diff --name-only "@{upstream}" HEAD 2>/dev/null | grep -qE '^(supabase-ops/|scripts/sql-suite/)' \
+     || ! git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+    SQL_SUITE_PROJECT=ops bash scripts/sql-suite/run.sh
+  fi
 fi

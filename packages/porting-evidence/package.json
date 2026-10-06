@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./instrument": "./src/instrument/index.ts"
+    "./instrument": "./src/instrument/index.ts",
+    "./inventory": "./src/inventory/index.ts"
   },
   "scripts": {
     "lint": "eslint \"src/**/*.ts\" && cd ../.. && eslint --config packages/porting-evidence/eslint.config.mjs \"scripts/porting/**/*.ts\"",
