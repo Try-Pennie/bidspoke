@@ -106,7 +106,9 @@ describe('deriveWatchedFields (wired through field-presence)', () => {
 
 describe('fieldPresenceForCapture with a real definition', () => {
   it('records presence for a derived field when the flag is on', () => {
-    const steps = { x: step({ final: 'ok' }) }
+    // The response node `r` reads the field, so it has to have run for the
+    // field to be judged on this run.
+    const steps = { x: step({ final: 'ok' }), r: step({}) }
     const definition: WorkflowDefinition = {
       id: 'wf',
       name: 'wf',
@@ -139,5 +141,106 @@ describe('shouldLogCapture — ~1% deterministic sample (#434)', () => {
   it('logs at least some ids (sampler is not always-false)', () => {
     const logged = Array.from({ length: 5000 }, (_, i) => shouldLogCapture(`exec-${i}`)).filter(Boolean).length
     expect(logged).toBeGreaterThan(0)
+  })
+})
+
+describe('a field is judged only on runs where a node that reads it ran', () => {
+  // Liberty1 Click Handler's refusal reasons are null on every click that is
+  // not refused, and only the refusal Response nodes read them. Counted on every
+  // run their PRODUCER ran, they paged as never resolving on 0 of 216 runs, a
+  // week in which no click was refused, which is the healthy outcome.
+  const readers = new Map<string, readonly string[] | null>([['input.reason', ['respond_bad']]])
+
+  it('omits the field when its producer ran but its only reader did not', () => {
+    const steps = { input: step({ valid: true, reason: null }) }
+    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({})
+  })
+
+  it('still records an empty field on a run where its reader ran', () => {
+    // The pairing that stops this passing by never recording anything: a
+    // refusal whose reason went missing must still read as absent.
+    const steps = { input: step({ valid: false, reason: null }), respond_bad: step({}) }
+    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': false })
+  })
+
+  it('counts a reader that failed, because it ran', () => {
+    const steps = {
+      input: step({ valid: false, reason: null }),
+      respond_bad: { output: null, status: 'failed' } as StepOutput,
+    }
+    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': false })
+  })
+
+  it('counts the field when any one of several readers ran', () => {
+    const several = new Map<string, readonly string[] | null>([['x.v', ['a', 'b']]])
+    const steps = { x: step({ v: 1 }), b: step({}) }
+    expect(computeFieldPresence(steps, ['x.v'], several)).toEqual({ 'x.v': true })
+  })
+
+  it('judges a field whose reader cannot be named on every run its producer ran', () => {
+    const unknown = new Map<string, readonly string[] | null>([['x.v', null]])
+    const steps = { x: step({ v: null }) }
+    expect(computeFieldPresence(steps, ['x.v'], unknown)).toEqual({ 'x.v': false })
+  })
+
+  it('judges a field whose gate is empty the old way, never hiding it on every run', () => {
+    const empty = new Map<string, readonly string[] | null>([['x.v', []]])
+    const steps = { x: step({ v: null }) }
+    expect(computeFieldPresence(steps, ['x.v'], empty)).toEqual({ 'x.v': false })
+  })
+
+  it('judges a field with no reader map at all the old way', () => {
+    const steps = { x: step({ v: null }) }
+    expect(computeFieldPresence(steps, ['x.v'])).toEqual({ 'x.v': false })
+  })
+})
+
+describe('the Liberty1 click shapes, end to end through capture', () => {
+  // A cut-down Liberty1 Click Handler: the real pick_record alias line, and the
+  // refusal Response that is the only reader of resolve_input.reason.
+  const definition: WorkflowDefinition = {
+    id: 'wf',
+    name: 'wf',
+    trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } },
+    nodes: [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: 'n1', namespace: 'respond_bad_input', type: 'response', config: { body: { reason: '{{steps.resolve_input.output.reason}}' } } } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: 'n2', namespace: 'pick_record', type: 'code', config: { script: 'const row = steps.query_record?.output?.body?.records?.[0] ?? null;\nreturn { id: row.Id };\n' } } as any,
+    ],
+    edges: [],
+  }
+
+  it('records the queried row as present on a click that was sent', () => {
+    const steps = {
+      resolve_input: step({ valid: true, reason: null }),
+      query_record: step({ body: { done: true, totalSize: 1, records: [{ Id: 'a04000000000001' }] } }),
+      pick_record: step({ id: 'a04000000000001' }),
+    }
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({
+      'query_record.body.records': true,
+      'query_record.body.records.0.Id': true,
+    })
+  })
+
+  it('still judges a field a code node reads on a run where that node did not run', () => {
+    // pick_record reads the queried row; a run that stopped before it must still
+    // count the row as absent, or a Salesforce outage would read as silence.
+    const steps = {
+      resolve_input: step({ valid: true, reason: null }),
+      query_record: step({ body: { done: true, totalSize: 0, records: [] } }),
+    }
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({
+      'query_record.body.records': true,
+      'query_record.body.records.0.Id': false,
+    })
+  })
+
+  it('records the refusal reason on a click that was refused', () => {
+    const steps = {
+      resolve_input: step({ valid: false, reason: 'no_id' }),
+      respond_bad_input: step({ reason: 'no_id' }),
+    }
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({ 'resolve_input.reason': true })
   })
 })

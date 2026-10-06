@@ -87,20 +87,78 @@ function declarationEnd(script: string, chainEnd: number): number {
 
 interface AliasDeclaration {
   local: string
-  base: string
+  /** The path the local stands for, or null when it cannot be named statically. */
+  base: string | null
   /** Where the declaration itself sits, so its own text is not read as a use. */
   start: number
   end: number
 }
 
+// One accessor after the chain: `[0]`, `?.[0]`, `['ny']`. Only a LITERAL key is
+// followed, and a quoted one only when it is a plain name: a watched path is
+// dotted, so `['a.b']` would be read back as two keys and never resolve.
+// Anything else in the brackets is an index chosen at run time.
+const LITERAL_INDEX_RE = /^\s*(?:\?\.\s*)?\[\s*(?:(\d+)|(['"])([A-Za-z_$][\w$]*)\2)\s*\]/
+const ANY_INDEX_RE = /^\s*(?:\?\.\s*)?\[/
+const MEMBER_RE = /^\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)/
+// What may follow the accessors while the local still holds the accessed value:
+// the end of the statement, a comma declaration, or a fallback (`?? null`,
+// `|| {}`), which yields that value whenever there is one to watch.
+const SAME_VALUE_END_RE = /^[ \t]*(?:$|[;,\r\n]|\?\?|\|\|)/
+
+/**
+ * What the initialiser does after the chain match, which stops at a bracket.
+ *
+ * `const row = steps.q.output.body.records?.[0]` matches only as far as
+ * `records`, so taking the match alone as the alias base watched every `row.Id`
+ * as `q.body.records.Id`: a key on an ARRAY, absent on every run however healthy
+ * the data (#1799, 0 of 216 runs on the Liberty1 click handler). A literal index
+ * is followed instead, giving `q.body.records.0.Id`, which the resolver reads
+ * because an array answers to the key "0".
+ *
+ * Anything that changes the value (a run time index, a method call, a
+ * comparison) leaves the local naming something no path describes, so the base
+ * is null and the caller reports the reads as a gap rather than guessing.
+ */
+function aliasTail(script: string, chainEnd: number): { segments: string[] | null; end: number } {
+  const segments: string[] = []
+  let at = chainEnd
+  for (;;) {
+    const rest = script.slice(at)
+    const index = LITERAL_INDEX_RE.exec(rest)
+    if (index) {
+      segments.push(index[1] ?? index[3])
+      at += index[0].length
+      continue
+    }
+    if (ANY_INDEX_RE.test(rest)) return { segments: null, end: at }
+    // The chain itself already took every `.name` before the first bracket, so a
+    // member read here can only follow an index.
+    const member = segments.length > 0 ? MEMBER_RE.exec(rest) : null
+    if (member) {
+      segments.push(member[1])
+      at += member[0].length
+      continue
+    }
+    return { segments: SAME_VALUE_END_RE.test(rest) ? segments : null, end: at }
+  }
+}
+
 /** Every `local = <steps chain>` declaration in the script, in source order. */
 function aliasDeclarations(script: string): AliasDeclaration[] {
-  return [...script.matchAll(ALIAS_RE)].map((m) => ({
-    local: m[1],
-    base: chainToWatchedField(m[2]),
-    start: m.index ?? 0,
-    end: declarationEnd(script, (m.index ?? 0) + m[0].length),
-  }))
+  return [...script.matchAll(ALIAS_RE)].map((m) => {
+    const chainEnd = (m.index ?? 0) + m[0].length
+    const tail = aliasTail(script, chainEnd)
+    const chain = chainToWatchedField(m[2])
+    return {
+      local: m[1],
+      base: tail.segments === null ? null : [chain, ...tail.segments].join('.'),
+      start: m.index ?? 0,
+      // A wrapped initialiser can carry its index onto the next line, past the
+      // end of the line the chain started on, so cover whatever the tail took.
+      end: Math.max(declarationEnd(script, chainEnd), tail.end),
+    }
+  })
 }
 
 /**
@@ -122,7 +180,7 @@ function aliasIsStable(script: string, local: string): boolean {
 }
 
 /**
- * Field reads through `local`, as full paths rooted at `base`.
+ * The fields read through `local`, as names for the caller to root at its base.
  *
  * A read followed by `(` is a METHOD CALL, not a field, and is skipped. That
  * matters more than it looks: watching `firstName.trim` would invent a field
@@ -143,7 +201,7 @@ function aliasIsStable(script: string, local: string): boolean {
  * the name and not the shape of the value.
  */
 function aliasFieldReads(script: string, declaration: AliasDeclaration): string[] {
-  const { local, base, start, end } = declaration
+  const { local, start, end } = declaration
   const re = new RegExp(`\\b${local}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
   const out: string[] = []
   for (const m of script.matchAll(re)) {
@@ -151,7 +209,7 @@ function aliasFieldReads(script: string, declaration: AliasDeclaration): string[
     if (at >= start && at < end) continue
     const after = script.slice(at + m[0].length)
     if (/^\s*\(/.test(after)) continue
-    out.push(`${base}.${m[1]}`)
+    out.push(m[1])
   }
   return out
 }
@@ -195,7 +253,13 @@ export function collectCodeRefs(rawScript: string, into: Set<string>): CodeRefRe
       aliasGap = true
       continue
     }
-    for (const path of aliasFieldReads(script, declaration)) into.add(path)
+    const reads = aliasFieldReads(script, declaration)
+    // A local that names no path is only a gap when something reads through it.
+    if (declaration.base === null) {
+      if (reads.length > 0) aliasGap = true
+      continue
+    }
+    for (const field of reads) into.add(`${declaration.base}.${field}`)
   }
   return { readable: true, aliasGap }
 }
@@ -205,7 +269,37 @@ export type WatchedFieldSource = 'structured' | 'code'
 export interface WatchedField {
   path: string
   source: WatchedFieldSource
+  /**
+   * The namespaces of the nodes that read this field, or null when one of its
+   * readers cannot be named (an edge whose source is not a node in the
+   * definition).
+   */
+  readers: string[] | null
+  /**
+   * The ending steps this field is judged behind, or null when it is judged on
+   * every run its producer ran. See ENDING_NODE_TYPES for why only these.
+   */
+  gate: string[] | null
 }
+
+/**
+ * Node types that END a run by sending something back, and never route it on.
+ *
+ * A field read ONLY by such steps is judged only on runs where one of them ran
+ * (#1215). Liberty1's refusal reasons are null on every click that is not
+ * refused and are read only by the refusal Responses, so judged on every run
+ * they paged as never resolving in a week with no refusals.
+ *
+ * Gating on readers in general is NOT safe, which is why it stops here. Measured
+ * on 2026-10-05: Engine Bidding's create_prospect.body.id is read by code nodes
+ * that run only when Salesforce returned an id, so gated on them it read 1.00
+ * instead of 0.67, and a total collapse would have removed its rows rather than
+ * lowered its rate, which pages nothing. An ending step reads a field to report
+ * it, never to decide whether the run continues, and a field that steers the
+ * run has a router among its readers (an edge condition is read by its source),
+ * which keeps it ungated.
+ */
+const ENDING_NODE_TYPES = new Set(['response', 'exit'])
 
 export interface WatchedFieldMap {
   fields: WatchedField[]
@@ -271,19 +365,53 @@ function isGuaranteedConstant(path: string, prefixes: string[]): boolean {
 // drift).
 export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFieldMap {
   const structured = new Set<string>()
-  collectStructuredRefs(definition.nodes, structured)
-  collectStructuredRefs(definition.edges, structured)
-
   const code = new Set<string>()
+  // Every node that reads each path. A null entry means some reader of the path
+  // could not be named, and it stays null whatever else reads the path.
+  const readers = new Map<string, Set<string> | null>()
+  const noteReads = (paths: Set<string>, reader: string | null) => {
+    for (const path of paths) {
+      const known = readers.get(path)
+      if (reader === null || known === null) readers.set(path, null)
+      else readers.set(path, (known ?? new Set<string>()).add(reader))
+    }
+  }
+
+  // An edge's condition is evaluated when its SOURCE node finishes, so that is
+  // the node whose running means the condition was read.
+  const namespaceById = new Map(definition.nodes.map((n) => [n.id, n.namespace]))
+  for (const node of definition.nodes) {
+    const found = new Set<string>()
+    collectStructuredRefs(node, found)
+    found.forEach((p) => structured.add(p))
+    noteReads(found, node.namespace)
+  }
+  for (const edge of definition.edges) {
+    const found = new Set<string>()
+    collectStructuredRefs(edge, found)
+    found.forEach((p) => structured.add(p))
+    noteReads(found, namespaceById.get(edge.source) ?? null)
+  }
+
   const unreadableNodes: string[] = []
   const aliasOnlyNodes: string[] = []
   for (const node of definition.nodes) {
     const script = node.config?.script
     if (typeof script !== 'string') continue
-    const { readable, aliasGap } = collectCodeRefs(script, code)
+    const found = new Set<string>()
+    const { readable, aliasGap } = collectCodeRefs(script, found)
+    found.forEach((p) => code.add(p))
+    noteReads(found, node.namespace)
     if (!readable) unreadableNodes.push(node.namespace)
     else if (aliasGap) aliasOnlyNodes.push(node.namespace)
   }
+  const readersOf = (path: string): string[] | null => {
+    const known = readers.get(path)
+    return known ? [...known].sort() : null
+  }
+  const typeOf = new Map(definition.nodes.map((n) => [n.namespace, n.type as string]))
+  const gateOf = (named: string[] | null): string[] | null =>
+    named && named.length > 0 && named.every((ns) => ENDING_NODE_TYPES.has(typeOf.get(ns) ?? '')) ? named : null
 
   // Applied to both sources at the point the map is built, so a dropped field
   // is absent from the manifest the coverage page renders as well as from the
@@ -294,13 +422,15 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
   const seen = new Set<string>()
   for (const path of [...structured].sort()) {
     if (isGuaranteedConstant(path, guaranteed)) continue
-    fields.push({ path, source: 'structured' })
+    const named = readersOf(path)
+    fields.push({ path, source: 'structured', readers: named, gate: gateOf(named) })
     seen.add(path)
   }
   for (const path of [...code].sort()) {
     if (seen.has(path)) continue
     if (isGuaranteedConstant(path, guaranteed)) continue
-    fields.push({ path, source: 'code' })
+    const named = readersOf(path)
+    fields.push({ path, source: 'code', readers: named, gate: gateOf(named) })
     seen.add(path)
   }
   return { fields, unreadableNodes, aliasOnlyNodes }

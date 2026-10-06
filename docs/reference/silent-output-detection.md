@@ -11,9 +11,9 @@ Nothing is tagged by hand. Opting nodes in was considered and rejected: it depen
 Instead, on every run the engine derives the set of fields that **something downstream actually reads**, straight from the running workflow definition. It scans two places:
 
 - **Structured references** in node configs, node variables, and edge conditions: anything written as `steps.x.y.z`.
-- **Code node scripts**, scanned for the same literal `steps.x.y.z` chains, and then for one level of alias: a script that writes `const r = steps.scout.$return_value` and later reads `r.final` has `scout.final` watched, even though that path is never written out in full. A read followed by `(` is a method call, not a field, and is skipped.
+- **Code node scripts**, scanned for the same literal `steps.x.y.z` chains, and then for one level of alias: a script that writes `const r = steps.scout.$return_value` and later reads `r.final` has `scout.final` watched, even though that path is never written out in full. A read followed by `(` is a method call, not a field, and is skipped. An alias taken through a fixed list position is followed into that position: `const row = steps.query_record.output.body.records?.[0]` and a later `row.Id` watch `query_record.body.records.0.Id`, the first record's Id, not an Id on the list itself, which no run could ever have (#1799).
 
-For each watched field it records one boolean per execution: did the producing node run, and did the field carry a value. Only booleans are stored, so no value and no PII is persisted. Those booleans roll up nightly into per-day counts per (workflow, field), which is what the detector reads.
+For each watched field it records one boolean per execution: did the producing node run, and did the field carry a value. A field that only ending steps read (Response and Exit nodes, such as a refusal reason that only the refusal response sends back) is recorded only on runs where one of those steps ran, because on any other run nothing read it. Without that, a week with no refusals reads as a refusal reason that never resolves (#1215). This is limited to ending steps on purpose: a field read by a code node or a router can stop that reader running when it goes missing, and gating on such a reader would turn a total collapse into silence. Only booleans are stored, so no value and no PII is persisted. Those booleans roll up nightly into per-day counts per (workflow, field), which is what the detector reads.
 
 Because the set is derived from the definition in memory at run time, it always matches the version that actually ran. There is no stored copy to drift.
 
@@ -23,7 +23,7 @@ Two gaps, both deliberate and both visible rather than assumed away.
 
 **Dynamic access.** A script that reaches `steps` through a variable key (`steps[name]`), aliases the whole object, or iterates it cannot be read statically. The scanner bails on the whole node rather than guess, and the node is listed in the coverage manifest as unreadable. As of 2026-09-01 there are zero such nodes across all active workflows.
 
-**Aliases the scanner cannot follow.** Alias resolution stops where the local stops meaning one thing: a local that is declared twice, or reassigned, is not followed, because attributing its reads to the original path would watch the wrong field. Those nodes are listed in the coverage manifest as `alias_only_nodes`, which is a milder statement than unreadable: the node is scanned, some of its reads just cannot be attributed.
+**Aliases the scanner cannot follow.** Alias resolution stops where the local stops meaning one thing: a local that is declared twice, or reassigned, is not followed, because attributing its reads to the original path would watch the wrong field. Nor is one whose value was changed on the way in, by a position chosen at run time (`map[source]`), a method call (`.find(...)`) or a comparison: no path describes what such a local holds. Those nodes are listed in the coverage manifest as `alias_only_nodes`, which is a milder statement than unreadable: the node is scanned, some of its reads just cannot be attributed.
 
 Resolving aliases closed the gap that used to dominate here. Measured 2026-09-01, before and after: 108 deep fields across 19 code nodes were read only through a local and therefore unwatched, in 8 of 10 active workflows, including money-path fields such as `ping_lendswift.data.data.bid_amount` and `bid_race.winner.bid`. All 108 are now watched, taking the total across active workflows from 250 to 358.
 
@@ -43,7 +43,7 @@ It fires when today's rate falls below the field's own baseline by more than fou
 
 ### Output Field Never Resolves (daily)
 
-A field that has never carried a value, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%.
+A field that has never carried a value, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%. For a field only ending steps read, the runs counted are the runs where one of those steps ran.
 
 The day floor matters as much as the run floor. A field enters the watched set the moment something starts referencing it, and on a workflow running 500,000 executions a week a brand new field clears 200 runs within hours. Without the day floor, "never resolved over 7 days" would be a claim made from a few hours of one day. So a newly referenced field is not judged for its first few days, which is the honest cost of not accusing it on no evidence.
 
@@ -87,7 +87,7 @@ Clear it with `DELETE /api/field-coverage/{workflowId}/silence` and the same `fi
 
 `GET /api/field-coverage/{workflowId}` returns what is actually watched for that workflow, so coverage can be inspected rather than assumed:
 
-- `fields`: every watched field, its `source` (`structured` or `code`), and its recent health (latest day's ran/present counts and rate, plus whether it is currently in drought or dead).
+- `fields`: every watched field, its `source` (`structured` or `code`), and its recent health (latest day's ran/present counts and rate, plus whether it is currently in drought or dead). For a field only ending steps read, ran counts only the runs where one of them ran, so it can sit well below the workflow's volume.
 - `unreadable_nodes`: code nodes the scanner could not read at all.
 - `alias_only_nodes`: code nodes holding a `steps` alias the scanner could not follow, so their watched set may be incomplete.
 - `silences`: every silenced field with its reason and who set it.

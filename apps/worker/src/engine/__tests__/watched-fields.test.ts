@@ -205,8 +205,8 @@ describe('deriveWatchedFieldMap', () => {
     })
     const map = deriveWatchedFieldMap(d)
     expect(map.fields).toEqual([
-      { path: 'x.final', source: 'structured' },
-      { path: 'y.v', source: 'code' },
+      { path: 'x.final', source: 'structured', readers: ['r'], gate: ['r'] },
+      { path: 'y.v', source: 'code', readers: ['c'], gate: null },
     ])
     expect(map.unreadableNodes).toEqual([])
   })
@@ -233,7 +233,8 @@ describe('deriveWatchedFieldMap', () => {
       ],
     })
     const map = deriveWatchedFieldMap(d)
-    expect(map.fields).toEqual([{ path: 'x.v', source: 'structured' }])
+    // Structured wins the source, and both nodes are kept as its readers.
+    expect(map.fields).toEqual([{ path: 'x.v', source: 'structured', readers: ['c', 'r'], gate: null }])
   })
 
   it('deriveWatchedFields still returns the same sorted path list', () => {
@@ -512,5 +513,214 @@ describe('a constant that its own config guarantees is not watched (#1147)', () 
     // gone from it too, not merely absent from the projection.
     const d = constantsDef({ logoSrc: '/logo.png' }, 'return steps.constants.output.logoSrc;')
     expect(deriveWatchedFieldMap(d).fields).toEqual([])
+  })
+})
+
+describe('an alias taken through a list index watches the element, not the list (#1799)', () => {
+  const codeNode = (script: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def({ nodes: [{ id: 'n1', namespace: 'c', type: 'code', config: { script } } as any] })
+
+  it('watches the first record for the Liberty1 pick_record shape', () => {
+    // The exact line from pick_click_record.js. Its reads were watched as
+    // `query_record.body.records.Id`, a key on an ARRAY, and paged as never
+    // resolving on 216 of 216 runs while the row carried an Id on every one.
+    const d = codeNode(
+      'const row = steps.query_record?.output?.body?.records?.[0] ?? null;\n' +
+        'if (!row || !row.Id) return null;\n' +
+        'return { lead: row.Lead__c, status: row.External_Exchange_Status__c };\n',
+    )
+    expect(deriveWatchedFields(d)).toEqual([
+      'query_record.body.records',
+      'query_record.body.records.0.External_Exchange_Status__c',
+      'query_record.body.records.0.Id',
+      'query_record.body.records.0.Lead__c',
+    ])
+  })
+
+  it('follows a plain bracket index and the path after it', () => {
+    const d = codeNode('const first = steps.q.output.list[0].inner;\nreturn first.value;\n')
+    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0.inner.value'])
+  })
+
+  it('follows a quoted key the same way as a numeric one', () => {
+    const d = codeNode("const m = steps.q.output.map['ny'];\nreturn m.rate;\n")
+    expect(deriveWatchedFields(d)).toEqual(['q.map', 'q.map.ny.rate'])
+  })
+
+  it('reports a dynamic index as a gap rather than guessing which element', () => {
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs('const s = steps.q.output.map[source];\nreturn s.name;\n', set)
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.map'])
+  })
+
+  it('does not report a gap for a dynamic index nothing reads through', () => {
+    // Engine Bidding's validate_bidding_and_state: `subAccountIdsMap[source] || ""`
+    // with no later `sourceName.x`, so there is nothing unwatched to report.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const sourceName = steps.constants.output.subAccountIdsMap[source] || "";\nreturn sourceName;\n',
+      set,
+    )
+    expect(aliasGap).toBe(false)
+    expect([...set]).toEqual(['constants.subAccountIdsMap'])
+  })
+
+  it('reports a method call on the chain as a gap rather than a field of its result', () => {
+    // `find` returns an element, so `x.name` is not `q.list.find.name`.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs('const x = steps.q.output.list.find((r) => r.ok);\nreturn x.name;\n', set)
+    expect(aliasGap).toBe(true)
+    expect([...set]).not.toContain('q.list.find.name')
+  })
+
+  it('still treats a fallback as the same value', () => {
+    const d = codeNode('const r = steps.q.output.body || {};\nreturn r.reason;\n')
+    expect(deriveWatchedFields(d)).toEqual(['q.body', 'q.body.reason'])
+  })
+
+  it('follows an index carried onto the next line without reading the tail as a use', () => {
+    const d = codeNode('const hit = steps.a.output.b\n  ?.[0]?.hit?.code\nreturn hit.x;\n')
+    expect(deriveWatchedFields(d)).toEqual(['a.b', 'a.b.0.hit.code.x'])
+  })
+
+  it('treats a comma declaration as the end of the initialiser', () => {
+    const d = codeNode('const row = steps.q.output.list[0], other = 1;\nreturn row.id;\n')
+    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0.id'])
+  })
+
+  it('reports a quoted key that is not a plain name as a gap, since a dotted path cannot hold it', () => {
+    for (const key of ["'a.b'", "''", "'ny city'"]) {
+      const set = new Set<string>()
+      const { aliasGap } = collectCodeRefs(`const m = steps.q.output.map[${key}];\nreturn m.rate;\n`, set)
+      expect(aliasGap).toBe(true)
+      expect([...set]).toEqual(['q.map'])
+    }
+  })
+})
+
+describe('each watched field names the nodes that read it', () => {
+  const readersOf = (d: WorkflowDefinition, path: string) =>
+    deriveWatchedFieldMap(d).fields.find((f) => f.path === path)?.readers
+
+  it('names the node whose config templates the field', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'respond_bad', type: 'response', config: { body: '{{steps.x.output.reason}}' } } as any,
+      ],
+    })
+    expect(readersOf(d, 'x.reason')).toEqual(['respond_bad'])
+  })
+
+  it('names the code node whose script reads the field', () => {
+    const d = def({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      nodes: [{ id: 'n1', namespace: 'c', type: 'code', config: { script: 'return steps.x.output.v;' } } as any],
+    })
+    expect(readersOf(d, 'x.v')).toEqual(['c'])
+  })
+
+  it('names the source node of an edge whose condition reads the field', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'f1', namespace: 'check', type: 'filter', config: {} } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'f1', target: 'b', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(readersOf(d, 'y.ok')).toEqual(['check'])
+  })
+
+  it('merges every reader of one field', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'b', type: 'response', config: { body: '{{steps.x.output.v}}' } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'a', type: 'code', config: { script: 'return steps.x.output.v;' } } as any,
+      ],
+    })
+    expect(readersOf(d, 'x.v')).toEqual(['a', 'b'])
+  })
+
+  it('cannot name a reader for an edge whose source is not a node, so it is null', () => {
+    const d = def({
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'missing', target: 'b', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(readersOf(d, 'y.ok')).toBeNull()
+  })
+})
+
+describe('a field is gated on its readers only when every reader is an ending step', () => {
+  const gateOf = (d: WorkflowDefinition, path: string) =>
+    deriveWatchedFieldMap(d).fields.find((f) => f.path === path)?.gate
+
+  it('gates a refusal reason that only a Response node reads', () => {
+    // Liberty1's resolve_input.reason: read only by respond_bad_input.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'respond_bad', type: 'response', config: { body: { reason: '{{steps.input.output.reason}}' } } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'stop', type: 'exit', config: { body: '{{steps.input.output.code}}' } } as any,
+      ],
+    })
+    expect(gateOf(d, 'input.reason')).toEqual(['respond_bad'])
+    expect(gateOf(d, 'input.code')).toEqual(['stop'])
+  })
+
+  it('does not gate a field a code node reads, because its absence can stop that node running', () => {
+    // Engine Bidding's create_prospect.body.id: the nodes that read it run only
+    // when Salesforce returned an id, so gating on them would turn a total
+    // collapse into silence instead of a page.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'trades', type: 'code', config: { script: 'return steps.create_prospect.output.body.id;' } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'reply', type: 'response', config: { body: '{{steps.create_prospect.output.body.id}}' } } as any,
+      ],
+    })
+    expect(gateOf(d, 'create_prospect.body.id')).toBeNull()
+  })
+
+  it('does not gate a field an edge condition routes on', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'f1', namespace: 'check', type: 'filter', config: {} } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'reply', type: 'response', config: { body: '{{steps.y.output.ok}}' } } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'f1', target: 'n1', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(gateOf(d, 'y.ok')).toBeNull()
+  })
+
+  it('does not gate a field one of whose readers cannot be named', () => {
+    // Nodes are walked before code scripts, so a nameless edge reader seen first
+    // must not be overwritten by a Response reader seen later.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'reply', type: 'response', config: { body: '{{steps.y.output.ok}}' } } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'e1', source: 'missing', target: 'n1', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.ok', operator: 'is_true' }] }] } } as any,
+      ],
+    })
+    expect(gateOf(d, 'y.ok')).toBeNull()
   })
 })

@@ -39,8 +39,7 @@ import {
   type PresenceRow,
   type PresenceThresholds,
 } from '../src/lib/field-presence-anomaly'
-import { deriveWatchedFieldMap, extractChains, chainToWatchedField } from '../src/engine/watched-fields'
-import { hasDynamicStepsAccess } from '../src/engine/nodes/code'
+import { deriveWatchedFieldMap } from '../src/engine/watched-fields'
 import type { WorkflowDefinition } from '../src/types'
 
 // Refused rather than defaulted (L50): a garbled argument would become NaN, the
@@ -56,16 +55,6 @@ const WINDOW_DAYS = (() => {
   }
   return n
 })()
-
-// A read like `firstName.trim()` is a method call, not a field the presence
-// capture could ever watch, so counting it would inflate the blind spot with
-// cases that are not gaps. Excluded from the alias measurement below.
-const JS_METHODS = new Set([
-  'trim', 'find', 'filter', 'map', 'includes', 'split', 'slice', 'toString', 'length',
-  'push', 'join', 'replace', 'match', 'test', 'forEach', 'reduce', 'some', 'every',
-  'indexOf', 'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'padStart',
-  'padEnd', 'concat', 'keys', 'values', 'entries', 'toFixed', 'sort', 'flat',
-])
 
 const vars = loadDevVars()
 const supabase = createClient(vars.SUPABASE_URL, vars.SUPABASE_SECRET_KEY)
@@ -331,7 +320,6 @@ async function main(): Promise<void> {
   // --- Auto-watch blind spot (the second half of #432) ---------------------
   console.log(`\n--- auto-watch blind spot per active workflow ---`)
   const aliasSites = new Set<string>()
-  const aliasFields = new Set<string>()
   for (const wf of await activeDefinitions()) {
     if (!wf.definition?.nodes) {
       console.log(`  ${wf.name}: no definition nodes`)
@@ -347,41 +335,18 @@ async function main(): Promise<void> {
     if (map.unreadableNodes.length > 0) {
       console.log(`      unreadable: ${map.unreadableNodes.join(', ')}`)
     }
-    // The alias-only blind spot (#435). hasDynamicStepsAccess bails only on
-    // WHOLE-object aliasing (`const x = steps`), so a node reading
-    // `const r = steps.a.$return_value; r.final` reports as fully readable
-    // while `a.final` is never watched. That is the gap "0 unreadable" hides,
-    // so it is measured here rather than assumed absent.
-    const watched = new Set(map.fields.map((f) => f.path))
-    for (const node of wf.definition.nodes) {
-      const script = node.config?.script
-      if (typeof script !== 'string') continue
-      if (hasDynamicStepsAccess(script)) continue
-      const aliases = [...script.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*((?:steps(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*(?:(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*)*))/g)]
-      const missed = new Set<string>()
-      for (const [, local, chain] of aliases) {
-        const base = chainToWatchedField(chain)
-        const reads = [...script.matchAll(new RegExp(`\\b${local}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g'))]
-        for (const [, field] of reads) {
-          if (JS_METHODS.has(field)) continue
-          const full = `${base}.${field}`
-          if (!watched.has(full)) {
-            missed.add(`${node.namespace}: ${local} = ${base} -> .${field}`)
-            aliasSites.add(`${wf.name}|${node.namespace}`)
-            aliasFields.add(`${wf.name}|${base}.${field}`)
-          }
-        }
-      }
-      if (missed.size > 0) {
-        console.log(`      alias-only code node ${node.namespace}: ${missed.size} unwatched deep field(s)`)
-      }
+    // The alias-only blind spot (#435): reads through a local the derivation
+    // could not name a path for. Reported from the derivation itself rather than
+    // a second copy of its alias matcher, which had stopped at a bracket and so,
+    // once #1799 taught the derivation to follow `records?.[0]`, listed every
+    // correctly watched `records.0.X` read as unwatched.
+    for (const ns of map.aliasOnlyNodes) {
+      console.log(`      alias-only code node ${ns}: some reads through a local are not watched`)
+      aliasSites.add(`${wf.name}|${ns}`)
     }
   }
 
-  console.log(
-    `\n  alias-only blind spot total: ${aliasFields.size} unwatched deep field(s) ` +
-      `across ${aliasSites.size} code node(s)`,
-  )
+  console.log(`\n  alias-only blind spot total: ${aliasSites.size} code node(s)`)
 
   // Positive control for the blind-spot count: a script the scanner MUST call
   // unreadable. Without it, "0 unreadable" everywhere reads the same whether
@@ -395,7 +360,6 @@ async function main(): Promise<void> {
     `\n  blind-spot detector control: injected steps[k] access -> ` +
       `${ctl.unreadableNodes.length === 1 ? 'FLAGGED (the zeros above are real)' : 'NOT FLAGGED (the zeros above prove nothing)'}`,
   )
-  void extractChains
 }
 
 main().catch((e) => {
