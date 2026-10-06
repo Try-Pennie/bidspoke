@@ -10,12 +10,17 @@
  * whatever they hold, and the scheme, host and path stay, which is what anyone
  * diagnosing a failed call needs.
  *
- * An address ends at whitespace, a quote, a backslash or a closing bracket, so a
- * serialised JSON line keeps its structure and the text after the address, and
- * sentence punctuation directly after an address is kept.
+ * The host and path end at whitespace, a quote, a backslash or a closing bracket,
+ * as prose writes "(see https://...)". Once a ? or # starts the query, it runs to
+ * the next whitespace, quote or backslash, brackets included, so an unencoded
+ * value such as (201)555-0100 goes whole. A serialised JSON line keeps its
+ * structure (an address ends at the closing quote or an escape), and sentence
+ * punctuation directly after an address is kept. Known limit: a raw space inside
+ * a query cannot be told from the end of the address, so text after it stays;
+ * fetch and the platform encode spaces, so error text rarely carries one.
  */
 
-const ADDRESS = /\b(?:https?|wss?):\/\/[^\s"'<>`\\)\]]+/gi
+const ADDRESS = /\b(?:https?|wss?):\/\/[^\s"'<>`\\)\]?#]*(?:[?#][^\s"'<>`\\]*)?/gi
 const TRAILING_PUNCTUATION = /[.,;:!]+$/
 
 /** The address without its query string and fragment. */

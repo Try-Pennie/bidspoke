@@ -426,7 +426,7 @@ export async function sendFailureSaturationAlert(
   const shapesLine = shapes.length > 0
     ? [
         '*What they failed on:*',
-        ...shapes.map((sh) => `- ${sh.count} x \`${sh.sample.replace(/`/g, "'")}\``),
+        ...shapes.map((sh) => `- ${sh.count} x \`${stripUrlQueriesInText(sh.sample).replace(/`/g, "'")}\``),
         ...((payload.other_shape_count ?? 0) > 0
           ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
           : []),
@@ -493,7 +493,7 @@ export async function sendUpstreamOutageAlert(
   const shapesLine = shapes.length > 0
     ? [
         '*What they failed on:*',
-        ...shapes.map((s) => `- ${s.count} x \`${s.sample.replace(/`/g, "'")}\``),
+        ...shapes.map((s) => `- ${s.count} x \`${stripUrlQueriesInText(s.sample).replace(/`/g, "'")}\``),
         ...((payload.other_shape_count ?? 0) > 0
           ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
           : []),

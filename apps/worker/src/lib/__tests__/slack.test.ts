@@ -1204,6 +1204,18 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     expect(text).not.toContain('status page')
   })
 
+  it('cuts an address in an error sample at its query string (L741, #1740)', async () => {
+    await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      { ...outagePayload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?phone=%28201%29555', count: 4 }] },
+      'https://app.example.com',
+    )
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).not.toMatch(/%28201%29|phone=/)
+    expect(text).toContain('https://p.example/x')
+  })
+
   // The failure path the issue asks for by name. Losing the page is worse than
   // sending it with only the cause label, so a payload with nothing to show must
   // still send, and must assert no cause it cannot support (L36).
@@ -1604,6 +1616,14 @@ describe('sendFailureSaturationAlert', () => {
   it('does not ping the channel', async () => {
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
     expect(sentText()).not.toContain('!here')
+  })
+
+  it('cuts an address in an error sample at its query string (L741, #1740)', async () => {
+    const leaky = { ...payload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?email=jo%40example.com', count: 17 }] }
+    await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', leaky, 'https://app.example.com')
+    const text = sentText()
+    expect(text).not.toMatch(/%40|email=/)
+    expect(text).toContain('https://p.example/x')
   })
 
   // Not just an absence: the message still has to carry what it measured, or a

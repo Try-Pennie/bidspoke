@@ -36,6 +36,14 @@ describe('stripUrlQueriesInText', () => {
     expect(JSON.parse(out)).toEqual({ error_message: 'load https://h.example/p\nnext line', step: 'x' })
   })
 
+  it('drops an unencoded query whole, brackets included, so nothing after a bracket is left behind', () => {
+    expect(stripUrlQueriesInText('GET https://p.example/x?phone=(201)555-0100&tags=[a] failed')).toBe('GET https://p.example/x failed')
+  })
+
+  it('still ends an address at a closing bracket in its path, as prose writes it', () => {
+    expect(stripUrlQueriesInText('(see https://app.example/executions/1)')).toBe('(see https://app.example/executions/1)')
+  })
+
   it('leaves a question mark that is not part of an address alone', () => {
     expect(stripUrlQueriesInText('Why did step x fail? See https://app.example/executions/1')).toBe('Why did step x fail? See https://app.example/executions/1')
   })
