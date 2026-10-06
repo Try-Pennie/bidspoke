@@ -664,6 +664,7 @@ export type Database = {
           sign_off_note: string | null
           signed_off_at: string | null
           signed_off_by: string | null
+          stage_b: Json | null
           state_resolved: number
           state_unresolved: number
           summarised_at: string
@@ -696,6 +697,7 @@ export type Database = {
           sign_off_note?: string | null
           signed_off_at?: string | null
           signed_off_by?: string | null
+          stage_b?: Json | null
           state_resolved?: number
           state_unresolved?: number
           summarised_at?: string
@@ -728,6 +730,7 @@ export type Database = {
           sign_off_note?: string | null
           signed_off_at?: string | null
           signed_off_by?: string | null
+          stage_b?: Json | null
           state_resolved?: number
           state_unresolved?: number
           summarised_at?: string

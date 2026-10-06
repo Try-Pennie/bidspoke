@@ -272,6 +272,7 @@ describe('runParityRefresh', () => {
           { execution_id: id, step_type: 'code', step_namespace: INCUMBENT_NAMESPACE, output: exec(id).incumbent, duration_ms: 900 },
         ]),
       },
+      bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
       upsert: async (row) => { upserts.push(row); return row },
       now: () => NOW,
       retentionDays: RETENTION_DAYS,
@@ -356,6 +357,54 @@ describe('runParityRefresh', () => {
     await runParityRefreshAndPage(clean.deps, notify, { day: '2027-09-19' })
     await runParityRefreshAndPage(clean.deps, notify, { workflowId: 'wf-engine' })
     expect(paged).toEqual([])
+  })
+})
+
+describe('the Stage B figures on each row (#1809)', () => {
+  const NOW = Date.parse(T0)
+  const WF = { id: 'wf-engine', organization_id: 'org-1' }
+  const base = (over: Partial<RefreshDeps> = {}): { deps: RefreshDeps; upserts: ParityRowWrite[] } => {
+    const upserts: ParityRowWrite[] = []
+    return {
+      upserts,
+      deps: {
+        listWorkflows: async () => [WF],
+        rules: async () => RULES,
+        read: {
+          countNodeRows: async () => 1,
+          listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: '2027-09-20T13:10:00.000Z' }] : []),
+          readRows: async (ids) => ids.flatMap((id) => [
+            { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: { ...exec(id).node, mode_effective: 'live', reason: 'canary_out' }, duration_ms: 0 },
+            { execution_id: id, step_type: 'code', step_namespace: INCUMBENT_NAMESPACE, output: exec(id).incumbent, duration_ms: 2750 },
+          ]),
+        },
+        bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+        upsert: async (row) => { upserts.push(row); return row },
+        now: () => NOW,
+        retentionDays: RETENTION_DAYS,
+        localDev: false,
+        log: () => {},
+        ...over,
+      },
+    }
+  }
+
+  it('writes the Stage B report beside the counts, outside the counts hash so it cannot clear a sign off', async () => {
+    const { deps, upserts } = base()
+    await runParityRefresh(deps)
+    const today = upserts.find((r) => r.et_day === '2027-09-20')
+    expect(today?.stage_b).toMatchObject({ legacy: { attempts: 1, accepted: 1, duration_p50_ms: 2750 }, canary: { attempts: 0 }, bid_rows: { legacy_missing: 0, legacy_multiple: 0 } })
+    const { stage_b: _b, workflow_id: _w, et_day: _d, organization_id: _o, window_complete: _c, counts_hash, ...counts } = today as ParityRowWrite
+    expect(counts_hash).toBe(await countsHash(counts))
+  })
+
+  it('a bid read that fails leaves the row written, with only the bid check unmeasured and the reason named (L73)', async () => {
+    const { deps, upserts } = base({ bids: { earliestBidRowIso: async () => { throw new Error('lead_sighting_bids: statement timeout') }, listBidExecutions: async () => [] } })
+    const summary = await runParityRefresh(deps)
+    expect(summary.errors).toEqual([])
+    const today = upserts.find((r) => r.et_day === '2027-09-20')
+    expect(today?.stage_b?.bid_rows).toEqual({ unmeasured: expect.stringMatching(/statement timeout/) })
+    expect(today?.stage_b?.legacy.attempts).toBe(1)
   })
 })
 
@@ -448,5 +497,7 @@ describe('readParityDay skips windows the node never ran in', () => {
     expect(counted).toHaveLength(8)
     expect(listed).toEqual(['2027-09-20T13:00:00.000Z'])
     expect(executions).toHaveLength(1)
+    // The legacy step's own duration is kept for the Stage B latency comparison (#1809).
+    expect(executions[0].incumbent_duration_ms).toBe(900)
   })
 })

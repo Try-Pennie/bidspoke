@@ -27,6 +27,7 @@ import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { fetchAllPaged } from './paginate'
+import { BID_SETTLE_MS, productionStageBBidDeps, readStageBBids, summariseStageB, type StageBBidReadDeps, type StageBBids, type StageBCounts } from './buyer-select-stage-b'
 import { tripointAnswerOf } from '../engine/bid-log'
 
 export { RETENTION_DAYS }
@@ -52,6 +53,12 @@ export interface NodeOutputLike {
   rehearsal_expired_in_flight?: number
   /** One entry per buyer the node considered, with the reason it was skipped or not reached (#1533). */
   considered?: Array<{ outcome?: unknown; reason?: unknown }>
+  /** The sale the node made or attempted; `skipped` false means a buyer was contacted (#1809). */
+  sale?: { skipped?: unknown; accepted?: unknown; result_code?: unknown }
+  /** The live share the node read, null when it was not read (#1809). */
+  live_percent_in_force?: number | null
+  /** The time inside buyer calls (#1804); absent on rows written before it was timed. */
+  buyer_call_ms?: number
 }
 
 /**
@@ -93,6 +100,8 @@ export interface ParityExecution {
   node: NodeOutputLike | null
   node_duration_ms: number | null
   incumbent: IncumbentOutputLike | null
+  /** The legacy step's own duration, the Stage B latency yardstick (#1809). */
+  incumbent_duration_ms?: number | null
 }
 
 export interface ParityRules {
@@ -319,7 +328,7 @@ export async function readParityDay(deps: ParityReadDeps, workflowId: string, da
     if (executions.length === 0) continue
     const rows = await deps.readRows(executions.map((e) => e.id), fromIso, toIso)
     const byExecution = new Map<string, ParityExecution>()
-    for (const e of executions) byExecution.set(e.id, { execution_id: e.id, started_at: e.started_at, node: null, node_duration_ms: null, incumbent: null })
+    for (const e of executions) byExecution.set(e.id, { execution_id: e.id, started_at: e.started_at, node: null, node_duration_ms: null, incumbent: null, incumbent_duration_ms: null })
     for (const r of rows) {
       const target = byExecution.get(r.execution_id)
       if (!target) continue
@@ -328,6 +337,7 @@ export async function readParityDay(deps: ParityReadDeps, workflowId: string, da
         target.node_duration_ms = typeof r.duration_ms === 'number' ? r.duration_ms : null
       } else if (r.step_namespace === INCUMBENT_NAMESPACE && isRecord(r.output) && 'skipped' in r.output) {
         target.incumbent = r.output as unknown as IncumbentOutputLike
+        target.incumbent_duration_ms = typeof r.duration_ms === 'number' ? r.duration_ms : null
       }
     }
     // Only executions the node actually ran in count: before Stage A places the
@@ -435,6 +445,8 @@ export type ParityRowWrite = ParityCounts & {
   organization_id: string
   window_complete: boolean
   counts_hash: string
+  /** The Stage B report for the day (#1809), outside the counts hash so it never clears a sign off. */
+  stage_b: StageBCounts
 }
 
 export interface RefreshDeps {
@@ -443,6 +455,8 @@ export interface RefreshDeps {
   /** The incumbent buyer's accept and decline rules for the organisation; null when it has none. */
   rules(orgId: string): Promise<ParityRules | null>
   read: ParityReadDeps
+  /** Tripoint's bid rows, for the Stage B one row per execution check (#1809). */
+  bids: StageBBidReadDeps
   upsert(row: ParityRowWrite): Promise<unknown>
   now(): number
   retentionDays: number
@@ -490,6 +504,14 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
       try {
         const executions = await readParityDay(deps.read, wf.id, day)
         const counts = summariseParityDay(executions, rules)
+        // The bid check is its own failure boundary (L73): an unreadable bid table
+        // marks that one check unmeasured and leaves the day's row to be written.
+        let bids: StageBBids
+        try {
+          bids = await readStageBBids(deps.bids, day)
+        } catch (err) {
+          bids = { unmeasured: `the bid rows could not be read: ${messageOf(err)}` }
+        }
         const row: ParityRowWrite = {
           ...counts,
           workflow_id: wf.id,
@@ -497,6 +519,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
           organization_id: wf.organization_id,
           window_complete: windowComplete(day, now, deps.retentionDays),
           counts_hash: await countsHash(counts),
+          stage_b: summariseStageB(executions, bids, now - BID_SETTLE_MS, windowComplete(day, now, deps.retentionDays)),
         }
         await deps.upsert(row)
         written += 1
@@ -534,6 +557,7 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
     },
     rules: (orgId) => incumbentRules(orgId, env, supabase),
     read: productionReadDeps(supabase),
+    bids: productionStageBBidDeps(supabase),
     upsert: async (row) => {
       const { data, error } = (await supabase.rpc('upsert_buyer_select_parity_day', { p_row: row })) as { data: unknown; error: { message: string } | null }
       if (error) throw new Error(`upsert_buyer_select_parity_day: ${error.message}`)
