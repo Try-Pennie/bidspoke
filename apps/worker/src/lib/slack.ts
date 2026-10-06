@@ -986,7 +986,7 @@ function upstreamSaid(error: string): string {
       const messages = parsed
         .map((e: unknown) => (e as { message?: unknown } | null)?.message)
         .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
-      if (messages.length > 0) return messages.map((m) => (/[.!?]$/.test(m) ? m : `${m}.`)).join(' ')
+      if (messages.length > 0) return stripUrlQueriesInText(messages.map((m) => (/[.!?]$/.test(m) ? m : `${m}.`)).join(' '))
     }
   } catch {
     // Not JSON: an HTML page or plain text, passed on as written.

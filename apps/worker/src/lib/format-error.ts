@@ -1,5 +1,6 @@
 import { summarizeHtmlErrorBody } from './html-error-summary'
 import { truncateKeepingTail } from './truncate-text'
+import { stripUrlQueriesInText } from './url-redact'
 
 // Single source of truth for rendering an unknown thrown/returned value as
 // human-readable alert text.
@@ -28,7 +29,8 @@ function nonEmptyString(v: unknown): string | undefined {
 const ALERT_TAIL_CHARS = 96
 
 export function truncateErrorForAlert(text: string, max = 300): string {
-  return truncateKeepingTail(text, max, ALERT_TAIL_CHARS)
+  // Addresses lose their query string first (L741, #1740), so the cut measures what is sent.
+  return truncateKeepingTail(stripUrlQueriesInText(text), max, ALERT_TAIL_CHARS)
 }
 
 // A `Response` thrown to signal a non-2xx (the integration/webhook executor does
@@ -50,7 +52,17 @@ function formatResponse(res: Response): string {
   return summarizeHtmlErrorBody(body ? `${status}: ${body}` : status)
 }
 
+/**
+ * Every rendering leaves here with the addresses in it cut at their query string
+ * (L741, #1740): an upstream's error can name the full address it was called on,
+ * and a query string carries a lead's email or phone percent-encoded, past any
+ * scrub that looks for their shape.
+ */
 export function formatErr(e: unknown): string {
+  return stripUrlQueriesInText(renderErr(e))
+}
+
+function renderErr(e: unknown): string {
   if (e instanceof Error) return summarizeHtmlErrorBody(e.message)
   // Before the generic object branch: a Response IS an object, and falling
   // through to JSON.stringify is exactly the bug.
