@@ -399,6 +399,22 @@
       "fixture": "* as shadow *",
       "field": "*",
       "reason": "Shadow runs now dispatch their code to the compare namespace, whose outbound Worker refuses every request (#1708 part B), so this shadow replay runs on the compare bundle instead of being refused (#1780), still sends nothing, and dispatches only to bidspoke-code-nodes-compare. Live and test replays are unchanged."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "fixture": "buyer_select_live_*",
+      "node": "insert execution_steps",
+      "field": "*.output.buyer_call_ms",
+      "reason": "buyer_select now records how long each live attempt spent before, inside and after the buyer call (#1804), as timing on the attempt row and buyer_call_ms on the node row, so the Stage B latency can be split between the buyer and our own ledger work. Bookkeeping fields on the step rows only: nothing sent, routed or decided changes. The values are 0 here because the replay pins the clock."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "fixture": "buyer_select_live_*",
+      "node": "insert execution_steps",
+      "field": "*.output.timing",
+      "reason": "buyer_select now records how long each live attempt spent before, inside and after the buyer call (#1804), as timing on the attempt row and buyer_call_ms on the node row, so the Stage B latency can be split between the buyer and our own ledger work. Bookkeeping fields on the step rows only: nothing sent, routed or decided changes. The values are 0 here because the replay pins the clock."
     }
   ]
 }
