@@ -690,11 +690,9 @@ export async function executeWorkflow(
           },
           { sightingId, isTest: reality.isTest },
         )
-        // Phase 0 (#419): dark field-presence capture. Behind a default-off
-        // flag, log-only. The watched map is an empty stub until Phase 1 (#420),
-        // so this writes {} — enough to prove the column + write path. Computed
-        // from in-memory ctx.steps (raw, before PII redaction in flushStepLogs);
-        // only booleans persist, so no value leaves the worker.
+        // Field-presence capture (#419, #420): one boolean per watched field,
+        // computed from in-memory ctx.steps (raw, before PII redaction in
+        // flushStepLogs); only booleans persist, so no value leaves the worker.
         const fieldPresence = fieldPresenceForCapture(env.FIELD_PRESENCE_CAPTURE, ctx.steps, definition)
         // #744: the Salesforce node blanks a rejected email and retries, so the
         // run SUCCEEDS and there is no failed execution to hang a rate off. This

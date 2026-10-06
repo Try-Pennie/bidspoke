@@ -1,7 +1,7 @@
 import type { StepOutput, WorkflowDefinition } from '../types'
 import { parseStepPath } from '@bidspoke/references'
 import { resolveStepField } from './context'
-import { deriveWatchedFields } from './watched-fields'
+import { deriveWatchedFieldMap, deriveWatchedFields } from './watched-fields'
 
 export { deriveWatchedFields }
 
@@ -19,18 +19,30 @@ const parseWatchedField = parseStepPath
  * (the ran_count denominator) and its value means the field was non-null (the
  * present_count). Booleans only — no resolved value is ever stored, so no PII can
  * leak into the persisted map.
+ *
+ * `gates` maps a field to the ending steps it is judged behind (WatchedField
+ * `gate`). Such a field is also OMITTED on a run where none of them ran,
+ * because nothing read it on that run. Without this a refusal reason that only
+ * the refusal response reads counted as empty on every run its producer ran,
+ * and paged as never resolving in a week with no refusals (#1215). A field
+ * missing from the map, or mapped to null or an empty list, is judged the old
+ * way, which can only page, never hide.
  */
 export function computeFieldPresence(
   steps: Record<string, StepOutput>,
   watchedFields: string[],
+  gates?: ReadonlyMap<string, readonly string[] | null>,
 ): Record<string, boolean> {
   const presence: Record<string, boolean> = {}
   for (const field of watchedFields) {
     const segments = parseWatchedField(field)
     const ns = segments[0]
     if (!ns || !(ns in steps)) continue
+    const key = segments.join('.')
+    const gate = gates?.get(key)
+    if (gate && gate.length > 0 && !gate.some((ending) => ending in steps)) continue
     const value = resolveStepField(steps, segments)
-    presence[segments.join('.')] = value !== null && value !== undefined
+    presence[key] = value !== null && value !== undefined
   }
   return presence
 }
@@ -62,5 +74,10 @@ export function fieldPresenceForCapture(
   definition: WorkflowDefinition,
 ): Record<string, boolean> | undefined {
   if (flag !== 'true') return undefined
-  return computeFieldPresence(steps, deriveWatchedFields(definition))
+  const { fields } = deriveWatchedFieldMap(definition)
+  return computeFieldPresence(
+    steps,
+    fields.map((f) => f.path),
+    new Map(fields.map((f) => [f.path, f.gate])),
+  )
 }
