@@ -1726,6 +1726,8 @@ export async function sendExportFailureAlert(
   },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
+  // An error line is upstream text and can name an address with its query (L741, #1740).
+  payload = { ...payload, errors: payload.errors.map(stripUrlQueriesInText) }
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
   if (payload.title) return sendTitledAlert(connection, channelOverride, payload as typeof payload & { title: string })
@@ -2344,7 +2346,7 @@ export async function sendPartnerUnreachableAlert(
 ): Promise<string | null> {
   const header = `${payload.host} is not answering Bidspoke's calls`
   const lines = [
-    `The scheduled reachability probe has had no answer from \`${payload.host}\` since ${etTime(Date.parse(payload.since))}. The last look failed with: \`${payload.reason}\`. Leads that call this host are failing the same way while this lasts.`,
+    `The scheduled reachability probe has had no answer from \`${payload.host}\` since ${etTime(Date.parse(payload.since))}. The last look failed with: \`${stripUrlQueriesInText(payload.reason)}\`. Leads that call this host are failing the same way while this lasts.`,
   ]
   if (payload.repeat) lines.push(payload.repeat)
   lines.push(`Seen at ${etTime(payload.at)}.`)
@@ -2384,7 +2386,7 @@ export async function sendProbeControlAlert(
   channel: string,
   payload: ProbeControlAlertPayload,
 ): Promise<string | null> {
-  const measured = `It answered ${payload.status === null ? 'nothing' : `HTTP ${payload.status}`} with: \`${payload.bodyHead.slice(0, 120) || '(empty)'}\`.`
+  const measured = `It answered ${payload.status === null ? 'nothing' : `HTTP ${payload.status}`} with: \`${stripUrlQueriesInText(payload.bodyHead).slice(0, 120) || '(empty)'}\`.`
   const header = payload.everPassed
     ? 'The block detector stopped seeing the block it should see'
     : 'The block detector has never seen the block it should see'
@@ -2424,7 +2426,7 @@ export async function sendProbeBrokenAlert(
 ): Promise<string | null> {
   const header = 'The partner reachability probe cannot fetch'
   const lines = [
-    `Since ${etTime(Date.parse(payload.since))} the probe's own control host has not answered at all, so nothing it reports about the partners can be trusted and their readings are being held. The last look failed with: \`${payload.reason}\`.`,
+    `Since ${etTime(Date.parse(payload.since))} the probe's own control host has not answered at all, so nothing it reports about the partners can be trusted and their readings are being held. The last look failed with: \`${stripUrlQueriesInText(payload.reason)}\`.`,
   ]
   if (payload.repeat) lines.push(payload.repeat)
   lines.push(`Seen at ${etTime(payload.at)}.`)

@@ -517,6 +517,19 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(text).toContain('not exported')
   })
 
+  it('cuts an address in an error line at its query string, titled or not (L741, #1740)', async () => {
+    const leaky = 'sightings export: 401 from https://p.example/x?email=jo%40example.com'
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'Lead sightings export', errors: [leaky] })
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [leaky], title: 'Export failed' })
+    for (const call of fetchMock.mock.calls) {
+      const body = JSON.parse(call[1].body)
+      const text = [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
+      expect(text).not.toMatch(/%40|email=/)
+      expect(text).toContain('https://p.example/x')
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('a titled alert is the title, the findings, an optional context line and a short fix, nothing else', async () => {
     // Dan, 2026-10-01, on the Tripoint pricing alert: "It's so hard to understand
     // right now". A check that names itself and explains itself buries the one

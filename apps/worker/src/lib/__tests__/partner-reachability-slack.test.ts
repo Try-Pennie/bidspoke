@@ -71,3 +71,29 @@ describe('the probe cannot measure alert', () => {
     expect(text()).toMatch(/fetch failed/)
   })
 })
+
+describe('a failure text carrying an address (L741, #1740)', () => {
+  const leaky = 'fetch failed: https://p.example/x?email=jo%40example.com'
+
+  it('the not answering alert cuts it at its query string', async () => {
+    await sendPartnerUnreachableAlert({ bot_token: 't' }, '#ops', {
+      host: 'p.example', reason: leaky, since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
+    })
+    expect(text()).not.toMatch(/%40|email=/)
+    expect(text()).toContain('https://p.example/x')
+  })
+
+  it('the probe cannot measure alert cuts it at its query string', async () => {
+    await sendProbeBrokenAlert({ bot_token: 't' }, '#ops', { reason: leaky, since: '2026-09-17T17:50:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z') })
+    expect(text()).not.toMatch(/%40|email=/)
+    expect(text()).toContain('https://p.example/x')
+  })
+
+  it('the control alert cuts an address in the body it quotes', async () => {
+    await sendProbeControlAlert({ bot_token: 't' }, '#ops', {
+      host: 'block-probe.trypennie.dev', everPassed: true, status: 200, bodyHead: `<a href="${'https://p.example/x?email=jo%40example.com'}">`, since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
+    })
+    expect(text()).not.toMatch(/%40|email=/)
+    expect(text()).toContain('https://p.example/x')
+  })
+})
