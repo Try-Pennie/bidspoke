@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { startJobRun, finishJobRun, withJobRun } from '../job-run-record'
+import { startJobRun, finishJobRun, withJobRun, recordFinishedJobRun } from '../job-run-record'
 
 interface Recorded { table: string; op: string; row: Record<string, unknown> }
 
@@ -208,5 +208,39 @@ describe('withJobRun', () => {
     // A bookkeeping row must never be able to stop the job it describes.
     const result = await withJobRun(client, 'a-job', async () => 'done', () => ({ outcome: 'ok' }))
     expect(result).toBe('done')
+  })
+})
+
+/**
+ * A job that runs every minute cannot open a row per tick (1,440 a day), so it
+ * records only the ticks that did something, as one finished row written after
+ * the work (#1810). A killed tick leaves nothing, which that job's own heartbeat
+ * and backlog page already cover.
+ */
+describe('recordFinishedJobRun', () => {
+  it('writes one finished row carrying the start, the ending and the summary', async () => {
+    const db = supabaseDouble()
+    const startedAt = Date.UTC(2027, 8, 20, 15, 40)
+
+    await recordFinishedJobRun(db.client, 'buyer-sale-drain', startedAt, { outcome: 'ok', summary: { delivered: 1 } })
+
+    expect(db.writes).toHaveLength(1)
+    expect(db.writes[0]).toMatchObject({ table: 'job_runs', op: 'insert' })
+    expect(db.writes[0].row).toMatchObject({ job: 'buyer-sale-drain', started_at: new Date(startedAt).toISOString(), outcome: 'ok', detail: null, summary: { delivered: 1 } })
+    expect(typeof db.writes[0].row.finished_at).toBe('string')
+  })
+
+  it('does not throw when the row cannot be written, and says so', async () => {
+    const db = supabaseDouble({ updateError: { message: 'postgrest said no' } })
+
+    await expect(recordFinishedJobRun(db.client, 'buyer-sale-drain', 0, { outcome: 'ok' })).resolves.toBeUndefined()
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(/buyer-sale-drain.*postgrest said no/)
+  })
+
+  it('says so when the insert came back with no row, rather than reporting it recorded', async () => {
+    const db = supabaseDouble({ rowsTouched: [] })
+
+    await recordFinishedJobRun(db.client, 'buyer-sale-drain', 0, { outcome: 'ok' })
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(/buyer-sale-drain/)
   })
 })

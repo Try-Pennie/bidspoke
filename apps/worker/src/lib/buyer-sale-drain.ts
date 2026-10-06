@@ -30,9 +30,16 @@ import { BuyerLedgerClient } from './buyer-object-clients'
 import { chunk } from './chunk'
 import { buildBuyerSaleRow, buyerSaleRowId, mirrorBuyerSale, type BuyerSaleRowMeta } from './buyer-sale-mirror'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { describeDuration } from './slack'
 
 export const BUYER_SALE_DRAIN_JOB = 'buyer-sale-drain'
+
+/** Delivered row ids kept per buyer in a tick's run record, so one long backlog cannot make a huge row (#1810). */
+export const RUN_RECORD_ROW_IDS = 50
+
+/** Errors named in a tick's run record detail; the rest are counted. */
+const RUN_RECORD_ERRORS = 5
 
 /** Five ticks of the minute cron: a backlog older than this is a standing failure, not a blip. */
 export const OUTBOX_BACKLOG_MS = 5 * 60 * 1000
@@ -85,6 +92,12 @@ export interface DrainDeps {
    * empty list, the clear, carries none.
    */
   notify(lines: string[], keys?: readonly string[]): Promise<void>
+  /**
+   * Records a tick that had work as one finished job_runs row (#1810). Never
+   * called for a quiet tick, because the job runs every minute. A throw here is
+   * logged and never fails the drain or its page.
+   */
+  recordRun(startedAtMs: number, ending: JobRunEnding): Promise<void>
   now(): number
   localDev: boolean
   log(line: string): void
@@ -97,6 +110,8 @@ export interface DrainBuyerSummary {
   delivered: number
   failed: number
   oldest_age_ms: number | null
+  /** The buyer_sales row id of every entry this tick delivered, in delivery order. */
+  delivered_row_ids: string[]
   /** The age of the oldest entry still undelivered after this tick; null when nothing is left. */
   remaining_oldest_age_ms: number | null
   /** Set when the ledger could not be read; the counts above are then meaningless and zero. */
@@ -124,13 +139,16 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
     return { skipped: 'local_dev', buyers: [], paged: [], errors: [] }
   }
 
+  const startedAtMs = deps.now()
   let buyers: DrainBuyer[]
   try {
     buyers = await deps.listBuyers()
   } catch (err) {
     const reason = `the buyer list could not be read, so no ledger was drained: ${messageOf(err)}`
     await deps.notify([reason], ['buyers-unlisted'])
-    return { unmeasured: reason, buyers: [], paged: [reason], errors: [reason] }
+    const result: DrainSummary = { unmeasured: reason, buyers: [], paged: [reason], errors: [reason] }
+    await recordTick(deps, startedAtMs, result)
+    return result
   }
 
   const summaries: DrainBuyerSummary[] = []
@@ -161,12 +179,34 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
   // An empty list is the clear, and carries no keys.
   if (paged.length === 0) await deps.notify(paged)
   else await deps.notify(paged, keys)
-  return { buyers: summaries, paged, errors }
+  const result: DrainSummary = { buyers: summaries, paged, errors }
+  await recordTick(deps, startedAtMs, result)
+  return result
+}
+
+/**
+ * Records the tick if it had work: an entry pending, a failure, or a ledger or
+ * buyer list it could not read (#1810). A quiet tick records nothing.
+ */
+async function recordTick(deps: DrainDeps, startedAtMs: number, result: DrainSummary): Promise<void> {
+  const hadWork = result.unmeasured !== undefined || result.errors.length > 0 || result.buyers.some((b) => b.pending > 0 || b.unmeasured !== undefined)
+  if (!hadWork) return
+  const unmeasured = result.unmeasured !== undefined || result.buyers.some((b) => b.unmeasured !== undefined)
+  const outcome = unmeasured ? 'unmeasured' : result.errors.length > 0 ? 'partial' : 'ok'
+  const named = result.errors.slice(0, RUN_RECORD_ERRORS)
+  const more = result.errors.length - named.length
+  const detail = result.errors.length === 0 ? undefined : named.join(' | ') + (more > 0 ? ` | and ${more} more` : '')
+  const buyers = result.buyers.map((b) => ({ ...b, delivered_row_ids: b.delivered_row_ids.slice(0, RUN_RECORD_ROW_IDS) }))
+  try {
+    await deps.recordRun(startedAtMs, { outcome, detail, summary: { buyers, paged: result.paged.length } })
+  } catch (err) {
+    deps.log(`[${BUYER_SALE_DRAIN_JOB}] the run record could not be written: ${messageOf(err)}`)
+  }
 }
 
 async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]): Promise<DrainBuyerSummary> {
   const ledger = deps.ledger(buyer.partner_id)
-  const base: DrainBuyerSummary = { partner_id: buyer.partner_id, slug: buyer.slug, pending: 0, delivered: 0, failed: 0, oldest_age_ms: null, remaining_oldest_age_ms: null }
+  const base: DrainBuyerSummary = { partner_id: buyer.partner_id, slug: buyer.slug, pending: 0, delivered: 0, failed: 0, oldest_age_ms: null, delivered_row_ids: [], remaining_oldest_age_ms: null }
   const now = deps.now()
   let oldestRemaining: number | null = null
   const leave = (entry: LedgerEntry) => { if (oldestRemaining === null || entry.reserved_at < oldestRemaining) oldestRemaining = entry.reserved_at }
@@ -204,6 +244,7 @@ async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]):
       const row = await buildBuyerSaleRow(entry, meta)
       await mirrorBuyerSale(deps.supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
       base.delivered += 1
+      base.delivered_row_ids.push(ids[i])
     } catch (err) {
       base.failed += 1
       leave(entry)
@@ -284,6 +325,7 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
     readExistingRows: (ids) => readExistingBuyerSaleRows(supabase, ids),
     supabase,
     notify: (lines, keys) => notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, env.IDEMPOTENCY, BUYER_SALE_DRAIN_REMEDY, undefined, { keys }),
+    recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, BUYER_SALE_DRAIN_JOB, startedAtMs, ending),
     now: () => Date.now(),
     localDev: Boolean(env.LOCAL_DEV),
     log: (line) => console.log(line),
