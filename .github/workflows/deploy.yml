@@ -529,7 +529,11 @@ jobs:
     timeout-minutes: 10
     # deploy-compare-outbound first (#1708 part B): the engine binds the compare
     # namespace with that Worker as its outbound service, so in a fresh account it
-    # has to exist before the engine deploys. always() below lets a skipped leg pass.
+    # has to exist before the engine deploys. always() below lets that leg be
+    # skipped, and also lets it FAIL, since its result is never checked. A failed
+    # leg is still safe: the "Ensure the compare namespace exists" step below
+    # refuses by name when the outbound Worker is missing, and an older outbound
+    # Worker left in place still refuses every request.
     needs: [verify, changes, worker_artifact, deploy-compare-outbound]
     # Skips ONLY on an explicit `false`, meaning the gate positively decided the
     # built artifact is byte identical to what is already live. Any other state,
