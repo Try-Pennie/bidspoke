@@ -58,25 +58,26 @@ const decideOn = (event: string, ref: string, ...filters: string[]): Record<stri
 
 describe('deploy-targets-decision', () => {
   it('deploys every target on a dispatched run, whatever the filter said', () => {
-    expect(decide('workflow_dispatch', '', '', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(decide('workflow_dispatch', '', '', '', '', '')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false', ops_worker: 'false' })
     expect(decide('workflow_dispatch', 'false', 'false', 'false', 'false', 'false')).toEqual({
       worker: 'true',
       worker_tail: 'true',
       pages: 'true',
       compare_outbound: 'true',
       ops_outbound: 'false',
+      ops_worker: 'false',
     })
   })
 
   it('passes the paths filter through on a push', () => {
-    expect(decide('push', 'true', 'false', 'false', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false' })
-    expect(decide('push', 'false', 'true', 'true', 'false', 'false')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true', compare_outbound: 'false', ops_outbound: 'false' })
+    expect(decide('push', 'true', 'false', 'false', 'false', 'false')).toEqual({ worker: 'true', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false', ops_worker: 'false' })
+    expect(decide('push', 'false', 'true', 'true', 'false', 'false')).toEqual({ worker: 'false', worker_tail: 'true', pages: 'true', compare_outbound: 'false', ops_outbound: 'false', ops_worker: 'false' })
     // #1708 part B: the compare namespace's outbound Worker ships on its own path.
-    expect(decide('push', 'false', 'false', 'false', 'true', 'false')).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(decide('push', 'false', 'false', 'false', 'true', 'false')).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'true', ops_outbound: 'false', ops_worker: 'false' })
   })
 
   it('deploys a target whose filter value on a push is empty or malformed, because a value nobody measured must not skip a deploy', () => {
-    expect(decide('push', '', 'yes', 'false', '', 'false')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(decide('push', '', 'yes', 'false', '', 'false')).toEqual({ worker: 'true', worker_tail: 'true', pages: 'false', compare_outbound: 'true', ops_outbound: 'false', ops_worker: 'false' })
   })
 
   it.each([
@@ -91,7 +92,7 @@ describe('deploy-targets-decision', () => {
     // code with nothing reporting it.
     // With the ops lane live, so ops_outbound is refused by the ref, not the flag.
     const run = runWith(OPS_ON, [event, ref, 'true', 'true', 'true', 'true', 'true'])
-    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false' })
+    expect(parse(run.stdout)).toEqual({ worker: 'false', worker_tail: 'false', pages: 'false', compare_outbound: 'false', ops_outbound: 'false', ops_worker: 'false' })
     expect(run.status).toBe(1)
     expect(run.stderr).toMatch(/::error::/)
     expect(run.stderr).toContain(`'${ref}'`)
@@ -104,6 +105,7 @@ describe('deploy-targets-decision', () => {
       pages: 'true',
       compare_outbound: 'true',
       ops_outbound: 'false',
+      ops_worker: 'false',
     })
   })
 })
@@ -129,7 +131,7 @@ describe('the ops outbound Worker deploys only once the ops lane is live (#1709 
   ])('holds it back with a warning, and fails no other deploy, when the flag is %s', (_label, flag) => {
     const run = runWith(flag, ['push', MAIN, 'true', 'true', 'true', 'true', 'true'])
     expect(run.status).toBe(0)
-    expect(parse(run.stdout)).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false' })
+    expect(parse(run.stdout)).toEqual({ worker: 'true', worker_tail: 'true', pages: 'true', compare_outbound: 'true', ops_outbound: 'false', ops_worker: 'false' })
     expect(run.stderr).toMatch(/::warning::.*OPS_WORKER_DEPLOYED/)
   })
 
@@ -153,7 +155,7 @@ describe('deploy.yml routes its targets through the script (#1761)', () => {
 
   it('takes every output from the decision script, never straight from the filter', () => {
     const outputs = changes.slice(changes.indexOf('outputs:'), changes.indexOf('steps:'))
-    for (const target of ['worker', 'worker_tail', 'pages', 'compare_outbound', 'ops_outbound']) {
+    for (const target of ['worker', 'worker_tail', 'pages', 'compare_outbound', 'ops_outbound', 'ops_worker']) {
       expect(outputs).toContain(`${target}: \${{ steps.targets.outputs.${target} }}`)
     }
     expect(outputs).not.toContain('steps.filter.outputs')
@@ -187,5 +189,20 @@ describe('dispatched Deploys queue rather than overlap (#1761)', () => {
     // targets with it; a replaced dispatch loses nothing, because the newer
     // dispatch deploys every target at a newer tip.
     expect(block).toContain('github.run_id')
+  })
+})
+
+describe('the ops Worker deploys with the worker sources, only once the ops lane is live (#1709 part 4)', () => {
+  it('is never deployed while OPS_WORKER_DEPLOYED is false, even when the worker sources changed', () => {
+    expect(decide('push', 'true', 'false', 'false', 'false', 'false').ops_worker).toBe('false')
+    expect(decide('workflow_dispatch', 'true', 'true', 'true', 'true', 'true').ops_worker).toBe('false')
+  })
+
+  it('follows the worker filter on a push, and deploys on a dispatched run, once the lane is live', () => {
+    const on = (event: string, worker: string) => parse(runWith(OPS_ON, [event, MAIN, worker, 'false', 'false', 'false', 'false']).stdout)
+    expect(on('push', 'true').ops_worker).toBe('true')
+    expect(on('push', 'false').ops_worker).toBe('false')
+    expect(on('push', '').ops_worker).toBe('true')
+    expect(on('workflow_dispatch', 'false').ops_worker).toBe('true')
   })
 })

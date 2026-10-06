@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Make sure the compare dispatch namespace exists, and its outbound Worker,
-# before the engine that binds them deploys (#1708 part B).
+# before the Worker that binds them deploys (#1708 part B; the ops namespace
+# too since #1709 part 4).
 #
 # Usage: ensure-compare-namespace.sh <account_id> <namespace> <outbound_worker>
 #
@@ -57,7 +58,7 @@ reason() {
 
 ANSWER=$(cf GET "/workers/scripts/${OUTBOUND}/settings")
 printf '%s' "$ANSWER" | jq -e '.success == true' >/dev/null 2>&1 \
-  || fail "the outbound Worker ${OUTBOUND} does not exist or cannot be read ($(reason "$ANSWER")), so ${NAMESPACE} would route shadow runs' requests nowhere. Deploy it first: Deploy Compare Outbound, from apps/compare-outbound."
+  || fail "the outbound Worker ${OUTBOUND} does not exist or cannot be read ($(reason "$ANSWER")), so ${NAMESPACE} would route its scripts' requests nowhere. Deploy it first: the Deploy Compare Outbound job for the compare namespace, Deploy Ops Outbound for the ops one."
 
 LIST=$(cf GET "/workers/dispatch/namespaces")
 printf '%s' "$LIST" | jq -e '.success == true' >/dev/null 2>&1 \

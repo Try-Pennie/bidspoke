@@ -26,8 +26,8 @@
 # On a push, a filter value that is not exactly `true` or `false` was not
 # measured, and a value nobody measured must not be what skips a deploy.
 #
-# Prints five `name=true|false` lines for $GITHUB_OUTPUT. Exits 0 on main, and
-# 1 (after printing all five false) on any other ref. compare_outbound is the
+# Prints six `name=true|false` lines for $GITHUB_OUTPUT. Exits 0 on main, and
+# 1 (after printing all six false) on any other ref. compare_outbound is the
 # compare namespace's outbound Worker (#1708 part B).
 #
 # ops_outbound is the ops namespace's outbound Worker (#1709 part 3). It is held
@@ -51,6 +51,7 @@ if [ "$REF" != "refs/heads/main" ]; then
   echo "pages=false"
   echo "compare_outbound=false"
   echo "ops_outbound=false"
+  echo "ops_worker=false"
   echo "::error::Deploy runs only on main, and this run is on '${REF}', so nothing deploys. Start Deploy on main from the Actions tab (Actions, Deploy, Run workflow, branch main)." >&2
   exit 1
 fi
@@ -78,12 +79,16 @@ if [ -z "$FLAG_FILE" ]; then
 fi
 # -E, not a backslash alternation, which BSD sed reads differently (L434).
 OPS_LIVE=$(sed -n -E 's/^export const OPS_WORKER_DEPLOYED = (true|false)$/\1/p' "$FLAG_FILE" 2>/dev/null | head -n 1)
+# The ops Worker is built from the same apps/worker sources as the bidding
+# Worker, so it follows the worker filter, behind the same switch (#1709 part 4).
+OPS_WORKER=$WORKER
 case "$OPS_LIVE" in
   true) ;;
-  false) OPS_OUTBOUND=false ;;
+  false) OPS_OUTBOUND=false; OPS_WORKER=false ;;
   *)
     OPS_OUTBOUND=false
-    echo "::warning::deploy-targets: OPS_WORKER_DEPLOYED could not be read from ${FLAG_FILE}, so the ops outbound Worker is held back. Every other target is unaffected." >&2
+    OPS_WORKER=false
+    echo "::warning::deploy-targets: OPS_WORKER_DEPLOYED could not be read from ${FLAG_FILE}, so the ops outbound Worker and the ops Worker are held back. Every other target is unaffected." >&2
     ;;
 esac
 
@@ -92,6 +97,7 @@ echo "worker_tail=$WORKER_TAIL"
 echo "pages=$PAGES"
 echo "compare_outbound=$COMPARE_OUTBOUND"
 echo "ops_outbound=$OPS_OUTBOUND"
+echo "ops_worker=$OPS_WORKER"
 
 if [ "$EVENT" != "push" ]; then
   echo "deploy-targets: '$EVENT' has no previous push to compare with, so every target deploys" >&2

@@ -6,35 +6,29 @@
 # none of the money Worker's (no Supabase key, no partner credentials, no KV, no
 # Durable Objects). The full ops Worker grows from this in plan 0.E.
 #
-# NOT DEPLOYED by anything yet. No CI job deploys it, the bucket below does not
-# exist yet and the master secret is not set. The go-live list is in the pull
-# request for #1705 and in docs/disaster-recovery.md's secret inventory.
-#
-# Deploy by hand, from apps/worker, once the go-live list is done:
-#   npx wrangler deploy --config wrangler.ops.toml
-#
-# Plan 0.E (#1709 part 3) adds the lane, the ops code namespace and the tail
-# consumer below. A deploy now also needs the namespace and its outbound Worker
-# to exist (wrangler refuses a binding to a missing namespace): see the go-live
-# list in the pull request for #1709 part 3.
+# Deployed by the Deploy Ops Worker job in .github/workflows/deploy.yml (#1709
+# part 4), whenever the worker sources change, after Deploy Ops Outbound and the
+# step that makes sure the ops code namespace exists. That job then proves
+# ops.trypennie.dev is answered by this Worker (.github/scripts/prove-ops-host.sh).
+# The bucket, the namespace, the outbound Worker and the master secret were
+# created on 2026-10-06; docs/disaster-recovery.md says how to recreate each.
 name = "bidspoke-worker-ops"
 main = "src/ops/index.ts"
 compatibility_date = "2024-09-23"
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
-# No workers.dev address: the only way in is the route below, once it exists.
+# No workers.dev address: the only way in is the route below.
 workers_dev = false
 
-# The route is added at go-live, after confirming no webhook_endpoints row uses
-# the `ops` subdomain and adding `ops` to RESERVED_SUBDOMAINS
-# (routes/api/endpoints.ts), because the main Worker's `*.trypennie.dev/*`
-# custom endpoint route would otherwise also claim it. A more specific route
-# wins over the wildcard.
-# routes = [{ pattern = "ops.trypennie.dev/porting/*", zone_name = "trypennie.dev" }]
+# The ops Worker's only way in. The bidding Worker's `*.trypennie.dev/*` custom
+# endpoint route covers the same host, and this more specific route wins over the
+# wildcard. `ops` is in RESERVED_SUBDOMAINS (routes/api/endpoints.ts) and no
+# webhook_endpoints row used it (checked 2026-10-06), so no endpoint is taken.
+routes = [{ pattern = "ops.trypennie.dev/porting/*", zone_name = "trypennie.dev" }]
 
 # Captures, redacted before they are written. A bucket lifecycle rule deletes
 # every object 90 days after it was written (the retention ceiling, plan 0.R);
-# the rule is set on the bucket, not here.
+# the rule is set on the bucket, not here (created 2026-10-06, #1709 part 4).
 [[r2_buckets]]
 binding = "PORTING_TEE"
 bucket_name = "bidspoke-porting-tee"
@@ -48,7 +42,8 @@ LANE = "ops"
 # run, apart from the bidding namespace (bidspoke-code-nodes) and the compare
 # one. Every request a script there makes goes to bidspoke-ops-outbound
 # (apps/ops-outbound), which refuses it until Phase 2 defines what ops code may
-# reach. Nothing dispatches here yet.
+# reach. Nothing dispatches here yet. The Deploy Ops Worker job makes sure the
+# namespace exists before deploying (ensure-compare-namespace.sh).
 [[dispatch_namespaces]]
 binding = "CODE_NODES_OPS"
 namespace = "bidspoke-code-nodes-ops"

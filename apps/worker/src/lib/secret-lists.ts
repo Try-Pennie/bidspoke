@@ -113,11 +113,11 @@ export const OPS_ALLOWED_SECRETS: readonly string[] = [...OPS_REQUIRED_SECRETS, 
  * Whether bidspoke-worker-ops is deployed yet. Until it is, the parity check
  * reports the ops side as not measured rather than failing on a Worker that does
  * not exist; once true, a missing ops Worker fails. Set to true in the change that
- * first deploys it (#1709 part 4).
+ * first deploys it (#1709 part 4), which it now is: deployed 2026-10-06.
  *
  * It is also the one switch for the ops lane's deploys: until it is true,
  * .github/scripts/deploy-targets-decision.sh holds back Deploy Ops Outbound on
  * every event (#1709 part 3). The script reads this line as written, so keep it
  * on one line in exactly this shape; a test fails if it changes.
  */
-export const OPS_WORKER_DEPLOYED = false
+export const OPS_WORKER_DEPLOYED = true

@@ -278,6 +278,7 @@ jobs:
       pages: ${{ steps.targets.outputs.pages }}
       compare_outbound: ${{ steps.targets.outputs.compare_outbound }}
       ops_outbound: ${{ steps.targets.outputs.ops_outbound }}
+      ops_worker: ${{ steps.targets.outputs.ops_worker }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -440,6 +441,54 @@ jobs:
         run: pnpm --filter=ops-outbound exec wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  # The ops Worker, bidspoke-worker-ops (#1709 part 4): the Pipedream move's own
+  # Worker, built from apps/worker with wrangler.ops.toml, serving
+  # ops.trypennie.dev/porting/*. It deploys whenever the worker sources do, once
+  # OPS_WORKER_DEPLOYED is true (deploy-targets-decision.sh), after its outbound
+  # Worker: the ops code namespace routes every request a bundle makes there, so
+  # the namespace step refuses by name if that Worker is missing. always() lets a
+  # skipped Deploy Ops Outbound leg pass (a push that did not touch it), and the
+  # namespace step is what stops a run whose outbound Worker does not exist. The
+  # last step proves the host is answered by this Worker, with its lane and its
+  # master secret, and fails the run if it is not.
+  deploy-ops-worker:
+    name: Deploy Ops Worker
+    runs-on: ubuntu-latest
+    # a wrangler deploy (Deploy Worker's measured max 39s) plus the proof's
+    # bounded wait (12 attempts, 10s apart), plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
+    needs: [verify, changes, deploy-ops-outbound]
+    if: |
+      always()
+      && needs.verify.result == 'success'
+      && needs.changes.outputs.ops_worker == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure the ops namespace exists
+        run: bash .github/scripts/ensure-compare-namespace.sh 3e7f907a9c19e51417873e2cce4fbc5c bidspoke-code-nodes-ops bidspoke-ops-outbound
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker.
+      - name: Deploy Ops Worker
+        run: pnpm --filter=worker exec wrangler deploy --config wrangler.ops.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Prove ops.trypennie.dev is the ops Worker
+        run: bash .github/scripts/prove-ops-host.sh https://ops.trypennie.dev/porting/capture/p_deployproof
 
   worker_artifact:
     name: Worker artifact changed
