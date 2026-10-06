@@ -261,6 +261,11 @@ export function productionStageBBidDeps(supabase: SupabaseClient): StageBBidRead
       .order('attempted_at_utc', { ascending: true })
       .limit(1)
     if (error) throw new Error(`lead_sighting_bids oldest row: ${error.message}`)
-    return utcIso((data as Array<{ attempted_at_utc?: unknown }> | null)?.[0]?.attempted_at_utc)
+    const rows = (data ?? []) as Array<{ attempted_at_utc?: unknown }>
+    if (rows.length === 0) return null
+    // A row whose time cannot be read is not "no row held" (L11): say what failed.
+    const iso = utcIso(rows[0].attempted_at_utc)
+    if (iso === null) throw new Error(`lead_sighting_bids oldest row: attempted_at_utc ${JSON.stringify(rows[0].attempted_at_utc)} could not be read as a time`)
+    return iso
   }
 }

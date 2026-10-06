@@ -174,6 +174,19 @@ describe('readStageBBids', () => {
 })
 
 describe('productionStageBBidDeps', () => {
+  it('an oldest row whose time cannot be read is an error, never reported as no row held (L11)', async () => {
+    const client = {
+      from() {
+        const chain: Record<string, unknown> = {
+          select() { return chain }, eq() { return chain }, order() { return chain }, limit() { return chain },
+          then(res: (v: unknown) => unknown) { return Promise.resolve({ data: [{ attempted_at_utc: 'not a time' }], error: null }).then(res) },
+        }
+        return chain
+      },
+    } as unknown as SupabaseClient
+    await expect(productionStageBBidDeps(client).earliestBidRowIso()).rejects.toThrow(/could not be read as a time/)
+  })
+
   it('reads the oldest bid row once per set of deps, since every day of one refresh asks the same question (#1809)', async () => {
     let reads = 0
     const client = {
