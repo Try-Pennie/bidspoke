@@ -84,6 +84,7 @@ import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
+import { restoreVersion } from '@/lib/version-restore'
 
 
 const edgeTypes = {
@@ -2858,10 +2859,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // ── Version restore ─────────────────────────────────────────────────────────
 
   async function handleVersionRestore(versionId: string) {
-    const restoredResult = await api.versions.restore(workflow.id, versionId)
-    const restoreOutcome = saveOutcomeMessage(restoredResult)
-    if (restoreOutcome) setSaveError(restoreOutcome)
-    const updated = await api.workflows.get(workflow.id)
+    const { workflow: updated, notice } = await restoreVersion(workflow.id, versionId)
+    if (notice) setSaveError(notice)
     // Run the same migration pipeline the initial mount does (#114) — restoring
     // an old version is exactly when legacy shapes appear, and skipping the
     // migrations here left the canvas half-migrated for the next save to persist.
