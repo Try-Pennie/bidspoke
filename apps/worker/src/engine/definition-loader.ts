@@ -4,6 +4,7 @@ import { isNotFoundError } from '../lib/api-error'
 import { formatErr } from '../lib/format-error'
 import { stripUrlQueriesInText } from '../lib/url-redact'
 import { isWorkflowLane } from '@bidspoke/node-types'
+import { leadRead } from '../lib/lead-read-budget'
 
 // Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
 // A typed error so routes can map it to 404 by instanceof rather than matching
@@ -157,7 +158,10 @@ export async function loadWorkflowDefinition(
     query = query.eq('is_active', true)
   }
 
-  const { data, error } = await query.single()
+  // A live run's read has a copy to fall back on, so on a lead client it is
+  // bounded and never retried (#1844). A test or shadow run has none, so its
+  // read keeps the library's own behaviour.
+  const { data, error } = allowInactive ? await query.single() : await leadRead(supabase, query.single(), 'workflow definition')
 
   // A transient DB error must NOT masquerade as a missing workflow: callers map
   // WorkflowNotFoundError to 404, which a lead source treats as "endpoint gone"

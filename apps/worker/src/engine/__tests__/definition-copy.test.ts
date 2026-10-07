@@ -18,6 +18,8 @@ import {
   type WorkflowDefinitionCopy,
 } from '../definition-loader'
 import { assertWorkflowServedInLane, WorkflowLaneError } from '../lane'
+import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../lib/lead-read-budget'
+import type { Env } from '../../index'
 
 const WF_ID = 'wf-copy-1'
 const CACHE_KEY = `workflow-def-${WF_ID}`
@@ -80,7 +82,12 @@ type DbState = { mode: 'up' | 'down-503' | 'down-500'; row: Row | null; requests
  * the real server answers `.single()` with no rows: 406 and PGRST116.
  */
 function realClient(db: DbState): SupabaseClient {
-  const fetchImpl = async (input: RequestInfo | URL): Promise<Response> => {
+  return createClient('https://db.test', 'service-key', { auth: { persistSession: false }, global: { fetch: answerAs(db) } })
+}
+
+/** The fake PostgREST network both client kinds run over. */
+function answerAs(db: DbState): typeof fetch {
+  return (async (input: RequestInfo | URL): Promise<Response> => {
     db.requests += 1
     if (db.mode === 'down-503') {
       // PostgREST's own answer while it cannot reach Postgres. Retry-After: 0
@@ -107,8 +114,15 @@ function realClient(db: DbState): SupabaseClient {
       )
     }
     return new Response(JSON.stringify(row), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  }
-  return createClient('https://db.test', 'service-key', { auth: { persistSession: false }, global: { fetch: fetchImpl } })
+  }) as typeof fetch
+}
+
+/** A lead's client over the same network, recording the deadlines it is given (#1844). */
+function leadClient(db: DbState, asked: number[]): SupabaseClient {
+  return createLeadSupabaseClient({ SUPABASE_URL: 'https://db.test', SUPABASE_SECRET_KEY: 'service-key' } as unknown as Env, {
+    fetch: answerAs(db),
+    deadline: (ms) => { asked.push(ms); return new AbortController().signal },
+  })
 }
 
 function heldCopy(kv: FakeKv): WorkflowDefinitionCopy | null {
@@ -433,5 +447,31 @@ describe('refreshWorkflowCaches when a KV call fails', () => {
       refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: { ...baseRow, is_active: false, updated_at: '2026-10-07T11:10:00+00:00' }, requests: 0 })),
     ).rejects.toThrow(/KV DELETE failed/)
     expect(heldCopy(kv)).toMatchObject({ is_active: false })
+  })
+})
+
+describe('the definition read on a lead client (#1844, #1845)', () => {
+  it('is bounded, never retried, and reaches the copy after one request when the database is down', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.store.delete(CACHE_KEY)
+    const db: DbState = { mode: 'down-500', row: baseRow, requests: 0 }
+    const asked: number[] = []
+    const loaded = await loadWorkflowDefinition(WF_ID, asKv(kv), leadClient(db, asked), { now: () => T0 + 60_000 })
+    expect(loaded.workflow_version_id).toBe('ver-7')
+    expect(db.requests).toBe(1)
+    expect(asked).toEqual([LEAD_READ_DEADLINE_MS])
+  })
+
+  it('is not given a deadline on a test or shadow run, which has no copy to fall back on', async () => {
+    const db: DbState = { mode: 'up', row: baseRow, requests: 0 }
+    const asked: number[] = []
+    await loadWorkflowDefinition(WF_ID, asKv(fakeKv()), leadClient(db, asked), { allowInactive: true, now: () => T0 })
+    expect(asked).toEqual([])
+  })
+
+  it('still answers a genuinely missing workflow as not found, without counting the database as down', async () => {
+    const db: DbState = { mode: 'up', row: null, requests: 0 }
+    await expect(loadWorkflowDefinition(WF_ID, asKv(fakeKv()), leadClient(db, []), { now: () => T0 })).rejects.toBeInstanceOf(WorkflowNotFoundError)
   })
 })
