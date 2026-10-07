@@ -13,7 +13,7 @@ at `POST https://<worker-host>/shadow/<workflow_id>` with the same `X-API-Key`.
 Bidspoke reads the workflow and, for one carrying code, makes sure its compare
 bundle is deployed (an upload only the first time that version of the code is
 shadowed), then returns `204` without waiting for the run, and runs the workflow
-in the background with `shadow_mode: 'dry_run'`. Add `?mode=stand_in` to the URL to run the stand-in
+in the background with `shadow_mode: 'dry_run'`. Send the header `X-Shadow-Mode: stand_in` to run the stand-in
 sub-mode instead (see below).
 
 For a workflow carrying a Code node, the route first deploys its compare bundle
@@ -73,7 +73,7 @@ creates the compare namespace if it is missing
 
 ## Stand-in bid sub-mode
 
-`shadow_mode: 'stand_in'` (triggered with `?mode=stand_in` on the shadow URL) is
+`shadow_mode: 'stand_in'` (triggered with the header `X-Shadow-Mode: stand_in`; any other value is refused with a 400, and the address's query string is never read, #1815) is
 dry run plus one difference: a Partner Bid resolves a deterministic bid instead
 of returning a `shadow` skip, so downstream Bid Group, bid evaluation, and
 routing are exercised too — not just the pre-bid path (filters, eligibility,
