@@ -104,7 +104,7 @@ describe('leadRead on a lead client (#1844)', () => {
     await first
     const second = await leadRead(db, db.from('partner_configs').select('id'), 'partner config')
     expect(second.error).not.toBeNull()
-    expect(second.error?.message).toMatch(/earlier read in this lead failed/)
+    expect(second.error?.message).toMatch(/earlier database call in this lead failed/)
     expect(net.calls).toHaveLength(1)
   })
 
@@ -144,6 +144,10 @@ describe('a write that did not answer trips the lead (#1849)', () => {
     expect(net.calls).toHaveLength(0)
     expect(res.error).toMatchObject({ code: LEAD_DB_DOWN_CODE })
     expect(res.error?.message).toMatch(/held click record/)
+    // A write that ran out of time had no answer, and no HTTP status to name.
+    expect(res.error?.message).toMatch(/held click record, did not answer in time/)
+    expect(res.error?.message).not.toMatch(/status 0|earlier read/)
+    expect(leadDatabaseDown(db)).toMatch(/held click record, did not answer in time/)
   })
 
   it('says why the lead knows its database is down, for a write with its own repair to skip waiting on it', async () => {

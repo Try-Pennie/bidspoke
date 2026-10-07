@@ -13,14 +13,18 @@
  * leadRead in that lead answers at once without asking the database, so an
  * outage costs a lead one deadline, not one per read.
  *
- * Reads only. A write is never given a deadline here: a write that timed out
- * may still have landed, and nothing here could tell. A read with no copy to
- * fall back on is not routed through this either, because a deadline would turn
- * a slow healthy read into a failed lead. It does lose the library's retries:
- * the lead's client is built with them off, as plan A1 says for every read a
- * lead waits on, so in an outage such a read fails after one attempt instead of
- * after 7 s of retrying. Those reads get copies of their own in #1849. Scheduled jobs and the signed-in app
- * use plain clients, on which leadRead runs the read exactly as before.
+ * Writes are never given a deadline here: a write that timed out may still
+ * have landed, and nothing here could tell. A write the lead waits on bounds
+ * itself, and one that did not answer in time says so through
+ * noteLeadWriteUnanswered, which trips the lead exactly as a failed read does
+ * (#1849); leadDatabaseDown then lets a write with its own repair skip a
+ * database the lead has already seen fail. A read with no copy to fall back on
+ * is not routed through leadRead, because a deadline would turn a slow healthy
+ * read into a failed lead. It does lose the library's retries: the lead's client
+ * is built with them off, as plan A1 says for every read a lead waits on, so in
+ * an outage such a read fails after one attempt instead of after 7 s of
+ * retrying. Scheduled jobs and the signed-in app use plain clients, on which
+ * leadRead runs the read exactly as before.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
@@ -40,7 +44,8 @@ export const LEAD_DB_DOWN_CODE = 'BIDSPOKE_LEAD_DB_DOWN'
 
 interface LeadState {
   deadline: (ms: number) => AbortSignal
-  failed: { what: string; status: number } | null
+  /** The first call that failed, and how: an HTTP status, no answer at all, or a write that ran out of time. */
+  failed: { what: string; how: string } | null
 }
 
 const leads = new WeakMap<object, LeadState>()
@@ -81,7 +86,7 @@ interface ReadResult {
 export function noteLeadWriteUnanswered(client: object, what: string): void {
   const lead = leads.get(client)
   if (!lead || lead.failed) return
-  lead.failed = { what, status: 0 }
+  lead.failed = { what, how: 'did not answer in time' }
   console.warn(JSON.stringify({ event: 'lead_db_write_unanswered', what }))
 }
 
@@ -94,7 +99,7 @@ export function noteLeadWriteUnanswered(client: object, what: string): void {
  */
 export function leadDatabaseDown(client: object): string | null {
   const failed = leads.get(client)?.failed
-  return failed ? `an earlier database call in this lead failed (${failed.what}, status ${failed.status})` : null
+  return failed ? `an earlier database call in this lead failed (${failed.what}, ${failed.how})` : null
 }
 
 /**
@@ -111,7 +116,7 @@ export async function leadRead<R extends ReadResult>(client: object, query: Read
       data: null,
       error: {
         code: LEAD_DB_DOWN_CODE,
-        message: `Not asked: an earlier read in this lead failed (${lead.failed.what}, status ${lead.failed.status})`,
+        message: `Not asked: an earlier database call in this lead failed (${lead.failed.what}, ${lead.failed.how})`,
         details: '',
         hint: '',
       },
@@ -129,7 +134,8 @@ export async function leadRead<R extends ReadResult>(client: object, query: Read
   query.abortSignal(lead.deadline(options.deadlineMs ?? LEAD_READ_DEADLINE_MS))
   const result = await query
   if (result.error && (result.status === 0 || result.status >= 500)) {
-    lead.failed = { what, status: result.status }
+    // A request that never got a response carries status 0, which is no HTTP status.
+    lead.failed = { what, how: result.status > 0 ? `status ${result.status}` : 'no answer' }
     console.warn(JSON.stringify({ event: 'lead_db_read_failed', what, status: result.status, message: result.error.message }))
   }
   return result
