@@ -37,7 +37,6 @@ import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
 import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
 const WORKER_ROOT = path.dirname(WORKER_SRC)
-const ANCHOR_FILE = path.join(WORKER_SRC, 'index.ts')
 
 const rel = (file: string) => path.relative(WORKER_SRC, file).replace(/\\/g, '/')
 
@@ -175,7 +174,9 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
     [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
     [PLANTED_FILTER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n",
   }
-  const plantedProgram = buildWorkerProgram([ANCHOR_FILE], planted)
+  // Rooted at the planted files alone: they import only hono and one small
+  // module, so this program does not load the whole worker a second time.
+  const plantedProgram = buildWorkerProgram([], planted)
   const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
   const plantedFindings = (file: string): Finding[] => {
     const found = plantedResults.get(file)
