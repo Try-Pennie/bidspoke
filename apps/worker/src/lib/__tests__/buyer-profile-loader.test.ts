@@ -12,7 +12,8 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerClickDelivery, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerClickDelivery, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -136,6 +137,38 @@ describe('loadBuyerProfiles', () => {
     expect(store.has('buyer-profiles:org-1')).toBe(false)
   })
 
+  // #1847: the copy is served for at most thirty minutes after a read last
+  // confirmed it (its loaded_at); past that, or with no readable time, refused.
+  describe('a last good copy is served for at most thirty minutes after it was confirmed (#1847)', () => {
+    const t0 = Date.UTC(2026, 9, 7, 12)
+    async function warmThenDown() {
+      const { kv, store } = fakeKv()
+      await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 })
+      store.delete('buyer-profiles:org-1')
+      return { kv, store, bad: fakeSupabase({ data: null, error: { message: 'connection reset' } }).supabase }
+    }
+
+    it('serves a copy confirmed exactly thirty minutes ago', async () => {
+      const { kv, bad } = await warmThenDown()
+      const snapshot = await loadBuyerProfiles('org-1', kv, bad, { now: () => t0 + STORED_COPY_MAX_AGE_MS })
+      expect(snapshot.served_from).toBe('last_good')
+    })
+
+    it('refuses a copy one millisecond older, by name', async () => {
+      const { kv, bad } = await warmThenDown()
+      const load = loadBuyerProfiles('org-1', kv, bad, { now: () => t0 + STORED_COPY_MAX_AGE_MS + 1 })
+      await expect(load).rejects.toBeInstanceOf(StoredCopyRefusedError)
+      await expect(load).rejects.toMatchObject({ reason: 'copy_too_old', copy: 'buyer_profiles' })
+    })
+
+    it('refuses a copy whose loaded_at cannot be read', async () => {
+      const { kv, store, bad } = await warmThenDown()
+      const held = JSON.parse(store.get('buyer-profiles:org-1:lastgood')!.value) as Record<string, unknown>
+      store.set('buyer-profiles:org-1:lastgood', { ...store.get('buyer-profiles:org-1:lastgood')!, value: JSON.stringify({ ...held, loaded_at: 'garbled' }) })
+      await expect(loadBuyerProfiles('org-1', kv, bad, { now: () => t0 })).rejects.toMatchObject({ reason: 'copy_age_unknown' })
+    })
+  })
+
   it('a failed read with no last good copy throws, naming the failure (L11)', async () => {
     const bad = fakeSupabase({ data: null, error: { message: 'connection reset' } })
     const { kv } = fakeKv()
@@ -203,23 +236,23 @@ describe('loadBuyerProfiles', () => {
     expect(lastGoodWrites()).toBe(before)
   })
 
-  it('unchanged content is rewritten once it is older than the refresh age, so its loaded_at says when it was last confirmed', async () => {
+  it('unchanged content is rewritten once it is the shared reconfirm age old, so its loaded_at says when it was last confirmed', async () => {
     const { kv, store, spies } = fakeKv()
     const lastGoodWrites = () => spies.put.mock.calls.filter(([k]) => k === 'buyer-profiles:org-1:lastgood').length
     const t0 = Date.UTC(2026, 8, 22, 12)
     await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 })
     store.delete('buyer-profiles:org-1')
     const before = lastGoodWrites()
-    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS })
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + STORED_COPY_RECONFIRM_AFTER_MS - 1 })
     expect(lastGoodWrites()).toBe(before)
     store.delete('buyer-profiles:org-1')
-    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS + 1 })
+    await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: [ROW], error: null }).supabase, { now: () => t0 + STORED_COPY_RECONFIRM_AFTER_MS })
     expect(lastGoodWrites()).toBe(before + 1)
-    expect(JSON.parse(store.get('buyer-profiles:org-1:lastgood')?.value ?? '{}').loaded_at).toBe(new Date(t0 + BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS + 1).toISOString())
+    expect(JSON.parse(store.get('buyer-profiles:org-1:lastgood')?.value ?? '{}').loaded_at).toBe(new Date(t0 + STORED_COPY_RECONFIRM_AFTER_MS).toISOString())
   })
 
   it('refreshes the last good copy well inside the age buyer_click_check will still offer from', () => {
-    expect(BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS * 2).toBeLessThanOrEqual(CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)
+    expect(STORED_COPY_RECONFIRM_AFTER_MS * 2).toBeLessThanOrEqual(CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)
   })
 
   it('invalidate clears the cache and leaves the last good copy', async () => {

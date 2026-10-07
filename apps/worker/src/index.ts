@@ -746,6 +746,8 @@ export default {
         sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE))
           .then((r) => {
             if (r.repaired.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} repaired=${r.repaired.length} ${r.repaired.join(' ')}`)
+            // Copies no lead reached, stamped as confirmed so they do not age out (#1847).
+            if (r.reconfirmed.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} reconfirmed=${r.reconfirmed.length}`)
             if (r.failed.length > 0) console.error(`[stored-copy-sweep] could not sweep: ${r.failed.join(' | ')}`)
           })
           .catch((e) => console.error('[stored-copy-sweep] failed:', e))

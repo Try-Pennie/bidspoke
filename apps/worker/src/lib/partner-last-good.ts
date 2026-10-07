@@ -25,45 +25,67 @@
  * updated_at on every UPDATE, so their record no longer matches the row. A
  * deleted partner has no row to read, and the first read that finds it gone
  * removes any copy a racing lead wrote after the retire.
+ *
+ * The copy is served for at most STORED_COPY_MAX_AGE_MS after it was last
+ * confirmed (#1847), and carries that time in its KV metadata, so the value is
+ * still the row exactly as the release before wrote it. A read confirms it when
+ * the row changed or when this isolate last wrote it STORED_COPY_RECONFIRM_AFTER_MS
+ * ago, so a partner that keeps bidding keeps a fresh copy at one write per
+ * isolate per five minutes; the per minute stored copy sweep confirms the copy
+ * of a partner no lead has reached, against the row's updated_at.
  */
 import { formatErr } from './format-error'
+import { STORED_COPY_RECONFIRM_AFTER_MS, confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
 
 /** The KV key holding a partner's last-good config. */
 export const partnerLastGoodKey = (partnerId: string): string => `partner-lastgood:${partnerId}`
 
-// The updated_at this isolate last wrote, per partner. Module state on purpose:
-// it lives as long as the isolate, which is what keeps the write rate down.
-const lastGoodWritten = new Map<string, string>()
+// The updated_at this isolate last wrote, per partner, and when. Module state on
+// purpose: it lives as long as the isolate, which is what keeps the write rate down.
+const lastGoodWritten = new Map<string, { stamp: string; atMs: number }>()
 
 interface PartnerRow {
   id: string
   updated_at?: string | null
 }
 
-/** Write the copy when the row has changed since this isolate last wrote it. Never throws. */
-export async function rememberPartnerLastGood(kv: KVNamespace | undefined, partner: PartnerRow): Promise<void> {
+/**
+ * Write the copy, stamped as confirmed at `nowMs`, when the row has changed
+ * since this isolate last wrote it or that write is due to be confirmed again.
+ * Never throws.
+ */
+export async function rememberPartnerLastGood(kv: KVNamespace | undefined, partner: PartnerRow, nowMs: number): Promise<void> {
   if (!kv) return
   const stamp = partner.updated_at ?? ''
-  if (lastGoodWritten.get(partner.id) === stamp) return
+  const written = lastGoodWritten.get(partner.id)
+  if (written && written.stamp === stamp && nowMs - written.atMs < STORED_COPY_RECONFIRM_AFTER_MS) return
   try {
-    await kv.put(partnerLastGoodKey(partner.id), JSON.stringify(partner))
-    lastGoodWritten.set(partner.id, stamp)
+    await kv.put(partnerLastGoodKey(partner.id), JSON.stringify(partner), confirmedAt(nowMs))
+    lastGoodWritten.set(partner.id, { stamp, atMs: nowMs })
   } catch (e) {
     // The bid must not fail because the safety copy could not be written.
     console.error(`[partner-bid] last-good write failed for ${partner.id}: ${formatErr(e)}`)
   }
 }
 
-/** The copy, or null when there is none or it does not parse. Read only after a failed database read. */
-export async function readPartnerLastGood<T>(kv: KVNamespace | undefined, partnerId: string): Promise<T | null> {
+/**
+ * The copy, read only after a failed database read: null when there is none or
+ * it does not parse. Throws StoredCopyRefusedError, with the refusal logged,
+ * when it is past the maximum age or carries no readable confirmation (#1847).
+ */
+export async function readPartnerLastGood<T>(kv: KVNamespace | undefined, partnerId: string, dbError: string, nowMs: number): Promise<T | null> {
   if (!kv) return null
-  const raw = await kv.get(partnerLastGoodKey(partnerId))
-  if (!raw) return null
+  const held = await readConfirmedCopy(kv, partnerLastGoodKey(partnerId))
+  if (!held) return null
+  let copy: T
   try {
-    return JSON.parse(raw) as T
+    copy = JSON.parse(held.value) as T
   } catch {
     return null
   }
+  const age = judgeCopyAge(held.confirmedAt, nowMs)
+  if (!age.usable) throw refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: age.reason, ageMs: age.ageMs, dbError })
+  return copy
 }
 
 /**

@@ -33,19 +33,11 @@ import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createLeadSupabaseClient, leadRead } from '../lib/lead-read-budget'
 import { isNotFoundError } from '../lib/api-error'
 import { sourceForApiKey } from '../lib/api-key-map'
-import { endpointHotKey, endpointLastGoodKey } from '../lib/endpoint-copies'
+import { endpointCopyOf, endpointHotKey, endpointLastGoodKey, readEndpointLastGood, writeEndpointLastGood, type CachedEndpoint } from '../lib/endpoint-copies'
 import { formatErr } from '../lib/format-error'
 
 const HOOK_HOST = 'hook.trypennie.dev'
 const CACHE_TTL = 60 // seconds
-
-interface CachedEndpoint {
-  id: string
-  workflow_id: string
-  source_name: string
-  is_active: boolean
-  auth_method: 'api_key' | 'none'
-}
 
 /**
  * Returns true if the request is for the custom endpoint host.
@@ -60,17 +52,6 @@ export function isCustomEndpointHost(host: string): boolean {
 function normalizePath(raw: string): string {
   const stripped = raw.replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase()
   return stripped === '' ? '/' : '/' + stripped
-}
-
-// The durable copy is read only on a failed lookup. A corrupt entry is a miss.
-async function readLastGood(kv: KVNamespace, key: string): Promise<CachedEndpoint | null> {
-  const raw = await kv.get(key)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as CachedEndpoint
-  } catch {
-    return null
-  }
 }
 
 export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promise<Response> {
@@ -133,14 +114,15 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     // source the endpoint is gone, so it stops retrying and the lead is dropped.
     // Return 503 (retryable) instead. Real error logged, not leaked (#107, #303).
     if (error && !isNotFoundError(error)) {
-      // Serve the durable copy from the last successful lookup (#1296). Only when
-      // there has never been one is the lead refused.
-      const stale = await readLastGood(c.env.WORKFLOW_CACHE, lastGoodKey)
+      // Serve the durable copy from the last successful lookup (#1296), while
+      // it is within the maximum age since a lookup or the sweep last confirmed
+      // it (#1847). No copy, or one refused, is a retryable 503, with the
+      // refusal and its reason logged by the read.
+      const stale = await readEndpointLastGood(c.env.WORKFLOW_CACHE, partner, path, error.message, Date.now())
       if (stale) {
         console.error(`[custom-endpoint] endpoint lookup failed; serving last-good record for ${partner}${path}:`, error)
         endpoint = stale
       } else {
-        console.error('[custom-endpoint] endpoint lookup failed and no last-good record exists:', error)
         return c.json({ error: 'Temporarily unavailable' }, 503)
       }
     } else if (!data) {
@@ -156,19 +138,13 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
       }
       return c.json({ error: 'Endpoint not found' }, 404)
     } else {
-      const triggerAuth = data.workflows?.definition?.trigger?.config?.auth_method
-      endpoint = {
-        id: data.id,
-        workflow_id: data.workflow_id,
-        source_name: data.source_name,
-        is_active: data.is_active,
-        auth_method: triggerAuth === 'none' ? 'none' : 'api_key',
-      }
+      endpoint = endpointCopyOf(data, data.workflows?.definition?.trigger?.config?.auth_method)
       const serialized = JSON.stringify(endpoint)
       // Cache even if inactive: inactive endpoints just return 404 quickly.
-      // The hot copy expires; the last-good copy does not (#1296).
+      // The hot copy expires; the last-good copy does not (#1296), and carries
+      // the time this lookup confirmed it (#1847).
       await c.env.WORKFLOW_CACHE.put(cacheKey, serialized, { expirationTtl: CACHE_TTL })
-      await c.env.WORKFLOW_CACHE.put(lastGoodKey, serialized)
+      await writeEndpointLastGood(c.env.WORKFLOW_CACHE, partner, path, endpoint, Date.now())
     }
   }
 

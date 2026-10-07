@@ -29,9 +29,16 @@ afterEach(() => vi.unstubAllGlobals())
 
 const ctx = () => ({ waitUntil: vi.fn(), passThroughOnException: vi.fn() }) as unknown as ExecutionContext
 
+// Each seeded entry is held as a healthy read just left it, confirmed now (#1847).
 function kv(entries: Record<string, string> = {}) {
   const store = new Map(Object.entries(entries))
-  return { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => { store.set(k, v) }, delete: async (k: string) => { store.delete(k) } }
+  const meta = new Map<string, unknown>(Object.keys(entries).map((k) => [k, { confirmed_at: new Date().toISOString() }]))
+  return {
+    get: async (k: string) => store.get(k) ?? null,
+    getWithMetadata: async (k: string) => ({ value: store.get(k) ?? null, metadata: meta.get(k) ?? null }),
+    put: async (k: string, v: string, opts?: { metadata?: unknown }) => { store.set(k, v); meta.set(k, opts?.metadata ?? null) },
+    delete: async (k: string) => { store.delete(k); meta.delete(k) },
+  }
 }
 
 /** The client the route gave the engine, read through moneyRuntime's config. */
