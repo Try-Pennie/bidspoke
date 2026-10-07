@@ -333,7 +333,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
       return late()
     })
-    const { db, result } = await run((c) => {
+    const { db, result, deadLetters } = await run((c) => {
       late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
       return 'up'
     })
@@ -341,9 +341,13 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     const row = db.executions.get(result.executionId)
     expect(row?.status).toBe('degraded')
     expect(String(row?.error_message)).toMatch(/did not finish within .* of the answer/)
-    // Every write the run made, finalize included, landed inside the budget.
-    const finalizeWrite = db.calls.filter((c) => c.table === 'workflow_executions' && c.op === 'update')
-    expect(finalizeWrite.length).toBeGreaterThan(0)
-    expect(Math.max(...finalizeWrite.map((c) => c.at))).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+    // The run's finalize and the lead sighting's finalize both ran, and every
+    // database call the run made landed inside the budget.
+    expect(db.calls.some((c) => c.table === 'workflow_executions' && c.op === 'update')).toBe(true)
+    expect(db.calls.some((c) => c.table === 'lead_sightings' && c.op === 'update')).toBe(true)
+    expect(Math.max(...db.calls.map((c) => c.at))).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+    // Unfinished is not a failed Salesforce write: counted under its own label.
+    expect(deadLetters('continuation_unfinished')).toHaveLength(1)
+    expect(deadLetters('sf_writeback')).toEqual([])
   })
 })
