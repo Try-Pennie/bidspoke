@@ -20,6 +20,7 @@ import {
 import { assertWorkflowServedInLane, WorkflowLaneError } from '../lane'
 import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../lib/lead-read-budget'
 import { STORED_COPY_MAX_AGE_MS, StoredCopyRefusedError } from '../../lib/stored-copy-age'
+import { flushStoredCopyLedger, forgetStoredCopyLedger, readStoredCopyLedger, type LedgerKv } from '../../lib/stored-copy-ledger'
 import type { Env } from '../../index'
 
 const WF_ID = 'wf-copy-1'
@@ -318,6 +319,62 @@ describe('serving the copy when the database read fails', () => {
       loadWorkflowDefinition(WF_ID, asKv(kv), realClient(db), { allowInactive: true }),
     ).rejects.toThrow(/Failed to load workflow/)
     expect(kv.gets).not.toContain(COPY_KEY)
+  })
+})
+
+/** What the per minute check will read for the workflow copy: the ledger, flushed to a KV double and read back. */
+async function workflowTally(): Promise<Record<string, number>> {
+  const store = new Map<string, unknown>()
+  const ledger = {
+    async put(key: string, _value: string, opts?: { metadata?: unknown }) { store.set(key, opts?.metadata ?? null) },
+    async list() {
+      return { keys: [...store.entries()].map(([name, metadata]) => ({ name, metadata })), list_complete: true as const, cursor: undefined, cacheStatus: null }
+    },
+  } as unknown as LedgerKv
+  await flushStoredCopyLedger(ledger, { now: () => Date.now(), sleep: async () => {} })
+  const reading = await readStoredCopyLedger(ledger, Date.now(), 2)
+  return reading.kinds.workflow_definition?.refused ?? {}
+}
+
+describe('the ledger names a copy that was there but unusable apart from one that was missing (#1848)', () => {
+  beforeEach(() => { forgetStoredCopyLedger() })
+  afterEach(() => { forgetStoredCopyLedger() })
+  const down = () => realClient({ mode: 'down-503', row: baseRow, requests: 0 })
+
+  it('no copy at all is counted as no_copy', async () => {
+    await expect(loadWorkflowDefinition(WF_ID, asKv(fakeKv()), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 1, copy_unusable: 0 })
+  })
+
+  it('a copy KV would not hand back is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    kv.get.mockImplementation(async (key: string) => {
+      if (key === COPY_KEY) throw new Error('KV GET failed: 500')
+      return null
+    })
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
+  })
+
+  it('a copy left unverified by a change is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'down-500', row: { ...baseRow, is_active: false }, requests: 0 }))
+    kv.store.delete(CACHE_KEY)
+    forgetStoredCopyLedger()
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
+  })
+
+  it('a copy the engine cannot run is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    const damaged = heldCopy(kv)!
+    kv.store.set(COPY_KEY, JSON.stringify({ ...damaged, lane: 'sideways', workflow: { ...damaged.workflow, lane: 'sideways' } }))
+    kv.store.delete(CACHE_KEY)
+    forgetStoredCopyLedger()
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down(), { now: () => T0 })).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
   })
 })
 
