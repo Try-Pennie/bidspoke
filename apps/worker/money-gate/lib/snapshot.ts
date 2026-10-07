@@ -150,6 +150,15 @@ export function snapshotEnvVar(row: EnvVarRow): EnvVarRow {
   }
 }
 
+/**
+ * The updated_at every workflow row in the snapshot carries. Production rows
+ * always have one (a trigger moves it on every update), and the definition
+ * loader writes its stored outage copy (#1845) only from a row with a readable
+ * stamp, so a row without one would leave the outage drill (#1305) no copy to
+ * serve. A fixed value, because the real one says nothing the replay needs.
+ */
+export const SNAPSHOT_WORKFLOW_UPDATED_AT = '2026-01-01T00:00:00+00:00'
+
 export interface ConfigSnapshot {
   version: 1
   exported_at: string

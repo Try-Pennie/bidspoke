@@ -173,6 +173,64 @@ The gate also fails, by name, when it checked nothing: a transcript with no
 workflow or no fixture, a committed definition the head did not replay, or a
 workflow not replayed as a test run or as a shadow run.
 
+## The outage drill
+
+`money-gate/harness/outage.workers.test.ts` (#1305, plan on #1675) proves each
+money flow keeps answering its caller, deciding and sending exactly what it would
+with the database up, while every database call fails. It reuses this harness
+(`harness/replay-core.ts`) and runs the head only, as its own CI job, `Outage
+drill`, woken by the same inputs decision as the gate.
+
+For each live fixture of each money flow it:
+
+1. warms the stored copies the way production does, with the Worker's own
+   per minute prewarm plus one lead on a different prospect;
+2. keeps only the stored copies (every KV key named `lastgood`), as an outage
+   that outlived every short cache would find them;
+3. runs the lead with the database up, from that state (the twin);
+4. runs it again from the same state once per outage shape (`lib/outage.ts`): a
+   refused connection, a PostgREST 503, and a Cloudflare HTML 522, with the engine
+   handed the Worker's own lead client over that network;
+5. requires each down run to match its twin on the response, every request sent,
+   every code dispatch, every route taken, the nodes run and the Durable Object
+   state. Writes to the database are not compared: losing the logging of a run
+   in an outage is allowed (Dan, 2026-09-10); losing the lead is not.
+
+A down run that never asked the database fails the drill, because it drilled
+nothing. Decisions come from the engine's step observer, since a down run never
+writes its step rows, and every post-response retry waits on an injected clock.
+
+```
+cd apps/worker && pnpm exec vitest run --config vitest.outage-drill.config.mts
+```
+
+`OUTAGE_DRILL_ONLY="<workflow name>"` drills one flow; the report then says it was
+narrowed. `MONEY_GATE_OUT=<file>` writes the report: each fixture's differences,
+each one naming the first position where the down run parted from its twin, and
+the time spent by phase.
+
+**Exemptions.** A flow that does not pass yet is listed in
+`money-gate/outage-exemptions.json` with its workflow, the outage shape (or `*`),
+its expected first difference (`field: pattern`, `*` as a wildcard), the issue
+that removes it and an expiry date. Any other difference still fails, an expired
+entry fails, and an entry that matched nothing fails, so a fixed flow cannot stay
+exempt.
+
+**Not drilled**, each for its reason:
+
+* Test and shadow runs: they carry no lead.
+* The custom endpoint route: the replay calls the engine directly. Its stored
+  record has its own tests (`routes/__tests__/custom-endpoint.test.ts`).
+* A database that hangs rather than fails: #1851.
+* `Delegate Gmail Access for Offboarded Agents`: it moves no lead.
+* A Cloudflare outage: the Worker itself is down, so nothing here runs.
+
+**Known quirk.** workerd reports a rejected fetch as unhandled even when
+supabase-js catches it and the caller awaits the answer (reproduced with one
+awaited read and nothing of ours around it), so the drill's config ignores
+exactly the refused shape's own rejection (`isRefusedShapeRejection`); any other
+unhandled error still fails the run.
+
 ## Known limits
 
 * The HTTP route (auth, body parsing, custom endpoints) is not exercised: the

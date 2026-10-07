@@ -66,7 +66,8 @@ export default defineConfig({
   },
   server: { fs: { allow: [repoRoot, engineRoot] } },
   test: {
-    include: ['money-gate/harness/*.workers.test.ts'],
+    // The gate's replay only; the outage drill has its own config and job (#1305).
+    include: ['money-gate/harness/replay.workers.test.ts'],
     testTimeout: 900_000,
     hookTimeout: 120_000,
     env: { TZ: 'UTC', LANG: 'en_US.UTF-8' },

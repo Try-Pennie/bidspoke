@@ -4,7 +4,9 @@ import {
   applyExemptions,
   compareOutage,
   decisionsFrom,
+  firstStepOutputDifference,
   isLastGoodKey,
+  isRefusedShapeRejection,
   outageNetwork,
   type OutageRecord,
   type OutageExemption,
@@ -126,6 +128,16 @@ describe('compareOutage', () => {
     expect(compareOutage(two, swapped)).toEqual([])
   })
 
+  // A long list differing late would be cut off before the difference, so a
+  // list's detail names the first position where the two runs part (L445).
+  it('names the first position where two lists part, however long they are', () => {
+    const long = Array.from({ length: 40 }, (_, i) => `step_${i}`)
+    const down = { ...base, decisions: { ...base.decisions, nodes_executed: [...long.slice(0, 33), 'refuse_by_name'] } }
+    const diff = compareOutage({ ...base, decisions: { ...base.decisions, nodes_executed: long } }, down).find((d) => d.field === 'nodes_executed')!
+    expect(diff.detail).toMatch(/^at \[33\]: up "step_33"; down "refuse_by_name"/)
+    expect(diff.detail).toMatch(/up has 40, down has 34/)
+  })
+
   it('puts the error first, so it is what an exemption keys on', () => {
     const diffs = compareOutage(base, { ...base, error: 'Error: Failed to load workflow', response: { status: 0, body: null } })
     expect(diffs[0].field).toBe('error')
@@ -164,5 +176,56 @@ describe('applyExemptions', () => {
   it('fails an entry that matched nothing, so a fixed flow cannot stay exempt', () => {
     const r = applyExemptions([], [ex()], today)
     expect(r.failures.join('\n')).toMatch(/matched no difference.*#1845/)
+  })
+})
+
+/**
+ * workerd reports a rejected fetch as unhandled even when supabase-js catches it
+ * and the caller awaits the result (reproduced 2026-10-07 with one awaited read,
+ * outside the engine), so every read the refused shape fails would fail the run.
+ * Only that rejection is ignored; any other unhandled error still fails it.
+ */
+describe('isRefusedShapeRejection', () => {
+  it('recognises the refused shape rejecting a request', async () => {
+    const err = await outageNetwork('refused').fetch('https://x/rest/v1/t', {}).catch((e: unknown) => e)
+    expect(isRefusedShapeRejection(err)).toBe(true)
+  })
+
+  it('recognises it once serialized, as vitest hands it over', async () => {
+    const err = (await outageNetwork('refused').fetch('https://x/rest/v1/t', {}).catch((e: unknown) => e)) as Error
+    expect(isRefusedShapeRejection({ name: err.name, message: err.message, stack: err.stack })).toBe(true)
+  })
+
+  it.each([
+    ['a fetch failure from anywhere else', Object.assign(new TypeError('fetch failed'), { stack: 'TypeError: fetch failed\n    at somewhere (src/engine/index.ts:1:1)' })],
+    ['another error from the drill network file', Object.assign(new Error('boom'), { stack: 'Error: boom\n    at fetchImpl (money-gate/lib/outage.ts:34:36)' })],
+    ['not an error at all', 'fetch failed'],
+    ['nothing', undefined],
+  ])('does not recognise %s', (_why, err) => {
+    expect(isRefusedShapeRejection(err)).toBe(false)
+  })
+})
+
+/**
+ * Which step first produced a different output, so a down run that took another
+ * path names its cause (the attempt that failed), not only where the paths split.
+ */
+describe('firstStepOutputDifference', () => {
+  const step = (ns: string, output: unknown, order = 1) => ({ step_order: order, step_namespace: ns, step_type: 'code', output })
+
+  it('names the first step, in step order, whose output differs', () => {
+    const up = [step('a', { x: 1 }, 1), step('bid_race.tripoint', { bid: 22 }, 2), step('bid_race', { _route: 'winner' }, 3)]
+    const down = [step('a', { x: 1 }, 1), step('bid_race.tripoint', { skipped: true, reason: 'config_unavailable' }, 2), step('bid_race', { _route: 'no_winner' }, 3)]
+    const d = firstStepOutputDifference(up, down)!
+    expect(d.namespace).toBe('bid_race.tripoint')
+    expect(d.down).toContain('config_unavailable')
+  })
+
+  it('names a step only one run reached', () => {
+    expect(firstStepOutputDifference([step('a', 1)], [step('a', 1), step('b', 2, 2)])!.namespace).toBe('b')
+  })
+
+  it('is null when every step output agrees', () => {
+    expect(firstStepOutputDifference([step('a', { x: 1 })], [step('a', { x: 1 })])).toBeNull()
   })
 })

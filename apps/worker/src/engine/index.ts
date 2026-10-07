@@ -1371,22 +1371,21 @@ export async function walkGraph(
       const maxAttempts = (config.mode === 'tiered' ? tieredPartnerCount : partnerIds.length) + (fallbackId ? 1 : 0)
       const groupEndOrder = attemptOrderBase + maxAttempts
 
-      // Pre-load partner slugs in one query so the synthesized namespaces use the slug
-      // instead of the UUID — much friendlier in the test panel.
+      // Each attempt is named by its partner's slug (bid_race.tripoint), which later
+      // steps, the step rows and the sightings read. The slugs come from the partner
+      // constants loader, whose stored copy is served when the database cannot be
+      // read, so an outage names attempts as a healthy day does (#1849, found by the
+      // outage drill, #1305). With no copy either, attempts fall back to `partner-N`
+      // and still bid, and that is logged.
       const tieredPartnerIds = tiers.flatMap((t) => t.partner_ids ?? [])
       const allIds = Array.from(new Set([...partnerIds, ...tieredPartnerIds, ...(fallbackId ? [fallbackId] : [])]))
       const slugByPartnerId = new Map<string, string>()
       if (allIds.length > 0) {
-        const { data: rows, error: slugErr } = await supabase
-          .from('partner_configs')
-          .select('id, slug')
-          .in('id', allIds)
-        // On error the map stays empty and namespaces fall back to `partner-N`.
-        // That's a cosmetic mislabel (don't fail a bid over it), but log it so the
-        // mislabeled analytics rows aren't a silent mystery.
-        if (slugErr) console.error('[bid-group] partner slug preload failed; using partner-N fallback:', slugErr)
-        for (const r of (rows ?? []) as { id: string; slug: string }[]) {
-          slugByPartnerId.set(r.id, r.slug)
+        try {
+          const { slugsById = {} } = await loadPartnerConstants(ctx.trigger.org_id, env.WORKFLOW_CACHE, supabase)
+          for (const id of allIds) if (slugsById[id]) slugByPartnerId.set(id, slugsById[id])
+        } catch (err) {
+          console.error(`[bid-group] partner slugs could not be loaded; using partner-N fallback: ${formatErr(err)}`)
         }
       }
 

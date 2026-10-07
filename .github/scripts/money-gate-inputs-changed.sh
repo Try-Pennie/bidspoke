@@ -53,7 +53,7 @@ fi
 # apps/compare-outbound/src/ because the harness answers compare bundles' requests
 # with that Worker's own handler (#1708 part B); inputs-changed.test.ts derives
 # every file the harness imports and requires each to wake the gate.
-PATTERN='^(apps/worker/(src|money-gate)/|apps/compare-outbound/src/|apps/worker/(wrangler\.toml|package\.json|tsconfig[^/]*\.json|vitest\.money-gate[^/]*\.mts|scripts/export-money-fixture-shapes\.ts)$|packages/|pnpm-lock\.yaml$|package\.json$|pnpm-workspace\.yaml$|\.github/scripts/money-gate[^/]*\.sh$|\.github/workflows/(ci|deploy)\.yml$)'
+PATTERN='^(apps/worker/(src|money-gate)/|apps/compare-outbound/src/|apps/worker/(wrangler\.toml|package\.json|tsconfig[^/]*\.json|vitest\.(money-gate|outage-drill)[^/]*\.mts|scripts/export-money-fixture-shapes\.ts)$|packages/|pnpm-lock\.yaml$|package\.json$|pnpm-workspace\.yaml$|\.github/scripts/money-gate[^/]*\.sh$|\.github/workflows/(ci|deploy)\.yml$)'
 
 matched=$(printf '%s\n' "$FILES" | grep -E "$PATTERN" | head -n 5)
 

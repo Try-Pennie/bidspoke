@@ -10,7 +10,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
@@ -19,7 +20,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
@@ -28,7 +30,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
@@ -37,7 +40,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
@@ -46,7 +50,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
@@ -55,7 +60,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       },
       {
         "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
@@ -64,7 +70,8 @@
         "slack_channel": null,
         "is_active": true,
         "deleted_at": null,
-        "lane": "money"
+        "lane": "money",
+        "updated_at": "2026-01-01T00:00:00+00:00"
       }
     ],
     "workflow_versions": [

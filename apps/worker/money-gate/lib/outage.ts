@@ -47,6 +47,20 @@ export function outageNetwork(shape: OutageShape): OutageNetwork {
 }
 
 /**
+ * Whether an unhandled error vitest reports is the refused shape's own rejection.
+ * workerd reports a rejected fetch as unhandled even when supabase-js catches it
+ * and the caller awaits the answer (reproduced 2026-10-07 with a single awaited
+ * read and nothing of ours around it), so every read the refused shape fails would
+ * otherwise fail the drill. Matched on the error itself AND its origin in this
+ * file, so any other unhandled error still fails the run.
+ */
+export function isRefusedShapeRejection(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { name?: unknown; message?: unknown; stack?: unknown }
+  return e.name === 'TypeError' && e.message === 'fetch failed' && typeof e.stack === 'string' && /money-gate\/lib\/outage\.ts/.test(e.stack)
+}
+
+/**
  * A KV key holding a stored copy served when the database cannot be read. Every
  * such key the worker writes names itself `lastgood` (ep-lastgood:,
  * partner-lastgood:, env-vars-<org>-lastgood, partner-constants-v2-<org>-lastgood,
@@ -80,6 +94,26 @@ export function decisionsFrom(steps: ObservedStep[]): Decisions {
     nodes_executed: ordered.map((s) => s.step_namespace),
     final_node: ordered.length ? ordered[ordered.length - 1].step_namespace : null,
   }
+}
+
+/**
+ * The first step, in step order, whose output differs between the two runs, or
+ * that only one of them reached: the cause a report names, where the decisions
+ * only say where the paths split. A diagnostic for the report, never compared.
+ */
+export function firstStepOutputDifference(up: ObservedStep[], down: ObservedStep[]): { namespace: string; up: string; down: string } | null {
+  const order = (xs: ObservedStep[]) => [...xs].sort((a, b) => a.step_order - b.step_order || a.step_namespace.localeCompare(b.step_namespace))
+  const upByNs = new Map(up.map((s) => [s.step_namespace, s]))
+  const downByNs = new Map(down.map((s) => [s.step_namespace, s]))
+  const namespaces = [...new Set([...order(up), ...order(down)].sort((a, b) => a.step_order - b.step_order).map((s) => s.step_namespace))]
+  for (const ns of namespaces) {
+    const a = upByNs.get(ns)
+    const b = downByNs.get(ns)
+    const sa = a ? canonical(a.output) : '(not reached)'
+    const sb = b ? canonical(b.output) : '(not reached)'
+    if (sa !== sb) return { namespace: ns, up: sa.slice(0, 400), down: sb.slice(0, 400) }
+  }
+  return null
 }
 
 export interface OutboundSent { via: string; method: string; host: string; path: string; headers?: Record<string, string>; body: unknown }
@@ -119,7 +153,16 @@ const short = (v: unknown) => {
 export function compareOutage(up: OutageRecord, down: OutageRecord): OutageDifference[] {
   const diffs: OutageDifference[] = []
   const check = (field: string, a: unknown, b: unknown) => {
-    if (canonical(a) !== canonical(b)) diffs.push({ field, detail: `up ${short(a)}; down ${short(b)}` })
+    if (canonical(a) === canonical(b)) return
+    if (Array.isArray(a) && Array.isArray(b)) {
+      // The first place the runs part: a long list cut short would hide it (L445).
+      let i = 0
+      while (i < a.length && i < b.length && canonical(a[i]) === canonical(b[i])) i++
+      const at = (xs: unknown[]) => (i < xs.length ? short(xs[i]) : '(nothing)')
+      diffs.push({ field, detail: `at [${i}]: up ${at(a)}; down ${at(b)} (up has ${a.length}, down has ${b.length})` })
+      return
+    }
+    diffs.push({ field, detail: `up ${short(a)}; down ${short(b)}` })
   }
   if ((up.error ?? null) !== (down.error ?? null)) diffs.push({ field: 'error', detail: down.error ?? `down run did not throw; up threw ${up.error}` })
   check('response', up.response, down.response)
@@ -147,7 +190,14 @@ export interface OutageExemption {
   expires: string
 }
 
-export interface FixtureOutcome { workflow: string; variant: string; shape: OutageShape; diffs: OutageDifference[] }
+export interface FixtureOutcome {
+  workflow: string
+  variant: string
+  shape: OutageShape
+  diffs: OutageDifference[]
+  /** Where the cause is: the first step whose output differs (a diagnostic). */
+  first_step_difference?: { namespace: string; up: string; down: string } | null
+}
 
 function wildcard(pattern: string): RegExp {
   return new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 's')

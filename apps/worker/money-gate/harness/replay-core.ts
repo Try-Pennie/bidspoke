@@ -5,23 +5,21 @@
  * and the capture of Durable Object and KV state. One copy, so the two cannot
  * drift apart.
  */
-import { env, listDurableObjectIds, runInDurableObject, createExecutionContext, waitOnExecutionContext, reset } from 'cloudflare:test'
+import { env, listDurableObjectIds, runInDurableObject, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { expect, vi } from 'vitest'
 import { executeWorkflow, moneyRuntime } from '@money-gate-engine/engine/index'
 import { buildBundledWorkerScript, codeBundleName, deployTestCodeBundle } from '@money-gate-engine/lib/code-node-deployer'
 import * as deployer from '@money-gate-engine/lib/code-node-deployer'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { createSupabaseDouble, type RecordedWrite, type Row } from '../lib/supabase-double'
-import { generatePayload } from '../lib/generate'
-import { scanForPersonalData } from '../lib/fixture-scan'
 import { parseBody, redactBody, redactHeaders, redactPathAndQuery } from '../lib/redact'
 import { noRuleAnswer, readBodyText, stubAnswer, toResponse, type Arms } from '../lib/stub-rules'
-import type { CodeDispatchRecord, FixtureRecord, OutboundRecord, RouteRecord, Transcript, WorkflowArms } from '../lib/compare'
+import type { CodeDispatchRecord, FixtureRecord, OutboundRecord, RouteRecord, WorkflowArms } from '../lib/compare'
 import type { ShapesFile, WorkflowShape } from '../lib/shape'
 import type { ConfigSnapshot } from '../lib/snapshot'
-import { fixtureId, runOptions, type RunKind } from '../lib/run-kinds'
+import { runOptions, type RunKind } from '../lib/run-kinds'
 import { scriptFromUpload } from '../lib/test-bundle-upload'
-import { FIXED_TIME_MS, buildEnv, runPlan, type VariantFile, type Variant } from './replay-env'
+import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
 import shapesFile from '../fixtures/shapes.json'
@@ -367,6 +365,12 @@ export interface RunSpec { id: string; seed: string; kind: RunKind; testBundle?:
  */
 export interface RunHooks {
   runtime?: (db: ReturnType<typeof createSupabaseDouble>) => unknown
+  /**
+   * Runs inside the run, with its network stubbed and its clock pinned, just
+   * before the engine is called: the drill warms the stored copies here with the
+   * Worker's own prewarm cron, as production does every minute.
+   */
+  before?: (runEnv: Record<string, unknown>, db: ReturnType<typeof createSupabaseDouble>) => Promise<void>
 }
 
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
@@ -472,6 +476,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   try {
     const ctx = createExecutionContext()
     // The runtime the bidding Worker's routes pass, built by the engine under test.
+    if (hooks.before) await hooks.before(runEnv, db)
     const runtime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
     const result = await executeWorkflow(options as never, runEnv as never, runtime as never, ctx)
     await waitOnExecutionContext(ctx)
