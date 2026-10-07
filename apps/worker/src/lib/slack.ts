@@ -1029,6 +1029,40 @@ async function sendLostWritebackAlert(
 }
 
 /**
+ * Work after the answer still running when finalize stopped waiting for it
+ * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
+ * for a check rather than a repair.
+ */
+async function sendUnfinishedWorkAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  run: OutcomeDeadLetterAlert['run'],
+  appUrl: string,
+): Promise<boolean> {
+  const n = payload.window_loss_count
+  const title = 'Work after an answer did not finish in time'
+  const who = run
+    ? `${run.workflow_name} answered a lead at ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))} ET`
+    : 'A workflow answered a lead'
+  const summary =
+    `${who}, but the steps after the answer were still running when Bidspoke stopped waiting for them. ` +
+    `They may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened ${n} times`} in the last ${payload.window_minutes} minutes.`
+  const fix = run
+    ? 'Fix: open the run below and check that its last steps, such as the Salesforce update, landed. If this keeps happening, those steps are running slowly.'
+    : 'Fix: open the recent runs on the dashboard and check that their last steps, such as the Salesforce update, landed. If this keeps happening, those steps are running slowly.'
+  const link = run
+    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+    : `<${appUrl}/dashboard|Open dashboard →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+}
+
+/**
  * Alert that a must-not-lose outcome write was dead-lettered after its retries
  * were exhausted (or a tier-3 Salesforce writeback was given up on). The record
  * feeds billing / win-tracking / repeat-lead analytics and is NOT auto-recovered.
@@ -1041,6 +1075,8 @@ export async function sendOutcomeDeadLetterAlert(
   appUrl: string
 ): Promise<boolean> {
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
+  // Always its own wording: an unfinished walk is never a lost record (#1860).
+  if (payload.label === 'continuation_unfinished') return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
   const errText = truncateErrorForAlert(payload.error_message)
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it

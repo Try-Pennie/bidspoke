@@ -900,6 +900,50 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
   })
 })
 
+// #1860: a run's work after its answer still running when finalize stopped
+// waiting. Its outcome is unknown, so the alert must not say anything was lost.
+describe('sendOutcomeDeadLetterAlert for work after the answer that did not finish', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: '[REDACTED]', default_channel: '#alerts' } as unknown as SlackConnection
+  const textOf = () => {
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    return [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
+  }
+
+  it('says the work may have finished and nothing was confirmed, never that a record was lost', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 2,
+      window_minutes: 30,
+      error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
+      run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-07T20:00:00Z' },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toMatch(/did not finish/i)
+    expect(text).toMatch(/may (still )?have finished|may still finish/i)
+    expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
+    expect(text).toContain('https://app.test/workflows/wf-1?execution=ex-1')
+  })
+
+  it('keeps that wording when the payload carries no run', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toMatch(/did not finish/i)
+    expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
+  })
+})
+
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {

@@ -300,3 +300,56 @@ describe('post-response writes with a database that never answers (#1850)', () =
     expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
   })
 })
+
+/**
+ * #1860: a run that answered early (continue_after_response) and whose remaining
+ * walk never finishes. Finalize waited for that walk with no limit, so the run was
+ * never recorded and its dead letter never written. The wait now stops at its own
+ * cut-off, and finalize records what is known with a named reason.
+ */
+describe('a continuation that never finishes after the answer (#1860)', () => {
+  const withContinuation = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'p', namespace: 'patch_sf', type: 'code', config: { retries: 0 } },
+    ],
+    edges: [{ id: 'e0', source: 'r', target: 'p' }],
+  } as unknown as WorkflowDefinition
+
+  it('finalizes the run inside the budget, as degraded with a named reason, while the walk is still out', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: withContinuation,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    // The remaining work ends 60 s after the answer on the virtual clock: well past
+    // the whole budget, where Cloudflare would already have cancelled it.
+    // Set from the run's own clock on its first database call, which comes before
+    // the walk reaches patch_sf; reached unset, it fails rather than hangs.
+    let late: () => Promise<{ output: unknown }> = () => Promise.reject(new Error('the late step ran before the clock was wired'))
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      return late()
+    })
+    const { db, result, deadLetters } = await run((c) => {
+      late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
+      return 'up'
+    })
+    expect(result.status).toBe(200)
+    const row = db.executions.get(result.executionId)
+    expect(row?.status).toBe('degraded')
+    expect(String(row?.error_message)).toMatch(/did not finish within .* of the answer/)
+    // The run's finalize and the lead sighting's finalize both ran, and every
+    // database call the run made landed inside the budget.
+    expect(db.calls.some((c) => c.table === 'workflow_executions' && c.op === 'update')).toBe(true)
+    expect(db.calls.some((c) => c.table === 'lead_sightings' && c.op === 'update')).toBe(true)
+    expect(Math.max(...db.calls.map((c) => c.at))).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+    // Unfinished is not a failed Salesforce write: counted under its own label.
+    expect(deadLetters('continuation_unfinished')).toHaveLength(1)
+    expect(deadLetters('sf_writeback')).toEqual([])
+  })
+})
