@@ -275,12 +275,14 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
   function recordingKv(seed: Record<string, string> = {}) {
     const store = new Map(Object.entries(seed))
     const puts: { key: string; value: string; opts?: { expirationTtl?: number } }[] = []
+    const deletes: string[] = []
     return {
       puts,
+      deletes,
       kv: {
         get: async (k: string) => store.get(k) ?? null,
         put: async (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); puts.push({ key: k, value: v, opts }) },
-        delete: async (k: string) => { store.delete(k) },
+        delete: async (k: string) => { store.delete(k); deletes.push(k) },
       },
     }
   }
@@ -323,6 +325,54 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
     const res = await postWith(kv)
     expect(res.status).toBe(404)
     expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  // #1846. The endpoint routes retire this copy after their write lands, but a
+  // lead that read the row just BEFORE a delete can write the copy just AFTER the
+  // retire. Nothing would ever rewrite it, because a missing endpoint is never
+  // looked up successfully again, so the first lookup that finds it gone removes it.
+  it('removes a copy that outlived its endpoint when the lookup finds the endpoint gone', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    )
+    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': lastGood })
+    const res = await postWith(kv)
+    expect(res.status).toBe(404)
+    expect(await kv.get('ep-lastgood:tripoint:/bidding')).toBeNull()
+  })
+
+  // The removal is a tidy up beside the answer: KV failing there must not turn
+  // a truthful 404 into a 500 that tells the source to retry.
+  it('still answers 404 when KV fails while removing the copy of a missing endpoint', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    )
+    // The hot copy read before the lookup succeeds (a miss); the removal is what fails.
+    const kv = {
+      get: async (k: string) => {
+        if (k.startsWith('ep-lastgood:')) throw new Error('kv unavailable')
+        return null
+      },
+      put: async () => {},
+      delete: async () => { throw new Error('kv unavailable') },
+    }
+    const res = await postWith(kv)
+    expect(res.status).toBe(404)
+    expect(errSpy.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining('could not remove the last-good copy of missing endpoint tripoint/bidding'))
+  })
+
+  // Anyone can probe a made up path, so a lookup that finds nothing must not
+  // spend a KV write when there is no copy to remove.
+  it('spends no KV write on a missing endpoint that never had a copy', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    )
+    const { kv, puts, deletes } = recordingKv()
+    const res = await postWith(kv)
+    expect(res.status).toBe(404)
+    expect(puts).toEqual([])
+    expect(deletes).toEqual([])
   })
 
   it('writes the last-good copy without a TTL on every successful DB lookup, beside the 60s hot copy', async () => {

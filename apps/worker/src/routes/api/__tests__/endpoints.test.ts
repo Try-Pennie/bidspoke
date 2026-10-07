@@ -24,7 +24,8 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 const ownWorkflow = { id: 'wf-mine' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } as unknown as Env
+// The create route retires the copies at the new address (#1846), so the cache needs a delete.
+const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { delete: async () => {} } } as unknown as Env
 
 async function makeApp() {
   const { default: api } = await import('../index')
@@ -270,5 +271,107 @@ describe('POST /endpoints: the ops subdomain is reserved (#1706)', () => {
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe('"ops" is reserved')
     expect((sb.calls.webhook_endpoints ?? []).filter(([m]) => m === 'insert')).toEqual([])
+  })
+})
+
+// #1846. The custom endpoint route keeps two copies of each endpoint record in
+// KV: a 60 second hot copy (ep:) and a durable last-good copy (ep-lastgood:)
+// that is served when the webhook_endpoints read fails (#1296). Only the hot
+// copy was ever deleted, so in a database outage an endpoint deleted, switched
+// off or moved minutes earlier was still served from its durable copy. Every
+// write now retires BOTH copies under every key it can have touched, after the
+// write lands, so the next successful lookup rewrites them from the row.
+describe('every endpoint write retires its stored copies (#1846)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const deleted: string[] = []
+  const kvEnv = {
+    SUPABASE_JWKS_URL: 'https://fake.jwks',
+    WORKFLOW_CACHE: { delete: async (k: string) => { deleted.push(k) } },
+  } as unknown as Env
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    deleted.length = 0
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  function call(method: string, path: string, body?: unknown) {
+    return app.request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: body ? JSON.stringify(body) : undefined,
+    }, kvEnv, mockCtx)
+  }
+
+  it('POST retires any copy left at the new address, so a reused path never serves an old record', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: ownWorkflow },
+        webhook_endpoints: { insertResult: { id: 'ep-1', subdomain: 'rml', path: '/bid', workflow_id: 'wf-mine', source_name: 'rml', is_active: true } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('POST', '/endpoints', { subdomain: 'rml', path: 'bid', source_name: 'rml', workflow_id: 'wf-mine' })
+    expect(res.status).toBe(201)
+    expect(deleted.sort()).toEqual(['ep-lastgood:rml:/bid', 'ep:rml:/bid'])
+  })
+
+  it('PUT that switches the endpoint off retires both copies, so an outage cannot serve it as active', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/' } }, { updateResult: { id: 'ep-1', subdomain: 'rml', path: '/', is_active: false } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('PUT', '/endpoints/ep-1', { is_active: false })
+    expect(res.status).toBe(200)
+    expect(deleted.sort()).toEqual(['ep-lastgood:rml:/', 'ep:rml:/'])
+  })
+
+  it('PUT that moves the endpoint retires the copies at the old address and the new one', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/old' } }, { updateResult: { id: 'ep-1', subdomain: 'acme', path: '/new', is_active: true } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('PUT', '/endpoints/ep-1', { subdomain: 'acme', path: 'new' })
+    expect(res.status).toBe(200)
+    expect(deleted.sort()).toEqual(['ep-lastgood:acme:/new', 'ep-lastgood:rml:/old', 'ep:acme:/new', 'ep:rml:/old'])
+  })
+
+  it('DELETE retires both copies, so a deleted endpoint is never served from KV', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/' } }, { writeRows: [{ id: 'ep-1' }] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('DELETE', '/endpoints/ep-1')
+    expect(res.status).toBe(200)
+    expect(deleted.sort()).toEqual(['ep-lastgood:rml:/', 'ep:rml:/'])
+  })
+
+  // A copy that could not be retired is the stale record this exists to remove,
+  // so the route must not answer a clean success over it. The change itself was
+  // saved by then, so it is still audited, and the answer says so (#1846).
+  it('does not report success when KV refuses to retire a copy, but still audits the saved change', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/' } }, { writeRows: [{ id: 'ep-1' }] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const failingEnv = {
+      SUPABASE_JWKS_URL: 'https://fake.jwks',
+      WORKFLOW_CACHE: { delete: async () => { throw new Error('kv unavailable') } },
+    } as unknown as Env
+    const res = await app.request('/endpoints/ep-1', { method: 'DELETE', headers: { Authorization: 'Bearer tok' } }, failingEnv, mockCtx)
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })

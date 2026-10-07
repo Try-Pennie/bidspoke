@@ -27,6 +27,7 @@ import { isNotFoundError } from '../../lib/api-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { log } from '../../lib/logger'
+import { dropPartnerLastGoodIfPresent, readPartnerLastGood, rememberPartnerLastGood } from '../../lib/partner-last-good'
 import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
@@ -128,42 +129,10 @@ const PARTNER_SELECT =
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
   'circuit_enabled, is_active, updated_at'
 
-// ── Last-good partner config (#1296) ──────────────────────────────────────────
+// ── Last-good partner config (#1296, #1846) ───────────────────────────────────
 //
-// The config is read from the database on every attempt so an edit (a cap, a
-// formula, disabling a partner) applies to the very next lead. That read had no
-// fallback, so on 2026-09-10, with Supabase unresponsive for ten minutes, every
-// attempt that reached this node threw "Partner config not found" and no lead
-// could bid. A copy of the last row we read is kept in KV with no TTL and served
-// only when the read FAILS (never when the row is genuinely missing). KV allows
-// one write a second per key, so the copy is rewritten only when updated_at
-// moves, tracked per isolate; a fresh isolate writes once and then goes quiet.
-const lastGoodKey = (partnerId: string) => `partner-lastgood:${partnerId}`
-const lastGoodWritten = new Map<string, string>()
-
-async function rememberLastGood(kv: KVNamespace | undefined, partner: PartnerConfig): Promise<void> {
-  if (!kv) return
-  const stamp = partner.updated_at ?? ''
-  if (lastGoodWritten.get(partner.id) === stamp) return
-  try {
-    await kv.put(lastGoodKey(partner.id), JSON.stringify(partner))
-    lastGoodWritten.set(partner.id, stamp)
-  } catch (e) {
-    // The bid must not fail because the safety copy could not be written.
-    console.error(`[partner-bid] last-good write failed for ${partner.id}: ${formatErr(e)}`)
-  }
-}
-
-async function readLastGood(kv: KVNamespace | undefined, partnerId: string): Promise<PartnerConfig | null> {
-  if (!kv) return null
-  const raw = await kv.get(lastGoodKey(partnerId))
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as PartnerConfig
-  } catch {
-    return null
-  }
-}
+// The copy, its key, its write rate and how a partner route retires it live in
+// lib/partner-last-good.ts, which every route writing partner_configs shares.
 
 // Record a circuit-breaker outcome with a bounded retry so a transient
 // Durable Object blip (network hiccup, brief overload) doesn't silently drop
@@ -277,9 +246,12 @@ export async function executePartnerBidNode(
   let p: PartnerConfig
   if (!error && partner) {
     p = partner as unknown as PartnerConfig
-    await rememberLastGood(env.WORKFLOW_CACHE, p)
+    await rememberPartnerLastGood(env.WORKFLOW_CACHE, p)
   } else {
-    const stale = error && !isNotFoundError(error) ? await readLastGood(env.WORKFLOW_CACHE, config.partner_id) : null
+    // The row is genuinely gone: a copy a racing lead wrote after the delete
+    // route retired it must not outlive the partner (#1846).
+    if (error && isNotFoundError(error)) await dropPartnerLastGoodIfPresent(env.WORKFLOW_CACHE, config.partner_id)
+    const stale = error && !isNotFoundError(error) ? await readPartnerLastGood<PartnerConfig>(env.WORKFLOW_CACHE, config.partner_id) : null
     if (!stale) {
       throw new Error(`Partner config not found: ${config.partner_id}`)
     }

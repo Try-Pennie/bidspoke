@@ -30,6 +30,7 @@ import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles, partnersPricedFor } from '../../lib/buyer-profile-loader'
 import { populationsInUse, workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
 import { secretKeys } from '../../lib/secret-crypto'
+import { retirePartnerLastGood } from '../../lib/partner-last-good'
 
 type Variables = AuthVariables
 
@@ -1288,6 +1289,8 @@ workflows.post('/:id/rename-apply', async (c) => {
   if (partnersError) return dbError(c, partnersError)
 
   let updated = 0
+
+  const notCleared: string[] = []
   for (const p of (partners ?? []) as PartnerForRename[]) {
     const nextLegacy = rewriteStepsRefs(p.bid_formula, oldNs, newNs)
     const cfg = (p.bid_resolver_config ?? {})
@@ -1329,8 +1332,25 @@ workflows.post('/:id/rename-apply', async (c) => {
       continue
     }
     updated += 1
+    // The Partner Bid node's stored copy of this partner still carries the old
+    // formula; retire it so an outage never bids with a formula that is gone
+    // (#1846). A refusal is collected rather than thrown, so the partners after
+    // it are still rewritten and the answer names exactly which copies remain.
+    try {
+      await retirePartnerLastGood(c.env.WORKFLOW_CACHE, p.id)
+    } catch (err) {
+      console.error(`[workflows] stored copy of ${p.id} could not be cleared after the rename: ${err instanceof Error ? err.message : 'unknown error'}`)
+      notCleared.push(p.id)
+    }
   }
 
+  if (notCleared.length > 0) {
+    return c.json({
+      error: `Every partner formula was rewritten, but the stored outage copies of ${notCleared.length} partner(s) could not be cleared, so during a database outage their old formulas could still be used. Apply the rename again to clear them.`,
+      updated,
+      copies_not_cleared: notCleared,
+    }, 500)
+  }
   return c.json({ updated })
 })
 

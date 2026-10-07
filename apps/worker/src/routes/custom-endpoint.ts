@@ -17,6 +17,10 @@
  * would otherwise be refused. A genuinely missing endpoint (no rows) still
  * answers 404 and never consults the durable copy.
  *
+ * Both copies are retired by every route that writes webhook_endpoints (#1846,
+ * lib/endpoint-copies.ts), so a deleted, switched off or moved endpoint is not
+ * served from KV in an outage.
+ *
  * To test locally, pass a spoofed Host header:
  *   curl -X POST http://localhost:8787/tripoint/bidding -H "Host: hook.trypennie.dev" -d '{}'
  */
@@ -29,6 +33,8 @@ import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createLeadSupabaseClient, leadRead } from '../lib/lead-read-budget'
 import { isNotFoundError } from '../lib/api-error'
 import { sourceForApiKey } from '../lib/api-key-map'
+import { endpointHotKey, endpointLastGoodKey } from '../lib/endpoint-copies'
+import { formatErr } from '../lib/format-error'
 
 const HOOK_HOST = 'hook.trypennie.dev'
 const CACHE_TTL = 60 // seconds
@@ -89,8 +95,8 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
   }
   const partner = segments[0]
   const path = normalizePath('/' + segments.slice(1).join('/'))
-  const cacheKey = `ep:${partner}:${path}`
-  const lastGoodKey = `ep-lastgood:${partner}:${path}`
+  const cacheKey = endpointHotKey(partner, path)
+  const lastGoodKey = endpointLastGoodKey(partner, path)
 
   // --- KV cache lookup ---
   let endpoint: CachedEndpoint | null = null
@@ -138,6 +144,16 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
         return c.json({ error: 'Temporarily unavailable' }, 503)
       }
     } else if (!data) {
+      // The routes retire this copy after a delete lands, but a lead that read
+      // the row just before the delete can write it just after (#1846), and a
+      // missing endpoint is never looked up successfully again to overwrite it.
+      // Read first, so probing made up paths spends no KV write. A KV failure
+      // here is logged, never turned into a 500: the answer is still 404.
+      try {
+        if ((await c.env.WORKFLOW_CACHE.get(lastGoodKey)) !== null) await c.env.WORKFLOW_CACHE.delete(lastGoodKey)
+      } catch (e) {
+        console.error(`[custom-endpoint] could not remove the last-good copy of missing endpoint ${partner}${path}: ${formatErr(e)}`)
+      }
       return c.json({ error: 'Endpoint not found' }, 404)
     } else {
       const triggerAuth = data.workflows?.definition?.trigger?.config?.auth_method

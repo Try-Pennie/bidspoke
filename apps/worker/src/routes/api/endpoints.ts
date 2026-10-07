@@ -5,6 +5,10 @@
  * POST   /api/endpoints          — create endpoint
  * PUT    /api/endpoints/:id      — update endpoint (invalidates KV cache)
  * DELETE /api/endpoints/:id      — delete endpoint (invalidates KV cache)
+ *
+ * Every write retires BOTH stored copies of the record at every address it
+ * touched, the 60 second hot copy and the no-expiry last-good copy, after the
+ * write lands (#1846, lib/endpoint-copies.ts).
  */
 
 import { Hono } from 'hono'
@@ -14,6 +18,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import type { Database } from '../../types/database'
+import { COPY_NOT_CLEARED_MESSAGE, copyCleared, retireEndpointCopies } from '../../lib/endpoint-copies'
 
 type Variables = AuthVariables
 
@@ -55,10 +60,6 @@ function validatePath(path: string): string | null {
   if (!PATH_RE.test(path)) return 'Path must start with / and contain only letters, numbers, hyphens, underscores, and slashes'
   if (path.length > 64) return 'Path must be 64 characters or less'
   return null
-}
-
-function cacheKey(subdomain: string, path: string): string {
-  return `ep:${subdomain}:${path}`
 }
 
 const endpoints = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -156,6 +157,13 @@ endpoints.post('/', async (c) => {
     action: 'webhook_endpoint_created',
   })
 
+  // A copy can survive at this address from an endpoint that used it before
+  // (#1846), and the new record must never be answered with the old one. Last,
+  // so a failure cannot leave the saved change unaudited.
+  if (!(await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
+
   return c.json(data, 201)
 })
 
@@ -227,18 +235,20 @@ endpoints.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Endpoint not found' }, 404)
 
-  // Invalidate KV cache for old and new subdomain+path
-  const oldKey = cacheKey(existing.subdomain, existing.path)
-  const newSub = (updates.subdomain as string | undefined) ?? existing.subdomain
-  const newPath = (updates.path as string | undefined) ?? existing.path
-  const newKey = cacheKey(newSub, newPath)
-
-  await c.env.WORKFLOW_CACHE.delete(oldKey)
-  if (newKey !== oldKey) await c.env.WORKFLOW_CACHE.delete(newKey)
-
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'updated', userId, {
     action: 'webhook_endpoint_updated',
   })
+
+  // Retire both copies at the old address and the new one (#1846). A switched
+  // off endpoint must not be served as active from its last-good copy, and a
+  // moved one must not keep answering at the address it left. Last, so a
+  // failure cannot leave the saved change unaudited.
+  const moved = data.subdomain !== existing.subdomain || data.path !== existing.path
+  const cleared = await copyCleared(async () => {
+    await retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path)
+    if (moved) await retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path)
+  }, `endpoint copy ${existing.subdomain}${existing.path}`)
+  if (!cleared) return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
 
   return c.json(data)
 })
@@ -265,15 +275,20 @@ endpoints.delete('/:id', async (c) => {
   )
   if (deleteBlocked) return deleteBlocked
 
-  await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
-
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'deleted', userId, {
     subdomain: existing.subdomain,
     path: existing.path,
     action: 'webhook_endpoint_deleted',
   })
 
+  // Both copies, so a deleted endpoint is never served from KV in an outage
+  // (#1846). Last, so a failure cannot leave the delete unaudited.
+  if (!(await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
+
   return c.json({ ok: true })
 })
 
 export default endpoints
+

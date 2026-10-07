@@ -670,3 +670,88 @@ describe('partner credential warning (#416)', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
+
+// #1846. The Partner Bid node keeps a durable copy of each partner's config in
+// KV (partner-lastgood:<id>) and bids from it when the partner_configs read
+// fails (#1296). No partner route touched it, so in a database outage a partner
+// deleted or switched off minutes earlier still bid from its copy. Every write
+// that changes or removes a partner now retires the copy once the write lands.
+describe('every partner write retires its stored copy (#1846)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const deleted: string[] = []
+  const kvEnv = {
+    SUPABASE_JWKS_URL: 'https://fake.jwks',
+    WORKFLOW_CACHE: { delete: async (k: string) => { deleted.push(k) } },
+  } as unknown as Env
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    deleted.length = 0
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  function call(method: string, path: string, body?: unknown) {
+    return app.request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: body ? JSON.stringify(body) : undefined,
+    }, kvEnv, mockCtx)
+  }
+
+  it('PUT that switches the partner off retires its copy, so an outage cannot bid with it', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { id: 'p-1' } }, { updateResult: { id: 'p-1', slug: 'sofi', is_active: false } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('PUT', '/partners/p-1', { is_active: false })
+    expect(res.status).toBe(200)
+    expect(deleted).toEqual(['partner-lastgood:p-1'])
+  })
+
+  it('DELETE retires its copy, so a deleted partner never bids from KV', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('DELETE', '/partners/p-1')
+    expect(res.status).toBe(200)
+    expect(deleted).toEqual(['partner-lastgood:p-1'])
+  })
+
+  // A copy that could not be retired is the stale record this exists to remove,
+  // so the edit must not answer a clean success over it.
+  it('PUT does not report success when KV refuses to retire the copy', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { id: 'p-1' } }, { updateResult: { id: 'p-1', slug: 'sofi', is_active: false } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const failingEnv = {
+      SUPABASE_JWKS_URL: 'https://fake.jwks',
+      WORKFLOW_CACHE: { delete: async () => { throw new Error('kv unavailable') } },
+    } as unknown as Env
+    const res = await app.request('/partners/p-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: JSON.stringify({ is_active: false }),
+    }, failingEnv, mockCtx)
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The edit was saved, so every other cache it feeds is still refreshed (#1846).
+    expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(refreshBuyerProfilesCache)).toHaveBeenCalledTimes(1)
+  })
+
+  it('a refused DELETE leaves the copy alone, because the partner is still there', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: 'BP023', message: 'partner_has_dependents' } }) }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await call('DELETE', '/partners/p-1')
+    expect(res.status).toBe(409)
+    expect(deleted).toEqual([])
+  })
+})
