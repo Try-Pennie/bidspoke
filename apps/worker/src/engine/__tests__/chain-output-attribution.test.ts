@@ -30,6 +30,12 @@ vi.mock('../step-logger', () => ({
 }))
 vi.mock('../nodes/bid-group', () => ({ executeBidGroupNode: vi.fn() }))
 vi.mock('../nodes/partner-bid', () => ({ executePartnerBidNode: vi.fn() }))
+// The bid group names its attempts from the partner constants (#1849); only that
+// loader is replaced, so the rest of the module stays real (L727).
+vi.mock('../../lib/partner-constants-loader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/partner-constants-loader')>()),
+  loadPartnerConstants: vi.fn().mockResolvedValue({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {}, slugsById: { 'p-slow': 'slow_partner' } }),
+}))
 
 // executeNode stays REAL (branch_end is the code under test). It is wrapped in a
 // spy only so a test can pin down *when* the straggler lands relative to the
@@ -137,11 +143,9 @@ describe('bid_group straggler does not corrupt the walk (#489)', () => {
     edges: [{ id: 'e0', source: 'g', target: 'be' }],
   } as unknown as WorkflowDefinition
 
-  const supabase = {
-    from: () => ({
-      select: () => ({ in: () => Promise.resolve({ data: [{ id: 'p-slow', slug: 'slow_partner' }], error: null }) }),
-    }),
-  } as unknown as SupabaseClient
+  // The walk reads nothing from the database here: the slugs come from the
+  // partner constants loader, mocked above.
+  const supabase = {} as unknown as SupabaseClient
 
   const groupOutput = { winner: null, all_bids: [], mode: 'highest_bid', reason: 'timeout', _route: 'no_winner' }
 

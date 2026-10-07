@@ -226,7 +226,6 @@ jobs:
           MONEY_GATE_BASE: ${{ github.event.pull_request.base.sha }}
         run: bash .github/scripts/money-gate.sh "$MONEY_GATE_BASE"
 
-
   # WHY THIS JOB STARTS AND THEN SKIPS ITS STEPS, RATHER THAN NOT STARTING (#894)
   #
   # It costs roughly thirty seconds of runner time on a pull request it will not

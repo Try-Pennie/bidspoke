@@ -55,7 +55,8 @@ describe('money-gate-inputs-changed: every file the harness imports wakes it (#1
     // Every file reached from the harness and the gate's config by relative
     // imports, transitively, so a file the compare Worker later imports from
     // outside its own folder is still found.
-    const queue = [...filesUnder(join(workerRoot, 'money-gate', 'harness')), 'apps/worker/vitest.money-gate.config.mts']
+    // The outage drill (#1305) runs on the same decision, so its config is a root too.
+    const queue = [...filesUnder(join(workerRoot, 'money-gate', 'harness')), 'apps/worker/vitest.money-gate.config.mts', 'apps/worker/vitest.outage-drill.config.mts']
     const seen = new Set<string>(queue)
     while (queue.length) {
       for (const next of importsOf(queue.shift() as string)) {
@@ -79,6 +80,7 @@ describe('money-gate-inputs-changed: runs on any input the gate reads, skips onl
     'apps/worker/package.json',
     'apps/worker/vitest.money-gate.config.mts',
     'apps/worker/vitest.money-gate-verdict.config.mts',
+    'apps/worker/vitest.outage-drill.config.mts',
     'apps/worker/scripts/export-money-fixture-shapes.ts',
     'pnpm-lock.yaml',
     'package.json',
@@ -86,6 +88,9 @@ describe('money-gate-inputs-changed: runs on any input the gate reads, skips onl
     '.github/scripts/money-gate.sh',
     '.github/scripts/money-gate-inputs-changed.sh',
     '.github/workflows/ci.yml',
+    '.github/scripts/outage-drill.sh',
+    '.github/workflows/outage-drill.yml',
+    '.github/workflows/outage-drill-weekly.yml',
   ])('runs when %s changes', (file) => {
     expect(decide('7', 'true', `docs/x.md\n${file}`)).toBe('true')
   })

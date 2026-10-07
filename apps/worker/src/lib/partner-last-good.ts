@@ -50,6 +50,15 @@ interface PartnerRow {
 }
 
 /**
+ * Forget which stamps this isolate wrote. Only the outage drill calls it (#1305,
+ * money-gate/harness/isolate-memory.ts): it resets storage between runs, and this
+ * record would otherwise stop a warm run writing the copy reset() removed.
+ */
+export function forgetPartnerLastGoodMemory(): void {
+  lastGoodWritten.clear()
+}
+
+/**
  * Write the copy, stamped as confirmed at `nowMs`, when the row has changed
  * since this isolate last wrote it or that write is due to be confirmed again.
  * Never throws.
