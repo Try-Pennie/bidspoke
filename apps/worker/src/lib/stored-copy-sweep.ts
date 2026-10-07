@@ -156,7 +156,7 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources):
       const copyStamp = typeof copy.row_updated_at === 'string' ? postgresTimeMicros(copy.row_updated_at) : Number.NaN
       // A tombstone for a row that is gone is already right.
       if (rowStamp === undefined && copy.is_active === false && copy.unverified !== true) continue
-      const stale = rowStamp === undefined || !Number.isFinite(copyStamp) || copyStamp < rowStamp || copy.unverified === true
+      const stale = rowStamp === undefined || !Number.isFinite(rowStamp) || !Number.isFinite(copyStamp) || copyStamp < rowStamp || copy.unverified === true
       if (stale) await repair(key, () => sources.refreshWorkflow(id))
     }
   })

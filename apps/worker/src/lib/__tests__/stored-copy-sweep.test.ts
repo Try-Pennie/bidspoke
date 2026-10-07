@@ -123,6 +123,15 @@ describe('sweepStoredCopies: workflow definition copies', () => {
     expect(r.repaired.sort()).toEqual([workflowCopyKey('wf-gone'), workflowCopyKey('wf-old')])
   })
 
+  // A stamp that does not parse compares false against everything (L50), which
+  // would keep the copy; an unreadable row stamp refreshes it instead.
+  it('refreshes a copy whose row stamp cannot be read', async () => {
+    const { kv } = memoryKv({ [workflowCopyKey('wf-1')]: workflowCopy('2026-10-07T10:00:00+00:00') })
+    const refreshWorkflow = vi.fn(async (_id: string) => {})
+    await sweepStoredCopies(kv, sources({ refreshWorkflow, workflows: async () => [{ id: 'wf-1', updated_at: 'not a time' }] }))
+    expect(refreshWorkflow).toHaveBeenCalledWith('wf-1')
+  })
+
   it('refreshes a copy marked unverified even when its stamp matches', async () => {
     const { kv } = memoryKv({ [workflowCopyKey('wf-1')]: workflowCopy('2026-10-07T10:00:00+00:00', { unverified: true }) })
     const refreshWorkflow = vi.fn(async (_id: string) => {})
