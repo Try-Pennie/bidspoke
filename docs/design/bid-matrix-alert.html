@@ -6,32 +6,25 @@ body { margin: 0; padding: 32px; background: #F4F1EC; font-family: -apple-system
 .rec h1 { font-size: 22px; margin: 0 0 8px; }
 .rec h2 { font-size: 15px; margin: 18px 0 4px; }
 .rec p, .rec li { font-size: 14px; }
-.s-win { width: 760px; min-height: 620px; background: #fff; border: 1px solid #dddddd; border-radius: 8px; overflow: hidden; font: 15px/1.46668 -apple-system, "Slack-Lato", "Helvetica Neue", Arial, sans-serif; color: #1d1c1d; display: flex; flex-direction: column; }
-.s-top { padding: 12px 20px; border-bottom: 1px solid #e8e8e8; font-weight: 900; font-size: 18px; }
-.s-pane { flex: 1; padding: 8px 0 16px; }
-.s-msg { display: flex; gap: 8px; padding: 8px 20px; }
-.s-faded { opacity: 0.55; }
-.s-avatar { width: 36px; height: 36px; border-radius: 6px; flex: none; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; }
-.s-avatar-bot { background: #1d1c1d; }
-.s-body { min-width: 0; flex: 1; }
-.s-meta { display: flex; align-items: baseline; gap: 6px; }
-.s-name { font-weight: 900; }
-.s-app { font-size: 10px; font-weight: 700; color: #616061; background: #e8e8e8; border-radius: 2px; padding: 0 3px; }
-.s-time { font-size: 12px; color: #616061; }
-.m-head { font-weight: 900; font-size: 18px; margin: 4px 0 6px; }
-.m-line { margin: 0; }
-.m-gap { height: 8px; }
-.m-code { font: 12px/1.5 Monaco, Menlo, Consolas, monospace; background: #f8f8f8; border: 1px solid #dddddd; border-radius: 4px; padding: 8px; margin: 4px 0; white-space: pre; overflow-x: auto; color: #1d1c1d; }
-.m-link-row { margin-top: 8px; }
-.m-link { color: #1264a3; text-decoration: none; }
-.s-compose { margin: 0 20px 20px; border: 1px solid #bbbbbb; border-radius: 8px; padding: 10px 12px; color: #868686; }
-.s-day { display: flex; align-items: center; gap: 10px; margin: 6px 20px; font-size: 13px; font-weight: 700; color: #616061; }
-.s-day::before, .s-day::after { content: ""; flex: 1; border-top: 1px solid #e8e8e8; }
-.m-sub { color: #616061; margin: -2px 0 2px; }
+.p-phone { width: 390px; min-height: 760px; background: #1a1d21; color: #d1d2d3; border-radius: 28px; border: 1px solid #3c3f44; overflow: hidden; font: 17px/1.4 -apple-system, "Slack-Lato", "Helvetica Neue", Arial, sans-serif; }
+.p-top { padding: 14px 16px; border-bottom: 1px solid #2c2f33; font-weight: 800; color: #fff; }
+.p-day { text-align: center; font-size: 13px; font-weight: 700; color: #9a9b9d; margin: 14px 0 4px; }
+.p-msg { display: flex; gap: 10px; padding: 8px 14px; }
+.p-av { width: 36px; height: 36px; border-radius: 8px; background: #4a154b; color: #fff; flex: none; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+.p-body { min-width: 0; flex: 1; }
+.p-meta { display: flex; gap: 6px; align-items: baseline; }
+.p-name { font-weight: 800; color: #fff; }
+.p-app { font-size: 10px; font-weight: 700; background: #2c2f33; color: #9a9b9d; padding: 0 3px; border-radius: 2px; }
+.p-time { font-size: 13px; color: #9a9b9d; }
+.p-head { font-weight: 800; font-size: 19px; color: #fff; margin: 2px 0 4px; }
+.p-line b { color: #fff; }
+.p-gap { height: 6px; }
+.p-code { font: 16px/1.4 Menlo, Monaco, monospace; background: #222529; border: 1px solid #3c3f44; border-radius: 6px; padding: 6px 8px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; color: #d1d2d3; }
+.p-link { color: #1d9bd1; margin-top: 4px; }
 </style></head><body>
 <div class="rec">
 <h1>Bid matrix alert: the settled design (#1864)</h1>
-<p>Settled with Dan in three rendered design rounds on 2026-10-07, after a teammate asked for the matrix name and the person who made the change. Drawn from two real edits recovered from the Salesforce recycle bin, with the editor's name replaced. Built in <code>apps/worker/src/lib/matrix-audit-message.ts</code>.</p>
+<p>Settled with Dan in four rendered design rounds on 2026-10-07, after a teammate asked for the matrix name and the person who made the change. Drawn from two real edits recovered from the Salesforce recycle bin, with the editor's name replaced. Built in <code>apps/worker/src/lib/matrix-audit-message.ts</code>.</p>
 <h2>Decision 1: the changes are a grid, not a list</h2>
 <p>Debt bands down the side, Vantage bands across, as the matrix looks in Salesforce. Only the rows and columns that changed are drawn, and a cell that did not change is a dot. The old list, one line per bid cut off at 20, hid 16 of the 36 bids changed on 2026-10-07; a line per Debt band and a single sentence were also rendered and set aside.</p>
 <h2>Decision 2: a cell is the new bid with how far it moved</h2>
@@ -40,131 +33,121 @@ body { margin: 0; padding: 32px; background: #F4F1EC; font-family: -apple-system
 <p>The title is always "Bid matrix changed", so the alert is recognisable at a glance in the channel. Under it, labelled lines: Matrix (the partner's name, and regular or sell-off), Changed by (who, and the span of their saves in ET, dated when not today), Bids changed (the count). Putting the matrix or the person in the title, or folding the facts into one sentence, were rendered and set aside.</p>
 <h2>Decision 4: one message per matrix</h2>
 <p>Each message has one Matrix line, so two matrices edited in the same hour post as two messages.</p>
+<h2>Decision 5: it has to read on a phone</h2>
+<p>A sample of the four column grid sent to a phone wrapped every row onto two lines, which Dan called much too busy. So neighbouring Vantage bands that read the same in every row fold into one column (a flat change becomes one column headed "500+"), and Debt bands are written in thousands with the top rounded up to where the next band starts ("19k-30k"). Bands fold only when they touch, so a folded label never claims a band changed that did not. A line per Debt band and one line per size of move were also rendered at phone width and set aside. Below, the alert drawn at phone width in Slack's dark theme, with the two real edits the rounds used.</p>
 <h2>What is the rendering medium, not the design</h2>
-<p>The Slack window, avatar, day dividers and compose box below are a stand in for Slack so the alert is seen in its channel; Slack draws them itself. The grid is a Slack code block, so its alignment comes from Slack's monospace font, and the link is a Slack mrkdwn link.</p>
+<p>The phone frame, avatar and day dividers below are a stand in for Slack so the alert is seen in its channel; Slack draws them itself. The grid is a Slack code block, so its alignment comes from Slack's monospace font, and the link is a Slack mrkdwn link.</p>
 </div>
 <div id="stage"></div>
 <script>
-// Two real edits, both recovered from the Salesforce recycle bin.
-// Sep 29: a teammate, AmOne Direct regular matrix, 7 uneven changes.
-// Oct 7: a teammate, Borrow Better regular matrix, 36 bids each down $2.
+// Same two real edits as rounds 2 and 3. Debt bands are listed in matrix order,
+// so adjacent entries are adjacent bands.
 var ALERTS = [
-  {
-    day: "Monday, September 29th",
-    time: "8:00 PM",
-    partner: "AmOne Direct", kind: "regular",
-    who: "Pat Example", when: "7:07 to 7:25 PM ET",
-    count: 7,
-    debt: ["19,000-29,999", "30,000-39,999"],
-    vantage: ["550-600", "601-660", "661-780", "781-850"],
-    cells: [
-      [[14, 12], [14, 12], [14, 12], null],
-      [[22, 14], [22, 14], [22, 14], [20, 14]]
-    ]
-  },
-  {
-    day: "Today",
-    time: "11:00 AM",
-    partner: "Borrow Better", kind: "regular",
-    who: "Pat Example", when: "10:30 to 10:31 AM ET",
-    count: 36,
-    debt: ["19,000-29,999", "30,000-39,999", "40,000-49,999", "50,000-59,999", "60,000-69,999",
-      "70,000-79,999", "80,000-89,999", "90,000-99,999", "100,000+"],
-    vantage: ["500-549", "550-649", "650-719", "720+"],
-    cells: [16, 24, 25, 27, 32, 34, 36, 38, 40].map(function (b) {
-      return [[b, b - 2], [b, b - 2], [b, b - 2], [b, b - 2]];
-    })
-  }
+  { day: "Monday, September 29th", time: "8:00 PM", partner: "AmOne Direct", when: "7:07 to 7:25 PM ET", count: 7,
+    debt: [[19000, 29999], [30000, 39999]], vantage: [[550, 600], [601, 660], [661, 780], [781, 850]],
+    cells: [[[14, 12], [14, 12], [14, 12], null], [[22, 14], [22, 14], [22, 14], [20, 14]]] },
+  { day: "Today", time: "11:00 AM", partner: "Borrow Better", when: "10:30 to 10:31 AM ET", count: 36,
+    debt: [[19000, 29999], [30000, 39999], [40000, 49999], [50000, 59999], [60000, 69999], [70000, 79999], [80000, 89999], [90000, 99999], [100000, 2000000]],
+    vantage: [[500, 549], [550, 649], [650, 719], [720, 1000]],
+    cells: [16, 24, 25, 27, 32, 34, 36, 38, 40].map(function (b) { return [[b, b - 2], [b, b - 2], [b, b - 2], [b, b - 2]]; }) }
 ];
 
-var CELL = {
-  both: function (c) { return "$" + c[0] + "→$" + c[1]; },
-  newdelta: function (c) { var d = c[1] - c[0]; return "$" + c[1] + " (" + (d > 0 ? "+" : "-") + Math.abs(d) + ")"; },
-  delta: function (c) { var d = c[1] - c[0]; return (d > 0 ? "+$" : "-$") + Math.abs(d); }
-};
+function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+function money(n) { return "$" + n; }
+function moved(c) { var d = c[1] - c[0]; return (d >= 0 ? "+" : "-") + Math.abs(d); }
+function cellText(c) { return c ? money(c[1]) + " (" + moved(c) + ")" : "·"; }
+function n(x) { return x.toLocaleString("en-US"); }
+function debtRange(lo, hi) { return hi >= 1000000 ? "$" + n(lo) + " and up" : "$" + n(lo) + " to " + n(hi); }
+function vRange(lo, hi) { return hi >= 1000 ? lo + " and up" : lo + " to " + hi; }
+function k(x) { return x === 0 ? "0" : (x / 1000) + "k"; }
+function debtShort(lo, hi) { return hi >= 1000000 ? k(lo) + "+" : k(lo) + "-" + k(hi % 10 === 9 ? hi + 1 : hi); }
+function vShort(lo, hi) { return hi >= 1000 ? lo + "+" : lo + "-" + hi; }
 
-
-var HEAD = {
-  lines: function (a) {
-    return [
-      el("div", "m-head", "Bid matrix changed"),
-      para([el("b", null, "Matrix: "), a.partner + " (" + a.kind + ", not sell-off)"]),
-      para([el("b", null, "Changed by: "), a.who + ", " + a.when]),
-      para([el("b", null, "Bids changed: "), String(a.count)])
-    ];
-  },
-  sentence: function (a) {
-    return [
-      el("div", "m-head", "Bid matrix changed"),
-      para([a.who + " changed " + a.count + " bids on the " + a.partner + " " + a.kind + " matrix (not sell-off), " + a.when + "."])
-    ];
-  },
-  title: function (a) {
-    return [
-      el("div", "m-head", a.who + " changed " + a.count + " " + a.partner + " bids"),
-      el("div", "m-line m-sub", "Regular matrix, not sell-off. " + a.when)
-    ];
-  }
-};
-
-function el(tag, cls, text) {
-  var n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
-
-function para(parts) {
-  var p = el("div", "m-line");
-  parts.forEach(function (x) { p.append(typeof x === "string" ? document.createTextNode(x) : x); });
-  return p;
-}
-
-function pad(s, n) { while (s.length < n) s += " "; return s; }
-
-function grid(a, fmt) {
-  var width = 9;
-  a.cells.forEach(function (row) { row.forEach(function (c) { if (c) width = Math.max(width, fmt(c).length + 2); }); });
-  var first = 15;
-  var lines = [pad("Debt $", first) + a.vantage.map(function (v) { return pad(v, width); }).join("")];
-  a.debt.forEach(function (d, i) {
-    lines.push(pad(d, first) + a.cells[i].map(function (c) { return pad(c ? fmt(c) : "·", width); }).join(""));
+// Merge adjacent Vantage columns that hold the same text in every row.
+function foldColumns(a) {
+  var groups = [];
+  a.vantage.forEach(function (v, j) {
+    var col = a.cells.map(function (r) { return cellText(r[j]); }).join("|");
+    var last = groups[groups.length - 1];
+    if (last && last.key === col) { last.hi = v[1]; last.cols.push(j); }
+    else groups.push({ key: col, lo: v[0], hi: v[1], cols: [j] });
   });
-  return el("pre", "m-code", lines.join("\n"));
+  return groups;
 }
 
-function message(a, fmt, head) {
-  var msg = el("div", "s-msg");
-  msg.append(el("div", "s-avatar s-avatar-bot", "B"));
-  var body = el("div", "s-body");
-  var meta = el("div", "s-meta");
-  meta.append(el("span", "s-name", "Bidspoke Alerts"), el("span", "s-app", "APP"), el("span", "s-time", a.time));
-  body.append(meta);
-  HEAD[head](a).forEach(function (n) { body.append(n); });
-  body.append(el("div", "m-gap"));
-  body.append(grid(a, fmt));
-  var link = el("div", "m-line m-link-row");
-  link.append(el("a", "m-link", "Open in Salesforce →"));
-  body.append(link);
-  msg.append(body);
-  return msg;
+// A: the grid, with identical neighbouring columns folded together.
+function bodyFoldedGrid(a) {
+  var groups = foldColumns(a);
+  var pad = function (s, w) { while (s.length < w) s += " "; return s; };
+  var first = Math.max(6, Math.max.apply(null, a.debt.map(function (d) { return debtShort(d[0], d[1]).length; }))) + 2;
+  var heads = groups.map(function (g) { return vShort(g.lo, g.hi); });
+  var rows = a.debt.map(function (d, i) { return groups.map(function (g) { return cellText(a.cells[i][g.cols[0]]); }); });
+  var widths = groups.map(function (g, j) { return Math.max(heads[j].length, Math.max.apply(null, rows.map(function (r) { return r[j].length; }))) + 2; });
+  var line = function (f, rest) { return (pad(f, first) + rest.map(function (t, j) { return pad(t, widths[j]); }).join("")).replace(/\s+$/, ""); };
+  var lines = [line("Debt $", heads)].concat(a.debt.map(function (d, i) { return line(debtShort(d[0], d[1]), rows[i]); }));
+  return [el("div", "p-code", lines.join("\n"))];
 }
+
+// B: one line per Debt band, plain text, identical Vantage bands folded.
+function bodyPerBand(a) {
+  var groups = foldColumns(a);
+  return a.debt.map(function (d, i) {
+    var parts = groups.filter(function (g) { return a.cells[i][g.cols[0]]; }).map(function (g) {
+      return cellText(a.cells[i][g.cols[0]]) + " at Vantage " + vRange(g.lo, g.hi);
+    });
+    var p = el("div", "p-line");
+    p.append(el("b", null, "Debt " + debtRange(d[0], d[1]) + ": "), document.createTextNode(parts.join(", ")));
+    return p;
+  });
+}
+
+// C: grouped by how far bids moved, one line per block of bids that moved together.
+function bodyByMove(a) {
+  var groups = foldColumns(a);
+  var blocks = [];
+  a.debt.forEach(function (d, i) {
+    groups.forEach(function (g) {
+      var c = a.cells[i][g.cols[0]];
+      if (!c) return;
+      var key = moved(c) + "#" + g.lo + "-" + g.hi;
+      var last = blocks.filter(function (b) { return b.key === key; })[0];
+      if (last && last.endRow === i - 1) { last.endRow = i; last.hiDebt = d[1]; last.count += g.cols.length; }
+      else blocks.push({ key: key, move: c[1] - c[0], endRow: i, loDebt: d[0], hiDebt: d[1], vlo: g.lo, vhi: g.hi, count: g.cols.length });
+    });
+  });
+  blocks.sort(function (x, y) { return x.move - y.move; });
+  return blocks.map(function (b) {
+    var p = el("div", "p-line");
+    var verb = b.move < 0 ? "Down $" + Math.abs(b.move) : "Up $" + b.move;
+    p.append(el("b", null, verb + ": "), document.createTextNode(b.count + " bid" + (b.count === 1 ? "" : "s") + ", Debt " + debtRange(b.loDebt, b.hiDebt) + ", Vantage " + vRange(b.vlo, b.vhi)));
+    return p;
+  });
+}
+
+var BODIES = { grid: bodyFoldedGrid };
+
+function line(label, text) { var p = el("div", "p-line"); p.append(el("b", null, label + " "), document.createTextNode(text)); return p; }
 
 function buildScreen(variant) {
-  var fmt = CELL.newdelta;
-  var win = el("div", "s-win");
-  var top = el("div", "s-top");
-  top.append(el("span", "s-chan", "# statuspage"));
-  win.append(top);
-  var pane = el("div", "s-pane");
+  var phone = el("div", "p-phone");
+  phone.append(el("div", "p-top", "# statuspage"));
   ALERTS.forEach(function (a) {
-    pane.append(el("div", "s-day", a.day));
-    pane.append(message(a, fmt, variant.head));
+    phone.append(el("div", "p-day", a.day));
+    var msg = el("div", "p-msg");
+    msg.append(el("div", "p-av", "B"));
+    var body = el("div", "p-body");
+    var meta = el("div", "p-meta");
+    meta.append(el("span", "p-name", "Bidspoke Alerts"), el("span", "p-app", "APP"), el("span", "p-time", a.time));
+    body.append(meta, el("div", "p-head", "Bid matrix changed"));
+    body.append(line("Matrix:", a.partner + " (regular, not sell-off)"), line("Changed by:", "Pat Example, " + a.when), line("Bids changed:", String(a.count)));
+    body.append(el("div", "p-gap"));
+    BODIES[variant.body](a).forEach(function (x) { body.append(x); });
+    body.append(el("div", "p-link", "Open in Salesforce →"));
+    msg.append(body);
+    phone.append(msg);
   });
-  win.append(pane);
-  win.append(el("div", "s-compose", "Message #statuspage"));
-  return win;
+  return phone;
 }
 
-document.getElementById("stage").append(buildScreen({ head: "lines" }));
+document.getElementById("stage").append(buildScreen({ body: "grid" }));
 </script></body></html>

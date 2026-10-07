@@ -46,14 +46,30 @@ function sectionTexts(blocks: unknown[]): string[] {
 }
 
 describe('formatGrid', () => {
-  it('draws only the changed rows and columns, with the new bid and how far it moved', () => {
+  // Round 4 (2026-10-07): the 4 column grid wrapped every row on a phone, so
+  // neighbouring Vantage bands that read the same in every row fold into one
+  // column, and Debt bands are written in thousands.
+  it('folds neighbouring Vantage bands that changed the same, so it fits a phone', () => {
     expect(formatGrid(SEP_29.cells)).toEqual([
       [
-        'Debt $         550-600   601-660   661-780   781-850',
-        '19,000-29,999  $12 (-2)  $12 (-2)  $12 (-2)  ·',
-        '30,000-39,999  $14 (-8)  $14 (-8)  $14 (-8)  $14 (-6)',
+        'Debt $   550-780   781-850',
+        '19k-30k  $12 (-2)  ·',
+        '30k-40k  $14 (-8)  $14 (-6)',
       ].join('\n'),
     ])
+  })
+
+  it('folds a flat change across every Vantage band into one column', () => {
+    const cells: MatrixCellChange[] = []
+    for (const [lo, hi, bid] of [[19000, 29999, 16], [100000, 2000000, 40]] as const) {
+      for (const v of [[500, 549], [550, 649], [650, 719], [720, 1000]] as const) cells.push(cell([lo, hi], [v[0], v[1]], bid, bid - 2))
+    }
+    expect(formatGrid(cells)).toEqual([['Debt $   500+', '19k-30k  $14 (-2)', '100k+    $38 (-2)'].join('\n')])
+  })
+
+  it('never folds two bands with an unchanged band between them, which would claim it changed', () => {
+    const grid = formatGrid([cell([19000, 29999], [500, 549], 16, 14), cell([19000, 29999], [650, 719], 16, 14)])[0]
+    expect(grid.split('\n')[0]).toBe('Debt $   500-549   650-719')
   })
 
   it('marks a new bid and a deleted one in words, and keeps cents', () => {
@@ -73,7 +89,7 @@ describe('formatGrid', () => {
     const many: MatrixCellChange[] = []
     for (let i = 0; i < 60; i++) {
       for (let j = 0; j < 5; j++) {
-        many.push(cell([i * 1000, i * 1000 + 999], [300 + j * 100, 399 + j * 100], 10, 11))
+        many.push(cell([i * 1000, i * 1000 + 999], [300 + j * 100, 399 + j * 100], 10, 11 + j))
       }
     }
     const parts = formatGrid(many)
@@ -88,12 +104,17 @@ describe('formatGrid', () => {
 })
 
 describe('bandLabel', () => {
+  it('writes Debt in thousands, rounding a band\'s top up to where the next band starts', () => {
+    expect(bandLabel({ low: 19000, high: 29999 }, 'debt')).toBe('19k-30k')
+    expect(bandLabel({ low: 0, high: 18999 }, 'debt')).toBe('0-19k')
+    expect(bandLabel({ low: 100000, high: 2000000 }, 'debt')).toBe('100k+')
+    expect(bandLabel({ low: 15250, high: 15749 }, 'debt')).toBe('15.25k-15.75k')
+  })
+
   it('shows an open top band as a plus, and a 0 to 0 placeholder as any', () => {
-    expect(bandLabel({ low: 100000, high: 2000000 }, 'debt')).toBe('100,000+')
     expect(bandLabel({ low: 720, high: 1000 }, 'vantage')).toBe('720+')
     expect(bandLabel({ low: 781, high: 850 }, 'vantage')).toBe('781-850')
     expect(bandLabel({ low: 0, high: 0 }, 'debt')).toBe('any')
-    expect(bandLabel({ low: 0, high: 18999 }, 'debt')).toBe('0-18,999')
   })
 })
 

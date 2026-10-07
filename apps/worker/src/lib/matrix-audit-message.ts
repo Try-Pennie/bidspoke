@@ -42,17 +42,25 @@ const FENCE = '```'
 const UNCHANGED = '·'
 const ET = 'America/New_York'
 
+/** Debt in thousands, so the grid fits a phone: 19000 is "19k". */
+function thousands(n: number): string {
+  return n === 0 ? '0' : `${Number((n / 1000).toFixed(3))}k`
+}
+
 export function bandLabel(band: Band, axis: 'debt' | 'vantage'): string {
   const { low, high } = band
-  const num = (n: number) => (axis === 'debt' ? n.toLocaleString('en-US') : String(n))
   if (low === 0 && high === 0) return 'any'
   if (low === null && high === null) return 'any'
-  if (low === null) return `up to ${num(high as number)}`
+  // Debt bands are whole dollars ending in 9 (19,000 to 29,999), so the top is
+  // written where the next band starts: "19k-30k", then "30k-40k".
+  const top = (n: number) => (axis === 'debt' ? thousands(n % 10 === 9 ? n + 1 : n) : String(n))
+  const bottom = (n: number) => (axis === 'debt' ? thousands(n) : String(n))
+  if (low === null) return `up to ${top(high as number)}`
   // The top band is stored with a sentinel ceiling (2,000,000 of debt, a
   // Vantage of 1,000) that means "and up".
   const openTop = high === null || (axis === 'debt' ? high >= 1_000_000 : high >= 1000)
-  if (openTop) return `${num(low)}+`
-  return `${num(low)}-${num(high)}`
+  if (openTop) return `${bottom(low)}+`
+  return `${bottom(low)}-${top(high)}`
 }
 
 function cents(n: number): number {
@@ -86,18 +94,44 @@ function pad(s: string, width: number): string {
 }
 
 /**
+ * Neighbouring Vantage bands that read the same in every row fold into one
+ * column, so a change across a whole row takes one cell rather than four, and
+ * the grid fits a phone (round 4 of the design, 2026-10-07). Only bands that
+ * touch fold: across a band left out because it did not change, a folded label
+ * would claim that band changed too.
+ */
+function foldColumns(cols: Band[], texts: string[][]): { bands: Band[]; texts: string[][] } {
+  const bands: Band[] = []
+  const keep: number[] = []
+  cols.forEach((c, j) => {
+    const prev = bands[bands.length - 1]
+    const touches = prev && prev.high !== null && c.low !== null && c.low === prev.high + 1
+    const same = touches && texts.every((row) => row[j] === row[keep[keep.length - 1]])
+    if (same) bands[bands.length - 1] = { low: prev.low, high: c.high }
+    else {
+      bands.push(c)
+      keep.push(j)
+    }
+  })
+  return { bands, texts: texts.map((row) => keep.map((j) => row[j])) }
+}
+
+/**
  * The grid as one or more blocks of fixed width text, each short enough for one
  * Slack section once fenced, with the header row repeated on each.
  */
 export function formatGrid(cells: MatrixCellChange[]): string[] {
   const rows = uniqueBands(cells.map((c) => c.debt))
-  const cols = uniqueBands(cells.map((c) => c.vantage))
   const byCell = new Map(cells.map((c) => [`${bandKey(c.debt)}#${bandKey(c.vantage)}`, cellText(c)]))
+  const unfolded = uniqueBands(cells.map((c) => c.vantage))
+  const { bands: cols, texts } = foldColumns(
+    unfolded,
+    rows.map((r) => unfolded.map((c) => byCell.get(`${bandKey(r)}#${bandKey(c)}`) ?? UNCHANGED)),
+  )
 
   const rowLabels = rows.map((r) => bandLabel(r, 'debt'))
   const colLabels = cols.map((c) => bandLabel(c, 'vantage'))
   const firstWidth = Math.max('Debt $'.length, ...rowLabels.map((l) => l.length)) + 2
-  const texts = rows.map((r) => cols.map((c) => byCell.get(`${bandKey(r)}#${bandKey(c)}`) ?? UNCHANGED))
   const widths = cols.map((_, j) => Math.max(colLabels[j].length, ...texts.map((t) => t[j].length)) + 2)
 
   const line = (first: string, rest: string[]) =>
