@@ -115,6 +115,14 @@ describe('the latency gate threshold in a database outage (#1849)', () => {
     expect(kv.store.has(partnerLastGoodKey(PARTNER.id))).toBe(false)
   })
 
+  it('a failed read with no copy says the partner could not be read, never that it is not found', async () => {
+    const db = database(PARTNER)
+    db.state.down = true
+    const run = executeLatencyGateNode(check, ctx, envWith(fakeKv(), NOW - 1000), createLeadSupabaseClient(dbEnv, { fetch: db.fetch }))
+    await expect(run).rejects.toThrow(/partner config p-le could not be read .*and there is no stored copy/)
+    await expect(run).rejects.not.toThrow(/not found/)
+  })
+
   it('a copy written before it carried the confirmation window is refused by name, never read as a partner with none', async () => {
     const kv = fakeKv()
     const db = database(PARTNER)

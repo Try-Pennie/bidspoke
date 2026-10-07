@@ -67,6 +67,7 @@ import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '.
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { applyOutboundMapping } from '../../lib/field-mapper'
 import { log as structuredLog } from '../../lib/logger'
+import { leadDatabaseDown, noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
@@ -296,6 +297,8 @@ export interface BuyerSelectDeps {
   sleep: (ms: number) => Promise<void>
   timers?: Timers
   log: (fields: { event: string } & Record<string, unknown>) => void
+  /** Says a database write this lead waited on did not answer in time, so its later reads take their copies at once (#1849). */
+  writeUnanswered: (what: string) => void
   localDev: boolean
 }
 
@@ -313,6 +316,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
     breaker: (slug) => new CircuitBreakerClient(env, slug),
     mirror: async (row, entry, partnerId) => {
+      // Not sent into a database this lead has already seen fail (#1849): the
+      // entry stays unmirrored and the minute drain delivers it through the same
+      // idempotent rpc, so waiting out a deadline here would only hold the answer.
+      const down = leadDatabaseDown(supabase)
+      if (down) throw new Error(`record_buyer_sale not sent: ${down}`)
       const ledger = new BuyerLedgerClient(env.BUYER_LEDGER, partnerId)
       await mirrorBuyerSale(supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
     },
@@ -320,6 +328,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     clock: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
+    writeUnanswered: (what) => noteLeadWriteUnanswered(supabase, what),
     localDev: runRealityOf(ctx, env).localDev,
   }
 }
@@ -708,12 +717,17 @@ class Run {
         live_percent_in_force: this.out.live_percent_in_force,
         caps_in_force: limits,
       })
+      // Bounded (#1849), by what is left of a budget when the node is under one.
+      // A copy that runs out of time may still land, so nothing undoes it.
+      const allowedMs = Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining()))
       try {
-        // Bounded (#1849), by what is left of a budget when the node is under one.
-        // A copy that runs out of time may still land, so nothing undoes it.
-        await withDeadline(this.deps.mirror(row, entry, partner.id), Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining())), 'buyer_sales copy', this.deps.timers)
+        await withDeadline(this.deps.mirror(row, entry, partner.id), allowedMs, 'buyer_sales copy', this.deps.timers)
       } catch (err) {
         const mirrorOutcome = err instanceof DeadlineError ? 'outcome_unknown' : 'not_mirrored'
+        // Only a copy given its whole allowance says the database is not
+        // answering; one cut short by the node's own spent budget says nothing
+        // about it, and must not send the rest of the lead to its copies.
+        if (mirrorOutcome === 'outcome_unknown' && allowedMs >= BUYER_SALE_MIRROR_DEADLINE_MS) this.deps.writeUnanswered('buyer_sales copy')
         this.deps.log({ event: 'buyer_select_mirror_failed', step_namespace: this.node.namespace, partner_id: partner.id, mirror_outcome: mirrorOutcome, error_message: messageOf(err) })
         throw err
       }

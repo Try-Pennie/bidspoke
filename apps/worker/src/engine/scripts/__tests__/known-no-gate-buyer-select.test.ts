@@ -139,6 +139,7 @@ async function buyerSelectOn(answer: Answer, extraction: Record<string, unknown>
     clock: () => clock,
     sleep: async (ms) => { clock += ms },
     log: () => undefined,
+    writeUnanswered: () => undefined,
     localDev: false,
   }
   const node: NodeDefinition = {

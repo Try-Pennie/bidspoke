@@ -254,7 +254,14 @@ async function serveLastGood(orgId: string, kv: KVNamespace, secretEncryptionKey
   if (!Object.hasOwn(entry, MARKER)) return { global, workflows: {} }
 
   const marker = parseMarker(entry[MARKER])
-  const beside = await readEncryptedConfirmed(kv, workflowLastGoodKey(orgId), secretEncryptionKey)
+  let beside: Awaited<ReturnType<typeof readEncryptedConfirmed>> = null
+  try {
+    beside = await readEncryptedConfirmed(kv, workflowLastGoodKey(orgId), secretEncryptionKey)
+  } catch (err) {
+    // KV would not hand it back: the same as unreadable, so the keys it would
+    // have carried are withheld below, and the org values are still served.
+    console.error(`[env-loader] the workflow scoped last-good copy for org ${orgId} could not be read: ${formatErr(err)}`)
+  }
   const copy = beside && judgeCopyAge(beside.confirmedAt, now).usable ? beside.entry : null
   const workflows = copy && isPlainObject(copy.workflows) ? (copy.workflows as WorkflowScoped) : null
   if (workflows) return { global, workflows }

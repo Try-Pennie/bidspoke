@@ -86,6 +86,7 @@ import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason, type HoldRecorded } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
+import { leadDatabaseDown, noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
 
@@ -146,8 +147,14 @@ export const CLICK_COUNT_RETRY_COST_MS = OBJECT_CALL_DEADLINE_MS + CLICK_ALERT_D
  */
 export const CLICK_PROFILE_READ_DEADLINE_MS = 5_000
 
-/** How long the node waits on the held click record before reporting it as not recorded. */
-export const CLICK_HOLD_RECORD_DEADLINE_MS = 5_000
+/**
+ * How long the node waits on the held click record before reporting it as
+ * outcome unknown (#1849). It was 5 s, and in the outage drill's hung database a
+ * held click waited that out and then the page's own lookup in turn, answering
+ * 11 s after its healthy twin. Measured 2026-10-07 from Supabase edge logs over
+ * 24 hours: 14 calls, p99 253 ms, the slowest 273 ms.
+ */
+export const CLICK_HOLD_RECORD_DEADLINE_MS = 1_000
 
 
 /** The fixed outgoing handles, in the order the canvas shows them. */
@@ -363,6 +370,11 @@ export interface BuyerClickSendDeps {
   clock: () => number
   timers?: Timers
   log: (fields: { event: string } & Record<string, unknown>) => void
+  /**
+   * Says a database write this lead waited on did not answer in time, so the
+   * lead's later reads take their copies at once (#1849). Never undoes the write.
+   */
+  writeUnanswered: (what: string) => void
   localDev: boolean
 }
 
@@ -387,6 +399,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     // The one production alert, shared with buyer_click_check (#1557).
     alert: productionClickAlert(orgId, env, supabase),
     recordHold: async (hold) => {
+      // Not sent into a database this lead has already seen fail (#1849): the
+      // next click on the prospect finds the claim and records it, so waiting
+      // out a deadline here would only hold the answer back.
+      const down = leadDatabaseDown(supabase)
+      if (down) throw new Error(`record_held_click not sent: ${down}`)
       const { error } = await supabase.rpc('record_held_click', {
         p_org: orgId,
         p_partner: hold.partner_id,
@@ -402,6 +419,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     },
     clock: () => Date.now(),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
+    writeUnanswered: (what) => noteLeadWriteUnanswered(supabase, what),
     localDev: runRealityOf(ctx, env).localDev,
   }
 }
@@ -755,6 +773,7 @@ class Run {
       return true
     } catch (err) {
       const recorded: HoldRecorded = err instanceof DeadlineError ? 'outcome_unknown' : false
+      if (recorded === 'outcome_unknown') this.deps.writeUnanswered('held click record')
       this.out.hold_recorded = recorded
       this.out.hold_record_error = messageOf(err)
       this.deps.log({ event: 'buyer_click_hold_record_failed', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, reason, hold_outcome: recorded === false ? 'not_recorded' : recorded, error_message: messageOf(err) })

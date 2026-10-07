@@ -14,6 +14,8 @@ import { loadPartnerConstants } from '../partner-constants-loader'
 import { loadBuyerProfiles } from '../buyer-profile-loader'
 import { endpointCopyOf, readEndpointLastGood, writeEndpointLastGood } from '../endpoint-copies'
 import { readPartnerLastGood, rememberPartnerLastGood } from '../partner-last-good'
+import { lookupMatrixBid } from '../bid-matrix-lookup'
+import type { ExecutionContext } from '../../types'
 import { STORED_COPY_MAX_AGE_MS, type StoredCopyKind } from '../stored-copy-age'
 import { flushStoredCopyLedger, forgetStoredCopyLedger, readStoredCopyLedger, type LedgerKv } from '../stored-copy-ledger'
 
@@ -71,6 +73,8 @@ function db(up: () => boolean): SupabaseClient {
     partner_uuid_map: [{ uuid: 'u1', partner_slug: 'tripoint' }],
     partner_configs: [PARTNER_ROW],
     buyer_profiles: [],
+    partner_bid_configs: [{ id: 'cfg-1', is_active: true, last_synced_at: '2026-10-06T00:00:00Z', dimensions: [{ name: 'debt', payload_field: 'debt_amount', column: 'row' }] }],
+    bid_matrix_rows: [{ id: 'r1', is_sell_off: false, row_id: 'A', row_low: 0, row_high: 50000, range_low: null, range_high: null, bid_amount: 40 }],
   }
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (!up()) return new Response(JSON.stringify({ message: 'upstream connect error' }), { status: 503, headers: { 'content-type': 'application/json' } })
@@ -91,6 +95,8 @@ async function counted(copy: StoredCopyKind) {
   await flushStoredCopyLedger(ledger as unknown as LedgerKv, { now: () => Date.now(), sleep: async () => {} })
   return (await readStoredCopyLedger(ledger as unknown as LedgerKv, Date.now(), 5)).kinds[copy]
 }
+
+const MATRIX_LEAD = { trigger: { payload: { debt_amount: 15000 }, source: 's', workflow_id: WF, org_id: 'org', trace_id: 't' }, steps: {}, env: {} } as unknown as ExecutionContext
 
 /** Each loader: write its copy with the database up, then drive it with the database down. */
 const LOADERS: Record<StoredCopyKind, { warm: (kv: Kv, d: SupabaseClient) => Promise<unknown>; serve: (kv: Kv, d: SupabaseClient) => Promise<unknown> }> = {
@@ -124,6 +130,10 @@ const LOADERS: Record<StoredCopyKind, { warm: (kv: Kv, d: SupabaseClient) => Pro
       if (!copy) throw new Error('refused')
       return copy
     },
+  },
+  bid_matrix: {
+    warm: (kv, d) => lookupMatrixBid('cfg-1', MATRIX_LEAD, d, { kv: kv as unknown as KVNamespace }),
+    serve: (kv, d) => lookupMatrixBid('cfg-1', MATRIX_LEAD, d, { kv: kv as unknown as KVNamespace }),
   },
   partner_config: {
     warm: (kv) => rememberPartnerLastGood(kv as unknown as KVNamespace, PARTNER_ROW, Date.now()),

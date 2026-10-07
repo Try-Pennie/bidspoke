@@ -50,7 +50,7 @@ export const STORED_COPY_RECONFIRM_AFTER_MS = 5 * 60 * 1000
 export const STORED_COPY_FUTURE_TOLERANCE_MS = 60 * 1000
 
 /** Which stored copy, as named in logs and errors. */
-export type StoredCopyKind = 'workflow_definition' | 'custom_endpoint' | 'partner_config' | 'env_vars' | 'partner_constants' | 'buyer_profiles'
+export type StoredCopyKind = 'workflow_definition' | 'custom_endpoint' | 'partner_config' | 'env_vars' | 'partner_constants' | 'buyer_profiles' | 'bid_matrix'
 
 export const COPY_LABELS: Record<StoredCopyKind, string> = {
   workflow_definition: 'the workflow definition',
@@ -59,6 +59,7 @@ export const COPY_LABELS: Record<StoredCopyKind, string> = {
   env_vars: 'the environment variables',
   partner_constants: 'the partner constants',
   buyer_profiles: 'the buyer profiles',
+  bid_matrix: 'the bid matrix',
 }
 
 /** Every kind of stored copy, from the one record keyed by the type, so a new kind cannot be left out. */

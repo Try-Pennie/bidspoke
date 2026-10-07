@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { createSupabaseClient } from '../supabase'
-import { createLeadSupabaseClient, leadRead, LEAD_READ_DEADLINE_MS } from '../lead-read-budget'
+import { createLeadSupabaseClient, leadRead, LEAD_DB_DOWN_CODE, LEAD_READ_DEADLINE_MS, leadDatabaseDown, noteLeadWriteUnanswered } from '../lead-read-budget'
 
 /**
  * The read time budget for a lead (#1844, Dan's decision of 2026-10-07: fall
@@ -104,7 +104,7 @@ describe('leadRead on a lead client (#1844)', () => {
     await first
     const second = await leadRead(db, db.from('partner_configs').select('id'), 'partner config')
     expect(second.error).not.toBeNull()
-    expect(second.error?.message).toMatch(/earlier read in this lead failed/)
+    expect(second.error?.message).toMatch(/earlier database call in this lead failed/)
     expect(net.calls).toHaveLength(1)
   })
 
@@ -125,6 +125,52 @@ describe('leadRead on a lead client (#1844)', () => {
     await leadRead(first, first.from('partner_configs').select('id'), 'partner config')
     const res = await leadRead(other, other.from('partner_configs').select('id'), 'partner config')
     expect(res.error).toBeNull()
+  })
+})
+
+/**
+ * A write the lead waited on that did not answer in time (#1849): the database
+ * is not answering, so the lead's later reads go straight to their copies
+ * rather than each waiting out its own deadline. Found by the outage drill's
+ * hung shape on the Liberty1 click: a held click record and the page after it
+ * each waited in turn.
+ */
+describe('a write that did not answer trips the lead (#1849)', () => {
+  it('the next read answers at once without asking the database, naming the write', async () => {
+    const net = network(['ok'])
+    const db = createLeadSupabaseClient(env, { fetch: net.fetch, deadline: manualDeadlines().deadline })
+    noteLeadWriteUnanswered(db, 'held click record')
+    const res = await leadRead(db, db.from('service_connections').select('config'), 'slack connection')
+    expect(net.calls).toHaveLength(0)
+    expect(res.error).toMatchObject({ code: LEAD_DB_DOWN_CODE })
+    expect(res.error?.message).toMatch(/held click record/)
+    // A write that ran out of time had no answer, and no HTTP status to name.
+    expect(res.error?.message).toMatch(/held click record, did not answer in time/)
+    expect(res.error?.message).not.toMatch(/status 0|earlier read/)
+    expect(leadDatabaseDown(db)).toMatch(/held click record, did not answer in time/)
+  })
+
+  it('says why the lead knows its database is down, for a write with its own repair to skip waiting on it', async () => {
+    const net = network(['refuse'])
+    const db = createLeadSupabaseClient(env, { fetch: net.fetch, deadline: manualDeadlines().deadline })
+    expect(leadDatabaseDown(db)).toBeNull()
+    await leadRead(db, db.from('partner_configs').select('id'), 'partner config')
+    expect(leadDatabaseDown(db)).toMatch(/partner config/)
+    expect(leadDatabaseDown(createSupabaseClient(env))).toBeNull()
+  })
+
+  it('changes nothing on any other client', async () => {
+    const net = network(['ok'])
+    vi.stubGlobal('fetch', net.fetch)
+    try {
+      const db = createSupabaseClient(env)
+      noteLeadWriteUnanswered(db, 'held click record')
+      const res = await leadRead(db, db.from('service_connections').select('config'), 'slack connection')
+      expect(res.error).toBeNull()
+      expect(net.calls).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

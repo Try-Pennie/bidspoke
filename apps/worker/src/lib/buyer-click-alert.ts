@@ -30,7 +30,7 @@ import type { Env } from '../index'
 import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
 import { resolveSlackForBlockAlert } from './partner-block-alert'
-import { etTime, getSlackConnection, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
+import { etTime, readSlackConnectionForLead, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
 import { readLastGoodSlackConnections } from './volume-cliff'
 import { secretKeys } from './secret-crypto'
 
@@ -211,7 +211,7 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
 /**
  * The production alert both click nodes post through (#1557): the alert claim
  * object for the cooldown, and the org's Slack connection from the database
- * first and the last good copy second, so a page still goes out while Supabase
+ * first (one bounded read, #1849) and the last good copy second, so a page still goes out while Supabase
  * wobbles (L682).
  */
 export function productionClickAlert(orgId: string, env: Env, supabase: SupabaseClient): (alert: ClickAlert) => Promise<ClickAlertOutcome> {
@@ -222,7 +222,7 @@ export function productionClickAlert(orgId: string, env: Env, supabase: Supabase
         resolveSlack: () =>
           resolveSlackForBlockAlert(
             orgId,
-            () => getSlackConnection(supabase, orgId),
+            () => readSlackConnectionForLead(supabase, orgId),
             () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
           ),
         appUrl: env.APP_URL,

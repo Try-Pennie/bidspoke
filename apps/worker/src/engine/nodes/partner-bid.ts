@@ -723,8 +723,9 @@ export function readPartnerConfig(supabase: SupabaseClient, partnerId: string) {
  * on a lead's path get it (partner_bid, and the latency gate's threshold since
  * #1849): the bounded read, the last-good copy rewritten when due, and the copy
  * served only when the read FAILS. Null when the partner is genuinely gone (its
- * copy removed too, #1846) or the read failed with no copy to serve. Throws
- * StoredCopyRefusedError, logged, for a copy past the maximum age (#1847).
+ * copy removed too, #1846). Throws, naming the failed read, when there is no
+ * copy to serve, and StoredCopyRefusedError, logged, for a copy past the
+ * maximum age (#1847).
  */
 export async function loadPartnerConfigForLead(supabase: SupabaseClient, kv: KVNamespace | undefined, partnerId: string): Promise<{ partner: PartnerConfig; fromCopy: boolean } | null> {
   const { data, error } = await readPartnerConfig(supabase, partnerId)
@@ -740,7 +741,9 @@ export async function loadPartnerConfigForLead(supabase: SupabaseClient, kv: KVN
     return null
   }
   const stale = await readPartnerLastGood<PartnerConfig>(kv, partnerId, error.message, Date.now())
-  if (!stale) return null
+  // A failed read with nothing to serve is not a missing partner (L11): null
+  // is kept for a row that is genuinely gone.
+  if (!stale) throw new Error(`partner config ${partnerId} could not be read (${error.message}), and there is no stored copy to use`)
   console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${partnerId}: ${formatErr(error)}`)
   return { partner: stale, fromCopy: true }
 }

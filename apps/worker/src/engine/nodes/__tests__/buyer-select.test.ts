@@ -17,7 +17,7 @@ import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
-import { createLeadSupabaseClient } from '../../../lib/lead-read-budget'
+import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../../../lib/lead-read-budget'
 import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, productionDeps, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -186,6 +186,8 @@ interface Harness {
   mirrored: unknown[]
   /** Copies started that never answer (mirrorHangs). */
   mirrorsHanging: number
+  /** Writes the node said did not answer in time (#1849). */
+  unanswered: string[]
   bidRows: Array<Record<string, unknown>>
   breakerCalls: string[]
   logs: Array<Record<string, unknown>>
@@ -217,7 +219,7 @@ function harness(opts: {
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
-  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
+  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, unanswered: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
   const spend = (op: ObjectOp) => { h.clockMs += opts.advanceOnObject?.[op] ?? 0 }
   h.deps = {
@@ -294,6 +296,7 @@ function harness(opts: {
     clock: () => h.clockMs,
     sleep: async (ms) => { h.clockMs += ms },
     log: (event) => { h.logs.push(event) },
+    writeUnanswered: (what) => { h.unanswered.push(what) },
     localDev: false,
   }
   return h
@@ -1036,6 +1039,25 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
       expect(out(r)).toMatchObject({ _route: 'sold', reason: 'sold', mirrored: 'outcome_unknown' })
       expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted', mirrored: 'outcome_unknown' })
       expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'outcome_unknown' }))
+      // The database is not answering, so the lead's later reads take their copies at once.
+      expect(h.unanswered).toEqual(['buyer_sales copy'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a rehearsal copy cut short by its own spent budget is outcome unknown, but is no evidence the database is down', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness({ mirrorHangs: true })
+      // The rehearsal's budget is all but spent by the time it reaches the copy.
+      const slowProfiles = async () => { h.clockMs += BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS - 20; return snapshot(buyer('p-1', 'tripoint', 1)) }
+      const pending = executeBuyerSelectNode(node({ mode: 'decide_only' }), ctx(), env, { ...h.deps, loadProfiles: slowProfiles })
+      for (let i = 0; i < 1_000 && h.mirrorsHanging === 0; i++) await new Promise((resolve) => setImmediate(resolve))
+      expect(h.mirrorsHanging).toBe(1)
+      await vi.advanceTimersByTimeAsync(BUYER_SALE_MIRROR_DEADLINE_MS)
+      expect(out(await pending)).toMatchObject({ mirrored: 'outcome_unknown' })
+      expect(h.unanswered).toEqual([])
     } finally {
       vi.useRealTimers()
     }
@@ -1067,11 +1089,23 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
     }
   })
 
+  it('the production copy is not sent into a database the lead has already seen fail; the minute drain delivers it', async () => {
+    let requests = 0
+    const counting = (async () => { requests++; return new Response('null', { status: 200 }) }) as typeof globalThis.fetch
+    const supabase = createLeadSupabaseClient({ SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env, { fetch: counting })
+    noteLeadWriteUnanswered(supabase, 'buyer profiles')
+    const objects = { idFromName: () => 'id', get: () => ({}) }
+    const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, supabase)
+    await expect(production.mirror({} as never, {} as never, 'p-1')).rejects.toThrow(/record_buyer_sale not sent: an earlier database call in this lead failed \(buyer profiles/)
+    expect(requests).toBe(0)
+  })
+
   it('a copy the database refused is reported as not mirrored, because a refused write did not land', async () => {
     const h = harness({ mirrorError: new Error('record_buyer_sale failed: connection refused') })
     const r = await run(h)
     expect(out(r)).toMatchObject({ _route: 'sold', mirrored: false })
     expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'not_mirrored' }))
+    expect(h.unanswered).toEqual([])
   })
 
   it('the deadline sits well above the healthy write: record_buyer_sale took at most 488 ms over the 24 hours to 2026-10-07 (p99 403 ms, 50 calls)', () => {
