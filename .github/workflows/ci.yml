@@ -226,69 +226,6 @@ jobs:
           MONEY_GATE_BASE: ${{ github.event.pull_request.base.sha }}
         run: bash .github/scripts/money-gate.sh "$MONEY_GATE_BASE"
 
-  # The outage drill (#1305, plan on #1675): every money flow's live fixtures run
-  # once with the database up and once per outage shape with every database call
-  # failing, from the same warmed stored copies, and each failing run must decide
-  # and send exactly what its twin did, unless outage-exemptions.json names the
-  # difference with an open issue. Head only (Dan, 2026-10-07). It wakes on the
-  # money gate's own inputs decision, which includes the drill's config. How to
-  # read it is in apps/worker/money-gate/README.md, "The outage drill".
-  outage-drill:
-    name: Outage drill
-    runs-on: ubuntu-latest
-    # Measured locally at 414 s for all 288 fixtures on 2026-10-07, nearly all of
-    # it real waits in post-response Slack lookups the down runs make. A runner is
-    # slower and adds checkout, install and workerd start, so 25 bounds a hang (#885)
-    # with room; the report prints the time by phase.
-    timeout-minutes: 25
-    # On pull requests and on every push to main, so main stays drilled. Not in
-    # deploy.yml's Verify: it would add its run time to every deploy, and an outage
-    # path regression is found here on the pull request first.
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Check whether an input of the outage drill changed
-        id: inputs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        # A push to main has no pull request, and the script then decides to run.
-        run: |
-          files=""
-          ok=true
-          if [ -n "${PR}" ] && ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
-            ok=false
-            files=""
-          fi
-          changed=$(bash .github/scripts/money-gate-inputs-changed.sh "${PR}" "${ok}" "${files}")
-          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
-
-      - uses: pnpm/action-setup@v6
-        if: steps.inputs.outputs.changed == 'true'
-
-      - uses: actions/setup-node@v7
-        if: steps.inputs.outputs.changed == 'true'
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        if: steps.inputs.outputs.changed == 'true'
-        run: pnpm install --frozen-lockfile
-
-      - name: Outage drill
-        if: steps.inputs.outputs.changed == 'true'
-        working-directory: apps/worker
-        env:
-          TZ: UTC
-          LANG: en_US.UTF-8
-          MONEY_GATE_OUT: ${{ runner.temp }}/outage-drill.json
-        run: pnpm exec vitest run --config vitest.outage-drill.config.mts
-
-
   # WHY THIS JOB STARTS AND THEN SKIPS ITS STEPS, RATHER THAN NOT STARTING (#894)
   #
   # It costs roughly thirty seconds of runner time on a pull request it will not

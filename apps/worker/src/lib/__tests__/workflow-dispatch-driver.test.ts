@@ -27,6 +27,12 @@ const access = {
 }
 
 const HOUR = 60 * 60 * 1000
+/**
+ * A last run past every watched workflow's drive threshold, derived from the
+ * registry so a workflow with a longer cadence (the weekly outage drill) is due
+ * here too (L401).
+ */
+const OVERDUE_FOR_EVERY_WORKFLOW_MS = Math.max(...WATCHED_WORKFLOWS.map((w) => w.driveAfterMs)) + HOUR
 const NOW = Date.parse('2026-08-29T14:00:00Z')
 const ago = (ms: number) => new Date(NOW - ms).toISOString()
 
@@ -196,14 +202,14 @@ describe('runWorkflowDispatchDriver: failing loud', () => {
     })
 
   it('dispatches every overdue workflow and reports it', async () => {
-    const fetchMock = wire({ lastRunAgoMs: 30 * HOUR, dispatchStatus: 204 })
+    const fetchMock = wire({ lastRunAgoMs: OVERDUE_FOR_EVERY_WORKFLOW_MS, dispatchStatus: 204 })
     const results = await runWorkflowDispatchDriver(env, NOW, fetchMock)
     expect(results.length).toBe(WATCHED_WORKFLOWS.length)
     expect(results.every((r) => r.outcome === 'dispatched')).toBe(true)
   })
 
   it('reports a refused dispatch as failed rather than reporting it as done', async () => {
-    const fetchMock = wire({ lastRunAgoMs: 30 * HOUR, dispatchStatus: 403 })
+    const fetchMock = wire({ lastRunAgoMs: OVERDUE_FOR_EVERY_WORKFLOW_MS, dispatchStatus: 403 })
     const results = await runWorkflowDispatchDriver(env, NOW, fetchMock)
     expect(results.every((r) => r.outcome === 'failed')).toBe(true)
     expect(results[0].reason).toContain('403')
@@ -234,7 +240,7 @@ describe('runWorkflowDispatchDriver: failing loud', () => {
           first = false
           throw new Error('boom')
         }
-        return new Response(runsBody(30 * HOUR), { status: 200 })
+        return new Response(runsBody(OVERDUE_FOR_EVERY_WORKFLOW_MS), { status: 200 })
       }
       return new Response('{}', { status: 200 })
     })
@@ -263,7 +269,7 @@ describe('runWorkflowDispatchDriver: failing loud', () => {
         first = false
         return null as unknown as Response
       }
-      return new Response(runsBody(30 * HOUR), { status: 200 })
+      return new Response(runsBody(OVERDUE_FOR_EVERY_WORKFLOW_MS), { status: 200 })
     })
     const results = await runWorkflowDispatchDriver(env, NOW, fetchMock)
     expect(results[0].outcome).toBe('failed')

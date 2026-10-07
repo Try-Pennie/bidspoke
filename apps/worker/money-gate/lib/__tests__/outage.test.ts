@@ -173,6 +173,13 @@ describe('applyExemptions', () => {
     expect(r.failures.join('\n')).toMatch(/expired/)
   })
 
+  it('prefers a live entry over an expired one for the same difference, whatever their order', () => {
+    const f = { workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused' as const, diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }
+    const r = applyExemptions([f], [ex({ expires: '2026-10-06' }), ex()], today)
+    expect(r.excused).toHaveLength(1)
+    expect(r.failures.join('\n')).not.toMatch(/expired on/)
+  })
+
   it('fails an entry that matched nothing, so a fixed flow cannot stay exempt', () => {
     const r = applyExemptions([], [ex()], today)
     expect(r.failures.join('\n')).toMatch(/matched no difference.*#1845/)

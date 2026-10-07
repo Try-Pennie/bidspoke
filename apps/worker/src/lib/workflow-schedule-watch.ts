@@ -150,6 +150,18 @@ export const WATCHED_WORKFLOWS: WatchedWorkflow[] = [
     dependents:
       'nothing is checking that the generated database types still match the live schema, so a migration can drift from the types the worker compiles against',
   },
+  {
+    file: 'outage-drill-weekly.yml',
+    label: 'Outage drill (weekly)',
+    cron: '0 9 * * MON',
+    // Weekly cadence (Dan, 2026-10-07), 8 day window: one missed Monday plus a day.
+    staleMs: 8 * 24 * H,
+    // Six days twenty hours: driven a little more than weekly, so a dropped cron
+    // is made up before the next Monday, with over a day before the alert.
+    driveAfterMs: (6 * 24 + 20) * H,
+    dependents:
+      'nothing is checking that every money flow on main still answers as it would with the database up while the database is failing, so a change that breaks bidding in an outage would go unnoticed until one',
+  },
 ]
 
 export type ScheduleStatus = 'healthy' | 'stale' | 'never_ran' | 'failing' | 'missing' | 'unreadable'

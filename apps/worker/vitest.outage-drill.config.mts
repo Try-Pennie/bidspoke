@@ -41,6 +41,11 @@ if (dispatchNamespaces.length === 0) {
 
 const dispatchDelayMs = parseDispatchDelay(process.env.MONEY_GATE_DISPATCH_DELAY_MS)
 
+// CI drills every flow; a narrowed run there would pass on one flow.
+if (process.env.CI && process.env.OUTAGE_DRILL_ONLY) {
+  throw new Error(`outage drill: OUTAGE_DRILL_ONLY is set in CI (${process.env.OUTAGE_DRILL_ONLY}), so the run would drill one flow and still pass; unset it`)
+}
+
 const io = createGateIo({ outPath: process.env.MONEY_GATE_OUT ? resolve(process.env.MONEY_GATE_OUT) : undefined, fixedTimeMs: FIXED_TIME_MS, dispatchNamespaces, dispatchDelayMs })
 
 export default defineConfig({

@@ -88,6 +88,9 @@ describe('money-gate-inputs-changed: runs on any input the gate reads, skips onl
     '.github/scripts/money-gate.sh',
     '.github/scripts/money-gate-inputs-changed.sh',
     '.github/workflows/ci.yml',
+    '.github/scripts/outage-drill.sh',
+    '.github/workflows/outage-drill.yml',
+    '.github/workflows/outage-drill-weekly.yml',
   ])('runs when %s changes', (file) => {
     expect(decide('7', 'true', `docs/x.md\n${file}`)).toBe('true')
   })

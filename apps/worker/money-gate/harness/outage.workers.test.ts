@@ -91,16 +91,11 @@ async function keepStoredCopies(e: GateEnv): Promise<Kept> {
   for (const name of COPY_NAMESPACES) {
     const kv = e[name] as KVNamespace
     const entries: Record<string, { value: string; metadata: unknown }> = {}
-    let cursor: string | undefined
-    do {
-      const page: KVNamespaceListResult<unknown> = await kv.list({ cursor })
-      for (const k of page.keys) {
-        if (!isLastGoodKey(k.name)) continue
-        const { value, metadata } = await kv.getWithMetadata(k.name)
-        if (value !== null) entries[k.name] = { value, metadata }
-      }
-      cursor = page.list_complete ? undefined : page.cursor
-    } while (cursor)
+    for (const key of await allKeys(kv)) {
+      if (!isLastGoodKey(key)) continue
+      const { value, metadata } = await kv.getWithMetadata(key)
+      if (value !== null) entries[key] = { value, metadata }
+    }
     kept[name] = entries
   }
   return kept
@@ -113,12 +108,23 @@ async function restore(e: GateEnv, kept: Kept): Promise<void> {
   }
 }
 
+/** Every key in a namespace, following the listing's cursor past its first page. */
+async function allKeys(kv: KVNamespace): Promise<string[]> {
+  const names: string[] = []
+  let cursor: string | undefined
+  do {
+    const page: KVNamespaceListResult<unknown> = await kv.list({ cursor })
+    for (const k of page.keys) names.push(k.name)
+    cursor = page.list_complete ? undefined : page.cursor
+  } while (cursor)
+  return names
+}
+
 /** Drops every key a prior run left that is not a stored copy, so the recorded run meets only the copies. */
 async function dropFastKeys(e: GateEnv): Promise<void> {
   for (const name of COPY_NAMESPACES) {
     const kv = e[name] as KVNamespace
-    const page = await kv.list()
-    for (const k of page.keys) if (!isLastGoodKey(k.name)) await kv.delete(k.name)
+    for (const key of await allKeys(kv)) if (!isLastGoodKey(key)) await kv.delete(key)
   }
 }
 
@@ -177,10 +183,18 @@ async function drill(e: GateEnv): Promise<void> {
       // 1 and 2. Warm on a different prospect, with the prewarm cron, then keep only the copies.
       await timed('reset', async () => { await reset(); forgetIsolateMemory() })
       const warmPayload = generatePayload(shape, { seed: `${id}#warm`, set: variant.set, unset: variant.unset })
-      await timed('warm run', () => runOnce(e, def, { id: `${id}#warm`, seed: `${id}#warm`, kind: 'live' }, warmPayload, variant, stubs, shape, {
+      const warm = await timed('warm run', () => runOnce(e, def, { id: `${id}#warm`, seed: `${id}#warm`, kind: 'live' }, warmPayload, variant, stubs, shape, {
         before: (runEnv, db) => timed('prewarm', () => prewarmKvCaches(db.client as never, runEnv as never)),
       }))
       const kept = await timed('keep copies', () => keepStoredCopies(e))
+      // A positive control on the warming: every run loads its definition, so a
+      // warm run that left no definition copy warmed nothing, and every difference
+      // after it would be blamed on the engine. Some warm runs end in an error by
+      // design, as their twin does, so the copy is what is required.
+      if (!kept.WORKFLOW_CACHE[`workflow-def-lastgood:${def.id}`]) {
+        controlFailures.push(`${def.name}/${variant.name}: the warm run left no definition copy, so nothing was warmed${warm.error ? ` (it ended: ${warm.error})` : ''}`)
+        continue
+      }
 
       const payload = generatePayload(shape, { seed: id, set: variant.set, unset: variant.unset })
       const fromKept = async () => {

@@ -1,0 +1,68 @@
+name: Outage Drill
+
+# The outage drill (#1305, plan on #1675): every money flow's live fixtures run
+# once with the database up and once per outage shape with every database call
+# failing, from the same warmed stored copies, and each failing run must decide
+# and send exactly what its twin did, unless money-gate/outage-exemptions.json
+# names the difference with an open issue. Head only (Dan, 2026-10-07). How to
+# read it is in apps/worker/money-gate/README.md, "The outage drill".
+#
+# When it runs (Dan, 2026-10-07): here, on every pull request whose files are
+# money gate inputs, so a change is drilled before it merges; and once a week on
+# main, in outage-drill-weekly.yml. Not after every merge and not in deploy.yml's
+# Verify: each run is several paid runner minutes, and the pull request run
+# already drilled what merged. The weekly run has its own file because the
+# schedule watch reads a workflow's newest 20 runs, and about 100 pull request
+# runs a week here would push every weekly run out of that page. Not a ci.yml
+# job, because ci.yml's main push coverage guard (#972) requires a pull request
+# only job there to run in Verify too; main is covered weekly instead.
+
+on:
+  pull_request:
+
+jobs:
+  outage-drill:
+    name: Outage drill
+    runs-on: ubuntu-latest
+    # Measured locally at 426 s for all 288 fixtures on 2026-10-07, nearly all of
+    # it real waits in post-response Slack lookups the down runs make. A runner is
+    # slower and adds checkout, install and workerd start, so 25 bounds a hang
+    # (#885) with room; the report prints the time by phase.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check whether an input of the outage drill changed
+        id: inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            ok=true
+          else
+            ok=false
+            files=""
+          fi
+          changed=$(bash .github/scripts/money-gate-inputs-changed.sh "${PR}" "${ok}" "${files}")
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v6
+        if: steps.inputs.outputs.changed == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.inputs.outputs.changed == 'true'
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        if: steps.inputs.outputs.changed == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Outage drill
+        if: steps.inputs.outputs.changed == 'true'
+        run: bash .github/scripts/outage-drill.sh

@@ -178,8 +178,12 @@ workflow not replayed as a test run or as a shadow run.
 `money-gate/harness/outage.workers.test.ts` (#1305, plan on #1675) proves each
 money flow keeps answering its caller, deciding and sending exactly what it would
 with the database up, while every database call fails. It reuses this harness
-(`harness/replay-core.ts`) and runs the head only, as its own CI job, `Outage
-drill`, woken by the same inputs decision as the gate.
+(`harness/replay-core.ts`) and runs the head only: on every pull request whose
+files are money gate inputs (`.github/workflows/outage-drill.yml`), and once a week
+on main (`outage-drill-weekly.yml`, Mondays 09:00 UTC, also driven by the worker's
+schedule watch when GitHub drops the cron). Not after every merge: each run is
+several paid runner minutes, and the pull request run already drilled what merged
+(Dan, 2026-10-07). `.github/scripts/outage-drill.sh` is how both run it.
 
 For each live fixture of each money flow it:
 

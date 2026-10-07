@@ -1,0 +1,62 @@
+name: Outage Drill Weekly
+
+# The outage drill (#1305) on main, once a week (Dan, 2026-10-07), so drift main
+# picks up between pull requests is still found; pull requests are drilled by
+# outage-drill.yml. This file holds only the weekly run so the schedule watch,
+# which reads a workflow's newest 20 runs, always sees it.
+#
+# GitHub stopped delivering this repo's cron events reliably on 2026-08-26, so the
+# worker's schedule watch (apps/worker/src/lib/workflow-schedule-watch.ts)
+# dispatches this workflow itself when the weekly run is overdue, and pages when
+# it has not run at all.
+
+on:
+  schedule:
+    - cron: '0 9 * * MON' # Mondays 09:00 UTC (L733: weekday by name)
+  workflow_dispatch:
+    inputs:
+      driver:
+        description: 'Who is running this. The worker sets cloudflare-cron; a manual run leaves the default.'
+        required: false
+        default: 'manual'
+
+# Stamped so the schedule watch can tell a run it drove from one a person
+# started by hand (#1058).
+run-name: Outage Drill Weekly (${{ inputs.driver || 'schedule' }})
+
+jobs:
+  outage-drill:
+    name: Outage drill on main
+    runs-on: ubuntu-latest
+    # Measured locally at 426 s for all 288 fixtures on 2026-10-07; a runner is
+    # slower and adds checkout, install and workerd start. Bounds a hang (#885).
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      # An incoming webhook for a failed weekly run (#324); absent, the alert step
+      # does nothing and the run still fails.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Outage drill
+        run: bash .github/scripts/outage-drill.sh
+
+      - name: Alert Slack when the weekly drill fails
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg url "$RUN_URL" '{text: ("The weekly outage drill failed on main. A money flow no longer answers as it does with the database up, or the drill could not run. Open the run, read the report, and fix the flow or add an exemption with its issue: " + $url)}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"

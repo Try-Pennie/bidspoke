@@ -222,7 +222,10 @@ export function applyExemptions(outcomes: FixtureOutcome[], exemptions: OutageEx
   const used = new Set<OutageExemption>()
   for (const f of outcomes) {
     if (f.diffs.length === 0) continue
-    const hit = exemptions.find((e) => matches(e, f))
+    // A live entry wins over an expired one for the same difference, whatever
+    // their order; the expired one then matched nothing and is reported for removal.
+    const candidates = exemptions.filter((e) => matches(e, f))
+    const hit = candidates.find((e) => e.expires >= today) ?? candidates[0]
     if (hit) {
       used.add(hit)
       if (hit.expires < today) {
