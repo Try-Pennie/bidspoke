@@ -14,7 +14,7 @@ vi.mock('../../../lib/cf-secrets')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { invalidateWorkflowCache } from '../../../engine/definition-loader'
+import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { setCfSecret } from '../../../lib/cf-secrets'
 import { makeSupabase } from './_supabase-mock'
@@ -62,7 +62,7 @@ describe('GET /sources', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     app = await makeApp()
   })
@@ -88,7 +88,7 @@ describe('POST /sources', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(setCfSecret).mockResolvedValue(undefined)
     app = await makeApp()
@@ -205,7 +205,7 @@ describe('DELETE /sources/:name', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(setCfSecret).mockResolvedValue(undefined)
     app = await makeApp()
@@ -260,7 +260,7 @@ describe('DELETE /sources: zero-row + DB error (#588)', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(setCfSecret).mockResolvedValue(undefined)
     app = await makeApp()

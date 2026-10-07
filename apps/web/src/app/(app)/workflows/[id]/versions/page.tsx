@@ -44,7 +44,13 @@ export default function VersionHistoryPage() {
     setConfirmingRestore(null)
     setRestoring(versionId)
     try {
-      await api.versions.restore(id, versionId)
+      const r = await api.versions.restore(id, versionId)
+      // Restored, but the old copy may still be served for a while: stay and say so (#1845).
+      if (r.stored_copy_warning) {
+        setError(r.stored_copy_warning)
+        setRestoring(null)
+        return
+      }
       router.push(`/workflows/${id}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Restore failed')

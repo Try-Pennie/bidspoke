@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 // NavLayout pulls in nav/auth chrome irrelevant to the delete-confirm flow under test.
 vi.mock('@/components/NavLayout', () => ({
@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    workflows: { list: vi.fn(), save: vi.fn(), duplicate: vi.fn() },
+    workflows: { list: vi.fn(), save: vi.fn(), duplicate: vi.fn(), setActive: vi.fn(), setFolder: vi.fn(), delete: vi.fn(), get: vi.fn() },
     stats: { get: vi.fn() },
     folders: { list: vi.fn(), delete: vi.fn() },
   },
@@ -126,5 +126,61 @@ describe('Workflows page: a copy made without its version history says so', () =
 
     expect(await screen.findByText('My Workflow (copy)')).toBeInTheDocument()
     expect(screen.queryByText(/version history could not be copied/)).not.toBeInTheDocument()
+  })
+})
+
+// #1845: each change from the list commits, then refreshes the stored copy the
+// engine reads in an outage. When that refresh fails the server still answers
+// 200 with stored_copy_warning, and the page must show it rather than drop it.
+describe('Workflows page: a change whose stored copy was not refreshed says so', () => {
+  const WARNING = 'The change was saved and recorded, but a stored copy of the old version could not be refreshed.'
+
+  async function openRowMenu() {
+    vi.mocked(api.workflows.list).mockResolvedValue([workflow])
+    render(<WorkflowsPage />)
+    fireEvent.click(await screen.findByLabelText('More options'))
+  }
+
+  it('after switching a workflow off', async () => {
+    vi.mocked(api.workflows.setActive).mockResolvedValue({ id: 'wf-1', is_active: false, stored_copy_warning: WARNING })
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+  })
+
+  it('after a rename', async () => {
+    vi.mocked(api.workflows.save).mockResolvedValue({ stored_copy_warning: WARNING } as never)
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    fireEvent.change(screen.getByDisplayValue('My Workflow'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByLabelText('Save name'))
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+  })
+
+  it('after a move to a folder', async () => {
+    vi.mocked(api.workflows.setFolder).mockResolvedValue({ id: 'wf-1', folder_id: 'fol-1', stored_copy_warning: WARNING })
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('button', { name: /Move to folder/ }))
+    // The folder header also reads Misc, so pick inside the popover the Root option sits in.
+    const picker = screen.getByRole('button', { name: /Root \(no folder\)/ }).parentElement as HTMLElement
+    fireEvent.click(within(picker).getByRole('button', { name: 'Misc' }))
+    await waitFor(() => expect(api.workflows.setFolder).toHaveBeenCalledWith('wf-1', 'fol-1'))
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+  })
+
+  it('after a delete', async () => {
+    vi.mocked(api.workflows.delete).mockResolvedValue({ ok: true, stored_copy_warning: WARNING })
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+  })
+
+  it('says nothing extra when the copy was refreshed', async () => {
+    vi.mocked(api.workflows.setActive).mockResolvedValue({ id: 'wf-1', is_active: false })
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+    await waitFor(() => expect(api.workflows.setActive).toHaveBeenCalled())
+    expect(screen.queryByText(WARNING)).not.toBeInTheDocument()
   })
 })

@@ -6,11 +6,12 @@ import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { invalidateWorkflowCache } from '../../engine/definition-loader'
+import { refreshWorkflowCaches } from '../../engine/definition-loader'
 import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
 import { executeWorkflow, moneyRuntime, nodeExecutorForLane } from '../../engine/index'
 import { dashboardLaneRefusal, refuseRowOutsideLane } from '../lane-refusal'
 import { buildContext } from '../../engine/context'
@@ -367,7 +368,10 @@ workflows.put('/:id', async (c) => {
   // real save), so a client edit that silently failed to reach the payload
   // looked "Saved" with an unchanged DB (the reported bug). Report `no_changes`
   // instead and skip the snapshot / cache churn / audit entry so the UI can flag
-  // the discrepancy loudly ("fail loud, not silent").
+  // the discrepancy loudly ("fail loud, not silent"). The stored copies are still
+  // refreshed (#1845): a save whose refresh failed tells the person to save
+  // again, and that second save is unchanged, so skipping the refresh here would
+  // make the remedy do nothing.
   const nameUnchanged = body.name === undefined || body.name === existing.name
   const slackUnchanged =
     body.slack_channel === undefined ||
@@ -380,7 +384,10 @@ workflows.put('/:id', async (c) => {
     descriptionNotTouched &&
     jsonEqual(body.definition, existing.definition)
   ) {
-    return c.json({ id, no_changes: true })
+    const copyRefreshed = await copyCleared(async () => {
+      await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
+    }, `workflow ${id} caches`)
+    return c.json({ id, no_changes: true, ...copyWarning(copyRefreshed) })
   }
 
   // Get next version number. `.single()` reports "no prior versions" (first save)
@@ -434,8 +441,11 @@ workflows.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!updated) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Invalidate KV cache
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  // Drop the KV cache and bring the last-good copy up to this save (#1845), so
+  // a database outage straight after it runs the definition just saved. Right
+  // after the commit and never throwing, so the deploy and the audit below
+  // always run; a failure is reported beside the save rather than instead of it.
+  const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
 
   // Deploy code node scripts — run synchronously so errors surface in the save response
   const deployErrors: { namespace: string; error: string }[] = []
@@ -519,7 +529,7 @@ workflows.put('/:id', async (c) => {
     changed_by_name: email,
   })
 
-  return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined })
+  return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined, ...copyWarning(copyRefreshed) })
 })
 
 // POST /api/workflows/:id/draft-changelog — AI-drafted summary of pending changes for the save popover
@@ -638,14 +648,16 @@ workflows.patch('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  // A switch off leaves a copy that refuses (#1845): an outage must not run a
+  // workflow somebody turned off.
+  const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     is_active: body.is_active,
     folder_id: 'folder_id' in body ? body.folder_id : undefined,
     changed_by_name: email,
   })
 
-  return c.json(data)
+  return c.json({ ...data, ...copyWarning(copyRefreshed) })
 })
 
 // DELETE /api/workflows/:id — soft delete. Execution rows have a
@@ -671,9 +683,9 @@ workflows.delete('/:id', async (c) => {
   )
   if (blocked) return blocked
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(copyRefreshed) })
 })
 
 // PATCH /api/workflows/:id/test-payloads — replace the saved test payload array
@@ -699,6 +711,11 @@ workflows.patch('/:id/test-payloads', async (c) => {
   const updateBlocked = dbErrorUnlessNotFound(c, error)
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
+  // Every write to the row moves its stamp, which orders the last-good copy, so
+  // the copy is brought up to it here too (#1845).
+  // Test payloads change nothing a live lead runs, so a copy still holding the
+  // old ones serves the same definition: the failure is logged, never warned.
+  await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   return c.json(data)
 })
 
@@ -843,13 +860,13 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   )
   if (restoreBlocked) return restoreBlocked
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     restored_from_version: version.version_number,
     new_version: nextVersion,
   })
 
-  return c.json({ ok: true, version_number: nextVersion })
+  return c.json({ ok: true, version_number: nextVersion, ...copyWarning(copyRefreshed) })
 })
 
 // POST /api/workflows/:id/test
