@@ -249,7 +249,7 @@
 - [x] **4.2a Constants node** — workflow-level constants stored in node config (key-value editor), partner data (UUID map + sell-off copy) from DB (KV-cached). `partner_uuid_map` table + sell-off columns on `partner_configs`. Constants executor merges both sources. Importer auto-detects `constants` namespace. Partner form updated with sell-off fields + UUID list.
 - [x] **Partner type toggle** — `partner_type: 'source' | 'buyer'` field on `partner_configs`. Form shows Source/Buyer segmented toggle; buyer-only sections (API, Bidding, Circuit breaker, Response classification, Alert config) hidden for source partners.
 - [x] **4.4 Token-based auth** — **NOT NEEDED (scratched per Dan 2026-06-18).** No longer a cutover blocker. Original scope: `issued_tokens` table, `POST /token` route, `auth_mode: 'api_key' | 'token'` on `webhook_endpoints` (§3.4).
-- [x] **4.0 Cutover** — **DONE per Dan 2026-06-18.** Engine routing flipped to Bidspoke and Pipedream disabled. Pipedream workflow stays warm as rollback target. **The engine bidding flow now runs on Bidspoke in production.**
+- [x] **4.0 Cutover**: **DONE per Dan 2026-06-18.** Engine routing flipped to Bidspoke and Pipedream disabled. The Pipedream workflow was kept warm as a rollback target, but is no longer one (2026-10-07, #1675): it is the cutover snapshot and would bid on old rules. **The engine bidding flow now runs on Bidspoke in production.**
 
 ### Pre-main-flow migration (must land before main flow migrates off Pipedream)
 

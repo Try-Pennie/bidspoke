@@ -170,7 +170,7 @@ Migrations must be **backward-compatible (expand/contract)** so schema and code 
 **Live privilege check** (`.github/scripts/db-privilege-check.mjs`, a step of CI's Security scans job on push to main): both projects are asked through the Management API, read only, for anything anon or authenticated can reach that they should not, and the step fails naming each one.
 
 ## Disaster recovery
-Recovery runbook for catastrophic loss (Supabase, Cloudflare, secrets, destructive migration), plus the warm-Pipedream rollback target: [docs/disaster-recovery.md](./docs/disaster-recovery.md). The two worker secrets that cannot be re-derived are escrowed in 1Password (`Bidspoke recovery keys`, #384); the rest are re-obtained from their sources, see the runbook's Secret inventory.
+Recovery runbook for catastrophic loss (Supabase, Cloudflare, secrets, destructive migration), and what happens to engine bidding while the database is down (Scenario E; there is no standby, #1675): [docs/disaster-recovery.md](./docs/disaster-recovery.md). The two worker secrets that cannot be re-derived are escrowed in 1Password (`Bidspoke recovery keys`, #384); the rest are re-obtained from their sources, see the runbook's Secret inventory.
 
 ## Worker secrets (production)
 These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never committed to git. There are ~20, not the handful below.

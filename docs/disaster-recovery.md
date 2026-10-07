@@ -12,7 +12,7 @@ Confirmed in the 2026-06-26 restore drill (#270 — see [restore-drill.md](./dr-
 - **RTO (how fast we must be back):**
   - **Resume bidding (config + schema restored): ~8 min proven** in the drill (laptop-driven logical restore), plus the Cloudflare Worker/Pages redeploy and worker-secret re-provisioning to actually serve traffic. A co-located runner or Supabase's native managed restore would be faster.
   - **Full system (all execution-log history + raw-SSN tables): hours**, dominated by the physical restore of a **27 GB** database (measured 2026-08-13, Supabase-side). Not on the critical path for getting money moving again.
-  - Fastest mitigation while restoring: reroute the engine to the warm Pipedream flow (Scenario E).
+  - While the Worker or Cloudflare is down, engine leads go unbid until it is restored; there is no failover. Whether engine bidding keeps going while only the database is down is not yet proven (Scenario E): making it survive, and proving it with a drill, is #1675.
 
 ### Per data class
 
@@ -51,7 +51,7 @@ Two items are pure dead weight in the figures above and removing them shortens t
 
 - **Workflow definitions** are pushed to the GitHub backup repo (`bidspoke-workflows`) on every save, so the canvas logic survives a Supabase loss (re-import from there).
 - **Lead-sighting + bid outcome data** is exported nightly (09:00 UTC) to Snowflake, so analytics-grade outcome history survives even past the Postgres retention window.
-- **The engine bidding flow stays warm on Pipedream** as the designated rollback target (the original platform, kept live since the cutover). This is the fastest mitigation for an engine-bidding outage — reroute the engine to Pipedream while Bidspoke is restored (see Scenario E).
+- **There is no standby for engine bidding, and the Pipedream engine flow is not one.** It was kept warm after the 2026-06-18 cutover, but it holds none of the engine bidding changes shipped since (`git log --oneline --since=2026-06-18 -- apps/worker/src/engine` lists them), so failing over to it would bid on June's rules, and Pipedream Workflows shuts down on 2027-03-31. Dan decided on 2026-10-07 (#1675) against any standby copy, since one would share Cloudflare and the database with the live flow: Bidspoke itself is to keep bidding through a database outage, proven by a drill.
 
 ### The execution archive has NO independent backup, and that is a decision (#909)
 
@@ -80,7 +80,7 @@ The realistic loss modes are account level and credential level, not hardware. T
 2. Restore from backup. Tier confirmed (2026-06-26): **Supabase Pro daily backups, 7-day retention, PITR not enabled** — so restore is to the most recent nightly backup (RPO up to ~24h), not to an arbitrary point in time. The restore path is proven end-to-end in [restore-drill.md](./dr-restore-drill.md); for the config/system-of-record subset, `scripts/dr-restore-drill.sh` dumps and restores it in ~5 min. The bulk (execution logs, `persons`, `lead_sightings`) comes from Supabase's managed restore of the daily backup.
 3. If the project itself is gone, create a new project, restore the dump, then update every consumer of the project ref/keys: the `SUPABASE_SECRET_KEY` secret on BOTH workers (`bidspoke-worker` and `bidspoke-worker-tail`), `SUPABASE_JWKS_URL`, the CI/Deploy `SUPABASE_PROJECT_ID` var + `SUPABASE_ACCESS_TOKEN` secret, and re-link `supabase link`.
 4. Re-run pending migrations against the restored DB (`supabase db push`) and verify pg_cron jobs are scheduled (`cron.job`).
-5. While restoring, reroute the engine to the warm Pipedream flow (Scenario E) so bidding keeps moving.
+5. Leads that arrive while the database is down are covered by Scenario E. Do not reroute the engine to Pipedream.
 
 ### B. Destructive or buggy migration
 
@@ -106,8 +106,8 @@ Everything here is redeployable from git — no data loss, since state lives in 
 ### E. Region / partial outage, or "just get bidding back"
 
 1. Cloudflare Workers run globally, so a single-region outage is largely absorbed. A Supabase region outage is the real exposure (the DB is single-region).
-2. Fastest mitigation for an engine-bidding outage: **reroute the engine to the warm Pipedream flow.** **[OWNER-TODO]** document the exact reroute step (where the engine's destination URL is configured) so this is a one-action failover.
-3. Bidspoke logging/finalize tolerates transient DB blips (PostgREST retry ladder + the strand drains recover lost finalizes), so a brief Supabase hiccup degrades gracefully rather than dropping leads.
+2. There is no failover for engine bidding (#1675). Do not reroute the engine to the Pipedream flow: it is the 2026-06-18 cutover snapshot and would bid on old rules. What is known today is narrow. The custom endpoint record, the partner config, environment variables (Salesforce credentials among them), partner constants and buyer profiles are served from a last-good copy when the database read fails (#1296 and earlier). Workflow definitions are not: they are cached for five minutes with no fallback, so a few minutes into an outage every live lead fails, and a test run fails at once. Nothing on the lead path puts a time limit on a database call, so a database that hangs rather than refuses holds Engine's answer. Whether a whole run still answers Engine with the database down is not yet proven; the drill in #1675 will prove it or find what breaks. If the Worker or Cloudflare is down, Engine's requests fail and those leads go unbid until it is back.
+3. A database outage does lose leads today. On 2026-09-10 Supabase was unresponsive for about 10 minutes and roughly 400 Engine leads went unbid, because the endpoint lookup and the partner config read refused when the database did (fixed by #1296). Execution logs and finalizes written during an outage are recovered by the strand drains afterwards; the leads themselves are not replayed (Dan, 2026-09-10).
 
 ### F. Secret loss or compromise
 
