@@ -31,7 +31,7 @@
  * `stored-copy-serving:cooldown` in the IDEMPOTENCY namespace.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { readStoredCopyLedger, type LedgerKv, type LedgerReading, type LedgerRefusal } from './stored-copy-ledger'
+import { readStoredCopyLedger, type LedgerKv, type LedgerReading } from './stored-copy-ledger'
 import {
   COPY_LABELS,
   STORED_COPY_MAX_AGE_MS,
@@ -39,6 +39,7 @@ import {
   judgeCopyAge,
   readConfirmedCopy,
   type StoredCopyKind,
+  type StoredCopyRefusal,
 } from './stored-copy-age'
 import { ENDPOINT_PREFIX, PARTNER_PREFIX, WORKFLOW_PREFIX, listKeys, type SweepResult } from './stored-copy-sweep'
 import { envVarsLastGoodKey } from './env-loader'
@@ -201,7 +202,7 @@ const minutesWord = (ms: number) => {
   return m === 1 ? '1 minute' : `${m} minutes`
 }
 
-const REFUSAL_WORDS: Record<LedgerRefusal, string> = {
+const REFUSAL_WORDS: Record<StoredCopyRefusal, string> = {
   copy_too_old: `the stored copy was past the ${MAX_AGE_MINUTES} minute limit`,
   no_copy: 'there was no stored copy',
   copy_age_unknown: 'the stored copy carried no readable time',

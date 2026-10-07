@@ -15,6 +15,7 @@ import {
   readStoredCopyLedger,
   type LedgerKv,
 } from '../stored-copy-ledger'
+import type { StoredCopyRefusal } from '../stored-copy-age'
 
 const T0 = Date.parse('2026-10-07T20:00:10Z')
 const MINUTE = 60_000
@@ -174,6 +175,20 @@ describe('noting a stored copy', () => {
 })
 
 describe('reading the ledger back', () => {
+  it('counts every refusal reason a loader can give, each under its own name', async () => {
+    // Keyed by the shared type, so a reason added there fails to compile here
+    // until it is listed, and then fails below until the ledger counts it.
+    const every: Record<StoredCopyRefusal, true> = { no_copy: true, copy_too_old: true, copy_age_unknown: true, copy_unusable: true }
+    const reasons = Object.keys(every) as StoredCopyRefusal[]
+    for (const [i, reason] of reasons.entries()) {
+      for (let n = 0; n <= i; n++) noteStoredCopy({ copy: 'partner_config', outcome: reason, ageMs: null, atMs: T0 })
+    }
+    const kv = ledgerKv()
+    await flushStoredCopyLedger(asKv(kv), testClock())
+    const refused = (await readStoredCopyLedger(asKv(kv), T0, 5)).kinds.partner_config?.refused
+    expect(refused).toEqual(Object.fromEntries(reasons.map((reason, i) => [reason, i + 1])))
+  })
+
   it('adds up every isolate, and counts each minute with any activity once', async () => {
     const kv = ledgerKv()
     const minute = Math.floor(T0 / MINUTE)

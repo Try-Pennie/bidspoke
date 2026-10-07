@@ -58,25 +58,17 @@ export const LEDGER_KEY_TTL_SECONDS = 15 * 60
 
 const MINUTE_MS = 60_000
 
-/**
- * Why the ledger counts a copy as refused: the three refusals a loader names
- * (stored-copy-age.ts), plus a copy that was there but could not be read or was
- * not fit to serve (unreadable, unconfirmed after a change), which is not "no
- * copy" and must not be worded as one (L11).
- */
-export type LedgerRefusal = StoredCopyRefusal
-
-export type StoredCopyOutcome = 'served' | LedgerRefusal
+export type StoredCopyOutcome = 'served' | StoredCopyRefusal
 
 const KINDS: readonly StoredCopyKind[] = ['workflow_definition', 'custom_endpoint', 'partner_config', 'env_vars', 'partner_constants', 'buyer_profiles']
-const REFUSALS: readonly LedgerRefusal[] = ['no_copy', 'copy_too_old', 'copy_age_unknown', 'copy_unusable']
+const REFUSALS: readonly StoredCopyRefusal[] = ['no_copy', 'copy_too_old', 'copy_age_unknown', 'copy_unusable']
 
 /** One copy's counts in one minute, as held in KV metadata: short names, since metadata is capped at 1024 bytes. */
 interface StoredTally {
   /** Served. */
   s: number
   /** Refused, by reason. */
-  r: Partial<Record<LedgerRefusal, number>>
+  r: Partial<Record<StoredCopyRefusal, number>>
   /** The oldest copy served, in ms, or null when none was served. */
   a: number | null
 }
@@ -89,7 +81,7 @@ interface LedgerEntry {
 
 export interface KindTally {
   served: number
-  refused: Record<LedgerRefusal, number>
+  refused: Record<StoredCopyRefusal, number>
   /** The oldest copy served in the window, or null when none was. */
   oldestServedAgeMs: number | null
 }
