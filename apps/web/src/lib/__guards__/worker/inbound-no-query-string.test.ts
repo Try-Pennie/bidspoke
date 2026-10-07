@@ -16,7 +16,10 @@
  *     element access or destructuring;
  *  2. in the code a sender reaches (routes/ outside api/, ops/, middleware/ and
  *     both Workers' entry points), `url` read from a raw Request, and `search`,
- *     `searchParams`, `href`, `toString` or `toJSON` read from a URL.
+ *     `searchParams`, `href`, `toString` or `toJSON` read from a URL;
+ *  3. `raw` read from a Hono request outside routes/api/, and, in the code a
+ *     sender reaches, a raw Request handed to any function defined outside it,
+ *     so the request never leaves the code rules 1 and 2 watch.
  *
  * Two shapes are allowed. `new URL(<request>.url).pathname`, which keeps only
  * the path. And controlWordFromQuery in apps/worker/src/lib/control-word.ts,
@@ -49,7 +52,7 @@ const isInbound = (file: string) => {
 }
 const isSignedInApp = (file: string) => rel(file).startsWith('routes/api/')
 
-const HONO_REQUEST_READS = new Set(['query', 'queries', 'url'])
+const HONO_REQUEST_READS = new Set(['query', 'queries', 'url', 'raw'])
 const REQUEST_READS = new Set(['url'])
 const URL_READS = new Set(['search', 'searchParams', 'href', 'toString', 'toJSON'])
 
@@ -141,7 +144,21 @@ export function scanQueryReads(program: ts.Program, files: string[]): Finding[] 
       }
     }
 
+    // A raw Request handed from inbound code to a function defined anywhere
+    // else would carry its address past every rule above.
+    const handOff = (call: ts.CallExpression | ts.NewExpression) => {
+      if (!inbound) return
+      for (const arg of call.arguments ?? []) {
+        if (kindOf(checker, checker.getTypeAtLocation(arg)) !== 'request') continue
+        const target = checker.getResolvedSignature(call)?.getDeclaration()?.getSourceFile().fileName
+        if (target !== undefined && target.startsWith(WORKER_SRC) && isInbound(target)) continue
+        const where = target === undefined ? 'an unresolved function' : target.startsWith(WORKER_SRC) ? rel(target) : 'a library'
+        offenders.push({ file: rel(file), line: sf.getLineAndCharacterOfPosition(arg.getStart(sf)).line + 1, what: `request handed to ${where}` })
+      }
+    }
+
     const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) || ts.isNewExpression(node)) handOff(node)
       if (ts.isPropertyAccessExpression(node)) judge(node, node.expression, node.name.text)
       else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
         judge(node, node.expression, node.argumentExpression.text)
@@ -175,6 +192,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   const planted = {
     [PLANTED_ROUTE]: [
       "import type { Context } from 'hono'",
+      "import { readJsonObject } from '../lib/do-json'",
       'export function a(c: Context) { return c.req.query("email") }',
       'export function b(c: Context) { const r = c.req; return r.queries("x") }',
       'export function d(c: Context) { const { query } = c.req; return query }',
@@ -185,6 +203,10 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
       'export function i(req: Request) { return req.url }',
       'export function ok1(c: Context) { return new URL(c.req.url).pathname }',
       'export function ok2(req: Request) { return new URL(req.url).pathname }',
+      'export function j(c: Context) { return c.req.raw }',
+      'export function k(req: Request) { return readJsonObject(req) }',
+      'function local(req: Request) { return req.method }',
+      'export function ok3(req: Request) { return local(req) }',
       '',
     ].join('\n'),
     [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
@@ -242,16 +264,18 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
 
   it('fails on each planted way of reading the query, by file, line and kind (L1)', () => {
     expect(plantedFindings(PLANTED_ROUTE).map((f) => `${f.line} ${f.what}`).sort()).toEqual([
-      '2 hono.query',
-      '3 hono.queries',
-      '4 hono.query',
+      '10 request.url',
+      '13 hono.raw',
+      '14 request handed to lib/do-json.ts',
+      '3 hono.query',
+      '4 hono.queries',
       '5 hono.query',
-      '6 hono.url',
-      '7 request.url',
-      '7 url.searchParams',
+      '6 hono.query',
+      '7 hono.url',
       '8 request.url',
-      '8 url.search',
+      '8 url.searchParams',
       '9 request.url',
+      '9 url.search',
     ])
   })
 
