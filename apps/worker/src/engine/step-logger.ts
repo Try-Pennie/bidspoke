@@ -8,10 +8,11 @@ import {
   requireRowsAffected,
   withDbRetry,
   normalizeDbError,
-  sleep,
   NO_ROW_MATCHED_CODE,
+  DB_WRITE_RETRY_DELAYS_MS,
   type DbError,
 } from '../lib/db-retry'
+import { waitToRetry, type RetryTiming } from '../lib/post-response-budget'
 
 // Re-export so existing importers of these from step-logger keep working; the
 // definitions now live in lib/db-retry (single source of truth, shared with the
@@ -121,32 +122,35 @@ export async function writeStepLog(
   }
 }
 
-// Retry delays. These inserts run inside waitUntil(), off the request critical
-// path, so the added wall-clock is free. The ladder must outlast the nightly
-// partition-purge lock/reload window (the purge bounds its own lock to ~2s, but
-// the PostgREST schema-cache reload it triggers can 503 for a few seconds).
-// Lost 8 executions' audit trail on 2026-06-10 and several more on 2026-06-12
-// before this was hardened.
-// These two were re-examined alongside the UPDATE ladder below and deliberately
-// left as they are (#1113), so the difference is a decision rather than an
-// oversight. CREATE runs while the request is still in flight, so its span is
-// bounded by the caller's patience, not by the outage. FLUSH carries step logs,
-// which are tier-1 observability (best-effort by design, see engine/durability.ts):
-// losing one debug row to a long outage is the tolerable outcome the tier exists
-// to name, and it is not worth holding an isolate open for two minutes.
-const CREATE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
-const FLUSH_RETRY_DELAYS_MS = [2_000, 5_000]
-// The finalize UPDATE is the only durable record that a lead was served, and it
-// runs in a post-response waitUntil, so the wall-clock this ladder spends costs
-// the lead nothing while giving up early costs a stranded row and a page.
+// Retry delays. These writes outlast the nightly partition-purge lock/reload
+// window (the purge bounds its own lock to ~2s, but the PostgREST schema-cache
+// reload it triggers can 503 for a few seconds). Lost 8 executions' audit trail
+// on 2026-06-10 and several more on 2026-06-12 before this was hardened.
 //
-// Sized against a MEASURED outage rather than a guess (#1113): on 2026-09-02
-// Supabase returned empty-bodied HTTP 500s across roughly 90 seconds, and the
-// old [2s, 5s] ladder was spent seven seconds in. This spans 112 seconds over
-// six attempts, which clears that wobble and still gives up long before the
-// strand drain's 30-minute floor, so the drain stays the backstop rather than
-// racing a retry that is still in flight (asserted in step-logger.test.ts).
-export const UPDATE_RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000]
+// They run in post-response waitUntil work, which Cloudflare cancels 30 seconds
+// after the response, and they run there together: create, then the step flush
+// chained on it, then finalize, then the dead letter. #1113 sized the finalize
+// ladder at 112 seconds on the belief that this time was free, so in a real
+// outage its later rungs and the dead letter behind them were cancelled before
+// they ran (#1850). Every ladder now takes the run's shared post-response budget
+// (lib/post-response-budget.ts) and stops retrying at its cut-off, and each one
+// on its own fits inside that budget with what must follow it (asserted in
+// lib/__tests__/post-response-budget.test.ts). A database outage longer than
+// the budget cannot be outlasted here at all: a row left at 'running' goes to
+// the strand drain, and a row that never landed goes to the dead letter.
+//
+// CREATE and FLUSH stop FINALIZE_RESERVE_MS short of the deadline, because
+// finalize can reconstruct a missing execution row by itself and so needs the
+// time more. FLUSH carries step logs, tier-1 observability (best-effort by
+// design, see engine/durability.ts).
+export const CREATE_RETRY_DELAYS_MS = [2_000, 4_000, 8_000]
+export const FLUSH_RETRY_DELAYS_MS = [2_000, 5_000]
+// The finalize UPDATE is the only durable record that a lead was served. On
+// 2026-09-02 Supabase returned empty-bodied HTTP 500s across roughly 90 seconds
+// (#1113); no ladder inside the platform's 30 seconds can outlast that, so this
+// one backs off quickly and leaves time for the dead letter, and the strand
+// drain (30-minute floor) stays the backstop for a row left at 'running'.
+export const UPDATE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000]
 
 // Batch-insert an accumulated queue of step logs. Used at end of execution
 // to flush all step logs in a single round-trip instead of one-per-step.
@@ -158,7 +162,10 @@ export async function flushStepLogs(
   supabase: SupabaseClient,
   queue: StepLogEntry[],
   piiFieldsRaw: string,
-  meta?: { workflowId: string; isTest: boolean }
+  meta?: { workflowId: string; isTest: boolean },
+  // #1850: the clock and the run's post-response budget. A wait that would run
+  // past the cut-off is not taken, and neither is the row by row fallback.
+  timing?: RetryTiming,
 ): Promise<string | null> {
   if (queue.length === 0) return null
   const piiFields = parsePiiFields(piiFieldsRaw)
@@ -175,7 +182,7 @@ export async function flushStepLogs(
   // and leave the run showing "unknown step".
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= FLUSH_RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) await sleep(FLUSH_RETRY_DELAYS_MS[attempt - 1])
+    if (attempt > 0 && !(await waitToRetry(FLUSH_RETRY_DELAYS_MS[attempt - 1], timing))) break
     const { error } = await insertRowsOnce(supabase, 'execution_steps', rows)
     if (!error) return null
     lastError = error
@@ -196,7 +203,20 @@ export async function flushStepLogs(
   // the whole history down with it.
   let failed = 0
   let firstRowError: string | null = null
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    // One insert per row against a database that is still failing can outrun
+    // the budget on a long run, so the fallback stops at the cut-off and counts
+    // what it never tried.
+    if (timing?.budget && timing.budget.msUntilCutoff(timing.reserveMs ?? 0) <= 0) {
+      const skipped = rows.length - index
+      failed += skipped
+      console.error('[step-logger] row by row fallback stopped at the post-response budget', {
+        execution_id: queue[0]?.execution_id,
+        skipped,
+      })
+      firstRowError ??= `not attempted: the post-response budget ran out (${lastError?.message ?? 'no error'})`
+      break
+    }
     const { error: rowErr } = await insertRowsOnce(supabase, 'execution_steps', [row])
     if (rowErr) {
       failed++
@@ -226,7 +246,9 @@ export async function createExecutionRecord(
     started_at: string
     is_test: boolean
   },
-  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS
+  retryDelaysMs: readonly number[] = CREATE_RETRY_DELAYS_MS,
+  // #1850: the clock and the run's post-response budget.
+  timing?: RetryTiming,
 ): Promise<void> {
   // Throw on (final) insert failure. The caller chains this into flushStepLogs
   // via `.then().catch()`, so a thrown error surfaces as a clear "Step logs
@@ -236,12 +258,12 @@ export async function createExecutionRecord(
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
     if (attempt > 0) {
+      if (!(await waitToRetry(retryDelaysMs[attempt - 1], timing))) break
       console.warn('[step-logger] retrying workflow_executions insert', {
         execution_id: record.id,
         attempt,
         previous_error: lastError?.message,
       })
-      await sleep(retryDelaysMs[attempt - 1])
     }
     const { error } = await insertRowsOnce(supabase, 'workflow_executions', [row])
     if (!error) return
@@ -284,7 +306,8 @@ async function reconstructExecutionRecord(
   id: string,
   started_at: string,
   update: Record<string, unknown>,
-  createFields: ExecutionCreateFields
+  createFields: ExecutionCreateFields,
+  timing?: RetryTiming,
 ): Promise<DbError | null> {
   const row = { id, started_at, trigger_type: 'http_webhook', ...createFields, ...update }
   const { error } = await withDbRetry(async () => {
@@ -293,7 +316,7 @@ async function reconstructExecutionRecord(
     // no-error so withDbRetry stops immediately without burning the ladder.
     if (res.error && isDuplicateError(res.error)) return { error: null }
     return res
-  })
+  }, DB_WRITE_RETRY_DELAYS_MS, timing)
   if (error) {
     console.error('[step-logger] workflow_executions reconstruction insert failed, execution record lost', {
       id,
@@ -352,7 +375,10 @@ export async function updateExecutionRecord(
   // uses this to re-flush the step logs whose insert was blocked while the row
   // was missing, so the recovered run keeps its step-by-step trace. Not called
   // on a normal update or when the reconstruction insert itself fails.
-  onReconstructed?: () => void
+  onReconstructed?: () => void,
+  // #1850: the clock and the run's post-response budget, shared with the
+  // reconstruction below.
+  timing?: RetryTiming,
 ): Promise<DbError | null> {
   // The finalize update lands in the same partition-purge window as the insert,
   // so it gets the same transient-retry ladder. Failure is returned, not thrown:
@@ -361,14 +387,14 @@ export async function updateExecutionRecord(
   // so a lost execution record is announced rather than silently accepted (#487).
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
+    if (attempt > 0 && !(await waitToRetry(UPDATE_RETRY_DELAYS_MS[attempt - 1], timing))) break
     const { error } = await updateExecutionOnce(supabase, id, started_at, update)
     if (!error) {
       // An outage the ladder ABSORBED leaves no other trace: the finalize
-      // succeeded, no row stranded, nothing dead-lettered, nothing paged. With a
-      // ladder that now spans two minutes, a database degrading repeatedly would
-      // be invisible for as long as it lasted (LESSONS L77), so say how many
-      // attempts it cost. Mirrors the warn the CREATE ladder already emits.
+      // succeeded, no row stranded, nothing dead-lettered, nothing paged. A
+      // database degrading repeatedly would be invisible for as long as it
+      // lasted (LESSONS L77), so say how many attempts it cost. Mirrors the
+      // warn the CREATE ladder already emits.
       if (attempt > 0) {
         console.warn('[step-logger] workflow_executions update landed only after retries', {
           id,
@@ -385,7 +411,7 @@ export async function updateExecutionRecord(
       // the create fields. The row carries the FINAL status from `update` (not
       // 'running'), so it is a complete terminal record on the first write.
       if (createFields) {
-        const reconError = await reconstructExecutionRecord(supabase, id, started_at, update, createFields)
+        const reconError = await reconstructExecutionRecord(supabase, id, started_at, update, createFields, timing)
         // Row now exists (reconstructed, or a concurrent writer's duplicate).
         // Signal the caller so it can re-flush the FK-blocked step logs (#629).
         if (reconError === null) onReconstructed?.()

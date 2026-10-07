@@ -17,6 +17,9 @@ import {
   type BidAttemptInsert,
   type FinalizeSightingInput,
 } from '../lead-sightings'
+import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
+import { DB_WRITE_RETRY_DELAYS_MS } from '../../lib/db-retry'
+import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -179,5 +182,25 @@ describe('finalizeSighting — transient retry', () => {
     await vi.runAllTimersAsync()
     await p
     expect(calls.update).toBe(2)
+  })
+})
+
+// #1850: a bid row written without dead-letter deps still takes the run's clock
+// and stops retrying at the post-response cut-off.
+describe('recordBidAttempt inside the post-response budget (#1850)', () => {
+  it('waits on the injected clock and stops at the cut-off', async () => {
+    const clock = new VirtualClock()
+    const budget = new PostResponseBudget(clock)
+    budget.arm()
+    const late = clock.delay(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS - 3_000)
+    await clock.run()
+    await late
+    const { client, calls } = scriptedSupabase({ upsert: [{ error: SCHEMA_CACHE_503 }] })
+    const p = recordBidAttempt(client, bidInput(), undefined, { clock, budget, reserveMs: DEAD_LETTER_RESERVE_MS })
+    await clock.run()
+    await p
+    expect(clock.sleeps).toEqual([DB_WRITE_RETRY_DELAYS_MS[0]])
+    expect(calls.upsert).toBe(2)
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
   })
 })

@@ -8,7 +8,9 @@
  * the partner; the caller's fields win. The write is registered on the context
  * so finalizeSighting can await it before its winner UPDATE, which otherwise
  * races the unawaited insert, matches zero rows and leaves the winning bid
- * is_winner false for ever (#88). recordBidAttempt never rejects.
+ * is_winner false for ever (#88). recordBidAttempt never rejects. The write
+ * takes the run's post-response budget from the context (#1850), since it is
+ * usually still retrying after the response when the database is down.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext } from '../types'
@@ -40,7 +42,7 @@ export function makeBidLogger(supabase: SupabaseClient, ctx: ExecutionContext, r
       resolver_type: resolverType,
       skip_reason: input.skip_reason ?? null,
       is_test: false,
-    })
+    }, undefined, ctx.retryTiming)
     ;(ctx.pendingBidWrites ??= []).push(write)
   }
 }
