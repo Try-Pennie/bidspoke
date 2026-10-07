@@ -27,34 +27,13 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
-const WORKER_ROOT = path.dirname(WORKER_SRC)
 const OPS_DB = path.join(WORKER_SRC, 'ops/ops-db.ts')
 const HELPER = 'readOpsRows'
 const QUERY_METHODS = new Set(['from', 'rpc', 'schema'])
 
 const rel = (file: string) => path.relative(WORKER_SRC, file).replace(/\\/g, '/')
-
-function compilerOptions(): ts.CompilerOptions {
-  const configPath = path.join(WORKER_ROOT, 'tsconfig.json')
-  const config = ts.readConfigFile(configPath, (p) => ts.sys.readFile(p))
-  if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'))
-  return ts.parseJsonConfigFileContent(config.config, ts.sys, WORKER_ROOT).options
-}
-
-/** A program over the given files, with `extra` served from memory on top of the disk. */
-function buildProgram(roots: string[], extra: Record<string, string> = {}): ts.Program {
-  const options = compilerOptions()
-  const host = ts.createCompilerHost(options, true)
-  const readFile = host.readFile.bind(host)
-  const fileExists = host.fileExists.bind(host)
-  const getSourceFile = host.getSourceFile.bind(host)
-  host.readFile = (f) => extra[f] ?? readFile(f)
-  host.fileExists = (f) => f in extra || fileExists(f)
-  host.getSourceFile = (f, lang, onError, create) =>
-    f in extra ? ts.createSourceFile(f, extra[f], lang, true) : getSourceFile(f, lang, onError, create)
-  return ts.createProgram({ rootNames: [...roots, ...Object.keys(extra)], options, host })
-}
 
 /** Whether a type is (or, for a union, may be) the branded ops client. */
 function isOpsClient(checker: ts.TypeChecker, type: ts.Type): boolean {
@@ -133,8 +112,12 @@ const SOURCE_FILES = listTsFiles(WORKER_SRC)
 const fmt = (f: Finding) => `${f.file}:${f.line} ${f.what}`
 
 describe('every ops database query goes through readOpsRows (#1709)', () => {
-  const program = buildProgram(SOURCE_FILES)
+  const program = buildWorkerProgram(SOURCE_FILES)
   const result = scanOpsQueries(program, SOURCE_FILES)
+
+  it('loads the worker program fully, so a clean result is not every type being any', () => {
+    expect(workerProgramLoadErrors(program)).toEqual([])
+  })
 
   it('scans the worker source, the ops client module among it', () => {
     expect(SOURCE_FILES.length).toBeGreaterThan(100)
@@ -168,7 +151,7 @@ describe('every ops database query goes through readOpsRows (#1709)', () => {
       '  return db as SupabaseClient',
       '}',
     ].join('\n')
-    const program = buildProgram([OPS_DB], { [planted]: src })
+    const program = buildWorkerProgram([OPS_DB], { [planted]: src })
     const { offenders } = scanOpsQueries(program, [planted])
     expect(offenders.map(fmt)).toEqual([
       'ops/__planted_ops_query__.ts:6 .from on the ops client',

@@ -37,6 +37,7 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
 const WORKER_ROOT = path.dirname(WORKER_SRC)
 const HELPER_FILE = path.join(WORKER_SRC, 'lib/control-word.ts')
@@ -55,30 +56,6 @@ const isSignedInApp = (file: string) => rel(file).startsWith('routes/api/')
 const HONO_REQUEST_READS = new Set(['query', 'queries', 'url', 'raw'])
 const REQUEST_READS = new Set(['url'])
 const URL_READS = new Set(['search', 'searchParams', 'href', 'toString', 'toJSON'])
-
-function compilerOptions(): ts.CompilerOptions {
-  const configPath = path.join(WORKER_ROOT, 'tsconfig.json')
-  const config = ts.readConfigFile(configPath, (p) => ts.sys.readFile(p))
-  if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'))
-  // The config's own path, so `types` (@cloudflare/workers-types) resolves from
-  // apps/worker. Without it TypeScript looks from this test's directory, finds
-  // nothing, and types every Request and URL as `any`, which this scan reads as
-  // neither and so passes everything.
-  return ts.parseJsonConfigFileContent(config.config, ts.sys, WORKER_ROOT, undefined, configPath).options
-}
-
-function buildProgram(roots: string[], extra: Record<string, string> = {}): ts.Program {
-  const options = compilerOptions()
-  const host = ts.createCompilerHost(options, true)
-  const readFile = host.readFile.bind(host)
-  const fileExists = host.fileExists.bind(host)
-  const getSourceFile = host.getSourceFile.bind(host)
-  host.readFile = (f) => extra[f] ?? readFile(f)
-  host.fileExists = (f) => f in extra || fileExists(f)
-  host.getSourceFile = (f, lang, onError, create) =>
-    f in extra ? ts.createSourceFile(f, extra[f], lang, true) : getSourceFile(f, lang, onError, create)
-  return ts.createProgram({ rootNames: [...roots, ...Object.keys(extra)], options, host })
-}
 
 type Kind = 'hono' | 'request' | 'url'
 
@@ -181,7 +158,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   // Built and scanned once, while the suite is collected, as
   // ops-reads-through-helper.test.ts does: type checking the whole worker took
   // 7.4s on a CI runner (1.4s locally), past a single test's 5s limit.
-  const program = buildProgram(SOURCE_FILES)
+  const program = buildWorkerProgram(SOURCE_FILES)
   const offenders = scanQueryReads(program, SOURCE_FILES)
 
   // The planted files share one program, built here for the same reason: each
@@ -212,7 +189,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
     [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
     [PLANTED_FILTER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n",
   }
-  const plantedProgram = buildProgram([HELPER_FILE], planted)
+  const plantedProgram = buildWorkerProgram([HELPER_FILE], planted)
   const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
   const plantedFindings = (file: string): Finding[] => {
     const found = plantedResults.get(file)
@@ -221,8 +198,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   }
 
   it('loads the Workers types, without which every Request and URL is `any` and nothing is found', () => {
-    const messages = [...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics()].map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
-    expect(messages).toEqual([])
+    expect(workerProgramLoadErrors(program)).toEqual([])
     const checker = program.getTypeChecker()
     const sf = program.getSourceFile(path.join(WORKER_SRC, 'ops/index.ts'))
     expect(sf).toBeDefined()
