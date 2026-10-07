@@ -29,7 +29,8 @@ const NOT_A_PARTNER = new Set(['IsSellOff__c', 'IsDeleted'])
 export function partnerFlagsFromDescribe(describe: { fields: DescribeField[] }): PartnerFlag[] {
   const flags = describe.fields
     .filter((f) => f.type === 'boolean' && /^Is\w*__c$/.test(f.name) && !NOT_A_PARTNER.has(f.name))
-    .map((f) => ({ field: f.name, label: f.label.replace(/^Is\s*/, '').trim() || f.name }))
+    // "Is Borrow Better" and "IsBrainsome" carry the prefix; "Island Lending" does not.
+    .map((f) => ({ field: f.name, label: f.label.replace(/^Is(?=\s|[A-Z])\s*/, '').trim() || f.name }))
     .sort((a, b) => (a.field < b.field ? -1 : a.field > b.field ? 1 : 0))
   if (flags.length === 0) {
     throw new Error('the describe has no partner checkbox fields, so no matrix can be told apart from another')

@@ -21,6 +21,11 @@ describe('partnerFlagsFromDescribe', () => {
     expect(byField.get('Is_Lead_Economy__c')).toBe('Lead Economy')
   })
 
+  it('keeps a partner name that merely starts with the letters Is', () => {
+    const flags = partnerFlagsFromDescribe({ fields: [{ name: 'IsIslandLending__c', type: 'boolean', label: 'Island Lending' }] })
+    expect(flags[0].label).toBe('Island Lending')
+  })
+
   it('leaves out the sell-off checkbox, which splits a matrix rather than naming a partner', () => {
     const fields = partnerFlagsFromDescribe(BID_RANGE_ROW_DESCRIBE).map((f) => f.field)
     expect(fields).not.toContain('IsSellOff__c')

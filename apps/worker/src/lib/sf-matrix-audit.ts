@@ -102,11 +102,17 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   const existing = await readSnapshot(supabase)
   const matrixUrl = deriveBidMatrixListUrl(instanceUrl)
 
+  // An empty read is a failed read (the matrix holds about 1,500 rows): compare
+  // nothing and rebuild nothing, and let the matrix audit watcher alert on it.
+  if (sfRows.length === 0) {
+    return { rows_fetched: 0, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false }
+  }
+
   const decision = decideBaseline(existing, flags)
   if (decision.baseline) {
     // Nothing trustworthy to compare against, so record what is there now and
     // say so once, rather than reporting every row as an edit made this hour.
-    if (sfRows.length > 0) await writeSnapshot(supabase, existing, sfRows, flags, startedAt)
+    await writeSnapshot(supabase, existing, sfRows, flags, startedAt)
     await notifyBaseline(supabase, decision, sfRows.length, matrixUrl)
     return { rows_fetched: sfRows.length, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: true, alerted: false }
   }
