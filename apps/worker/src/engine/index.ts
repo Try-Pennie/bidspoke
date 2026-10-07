@@ -163,6 +163,12 @@ export interface EngineRuntime {
    * production, which uses real time; a test passes one it drives.
    */
   clock?: RetryClock
+  /**
+   * Receives each step record as the engine queues it (#1305). The outage drill
+   * reads a run's decisions from it, because in a database outage the step rows
+   * are never written. Production never sets it.
+   */
+  observeStep?: (entry: StepLogEntry) => void
 }
 
 /** The bidding Worker's runtime: one client for config and run alike. */
@@ -449,6 +455,21 @@ export async function executeWorkflow(
   // Step logs are accumulated here and flushed in a single Supabase insert after
   // the walk completes. Avoids serializing graph execution on N per-step writes.
   const stepLogQueue: StepLogEntry[] = []
+  if (runtime.observeStep) {
+    // Every step is queued through push (logStep), so this sees each one as it is
+    // recorded, whether or not it is ever flushed.
+    const observe = runtime.observeStep
+    const push = stepLogQueue.push.bind(stepLogQueue)
+    // Not enumerable, so the queue still reads as a plain array of steps to
+    // anything that walks its keys.
+    Object.defineProperty(stepLogQueue, 'push', {
+      value: (...entries: StepLogEntry[]) => {
+        for (const entry of entries) observe(entry)
+        return push(...entries)
+      },
+      enumerable: false,
+    })
+  }
 
   let walkStatus = 200
   let walkHeaders: Record<string, string> | undefined
