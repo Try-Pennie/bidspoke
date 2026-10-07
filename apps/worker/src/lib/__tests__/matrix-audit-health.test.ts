@@ -25,7 +25,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 const env = { IDEMPOTENCY: undefined } as unknown as Env
 const supabase = {} as unknown as SupabaseClient
 
-const healthy = { rows_fetched: 1390, rows_added: 0, rows_edited: 0, rows_removed: 0, alerted: false }
+const healthy = { rows_fetched: 1390, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false }
 
 function alerted(): string[] {
   return vi

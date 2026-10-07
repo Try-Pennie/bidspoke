@@ -19,6 +19,7 @@ vi.mock('../slack', () => ({
 
 import { syncBidConfig, syncAllSalesforceConfigs } from '../bid-matrix-sync'
 import { sendMatrixValidationAlert } from '../slack'
+import { BID_RANGE_ROW_DESCRIBE } from './fixtures/bid-range-row-describe'
 
 const CONFIG = {
   id: 'cfg-1',
@@ -31,6 +32,9 @@ const CONFIG = {
   is_active: true,
   dimensions: [{ column: 'row', payload_field: 'credit_score' }],
 }
+
+// The config the Supabase double serves; a test may swap it.
+let servedConfig: Record<string, unknown> = CONFIG
 
 // A malformed matrix: a row-band gap between 659 and 700 (and bounded edges).
 const SF_RECORDS = [
@@ -46,7 +50,7 @@ function makeSupabase() {
   const handler: ProxyHandler<() => void> = {
     get(_t, prop) {
       if (prop === 'then') return (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
-      if (prop === 'single') return async () => ({ data: CONFIG, error: null })
+      if (prop === 'single') return async () => ({ data: servedConfig, error: null })
       if (prop === 'select') {
         // The config-list query in syncAllSalesforceConfigs awaits select().eq().eq().
         return () => listChain
@@ -61,7 +65,7 @@ function makeSupabase() {
   const listHandler: ProxyHandler<() => void> = {
     get(_t, prop) {
       if (prop === 'then') return (resolve: (v: unknown) => void) => resolve({ data: [{ id: 'cfg-1' }], error: null })
-      if (prop === 'single') return async () => ({ data: CONFIG, error: null })
+      if (prop === 'single') return async () => ({ data: servedConfig, error: null })
       return () => listChain
     },
   }
@@ -89,6 +93,7 @@ const ENV = {
 describe('#182 sync integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    servedConfig = CONFIG
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ records: SF_RECORDS, done: true }),
@@ -110,5 +115,22 @@ describe('#182 sync integration', () => {
     const payload = vi.mocked(sendMatrixValidationAlert).mock.calls[0][3]
     expect(payload.configs[0].partner_slug).toBe('sofi')
     expect(payload.configs[0].problems.length).toBeGreaterThan(0)
+  })
+
+  // #1864: the default matrix is every row no partner claims, and the list of
+  // partners grew in Salesforce after it was hard coded here.
+  it('syncBidConfig asks Salesforce for its partner list before querying the default matrix', async () => {
+    servedConfig = { ...CONFIG, slug: 'default', sf_filters: {} }
+    const fetchMock = vi.fn(async (url: string) => (
+      url.endsWith('/sobjects/BidRangeRow__c/describe')
+        ? { ok: true, json: async () => BID_RANGE_ROW_DESCRIBE }
+        : { ok: true, json: async () => ({ records: SF_RECORDS, done: true }) }
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    await syncBidConfig('cfg-1', ENV, makeSupabase())
+    const query = decodeURIComponent(fetchMock.mock.calls.map((c) => c[0]).find((u) => u.includes('/query?q='))!)
+    expect(query).toContain('IsBorrowBetter__c = FALSE')
+    expect(query).toContain('Is_Lead_Economy__c = FALSE')
+    expect(query).toContain('IsSoFi__c = FALSE')
   })
 })
