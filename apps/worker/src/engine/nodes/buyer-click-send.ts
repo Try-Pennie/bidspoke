@@ -61,8 +61,8 @@
  *
  * Switching a click buyer's profile OFF stops new offers only (Dan, 2026-09-30):
  * a click on an offer already shown is still sent through that profile's click
- * delivery, read from the buyer's own row when the enabled snapshot does not
- * hold it (readClickProfile), and recorded as no_enabled_profile for the over
+ * delivery, read from the switched off profiles the same snapshot carries
+ * (readClickProfile, #1849), and recorded as no_enabled_profile for the over
  * cap notice, which pages nothing because nothing more is offered.
  *
  * The partner is stored by its partner_configs id (#1553, L15), and the claim,
@@ -81,7 +81,7 @@ import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
 import { addAskingOnceMore, addKnownRefused, ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type AddFailure, type ClickClaimKey } from '../../lib/buyer-object-clients'
-import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
+import { loadBuyerProfiles, switchedOffProfile, type BuyerProfilesSnapshot } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason, type HoldRecorded } from '../../lib/buyer-click-alert'
@@ -320,28 +320,30 @@ export type ProfileRead =
   | { found: false }
   | { found: true; enabled: boolean; cap: number | null; soldOn: SoldOn | null; clickDelivery: ClickDelivery | null }
 
-/** The enabled snapshot as readClickProfile needs it: the shape loadBuyerProfiles answers. */
-interface EnabledBuyersLike {
+/** The snapshot as readClickProfile needs it: the shape loadBuyerProfiles answers. */
+interface EnabledBuyersLike extends Pick<BuyerProfilesSnapshot, 'switched_off'> {
   buyers: ReadonlyArray<{ partner: { id: string }; profile: { dailyLeadCap: number | null; soldOn: SoldOn | null; clickDelivery?: ClickDelivery | null } }>
 }
 
 /**
  * The profile for one click: the enabled profile from the one cached snapshot
  * that buyer_select and buyer_click_check read, and only when the buyer is not
- * in it, the buyer's own row (readBuyerClickDelivery), for a profile switched
- * off after its offers went out. Both reads live in buyer-profile-loader.ts.
- * Either read failing throws, so the click is refused as profile_unreadable.
+ * in it, the switched off profile the same snapshot carries, for a profile
+ * switched off after its offers went out. That used to be a read of the buyer's
+ * own row with no copy behind it, so in a database outage every such click was
+ * refused; now both come from the snapshot's cache or its last-good copy
+ * (#1849). A snapshot that cannot be read, or cannot answer for this buyer,
+ * throws, so the click is refused as profile_unreadable.
  */
 export async function readClickProfile(
   partnerId: string,
   enabledSnapshot: () => Promise<EnabledBuyersLike>,
-  profileRow: (partnerId: string) => Promise<{ soldOn: SoldOn; isEnabled: boolean; clickDelivery: ClickDelivery | null } | null>,
 ): Promise<ProfileRead> {
   const snapshot = await enabledSnapshot()
   const buyer = snapshot.buyers.find((b) => b.partner.id === partnerId)
   // A snapshot cached before #1639 carries no clickDelivery: read as none, which refuses the click by name.
   if (buyer) return { found: true, enabled: true, cap: buyer.profile.dailyLeadCap, soldOn: buyer.profile.soldOn, clickDelivery: buyer.profile.clickDelivery ?? null }
-  const row = await profileRow(partnerId)
+  const row = switchedOffProfile(snapshot, partnerId)
   // Not in the enabled snapshot: switched off (or enabled since the snapshot was cached),
   // so there is no cap in force to judge an overshoot against.
   return row ? { found: true, enabled: false, cap: null, soldOn: row.soldOn, clickDelivery: row.clickDelivery } : { found: false }
@@ -369,11 +371,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
   // Fire and forget, as buyer_select does: the walk is still inside the request, and the rebuild never rejects.
   const background = (work: Promise<unknown>) => { void work }
   return {
-    readProfile: (partnerId) => readClickProfile(
-      partnerId,
-      () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
-      (id) => readBuyerClickDelivery(supabase, orgId, id),
-    ),
+    readProfile: (partnerId) => readClickProfile(partnerId, () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background })),
     // The org scoped, cached partner read the Constants node already uses (memory, KV, then a
     // last good copy), so a click does not pay a cold database read and survives a Supabase wobble.
     resolvePartner: async (partnerId) => {

@@ -1116,39 +1116,31 @@ describe('classifyClickAnswer', () => {
 /**
  * The profile the node reads (Dan, 2026-09-30): the enabled profile from the one
  * cached snapshot, as buyer_select and buyer_click_check read it, and only when the
- * buyer is not in it, the buyer's own profile row, for a profile switched off after
- * its offers went out. Both reads live in buyer-profile-loader.ts.
+ * buyer is not in it, the switched off profile the same snapshot carries, for a
+ * profile switched off after its offers went out (#1849: it used to be a row read
+ * with no copy behind it). The reads through the real client are in
+ * lib/__tests__/buyer-profile-switched-off.test.ts.
  */
 describe('readClickProfile', () => {
   const DELIVERY: ClickDelivery = { routes: [{ name: 'ALL', url: 'https://a.example/x', states: [] }], successPattern: '(?<id>\\w+)' }
+  const DOC = { routes: DELIVERY.routes, success_pattern: DELIVERY.successPattern }
   const enabledBuyer = { partner: { id: PARTNER_ID }, profile: { dailyLeadCap: 50, soldOn: 'click' as const, clickDelivery: DELIVERY } }
 
-  it('an enabled buyer is answered from the snapshot, and the row is never read', async () => {
-    const row = vi.fn()
-    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [enabledBuyer] }), row)
+  it('an enabled buyer is answered from the snapshot', async () => {
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [enabledBuyer], switched_off: [] }))
     expect(r).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: DELIVERY })
-    expect(row).not.toHaveBeenCalled()
   })
 
-  it('a buyer the snapshot does not hold is read from its row: switched off, with its delivery, and no cap', async () => {
-    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async (id) => {
-      expect(id).toBe(PARTNER_ID)
-      return { soldOn: 'click', isEnabled: false, clickDelivery: DELIVERY }
-    })
+  it('a buyer the snapshot holds as switched off is answered with its delivery, and no cap', async () => {
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [], switched_off: [{ partner_id: PARTNER_ID, sold_on: 'click', click_delivery: DOC }] }))
     expect(r).toEqual({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: DELIVERY })
   })
 
-  it('a buyer with no row at all is not found', async () => {
-    expect(await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => null)).toEqual({ found: false })
+  it('a buyer the snapshot holds in neither list is not found', async () => {
+    expect(await readClickProfile(PARTNER_ID, async () => ({ buyers: [], switched_off: [] }))).toEqual({ found: false })
   })
 
-  it('a row read that fails throws, so the click is refused as profile_unreadable rather than guessed', async () => {
-    await expect(readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => { throw new Error('buyer_profiles: timeout') })).rejects.toThrow(/timeout/)
-  })
-
-  it('a snapshot read that fails throws without falling back to the row', async () => {
-    const row = vi.fn()
-    await expect(readClickProfile(PARTNER_ID, async () => { throw new Error('kv and database both down') }, row)).rejects.toThrow(/down/)
-    expect(row).not.toHaveBeenCalled()
+  it('a snapshot read that fails throws, so the click is refused as profile_unreadable rather than guessed', async () => {
+    await expect(readClickProfile(PARTNER_ID, async () => { throw new Error('kv and database both down') })).rejects.toThrow(/down/)
   })
 })

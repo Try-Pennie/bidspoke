@@ -3,7 +3,9 @@
  * tables. Enabled profiles for the org, joined in one query to their partner
  * (the accept and decline rules, the endpoint, the credential name, the breaker
  * settings), the operating windows, the blackout dates and the pricing tiers,
- * shaped for the shared evaluator.
+ * shaped for the shared evaluator. The switched off profiles ride along in the
+ * same read, kept apart from the buyers, for buyer_click_send's clicks on offers
+ * made before a buyer was switched off (#1849).
  *
  * Caching: a KV copy for the hot path that the profile save route and the
  * partner routes REBUILD on every save (#1492), so the very next lead is served
@@ -90,13 +92,31 @@ export interface LoadedBuyer {
   updated_at: string
 }
 
+/**
+ * A switched off profile as buyer_click_send needs it (#1849): how the buyer is
+ * sold and its click delivery, exactly as stored. Kept raw, and checked only
+ * when a click asks for that buyer (switchedOffProfile), so one malformed
+ * switched off row refuses that buyer's clicks and never the whole snapshot.
+ */
+export interface SwitchedOffProfile {
+  partner_id: string
+  sold_on: unknown
+  click_delivery: ClickDeliveryDocument | null
+}
+
 export interface BuyerProfilesSnapshot {
   org_id: string
   loaded_at: string
-  /** SHA-256 of the buyers in partner id order, the key the last good rewrite is gated on (#1557). */
+  /** SHA-256 of the buyers and the switched off profiles in partner id order, the key the last good rewrite is gated on (#1557, #1849). */
   content_hash: string
   served_from: 'database' | 'cache' | 'last_good'
+  /** The enabled buyers, the only ones any node offers a lead to. */
   buyers: LoadedBuyer[]
+  /**
+   * Every switched off profile, for a click on an offer made before it was
+   * switched off (#1849). Absent on a copy written before this field existed.
+   */
+  switched_off?: SwitchedOffProfile[]
 }
 
 const SELECT =
@@ -273,18 +293,50 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
 
 /** The one read of the profile tables, shaped and hashed. Throws on a failed read. */
 async function readSnapshot(orgId: string, supabase: SupabaseClient, now: () => number): Promise<BuyerProfilesSnapshot> {
+  // Every profile of the org, switched off ones included (#1849): a click on an
+  // offer made before its buyer was switched off still needs that profile, and
+  // reading it here puts it behind this snapshot's cache and last good copy.
   const { data, error } = await leadRead(
     supabase,
-    supabase.from('buyer_profiles').select(SELECT).eq('organization_id', orgId).eq('is_enabled', true),
+    supabase.from('buyer_profiles').select(SELECT).eq('organization_id', orgId),
     'buyer profiles',
     { deadlineMs: BUYER_PROFILES_READ_DEADLINE_MS }
   )
   if (error) throw new Error(error.message)
 
   const rows = (data ?? []) as unknown as ProfileRow[]
-  const buyers = rows.map(shape)
-  const content_hash = await contentHash(buyers)
-  return { org_id: orgId, loaded_at: new Date(now()).toISOString(), content_hash, served_from: 'database', buyers }
+  // Only a row whose flag is exactly true is offered; anything else is switched off.
+  const buyers = rows.filter((r) => r.is_enabled === true).map(shape)
+  const switched_off: SwitchedOffProfile[] = rows
+    .filter((r) => r.is_enabled !== true)
+    .map((r) => ({ partner_id: r.partner_id, sold_on: r.sold_on, click_delivery: r.click_delivery ?? null }))
+  const content_hash = await contentHash(buyers, switched_off)
+  return { org_id: orgId, loaded_at: new Date(now()).toISOString(), content_hash, served_from: 'database', buyers, switched_off }
+}
+
+/**
+ * A switched off profile from the snapshot, shaped as buyer_click_send reads it,
+ * or null when the snapshot holds none for the partner. Throws when the snapshot
+ * was written before it carried switched off profiles (so absence there proves
+ * nothing), or when the row's sale kind is outside the vocabulary (L10). The
+ * delivery is shaped by the snapshot's own shaper, so the enabled and switched
+ * off readings cannot disagree on it.
+ */
+export function switchedOffProfile(snapshot: Pick<BuyerProfilesSnapshot, 'switched_off'>, partnerId: string): { soldOn: SoldOn; isEnabled: false; clickDelivery: ClickDelivery | null } | null {
+  if (!Array.isArray(snapshot.switched_off)) {
+    throw new Error('the buyer profile copy was written before it carried the switched off profiles, so whether this buyer has one is not known; it is rebuilt within a minute')
+  }
+  const row = snapshot.switched_off.find((r) => r.partner_id === partnerId)
+  if (!row) return null
+  return { soldOn: soldOnOf(row.sold_on), isEnabled: false, clickDelivery: row.click_delivery ? clickDeliveryFromDocument(row.click_delivery) : null }
+}
+
+/** A stored sale kind, refused by name when it is outside the vocabulary (L10). */
+function soldOnOf(value: unknown): SoldOn {
+  if (typeof value !== 'string' || !(SOLD_ON as readonly string[]).includes(value)) {
+    throw new Error(`buyer_profiles: sold_on ${String(value)} is not one of ${SOLD_ON.join(', ')}`)
+  }
+  return value as SoldOn
 }
 
 /**
@@ -373,9 +425,11 @@ export async function keepBuyerProfilesWarm(orgId: string, kv: KVNamespace, supa
  * field is in it: a partner switched off changes a partner row, which no
  * profile version or updated_at records.
  */
-async function contentHash(buyers: readonly LoadedBuyer[]): Promise<string> {
-  const ordered = [...buyers].sort((a, b) => (a.partner.id < b.partner.id ? -1 : a.partner.id > b.partner.id ? 1 : 0))
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(ordered)))
+async function contentHash(buyers: readonly LoadedBuyer[], switchedOff: readonly SwitchedOffProfile[]): Promise<string> {
+  const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+  const ordered = [...buyers].sort((a, b) => byId(a.partner.id, b.partner.id))
+  const off = [...switchedOff].sort((a, b) => byId(a.partner_id, b.partner_id))
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ buyers: ordered, switched_off: off })))
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
@@ -434,41 +488,17 @@ export async function readBuyerSoldOn(supabase: SupabaseClient, orgId: string, p
  * vocabulary or an enabled flag that is not a boolean throws (L10).
  */
 export async function readBuyerSale(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ soldOn: SoldOn; isEnabled: boolean } | null> {
-  const row = await readSaleRow(supabase, orgId, partnerId, 'sold_on, is_enabled')
-  return row ? { soldOn: row.soldOn, isEnabled: row.isEnabled } : null
-}
-
-/**
- * One buyer's profile row whether or not it is switched on, with its click
- * delivery (Dan, 2026-09-30): switching a click buyer off stops new offers only,
- * so buyer_click_send still sends a click on an offer already shown through the
- * profile's delivery. The node reads this only for a buyer the enabled snapshot
- * does not hold; the delivery is shaped by the snapshot's own shaper
- * (clickDeliveryFromDocument), so the two reads cannot disagree on it. Null
- * means no profile; a failed read or a malformed row throws (L10).
- */
-export async function readBuyerClickDelivery(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ soldOn: SoldOn; isEnabled: boolean; clickDelivery: ClickDelivery | null } | null> {
-  const row = await readSaleRow(supabase, orgId, partnerId, 'sold_on, is_enabled, click_delivery')
-  if (!row) return null
-  const doc = row.data.click_delivery as ClickDeliveryDocument | null | undefined
-  return { soldOn: row.soldOn, isEnabled: row.isEnabled, clickDelivery: doc ? clickDeliveryFromDocument(doc) : null }
-}
-
-/** The one row read behind readBuyerSale and readBuyerClickDelivery, with the kind and flag checks both need. */
-async function readSaleRow(supabase: SupabaseClient, orgId: string, partnerId: string, select: string): Promise<{ soldOn: SoldOn; isEnabled: boolean; data: Record<string, unknown> } | null> {
   const { data, error } = await supabase
     .from('buyer_profiles')
-    .select(select)
+    .select('sold_on, is_enabled')
     .eq('partner_id', partnerId)
     .eq('organization_id', orgId)
     .maybeSingle()
   if (error) throw new Error(`buyer_profiles: ${error.message}`)
   if (!data) return null
   const row = data as unknown as Record<string, unknown>
-  const { sold_on: soldOn, is_enabled: isEnabled } = row
-  if (typeof soldOn !== 'string' || !(SOLD_ON as readonly string[]).includes(soldOn)) {
-    throw new Error(`buyer_profiles: sold_on ${String(soldOn)} is not one of ${SOLD_ON.join(', ')}`)
-  }
+  const soldOn = soldOnOf(row.sold_on)
+  const isEnabled = row.is_enabled
   if (typeof isEnabled !== 'boolean') throw new Error(`buyer_profiles: is_enabled ${String(isEnabled)} is not a boolean`)
-  return { soldOn: soldOn as SoldOn, isEnabled, data: row }
+  return { soldOn, isEnabled }
 }
