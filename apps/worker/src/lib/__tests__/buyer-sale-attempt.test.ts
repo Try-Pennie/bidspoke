@@ -411,6 +411,37 @@ describe('runBuyerSaleAttempt buyer outcomes', () => {
     expect(sale.calls).toEqual(['claim:exec-1', 'free:1'])
   })
 
+  // The node times each object call from these steps (#1804), so an answered decline reports
+  // the release (with the claim freed) and the copy as steps of their own.
+  it.each(['declined_by_buyer', 'buyer_error'] as const)('%s: reports released once the entry is released and the claim freed, then mirrored', async (outcome) => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger, buyer: { outcome, record: { ...OUTCOME, result_code: '1003' } } })
+    let callsAtReleased: string[] = []
+    const onStep = h.deps.onStep!
+    h.deps.onStep = (s) => { if (s === 'released') callsAtReleased = [...sale.calls]; return onStep(s) }
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called', 'released', 'mirrored'])
+    expect(callsAtReleased).toEqual(['claim:exec-1', 'free:1'])
+  })
+
+  it('declined: a release that fails reports no released step, because nothing was released', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    ledger.releaseError = new Error('ledger unreachable')
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record: { ...OUTCOME, result_code: '1003' } } })
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called'])
+  })
+
+  it('declined: a copy that fails reports no mirrored step', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const h = harness({ sale, ledger, buyer: { outcome: 'declined_by_buyer', record: { ...OUTCOME, result_code: '1003' } }, mirrorError: new Error('supabase down') })
+    await runBuyerSaleAttempt(INPUT, h.deps)
+    expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called', 'released'])
+  })
+
   it('outcome_unknown: reservation and claim are both HELD, and the result pages', async () => {
     const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
     const ledger = new FakeLedger()
