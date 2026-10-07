@@ -6,6 +6,7 @@ import { loadWorkflowDefinition, WorkflowNotFoundError } from '../engine/definit
 import { runReality, shadowRunRefusal } from '../engine/run-reality'
 import { createSupabaseClient } from '../lib/supabase'
 import { deployCompareCodeBundle } from '../lib/code-node-deployer'
+import { controlWordFromQuery } from '../lib/control-word'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
 // each real engine request here. We acknowledge with 204 once the checks below
@@ -38,7 +39,8 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
   // Default dry_run (all outbound stubbed). `?mode=stand_in` additionally lets
   // Partner Bid resolve a deterministic bid (no outbound submission) so winner
   // selection and routing are rehearsed too. See engine/shadow.ts and #232.
-  const shadowMode = c.req.query('mode') === 'stand_in' ? 'stand_in' : 'dry_run'
+  // Read as a fixed word, never as the sender's text (#1815).
+  const shadowMode = controlWordFromQuery(c.req, 'mode', ['stand_in']) ?? 'dry_run'
 
   let payload: unknown
   try {

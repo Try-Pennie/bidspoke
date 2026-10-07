@@ -27,7 +27,8 @@ Partners: Engine, Borrow Better, LendingTree, Lead Economy, AmOne, EPCVIP, Pivot
 
 ### 4. Seeing the whole incoming request (32 read headers, 18 read the address's query, some send forms or plain text)
 Today: a workflow only sees the JSON body. Bidspoke refuses anything that isn't JSON, accepts only POST, and some addresses can only answer in JSON.
-Need: headers, query string, form and text bodies, other request methods, and replies in any format.
+Need: headers, form and text bodies, other request methods, and replies in any format.
+Not the query string (Dan, 2026-10-06, #1815): Cloudflare's request logs keep every address in full, so the 18 that read the query have their senders move that data into the body. A build check refuses any read of the query string in code a sender reaches (`__guards__/worker/inbound-no-query-string.test.ts`).
 
 ### 5. Connections to other services
 Today: none of these exist as steps in Bidspoke, and there is no way to connect an account.
