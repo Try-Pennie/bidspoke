@@ -2,7 +2,7 @@
 #
 # Which Deploy legs run on this run (#1761).
 #
-# Usage: deploy-targets-decision.sh <event_name> <ref> <worker> <worker_tail> <pages> <compare_outbound> <ops_outbound>
+# Usage: deploy-targets-decision.sh <event_name> <ref> <worker> <worker_tail> <pages> <compare_outbound> <ops_outbound> <ops_database>
 #
 # <ref> is github.ref. Only refs/heads/main deploys. Deploy Worker and Deploy
 # Worker Tail (and Deploy Compare Outbound) run `wrangler deploy`, which goes to production whatever branch the
@@ -12,7 +12,7 @@
 # any other ref deploys nothing and refuses by name (exit 1), so it reads red
 # rather than as a green run that did nothing.
 #
-# The last five are dorny/paths-filter's outputs, which are only meaningful on a
+# The last six are dorny/paths-filter's outputs, which are only meaningful on a
 # push: the filter compares the push with the commit before it. A dispatched run
 # has no previous push, and the filter then compares HEAD with HEAD^ alone, so a
 # Deploy started on a tip that touched only docs would deploy nothing and report
@@ -72,6 +72,7 @@ WORKER_TAIL=$(judge "${2-}")
 PAGES=$(judge "${3-}")
 COMPARE_OUTBOUND=$(judge "${4-}")
 OPS_OUTBOUND=$(judge "${5-}")
+OPS_DATABASE=$(judge "${6-}")
 
 FLAG_FILE="${OPS_LIVE_FLAG_FILE:-}"
 if [ -z "$FLAG_FILE" ]; then
@@ -81,7 +82,11 @@ fi
 OPS_LIVE=$(sed -n -E 's/^export const OPS_WORKER_DEPLOYED = (true|false)$/\1/p' "$FLAG_FILE" 2>/dev/null | head -n 1)
 # The ops Worker is built from the same apps/worker sources as the bidding
 # Worker, so it follows the worker filter, behind the same switch (#1709 part 4).
+# It also runs when only supabase-ops/ changed, because its job is where an
+# unapplied ops migration is refused (#1829): a migration merged on its own
+# would otherwise be noticed only at the next ops code change.
 OPS_WORKER=$WORKER
+if [ "$OPS_DATABASE" = "true" ]; then OPS_WORKER=true; fi
 case "$OPS_LIVE" in
   true) ;;
   false) OPS_OUTBOUND=false; OPS_WORKER=false ;;

@@ -39,7 +39,7 @@ const flagFile = (name: string, text: string) => {
 const OPS_OFF = flagFile('off.ts', 'export const OPS_WORKER_DEPLOYED = false\n')
 const OPS_ON = flagFile('on.ts', '// a comment\nexport const OPS_WORKER_DEPLOYED = true\n')
 
-/** The decision for a run on main: the event, then the five filter values, with the ops lane not live. */
+/** The decision for a run on main: the event, then the filter values, with the ops lane not live. */
 const decide = (event: string, ...filters: string[]): Record<string, string> => decideOn(event, MAIN, ...filters)
 
 const parse = (out: string): Record<string, string> =>
@@ -199,10 +199,35 @@ describe('the ops Worker deploys with the worker sources, only once the ops lane
   })
 
   it('follows the worker filter on a push, and deploys on a dispatched run, once the lane is live', () => {
-    const on = (event: string, worker: string) => parse(runWith(OPS_ON, [event, MAIN, worker, 'false', 'false', 'false', 'false']).stdout)
+    const on = (event: string, worker: string) => parse(runWith(OPS_ON, [event, MAIN, worker, 'false', 'false', 'false', 'false', 'false']).stdout)
     expect(on('push', 'true').ops_worker).toBe('true')
     expect(on('push', 'false').ops_worker).toBe('false')
     expect(on('push', '').ops_worker).toBe('true')
     expect(on('workflow_dispatch', 'false').ops_worker).toBe('true')
+  })
+
+  // #1829: Deploy Ops Worker is where an unapplied ops database migration is
+  // refused, so a push that changes only supabase-ops/ must still reach it, or a
+  // migration merged on its own is noticed only at the next ops code change.
+  it('also deploys when only the ops database migrations changed, once the lane is live', () => {
+    const on = (event: string, worker: string, opsDatabase: string) =>
+      parse(runWith(OPS_ON, [event, MAIN, worker, 'false', 'false', 'false', 'false', opsDatabase]).stdout)
+    expect(on('push', 'false', 'true').ops_worker).toBe('true')
+    expect(on('push', 'false', 'false').ops_worker).toBe('false')
+    // A value nobody measured must not be what skips it.
+    expect(on('push', 'false', '').ops_worker).toBe('true')
+  })
+
+  it('still holds it back while OPS_WORKER_DEPLOYED is false, whatever the ops database filter said', () => {
+    expect(decide('push', 'false', 'false', 'false', 'false', 'false', 'true').ops_worker).toBe('false')
+  })
+
+  it('feeds the ops database filter to the script from supabase-ops/', () => {
+    const changes = workflowJobBody(readWorkflow('.github/workflows/deploy.yml'), 'changes')
+    const filters = changes.slice(changes.indexOf('filters:'), changes.indexOf('Decide which targets deploy'))
+    expect(filters).toMatch(/\n {12}ops_database:\n {14}- 'supabase-ops\/\*\*'/)
+    const step = changes.slice(changes.indexOf('Decide which targets deploy'))
+    expect(step).toMatch(/OPS_DATABASE:\s*\$\{\{\s*steps\.filter\.outputs\.ops_database\s*\}\}/)
+    expect(step).toMatch(/"\$OPS_OUTBOUND" "\$OPS_DATABASE"/)
   })
 })
