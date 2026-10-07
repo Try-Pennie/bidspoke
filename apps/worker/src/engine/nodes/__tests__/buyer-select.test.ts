@@ -17,7 +17,8 @@ import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
-import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
+import { createLeadSupabaseClient } from '../../../lib/lead-read-budget'
+import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, productionDeps, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1035,6 +1036,32 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
       expect(out(r)).toMatchObject({ _route: 'sold', reason: 'sold', mirrored: 'outcome_unknown' })
       expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted', mirrored: 'outcome_unknown' })
       expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'outcome_unknown' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a sold lead answers with the database hung beneath the real supabase-js client: the production copy is bounded too', async () => {
+    // The outage drill's hung shape (#1851): a request ends only when its signal aborts.
+    let requests = 0
+    const hung = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests++
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      })
+    }) as typeof globalThis.fetch
+    const supabase = createLeadSupabaseClient({ SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env, { fetch: hung })
+    const objects = { idFromName: () => 'id', get: () => ({}) }
+    const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, supabase)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness()
+      h.deps = { ...h.deps, mirror: production.mirror }
+      const pending = run(h)
+      for (let i = 0; i < 1_000 && requests === 0; i++) await new Promise((resolve) => setImmediate(resolve))
+      expect(requests).toBe(1)
+      await vi.advanceTimersByTimeAsync(BUYER_SALE_MIRROR_DEADLINE_MS)
+      expect(out(await pending)).toMatchObject({ _route: 'sold', mirrored: 'outcome_unknown' })
     } finally {
       vi.useRealTimers()
     }

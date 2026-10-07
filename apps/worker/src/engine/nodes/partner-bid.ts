@@ -75,6 +75,12 @@ interface PartnerConfig {
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
   is_active: boolean
+  /**
+   * The latency gate's window for this partner (#1849), read with the rest of the
+   * row so the gate shares this read and its last-good copy. Absent only on a copy
+   * written before it was selected.
+   */
+  confirmation_window_ms?: number | null
   updated_at?: string | null
 }
 
@@ -131,7 +137,7 @@ const PARTNER_SELECT =
   'bid_mode, bid_comparison_source, extra_extraction, ' +
   'dedup_endpoint, response_classification, alert_config, ' +
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
-  'circuit_enabled, is_active, updated_at'
+  'circuit_enabled, is_active, confirmation_window_ms, updated_at'
 
 // ── Last-good partner config (#1296, #1846) ───────────────────────────────────
 //
@@ -269,24 +275,9 @@ export async function executePartnerBidNode(
 
   // 1. Load partner config. A failed READ falls back to the last-good copy
   // (#1296); a row that is genuinely absent does not.
-  const { data: partner, error } = await readPartnerConfig(supabase, config.partner_id)
-
-  let p: PartnerConfig
-  if (!error && partner) {
-    p = partner as unknown as PartnerConfig
-    await rememberPartnerLastGood(env.WORKFLOW_CACHE, p, Date.now())
-  } else {
-    // The row is genuinely gone: a copy a racing lead wrote after the delete
-    // route retired it must not outlive the partner (#1846).
-    if (error && isNotFoundError(error)) await dropPartnerLastGoodIfPresent(env.WORKFLOW_CACHE, config.partner_id)
-    // A copy past the maximum age is refused by name inside the read (#1847).
-    const stale = error && !isNotFoundError(error) ? await readPartnerLastGood<PartnerConfig>(env.WORKFLOW_CACHE, config.partner_id, error.message, Date.now()) : null
-    if (!stale) {
-      throw new Error(`Partner config not found: ${config.partner_id}`)
-    }
-    console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${config.partner_id}: ${formatErr(error)}`)
-    p = stale
-  }
+  const loaded = await loadPartnerConfigForLead(supabase, env.WORKFLOW_CACHE, config.partner_id)
+  if (!loaded) throw new Error(`Partner config not found: ${config.partner_id}`)
+  const p = loaded.partner
 
   // Built once and merged onto every return/throw path so the Results panel
   // surfaces both the partner config the author set up and the resolved values
@@ -725,4 +716,31 @@ export async function checkDedup(
  */
 export function readPartnerConfig(supabase: SupabaseClient, partnerId: string) {
   return leadRead(supabase, supabase.from('partner_configs').select(PARTNER_SELECT).eq('id', partnerId).single(), 'partner config')
+}
+
+/**
+ * A partner's config for a lead, the one way the nodes that read partner_configs
+ * on a lead's path get it (partner_bid, and the latency gate's threshold since
+ * #1849): the bounded read, the last-good copy rewritten when due, and the copy
+ * served only when the read FAILS. Null when the partner is genuinely gone (its
+ * copy removed too, #1846) or the read failed with no copy to serve. Throws
+ * StoredCopyRefusedError, logged, for a copy past the maximum age (#1847).
+ */
+export async function loadPartnerConfigForLead(supabase: SupabaseClient, kv: KVNamespace | undefined, partnerId: string): Promise<{ partner: PartnerConfig; fromCopy: boolean } | null> {
+  const { data, error } = await readPartnerConfig(supabase, partnerId)
+  if (!error && data) {
+    const partner = data as unknown as PartnerConfig
+    await rememberPartnerLastGood(kv, partner, Date.now())
+    return { partner, fromCopy: false }
+  }
+  if (!error || isNotFoundError(error)) {
+    // The row is genuinely gone: a copy a racing lead wrote after the delete
+    // route retired it must not outlive the partner (#1846).
+    await dropPartnerLastGoodIfPresent(kv, partnerId)
+    return null
+  }
+  const stale = await readPartnerLastGood<PartnerConfig>(kv, partnerId, error.message, Date.now())
+  if (!stale) return null
+  console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${partnerId}: ${formatErr(error)}`)
+  return { partner: stale, fromCopy: true }
 }
