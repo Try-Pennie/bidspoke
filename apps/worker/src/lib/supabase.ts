@@ -28,9 +28,14 @@ const BIDDING_RPCS: RpcClassification = {
   listFile: 'apps/worker/src/lib/read-only-rpcs.json',
 }
 
-export function createSupabaseClient(env: Env, options: { fetch?: typeof fetch } = {}): SupabaseClient<Database> {
+/**
+ * `retry: false` turns off the library's own read retries (1, 2 and 4 s waits)
+ * for every read on the client; a lead's client sets it (#1844).
+ */
+export function createSupabaseClient(env: Env, options: { fetch?: typeof fetch; retry?: boolean } = {}): SupabaseClient<Database> {
   const client = createClient<Database>(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
     auth: { persistSession: false },
+    ...(options.retry === false ? { db: { retry: false } } : {}),
     ...(options.fetch ? { global: { fetch: options.fetch } } : {}),
   })
   return guardLocalDevWrites(client, env, env.SUPABASE_URL, BIDDING_RPCS)
