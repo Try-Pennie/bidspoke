@@ -711,6 +711,25 @@ describe('every partner write retires its stored copy (#1846)', () => {
     expect(deleted).toEqual(['partner-lastgood:p-1'])
   })
 
+  // The retire runs straight after the write, before the other cache refreshes,
+  // so one of those throwing cannot leave the copy in place (#1846 review).
+  it.each([
+    ['PUT', 'the partner constants refresh'],
+    ['DELETE', 'the buyer profile refresh'],
+  ] as const)('%s retires the copy even when %s throws', async (method, which) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    if (which === 'the partner constants refresh') vi.mocked(invalidatePartnerConstantsCache).mockRejectedValueOnce(new Error('kv down'))
+    else vi.mocked(refreshBuyerProfilesCache).mockRejectedValueOnce(new Error('kv down'))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase(
+        { users: { single: testUser }, partner_configs: [{ single: { id: 'p-1' } }, { updateResult: { id: 'p-1', slug: 'sofi', is_active: false } }] },
+        { rpc: vi.fn().mockResolvedValue({ data: null, error: null }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await call(method, '/partners/p-1', method === 'PUT' ? { is_active: false } : undefined)
+    expect(deleted).toEqual(['partner-lastgood:p-1'])
+  })
+
   it('DELETE retires its copy, so a deleted partner never bids from KV', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>

@@ -223,7 +223,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             {!readOnly && !addingEndpoint && (
               <button
                 type="button"
-                onClick={() => setAddingEndpoint(true)}
+                onClick={() => { setEndpointCopyWarning(null); setAddingEndpoint(true) }}
                 className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
               >
                 <Plus className="h-3 w-3" /> Add

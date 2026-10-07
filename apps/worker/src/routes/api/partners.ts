@@ -291,18 +291,19 @@ partners.put('/:id', async (c) => {
     'click_url' in updates ||
     'sub_account_min_bids' in updates ||
     'is_active' in updates
+  // The Partner Bid node bids from a stored copy of this row when the database
+  // read fails (#1296). Retired on every edit, so a partner switched off or
+  // changed is never bid with as it was in an outage (#1846). It never throws and
+  // runs first, so a refresh below that throws cannot leave the copy in place; a
+  // failure is warned about and repaired by the sweep.
+  const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
+
   if (affectsConstants) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
   // The buyer profile snapshot joins the partner row (endpoint, credential name,
   // accept rules, mapping, active flag), so every edit refreshes it (#1411).
   await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
-
-  // The Partner Bid node bids from a stored copy of this row when the database
-  // read fails (#1296). Retired on every edit, so a partner switched off or
-  // changed is never bid with as it was in an outage (#1846). A failure is
-  // warned about and repaired by the sweep.
-  const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
 
   return c.json({ ...withCredentialWarning(c.env, data), ...copyWarning(cleared) })
 })
@@ -335,13 +336,14 @@ partners.delete('/:id', async (c) => {
     return dbError(c, error)
   }
 
-  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
-  await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
-
   // A deleted partner must never bid from its stored copy in an outage (#1846).
+  // First, and never throws, so a refresh below that throws cannot leave it.
   // Deleting again would find no row, so a failure is warned about and repaired
   // by the sweep.
   const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
+
+  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
 
   return c.json({ ok: true, ...copyWarning(cleared) })
 })
@@ -380,4 +382,3 @@ partners.get('/:id/cap-count', async (c) => {
 })
 
 export default partners
-

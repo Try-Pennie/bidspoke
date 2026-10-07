@@ -34,4 +34,9 @@ describe('applyFormulaRenames', () => {
     vi.mocked(api.workflows.renameApply).mockResolvedValue({ updated: 2, copies_not_cleared: ['p-1'], stored_copy_warning: WARNING })
     expect(await applyFormulaRenames('wf-1', [{ oldNs: 'a', newNs: 'b', partner_ids: ['p-1'] }])).toEqual([WARNING])
   })
+
+  it('reports the stored copy warning once however many renames hit it', async () => {
+    vi.mocked(api.workflows.renameApply).mockResolvedValue({ updated: 1, copies_not_cleared: ['p-1'], stored_copy_warning: WARNING })
+    expect(await applyFormulaRenames('wf-1', [{ oldNs: 'a', newNs: 'b', partner_ids: ['p-1'] }, { oldNs: 'c', newNs: 'd', partner_ids: ['p-1'] }])).toEqual([WARNING])
+  })
 })

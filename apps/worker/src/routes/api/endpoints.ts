@@ -288,4 +288,3 @@ endpoints.delete('/:id', async (c) => {
 })
 
 export default endpoints
-

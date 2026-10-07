@@ -78,6 +78,17 @@ describe('sweepStoredCopies: endpoint copies', () => {
     expect(r.repaired).toEqual([endpointLastGoodKey('engine', '/bidding')])
   })
 
+  // A key the key builder cannot produce has no address to clear, so it is
+  // reported, never parsed into a guess at one and deleted.
+  it('reports a malformed endpoint key rather than clearing a guessed address', async () => {
+    const { kv, store } = memoryKv({ 'ep-lastgood:nocolon': endpointCopy(), [endpointHotKey('nocolo', '')]: endpointCopy() })
+    const r = await sweepStoredCopies(kv, sources())
+    expect(store.has('ep-lastgood:nocolon')).toBe(true)
+    expect(store.has(endpointHotKey('nocolo', ''))).toBe(true)
+    expect(r.repaired).toEqual([])
+    expect(r.failed).toEqual([expect.stringMatching(/ep-lastgood:nocolon.*not an endpoint address/)])
+  })
+
   it('reads an address whose path itself holds a colon', async () => {
     const { kv, store } = memoryKv({ [endpointLastGoodKey('engine', '/a:b')]: endpointCopy() })
     await sweepStoredCopies(kv, sources({ endpoints: async () => [{ id: 'ep-1', subdomain: 'engine', path: '/a:b', workflow_id: 'wf-1', source_name: 'engine', is_active: true }] }))

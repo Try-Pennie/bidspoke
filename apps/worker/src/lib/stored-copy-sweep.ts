@@ -117,6 +117,10 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources):
       // The subdomain holds no colon; the path after it may.
       const rest = key.slice(ENDPOINT_PREFIX.length)
       const cut = rest.indexOf(':')
+      if (cut < 0) {
+        result.failed.push(`${key}: not an endpoint address, so nothing was cleared`)
+        continue
+      }
       const subdomain = rest.slice(0, cut)
       const path = rest.slice(cut + 1)
       const copy = await readJson(kv, key)

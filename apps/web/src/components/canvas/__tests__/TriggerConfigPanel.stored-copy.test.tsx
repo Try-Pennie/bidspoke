@@ -40,5 +40,8 @@ describe('TriggerConfigPanel: an endpoint created with a stored copy not cleared
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Stub create' }))
     expect(await screen.findByText(WARNING)).toBeInTheDocument()
+    // It belongs to that create, so starting the next one clears it.
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(screen.queryByText(WARNING)).not.toBeInTheDocument()
   })
 })
