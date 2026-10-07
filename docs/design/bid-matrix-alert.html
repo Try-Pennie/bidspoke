@@ -88,47 +88,10 @@ function bodyFoldedGrid(a) {
   return [el("div", "p-code", lines.join("\n"))];
 }
 
-// B: one line per Debt band, plain text, identical Vantage bands folded.
-function bodyPerBand(a) {
-  var groups = foldColumns(a);
-  return a.debt.map(function (d, i) {
-    var parts = groups.filter(function (g) { return a.cells[i][g.cols[0]]; }).map(function (g) {
-      return cellText(a.cells[i][g.cols[0]]) + " at Vantage " + vRange(g.lo, g.hi);
-    });
-    var p = el("div", "p-line");
-    p.append(el("b", null, "Debt " + debtRange(d[0], d[1]) + ": "), document.createTextNode(parts.join(", ")));
-    return p;
-  });
-}
-
-// C: grouped by how far bids moved, one line per block of bids that moved together.
-function bodyByMove(a) {
-  var groups = foldColumns(a);
-  var blocks = [];
-  a.debt.forEach(function (d, i) {
-    groups.forEach(function (g) {
-      var c = a.cells[i][g.cols[0]];
-      if (!c) return;
-      var key = moved(c) + "#" + g.lo + "-" + g.hi;
-      var last = blocks.filter(function (b) { return b.key === key; })[0];
-      if (last && last.endRow === i - 1) { last.endRow = i; last.hiDebt = d[1]; last.count += g.cols.length; }
-      else blocks.push({ key: key, move: c[1] - c[0], endRow: i, loDebt: d[0], hiDebt: d[1], vlo: g.lo, vhi: g.hi, count: g.cols.length });
-    });
-  });
-  blocks.sort(function (x, y) { return x.move - y.move; });
-  return blocks.map(function (b) {
-    var p = el("div", "p-line");
-    var verb = b.move < 0 ? "Down $" + Math.abs(b.move) : "Up $" + b.move;
-    p.append(el("b", null, verb + ": "), document.createTextNode(b.count + " bid" + (b.count === 1 ? "" : "s") + ", Debt " + debtRange(b.loDebt, b.hiDebt) + ", Vantage " + vRange(b.vlo, b.vhi)));
-    return p;
-  });
-}
-
-var BODIES = { grid: bodyFoldedGrid };
 
 function line(label, text) { var p = el("div", "p-line"); p.append(el("b", null, label + " "), document.createTextNode(text)); return p; }
 
-function buildScreen(variant) {
+function buildScreen() {
   var phone = el("div", "p-phone");
   phone.append(el("div", "p-top", "# statuspage"));
   ALERTS.forEach(function (a) {
@@ -141,7 +104,7 @@ function buildScreen(variant) {
     body.append(meta, el("div", "p-head", "Bid matrix changed"));
     body.append(line("Matrix:", a.partner + " (regular, not sell-off)"), line("Changed by:", "Pat Example, " + a.when), line("Bids changed:", String(a.count)));
     body.append(el("div", "p-gap"));
-    BODIES[variant.body](a).forEach(function (x) { body.append(x); });
+    bodyFoldedGrid(a).forEach(function (x) { body.append(x); });
     body.append(el("div", "p-link", "Open in Salesforce →"));
     msg.append(body);
     phone.append(msg);
@@ -149,5 +112,5 @@ function buildScreen(variant) {
   return phone;
 }
 
-document.getElementById("stage").append(buildScreen({ body: "grid" }));
+document.getElementById("stage").append(buildScreen());
 </script></body></html>
