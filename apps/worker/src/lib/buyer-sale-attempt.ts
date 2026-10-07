@@ -99,7 +99,8 @@ export interface BuyerCall {
   record: SaleOutcomeRecord
 }
 
-export type AttemptStep = 'claimed' | 'reserved' | 'buyer_called' | 'committed' | 'marked_sold' | 'mirrored'
+/** `released` follows an answered decline once the entry is released and the claim freed, and its copy then reports `mirrored` too (#1804). */
+export type AttemptStep = 'claimed' | 'reserved' | 'buyer_called' | 'committed' | 'marked_sold' | 'released' | 'mirrored'
 
 export interface AttemptDeps {
   sale: SaleApi
@@ -245,10 +246,10 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
 
   switch (call.outcome) {
     case 'declined_by_buyer':
-      await releaseAnswered(deps, key, 'declined', call.record, generation)
+      await releaseAnswered(deps, key, 'declined', call.record, generation, step)
       return { result: 'no_sale', reason: 'declined_by_buyer', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'buyer_error':
-      await releaseAnswered(deps, key, 'released', call.record, generation)
+      await releaseAnswered(deps, key, 'released', call.record, generation, step)
       return { result: 'no_sale', reason: 'buyer_error', detail: call.record.result_code ?? `http ${call.record.http_status}` }
     case 'outcome_unknown':
       // The buyer may have taken the lead: hold the reservation (the alarm makes
@@ -507,10 +508,12 @@ async function freeQuietly(deps: AttemptDeps, generation: number): Promise<void>
  * entry; a copy that fails is left to the drain. Neither changes what the buyer
  * answered.
  */
-async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declined' | 'released', record: SaleOutcomeRecord, generation: number): Promise<void> {
+async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declined' | 'released', record: SaleOutcomeRecord, generation: number, step: (s: AttemptStep) => Promise<void>): Promise<void> {
   const released = await deps.ledger.release(key, status, record).catch(() => null)
   await freeQuietly(deps, generation)
-  if (released) await mirrorQuietly(deps, released)
+  if (!released) return
+  await step('released')
+  if (await mirrorQuietly(deps, released)) await step('mirrored')
 }
 
 async function mirrorQuietly(deps: AttemptDeps, entry: LedgerEntry): Promise<boolean> {

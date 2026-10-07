@@ -92,14 +92,19 @@ function ctx(over: { sellOff?: unknown; engineBid?: unknown; leadUuid?: unknown;
 
 // ── Fakes ─────────────────────────────────────────────────────────────────────
 
+/** The lead sale and buyer ledger calls a test can give a duration to (#1804). */
+type ObjectOp = 'claim' | 'sold' | 'free' | 'commit' | 'release'
+
 class FakeSale implements SaleApi {
   state: 'free' | 'in_flight' | 'sold' = 'free'
   generation = 0
   outcome: SaleOutcomeRecord | null = null
   calls: string[] = []
-  constructor(readonly key: { kind: string; population: string; lead_key: string }) {}
+  /** `spend` lets a test give each call a duration on the harness clock (#1804). */
+  constructor(readonly key: { kind: string; population: string; lead_key: string }, private readonly spend: (op: ObjectOp) => void = () => {}) {}
   async claim(body: ClaimBody): Promise<ClaimResult> {
     this.calls.push(`claim:${body.execution_id}`)
+    this.spend('claim')
     if (this.state === 'sold') return { state: 'sold', partner_id: 'p', outcome: this.outcome!, generation: this.generation }
     this.state = 'in_flight'
     this.generation += 1
@@ -107,12 +112,14 @@ class FakeSale implements SaleApi {
   }
   async sold(generation: number, outcome: SaleOutcomeRecord): Promise<number> {
     this.calls.push(`sold:${generation}`)
+    this.spend('sold')
     this.state = 'sold'
     this.outcome = outcome
     return ++this.generation
   }
   async free(generation: number): Promise<number> {
     this.calls.push(`free:${generation}`)
+    this.spend('free')
     this.state = 'free'
     return ++this.generation
   }
@@ -127,7 +134,7 @@ class FakeSale implements SaleApi {
 class FakeLedger implements LedgerApi {
   entries = new Map<string, LedgerEntry>()
   calls: string[] = []
-  constructor(readonly partnerId: string, private readonly refuse: ReserveResult | Error | null = null) {}
+  constructor(readonly partnerId: string, private readonly refuse: ReserveResult | Error | null = null, private readonly spend: (op: ObjectOp) => void = () => {}) {}
   private k(key: EntryKey) { return `${key.lead_key}|${key.population}|${key.kind}` }
   async reserve(body: ReserveBody): Promise<ReserveResult> {
     this.calls.push(`reserve:${body.kind}:${body.payout_cents}`)
@@ -142,6 +149,7 @@ class FakeLedger implements LedgerApi {
   }
   async commit(key: EntryKey, outcome: SaleOutcomeRecord): Promise<LedgerEntry> {
     this.calls.push('commit')
+    this.spend('commit')
     const e = this.entries.get(this.k(key))!
     const next = { ...e, status: 'accepted' as const, outcome, resolved_at: NOW }
     this.entries.set(this.k(key), next)
@@ -149,6 +157,7 @@ class FakeLedger implements LedgerApi {
   }
   async release(key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry> {
     this.calls.push(`release:${status}`)
+    this.spend('release')
     const e = this.entries.get(this.k(key))!
     const next = { ...e, status, resolved_at: NOW }
     this.entries.set(this.k(key), next)
@@ -198,18 +207,21 @@ function harness(opts: {
   advanceOnBreakerRecord?: number
   /** Time the buyer_sales copy takes (#1804). */
   advanceOnMirror?: number
+  /** Time each lead sale or buyer ledger call takes, by call (#1804). Reserve has its own option, slowReserveMs. */
+  advanceOnObject?: Partial<Record<ObjectOp, number>>
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
   const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
+  const spend = (op: ObjectOp) => { h.clockMs += opts.advanceOnObject?.[op] ?? 0 }
   h.deps = {
     loadProfiles: async () => {
       if (opts.profiles instanceof Error) throw opts.profiles
       return opts.profiles ?? snapshot(buyer('p-1', 'tripoint', 1))
     },
     saleClient: (key) => {
-      const s = new FakeSale(key)
+      const s = new FakeSale(key, spend)
       h.sales.push(s)
       return s
     },
@@ -223,7 +235,7 @@ function harness(opts: {
       }
       let l = h.ledgers.get(partnerId)
       if (!l) {
-        l = new FakeLedger(partnerId, opts.refuse?.[partnerId] ?? null)
+        l = new FakeLedger(partnerId, opts.refuse?.[partnerId] ?? null, spend)
         h.ledgers.set(partnerId, l)
       }
       const slow = opts.slowReserveMs
@@ -900,7 +912,7 @@ describe('the time of each phase of a live attempt (#1804)', () => {
     const r = await run(h)
     expect(out(r)._route).toBe('sold')
     // The breaker's record of the answer is our work, so it counts after the call, never inside it.
-    expect(r.attempts[0].output.timing).toEqual({ before_call_ms: 300, call_ms: 2500, after_call_ms: 240 })
+    expect(r.attempts[0].output.timing).toMatchObject({ before_call_ms: 300, call_ms: 2500, after_call_ms: 240 })
     expect(out(r).buyer_call_ms).toBe(2500)
     expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_attempt_timing', partner_slug: 'tripoint', outcome: 'accepted', before_call_ms: 300, call_ms: 2500, after_call_ms: 240 }))
   })
@@ -940,5 +952,51 @@ describe('the time of each phase of a live attempt (#1804)', () => {
     const refused = await run(capped)
     expect(out(refused).buyer_call_ms).toBeUndefined()
     expect(capped.logs.filter((l) => l.event === 'buyer_select_attempt_timing')).toEqual([])
+  })
+})
+
+/**
+ * The phase split showed the live arm's added time is our own work around the call, p50 769 ms
+ * before plus after over 27 attempts, with the call itself level with the legacy step (#1804).
+ * Each object call in those phases is therefore timed on its own, so the one costing the most
+ * can be named from production rather than guessed from the code.
+ */
+describe('the time of each object call around a live buyer call (#1804)', () => {
+  const COSTS = { claim: 120, commit: 90, sold: 70, release: 60, free: 15 }
+
+  it('an accepted sale records the claim, reserve, breaker, commit, mark sold and mirror, adding up to the before and after figures', async () => {
+    const h = harness({ advanceOnObject: COSTS, slowReserveMs: 300, advanceOnBuyerCall: 2500, advanceOnBreakerRecord: 40, advanceOnMirror: 200 })
+    const r = await run(h)
+    expect(out(r)._route).toBe('sold')
+    expect(r.attempts[0].output.timing).toEqual({
+      before_call_ms: 420, call_ms: 2500, after_call_ms: 400,
+      claim_ms: 120, reserve_ms: 300, breaker_ms: 40, commit_ms: 90, mark_sold_ms: 70, mirror_ms: 200,
+    })
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_attempt_timing', claim_ms: 120, reserve_ms: 300, breaker_ms: 40, commit_ms: 90, mark_sold_ms: 70, mirror_ms: 200 }))
+  })
+
+  it('a decline records the release and its mirror in place of commit and mark sold, which it never reached', async () => {
+    const h = harness({ answers: { tripoint: [DUPLICATE] }, advanceOnObject: COSTS, slowReserveMs: 300, advanceOnBuyerCall: 1800, advanceOnBreakerRecord: 40, advanceOnMirror: 150 })
+    const r = await run(h)
+    expect(out(r)._route).toBe('no_sale')
+    // Releasing a declined attempt gives back the reservation and frees the claim (60 + 15); the decline is then copied too.
+    expect(r.attempts[0].output.timing).toEqual({ before_call_ms: 420, call_ms: 1800, after_call_ms: 265, claim_ms: 120, reserve_ms: 300, breaker_ms: 40, release_ms: 75, mirror_ms: 150 })
+  })
+
+  it('a call that throws still records the claim, reserve and breaker, and nothing it did not reach', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError')
+    const h = harness({ answers: { tripoint: [abort] }, advanceOnObject: COSTS, slowReserveMs: 300, advanceOnBuyerCall: 5000, advanceOnBreakerRecord: 40 })
+    const r = await run(h)
+    expect(r.failure).toMatchObject({ errorType: 'transient' })
+    const timing = r.attempts[0].output.timing as Record<string, number>
+    expect(timing).toMatchObject({ claim_ms: 120, reserve_ms: 300, call_ms: 5000, breaker_ms: 40 })
+    for (const absent of ['commit_ms', 'mark_sold_ms', 'mirror_ms', 'release_ms']) expect(timing).not.toHaveProperty(absent)
+  })
+
+  it('a mirror that fails is still timed, since the lead waited for it all the same', async () => {
+    const h = harness({ advanceOnObject: COSTS, mirrorError: new Error('insert failed'), advanceOnMirror: 900 })
+    const r = await run(h)
+    expect(out(r)._route).toBe('sold')
+    expect(r.attempts[0].output.timing).toMatchObject({ mirror_ms: 900 })
   })
 })

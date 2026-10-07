@@ -60,7 +60,7 @@ import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
 import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
-import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
+import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
 import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
@@ -220,6 +220,20 @@ export interface AttemptTiming {
   call_ms: number
   /** From the answer to the attempt's end: the breaker record, commit, mark sold and the mirror. */
   after_call_ms: number
+  /**
+   * Each object call inside those phases, so the one costing the most can be named (#1804). A
+   * figure is present only when the attempt reached that call, never as a zero (L90). The claim
+   * includes any wait on another holder; the breaker is recording the buyer's answer; the
+   * release gives back the reservation and frees the claim after a decline; the mirror is the
+   * buyer_sales copy of a sale or a decline, timed even when it fails, since the lead waited for it.
+   */
+  claim_ms?: number
+  reserve_ms?: number
+  breaker_ms?: number
+  commit_ms?: number
+  mark_sold_ms?: number
+  release_ms?: number
+  mirror_ms?: number
 }
 
 /** One `partner_bid` child step row, written by the walker under the node's id. */
@@ -617,6 +631,8 @@ class Run {
     let buyerCalled = false
     // When the request left and when it answered or threw, read on the node's clock (#1804).
     let callWindow: { startMs: number; endMs: number } | null = null
+    // When each step of the attempt landed, read on the same clock, to time each object call (#1804).
+    const landed: Partial<Record<AttemptStep, number>> = {}
     // What the buyer answered, kept beside the outcome so a decline's sale can name
     // the code and the class Salesforce records (#1416). Null until an answer arrives.
     let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null = null
@@ -718,6 +734,7 @@ class Run {
           preCallBudgetLeftMs: live ? () => this.remaining() : undefined,
           background: live ? undefined : this.deps.background,
           onClaimEvent: this.claims.observe,
+          onStep: (s) => { landed[s] = this.deps.clock() },
         }
       )
     } catch (err) {
@@ -729,7 +746,7 @@ class Run {
 
     const completedAt = new Date(this.deps.clock())
     const status = lastCall === null ? null : (lastCall as { status: number | null }).status
-    const timing = this.timeAttempt(c, startedAt, completedAt, callWindow, result.result === 'sold' ? 'accepted' : result.reason)
+    const timing = this.timeAttempt(c, startedAt, completedAt, callWindow, landed, result.result === 'sold' ? 'accepted' : result.reason)
 
     if (result.result === 'sold') {
       // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
@@ -805,13 +822,25 @@ class Run {
    * Splits a live attempt at its buyer call, adds the call to the output's total and logs the
    * split (#1804). Null when no request left, which includes decide_only and a config error.
    */
-  private timeAttempt(c: Candidate, startedAt: Date, completedAt: Date, callWindow: { startMs: number; endMs: number } | null, outcome: string): AttemptTiming | null {
+  private timeAttempt(c: Candidate, startedAt: Date, completedAt: Date, callWindow: { startMs: number; endMs: number } | null, landed: Partial<Record<AttemptStep, number>>, outcome: string): AttemptTiming | null {
     if (callWindow === null) return null
     const timing: AttemptTiming = {
       before_call_ms: callWindow.startMs - startedAt.getTime(),
       call_ms: callWindow.endMs - callWindow.startMs,
       after_call_ms: completedAt.getTime() - callWindow.endMs,
     }
+    const between = (field: keyof AttemptTiming, from: number | undefined, to: number | undefined) => {
+      if (from !== undefined && to !== undefined) timing[field] = to - from
+    }
+    between('claim_ms', startedAt.getTime(), landed.claimed)
+    between('reserve_ms', landed.claimed, landed.reserved)
+    // The breaker records the answer inside the call wrapper, after the call window closes.
+    between('breaker_ms', callWindow.endMs, landed.buyer_called)
+    between('commit_ms', landed.buyer_called, landed.committed)
+    between('mark_sold_ms', landed.committed, landed.marked_sold)
+    between('release_ms', landed.buyer_called, landed.released)
+    // Only the copy runs after a sale is marked or a decline released, so a failed copy runs to the attempt's end.
+    between('mirror_ms', landed.marked_sold ?? landed.released, landed.mirrored ?? completedAt.getTime())
     this.out.buyer_call_ms = (this.out.buyer_call_ms ?? 0) + timing.call_ms
     this.deps.log({ event: 'buyer_select_attempt_timing', step_namespace: this.node.namespace, partner_slug: c.buyer.partner.slug, outcome, ...timing })
     return timing
