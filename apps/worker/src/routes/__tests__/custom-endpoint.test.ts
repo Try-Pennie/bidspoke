@@ -29,11 +29,16 @@ function makeUncachedEnv(): Env {
 }
 
 // A Supabase client whose endpoint `.single()` resolves to the given result.
+// The query carries retry and abortSignal as the real one does, because the
+// route reads the endpoint through leadRead (#1844).
 function makeSupabaseReturning(result: { data: unknown; error: unknown }) {
   const chain: Record<string, unknown> = {
     select: () => chain,
     eq: () => chain,
-    single: () => Promise.resolve(result),
+    single: () => {
+      const query = Promise.resolve(result)
+      return Object.assign(query, { retry: () => query, abortSignal: () => query })
+    },
   }
   return { from: () => chain } as unknown as ReturnType<typeof createSupabaseClient>
 }
@@ -78,7 +83,12 @@ function post() {
   )
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  // The route makes its lead client before it knows whether it needs the
+  // database, so every test has one; tests that read set their own.
+  vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning({ data: null, error: null }))
+})
 
 describe('custom endpoint error mapping (#107)', () => {
   it('returns 404 with a generic message for WorkflowNotFoundError', async () => {

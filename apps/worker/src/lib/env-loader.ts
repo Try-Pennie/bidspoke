@@ -59,6 +59,7 @@ import { formatErr } from './format-error'
 import { isOrgOnlyEnvKey } from './org-only-env-keys'
 import { fetchAllPaged } from './paginate'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
+import { leadRead } from './lead-read-budget'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
@@ -270,13 +271,17 @@ async function loadOrgEnv(
   try {
     data = await fetchAllPaged<EnvRow>(
       (from, to) =>
-        supabase
-          .from('environment_variables')
-          .select('key, value, is_secret, scope, workflow_id')
-          .eq('organization_id', orgId)
-          .order('created_at')
-          .order('id')
-          .range(from, to),
+        leadRead(
+          supabase,
+          supabase
+            .from('environment_variables')
+            .select('key, value, is_secret, scope, workflow_id')
+            .eq('organization_id', orgId)
+            .order('created_at')
+            .order('id')
+            .range(from, to),
+          'environment variables'
+        ),
       `environment_variables read for org ${orgId}`,
       { maxPages: ENV_READ_MAX_PAGES }
     )

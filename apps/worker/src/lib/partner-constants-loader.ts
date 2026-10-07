@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { leadRead } from './lead-read-budget'
 
 // Partner constants change rarely and every mutating route busts this cache
 // explicitly (see invalidatePartnerConstantsCache call sites). The long TTL keeps
@@ -75,14 +76,15 @@ async function loadFromKvOrDb(
   if (cached && cached.slugsById) return cached
 
   const [uuidRes, partnerRes] = await Promise.all([
-    supabase
-      .from('partner_uuid_map')
-      .select('uuid, partner_slug')
-      .eq('org_id', orgId),
-    supabase
-      .from('partner_configs')
-      .select('id, slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
-      .eq('organization_id', orgId),
+    leadRead(supabase, supabase.from('partner_uuid_map').select('uuid, partner_slug').eq('org_id', orgId), 'partner uuid map'),
+    leadRead(
+      supabase,
+      supabase
+        .from('partner_configs')
+        .select('id, slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
+        .eq('organization_id', orgId),
+      'partner constants'
+    ),
   ])
 
   // A transient DB error must NEVER be turned into empty bidding constants and
