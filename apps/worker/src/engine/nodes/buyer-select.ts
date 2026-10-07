@@ -717,13 +717,17 @@ class Run {
         live_percent_in_force: this.out.live_percent_in_force,
         caps_in_force: limits,
       })
+      // Bounded (#1849), by what is left of a budget when the node is under one.
+      // A copy that runs out of time may still land, so nothing undoes it.
+      const allowedMs = Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining()))
       try {
-        // Bounded (#1849), by what is left of a budget when the node is under one.
-        // A copy that runs out of time may still land, so nothing undoes it.
-        await withDeadline(this.deps.mirror(row, entry, partner.id), Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining())), 'buyer_sales copy', this.deps.timers)
+        await withDeadline(this.deps.mirror(row, entry, partner.id), allowedMs, 'buyer_sales copy', this.deps.timers)
       } catch (err) {
         const mirrorOutcome = err instanceof DeadlineError ? 'outcome_unknown' : 'not_mirrored'
-        if (mirrorOutcome === 'outcome_unknown') this.deps.writeUnanswered('buyer_sales copy')
+        // Only a copy given its whole allowance says the database is not
+        // answering; one cut short by the node's own spent budget says nothing
+        // about it, and must not send the rest of the lead to its copies.
+        if (mirrorOutcome === 'outcome_unknown' && allowedMs >= BUYER_SALE_MIRROR_DEADLINE_MS) this.deps.writeUnanswered('buyer_sales copy')
         this.deps.log({ event: 'buyer_select_mirror_failed', step_namespace: this.node.namespace, partner_id: partner.id, mirror_outcome: mirrorOutcome, error_message: messageOf(err) })
         throw err
       }

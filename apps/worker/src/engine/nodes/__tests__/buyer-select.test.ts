@@ -1046,6 +1046,23 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
     }
   })
 
+  it('a rehearsal copy cut short by its own spent budget is outcome unknown, but is no evidence the database is down', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness({ mirrorHangs: true })
+      // The rehearsal's budget is all but spent by the time it reaches the copy.
+      const slowProfiles = async () => { h.clockMs += BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS - 20; return snapshot(buyer('p-1', 'tripoint', 1)) }
+      const pending = executeBuyerSelectNode(node({ mode: 'decide_only' }), ctx(), env, { ...h.deps, loadProfiles: slowProfiles })
+      for (let i = 0; i < 1_000 && h.mirrorsHanging === 0; i++) await new Promise((resolve) => setImmediate(resolve))
+      expect(h.mirrorsHanging).toBe(1)
+      await vi.advanceTimersByTimeAsync(BUYER_SALE_MIRROR_DEADLINE_MS)
+      expect(out(await pending)).toMatchObject({ mirrored: 'outcome_unknown' })
+      expect(h.unanswered).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a sold lead answers with the database hung beneath the real supabase-js client: the production copy is bounded too', async () => {
     // The outage drill's hung shape (#1851): a request ends only when its signal aborts.
     let requests = 0
