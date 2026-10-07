@@ -423,6 +423,18 @@
       "node": "insert execution_steps",
       "field": "*.output.timing.*_ms",
       "reason": "buyer_select now times each object call inside a live attempt (#1804): the claim, reserve, breaker record, commit, mark sold, release and buyer_sales mirror, as fields of timing on the attempt row, so the call costing the most can be named from production. Bookkeeping fields on the step rows only: nothing sent, routed or decided changes. The values are 0 here because the replay pins the clock."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "kv_state",
+      "field": "*WORKFLOW_CACHE.buyer-profiles:*",
+      "reason": "The buyer profile copies now carry a switched_off list (the partner id, sale kind and delivery of each disabled profile, #1849 item 3), so a click for a switched-off buyer is refused from the same cache and last-good copy during an outage. The list is empty in these fixtures, and content_hash changes with the new field. Nothing sent to a buyer or decided differs."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "kv_state",
+      "field": "*WORKFLOW_CACHE.buyer-profiles:*",
+      "reason": "The buyer profile copies now carry a switched_off list (the partner id, sale kind and delivery of each disabled profile, #1849 item 3), so a click for a switched-off buyer is refused from the same cache and last-good copy during an outage. The list is empty in these fixtures, and content_hash changes with the new field. Nothing sent to a buyer or decided differs."
     }
   ]
 }
