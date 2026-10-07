@@ -4,7 +4,7 @@ export const runtime = 'edge'
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
-import type { WebhookEndpoint } from '@/lib/api'
+import type { StoredCopyAnswer, WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
 import NavLayout from '@/components/NavLayout'
 import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
@@ -52,12 +52,24 @@ export default function EndpointsPage() {
 
   useEffect(() => { load() }, [])
 
+  /**
+   * Each change here commits, then clears the copy of the record served in a
+   * database outage. When that clear failed the change still landed, and the
+   * server says so in stored_copy_warning, which this shows rather than drops
+   * (#1846). Returns the answer without the warning, for the list.
+   */
+  function showStoredCopyWarning<T extends StoredCopyAnswer>(answer: T): Omit<T, 'stored_copy_warning'> {
+    const { stored_copy_warning: warning, ...rest } = answer
+    if (warning) setError(warning)
+    return rest
+  }
+
   async function handleToggle(ep: WebhookEndpoint) {
     setTogglingId(ep.id)
     const next = !ep.is_active
     setEndpoints((prev) => prev.map((e) => e.id === ep.id ? { ...e, is_active: next } : e))
     try {
-      await api.endpoints.update(ep.id, { is_active: next })
+      showStoredCopyWarning(await api.endpoints.update(ep.id, { is_active: next }))
     } catch (e) {
       setEndpoints((prev) => prev.map((e) => e.id === ep.id ? { ...e, is_active: ep.is_active } : e))
       setError(e instanceof Error ? e.message : 'Failed to update endpoint')
@@ -86,7 +98,7 @@ export default function EndpointsPage() {
       setRemovingId(null)
     }, 150)
     try {
-      await api.endpoints.delete(ep.id)
+      showStoredCopyWarning(await api.endpoints.delete(ep.id))
     } catch (e) {
       if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
       setRemovingId(null)
@@ -137,7 +149,8 @@ export default function EndpointsPage() {
               <EndpointCreateForm
                 workflows={workflows}
                 autoFocus={adding}
-                onCreated={(ep) => {
+                onCreated={(answer) => {
+                  const ep = showStoredCopyWarning(answer)
                   setEndpoints((prev) => [ep, ...prev])
                   setAdding(false)
                 }}
@@ -189,7 +202,8 @@ export default function EndpointsPage() {
                     <EndpointEditForm
                       endpoint={ep}
                       workflows={workflows}
-                      onSaved={(updated) => {
+                      onSaved={(answer) => {
+                        const updated = showStoredCopyWarning(answer)
                         setEndpoints((prev) => prev.map((e) => e.id === updated.id ? updated : e))
                         setEditingId(null)
                       }}

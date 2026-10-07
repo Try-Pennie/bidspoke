@@ -25,35 +25,9 @@ export const endpointHotKey = (subdomain: string, path: string): string => `ep:$
 export const endpointLastGoodKey = (subdomain: string, path: string): string => `ep-lastgood:${subdomain}:${path}`
 
 /**
- * Delete both copies at this address. Throws when KV refuses, so a route cannot
- * report a clean success while a copy that should be gone is still served.
+ * Delete both copies at this address. Throws when KV refuses; a route runs it
+ * through copyCleared (stored-copy.ts) and warns, and the sweep retries it.
  */
 export async function retireEndpointCopies(kv: KVNamespace, subdomain: string, path: string): Promise<void> {
   await Promise.all([kv.delete(endpointHotKey(subdomain, path)), kv.delete(endpointLastGoodKey(subdomain, path))])
-}
-
-/**
- * What an edit route answers when its row was saved and audited but a stored
- * outage copy could not be cleared (#1846). Retiring runs last, after the audit
- * and the other cache refreshes, so a failure here never leaves a saved change
- * unrecorded; saving again retries the clear.
- */
-export const COPY_NOT_CLEARED_MESSAGE =
-  'The change was saved and recorded, but its stored outage copy could not be cleared, so during a database outage the old version could still be served. Save it again to clear it.'
-
-/**
- * Runs a stored copy's retirement, answering false (with the failure logged)
- * when KV refused it, so an edit route can report COPY_NOT_CLEARED_MESSAGE
- * after its audit and other refreshes rather than throwing past them (#1846).
- * The retire call is written at the call site, where the retired-copies guard
- * reads it.
- */
-export async function copyCleared(retire: () => Promise<void>, what: string): Promise<boolean> {
-  try {
-    await retire()
-    return true
-  } catch (err) {
-    console.error(`[stored-copy] ${what} could not be cleared: ${err instanceof Error ? err.message : 'unknown error'}`)
-    return false
-  }
 }

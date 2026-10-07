@@ -10,7 +10,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 import { refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
-import { COPY_NOT_CLEARED_MESSAGE, copyCleared } from '../../lib/endpoint-copies'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
@@ -300,11 +300,11 @@ partners.put('/:id', async (c) => {
 
   // The Partner Bid node bids from a stored copy of this row when the database
   // read fails (#1296). Retired on every edit, so a partner switched off or
-  // changed is never bid with as it was in an outage (#1846). Last, after the
-  // other refreshes, so a failure here leaves nothing else stale.
-  if (!(await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`))) return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  // changed is never bid with as it was in an outage (#1846). A failure is
+  // warned about and repaired by the sweep.
+  const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
 
-  return c.json(withCredentialWarning(c.env, data))
+  return c.json({ ...withCredentialWarning(c.env, data), ...copyWarning(cleared) })
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -339,10 +339,11 @@ partners.delete('/:id', async (c) => {
   await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
 
   // A deleted partner must never bid from its stored copy in an outage (#1846).
-  // Last, after the other refreshes, so a failure here leaves nothing else stale.
-  if (!(await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`))) return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  // Deleting again would find no row, so a failure is warned about and repaired
+  // by the sweep.
+  const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(cleared) })
 })
 
 // ── Today's cap count from the Durable Object ─────────────────────────────────

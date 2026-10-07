@@ -64,6 +64,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   const [copiedCustom, setCopiedCustom] = useState<string | null>(null)
   const [customEndpoints, setCustomEndpoints] = useState<WebhookEndpoint[]>([])
   const [addingEndpoint, setAddingEndpoint] = useState(false)
+  // The server's warning when a created endpoint's address still held a stored
+  // outage copy it could not clear (#1846).
+  const [endpointCopyWarning, setEndpointCopyWarning] = useState<string | null>(null)
   const [sources, setSources] = useState<Source[]>([])
   const [addingSource, setAddingSource] = useState(false)
   const [assigningExisting, setAssigningExisting] = useState(false)
@@ -253,6 +256,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               })}
             </div>
           )}
+          {endpointCopyWarning && (
+            <p role="alert" className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">{endpointCopyWarning}</p>
+          )}
           {customEndpoints.length === 0 && !addingEndpoint && (
             <p className="text-xs text-gray-500">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner</span> (or <span className="font-mono">/partner/bidding</span>).</p>
           )}
@@ -264,7 +270,8 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   workflowName={workflowName}
                   lockWorkflow
                   autoFocus={addingEndpoint}
-                  onCreated={(ep) => {
+                  onCreated={({ stored_copy_warning: copyWarning, ...ep }) => {
+                    setEndpointCopyWarning(copyWarning ?? null)
                     if (ep.workflow_id === workflowId && ep.is_active) {
                       setCustomEndpoints((prev) => [...prev, ep])
                     }

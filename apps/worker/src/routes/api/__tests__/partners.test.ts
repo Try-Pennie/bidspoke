@@ -720,9 +720,9 @@ describe('every partner write retires its stored copy (#1846)', () => {
     expect(deleted).toEqual(['partner-lastgood:p-1'])
   })
 
-  // A copy that could not be retired is the stale record this exists to remove,
-  // so the edit must not answer a clean success over it.
-  it('PUT does not report success when KV refuses to retire the copy', async () => {
+  // The edit landed, so it is answered as the success it was, with a warning
+  // that the copy is repaired by the per minute sweep (#1846).
+  it('PUT answers the saved edit with a warning when KV refuses to retire the copy', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -739,8 +739,8 @@ describe('every partner write retires its stored copy (#1846)', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
       body: JSON.stringify({ is_active: false }),
     }, failingEnv, mockCtx)
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/repaired automatically/i)
     // The edit was saved, so every other cache it feeds is still refreshed (#1846).
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(refreshBuyerProfilesCache)).toHaveBeenCalledTimes(1)

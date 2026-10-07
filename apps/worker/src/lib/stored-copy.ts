@@ -5,10 +5,13 @@
  *
  * The refresh runs right after the commit and never throws, so the route's
  * other work (deploy, audit) always runs, and the save is reported as the
- * success it was, with this beside it. Saving again retries the refresh.
+ * success it was, with this beside it. Repeating the edit cannot always repeat
+ * the refresh (a deleted row is gone, a created endpoint answers 409), so the
+ * per minute sweep (stored-copy-sweep.ts) is what repairs the copy, and the
+ * warning says that rather than naming a step that may not work.
  */
 export const COPY_NOT_CLEARED_MESSAGE =
-  'The change was saved and recorded, but a stored copy of the old version could not be refreshed, so the old version may still be served for a few minutes, and during a database outage until it is cleared. Save it again to clear it.'
+  'The change was saved and recorded, but a stored copy of the old version could not be refreshed. It is repaired automatically within a few minutes while the database is reachable; until then, during a database outage, the old version could still be served.'
 
 /**
  * Runs a stored copy's refresh or retirement, answering false (with the failure

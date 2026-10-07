@@ -238,7 +238,7 @@ describe('PUT /workflows/:id', () => {
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
   })
 
@@ -437,7 +437,7 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { no_changes?: boolean; stored_copy_warning?: string }
     expect(body.no_changes).toBe(true)
-    expect(body.stored_copy_warning).toMatch(/save it again/i)
+    expect(body.stored_copy_warning).toMatch(/repaired automatically/i)
   })
 
   it('treats a key-reordered but structurally identical definition as no_changes (jsonb round-trip)', async () => {
@@ -681,7 +681,7 @@ describe('PATCH /workflows/:id', () => {
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -728,7 +728,7 @@ describe('DELETE /workflows/:id', () => {
     const res = await request(app, 'DELETE', '/workflows/wf-1')
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 
@@ -912,7 +912,7 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -1878,7 +1878,7 @@ describe('POST /workflows/:id/rename-apply rewrites partner formulas through the
 
   // One partner's copy that cannot be retired must not stop the others being
   // rewritten, or the rename is left half applied with no way to tell which (#1846).
-  it('rewrites every partner when one copy cannot be retired, then names that partner in a 500', async () => {
+  it('rewrites every partner when one copy cannot be retired, and answers with a warning naming that partner', async () => {
     const both = [partners[0], { ...partners[0], id: 'p-3', name: 'Dot818', slug: 'dot818' }]
     const rpc = vi.fn().mockResolvedValue({ data: 1, error: null })
     vi.mocked(createSupabaseClient).mockReturnValue(
@@ -1892,11 +1892,11 @@ describe('POST /workflows/:id/rename-apply rewrites partner formulas through the
       const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1', 'p-3'] } })
       expect(rpc).toHaveBeenCalledTimes(2)
       expect(kvDeleted).toEqual(['partner-lastgood:p-3'])
-      expect(res.status).toBe(500)
-      const body = (await res.json()) as { error: string; updated: number; copies_not_cleared: string[] }
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { updated: number; copies_not_cleared: string[]; stored_copy_warning?: string }
       expect(body.updated).toBe(2)
       expect(body.copies_not_cleared).toEqual(['p-1'])
-      expect(body.error).toMatch(/rewritten/i)
+      expect(body.stored_copy_warning).toMatch(/repaired automatically/i)
     } finally {
       cache.delete = realDelete
     }

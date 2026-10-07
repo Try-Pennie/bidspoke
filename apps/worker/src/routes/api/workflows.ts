@@ -1336,21 +1336,12 @@ workflows.post('/:id/rename-apply', async (c) => {
     // formula; retire it so an outage never bids with a formula that is gone
     // (#1846). A refusal is collected rather than thrown, so the partners after
     // it are still rewritten and the answer names exactly which copies remain.
-    try {
-      await retirePartnerLastGood(c.env.WORKFLOW_CACHE, p.id)
-    } catch (err) {
-      console.error(`[workflows] stored copy of ${p.id} could not be cleared after the rename: ${err instanceof Error ? err.message : 'unknown error'}`)
-      notCleared.push(p.id)
-    }
+    // Applying the rename again finds nothing left to rewrite, so the sweep is
+    // what repairs those copies.
+    if (!(await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, p.id), `partner copy ${p.id} after the rename`))) notCleared.push(p.id)
   }
 
-  if (notCleared.length > 0) {
-    return c.json({
-      error: `Every partner formula was rewritten, but the stored outage copies of ${notCleared.length} partner(s) could not be cleared, so during a database outage their old formulas could still be used. Apply the rename again to clear them.`,
-      updated,
-      copies_not_cleared: notCleared,
-    }, 500)
-  }
+  if (notCleared.length > 0) return c.json({ updated, copies_not_cleared: notCleared, ...copyWarning(false) })
   return c.json({ updated })
 })
 

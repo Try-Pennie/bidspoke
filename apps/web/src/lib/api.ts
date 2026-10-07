@@ -325,6 +325,15 @@ export interface ServiceConnection {
   updated_by_email: string | null
 }
 
+/**
+ * An edit route's answer when its change landed but a stored outage copy of the
+ * old version could not be refreshed or cleared (#1845, #1846). Every page that
+ * makes the change shows the warning; the server's sweep repairs the copy.
+ */
+export interface StoredCopyAnswer {
+  stored_copy_warning?: string
+}
+
 export interface WebhookEndpoint {
   id: string
   subdomain: string
@@ -569,7 +578,7 @@ export const api = {
         }>
       }>(`/api/workflows/${id}/rename-impact?old=${encodeURIComponent(oldNs)}&new=${encodeURIComponent(newNs)}`),
     renameApply: (id: string, oldNs: string, newNs: string, partner_ids: string[]) =>
-      req<{ updated: number }>(`/api/workflows/${id}/rename-apply`, {
+      req<{ updated: number; copies_not_cleared?: string[] } & StoredCopyAnswer>(`/api/workflows/${id}/rename-apply`, {
         method: 'POST',
         body: JSON.stringify({ old: oldNs, new: newNs, partner_ids }),
       }),
@@ -832,9 +841,9 @@ export const api = {
     create: (body: PartnerBody) =>
       req<Partner>('/api/partners', { method: 'POST', body: JSON.stringify(body) }),
     update: (id: string, body: Partial<PartnerBody>) =>
-      req<Partner>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
     delete: (id: string) =>
-      req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
+      req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
   },
@@ -977,11 +986,11 @@ export const api = {
   endpoints: {
     list: () => req<WebhookEndpoint[]>('/api/endpoints'),
     create: (body: WebhookEndpointBody) =>
-      req<WebhookEndpoint>('/api/endpoints', { method: 'POST', body: JSON.stringify(body) }),
+      req<WebhookEndpoint & StoredCopyAnswer>('/api/endpoints', { method: 'POST', body: JSON.stringify(body) }),
     update: (id: string, body: WebhookEndpointBody) =>
-      req<WebhookEndpoint>(`/api/endpoints/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+      req<WebhookEndpoint & StoredCopyAnswer>(`/api/endpoints/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
     delete: (id: string) =>
-      req<{ ok: boolean }>(`/api/endpoints/${id}`, { method: 'DELETE' }),
+      req<{ ok: boolean } & StoredCopyAnswer>(`/api/endpoints/${id}`, { method: 'DELETE' }),
   },
 
   connections: {

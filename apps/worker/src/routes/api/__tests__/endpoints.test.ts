@@ -354,10 +354,11 @@ describe('every endpoint write retires its stored copies (#1846)', () => {
     expect(deleted.sort()).toEqual(['ep-lastgood:rml:/', 'ep:rml:/'])
   })
 
-  // A copy that could not be retired is the stale record this exists to remove,
-  // so the route must not answer a clean success over it. The change itself was
-  // saved by then, so it is still audited, and the answer says so (#1846).
-  it('does not report success when KV refuses to retire a copy, but still audits the saved change', async () => {
+  // The delete landed, so it is answered as the success it was and audited. The
+  // copy KV would not clear is named in a warning: deleting again would find no
+  // row, so the per minute sweep (lib/stored-copy-sweep.ts) is what clears it,
+  // and the warning says that rather than naming a step that cannot work (#1846).
+  it('answers a delete as done, with a warning, when KV refuses to retire a copy, and still audits it', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -370,8 +371,11 @@ describe('every endpoint write retires its stored copies (#1846)', () => {
       WORKFLOW_CACHE: { delete: async () => { throw new Error('kv unavailable') } },
     } as unknown as Env
     const res = await app.request('/endpoints/ep-1', { method: 'DELETE', headers: { Authorization: 'Bearer tok' } }, failingEnv, mockCtx)
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok?: boolean; stored_copy_warning?: string }
+    expect(body.ok).toBe(true)
+    expect(body.stored_copy_warning).toMatch(/repaired automatically/i)
+    expect(body.stored_copy_warning).not.toMatch(/save it again/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })

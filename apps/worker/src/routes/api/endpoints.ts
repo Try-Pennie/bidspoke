@@ -18,7 +18,8 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import type { Database } from '../../types/database'
-import { COPY_NOT_CLEARED_MESSAGE, copyCleared, retireEndpointCopies } from '../../lib/endpoint-copies'
+import { retireEndpointCopies } from '../../lib/endpoint-copies'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
 
 type Variables = AuthVariables
 
@@ -158,13 +159,11 @@ endpoints.post('/', async (c) => {
   })
 
   // A copy can survive at this address from an endpoint that used it before
-  // (#1846), and the new record must never be answered with the old one. Last,
-  // so a failure cannot leave the saved change unaudited.
-  if (!(await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`))) {
-    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
-  }
+  // (#1846), and the new record must never be answered with the old one. A
+  // failure is warned about and repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
 
-  return c.json(data, 201)
+  return c.json({ ...data, ...copyWarning(cleared) }, 201)
 })
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -241,16 +240,15 @@ endpoints.put('/:id', async (c) => {
 
   // Retire both copies at the old address and the new one (#1846). A switched
   // off endpoint must not be served as active from its last-good copy, and a
-  // moved one must not keep answering at the address it left. Last, so a
-  // failure cannot leave the saved change unaudited.
+  // moved one must not keep answering at the address it left. A failure is
+  // warned about and repaired by the sweep.
   const moved = data.subdomain !== existing.subdomain || data.path !== existing.path
   const cleared = await copyCleared(async () => {
     await retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path)
     if (moved) await retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path)
   }, `endpoint copy ${existing.subdomain}${existing.path}`)
-  if (!cleared) return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
 
-  return c.json(data)
+  return c.json({ ...data, ...copyWarning(cleared) })
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -282,12 +280,11 @@ endpoints.delete('/:id', async (c) => {
   })
 
   // Both copies, so a deleted endpoint is never served from KV in an outage
-  // (#1846). Last, so a failure cannot leave the delete unaudited.
-  if (!(await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`))) {
-    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
-  }
+  // (#1846). Deleting again would find no row, so a failure is warned about
+  // and repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(cleared) })
 })
 
 export default endpoints

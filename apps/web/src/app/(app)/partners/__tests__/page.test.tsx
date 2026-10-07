@@ -24,9 +24,11 @@ vi.mock('../PartnerForm', () => ({
     confirmingDelete?: boolean
     onDelete?: (id: string) => void
     onConfirmDelete?: () => void
+    onSave?: (body: unknown, id?: string) => Promise<void>
   }) => (
     <div>
       <span data-testid="deleting">{String(props.deleting)}</span>
+      <button onClick={() => props.onSave?.({ is_active: false }, props.partner?.id)}>Save</button>
       {props.confirmingDelete ? (
         <button onClick={props.onConfirmDelete}>Confirm delete</button>
       ) : (
@@ -41,6 +43,7 @@ vi.mock('@/lib/api', () => ({
     partners: {
       list: vi.fn(),
       delete: vi.fn(),
+      update: vi.fn(),
     },
   },
 }))
@@ -91,5 +94,26 @@ describe('Partners page — delete in-flight state (#495 / AUD-065)', () => {
 
     resolveDelete()
     await waitFor(() => expect(api.partners.delete).toHaveBeenCalledTimes(1))
+  })
+})
+
+// #1846: an edit or delete commits, then clears the stored copy the Partner Bid
+// node bids from in a database outage. When KV refuses that, the server answers
+// the change as done with stored_copy_warning, and the page shows it.
+describe('Partners page: a change whose stored copy was not cleared says so', () => {
+  const WARNING = 'The change was saved and recorded, but a stored copy of the old version could not be refreshed.'
+
+  it('after an edit', async () => {
+    vi.mocked(api.partners.update).mockResolvedValue({ ...partnerA, is_active: false, stored_copy_warning: WARNING } as never)
+    render(<PartnersPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /SoFi/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+  })
+
+  it('after a delete', async () => {
+    vi.mocked(api.partners.delete).mockResolvedValue({ ok: true, stored_copy_warning: WARNING } as never)
+    fireEvent.click(await selectAndConfirm())
+    expect(await screen.findByText(WARNING)).toBeInTheDocument()
   })
 })
