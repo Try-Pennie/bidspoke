@@ -15,6 +15,7 @@ import type { Env } from '../../../index'
 
 const ctx = { trigger: { trace_id: 't', workflow_id: 'wf', org_id: 'org-1' } } as unknown as ExecutionContext
 const supabase = {} as never
+const deps = { lastGoodSlack: async () => new Map() }
 
 describe('recordBreakerOutcome — returns the call result', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -37,7 +38,7 @@ describe('alertIfTripped', () => {
   })
 
   it('fires a circuit alert when the outcome tripped', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, {}, deps)
     expect(alerted).toBe(true)
     expect(vi.mocked(sendCircuitAlert)).toHaveBeenCalledTimes(1)
     const [, orgId, channel, payload] = vi.mocked(sendCircuitAlert).mock.calls[0]
@@ -47,25 +48,25 @@ describe('alertIfTripped', () => {
   })
 
   it('does nothing when the outcome did not trip', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'closed', tripped: false })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'closed', tripped: false }, {}, deps)
     expect(alerted).toBe(false)
     expect(vi.mocked(sendCircuitAlert)).not.toHaveBeenCalled()
   })
 
   it('does nothing when the breaker record was dropped (undefined outcome)', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', undefined)
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', undefined, {}, deps)
     expect(alerted).toBe(false)
     expect(vi.mocked(sendCircuitAlert)).not.toHaveBeenCalled()
   })
 
   it('never throws if the alert delivery fails (off the critical path)', async () => {
     vi.mocked(sendCircuitAlert).mockRejectedValueOnce(new Error('slack down'))
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, {}, deps)
     expect(alerted).toBe(true)
   })
 
   it('does not page Slack when running under local wrangler dev, even on a real trip (shares the real org Slack connection)', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isLocalDev: true })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isLocalDev: true }, deps)
     expect(alerted).toBe(false)
     expect(vi.mocked(sendCircuitAlert)).not.toHaveBeenCalled()
   })
@@ -74,13 +75,13 @@ describe('alertIfTripped', () => {
   // and until now that paged the team exactly like a production incident. Every other
   // failure alert (execution failure, duration, dead-letter) already skips test runs.
   it('does not page Slack for a Test Runner run, even on a real trip', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isTest: true })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isTest: true }, deps)
     expect(alerted).toBe(false)
     expect(vi.mocked(sendCircuitAlert)).not.toHaveBeenCalled()
   })
 
   it('still pages Slack on a real production trip (neither flag set)', async () => {
-    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isLocalDev: false, isTest: false })
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, { isLocalDev: false, isTest: false }, deps)
     expect(alerted).toBe(true)
     expect(vi.mocked(sendCircuitAlert)).toHaveBeenCalledTimes(1)
   })

@@ -20,7 +20,11 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
-import { sendCircuitAlert } from '../../lib/slack'
+import { readSlackConnectionForLead, sendCircuitAlert, type SlackConnection } from '../../lib/slack'
+import { resolveSlackForBlockAlert } from '../../lib/partner-block-alert'
+import { readLastGoodSlackConnections } from '../../lib/volume-cliff'
+import { secretKeys } from '../../lib/secret-crypto'
+import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import { parseJson } from '../../lib/json'
 import { formatErr } from '../../lib/format-error'
 import { isNotFoundError } from '../../lib/api-error'
@@ -195,12 +199,32 @@ export interface CircuitAlertGate {
   isTest?: boolean
 }
 
+/**
+ * The longest the lead waits on a circuit breaker page (#1849): the connection
+ * lookup (at most LEAD_READ_DEADLINE_MS, then the KV copy) and the Slack post.
+ * The page runs on partner_bid's error path while the lead waits, and neither
+ * half had a deadline. A page that runs out of time is logged, never thrown.
+ */
+export const CIRCUIT_ALERT_DEADLINE_MS = 3_000
+
+export interface CircuitAlertDeps {
+  /**
+   * The last-good copy of the Slack connections (lib/volume-cliff.ts), the page's
+   * fallback when the connection row cannot be read. Required, so no caller can
+   * page without one by forgetting it (L168).
+   */
+  lastGoodSlack: () => Promise<Map<string, Pick<SlackConnection, 'bot_token' | 'default_channel'>>>
+  /** Tests fire the page deadline by hand. */
+  timers?: Timers
+}
+
 export async function alertIfTripped(
   supabase: SupabaseClient,
   orgId: string,
   slug: string,
   outcome: BreakerRecordResult | undefined,
-  gate: CircuitAlertGate = {},
+  gate: CircuitAlertGate,
+  deps: CircuitAlertDeps,
 ): Promise<boolean> {
   if (!outcome?.tripped) return false
   // LOCAL_DEV (set only in .dev.vars, never in production) means this run is
@@ -212,7 +236,11 @@ export async function alertIfTripped(
   // someone clicking Test Run, not an incident. Every other failure alert (execution
   // failure, duration, dead-letter) already skips test runs; this one did not (#547).
   if (gate.isTest) return false
-  await sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }).catch(() => {})
+  // The connection from the database in one bounded read, else from the last-good
+  // copy, so a database outage neither holds the lead nor drops the page (#1849).
+  const connection = () => resolveSlackForBlockAlert(orgId, () => readSlackConnectionForLead(supabase, orgId), deps.lastGoodSlack)
+  await withDeadline(sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }, connection), CIRCUIT_ALERT_DEADLINE_MS, 'circuit breaker page', deps.timers)
+    .catch((e: unknown) => console.error(`[partner-bid] circuit breaker page for ${slug} was not sent: ${formatErr(e)}`))
   return true
 }
 
@@ -515,6 +543,8 @@ export async function executePartnerBidNode(
       await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome, {
         isLocalDev: reality.localDev,
         isTest: reality.isTest,
+      }, {
+        lastGoodSlack: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
       })
     }
 
