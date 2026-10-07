@@ -51,7 +51,7 @@ Two items are pure dead weight in the figures above and removing them shortens t
 
 - **Workflow definitions** are pushed to the GitHub backup repo (`bidspoke-workflows`) on every save, so the canvas logic survives a Supabase loss (re-import from there).
 - **Lead-sighting + bid outcome data** is exported nightly (09:00 UTC) to Snowflake, so analytics-grade outcome history survives even past the Postgres retention window.
-- **There is no standby for engine bidding, and the Pipedream engine flow is not one.** It was kept warm after the 2026-06-18 cutover, but 39 engine bidding changes have shipped since, so failing over to it would bid on June's rules, and Pipedream Workflows shuts down on 2027-03-31. Dan decided on 2026-10-07 (#1675) against any standby copy, since one would share Cloudflare and the database with the live flow: Bidspoke itself is to keep bidding through a database outage, proven by a drill.
+- **There is no standby for engine bidding, and the Pipedream engine flow is not one.** It was kept warm after the 2026-06-18 cutover, but it holds none of the engine bidding changes shipped since (`git log --oneline --since=2026-06-18 -- apps/worker/src/engine` lists them), so failing over to it would bid on June's rules, and Pipedream Workflows shuts down on 2027-03-31. Dan decided on 2026-10-07 (#1675) against any standby copy, since one would share Cloudflare and the database with the live flow: Bidspoke itself is to keep bidding through a database outage, proven by a drill.
 
 ### The execution archive has NO independent backup, and that is a decision (#909)
 
