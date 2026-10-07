@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { createSupabaseClient } from '../supabase'
-import { createLeadSupabaseClient, leadRead, LEAD_READ_DEADLINE_MS } from '../lead-read-budget'
+import { createLeadSupabaseClient, leadRead, LEAD_DB_DOWN_CODE, LEAD_READ_DEADLINE_MS, noteLeadWriteUnanswered } from '../lead-read-budget'
 
 /**
  * The read time budget for a lead (#1844, Dan's decision of 2026-10-07: fall
@@ -125,6 +125,39 @@ describe('leadRead on a lead client (#1844)', () => {
     await leadRead(first, first.from('partner_configs').select('id'), 'partner config')
     const res = await leadRead(other, other.from('partner_configs').select('id'), 'partner config')
     expect(res.error).toBeNull()
+  })
+})
+
+/**
+ * A write the lead waited on that did not answer in time (#1849): the database
+ * is not answering, so the lead's later reads go straight to their copies
+ * rather than each waiting out its own deadline. Found by the outage drill's
+ * hung shape on the Liberty1 click: a held click record and the page after it
+ * each waited in turn.
+ */
+describe('a write that did not answer trips the lead (#1849)', () => {
+  it('the next read answers at once without asking the database, naming the write', async () => {
+    const net = network(['ok'])
+    const db = createLeadSupabaseClient(env, { fetch: net.fetch, deadline: manualDeadlines().deadline })
+    noteLeadWriteUnanswered(db, 'held click record')
+    const res = await leadRead(db, db.from('service_connections').select('config'), 'slack connection')
+    expect(net.calls).toHaveLength(0)
+    expect(res.error).toMatchObject({ code: LEAD_DB_DOWN_CODE })
+    expect(res.error?.message).toMatch(/held click record/)
+  })
+
+  it('changes nothing on any other client', async () => {
+    const net = network(['ok'])
+    vi.stubGlobal('fetch', net.fetch)
+    try {
+      const db = createSupabaseClient(env)
+      noteLeadWriteUnanswered(db, 'held click record')
+      const res = await leadRead(db, db.from('service_connections').select('config'), 'slack connection')
+      expect(res.error).toBeNull()
+      expect(net.calls).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

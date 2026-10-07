@@ -72,6 +72,20 @@ interface ReadResult {
 }
 
 /**
+ * Say that a write this lead waited on did not answer in time (#1849), so the
+ * lead's later leadReads answer at once and take their copies, as after a failed
+ * read. The write is not touched: it may still land, and nothing undoes it.
+ * Without this, a hung database cost a lead the write's deadline and then each
+ * later read's deadline in turn. Changes nothing on a client that is not a lead's.
+ */
+export function noteLeadWriteUnanswered(client: object, what: string): void {
+  const lead = leads.get(client)
+  if (!lead || lead.failed) return
+  lead.failed = { what, status: 0 }
+  console.warn(JSON.stringify({ event: 'lead_db_write_unanswered', what }))
+}
+
+/**
  * Run a read that has a last-good copy. `what` names it in the log line a
  * failure writes. `deadlineMs` lets a caller inside a tighter budget ask for
  * less than LEAD_READ_DEADLINE_MS.

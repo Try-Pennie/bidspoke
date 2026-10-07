@@ -228,6 +228,7 @@ describe('status output key contract', () => {
         alert: async () => 'posted',
         clock: () => 0,
         log: () => undefined,
+        writeUnanswered: () => undefined,
         localDev: false,
       }
     )

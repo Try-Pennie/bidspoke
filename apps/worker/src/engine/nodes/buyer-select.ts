@@ -67,6 +67,7 @@ import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '.
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { applyOutboundMapping } from '../../lib/field-mapper'
 import { log as structuredLog } from '../../lib/logger'
+import { noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
@@ -296,6 +297,8 @@ export interface BuyerSelectDeps {
   sleep: (ms: number) => Promise<void>
   timers?: Timers
   log: (fields: { event: string } & Record<string, unknown>) => void
+  /** Says a database write this lead waited on did not answer in time, so its later reads take their copies at once (#1849). */
+  writeUnanswered: (what: string) => void
   localDev: boolean
 }
 
@@ -320,6 +323,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     clock: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (fields) => structuredLog({ ...fields, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, execution_id: ctx.trigger.execution_id } as Parameters<typeof structuredLog>[0]),
+    writeUnanswered: (what) => noteLeadWriteUnanswered(supabase, what),
     localDev: runRealityOf(ctx, env).localDev,
   }
 }
@@ -714,6 +718,7 @@ class Run {
         await withDeadline(this.deps.mirror(row, entry, partner.id), Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining())), 'buyer_sales copy', this.deps.timers)
       } catch (err) {
         const mirrorOutcome = err instanceof DeadlineError ? 'outcome_unknown' : 'not_mirrored'
+        if (mirrorOutcome === 'outcome_unknown') this.deps.writeUnanswered('buyer_sales copy')
         this.deps.log({ event: 'buyer_select_mirror_failed', step_namespace: this.node.namespace, partner_id: partner.id, mirror_outcome: mirrorOutcome, error_message: messageOf(err) })
         throw err
       }

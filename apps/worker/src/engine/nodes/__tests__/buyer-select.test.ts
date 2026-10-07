@@ -186,6 +186,8 @@ interface Harness {
   mirrored: unknown[]
   /** Copies started that never answer (mirrorHangs). */
   mirrorsHanging: number
+  /** Writes the node said did not answer in time (#1849). */
+  unanswered: string[]
   bidRows: Array<Record<string, unknown>>
   breakerCalls: string[]
   logs: Array<Record<string, unknown>>
@@ -217,7 +219,7 @@ function harness(opts: {
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
-  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
+  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, unanswered: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
   const spend = (op: ObjectOp) => { h.clockMs += opts.advanceOnObject?.[op] ?? 0 }
   h.deps = {
@@ -294,6 +296,7 @@ function harness(opts: {
     clock: () => h.clockMs,
     sleep: async (ms) => { h.clockMs += ms },
     log: (event) => { h.logs.push(event) },
+    writeUnanswered: (what) => { h.unanswered.push(what) },
     localDev: false,
   }
   return h
@@ -1036,6 +1039,8 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
       expect(out(r)).toMatchObject({ _route: 'sold', reason: 'sold', mirrored: 'outcome_unknown' })
       expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted', mirrored: 'outcome_unknown' })
       expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'outcome_unknown' }))
+      // The database is not answering, so the lead's later reads take their copies at once.
+      expect(h.unanswered).toEqual(['buyer_sales copy'])
     } finally {
       vi.useRealTimers()
     }
@@ -1072,6 +1077,7 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
     const r = await run(h)
     expect(out(r)).toMatchObject({ _route: 'sold', mirrored: false })
     expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'not_mirrored' }))
+    expect(h.unanswered).toEqual([])
   })
 
   it('the deadline sits well above the healthy write: record_buyer_sale took at most 488 ms over the 24 hours to 2026-10-07 (p99 403 ms, 50 calls)', () => {

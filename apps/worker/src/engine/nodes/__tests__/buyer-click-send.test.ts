@@ -16,6 +16,7 @@ import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { PartnerCallResult } from '../../../lib/post-to-partner'
 import { clickAlertMessage, type ClickAlert, type ClickAlertOutcome } from '../../../lib/buyer-click-alert'
 import { NODE_TRAITS } from '@bidspoke/node-types'
+import { LEAD_READ_DEADLINE_MS } from '../../../lib/lead-read-budget'
 import { buildContext } from '../../context'
 import {
   BUYER_CLICK_SEND_ROUTES,
@@ -106,6 +107,8 @@ interface Harness {
   profileReads: number
   /** Held click records started that never answer (holdHangs). */
   holdsHanging: number
+  /** Writes the node said did not answer in time (#1849). */
+  unanswered: string[]
 }
 
 function harness(opts: {
@@ -143,7 +146,7 @@ function harness(opts: {
   let now = NOW
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, holdsHanging: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, holdsHanging: 0, unanswered: [], adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
   }
   const script: CounterAsk[] = opts.counter ?? (opts.addFails ? [{ kind: 'refused' }] : [])
   h.deps = {
@@ -239,6 +242,7 @@ function harness(opts: {
     clock: () => now,
     timers: opts.timers,
     log: (fields) => h.logs.push(fields),
+    writeUnanswered: (what) => { h.unanswered.push(what) },
     localDev: false,
   }
   return h
@@ -923,12 +927,23 @@ describe('a held claim is recorded so a person can find it on the partner page (
     expect(r.output.hold_record_error).toMatch(/did not answer within/)
     expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown', hold_recorded: 'outcome_unknown' })])
     expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'outcome_unknown')).toBe(true)
+    // The database is not answering, so the lead's later reads (the page's Slack
+    // connection) go straight to their copies rather than waiting again.
+    expect(h.unanswered).toEqual(['held click record'])
   })
 
-  it('a record the database refused is reported as not recorded', async () => {
+  it('a record the database refused is reported as not recorded, and is not taken as the database hanging', async () => {
     const h = harness({ post: answer(503, 'down'), holdFails: true })
     await run(h)
     expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'not_recorded')).toBe(true)
+    expect(h.unanswered).toEqual([])
+  })
+
+  it('the record waits at most a second, above the healthy write: record_held_click took at most 273 ms over the 24 hours to 2026-10-07 (p99 253 ms, 14 calls)', () => {
+    expect(CLICK_HOLD_RECORD_DEADLINE_MS).toBeGreaterThanOrEqual(2 * 273)
+    // With the page's Slack lookup answered at once afterwards, a held click in
+    // a hung database answers inside the outage drill's allowance over its twin.
+    expect(CLICK_HOLD_RECORD_DEADLINE_MS).toBeLessThan(2 * LEAD_READ_DEADLINE_MS)
   })
 
   it('each held page says whether its hold was recorded, so the page never points at a list that lacks the click', async () => {
