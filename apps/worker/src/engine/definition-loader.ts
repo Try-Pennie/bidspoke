@@ -58,6 +58,12 @@ export interface WorkflowDefinitionCopy {
   written_at: string
   /** What the engine runs; null on a tombstone. */
   workflow: LoadedWorkflow | null
+  /**
+   * Set when a route changed the workflow and the row could not then be read
+   * back, or read back as one the engine would refuse: the state is unknown, so
+   * the copy refuses as no usable copy (a retryable failure), never as not found.
+   */
+  unverified?: boolean
 }
 
 // The one select both reads use: the live load (filtered to active, not
@@ -207,6 +213,11 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'no_copy', db_error: failure.message })
     throw failure
   }
+  // A route changed the workflow and its new state could not be confirmed.
+  if (held.unverified === true) {
+    logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unverified', db_error: failure.message })
+    throw failure
+  }
   // The copy says the workflow was switched off or deleted: the same answer
   // the database gives for that row when it is up.
   if (held.is_active !== true) {
@@ -338,9 +349,19 @@ async function writeCopyForward(workflowId: string, kv: KVNamespace, incoming: W
  * workflow, in the same request and after its write (#1845). Drops the 300 s
  * cache, then reads the row back and brings the last-good copy to match it: a
  * live row is written as the copy, a switched off or deleted row as a tombstone
- * that refuses. When the row cannot be read back, or no longer exists, the copy
- * is deleted rather than left describing a state that may have changed. A KV
- * failure throws, as the cache delete always has.
+ * that refuses as not found.
+ *
+ * When the row cannot be read back, the change it made is unknown, so the copy
+ * becomes one that refuses as no usable copy (a live run then fails retryably,
+ * exactly as with none). It is stamped one microsecond past the copy it
+ * replaces rather than deleted: a deleted key carries no stamp, so a loader
+ * still holding the row from before the change could write it back, while the
+ * next successful load, whose row carries the change's own newer stamp, still
+ * replaces it.
+ *
+ * A failed KV call throws after the rest has been attempted: a failed cache
+ * drop still lets the copy be brought up to the row, and a failed copy write
+ * deletes the held copy so a copy from before the change is not left to serve.
  */
 export async function refreshWorkflowCaches(
   workflowId: string,
@@ -349,8 +370,28 @@ export async function refreshWorkflowCaches(
   options: { now?: () => number } = {}
 ): Promise<void> {
   const now = options.now ?? Date.now
-  await kv.delete(cacheKey(workflowId))
+  let cacheDropError: Error | null = null
+  try {
+    await kv.delete(cacheKey(workflowId))
+  } catch (err) {
+    cacheDropError = err instanceof Error ? err : new Error(formatErr(err))
+    logEvent('workflow_definition_cache_drop_failed', { workflow_id: workflowId, reason: formatErr(err) })
+  }
+  try {
+    await bringCopyUpToRow(workflowId, kv, supabase, now)
+  } catch (err) {
+    logEvent('workflow_definition_copy_write_failed', { workflow_id: workflowId, reason: formatErr(err), after: 'a route changed the workflow; deleting the held copy' })
+    try {
+      await kv.delete(workflowCopyKey(workflowId))
+    } catch (deleteErr) {
+      logEvent('workflow_definition_copy_write_failed', { workflow_id: workflowId, reason: `the held copy could not be deleted either: ${formatErr(deleteErr)}` })
+    }
+    throw err
+  }
+  if (cacheDropError) throw cacheDropError
+}
 
+async function bringCopyUpToRow(workflowId: string, kv: KVNamespace, supabase: SupabaseClient, now: () => number): Promise<void> {
   const { data, error } = await supabase
     .from('workflows')
     .select(WORKFLOW_SELECT)
@@ -360,12 +401,11 @@ export async function refreshWorkflowCaches(
     .single()
 
   if (error && !isNotFoundError(error)) {
-    logEvent('workflow_definition_copy_dropped', { workflow_id: workflowId, reason: `the row could not be read back: ${error.message}` })
-    await kv.delete(workflowCopyKey(workflowId))
+    await refusePastHeldCopy(workflowId, kv, now, { unverified: true, reason: `the row could not be read back: ${error.message}` })
     return
   }
   if (!data) {
-    await kv.delete(workflowCopyKey(workflowId))
+    await refusePastHeldCopy(workflowId, kv, now, { unverified: false, reason: 'the row no longer exists' })
     return
   }
 
@@ -377,13 +417,49 @@ export async function refreshWorkflowCaches(
       loaded = loadedFromRow(workflowId, row)
     } catch (err) {
       // A row the engine would refuse when the database is up must not be run
-      // from a copy when it is down.
-      logEvent('workflow_definition_copy_dropped', { workflow_id: workflowId, reason: formatErr(err) })
-      await kv.delete(workflowCopyKey(workflowId))
+      // from a copy when it is down. Stamped with the row as read, so a loader
+      // holding an older, runnable row cannot write it back.
+      logEvent('workflow_definition_copy_refusing', { workflow_id: workflowId, reason: formatErr(err) })
+      await writeCopyForward(workflowId, kv, { ...copyFromRow(row, null, now), unverified: true }, now)
       return
     }
   }
   await writeCopyForward(workflowId, kv, copyFromRow(row, loaded, now), now)
+}
+
+/**
+ * Replaces the held copy with one that refuses, stamped one microsecond past it
+ * (see refreshWorkflowCaches). `unverified` refuses as no usable copy; otherwise
+ * it refuses as not found. With no held copy to stamp from there is nothing to
+ * order against, so none is kept, which refuses the same way as no usable copy.
+ */
+async function refusePastHeldCopy(workflowId: string, kv: KVNamespace, now: () => number, why: { unverified: boolean; reason: string }): Promise<void> {
+  const held = await kv.get<WorkflowDefinitionCopy>(workflowCopyKey(workflowId), 'json')
+  const heldOrder = held ? copyOrder(held) : null
+  if (!held || !heldOrder) {
+    if (held) await kv.delete(workflowCopyKey(workflowId))
+    logEvent('workflow_definition_copy_dropped', { workflow_id: workflowId, reason: `${why.reason}; no held copy to stamp a refusing copy from, so none is kept` })
+    return
+  }
+  const refusing: WorkflowDefinitionCopy = {
+    is_active: false,
+    ...(why.unverified ? { unverified: true } : {}),
+    lane: held.lane,
+    workflow_version_id: null,
+    version_number: null,
+    row_updated_at: microsToPostgresTime(heldOrder[0] + 1),
+    written_at: new Date(now()).toISOString(),
+    workflow: null,
+  }
+  logEvent('workflow_definition_copy_refusing', { workflow_id: workflowId, reason: why.reason, refuses_as: why.unverified ? 'no usable copy' : 'not found', row_updated_at: refusing.row_updated_at })
+  await kv.put(workflowCopyKey(workflowId), JSON.stringify(refusing))
+}
+
+/** The inverse of postgresTimeMicros, in the form PostgREST writes (UTC, six fractional digits). */
+function microsToPostgresTime(micros: number): string {
+  const wholeSeconds = Math.floor(micros / 1_000_000)
+  const fraction = String(micros - wholeSeconds * 1_000_000).padStart(6, '0')
+  return `${new Date(wholeSeconds * 1000).toISOString().slice(0, 19)}.${fraction}+00:00`
 }
 
 function logEvent(event: string, fields: Record<string, unknown>): void {

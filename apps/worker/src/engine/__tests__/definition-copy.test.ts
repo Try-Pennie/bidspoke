@@ -341,19 +341,97 @@ describe('refreshWorkflowCaches: what a save, switch off, delete or restore leav
     expect(heldCopy(kv)).toMatchObject({ is_active: true, workflow_version_id: 'ver-7' })
   })
 
-  it('when the row cannot be read back, the copy is deleted rather than left describing a state that may have changed', async () => {
+  it('a switch off whose read back fails leaves a copy that refuses, which a slower loader holding the pre-change row cannot bring back', async () => {
     const kv = fakeKv()
     await warm(kv)
+    // The route switched the workflow off; reading the row back then failed.
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'down-500', row: { ...baseRow, is_active: false }, requests: 0 }))
+    expect(kv.store.has(CACHE_KEY)).toBe(false)
+    expect(heldCopy(kv)).toMatchObject({ is_active: false, unverified: true, workflow: null })
+    expect(eventsNamed('workflow_definition_copy_refusing')[0]).toMatchObject({ workflow_id: WF_ID })
+
+    // A lead whose database read began before the switch off writes afterwards.
+    kv.store.delete(CACHE_KEY)
+    await warm(kv, baseRow, T0 + 1000)
+    expect(heldCopy(kv)).toMatchObject({ is_active: false, unverified: true })
+
+    // In an outage, once the 300 s cache has run out, that copy is no usable
+    // copy: the run fails retryably, exactly as with none.
+    kv.store.delete(CACHE_KEY)
+    const promise = loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 }))
+    await expect(promise).rejects.toThrow(/Failed to load workflow wf-copy-1/)
+    await expect(promise).rejects.not.toBeInstanceOf(WorkflowNotFoundError)
+    expect(eventsNamed('workflow_definition_copy_refused').at(-1)).toMatchObject({ workflow_id: WF_ID, reason: 'unverified' })
+  })
+
+  it('the next successful load, which carries the new row stamp, replaces that refusing copy, even one microsecond newer', async () => {
+    const kv = fakeKv()
+    await warm(kv) // stamp ...00.123456
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'down-500', row: baseRow, requests: 0 }))
+    kv.store.delete(CACHE_KEY)
+    await warm(kv, { ...baseRow, updated_at: '2026-10-07T11:00:00.123457+00:00', workflow_versions: [{ id: 'ver-8', version_number: 8 }] }, T0 + 2000)
+    expect(heldCopy(kv)).toMatchObject({ is_active: true, workflow_version_id: 'ver-8' })
+    expect(heldCopy(kv)!.unverified).toBeUndefined()
+  })
+
+  it('with no copy held, a failed read back keeps none, which refuses the same way', async () => {
+    const kv = fakeKv()
     await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'down-500', row: baseRow, requests: 0 }))
     expect(kv.store.has(COPY_KEY)).toBe(false)
-    expect(kv.store.has(CACHE_KEY)).toBe(false)
     expect(eventsNamed('workflow_definition_copy_dropped')[0]).toMatchObject({ workflow_id: WF_ID })
   })
 
-  it('when the row is gone altogether, the copy is deleted', async () => {
+  it('when the row is gone altogether, the copy refuses as not found and a slower loader cannot bring it back', async () => {
     const kv = fakeKv()
     await warm(kv)
     await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: null, requests: 0 }))
+    expect(heldCopy(kv)).toMatchObject({ is_active: false, workflow: null })
+    kv.store.delete(CACHE_KEY)
+    await warm(kv, baseRow, T0 + 1000)
+    kv.store.delete(CACHE_KEY) // the 300 s cache has run out
+    await expect(
+      loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 })),
+    ).rejects.toBeInstanceOf(WorkflowNotFoundError)
+  })
+
+  it('a row the engine would refuse (no version) leaves a copy that refuses, stamped with the row it read', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    const unrunnable: Row = { ...baseRow, updated_at: '2026-10-07T11:10:00+00:00', workflow_versions: [] }
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: unrunnable, requests: 0 }))
+    expect(heldCopy(kv)).toMatchObject({ is_active: false, unverified: true, row_updated_at: unrunnable.updated_at })
+    kv.store.delete(CACHE_KEY)
+    await warm(kv, baseRow, T0 + 1000)
+    expect(heldCopy(kv)!.unverified).toBe(true)
+  })
+})
+
+describe('refreshWorkflowCaches when a KV call fails', () => {
+  it('a failed write of the refusing copy deletes the held copy and throws, so the route reports the failure', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.put.mockImplementation(async (key: string, value: string) => {
+      if (key === COPY_KEY) throw new Error('KV PUT failed: 503')
+      kv.store.set(key, value)
+    })
+    await expect(
+      refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: { ...baseRow, is_active: false, updated_at: '2026-10-07T11:10:00+00:00' }, requests: 0 })),
+    ).rejects.toThrow(/KV PUT failed/)
+    // The live copy of the switched off workflow is not left behind.
     expect(kv.store.has(COPY_KEY)).toBe(false)
+    expect(eventsNamed('workflow_definition_copy_write_failed').at(-1)).toMatchObject({ workflow_id: WF_ID })
+  })
+
+  it('a failed drop of the 300 s cache still brings the copy up to the row, then throws', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.delete.mockImplementation(async (key: string) => {
+      if (key === CACHE_KEY) throw new Error('KV DELETE failed: 503')
+      kv.store.delete(key)
+    })
+    await expect(
+      refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: { ...baseRow, is_active: false, updated_at: '2026-10-07T11:10:00+00:00' }, requests: 0 })),
+    ).rejects.toThrow(/KV DELETE failed/)
+    expect(heldCopy(kv)).toMatchObject({ is_active: false })
   })
 })

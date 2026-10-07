@@ -52,9 +52,17 @@ function createsANewRowOnly(write: Write): boolean {
   return write.methods.filter((name) => WRITE_METHODS.has(name)).every((name) => name === 'insert')
 }
 
-/** Route handlers, each running from its registration to the next one. */
+/**
+ * Route handlers, each running from its registration to the next one. Only a
+ * call on a router the file declares (`const workflows = new Hono...`) is a
+ * registration: `kv.get('key', 'json')` on a line of its own has the same shape
+ * and would otherwise end the handler it sits in.
+ */
 function handlersOf(file: string, src: string): Handler[] {
-  const starts = [...src.matchAll(/^\s*\w+\.(get|post|put|patch|delete|all)\(\s*(['"`])([^'"`]*)\2\s*,/gm)]
+  const routers = [...src.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*new\s+Hono\b/g)].map((m) => m[1])
+  if (routers.length === 0) return []
+  const registration = new RegExp(`^\\s*(?:${routers.join('|')})\\.(get|post|put|patch|delete|all)\\(\\s*(['"\`])([^'"\`]*)\\2\\s*,`, 'gm')
+  const starts = [...src.matchAll(registration)]
   return starts.map((m, k) => ({
     file,
     label: `${m[1].toUpperCase()} ${m[3]}`,
@@ -63,31 +71,57 @@ function handlersOf(file: string, src: string): Handler[] {
   }))
 }
 
-function scan() {
+interface SourceScan {
+  writingHandlers: Map<Handler, Write[]>
+  refreshes: Map<Handler, number[]>
+  orphanWrites: Write[]
+}
+
+/** One file's writes and refreshes, attributed to the handler each sits in. Comments blanked, strings kept. */
+function scanSource(file: string, raw: string): SourceScan {
+  const src = sanitizeSource(raw, { blankStrings: false })
   const writingHandlers = new Map<Handler, Write[]>()
   const refreshes = new Map<Handler, number[]>()
   const orphanWrites: Write[] = []
-  for (const full of listTsFiles(WORKER_SRC)) {
-    // Comments blanked, strings kept: the table name and route paths are strings.
-    const src = sanitizeSource(readFileSync(full, 'utf8'), { blankStrings: false })
-    const file = path.relative(WORKER_SRC, full)
-    const handlers = handlersOf(file, src)
-    const inHandler = (at: number) => handlers.find((h) => at >= h.start && at < h.end)
-    for (const write of workflowWrites(file, src).filter((w) => !createsANewRowOnly(w))) {
-      const handler = inHandler(write.at)
-      if (!handler) { orphanWrites.push(write); continue }
-      writingHandlers.set(handler, [...(writingHandlers.get(handler) ?? []), write])
-    }
-    for (const m of src.matchAll(REFRESH_CALL)) {
-      const handler = inHandler(m.index ?? 0)
-      if (handler) refreshes.set(handler, [...(refreshes.get(handler) ?? []), m.index ?? 0])
-    }
+  const handlers = handlersOf(file, src)
+  const inHandler = (at: number) => handlers.find((h) => at >= h.start && at < h.end)
+  for (const write of workflowWrites(file, src).filter((w) => !createsANewRowOnly(w))) {
+    const handler = inHandler(write.at)
+    if (!handler) { orphanWrites.push(write); continue }
+    writingHandlers.set(handler, [...(writingHandlers.get(handler) ?? []), write])
+  }
+  for (const m of src.matchAll(REFRESH_CALL)) {
+    const handler = inHandler(m.index ?? 0)
+    if (handler) refreshes.set(handler, [...(refreshes.get(handler) ?? []), m.index ?? 0])
   }
   return { writingHandlers, refreshes, orphanWrites }
 }
 
+/** Handlers whose last workflows write has no awaited refresh after it. */
+function missingRefreshes({ writingHandlers, refreshes }: SourceScan): string[] {
+  const missing: string[] = []
+  for (const [handler, writes] of writingHandlers) {
+    const lastWrite = Math.max(...writes.map((w) => w.at))
+    const lastRefresh = Math.max(-1, ...(refreshes.get(handler) ?? []))
+    if (lastRefresh < lastWrite) missing.push(`${handler.file} ${handler.label}`)
+  }
+  return missing
+}
+
+function scan(): SourceScan {
+  const all: SourceScan = { writingHandlers: new Map(), refreshes: new Map(), orphanWrites: [] }
+  for (const full of listTsFiles(WORKER_SRC)) {
+    const one = scanSource(path.relative(WORKER_SRC, full), readFileSync(full, 'utf8'))
+    for (const [h, w] of one.writingHandlers) all.writingHandlers.set(h, w)
+    for (const [h, r] of one.refreshes) all.refreshes.set(h, r)
+    all.orphanWrites.push(...one.orphanWrites)
+  }
+  return all
+}
+
 describe('every write to an existing workflows row refreshes the last-good copy (#1845)', () => {
-  const { writingHandlers, refreshes, orphanWrites } = scan()
+  const result = scan()
+  const { writingHandlers, orphanWrites } = result
   const labels = [...writingHandlers.keys()].map((h) => `${h.file} ${h.label}`)
 
   it('finds the routes it exists to check (a scan that found none would pass on nothing)', () => {
@@ -107,13 +141,7 @@ describe('every write to an existing workflows row refreshes the last-good copy 
   })
 
   it('awaits refreshWorkflowCaches after the last write in every handler that writes one', () => {
-    const missing: string[] = []
-    for (const [handler, writes] of writingHandlers) {
-      const lastWrite = Math.max(...writes.map((w) => w.at))
-      const lastRefresh = Math.max(-1, ...(refreshes.get(handler) ?? []))
-      if (lastRefresh < lastWrite) missing.push(`${handler.file} ${handler.label}`)
-    }
-    expect(missing).toEqual([])
+    expect(missingRefreshes(result)).toEqual([])
   })
 })
 
@@ -134,6 +162,44 @@ describe('the scanner', () => {
   it('ignores a write that only appears in a comment', () => {
     const src = blanked(`// supabase.from('workflows').update(x)\n/* supabase.from('workflows').delete() */\nconst u = 'https://a.test'; supabase.from('workflows').upsert({})\n`)
     expect(workflowWrites('f.ts', src).map((w) => w.methods)).toEqual([['upsert']])
+  })
+
+  // A key value call on a line of its own (`kv.get('x', 'json')`) is shaped like a
+  // route registration. Only the file's own Hono routers register routes, so it
+  // must neither end the handler it sits in nor start one of its own.
+  const plantedHandler = (between: string, after: string) => [
+    'const workflows = new Hono()',
+    "workflows.patch('/:id', async (c) => {",
+    "  await supabase.from('workflows').update({ is_active: false }).eq('id', id)",
+    between,
+    after,
+    '  return c.json({ ok: true })',
+    '})',
+    "workflows.get('/', async (c) => c.json([]))",
+    '',
+  ].join('\n')
+
+  it('still fails a handler that writes workflows and never refreshes, with a key value call on a line of its own inside it', () => {
+    const scanned = scanSource('planted.ts', plantedHandler("  kv.get('x', 'json')", "  kv.delete('y', 1)"))
+    expect(missingRefreshes(scanned)).toEqual(['planted.ts PATCH /:id'])
+    expect([...scanned.writingHandlers.keys()].map((h) => h.label)).toEqual(['PATCH /:id'])
+  })
+
+  it('passes that handler once it refreshes after the key value call, which the call must not cut off', () => {
+    const scanned = scanSource('planted.ts', plantedHandler("  kv.get('x', 'json')", '  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)'))
+    expect(missingRefreshes(scanned)).toEqual([])
+  })
+
+  it('reads routes registered on every router the file declares, and on nothing else', () => {
+    const src = sanitizeSource([
+      'const app = new Hono<{ Bindings: Env }>()',
+      'const admin = new Hono()',
+      "app.get('/a', (c) => c.text('a'))",
+      "admin.post('/b', (c) => c.text('b'))",
+      "  cache.all('/c', x)",
+      '',
+    ].join('\n'), { blankStrings: false })
+    expect(handlersOf('f.ts', src).map((h) => h.label)).toEqual(['GET /a', 'POST /b'])
   })
 
   it('exempts only a plain insert: an update or upsert of an existing row is not exempt', () => {
