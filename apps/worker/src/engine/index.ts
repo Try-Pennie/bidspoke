@@ -45,8 +45,10 @@ import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import {
   PostResponseBudget,
+  CONTINUATION_RESERVE_MS,
   DEAD_LETTER_RESERVE_MS,
   FINALIZE_RESERVE_MS,
+  POST_RESPONSE_BUDGET_MS,
   realClock,
   withReserve,
   withinBudget,
@@ -191,6 +193,17 @@ export function nodeExecutorForLane(lane: WorkflowLane): ExecuteNode {
   return lane === 'money' ? executeNode : createNodeExecutor(lane)
 }
 
+/**
+ * A run's walk still running at its cut-off after the answer (#1860). Its outcome
+ * is unknown, not failed: it may still finish, but nothing confirmed it.
+ */
+class ContinuationUnfinishedError extends Error {
+  constructor(seconds: number) {
+    super(`The run's work after the answer did not finish within ${seconds} s of the answer; it may still finish, but nothing confirmed it`)
+    this.name = 'ContinuationUnfinishedError'
+  }
+}
+
 export async function executeWorkflow(
   options: ExecuteOptions,
   env: Env,
@@ -221,6 +234,7 @@ export async function executeWorkflow(
   const postResponse = new PostResponseBudget(retryClock)
   const writeTiming: RetryTiming = { clock: retryClock, budget: postResponse, reserveMs: DEAD_LETTER_RESERVE_MS }
   const beforeFinalizeTiming = withReserve(writeTiming, FINALIZE_RESERVE_MS)
+  const continuationTiming = withReserve(writeTiming, CONTINUATION_RESERVE_MS)
   const traceTiming = withReserve(writeTiming, 0)
   // What kind of run this is, decided once (#1708).
   const reality = runRealityOfOptions(options, env)
@@ -617,13 +631,28 @@ export async function executeWorkflow(
   // #1850: the wait for the create and the flush stops at the write cut-off, so
   // a database that never answers cannot hold finalize, and the dead letter
   // behind it, past Cloudflare's limit. The walk itself is not raced here.
-  const flushPromise: Promise<string | null> = walkPromiseCaught
+  //
+  // #1860: and the wait for the walk itself stops too. A run that answered early
+  // keeps walking after the response; a walk still out at its cut-off is reported
+  // to finalize as unfinished (it may still finish, nothing confirmed it), so the
+  // flush and finalize behind it still run inside the budget. A test run waits
+  // for its whole walk, as before.
+  const walkSettled: Promise<unknown> = reality.isTest
+    ? walkPromiseCaught
+    : withinBudget(walkPromiseCaught, continuationTiming).then((o) =>
+        o.settled
+          ? o.value
+          : { __error: new ContinuationUnfinishedError((POST_RESPONSE_BUDGET_MS - CONTINUATION_RESERVE_MS) / 1000) },
+      )
+  const flushPromise: Promise<string | null> = walkSettled
     .then(() =>
       withinBudget(
         executionRecordPromise.then(() =>
           flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }, beforeFinalizeTiming),
         ),
-        writeTiming,
+        // Stops at finalize's reserve, not the dead letter's: a create or flush
+        // that never answers must leave finalize its time (#1860 review).
+        beforeFinalizeTiming,
       ),
     )
     .then((flushed) =>
@@ -671,7 +700,7 @@ export async function executeWorkflow(
   // The tail consumer adds the main-Worker CPU slice on top once Cloudflare
   // reports true cpuTime for the invocation.
   executionCtx.waitUntil(
-    Promise.all([walkPromiseCaught, flushPromise])
+    Promise.all([walkSettled, flushPromise])
       .then(async ([walkResult, flushError]) => {
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
 
@@ -723,11 +752,14 @@ export async function executeWorkflow(
             !matchesMutedSignal(finalErrorMessage, mutedFailureSignals) &&
             !classifyOutageCause(finalErrorMessage)
           ) {
+            // A walk still out at its cut-off is not a failed write: its outcome is
+            // unknown, so it is counted under its own label (#1860).
+            const label = continuationError instanceof ContinuationUnfinishedError ? 'continuation_unfinished' : 'sf_writeback'
             executionCtx.waitUntil(
-              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase: runDb }, {
+              recordOutcomeDeadLetter(label, continuationError, { ...outcomeDeps, supabase: runDb }, {
                 workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),
               }).catch((e) =>
-                console.error('[durability] sf_writeback dead-letter failed:', e),
+                console.error(`[durability] ${label} dead-letter failed:`, e),
               ),
             )
           }
@@ -931,7 +963,8 @@ export async function executeWorkflow(
   if (sightingId && !reality.isTest) {
     const startedAtDate = new Date(startedAt)
     executionCtx.waitUntil(
-      walkPromiseCaught
+      // The bounded wait, so an unfinished walk cannot hold the sighting (#1860).
+      walkSettled
         .then(async () => {
           // The row finalize is about to UPDATE is INSERTed by this promise.
           // It already carries its own .catch, so a failed insert resolves here
@@ -1006,7 +1039,8 @@ export async function executeWorkflow(
   // the achieve_fdr marker and persist request/offers to achieve_evaluations.
   // Test runs are recorded with is_test=true so sandbox validation is visible.
   executionCtx.waitUntil(
-    walkPromiseCaught
+    // The bounded wait, so an unfinished walk cannot hold this write (#1860).
+    walkSettled
       .then(async () => {
         const payloadSubmissionId = (payload as { Submission__c?: unknown } | null)?.Submission__c
         const achieveRows = extractAchieveEvaluations(stepLogQueue, {

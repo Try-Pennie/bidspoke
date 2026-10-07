@@ -19,6 +19,7 @@ import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds } from './salesforce-creds'
 import { parseJson } from './json'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert, sendMatrixSyncFailureAlert } from './slack'
+import { fetchPartnerFlags, defaultMatrixWhere } from './bid-range-flags'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary, MatrixConfigProblems } from './slack'
 import { fetchAllPaged } from './paginate'
 import { validateMatrix } from './bid-matrix-validate'
@@ -198,8 +199,10 @@ async function querySalesforceMatrixRows(
   if (filters.partner_flag) {
     whereParts.push(`${filters.partner_flag} = TRUE`)
   } else {
-    // Default config: all partner flags FALSE (matches Apex getBidRangeRows())
-    whereParts.push('IsSoFi__c = FALSE AND IsEPCVIP__c = FALSE AND IsDot818__c = FALSE AND IsNerdWallet__c = FALSE AND IsBrainsome__c = FALSE AND IsTLG__c = FALSE AND IsAmOne__c = FALSE AND IsAmOneDirect__c = FALSE')
+    // Default config: every partner flag FALSE (matches Apex getBidRangeRows()).
+    // The partners are read from Salesforce, since a hard coded list missed the
+    // ones added later and pulled their rows into the default matrix (#1864).
+    whereParts.push(defaultMatrixWhere(await fetchPartnerFlags(instanceUrl, token, fetch, config.sf_object ?? undefined)))
   }
   if (filters.extra) whereParts.push(filters.extra)
 
