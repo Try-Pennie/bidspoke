@@ -63,9 +63,10 @@ export const COPY_LABELS: Record<StoredCopyKind, string> = {
 
 /**
  * Why a copy is not served. Each is its own reason, so a log or an alert can
- * tell an outage with no copy from one whose copy had gone stale.
+ * tell an outage with no copy from one whose copy had gone stale, or one whose
+ * copy was there but could not be read, parsed or decrypted (`copy_unusable`).
  */
-export type StoredCopyRefusal = 'no_copy' | 'copy_too_old' | 'copy_age_unknown'
+export type StoredCopyRefusal = 'no_copy' | 'copy_too_old' | 'copy_age_unknown' | 'copy_unusable'
 
 export type CopyAgeVerdict =
   | { usable: true; ageMs: number }
@@ -121,7 +122,7 @@ export async function readConfirmedCopy(kv: KVNamespace, key: string): Promise<{
   return { value, confirmedAt: metadata && typeof metadata === 'object' ? metadata.confirmed_at : undefined }
 }
 
-/** A stored copy refused in a database outage. `reason` says which of the three refusals. */
+/** A stored copy refused in a database outage. `reason` says which refusal. */
 export class StoredCopyRefusedError extends Error {
   readonly reason: StoredCopyRefusal
   readonly copy: StoredCopyKind
@@ -139,6 +140,7 @@ export class StoredCopyRefusedError extends Error {
 function refusalWords(reason: StoredCopyRefusal, ageMs: number | null): string {
   const limit = `${STORED_COPY_MAX_AGE_MS / 60_000} minute limit`
   if (reason === 'no_copy') return 'there is no stored copy to serve'
+  if (reason === 'copy_unusable') return 'its stored copy could not be read or was not fit to serve'
   if (reason === 'copy_too_old') return `its stored copy was last confirmed ${ageMs === null ? 'at an unknown time' : `${Math.floor(ageMs / 60_000)} minutes ago`}, past the ${limit}`
   return 'its stored copy carries no readable confirmation time'
 }

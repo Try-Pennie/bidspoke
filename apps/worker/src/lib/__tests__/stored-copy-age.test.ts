@@ -131,9 +131,10 @@ describe('refuseStoredCopy', () => {
   })
 
   it('words each reason differently, so a missing copy never reads as an old one', () => {
-    const messages = (['no_copy', 'copy_too_old', 'copy_age_unknown'] as const).map((reason) => refuseStoredCopy({ copy: 'partner_constants', subject: 'org-1', reason, ageMs: reason === 'copy_too_old' ? STORED_COPY_MAX_AGE_MS + 1 : null, dbError: 'x' }).message)
-    expect(new Set(messages).size).toBe(3)
+    const messages = (['no_copy', 'copy_too_old', 'copy_age_unknown', 'copy_unusable'] as const).map((reason) => refuseStoredCopy({ copy: 'partner_constants', subject: 'org-1', reason, ageMs: reason === 'copy_too_old' ? STORED_COPY_MAX_AGE_MS + 1 : null, dbError: 'x' }).message)
+    expect(new Set(messages).size).toBe(4)
     expect(messages[0]).toMatch(/no stored copy/)
     expect(messages[2]).toMatch(/no readable confirmation time/)
+    expect(messages[3]).toMatch(/could not be read or was not fit to serve/)
   })
 })

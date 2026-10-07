@@ -64,7 +64,7 @@ const MINUTE_MS = 60_000
  * not fit to serve (unreadable, unconfirmed after a change), which is not "no
  * copy" and must not be worded as one (L11).
  */
-export type LedgerRefusal = StoredCopyRefusal | 'copy_unusable'
+export type LedgerRefusal = StoredCopyRefusal
 
 export type StoredCopyOutcome = 'served' | LedgerRefusal
 

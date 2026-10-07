@@ -34,6 +34,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
+import { formatErr } from './format-error'
 import { leadRead } from './lead-read-budget'
 import { isDueForReconfirm, judgeCopyAge, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
@@ -228,7 +229,15 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error'
     console.error(`[buyer-profiles] read failed for org ${orgId}, not caching: ${message}`)
-    const lastGood = await kv.get<BuyerProfilesSnapshot>(lastGoodKey(orgId), 'json')
+    let lastGood: BuyerProfilesSnapshot | null
+    try {
+      lastGood = await kv.get<BuyerProfilesSnapshot>(lastGoodKey(orgId), 'json')
+    } catch (copyErr) {
+      // A copy KV would not hand back, or one that does not parse, is there but
+      // unusable: counted apart from no copy at all, and the lead fails the same.
+      refuseStoredCopy({ copy: 'buyer_profiles', subject: orgId, reason: 'copy_unusable', ageMs: null, dbError: message })
+      throw new Error(`buyer profiles read failed for org ${orgId}: ${message}; the last good copy could not be read: ${formatErr(copyErr)}`, { cause: err })
+    }
     if (lastGood) {
       // Its loaded_at is when a read last confirmed it (#1557); past the shared
       // maximum, or unreadable, it is refused by name (#1847).

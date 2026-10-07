@@ -95,7 +95,7 @@ export async function readPartnerLastGood<T>(kv: KVNamespace | undefined, partne
   }
   if (!held || copy === null) {
     // Logged and counted as a refusal (#1848); the caller still answers a null.
-    refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: 'no_copy', ageMs: null, dbError })
+    refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: held ? 'copy_unusable' : 'no_copy', ageMs: null, dbError })
     return null
   }
   const age = judgeCopyAge(held.confirmedAt, nowMs)

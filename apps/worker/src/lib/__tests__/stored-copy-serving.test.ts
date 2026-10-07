@@ -185,6 +185,29 @@ describe('every loader counts what it serves and refuses in an outage (#1848)', 
       expect(tally?.refused.copy_too_old).toBe(1)
     })
 
+    it(`${copy}: a copy that is there but cannot be read is counted as unusable, never as missing`, async () => {
+      let up = true
+      const kv = expiringKv()
+      const d = db(() => up)
+      await loader.warm(kv, d)
+      // The last-good copies are the keys kept with no expiry; damage each one,
+      // keeping its confirmation, so only its content is wrong.
+      let damaged = 0
+      for (const entry of kv.store.values()) {
+        if (entry.expiresAt === Number.POSITIVE_INFINITY) { entry.value = '{not a copy'; damaged++ }
+      }
+      expect(damaged).toBeGreaterThan(0)
+      vi.setSystemTime(T0 + 10 * MINUTE)
+      up = false
+      await loader.serve(kv, d).catch(() => undefined)
+
+      const tally = await counted(copy)
+      expect(tally?.served ?? 0).toBe(0)
+      expect(tally?.refused).toMatchObject({ copy_unusable: 1, no_copy: 0 })
+      const refused = vi.mocked(console.error).mock.calls.flat().map(String).filter((l) => l.includes('"stored_copy_refused"'))
+      if (copy !== 'workflow_definition') expect(refused.map((l) => (JSON.parse(l) as { reason: string }).reason)).toEqual(['copy_unusable'])
+    })
+
     it(`${copy}: no copy at all is counted as refused for want of one`, async () => {
       const kv = expiringKv()
       await loader.serve(kv, db(() => false)).catch(() => undefined)

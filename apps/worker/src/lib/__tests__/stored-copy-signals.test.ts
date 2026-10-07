@@ -314,15 +314,19 @@ describe('while leads are being served from stored copies', () => {
 
     // A copy is used in one minute of every five: never enough to page again,
     // and never a stop either.
+    let lastUseAt = h.clock.now
     for (let i = 1; i <= RECOVERY_REARM_MINUTES + 10; i++) {
       h.clock.now += MINUTE
-      if (i % 5 === 0) await ledgerMinute(h.kv, h.clock, 0, served(1))
+      if (i % 5 === 0) {
+        await ledgerMinute(h.kv, h.clock, 0, served(1))
+        lastUseAt = h.clock.now
+      }
       expect((await runStoredCopyChecks(h.deps())).serving).not.toBe('recovered')
     }
     expect(h.recoveries).toEqual([])
 
-    // The last use was this minute; the all-clear comes the re-arm window after it.
-    h.clock.now += (RECOVERY_REARM_MINUTES - 1) * MINUTE
+    // The all-clear comes the re-arm window after the last use, and not before.
+    h.clock.now = lastUseAt + (RECOVERY_REARM_MINUTES - 1) * MINUTE
     expect((await runStoredCopyChecks(h.deps())).serving).not.toBe('recovered')
     h.clock.now += 2 * MINUTE
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('recovered')

@@ -234,8 +234,11 @@ async function readCache(orgId: string, kv: KVNamespace, secretEncryptionKey: Se
  */
 async function serveLastGood(orgId: string, kv: KVNamespace, secretEncryptionKey: SecretKeyInput, dbError: string): Promise<OrgEnv> {
   const now = Date.now()
-  const held = await readEncryptedConfirmed(kv, lastGoodKey(orgId), secretEncryptionKey)
-  if (!held) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  const raw = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  if (!raw) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  const decrypted = await decryptEntry(raw.value, secretEncryptionKey)
+  if (!decrypted) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: 'copy_unusable', ageMs: null, dbError })
+  const held = { entry: decrypted, confirmedAt: raw.confirmedAt }
   const age = judgeCopyAge(held.confirmedAt, now)
   if (!age.usable) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
   serveStoredCopy({ copy: 'env_vars', subject: orgId, ageMs: age.ageMs, dbError })

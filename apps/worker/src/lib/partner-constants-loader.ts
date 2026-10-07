@@ -119,7 +119,7 @@ async function serveLastGood(orgId: string, kv: KVNamespace, dbError: string): P
   } catch {
     lastGood = null
   }
-  if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: held ? 'copy_unusable' : 'no_copy', ageMs: null, dbError })
   const age = judgeCopyAge(held.confirmedAt, Date.now())
   if (!age.usable) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
   serveStoredCopy({ copy: 'partner_constants', subject: orgId, ageMs: age.ageMs, dbError })
