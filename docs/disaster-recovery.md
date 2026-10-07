@@ -12,7 +12,7 @@ Confirmed in the 2026-06-26 restore drill (#270 — see [restore-drill.md](./dr-
 - **RTO (how fast we must be back):**
   - **Resume bidding (config + schema restored): ~8 min proven** in the drill (laptop-driven logical restore), plus the Cloudflare Worker/Pages redeploy and worker-secret re-provisioning to actually serve traffic. A co-located runner or Supabase's native managed restore would be faster.
   - **Full system (all execution-log history + raw-SSN tables): hours**, dominated by the physical restore of a **27 GB** database (measured 2026-08-13, Supabase-side). Not on the critical path for getting money moving again.
-  - No fallback keeps engine bidding going while the database or the Worker is down: those leads go unbid until it is restored (Scenario E). Making engine bidding survive a database outage, and proving it with a drill, is #1675.
+  - While the Worker or Cloudflare is down, engine leads go unbid until it is restored; there is no failover. Whether engine bidding keeps going while only the database is down is not yet proven (Scenario E): making it survive, and proving it with a drill, is #1675.
 
 ### Per data class
 
