@@ -202,7 +202,7 @@ async function querySalesforceMatrixRows(
     // Default config: every partner flag FALSE (matches Apex getBidRangeRows()).
     // The partners are read from Salesforce, since a hard coded list missed the
     // ones added later and pulled their rows into the default matrix (#1864).
-    whereParts.push(defaultMatrixWhere(await fetchPartnerFlags(instanceUrl, token)))
+    whereParts.push(defaultMatrixWhere(await fetchPartnerFlags(instanceUrl, token, fetch, config.sf_object ?? undefined)))
   }
   if (filters.extra) whereParts.push(filters.extra)
 

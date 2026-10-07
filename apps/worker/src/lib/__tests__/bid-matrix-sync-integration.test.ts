@@ -120,9 +120,9 @@ describe('#182 sync integration', () => {
   // #1864: the default matrix is every row no partner claims, and the list of
   // partners grew in Salesforce after it was hard coded here.
   it('syncBidConfig asks Salesforce for its partner list before querying the default matrix', async () => {
-    servedConfig = { ...CONFIG, slug: 'default', sf_filters: {} }
+    servedConfig = { ...CONFIG, slug: 'default', sf_filters: {}, sf_object: 'OtherMatrix__c' }
     const fetchMock = vi.fn(async (url: string) => (
-      url.endsWith('/sobjects/BidRangeRow__c/describe')
+      url.endsWith('/sobjects/OtherMatrix__c/describe')
         ? { ok: true, json: async () => BID_RANGE_ROW_DESCRIBE }
         : { ok: true, json: async () => ({ records: SF_RECORDS, done: true }) }
     ))

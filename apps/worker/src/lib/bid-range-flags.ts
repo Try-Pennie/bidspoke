@@ -32,22 +32,27 @@ export function partnerFlagsFromDescribe(describe: { fields: DescribeField[] }):
     .map((f) => ({ field: f.name, label: f.label.replace(/^Is\s*/, '').trim() || f.name }))
     .sort((a, b) => (a.field < b.field ? -1 : a.field > b.field ? 1 : 0))
   if (flags.length === 0) {
-    throw new Error('the describe of BidRangeRow__c has no partner checkbox fields, so no matrix can be told apart from another')
+    throw new Error('the describe has no partner checkbox fields, so no matrix can be told apart from another')
   }
   return flags
 }
 
+/**
+ * Reads the partner checkboxes of the object a matrix lives on, BidRangeRow__c
+ * unless a config names another, so its rows are filtered by its own fields.
+ */
 export async function fetchPartnerFlags(
   instanceUrl: string,
   token: string,
   fetchImpl: typeof fetch = fetch,
+  sobject = 'BidRangeRow__c',
 ): Promise<PartnerFlag[]> {
-  const res = await fetchImpl(`${instanceUrl}/services/data/v60.0/sobjects/BidRangeRow__c/describe`, {
+  const res = await fetchImpl(`${instanceUrl}/services/data/v60.0/sobjects/${encodeURIComponent(sobject)}/describe`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`the describe of BidRangeRow__c failed (${res.status}): ${text.slice(0, 500)}`)
+    throw new Error(`the describe of ${sobject} failed (${res.status}): ${text.slice(0, 500)}`)
   }
   return partnerFlagsFromDescribe(await parseJson<{ fields: DescribeField[] }>(res))
 }

@@ -44,6 +44,12 @@ describe('fetchPartnerFlags', () => {
     )
   })
 
+  it('reads the object it is told to, so a matrix kept elsewhere is filtered by its own checkboxes', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(BID_RANGE_ROW_DESCRIBE), { status: 200 }))
+    await fetchPartnerFlags('https://x.my.salesforce.com', 'tok', fetchImpl, 'OtherMatrix__c')
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://x.my.salesforce.com/services/data/v60.0/sobjects/OtherMatrix__c/describe')
+  })
+
   it('throws with the status and body when Salesforce refuses, never falling back to a fixed list', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('INVALID_SESSION_ID', { status: 401 }))
     await expect(fetchPartnerFlags('https://x.my.salesforce.com', 'tok', fetchImpl))
