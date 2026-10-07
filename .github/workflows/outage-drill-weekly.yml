@@ -53,10 +53,20 @@ jobs:
       - name: Outage drill
         run: bash .github/scripts/outage-drill.sh
 
+      # The report (each differing fixture, where it parted from its twin, and the
+      # time by phase) is the diagnosis the alert points at; kept with the run.
+      - name: Keep the drill report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: outage-drill-report
+          path: ${{ runner.temp }}/outage-drill.json
+          if-no-files-found: warn
+
       - name: Alert Slack when the weekly drill fails
         if: failure() && env.SLACK_WEBHOOK_URL != ''
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          jq -n --arg url "$RUN_URL" '{text: ("The weekly outage drill failed on main. A money flow no longer answers as it does with the database up, or the drill could not run. Open the run, read the report, and fix the flow or add an exemption with its issue: " + $url)}' \
+          jq -n --arg url "$RUN_URL" '{text: ("The weekly outage drill failed on main. A money flow no longer answers as it does with the database up, or the drill could not run. Open the run, read the outage-drill-report artifact, and fix the flow or add an exemption with its issue: " + $url)}' \
             | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"

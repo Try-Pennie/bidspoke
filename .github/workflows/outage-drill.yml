@@ -66,3 +66,13 @@ jobs:
       - name: Outage drill
         if: steps.inputs.outputs.changed == 'true'
         run: bash .github/scripts/outage-drill.sh
+
+      # The report (each differing fixture, where it parted from its twin, and the
+      # time by phase) is the diagnosis; kept with the run, red or green.
+      - name: Keep the drill report
+        if: always() && steps.inputs.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: outage-drill-report
+          path: ${{ runner.temp }}/outage-drill.json
+          if-no-files-found: warn
