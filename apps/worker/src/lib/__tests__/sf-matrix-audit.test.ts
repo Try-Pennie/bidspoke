@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { computeAuditDiff, decideBaseline, editorsFor, notifyAllOrgsWithSlack } from '../sf-matrix-audit'
+import { computeAuditDiff, decideBaseline, editorsFor, notifyAllOrgsWithSlack, baselineNotice } from '../sf-matrix-audit'
 import { partnerFlagsFromDescribe } from '../bid-range-flags'
 import type { MatrixAuditAlert } from '../matrix-audit-message'
 import { BID_RANGE_ROW_DESCRIBE } from './fixtures/bid-range-row-describe'
@@ -135,6 +135,21 @@ describe('decideBaseline', () => {
 
   it('compares as usual when the snapshot tracks exactly the partners Salesforce has', () => {
     expect(decideBaseline([snap()] as any, FLAGS)).toEqual({ baseline: false, reason: null, added: [], removed: [] })
+  })
+})
+
+// 2026-10-07: Dan chose a quiet rebuild when Salesforce gains a partner
+// checkbox. An empty record still says so (#1176), because rebuilding from
+// nothing silently would look the same as an hour with no edits.
+describe('baselineNotice', () => {
+  it('posts nothing when the rebuild is because Salesforce gained a partner', () => {
+    expect(baselineNotice({ baseline: true, reason: 'flags_changed', added: ['Borrow Better'], removed: [] }, 1545)).toBeNull()
+  })
+
+  it('says so when there was no record to compare against', () => {
+    expect(baselineNotice({ baseline: true, reason: 'empty', added: [], removed: [] }, 1545)).toBe(
+      'The bid matrix audit had no record to compare against, so it recorded the current 1545 bids. Changes are reported from the next run.',
+    )
   })
 })
 

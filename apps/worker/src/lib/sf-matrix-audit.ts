@@ -472,15 +472,20 @@ export async function notifyAllOrgsWithSlack(
   return allDelivered
 }
 
-function listed(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? ''
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+/**
+ * What to say when the snapshot is rebuilt, or null to say nothing. An empty
+ * record is announced, so a rebuild from nothing is never mistaken for a quiet
+ * hour (#1176). A rebuild because Salesforce gained or lost a partner checkbox
+ * is quiet, by Dan's choice on 2026-10-07, and only logged.
+ */
+export function baselineNotice(decision: BaselineDecision, rowCount: number): string | null {
+  if (decision.reason !== 'empty') return null
+  return `The bid matrix audit had no record to compare against, so it recorded the current ${rowCount} bids. Changes are reported from the next run.`
 }
 
 /**
- * Said once when the snapshot is rebuilt, so a rebuild is never mistaken for a
- * quiet hour. It reports rather than guards, so a failure to post it is logged
- * and does not undo the rebuild.
+ * Posts the rebuild notice where there is one. It reports rather than guards,
+ * so a failure to post it is logged and does not undo the rebuild.
  */
 async function notifyBaseline(
   supabase: SupabaseClient,
@@ -488,20 +493,18 @@ async function notifyBaseline(
   rowCount: number,
   matrixUrl: string | undefined,
 ): Promise<void> {
-  const lines: string[] = []
-  if (decision.reason === 'empty') {
-    lines.push(`The bid matrix audit had no record to compare against, so it recorded the current ${rowCount} bids.`)
-  } else {
-    if (decision.added.length > 0) lines.push(`The bid matrix audit now also tracks ${listed(decision.added)}.`)
-    if (decision.removed.length > 0) lines.push(`Salesforce no longer has ${listed(decision.removed)}, so the audit stopped tracking it.`)
-    lines.push(`It recorded the current ${rowCount} bids. An edit made since the last hourly run is not reported.`)
+  const text = baselineNotice(decision, rowCount)
+  if (text === null) {
+    console.log(
+      `[sf-matrix-audit] rebuilt the snapshot of ${rowCount} bids quietly: partners added ${decision.added.join(', ') || 'none'}, removed ${decision.removed.join(', ') || 'none'}`,
+    )
+    return
   }
-  lines.push('Changes are reported from the next run.')
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Bid matrix tracking updated', emoji: false } },
-    { type: 'section', text: { type: 'mrkdwn', text: lines.join(' ') } },
+    { type: 'section', text: { type: 'mrkdwn', text } },
   ]
-  if (matrixUrl) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${matrixUrl}|Open in Salesforce →>` } })
+  if (matrixUrl) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${matrixUrl}|Open in Salesforce \u2192>` } })
   for (const orgId of await slackOrgIds(supabase)) {
     try {
       if (!(await postToOrg(supabase, orgId, blocks, 'Bid matrix tracking updated'))) {
