@@ -118,7 +118,8 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources):
       const rest = key.slice(ENDPOINT_PREFIX.length)
       const cut = rest.indexOf(':')
       if (cut < 0) {
-        result.failed.push(`${key}: not an endpoint address, so nothing was cleared`)
+        // No route reads a key without an address in it, so it is deleted exactly.
+        await repair(key, () => kv.delete(key))
         continue
       }
       const subdomain = rest.slice(0, cut)
