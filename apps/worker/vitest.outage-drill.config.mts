@@ -6,7 +6,7 @@ import { unstable_readConfig } from 'wrangler'
 import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
 import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
-import { isRefusedShapeRejection } from './money-gate/lib/outage'
+import { OUTAGE_DRILL_TIMEOUT_MS, isOutageNetworkRejection } from './money-gate/lib/outage'
 
 /**
  * The outage drill (#1305), on the money gate's replay harness (#1704). It runs
@@ -74,8 +74,8 @@ export default defineConfig({
     include: ['money-gate/harness/outage.workers.test.ts'],
     // Only the refused shape's own rejection, which workerd reports even when it
     // was handled (money-gate/lib/outage.ts); any other unhandled error fails.
-    onUnhandledError: (err) => (isRefusedShapeRejection(err) ? false : undefined),
-    testTimeout: 900_000,
+    onUnhandledError: (err) => (isOutageNetworkRejection(err) ? false : undefined),
+    testTimeout: OUTAGE_DRILL_TIMEOUT_MS,
     hookTimeout: 120_000,
     env: { TZ: 'UTC', LANG: 'en_US.UTF-8' },
   },
