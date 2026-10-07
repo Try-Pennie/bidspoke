@@ -152,16 +152,17 @@ endpoints.post('/', async (c) => {
     return dbError(c, error)
   }
 
+  // A copy can survive at this address from an endpoint that used it before
+  // (#1846), and the new record must never be answered with the old one.
+  // Straight after the write and never throwing, so nothing after it can leave
+  // the copy standing; a failure is warned about and repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
+
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', data.id, 'created', userId, {
     subdomain,
     path,
     action: 'webhook_endpoint_created',
   })
-
-  // A copy can survive at this address from an endpoint that used it before
-  // (#1846), and the new record must never be answered with the old one. A
-  // failure is warned about and repaired by the sweep.
-  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
 
   return c.json({ ...data, ...copyWarning(cleared) }, 201)
 })
@@ -234,19 +235,19 @@ endpoints.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Endpoint not found' }, 404)
 
+  // Retire both copies at the old address and the new one (#1846). A switched
+  // off endpoint must not be served as active from its last-good copy, and a
+  // moved one must not keep answering at the address it left. Each address on
+  // its own, straight after the write, so one failing cannot leave the other;
+  // a failure is warned about and repaired by the sweep.
+  const moved = data.subdomain !== existing.subdomain || data.path !== existing.path
+  const clearedOld = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
+  const clearedNew = !moved || await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
+  const cleared = clearedOld && clearedNew
+
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'updated', userId, {
     action: 'webhook_endpoint_updated',
   })
-
-  // Retire both copies at the old address and the new one (#1846). A switched
-  // off endpoint must not be served as active from its last-good copy, and a
-  // moved one must not keep answering at the address it left. A failure is
-  // warned about and repaired by the sweep.
-  const moved = data.subdomain !== existing.subdomain || data.path !== existing.path
-  const cleared = await copyCleared(async () => {
-    await retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path)
-    if (moved) await retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path)
-  }, `endpoint copy ${existing.subdomain}${existing.path}`)
 
   return c.json({ ...data, ...copyWarning(cleared) })
 })
@@ -273,16 +274,17 @@ endpoints.delete('/:id', async (c) => {
   )
   if (deleteBlocked) return deleteBlocked
 
+  // Both copies, so a deleted endpoint is never served from KV in an outage
+  // (#1846). Straight after the write, so the audit below cannot skip it.
+  // Deleting again would find no row, so a failure is warned about and
+  // repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
+
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'deleted', userId, {
     subdomain: existing.subdomain,
     path: existing.path,
     action: 'webhook_endpoint_deleted',
   })
-
-  // Both copies, so a deleted endpoint is never served from KV in an outage
-  // (#1846). Deleting again would find no row, so a failure is warned about
-  // and repaired by the sweep.
-  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
 
   return c.json({ ok: true, ...copyWarning(cleared) })
 })

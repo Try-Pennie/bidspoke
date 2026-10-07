@@ -342,6 +342,40 @@ describe('every endpoint write retires its stored copies (#1846)', () => {
     expect(deleted.sort()).toEqual(['ep-lastgood:acme:/new', 'ep-lastgood:rml:/old', 'ep:acme:/new', 'ep:rml:/old'])
   })
 
+  // Each address is cleared on its own, so KV refusing the old one cannot leave
+  // a stale copy standing at the new one (#1846 review).
+  it('PUT that moves the endpoint still clears the new address when KV refuses the old one', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const refusing = { ...kvEnv, WORKFLOW_CACHE: { delete: async (k: string) => { if (k.includes(':rml:')) throw new Error('kv unavailable'); deleted.push(k) } } } as unknown as Env
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/old' } }, { updateResult: { id: 'ep-1', subdomain: 'acme', path: '/new', is_active: true } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await app.request('/endpoints/ep-1', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify({ subdomain: 'acme', path: 'new' }) }, refusing, mockCtx)
+    expect(res.status).toBe(200)
+    expect(deleted.sort()).toEqual(['ep-lastgood:acme:/new', 'ep:acme:/new'])
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/repaired automatically/i)
+  })
+
+  // The clear runs straight after the write, so an audit failure after it cannot
+  // leave the copy standing (#1846 review).
+  it.each(['POST', 'PUT', 'DELETE'] as const)('%s clears the copies even when the audit write throws', async (method) => {
+    vi.mocked(writeAuditLog).mockRejectedValueOnce(new Error('audit down'))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: ownWorkflow },
+        webhook_endpoints: method === 'POST'
+          ? { insertResult: { id: 'ep-1', subdomain: 'rml', path: '/', workflow_id: 'wf-mine', source_name: 'rml', is_active: true } }
+          : [{ single: { subdomain: 'rml', path: '/' } }, method === 'PUT' ? { updateResult: { id: 'ep-1', subdomain: 'rml', path: '/', is_active: false } } : { writeRows: [{ id: 'ep-1' }] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await call(method, method === 'POST' ? '/endpoints' : '/endpoints/ep-1', method === 'POST' ? { subdomain: 'rml', path: '', source_name: 'rml', workflow_id: 'wf-mine' } : method === 'PUT' ? { is_active: false } : undefined)
+    expect(deleted.sort()).toEqual(['ep-lastgood:rml:/', 'ep:rml:/'])
+  })
+
   it('DELETE retires both copies, so a deleted endpoint is never served from KV', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
