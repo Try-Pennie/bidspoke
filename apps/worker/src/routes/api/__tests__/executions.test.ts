@@ -20,7 +20,7 @@ vi.mock('../../../lib/archive-read')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { invalidateWorkflowCache } from '../../../engine/definition-loader'
+import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
 import { readArchivedExecution, readArchivedChildren, readArchivedParentSteps, searchArchive } from '../../../lib/archive-read'
@@ -76,7 +76,7 @@ describe('GET /executions', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     vi.mocked(readArchivedChildren).mockResolvedValue({ kind: 'ok', children: [] })
@@ -207,7 +207,7 @@ describe('GET /executions/:id', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
@@ -429,7 +429,7 @@ describe('POST /executions/:id/replay', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
@@ -497,7 +497,7 @@ describe('POST /executions/:id/resume', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()

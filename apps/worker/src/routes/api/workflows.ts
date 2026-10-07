@@ -6,7 +6,7 @@ import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { invalidateWorkflowCache } from '../../engine/definition-loader'
+import { refreshWorkflowCaches } from '../../engine/definition-loader'
 import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
@@ -434,8 +434,9 @@ workflows.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!updated) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Invalidate KV cache
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  // Drop the KV cache and bring the last-good copy up to this save (#1845), so
+  // a database outage straight after it runs the definition just saved.
+  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
 
   // Deploy code node scripts — run synchronously so errors surface in the save response
   const deployErrors: { namespace: string; error: string }[] = []
@@ -638,7 +639,9 @@ workflows.patch('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  // A switch off leaves a copy that refuses (#1845): an outage must not run a
+  // workflow somebody turned off.
+  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     is_active: body.is_active,
     folder_id: 'folder_id' in body ? body.folder_id : undefined,
@@ -671,7 +674,7 @@ workflows.delete('/:id', async (c) => {
   )
   if (blocked) return blocked
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
   return c.json({ ok: true })
 })
@@ -699,6 +702,9 @@ workflows.patch('/:id/test-payloads', async (c) => {
   const updateBlocked = dbErrorUnlessNotFound(c, error)
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
+  // Every write to the row moves its stamp, which orders the last-good copy, so
+  // the copy is brought up to it here too (#1845).
+  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   return c.json(data)
 })
 
@@ -843,7 +849,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   )
   if (restoreBlocked) return restoreBlocked
 
-  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     restored_from_version: version.version_number,
     new_version: nextVersion,

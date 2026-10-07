@@ -15,7 +15,7 @@ vi.mock('../../../lib/slack')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { invalidateWorkflowCache } from '../../../engine/definition-loader'
+import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
 
@@ -63,7 +63,7 @@ describe('REST API — auth rejection', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     app = await makeApp()
   })
@@ -135,7 +135,7 @@ describe('REST API — org scoping', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     app = await makeApp()
   })
@@ -212,7 +212,7 @@ describe('REST API — happy path', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     app = await makeApp()
   })
