@@ -59,6 +59,19 @@ export const DEAD_LETTER_RESERVE_MS = 3_000
 export const FINALIZE_RESERVE_MS = 10_000
 
 /**
+ * The tail finalize's wait for a run's remaining walk leaves for the step log
+ * flush and finalize behind it (#1860). A run that answered early
+ * (continue_after_response) keeps walking after the response, and finalize waited
+ * for that walk with no limit: a walk still running past about 22 s left finalize
+ * nothing, and one that never settled meant neither finalize nor its dead letter
+ * ran. The wait now stops 12 s after the response: the Main Flow's work after its
+ * answer took 96 ms typically, 5.3 s at the slowest 1 in 100, 6.7 s at the slowest
+ * 1 in 1,000 and 12.4 s at most, over 3,451 answered runs in the day to
+ * 2026-10-07. The 3 s past finalize's own reserve is the flush's.
+ */
+export const CONTINUATION_RESERVE_MS = FINALIZE_RESERVE_MS + 3_000
+
+/**
  * Time, for the retry ladders. Injected so a test drives it instead of waiting
  * (LESSONS L524); production uses `realClock`.
  */

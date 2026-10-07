@@ -45,8 +45,10 @@ import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import {
   PostResponseBudget,
+  CONTINUATION_RESERVE_MS,
   DEAD_LETTER_RESERVE_MS,
   FINALIZE_RESERVE_MS,
+  POST_RESPONSE_BUDGET_MS,
   realClock,
   withReserve,
   withinBudget,
@@ -215,6 +217,7 @@ export async function executeWorkflow(
   const postResponse = new PostResponseBudget(retryClock)
   const writeTiming: RetryTiming = { clock: retryClock, budget: postResponse, reserveMs: DEAD_LETTER_RESERVE_MS }
   const beforeFinalizeTiming = withReserve(writeTiming, FINALIZE_RESERVE_MS)
+  const continuationTiming = withReserve(writeTiming, CONTINUATION_RESERVE_MS)
   const traceTiming = withReserve(writeTiming, 0)
   // What kind of run this is, decided once (#1708).
   const reality = runRealityOfOptions(options, env)
@@ -596,7 +599,24 @@ export async function executeWorkflow(
   // #1850: the wait for the create and the flush stops at the write cut-off, so
   // a database that never answers cannot hold finalize, and the dead letter
   // behind it, past Cloudflare's limit. The walk itself is not raced here.
-  const flushPromise: Promise<string | null> = walkPromiseCaught
+  //
+  // #1860: and the wait for the walk itself stops too. A run that answered early
+  // keeps walking after the response; a walk still out at its cut-off is reported
+  // to finalize as unfinished (it may still finish, nothing confirmed it), so the
+  // flush and finalize behind it still run inside the budget. A test run waits
+  // for its whole walk, as before.
+  const walkSettled: Promise<unknown> = reality.isTest
+    ? walkPromiseCaught
+    : withinBudget(walkPromiseCaught, continuationTiming).then((o) =>
+        o.settled
+          ? o.value
+          : {
+              __error: new Error(
+                `The run's work after the answer did not finish within ${(POST_RESPONSE_BUDGET_MS - CONTINUATION_RESERVE_MS) / 1000} s of the answer; it may still finish, but nothing confirmed it`,
+              ),
+            },
+      )
+  const flushPromise: Promise<string | null> = walkSettled
     .then(() =>
       withinBudget(
         executionRecordPromise.then(() =>
@@ -650,7 +670,7 @@ export async function executeWorkflow(
   // The tail consumer adds the main-Worker CPU slice on top once Cloudflare
   // reports true cpuTime for the invocation.
   executionCtx.waitUntil(
-    Promise.all([walkPromiseCaught, flushPromise])
+    Promise.all([walkSettled, flushPromise])
       .then(async ([walkResult, flushError]) => {
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
 

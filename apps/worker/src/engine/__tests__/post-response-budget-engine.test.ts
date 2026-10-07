@@ -300,3 +300,50 @@ describe('post-response writes with a database that never answers (#1850)', () =
     expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
   })
 })
+
+/**
+ * #1860: a run that answered early (continue_after_response) and whose remaining
+ * walk never finishes. Finalize waited for that walk with no limit, so the run was
+ * never recorded and its dead letter never written. The wait now stops at its own
+ * cut-off, and finalize records what is known with a named reason.
+ */
+describe('a continuation that never finishes after the answer (#1860)', () => {
+  const withContinuation = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'p', namespace: 'patch_sf', type: 'code', config: { retries: 0 } },
+    ],
+    edges: [{ id: 'e0', source: 'r', target: 'p' }],
+  } as unknown as WorkflowDefinition
+
+  it('finalizes the run inside the budget, as degraded with a named reason, while the walk is still out', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: withContinuation,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    // The remaining work ends 60 s after the answer on the virtual clock: well past
+    // the whole budget, where Cloudflare would already have cancelled it.
+    let late: () => Promise<{ output: unknown }> = () => new Promise(() => {})
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      return late()
+    })
+    const { db, result } = await run((c) => {
+      late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
+      return 'up'
+    })
+    expect(result.status).toBe(200)
+    const row = db.executions.get(result.executionId)
+    expect(row?.status).toBe('degraded')
+    expect(String(row?.error_message)).toMatch(/did not finish within .* of the answer/)
+    // Every write the run made, finalize included, landed inside the budget.
+    const finalizeWrite = db.calls.filter((c) => c.table === 'workflow_executions' && c.op === 'update')
+    expect(finalizeWrite.length).toBeGreaterThan(0)
+    expect(Math.max(...finalizeWrite.map((c) => c.at))).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+  })
+})
