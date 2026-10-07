@@ -479,7 +479,8 @@ export async function notifyAllOrgsWithSlack(
  * is quiet, by Dan's choice on 2026-10-07, and only logged.
  */
 export function baselineNotice(decision: BaselineDecision, rowCount: number): string | null {
-  if (decision.reason !== 'empty') return null
+  // No rows means nothing was recorded; the matrix audit watcher already alerts on an empty read.
+  if (decision.reason !== 'empty' || rowCount === 0) return null
   return `The bid matrix audit had no record to compare against, so it recorded the current ${rowCount} bids. Changes are reported from the next run.`
 }
 

@@ -146,6 +146,10 @@ describe('baselineNotice', () => {
     expect(baselineNotice({ baseline: true, reason: 'flags_changed', added: ['Borrow Better'], removed: [] }, 1545)).toBeNull()
   })
 
+  it('says nothing when Salesforce returned no rows, since nothing was recorded', () => {
+    expect(baselineNotice({ baseline: true, reason: 'empty', added: [], removed: [] }, 0)).toBeNull()
+  })
+
   it('says so when there was no record to compare against', () => {
     expect(baselineNotice({ baseline: true, reason: 'empty', added: [], removed: [] }, 1545)).toBe(
       'The bid matrix audit had no record to compare against, so it recorded the current 1545 bids. Changes are reported from the next run.',
