@@ -83,6 +83,7 @@ import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmD
 import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
+import { saveOutcomeMessage } from '@/lib/save-outcome'
 
 
 const edgeTypes = {
@@ -2840,11 +2841,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setSavedSignatureToken((t) => t + 1)
       const { switchToView } = resolvePostSaveStateBySignature(savedSignature, currentSignatureRef.current)
 
-      if (result.deploy_errors?.length) {
-        const msg = result.deploy_errors
-          .map((e) => `${e.namespace}: ${e.error}`)
-          .join('\n')
-        setSaveError(`Saved, but ${result.deploy_errors.length === 1 ? 'one code node' : `${result.deploy_errors.length} code nodes`} failed to deploy:\n${msg}`)
+      const outcome = saveOutcomeMessage(result)
+      if (outcome) {
+        setSaveError(outcome)
       } else {
         setSavedOk(true)
         setTimeout(() => setSavedOk(false), 2500)

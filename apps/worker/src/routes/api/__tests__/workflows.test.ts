@@ -222,7 +222,7 @@ describe('PUT /workflows/:id', () => {
   // The save has committed by the time the caches are refreshed, so a KV failure
   // there must not skip the audit of a change that happened, and the answer says
   // what was saved and how to clear the copy (#1845).
-  it('still audits a committed save when the cache refresh fails, and says the save landed', async () => {
+  it('still deploys and audits a committed save when the cache refresh fails, and answers it as saved with a warning', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     const newVersion = { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' }
@@ -234,8 +234,9 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The save landed, so it is answered as the success it was, with the warning beside it.
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
   })
 
@@ -644,8 +645,9 @@ describe('PATCH /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The save landed, so it is answered as the success it was, with the warning beside it.
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -683,15 +685,16 @@ describe('DELETE /workflows/:id', () => {
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
-  it('still audits a committed delete when the cache refresh fails, and says the delete landed (#1845)', async () => {
+  it('still audits a committed delete when the cache refresh fails, and answers it with a warning (#1845)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-1')
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The save landed, so it is answered as the success it was, with the warning beside it.
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 
@@ -873,8 +876,9 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The save landed, so it is answered as the success it was, with the warning beside it.
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -1533,7 +1537,7 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
-  it('says the payloads were saved when the cache refresh fails afterwards (#1845)', async () => {
+  it('answers saved payloads as saved, with a warning, when the cache refresh fails (#1845)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     vi.mocked(createSupabaseClient).mockReturnValue(
@@ -1543,8 +1547,9 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PATCH', '/workflows/wf-1/test-payloads', { body: payloadBody })
-    expect(res.status).toBe(500)
-    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    // The save landed, so it is answered as the success it was, with the warning beside it.
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
   })
 })
 

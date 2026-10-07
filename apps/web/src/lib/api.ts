@@ -512,7 +512,7 @@ export const api = {
       // no_changes (#569): the server short-circuits a save whose definition is
       // identical to what's stored: the row is untouched, so version_id and the
       // Workflow body are absent. Callers branch on no_changes before reading them.
-      req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; stored_copy_warning?: string; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
       req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
         `/api/workflows/${id}/draft-changelog`,
