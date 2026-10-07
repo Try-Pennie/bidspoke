@@ -3,7 +3,7 @@
  * Cache hit skips Supabase, cache miss fetches and stores, invalidate removes key.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { loadWorkflowDefinition, invalidateWorkflowCache, WorkflowNotFoundError } from '../definition-loader'
+import { loadWorkflowDefinition, WorkflowNotFoundError } from '../definition-loader'
 
 const WF_ID = 'wf-abc'
 const CACHE_KEY = `workflow-def-${WF_ID}`
@@ -125,15 +125,8 @@ describe('loadWorkflowDefinition', () => {
   })
 })
 
-describe('invalidateWorkflowCache', () => {
-  it('deletes the correct KV key', async () => {
-    const kv = makeKv()
-
-    await invalidateWorkflowCache(WF_ID, kv)
-
-    expect(kv.delete).toHaveBeenCalledWith(CACHE_KEY)
-  })
-})
+// Dropping the cache on a save, and the last-good copy beside it, are covered
+// in definition-copy.test.ts (refreshWorkflowCaches, #1845).
 
 // #1707 (plan 0.C): the workflow's stored lane rides on the loaded workflow, so
 // every entry point that runs a workflow reads it through this one loader.

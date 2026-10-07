@@ -389,6 +389,15 @@ export default function WorkflowsPage() {
     }
   }
 
+  /**
+   * Each change here commits, then refreshes the stored copy the engine reads in
+   * an outage. When that refresh failed the change still landed, and the server
+   * says so in stored_copy_warning, which this shows rather than drops (#1845).
+   */
+  function showStoredCopyWarning(result: { stored_copy_warning?: string }) {
+    if (result.stored_copy_warning) setError(result.stored_copy_warning)
+  }
+
   async function handleMoveWorkflow(workflowId: string, folderId: string | null) {
     setMovingWorkflowId(null)
     setOpenMenuId(null)
@@ -405,7 +414,7 @@ export default function WorkflowsPage() {
       })
     }
     try {
-      await api.workflows.setFolder(workflowId, folderId)
+      showStoredCopyWarning(await api.workflows.setFolder(workflowId, folderId))
     } catch (e) {
       setWorkflows((ws) => ws.map((w) => (w.id === workflowId ? original : w)))
       setError(e instanceof Error ? e.message : 'Failed to move workflow')
@@ -506,7 +515,7 @@ export default function WorkflowsPage() {
 
     setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: next } : w))
     try {
-      await api.workflows.setActive(wf.id, next)
+      showStoredCopyWarning(await api.workflows.setActive(wf.id, next))
     } catch (e) {
       setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: wf.is_active } : w))
       setError(e instanceof Error ? e.message : 'Failed to update workflow')
@@ -525,7 +534,7 @@ export default function WorkflowsPage() {
     setWorkflows((ws) => ws.map((w) => w.id === id ? { ...w, name: trimmed } : w))
     setRenamingId(null)
     try {
-      await api.workflows.save(id, { name: trimmed })
+      showStoredCopyWarning(await api.workflows.save(id, { name: trimmed }))
     } catch (e) {
       if (original) {
         setWorkflows((ws) => ws.map((w) => w.id === id ? original : w))
@@ -564,7 +573,7 @@ export default function WorkflowsPage() {
       setRemovingId(null)
     }, 150)
     try {
-      await api.workflows.delete(id)
+      showStoredCopyWarning(await api.workflows.delete(id))
     } catch (e) {
       if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
       setRemovingId(null)

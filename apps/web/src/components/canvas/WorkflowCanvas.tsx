@@ -83,6 +83,8 @@ import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmD
 import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
+import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
+import { restoreVersion } from '@/lib/version-restore'
 
 
 const edgeTypes = {
@@ -2805,7 +2807,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       }
       const verdict = classifySave({ noChanges: !!result.no_changes, sentDefinition: definition, persisted })
       if (verdict === 'no_changes') {
-        setSaveError('Nothing was saved: the workflow is identical to the stored version. If you just made an edit, it did not register. Check the node and try saving again.')
+        setSaveError(noChangesMessage(result))
         return
       }
       if (verdict === 'unverified') {
@@ -2822,13 +2824,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       // failed, the formulas wouldn't be rewritten).
       const queuedRenames = pendingFormulaRenamesRef.current
       pendingFormulaRenamesRef.current = []
+      const rewriteFailures: string[] = []
       for (const rn of queuedRenames) {
         try {
           await api.workflows.renameApply(workflow.id, rn.oldNs, rn.newNs, rn.partner_ids)
         } catch (e) {
           // Don't block save UX — surface as a non-fatal banner.
           const msg = e instanceof Error ? e.message : 'Formula rewrite failed'
-          setSaveError(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
+          rewriteFailures.push(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
         }
       }
       // #92: if the user edited during the save window (any await above), the
@@ -2840,12 +2843,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setSavedSignatureToken((t) => t + 1)
       const { switchToView } = resolvePostSaveStateBySignature(savedSignature, currentSignatureRef.current)
 
-      if (result.deploy_errors?.length) {
-        const msg = result.deploy_errors
-          .map((e) => `${e.namespace}: ${e.error}`)
-          .join('\n')
-        setSaveError(`Saved, but ${result.deploy_errors.length === 1 ? 'one code node' : `${result.deploy_errors.length} code nodes`} failed to deploy:\n${msg}`)
-      } else {
+      const outcome = saveOutcomeMessage(result, rewriteFailures)
+      if (outcome) setSaveError(outcome)
+      if (saveFinished(result)) {
         setSavedOk(true)
         setTimeout(() => setSavedOk(false), 2500)
         if (switchToView) switchMode('view')
@@ -2860,8 +2860,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // ── Version restore ─────────────────────────────────────────────────────────
 
   async function handleVersionRestore(versionId: string) {
-    await api.versions.restore(workflow.id, versionId)
-    const updated = await api.workflows.get(workflow.id)
+    const { workflow: updated, notice } = await restoreVersion(workflow.id, versionId)
+    if (notice) setSaveError(notice)
     // Run the same migration pipeline the initial mount does (#114) — restoring
     // an old version is exactly when legacy shapes appear, and skipping the
     // migrations here left the canvas half-migrated for the next save to persist.
