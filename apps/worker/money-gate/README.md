@@ -193,12 +193,17 @@ For each live fixture of each money flow it:
    that outlived every short cache would find them;
 3. runs the lead with the database up, from that state (the twin);
 4. runs it again from the same state once per outage shape (`lib/outage.ts`): a
-   refused connection, a PostgREST 503, and a Cloudflare HTML 522, with the engine
-   handed the Worker's own lead client over that network;
+   refused connection, a PostgREST 503, a Cloudflare HTML 522, and a database
+   that hangs, whose requests end only when the caller's own deadline aborts them
+   (#1851), with the engine handed the Worker's own lead client over that network;
 5. requires each down run to match its twin on the response, every request sent,
    every code dispatch, every route taken, the nodes run and the Durable Object
    state. Writes to the database are not compared: losing the logging of a run
-   in an outage is allowed (Dan, 2026-09-10); losing the lead is not.
+   in an outage is allowed (Dan, 2026-09-10); losing the lead is not. In the
+   hung shape the lead must also be answered within `HUNG_ANSWER_ALLOWANCE_MS`
+   (2 s) of its twin, since Engine's own timeout is recorded nowhere, and a run
+   still unanswered after 30 s stops the drill by name, as a wait with no
+   deadline.
 
 A down run that never asked the database fails the drill, because it drilled
 nothing. Decisions come from the engine's step observer, since a down run never
@@ -207,6 +212,10 @@ writes its step rows, and every post-response retry waits on an injected clock.
 ```
 cd apps/worker && pnpm exec vitest run --config vitest.outage-drill.config.mts
 ```
+
+The hung shape waits out each bounded deadline for real, which makes it the slow
+one: the whole drill took 608 s on a laptop on 2026-10-07, so vitest gives it
+`OUTAGE_DRILL_TIMEOUT_MS` (20 minutes) inside the jobs' 25.
 
 `OUTAGE_DRILL_ONLY="<workflow name>"` drills one flow; the report then says it was
 narrowed. `MONEY_GATE_OUT=<file>` writes the report: each fixture's differences,
@@ -225,14 +234,17 @@ exempt.
 * Test and shadow runs: they carry no lead.
 * The custom endpoint route: the replay calls the engine directly. Its stored
   record has its own tests (`routes/__tests__/custom-endpoint.test.ts`).
-* A database that hangs rather than fails: #1851.
+* The bid matrix and the latency gate: no live money flow uses them, so no
+  fixture reaches them. Their stored copies have their own tests
+  (`lib/__tests__/bid-matrix-last-good.test.ts`,
+  `engine/nodes/__tests__/latency-gate-outage.test.ts`).
 * `Delegate Gmail Access for Offboarded Agents`: it moves no lead.
 * A Cloudflare outage: the Worker itself is down, so nothing here runs.
 
 **Known quirk.** workerd reports a rejected fetch as unhandled even when
 supabase-js catches it and the caller awaits the answer (reproduced with one
 awaited read and nothing of ours around it), so the drill's config ignores
-exactly the refused shape's own rejection (`isRefusedShapeRejection`); any other
+exactly the refused shape's own rejection (`isOutageNetworkRejection`); any other
 unhandled error still fails the run.
 
 ## Known limits

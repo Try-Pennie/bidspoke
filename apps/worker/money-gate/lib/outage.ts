@@ -10,15 +10,18 @@
  * exemptions for flows that do not pass yet.
  */
 
+import { LEAD_READ_DEADLINE_MS } from '../../src/lib/lead-read-budget'
+
 /**
  * How the database answers in an outage. `refused` is a connection that never
  * opens; `unavailable_503` is PostgREST answering that it cannot reach Postgres
  * (PGRST002, with Retry-After); `gateway_html_522` is Cloudflare in front of
  * Supabase answering with an HTML error page. Which one 2026-09-10 produced was
- * never recorded, so all three are drilled. A database that hangs is a later
- * shape (#1851).
+ * never recorded, so all of them are drilled. `hung` is a database that never
+ * answers (#1851): only the caller giving up ends a request, so a wait with no
+ * deadline is a run that never finishes, which the drill stops by name.
  */
-export const OUTAGE_SHAPES = ['refused', 'unavailable_503', 'gateway_html_522'] as const
+export const OUTAGE_SHAPES = ['refused', 'unavailable_503', 'gateway_html_522', 'hung'] as const
 export type OutageShape = (typeof OUTAGE_SHAPES)[number]
 
 export interface OutageNetwork {
@@ -27,10 +30,20 @@ export interface OutageNetwork {
   requests(): number
 }
 
+/** A request no one answers: it ends only when its signal aborts, as fetch does. */
+function never(signal: AbortSignal | undefined): Promise<Response> {
+  const aborted = () => Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })
+  return new Promise<Response>((_resolve, reject) => {
+    if (signal?.aborted) return reject(aborted())
+    signal?.addEventListener('abort', () => reject(aborted()), { once: true })
+  })
+}
+
 export function outageNetwork(shape: OutageShape): OutageNetwork {
   let count = 0
-  const fetchImpl = (async () => {
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     count++
+    if (shape === 'hung') return await never(init?.signal ?? undefined)
     if (shape === 'refused') throw new TypeError('fetch failed')
     if (shape === 'unavailable_503') {
       return new Response(
@@ -47,17 +60,47 @@ export function outageNetwork(shape: OutageShape): OutageNetwork {
 }
 
 /**
- * Whether an unhandled error vitest reports is the refused shape's own rejection.
- * workerd reports a rejected fetch as unhandled even when supabase-js catches it
- * and the caller awaits the answer (reproduced 2026-10-07 with a single awaited
- * read and nothing of ours around it), so every read the refused shape fails would
- * otherwise fail the drill. Matched on the error itself AND its origin in this
- * file, so any other unhandled error still fails the run.
+ * How long the whole drill may run before vitest stops it (#1851). The hung
+ * shape waits out each bounded deadline for real, so it is the slow one: with
+ * it the drill took 608 s on a laptop on 2026-10-07, and CI ran the three shape
+ * drill 5 to 20 percent slower than the same laptop. Twenty minutes is half as
+ * much again as the slowest of those, and the jobs' 25 leave room to install,
+ * build and upload the report, so a slow run still ends with a verdict.
  */
-export function isRefusedShapeRejection(err: unknown): boolean {
+export const OUTAGE_DRILL_TIMEOUT_MS = 20 * 60_000
+
+/**
+ * How much later than its database-up twin a lead may be answered while the
+ * database hangs (#1851): twice the lead read deadline, the budget a lead spends
+ * before going to its stored copies, with room for a second bounded wait.
+ * Engine's own timeout is recorded nowhere; production shows it routinely waits
+ * about 10 s (the Engine flow's slowest 1 in 1,000 answers took 9.4 s over the 7
+ * days to 2026-10-07), so the rule is relative to the twin, not a guessed cutoff.
+ */
+export const HUNG_ANSWER_ALLOWANCE_MS = 2 * LEAD_READ_DEADLINE_MS
+
+/** The difference to report when the down run answered too long after its twin, or null. */
+export function lateAnswer(upMs: number, downMs: number): OutageDifference | null {
+  if (downMs - upMs <= HUNG_ANSWER_ALLOWANCE_MS) return null
+  return { field: 'answer_time', detail: `up answered in ${Math.round(upMs)} ms; down in ${Math.round(downMs)} ms, more than ${HUNG_ANSWER_ALLOWANCE_MS} ms later` }
+}
+
+/**
+ * Whether an unhandled error vitest reports is the outage network's own rejection:
+ * the refused shape refusing a request, or the hung shape abandoning one its
+ * caller gave up on. workerd reports a rejected fetch as unhandled even when
+ * supabase-js catches it and the caller awaits the answer (reproduced 2026-10-07
+ * with a single awaited read and nothing of ours around it), so every such read
+ * would otherwise fail the drill. Matched on the error itself AND its origin in
+ * this file, so any other unhandled error still fails the run.
+ */
+export function isOutageNetworkRejection(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const e = err as { name?: unknown; message?: unknown; stack?: unknown }
-  return e.name === 'TypeError' && e.message === 'fetch failed' && typeof e.stack === 'string' && /money-gate\/lib\/outage\.ts/.test(e.stack)
+  const ours = typeof e.stack === 'string' && /money-gate\/lib\/outage\.ts/.test(e.stack)
+  const refused = e.name === 'TypeError' && e.message === 'fetch failed'
+  const abandoned = e.name === 'AbortError' && e.message === 'The operation was aborted'
+  return ours && (refused || abandoned)
 }
 
 /**

@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
+import { waitAtMost } from '../wait-at-most'
 import {
+  OUTAGE_DRILL_TIMEOUT_MS,
   OUTAGE_SHAPES,
   applyExemptions,
   compareOutage,
   decisionsFrom,
   firstStepOutputDifference,
+  lateAnswer,
+  HUNG_ANSWER_ALLOWANCE_MS,
   isLastGoodKey,
-  isRefusedShapeRejection,
+  isOutageNetworkRejection,
   outageNetwork,
   type OutageRecord,
   type OutageExemption,
@@ -22,14 +28,31 @@ import {
 describe('outageNetwork', () => {
   it.each(OUTAGE_SHAPES)('answers every request in the %s shape and counts it', async (shape) => {
     const net = outageNetwork(shape)
-    const call = net.fetch('https://supabase-url.placeholder.invalid/rest/v1/workflows?id=eq.1', { method: 'GET' })
-    if (shape === 'refused') {
+    const giveUp = new AbortController()
+    const call = net.fetch('https://supabase-url.placeholder.invalid/rest/v1/workflows?id=eq.1', { method: 'GET', signal: giveUp.signal })
+    if (shape === 'hung') {
+      giveUp.abort()
+      await expect(call).rejects.toMatchObject({ name: 'AbortError' })
+    } else if (shape === 'refused') {
       await expect(call).rejects.toThrow(TypeError)
     } else {
       const res = await call
       expect(res.status).toBeGreaterThanOrEqual(500)
     }
     expect(net.requests()).toBe(1)
+  })
+
+  // #1851: a database that never answers. Only the caller giving up ends a request.
+  it('never answers in the hung shape until the caller gives up', async () => {
+    let settled = false
+    void outageNetwork('hung').fetch('https://x/rest/v1/t', {}).then(() => { settled = true }, () => { settled = true })
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 5))
+    expect(settled).toBe(false)
+  })
+
+  it('gives up at once in the hung shape when the signal was already aborted', async () => {
+    await expect(outageNetwork('hung').fetch('https://x/rest/v1/t', { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('answers the 503 shape the way PostgREST does when it cannot reach Postgres', async () => {
@@ -192,15 +215,22 @@ describe('applyExemptions', () => {
  * outside the engine), so every read the refused shape fails would fail the run.
  * Only that rejection is ignored; any other unhandled error still fails it.
  */
-describe('isRefusedShapeRejection', () => {
+describe('isOutageNetworkRejection', () => {
   it('recognises the refused shape rejecting a request', async () => {
     const err = await outageNetwork('refused').fetch('https://x/rest/v1/t', {}).catch((e: unknown) => e)
-    expect(isRefusedShapeRejection(err)).toBe(true)
+    expect(isOutageNetworkRejection(err)).toBe(true)
+  })
+
+  it('recognises the hung shape abandoning a request the caller gave up on', async () => {
+    const giveUp = new AbortController()
+    const call = outageNetwork('hung').fetch('https://x/rest/v1/t', { signal: giveUp.signal })
+    giveUp.abort()
+    expect(isOutageNetworkRejection(await call.catch((e: unknown) => e))).toBe(true)
   })
 
   it('recognises it once serialized, as vitest hands it over', async () => {
     const err = (await outageNetwork('refused').fetch('https://x/rest/v1/t', {}).catch((e: unknown) => e)) as Error
-    expect(isRefusedShapeRejection({ name: err.name, message: err.message, stack: err.stack })).toBe(true)
+    expect(isOutageNetworkRejection({ name: err.name, message: err.message, stack: err.stack })).toBe(true)
   })
 
   it.each([
@@ -209,7 +239,7 @@ describe('isRefusedShapeRejection', () => {
     ['not an error at all', 'fetch failed'],
     ['nothing', undefined],
   ])('does not recognise %s', (_why, err) => {
-    expect(isRefusedShapeRejection(err)).toBe(false)
+    expect(isOutageNetworkRejection(err)).toBe(false)
   })
 })
 
@@ -234,5 +264,78 @@ describe('firstStepOutputDifference', () => {
 
   it('is null when every step output agrees', () => {
     expect(firstStepOutputDifference([step('a', { x: 1 })], [step('a', { x: 1 })])).toBeNull()
+  })
+})
+
+/**
+ * A hung database must not slow the answer past the lead read budget (#1851).
+ * Engine's own timeout is not recorded anywhere; production shows it routinely
+ * waits about 10 s (Engine flow p99.9 9.4 s over 7 days, 2026-10-07), so the rule
+ * is relative: the down run answers no more than the allowance later than its twin.
+ */
+describe('lateAnswer', () => {
+  it('allows twice the lead read deadline, taken from the constant', async () => {
+    const { LEAD_READ_DEADLINE_MS } = await import('../../../src/lib/lead-read-budget')
+    expect(HUNG_ANSWER_ALLOWANCE_MS).toBe(2 * LEAD_READ_DEADLINE_MS)
+  })
+
+  it('passes an answer within the allowance of its twin', () => {
+    expect(lateAnswer(1_000, 1_000 + HUNG_ANSWER_ALLOWANCE_MS)).toBeNull()
+  })
+
+  it('names an answer later than the allowance, with both times', () => {
+    const d = lateAnswer(1_000, 1_001 + HUNG_ANSWER_ALLOWANCE_MS)!
+    expect(d.field).toBe('answer_time')
+    expect(d.detail).toMatch(/up answered in 1000 ms; down in 3001 ms/)
+  })
+})
+
+describe('the drill has room to finish (#1851)', () => {
+  const workflowMinutes = (file: string): number => {
+    const text = readFileSync(join(__dirname, '..', '..', '..', '..', '..', '.github', 'workflows', file), 'utf8')
+    // One job per file, so its one limit is the drill's; a second job would make
+    // the first limit found possibly someone else's.
+    const all = [...text.matchAll(/timeout-minutes:\s*(\d+)/g)]
+    if (all.length !== 1) throw new Error(`${file} names ${all.length} timeout-minutes, not the one drill job's`)
+    return Number(all[0][1])
+  }
+
+  it('gives the drill well over its measured run time, and ends it inside each job, so a slow run fails with a verdict', () => {
+    // Measured 2026-10-07 with the hung shape: 608 s on a laptop; CI ran the
+    // three shape drill 5 to 20 percent slower than the same laptop.
+    expect(OUTAGE_DRILL_TIMEOUT_MS).toBeGreaterThanOrEqual(1.5 * 608_000 * 1.2)
+    for (const file of ['outage-drill.yml', 'outage-drill-weekly.yml']) {
+      // Install, build and the report upload need minutes of their own.
+      expect(OUTAGE_DRILL_TIMEOUT_MS + 4 * 60_000).toBeLessThanOrEqual(workflowMinutes(file) * 60_000)
+    }
+  })
+})
+
+describe('waiting at most a while for post-response work (#1851)', () => {
+  it('returns when the work settles, and when the limit passes first, leaving no timer behind either way', async () => {
+    vi.useFakeTimers()
+    try {
+      await waitAtMost(Promise.resolve(), 250)
+      expect(vi.getTimerCount()).toBe(0)
+      let done = false
+      const hung = waitAtMost(new Promise<void>(() => {}), 250).then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(249)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await hung
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears its timer when the work rejects, and passes the rejection on', async () => {
+    vi.useFakeTimers()
+    try {
+      await expect(waitAtMost(Promise.reject(new Error('post-response write failed')), 250)).rejects.toThrow('post-response write failed')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

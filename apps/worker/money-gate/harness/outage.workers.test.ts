@@ -17,18 +17,22 @@
  *  3. The twin: from that state, run the lead with the database up.
  *  4. For each outage shape (outage.ts), from that same state, run the lead with
  *     the database failing: the engine is handed the Worker's own lead client
- *     over a network that refuses, answers 503, or answers an HTML 522.
+ *     over a network that refuses, answers 503, answers an HTML 522, or hangs
+ *     until the caller's own deadline aborts the request (#1851).
  *  5. Require the failing run to match its twin (outage.ts compareOutage), unless
- *     outage-exemptions.json names that flow's first difference with an open issue.
+ *     outage-exemptions.json names that flow's first difference with an open issue,
+ *     and in the hang to answer within HUNG_ANSWER_ALLOWANCE_MS of it (lateAnswer).
  *
  * Decisions are read from the engine's step observer, because a failing run
  * never writes its step rows. Every post-response retry waits on an injected
- * clock that answers at once, so no run waits in real time (L524).
+ * clock that answers at once. The hung shape is the exception: it waits out each
+ * lead's real deadlines, because how long the caller waits is what it measures
+ * (#1876 tracks moving those onto the drill's clock).
  *
  * Not drilled, named in README: test and shadow runs (not lead bearing), the
  * custom endpoint route (the replay calls the engine directly; its stored record
- * is covered by its own tests), a database that hangs (#1851), and the
- * non-money Delegate Gmail workflow.
+ * is covered by its own tests), and the non-money Delegate Gmail workflow. A
+ * database that hangs is drilled as the `hung` shape (#1851).
  */
 import { env, reset } from 'cloudflare:test'
 import { it, expect } from 'vitest'
@@ -42,11 +46,13 @@ import type { WorkflowShape } from '../lib/shape'
 import { runPlan, type Variant } from './replay-env'
 import { definitions, dumpDurableObjects, hostBundles, runOnce, shapes, variantFiles, type DefinitionFile, type GateEnv, type RunResult } from './replay-core'
 import {
+  OUTAGE_DRILL_TIMEOUT_MS,
   OUTAGE_SHAPES,
   applyExemptions,
   compareOutage,
   decisionsFrom,
   firstStepOutputDifference,
+  lateAnswer,
   isLastGoodKey,
   outageNetwork,
   type FixtureOutcome,
@@ -78,6 +84,43 @@ const instantClock = {
     if (signal.aborted) return resolve()
     signal.addEventListener('abort', () => resolve(), { once: true })
   }),
+}
+
+/**
+ * The clock for the hung shape (#1851). Its retry waits answer at once, and its
+ * deadline watch fires after a quarter of a second rather than the 25 s budget:
+ * long enough for post-response work that does not wait on the database, while
+ * work stuck behind the hung database is cut, as the real budget would cut it.
+ * Losing that logging is allowed (Dan, 2026-09-10).
+ */
+const HUNG_BUDGET_MS = 250
+const hungClock = {
+  now: () => Date.now(),
+  sleep: async () => {},
+  timer: (ms: number, signal: AbortSignal) => new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve()
+    const t = setTimeout(resolve, Math.min(ms, HUNG_BUDGET_MS))
+    signal.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
+  }),
+}
+
+/**
+ * The longest a single run may take, in real time. A run past it is not a result
+ * to compare: it is a flow that never answers when the database hangs, or a wait
+ * with no deadline, so it stops the whole drill and names the run (#1851).
+ */
+const RUN_DEADLINE_MS = 30_000
+
+async function withinDeadline<T>(what: string, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`outage drill: ${what} did not finish within ${RUN_DEADLINE_MS / 1000} s of real time, far past every deadline a lead waits on, so something in it waits with no deadline or one too long; the drill stops here`)), RUN_DEADLINE_MS)
+  })
+  try {
+    return await Promise.race([work, late])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
 }
 
 /** The database address of the placeholder environment: never reached, the lead client brings its own network. */
@@ -151,7 +194,7 @@ it('keeps every money flow answering, as it would with the database up, while th
   } finally {
     await e.GATE_IO.fetch('https://gate/dispose', { method: 'POST' })
   }
-}, 900_000)
+}, OUTAGE_DRILL_TIMEOUT_MS)
 
 /** Where the drill's time goes, by phase, so a slow run names its cause (L466). */
 const phaseMs: Record<string, number> = {}
@@ -217,16 +260,23 @@ async function drill(e: GateEnv): Promise<void> {
         await fromKept()
         const net = outageNetwork(outage)
         const downSteps: ObservedStep[] = []
-        const down = await timed('down run', () => runOnce(e, def, { id, seed: id, kind: 'live' }, payload, variant, stubs, shape, {
+        const down = await timed('down run', () => withinDeadline(`${def.name}/${variant.name} [${outage}]`, runOnce(e, def, { id, seed: id, kind: 'live' }, payload, variant, stubs, shape, {
           runtime: () => {
             const client = createLeadSupabaseClient(DB_ENV as never, { fetch: net.fetch })
-            return { lane: 'money', config: client, run: client, observeStep: observer(downSteps), clock: instantClock }
+            return { lane: 'money', config: client, run: client, observeStep: observer(downSteps), clock: outage === 'hung' ? hungClock : instantClock }
           },
-        }))
+          // The hung shape's post-response work can wait on the database for ever;
+          // it is cut a little after its own budget clock gives up, as Cloudflare
+          // cuts it 30 s after the response. The deadline then measures the answer.
+          ...(outage === 'hung' ? { postResponseLimitMs: HUNG_BUDGET_MS * 4 } : {}),
+        })))
         fixtures++
         // A positive control: a run that never asked the database proves nothing about an outage.
         if (net.requests() === 0) controlFailures.push(`${def.name}/${variant.name} [${outage}]: the run never asked the database, so it was not drilled`)
         const diffs = compareOutage(upRecord, recordOf(down, downSteps, await dumpDurableObjects(e)))
+        // A hung database must not slow the answer past the lead read budget.
+        const late = outage === 'hung' && up.answeredMs !== null && down.answeredMs !== null ? lateAnswer(up.answeredMs, down.answeredMs) : null
+        if (late) diffs.push(late)
         outcomes.push({ workflow: def.name, variant: variant.name, shape: outage as OutageShape, diffs, ...(diffs.length ? { first_step_difference: firstStepOutputDifference(upSteps, downSteps) } : {}) })
       }
     }

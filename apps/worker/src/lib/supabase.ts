@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import type { Env } from '../index'
+import type { Env } from '../env'
 import type { Database } from '../types/database'
 import rpcLists from './read-only-rpcs.json'
 import { guardLocalDevWrites, type RpcClassification } from './local-dev-write-guard'

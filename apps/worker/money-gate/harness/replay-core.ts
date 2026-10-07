@@ -22,6 +22,7 @@ import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
+import { waitAtMost } from '../lib/wait-at-most'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
 
@@ -347,6 +348,8 @@ export async function recordFixture(e: GateEnv, def: DefinitionFile, who: Fixtur
 export interface RunResult {
   db: ReturnType<typeof createSupabaseDouble>
   response: FixtureRecord['response']
+  /** Real milliseconds from calling the engine to its answer, post-response work excluded. */
+  answeredMs: number | null
   error?: string
   outbound: OutboundRecord[]
   codeDispatch: CodeDispatchRecord[]
@@ -371,6 +374,13 @@ export interface RunHooks {
    * Worker's own prewarm cron, as production does every minute.
    */
   before?: (runEnv: Record<string, unknown>, db: ReturnType<typeof createSupabaseDouble>) => Promise<void>
+  /**
+   * How long the run's post-response work (its waitUntil promises) may take after
+   * the answer, as Cloudflare cuts it 30 s after the response. Unset, it is waited
+   * for to the end. The drill's hung shape bounds it (#1851): work stuck on a hung
+   * database is logging the outage may lose, not the answer.
+   */
+  postResponseLimitMs?: number
 }
 
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
@@ -472,14 +482,23 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
         : {},
   )
   let response: FixtureRecord['response'] = { status: 0, body: null }
+  let answeredMs: number | null = null
   let error: string | undefined
   try {
     const ctx = createExecutionContext()
     // The runtime the bidding Worker's routes pass, built by the engine under test.
     if (hooks.before) await hooks.before(runEnv, db)
     const runtime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
+    // Real time (Date is pinned during a run): how long the caller waited for its answer.
+    const calledAt = performance.now()
     const result = await executeWorkflow(options as never, runEnv as never, runtime as never, ctx)
-    await waitOnExecutionContext(ctx)
+    answeredMs = performance.now() - calledAt
+    const settled = waitOnExecutionContext(ctx)
+    if (hooks.postResponseLimitMs === undefined) {
+      await settled
+    } else {
+      await waitAtMost(settled, hooks.postResponseLimitMs)
+    }
     response = { status: result.status, body: result.response, headers: result.responseHeaders }
   } catch (err) {
     error = err instanceof Error ? `${err.name}: ${err.message}` : 'non Error thrown'
@@ -494,6 +513,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   return {
     db,
     response,
+    answeredMs,
     error,
     outbound: [...engineOutbound, ...drained.outbound],
     codeDispatch,

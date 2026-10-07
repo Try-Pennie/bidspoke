@@ -27,7 +27,7 @@
  * leadRead runs the read exactly as before.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Env } from '../index'
+import type { Env } from '../env'
 import type { Database } from '../types/database'
 import { createSupabaseClient } from './supabase'
 
