@@ -415,6 +415,14 @@
       "node": "insert execution_steps",
       "field": "*.output.timing",
       "reason": "buyer_select now records how long each live attempt spent before, inside and after the buyer call (#1804), as timing on the attempt row and buyer_call_ms on the node row, so the Stage B latency can be split between the buyer and our own ledger work. Bookkeeping fields on the step rows only: nothing sent, routed or decided changes. The values are 0 here because the replay pins the clock."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "fixture": "buyer_select_live_*",
+      "node": "insert execution_steps",
+      "field": "*.output.timing.*_ms",
+      "reason": "buyer_select now times each object call inside a live attempt (#1804): the claim, reserve, breaker record, commit, mark sold, release and buyer_sales mirror, as fields of timing on the attempt row, so the call costing the most can be named from production. Bookkeeping fields on the step rows only: nothing sent, routed or decided changes. The values are 0 here because the replay pins the clock."
     }
   ]
 }
