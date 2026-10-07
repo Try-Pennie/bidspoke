@@ -83,7 +83,7 @@ import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmD
 import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
-import { saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
+import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
 
 
 const edgeTypes = {
@@ -2806,9 +2806,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       }
       const verdict = classifySave({ noChanges: !!result.no_changes, sentDefinition: definition, persisted })
       if (verdict === 'no_changes') {
-        const nothingSaved = 'Nothing was saved: the workflow is identical to the stored version. If you just made an edit, it did not register. Check the node and try saving again.'
-        // An unchanged save still refreshes the stored copies (#1845), and says so when that failed again.
-        setSaveError(result.stored_copy_warning ? `${nothingSaved}\n\n${result.stored_copy_warning}` : nothingSaved)
+        setSaveError(noChangesMessage(result))
         return
       }
       if (verdict === 'unverified') {
@@ -2861,7 +2859,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   async function handleVersionRestore(versionId: string) {
     const restoredResult = await api.versions.restore(workflow.id, versionId)
-    if (restoredResult.stored_copy_warning) setSaveError(restoredResult.stored_copy_warning)
+    const restoreOutcome = saveOutcomeMessage(restoredResult)
+    if (restoreOutcome) setSaveError(restoreOutcome)
     const updated = await api.workflows.get(workflow.id)
     // Run the same migration pipeline the initial mount does (#114) — restoring
     // an old version is exactly when legacy shapes appear, and skipping the

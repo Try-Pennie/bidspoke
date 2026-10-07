@@ -28,3 +28,13 @@ export function saveOutcomeMessage(result: SaveResult): string | null {
 export function saveFinished(result: SaveResult): boolean {
   return (result.deploy_errors ?? []).length === 0
 }
+
+/**
+ * What the canvas says when the server found nothing to save. That save still
+ * refreshed the stored copies (#1845), so it is how a person clears a stale one,
+ * and when the refresh failed again the warning rides along.
+ */
+export function noChangesMessage(result: SaveResult): string {
+  const nothingSaved = 'Nothing was saved: the workflow is identical to the stored version. If you just made an edit, it did not register. Check the node and try saving again.'
+  return result.stored_copy_warning ? `${nothingSaved}\n\n${result.stored_copy_warning}` : nothingSaved
+}

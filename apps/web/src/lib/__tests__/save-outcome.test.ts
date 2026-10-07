@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { saveOutcomeMessage, saveFinished } from '../save-outcome'
+import { noChangesMessage, saveOutcomeMessage, saveFinished } from '../save-outcome'
 
 /**
  * What the canvas tells the person after a save the server accepted (#1845):
@@ -37,5 +37,20 @@ describe('saveFinished', () => {
 
   it('is false while a code node failed to deploy', () => {
     expect(saveFinished({ deploy_errors: [{ namespace: 'a', error: 'x' }] })).toBe(false)
+  })
+})
+
+// #1845: an unchanged save still refreshes the stored copies, so "save it again"
+// works; the canvas says nothing was saved, and adds the warning when the
+// refresh failed again.
+describe('noChangesMessage', () => {
+  it('says nothing was saved', () => {
+    expect(noChangesMessage({})).toMatch(/^Nothing was saved/)
+  })
+
+  it('adds the stored copy warning when the refresh failed again', () => {
+    const msg = noChangesMessage({ stored_copy_warning: 'A stored copy could not be refreshed.' })
+    expect(msg).toMatch(/^Nothing was saved/)
+    expect(msg).toContain('A stored copy could not be refreshed.')
   })
 })
