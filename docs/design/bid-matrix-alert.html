@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Bid matrix alert</title>
+<style>
+body { margin: 0; padding: 32px; background: #F4F1EC; font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; color: #1F2430; }
+.rec { max-width: 760px; margin: 0 0 24px; line-height: 1.5; }
+.rec h1 { font-size: 22px; margin: 0 0 8px; }
+.rec h2 { font-size: 15px; margin: 18px 0 4px; }
+.rec p, .rec li { font-size: 14px; }
+.p-phone { width: 390px; min-height: 760px; background: #1a1d21; color: #d1d2d3; border-radius: 28px; border: 1px solid #3c3f44; overflow: hidden; font: 17px/1.4 -apple-system, "Slack-Lato", "Helvetica Neue", Arial, sans-serif; }
+.p-top { padding: 14px 16px; border-bottom: 1px solid #2c2f33; font-weight: 800; color: #fff; }
+.p-day { text-align: center; font-size: 13px; font-weight: 700; color: #9a9b9d; margin: 14px 0 4px; }
+.p-msg { display: flex; gap: 10px; padding: 8px 14px; }
+.p-av { width: 36px; height: 36px; border-radius: 8px; background: #4a154b; color: #fff; flex: none; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+.p-body { min-width: 0; flex: 1; }
+.p-meta { display: flex; gap: 6px; align-items: baseline; }
+.p-name { font-weight: 800; color: #fff; }
+.p-app { font-size: 10px; font-weight: 700; background: #2c2f33; color: #9a9b9d; padding: 0 3px; border-radius: 2px; }
+.p-time { font-size: 13px; color: #9a9b9d; }
+.p-head { font-weight: 800; font-size: 19px; color: #fff; margin: 2px 0 4px; }
+.p-line b { color: #fff; }
+.p-gap { height: 6px; }
+.p-code { font: 16px/1.4 Menlo, Monaco, monospace; background: #222529; border: 1px solid #3c3f44; border-radius: 6px; padding: 6px 8px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; color: #d1d2d3; }
+.p-link { color: #1d9bd1; margin-top: 4px; }
+</style></head><body>
+<div class="rec">
+<h1>Bid matrix alert: the settled design (#1864)</h1>
+<p>Settled with Dan in four rendered design rounds on 2026-10-07, after a teammate asked for the matrix name and the person who made the change. Drawn from two real edits recovered from the Salesforce recycle bin, with the editor's name replaced. Built in <code>apps/worker/src/lib/matrix-audit-message.ts</code>.</p>
+<h2>Decision 1: the changes are a grid, not a list</h2>
+<p>Debt bands down the side, Vantage bands across, as the matrix looks in Salesforce. Only the rows and columns that changed are drawn, and a cell that did not change is a dot. The old list, one line per bid cut off at 20, hid 16 of the 36 bids changed on 2026-10-07; a line per Debt band and a single sentence were also rendered and set aside.</p>
+<h2>Decision 2: a cell is the new bid with how far it moved</h2>
+<p><code>$14 (-8)</code>: the bid that is live now, and the size of the move, which is what the reader judges. Old and new (<code>$22&rarr;$14</code>) made the reader do the subtraction; the move alone (<code>-$8</code>) hid what is live. A bid that appeared reads <code>$14 (new)</code> and one that was deleted reads <code>gone</code>.</p>
+<h2>Decision 3: one fixed title, the facts in labelled lines</h2>
+<p>The title is always "Bid matrix changed", so the alert is recognisable at a glance in the channel. Under it, labelled lines: Matrix (the partner's name, and regular or sell-off), Changed by (who, and the span of their saves in ET, dated when not today), Bids changed (the count). Putting the matrix or the person in the title, or folding the facts into one sentence, were rendered and set aside.</p>
+<h2>Decision 4: one message per matrix</h2>
+<p>Each message has one Matrix line, so two matrices edited in the same hour post as two messages.</p>
+<h2>Decision 5: it has to read on a phone</h2>
+<p>A sample of the four column grid sent to a phone wrapped every row onto two lines, which Dan called much too busy. So neighbouring Vantage bands that read the same in every row fold into one column (a flat change becomes one column headed "500+"), and Debt bands are written in thousands with the top rounded up to where the next band starts ("19k-30k"). Bands fold only when they touch, so a folded label never claims a band changed that did not. A line per Debt band and one line per size of move were also rendered at phone width and set aside. Below, the alert drawn at phone width in Slack's dark theme, with the two real edits the rounds used.</p>
+<h2>What is the rendering medium, not the design</h2>
+<p>The phone frame, avatar and day dividers below are a stand in for Slack so the alert is seen in its channel; Slack draws them itself. The grid is a Slack code block, so its alignment comes from Slack's monospace font, and the link is a Slack mrkdwn link.</p>
+</div>
+<div id="stage"></div>
+<script>
+// Same two real edits as rounds 2 and 3. Debt bands are listed in matrix order,
+// so adjacent entries are adjacent bands.
+var ALERTS = [
+  { day: "Monday, September 29th", time: "8:00 PM", partner: "AmOne Direct", when: "7:07 to 7:25 PM ET", count: 7,
+    debt: [[19000, 29999], [30000, 39999]], vantage: [[550, 600], [601, 660], [661, 780], [781, 850]],
+    cells: [[[14, 12], [14, 12], [14, 12], null], [[22, 14], [22, 14], [22, 14], [20, 14]]] },
+  { day: "Today", time: "11:00 AM", partner: "Borrow Better", when: "10:30 to 10:31 AM ET", count: 36,
+    debt: [[19000, 29999], [30000, 39999], [40000, 49999], [50000, 59999], [60000, 69999], [70000, 79999], [80000, 89999], [90000, 99999], [100000, 2000000]],
+    vantage: [[500, 549], [550, 649], [650, 719], [720, 1000]],
+    cells: [16, 24, 25, 27, 32, 34, 36, 38, 40].map(function (b) { return [[b, b - 2], [b, b - 2], [b, b - 2], [b, b - 2]]; }) }
+];
+
+function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+function money(n) { return "$" + n; }
+function moved(c) { var d = c[1] - c[0]; return (d >= 0 ? "+" : "-") + Math.abs(d); }
+function cellText(c) { return c ? money(c[1]) + " (" + moved(c) + ")" : "·"; }
+function n(x) { return x.toLocaleString("en-US"); }
+function debtRange(lo, hi) { return hi >= 1000000 ? "$" + n(lo) + " and up" : "$" + n(lo) + " to " + n(hi); }
+function vRange(lo, hi) { return hi >= 1000 ? lo + " and up" : lo + " to " + hi; }
+function k(x) { return x === 0 ? "0" : (x / 1000) + "k"; }
+function debtShort(lo, hi) { return hi >= 1000000 ? k(lo) + "+" : k(lo) + "-" + k(hi % 10 === 9 ? hi + 1 : hi); }
+function vShort(lo, hi) { return hi >= 1000 ? lo + "+" : lo + "-" + hi; }
+
+// Merge adjacent Vantage columns that hold the same text in every row.
+function foldColumns(a) {
+  var groups = [];
+  a.vantage.forEach(function (v, j) {
+    var col = a.cells.map(function (r) { return cellText(r[j]); }).join("|");
+    var last = groups[groups.length - 1];
+    if (last && last.key === col) { last.hi = v[1]; last.cols.push(j); }
+    else groups.push({ key: col, lo: v[0], hi: v[1], cols: [j] });
+  });
+  return groups;
+}
+
+// A: the grid, with identical neighbouring columns folded together.
+function bodyFoldedGrid(a) {
+  var groups = foldColumns(a);
+  var pad = function (s, w) { while (s.length < w) s += " "; return s; };
+  var first = Math.max(6, Math.max.apply(null, a.debt.map(function (d) { return debtShort(d[0], d[1]).length; }))) + 2;
+  var heads = groups.map(function (g) { return vShort(g.lo, g.hi); });
+  var rows = a.debt.map(function (d, i) { return groups.map(function (g) { return cellText(a.cells[i][g.cols[0]]); }); });
+  var widths = groups.map(function (g, j) { return Math.max(heads[j].length, Math.max.apply(null, rows.map(function (r) { return r[j].length; }))) + 2; });
+  var line = function (f, rest) { return (pad(f, first) + rest.map(function (t, j) { return pad(t, widths[j]); }).join("")).replace(/\s+$/, ""); };
+  var lines = [line("Debt $", heads)].concat(a.debt.map(function (d, i) { return line(debtShort(d[0], d[1]), rows[i]); }));
+  return [el("div", "p-code", lines.join("\n"))];
+}
+
+
+function line(label, text) { var p = el("div", "p-line"); p.append(el("b", null, label + " "), document.createTextNode(text)); return p; }
+
+function buildScreen() {
+  var phone = el("div", "p-phone");
+  phone.append(el("div", "p-top", "# statuspage"));
+  ALERTS.forEach(function (a) {
+    phone.append(el("div", "p-day", a.day));
+    var msg = el("div", "p-msg");
+    msg.append(el("div", "p-av", "B"));
+    var body = el("div", "p-body");
+    var meta = el("div", "p-meta");
+    meta.append(el("span", "p-name", "Bidspoke Alerts"), el("span", "p-app", "APP"), el("span", "p-time", a.time));
+    body.append(meta, el("div", "p-head", "Bid matrix changed"));
+    body.append(line("Matrix:", a.partner + " (regular, not sell-off)"), line("Changed by:", "Pat Example, " + a.when), line("Bids changed:", String(a.count)));
+    body.append(el("div", "p-gap"));
+    bodyFoldedGrid(a).forEach(function (x) { body.append(x); });
+    body.append(el("div", "p-link", "Open in Salesforce →"));
+    msg.append(body);
+    phone.append(msg);
+  });
+  return phone;
+}
+
+document.getElementById("stage").append(buildScreen());
+</script></body></html>
