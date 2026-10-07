@@ -37,7 +37,7 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
-import { buildWorkerProgram, workerProgramLoadErrors } from '../../__tests__/_worker-program'
+import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
 const WORKER_ROOT = path.dirname(WORKER_SRC)
 const HELPER_FILE = path.join(WORKER_SRC, 'lib/control-word.ts')

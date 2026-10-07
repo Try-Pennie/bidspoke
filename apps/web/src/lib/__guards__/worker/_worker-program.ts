@@ -11,7 +11,7 @@
  */
 import path from 'node:path'
 import ts from 'typescript'
-import { WORKER_SRC } from './_scan-utils'
+import { WORKER_SRC } from '../../__tests__/_scan-utils'
 
 const WORKER_ROOT = path.dirname(WORKER_SRC)
 const CONFIG_PATH = path.join(WORKER_ROOT, 'tsconfig.json')

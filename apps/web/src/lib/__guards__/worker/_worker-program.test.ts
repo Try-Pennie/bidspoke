@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { WEB_SRC, WORKER_SRC, listFiles } from './_scan-utils'
+import { WEB_SRC, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
 import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
 /**
@@ -52,7 +52,7 @@ describe('buildWorkerProgram', () => {
 
 describe('no test builds a program from the worker config by hand', () => {
   it('leaves parseJsonConfigFileContent and createProgram to this helper alone', () => {
-    const helper = path.join(WEB_SRC, 'lib/__tests__/_worker-program.ts')
+    const helper = path.join(WEB_SRC, 'lib/__guards__/worker/_worker-program.ts')
     const offenders = listFiles(WEB_SRC, { exts: ['.ts', '.tsx'], skipDirs: ['node_modules'], includeTests: true })
       .filter((file) => file !== helper && file !== fileURLToPath(import.meta.url))
       .filter((file) => /\bparseJsonConfigFileContent\b|\bcreateProgram\(/.test(readFileSync(file, 'utf8')))
