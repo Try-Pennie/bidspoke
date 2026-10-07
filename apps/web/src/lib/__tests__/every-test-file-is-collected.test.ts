@@ -22,7 +22,8 @@
  * assumed, so a change to either is a change this guard sees.
  */
 import { describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { REPO_ROOT, workspacePackages } from './_scan-utils'
@@ -52,7 +53,7 @@ function testFilesOnDisk(pkgDir: string): string[] {
  * The web package prints a `[project]` prefix because its config declares
  * projects, so the same file can appear more than once; the set collapses that.
  */
-function vitestCollects(pkgDir: string): Set<string> {
+async function vitestCollects(pkgDir: string): Promise<Set<string>> {
   const bin = path.join(pkgDir, 'node_modules', '.bin', 'vitest')
   const runner = existsSync(bin) ? bin : path.join(REPO_ROOT, 'node_modules', '.bin', 'vitest')
   // The default config, plus every additional `vitest.<name>.config.*` the
@@ -62,9 +63,13 @@ function vitestCollects(pkgDir: string): Set<string> {
   const extraConfigs = readdirSync(pkgDir).filter((f) => /^vitest\.[\w-]+\.config\.[cm]?[jt]s$/.test(f))
   const invocations: string[][] = [['list', '--filesOnly'], ...extraConfigs.map((c) => ['list', '--filesOnly', '--config', c])]
 
+  // In parallel: each listing starts vitest afresh (about 0.4 to 0.85 s each,
+  // measured 2026-10-07 for the worker's five configs), and run one after another
+  // they passed the default 5 s limit on a CI runner once the outage drill's
+  // config was added.
+  const outputs = await Promise.all(invocations.map((args) => promisify(execFile)(runner, args, { cwd: pkgDir, encoding: 'utf8' })))
   const collected = new Set<string>()
-  for (const args of invocations) {
-    const stdout = execFileSync(runner, args, { cwd: pkgDir, encoding: 'utf8' })
+  for (const { stdout } of outputs) {
     for (const line of stdout.split('\n')) {
       const l = line.trim().replace(/^\[[^\]]+\]\s*/, '')
       if (l && TEST_FILE.test(l)) collected.add(l)
@@ -106,11 +111,11 @@ describe('every test file is collected by some runner', () => {
   for (const pkg of packages) {
     const who = pkg.name ?? path.relative(REPO_ROOT, pkg.dir)
 
-    it(`${who} collects every test file it holds`, () => {
+    it(`${who} collects every test file it holds`, async () => {
       const onDisk = testFilesOnDisk(pkg.dir)
       expect(onDisk.length, `${who} appears to hold no test files at all`).toBeGreaterThan(0)
 
-      const collected = vitestCollects(pkg.dir)
+      const collected = await vitestCollects(pkg.dir)
       const byPlaywright = playwrightCollects(pkg.dir)
       const orphaned = onDisk.filter((f) => !collected.has(f) && !byPlaywright(f))
 
@@ -119,6 +124,9 @@ describe('every test file is collected by some runner', () => {
         `these files look like tests but no runner collects them, so they never run and their absence ` +
           `is indistinguishable from passing:\n  ${orphaned.join('\n  ')}`,
       ).toEqual([])
-    })
+      // The worker's five listings take 3.3 s one after another locally (2026-10-07)
+      // and about twice that on a CI runner; in parallel well under it. 20 s keeps
+      // more than double the serial CI time (L743).
+    }, 20_000)
   }
 })

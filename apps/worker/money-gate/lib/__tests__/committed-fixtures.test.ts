@@ -18,6 +18,7 @@ import type { ShapesFile } from '../shape'
 import type { ConfigSnapshot } from '../snapshot'
 import { resolveVariant, runPlan, type VariantFile } from '../../harness/replay-env'
 import { EXTRA_RUN_KINDS } from '../run-kinds'
+import { postgresTimeMicros } from '../../../src/engine/definition-loader'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures')
 const readJson = <T>(...p: string[]) => JSON.parse(readFileSync(join(fixtures, ...p), 'utf8')) as T
@@ -53,6 +54,16 @@ describe('committed money gate fixtures', () => {
   it('expected-changes.json parses, and every entry in it names a workflow, a check and a reason', () => {
     const parsed = parseExpectedChanges(readFileSync(join(fixtures, '..', 'expected-changes.json'), 'utf8'))
     expect(parsed.failures).toEqual([])
+  })
+
+  // Every production workflow row carries updated_at, and the definition loader
+  // writes its stored outage copy (#1845) only from a row with a readable stamp.
+  // Without one the outage drill (#1305) would find no copy to serve and blame
+  // the engine for a gap that exists only in the fixtures.
+  it('every workflow row carries an updated_at the definition loader can read', () => {
+    for (const w of snapshot.tables.workflows) {
+      expect({ id: w.id, stamp: Number.isFinite(postgresTimeMicros(String(w.updated_at))) }).toEqual({ id: w.id, stamp: true })
+    }
   })
 
   it('every live workflow in the shapes has a committed definition, and every definition a shape', () => {

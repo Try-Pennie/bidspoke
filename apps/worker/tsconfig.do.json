@@ -15,6 +15,6 @@
     "resolveJsonModule": true,
     "paths": { "@money-gate-engine/*": ["./src/*"] }
   },
-  "include": ["src", "money-gate/harness/replay.workers.test.ts", "money-gate/harness/import-meta.d.ts"],
+  "include": ["src", "money-gate/harness/*.workers.test.ts", "money-gate/harness/import-meta.d.ts"],
   "exclude": []
 }
