@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { leadRead } from './lead-read-budget'
-import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 import { formatErr } from './format-error'
 
 // Partner constants change rarely and every mutating route busts this cache
@@ -17,6 +17,8 @@ const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
 // lead almost never reads the database, so the per minute prewarm confirms the
 // copy once it is due (keepPartnerConstantsConfirmed).
 const lastGoodKey = (orgId: string) => `partner-constants-v2-${orgId}-lastgood`
+/** The last-good copy, which the stale copy check judges (#1848). */
+export const partnerConstantsLastGoodKey = lastGoodKey
 
 // In front of KV sits a per-isolate memory cache + single-flight. A warm isolate
 // serves from memory without touching KV (sub-ms), and concurrent loads on a cold
@@ -120,6 +122,7 @@ async function serveLastGood(orgId: string, kv: KVNamespace, dbError: string): P
   if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
   const age = judgeCopyAge(held.confirmedAt, Date.now())
   if (!age.usable) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
+  serveStoredCopy({ copy: 'partner_constants', subject: orgId, ageMs: age.ageMs, dbError })
   return lastGood
 }
 

@@ -24,10 +24,13 @@
  *   on the read), so the value keeps the exact shape the release before reads
  *   and writes, and an encrypted copy needs no second encryption.
  *
- * Every loader judges its copy with judgeCopyAge and refuses with
- * refuseStoredCopy, so the rule and the words for it exist once.
+ * Every loader judges its copy with judgeCopyAge, serves it with
+ * serveStoredCopy and refuses with refuseStoredCopy, so the rule and the words
+ * for it exist once, and every serve and refusal is counted in the stored copy
+ * ledger the per minute check alerts from (#1848).
  */
 import { stripUrlQueriesInText } from './url-redact'
+import { noteStoredCopy } from './stored-copy-ledger'
 
 /** The oldest a stored copy may be, since it was last confirmed, and still be served (Dan, 2026-10-07). */
 export const STORED_COPY_MAX_AGE_MS = 30 * 60 * 1000
@@ -49,7 +52,7 @@ export const STORED_COPY_FUTURE_TOLERANCE_MS = 60 * 1000
 /** Which stored copy, as named in logs and errors. */
 export type StoredCopyKind = 'workflow_definition' | 'custom_endpoint' | 'partner_config' | 'env_vars' | 'partner_constants' | 'buyer_profiles'
 
-const COPY_LABELS: Record<StoredCopyKind, string> = {
+export const COPY_LABELS: Record<StoredCopyKind, string> = {
   workflow_definition: 'the workflow definition',
   custom_endpoint: 'the custom endpoint',
   partner_config: 'the partner config',
@@ -146,6 +149,7 @@ function refusalWords(reason: StoredCopyRefusal, ageMs: number | null): string {
  * caller answers rather than throws).
  */
 export function refuseStoredCopy(args: { copy: StoredCopyKind; subject: string; reason: StoredCopyRefusal; ageMs: number | null; dbError: string }): StoredCopyRefusedError {
+  noteStoredCopy({ copy: args.copy, outcome: args.reason, ageMs: args.ageMs })
   console.error(stripUrlQueriesInText(JSON.stringify({
     event: 'stored_copy_refused',
     copy: args.copy,
@@ -156,4 +160,23 @@ export function refuseStoredCopy(args: { copy: StoredCopyKind; subject: string; 
     db_error: args.dbError,
   })))
   return new StoredCopyRefusedError(args.copy, args.subject, args.reason, args.ageMs, args.dbError)
+}
+
+/**
+ * Says, in one structured line, that a stored copy was served in place of the
+ * database, and counts it (#1848). Every loader calls it at the moment it hands
+ * its copy back, so an outage being absorbed is never silent. `detail` adds the
+ * fields one copy has and the others do not (a workflow's version, say).
+ */
+export function serveStoredCopy(args: { copy: StoredCopyKind; subject: string; ageMs: number; dbError: string; detail?: Record<string, unknown> }): void {
+  noteStoredCopy({ copy: args.copy, outcome: 'served', ageMs: args.ageMs })
+  console.warn(stripUrlQueriesInText(JSON.stringify({
+    event: 'stored_copy_served',
+    copy: args.copy,
+    subject: args.subject,
+    copy_age_ms: args.ageMs,
+    max_age_ms: STORED_COPY_MAX_AGE_MS,
+    db_error: args.dbError,
+    ...args.detail,
+  })))
 }

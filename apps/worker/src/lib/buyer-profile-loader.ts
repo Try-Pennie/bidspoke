@@ -35,7 +35,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 import { leadRead } from './lead-read-budget'
-import { isDueForReconfirm, judgeCopyAge, refuseStoredCopy } from './stored-copy-age'
+import { isDueForReconfirm, judgeCopyAge, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
 export const BUYER_PROFILES_CACHE_TTL_SECONDS = 300
@@ -49,6 +49,8 @@ export interface LoadOptions {
 
 const cacheKey = (orgId: string) => `buyer-profiles:${orgId}`
 const lastGoodKey = (orgId: string) => `buyer-profiles:${orgId}:lastgood`
+/** The last-good copy, which the stale copy check judges (#1848). */
+export const buyerProfilesLastGoodKey = lastGoodKey
 /** When a save route last rebuilt this org's profiles; a refresh or prewarm whose read began before it never writes (review of #1646). */
 const savedAtKey = (orgId: string) => `buyer-profiles:${orgId}:saved_at`
 /** Far above the cache TTL and any read's duration, so the marker outlives every refresh that could race the save. */
@@ -232,8 +234,12 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
       // maximum, or unreadable, it is refused by name (#1847).
       const age = judgeCopyAge(lastGood.loaded_at, now())
       if (!age.usable) throw refuseStoredCopy({ copy: 'buyer_profiles', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError: message })
+      serveStoredCopy({ copy: 'buyer_profiles', subject: orgId, ageMs: age.ageMs, dbError: message })
       return { ...lastGood, served_from: 'last_good' }
     }
+    // Logged and counted as a refusal (#1848); the error thrown keeps its words,
+    // which the buyer nodes and the scheduled checks show as they are.
+    refuseStoredCopy({ copy: 'buyer_profiles', subject: orgId, reason: 'no_copy', ageMs: null, dbError: message })
     throw new Error(`buyer profiles read failed for org ${orgId}: ${message}`, { cause: err })
   }
   console.log(`[buyer-profiles] cache miss org=${orgId} kv_get_ms=${kvGetMs} db_read_ms=${now() - readStarted}`)

@@ -69,11 +69,13 @@ import { isOrgOnlyEnvKey } from './org-only-env-keys'
 import { fetchAllPaged } from './paginate'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import { leadRead } from './lead-read-budget'
-import { confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
 const lastGoodKey = (orgId: string) => `env-vars-${orgId}-lastgood`
+/** The org's last-good copy, which the stale copy check judges (#1848). */
+export const envVarsLastGoodKey = lastGoodKey
 const workflowCacheKey = (orgId: string) => `env-vars-${orgId}-workflow-scoped`
 const workflowLastGoodKey = (orgId: string) => `env-vars-${orgId}-workflow-scoped-lastgood`
 
@@ -236,6 +238,7 @@ async function serveLastGood(orgId: string, kv: KVNamespace, secretEncryptionKey
   if (!held) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
   const age = judgeCopyAge(held.confirmedAt, now)
   if (!age.usable) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
+  serveStoredCopy({ copy: 'env_vars', subject: orgId, ageMs: age.ageMs, dbError })
 
   const entry = held.entry
   const global = globalOf(entry)

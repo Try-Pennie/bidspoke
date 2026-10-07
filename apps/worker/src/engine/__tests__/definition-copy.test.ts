@@ -255,9 +255,9 @@ describe('serving the copy when the database read fails', () => {
 
     expect(db.requests).toBeGreaterThan(0) // the database was really asked first
     expect(loaded).toEqual(heldCopy(kv)!.workflow)
-    const served = eventsNamed('workflow_definition_served_from_copy')
+    const served = eventsNamed('stored_copy_served')
     expect(served).toHaveLength(1)
-    expect(served[0]).toMatchObject({ workflow_id: WF_ID, workflow_version_id: 'ver-7', copy_age_ms: 90_000, copy_written_at: new Date(T0).toISOString() })
+    expect(served[0]).toMatchObject({ copy: 'workflow_definition', subject: WF_ID, workflow_version_id: 'ver-7', copy_age_ms: 90_000, copy_written_at: new Date(T0).toISOString() })
   })
 
   it('with no copy, the failure is thrown as a retryable error, never an empty definition', async () => {
@@ -340,7 +340,7 @@ describe('the copy is served for at most thirty minutes after it was last confir
     await expect(promise).rejects.toBeInstanceOf(StoredCopyRefusedError)
     await expect(promise).rejects.toMatchObject({ reason: 'copy_too_old', copy: 'workflow_definition' })
     expect(eventsNamed('stored_copy_refused')[0]).toMatchObject({ copy: 'workflow_definition', subject: WF_ID, reason: 'copy_too_old', copy_age_ms: STORED_COPY_MAX_AGE_MS + 1 })
-    expect(eventsNamed('workflow_definition_served_from_copy')).toHaveLength(0)
+    expect(eventsNamed('stored_copy_served')).toHaveLength(0)
   })
 
   it('refuses a copy whose written_at cannot be read, rather than serving it at an unknown age', async () => {

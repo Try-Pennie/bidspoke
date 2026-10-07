@@ -35,7 +35,7 @@
  * of a partner no lead has reached, against the row's updated_at.
  */
 import { formatErr } from './format-error'
-import { STORED_COPY_RECONFIRM_AFTER_MS, confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { STORED_COPY_RECONFIRM_AFTER_MS, confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
 /** The KV key holding a partner's last-good config. */
 export const partnerLastGoodKey = (partnerId: string): string => `partner-lastgood:${partnerId}`
@@ -85,15 +85,22 @@ export async function rememberPartnerLastGood(kv: KVNamespace | undefined, partn
 export async function readPartnerLastGood<T>(kv: KVNamespace | undefined, partnerId: string, dbError: string, nowMs: number): Promise<T | null> {
   if (!kv) return null
   const held = await readConfirmedCopy(kv, partnerLastGoodKey(partnerId))
-  if (!held) return null
-  let copy: T
-  try {
-    copy = JSON.parse(held.value) as T
-  } catch {
+  let copy: T | null = null
+  if (held) {
+    try {
+      copy = JSON.parse(held.value) as T
+    } catch {
+      copy = null
+    }
+  }
+  if (!held || copy === null) {
+    // Logged and counted as a refusal (#1848); the caller still answers a null.
+    refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: 'no_copy', ageMs: null, dbError })
     return null
   }
   const age = judgeCopyAge(held.confirmedAt, nowMs)
   if (!age.usable) throw refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: age.reason, ageMs: age.ageMs, dbError })
+  serveStoredCopy({ copy: 'partner_config', subject: partnerId, ageMs: age.ageMs, dbError })
   return copy
 }
 

@@ -89,11 +89,12 @@ export interface SweepResult {
 }
 
 /** `ep-lastgood:`, taken from the key builder so the two cannot drift. */
-const ENDPOINT_PREFIX = endpointLastGoodKey('', '').slice(0, -1)
-const PARTNER_PREFIX = partnerLastGoodKey('')
-const WORKFLOW_PREFIX = workflowCopyKey('')
+export const ENDPOINT_PREFIX = endpointLastGoodKey('', '').slice(0, -1)
+export const PARTNER_PREFIX = partnerLastGoodKey('')
+export const WORKFLOW_PREFIX = workflowCopyKey('')
 
-async function listKeys(kv: KVNamespace, prefix: string): Promise<string[]> {
+/** Every key under `prefix`, all pages. Throws when KV does. The stale copy check lists with it too (#1848). */
+export async function listKeys(kv: KVNamespace, prefix: string): Promise<string[]> {
   const names: string[] = []
   let cursor: string | undefined
   do {
