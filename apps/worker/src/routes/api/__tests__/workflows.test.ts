@@ -683,6 +683,18 @@ describe('DELETE /workflows/:id', () => {
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
+  it('still audits a committed delete when the cache refresh fails, and says the delete landed (#1845)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/workflows/wf-1')
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
+  })
+
   it('writes an audit log entry', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
@@ -843,6 +855,27 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     )
     await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
+  })
+
+  it('still audits a committed restore when the cache refresh fails (#1845)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_versions: [
+          { single: oldVersion },
+          { single: { version_number: 3 } },
+          { insertResult: { id: 'ver-4', version_number: 4 } },
+        ],
+        workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1498,6 +1531,20 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
     expect(await res.json()).toEqual({ test_payloads: payloadBody.test_payloads })
     // The write moved the row's stamp, so the last-good copy follows it (#1845).
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
+  })
+
+  it('says the payloads were saved when the cache refresh fails afterwards (#1845)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: { test_payloads: payloadBody.test_payloads } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1/test-payloads', { body: payloadBody })
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
   })
 })
 
