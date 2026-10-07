@@ -216,7 +216,7 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
     held = await kv.get<WorkflowDefinitionCopy>(workflowCopyKey(workflowId), 'json')
   } catch (err) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'copy_read_failed', detail: formatErr(err), db_error: failure.message })
-    noteStoredCopy({ copy: 'workflow_definition', outcome: 'no_copy', ageMs: null })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
   if (!held) {
@@ -227,7 +227,7 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
   // A route changed the workflow and its new state could not be confirmed.
   if (held.unverified === true) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unverified', db_error: failure.message })
-    noteStoredCopy({ copy: 'workflow_definition', outcome: 'no_copy', ageMs: null })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
   // Judged before anything the copy claims, a tombstone's not found included:
@@ -246,7 +246,7 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
   const workflow = held.workflow
   if (!isServableWorkflow(workflow)) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unreadable', db_error: failure.message })
-    noteStoredCopy({ copy: 'workflow_definition', outcome: 'no_copy', ageMs: null })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
 

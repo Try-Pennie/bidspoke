@@ -12,6 +12,12 @@ export const FORGOTTEN_STATE = [
   // A warm run would otherwise skip writing the partner copy a previous fixture
   // wrote, though reset() removed that copy.
   'src/lib/partner-last-good.ts:lastGoodWritten',
+  // The count of stored copies served (#1848): a down run adds to it, and it is
+  // flushed per request, so one fixture's counts must not carry into the next.
+  'src/lib/stored-copy-ledger.ts:flushing',
+  'src/lib/stored-copy-ledger.ts:isolateId',
+  'src/lib/stored-copy-ledger.ts:lastFlushAt',
+  'src/lib/stored-copy-ledger.ts:pending',
 ] as const
 
 export type ForgottenState = (typeof FORGOTTEN_STATE)[number]

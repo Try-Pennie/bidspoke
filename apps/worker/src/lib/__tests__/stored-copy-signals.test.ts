@@ -205,6 +205,17 @@ describe('while leads are being served from stored copies', () => {
     expect(post.fixHint).toMatch(/status\.supabase\.com/)
   })
 
+  // A copy that was there but could not be read or used is not "no copy" (L11).
+  it('says a stored copy could not be used, not that there was none, when one existed', async () => {
+    const h = harness()
+    await rememberSlack(h.kv)
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, { workflow_definition: { s: 0, r: { copy_unusable: 4 }, a: null } })
+    await runStoredCopyChecks(h.deps())
+    const text = h.posted.flatMap((p) => p.errors).join('\n')
+    expect(text).toMatch(/could not be read or was not fit to serve/)
+    expect(text).not.toMatch(/there was no stored copy/)
+  })
+
   it('reads the live Slack connection only when there is no last-good copy', async () => {
     const h = harness({ db: slackDb(SLACK_CONFIG) })
     for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
@@ -353,6 +364,18 @@ describe('a stored copy that has gone stale', () => {
     await liveWorkflowCopy(h.copies, old, { unverified: true })
     await h.copies.put(envVarsLastGoodKey('org-gone'), 'blob', confirmedAt(old))
     expect((await findStaleCopies(h.copies as unknown as KVNamespace, T0)).stale).toEqual([])
+  })
+
+  // A copy KV would not hand back is unmeasured, never skipped as if it were not
+  // live: a read failure must not read as a fresh copy (L215).
+  it('reports a workflow copy it could not read as unmeasured, rather than skipping it', async () => {
+    const h = harness()
+    await liveWorkflowCopy(h.copies, T0)
+    const reading = Object.assign(Object.create(h.copies), {
+      get: async () => { throw new Error('KV get failed: 500') },
+    }) as unknown as KVNamespace
+    const { unmeasured } = await findStaleCopies(reading, T0)
+    expect(unmeasured.join('\n')).toMatch(/workflow-def-lastgood:.*KV get failed: 500/)
   })
 
   it('alerts through the shared alerter with one finding per stale copy, keyed on the copy so a growing age is not a new problem', async () => {

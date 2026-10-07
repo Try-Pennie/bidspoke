@@ -31,7 +31,7 @@
  * `stored-copy-serving:cooldown` in the IDEMPOTENCY namespace.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { readStoredCopyLedger, type LedgerKv, type LedgerReading } from './stored-copy-ledger'
+import { readStoredCopyLedger, type LedgerKv, type LedgerReading, type LedgerRefusal } from './stored-copy-ledger'
 import {
   COPY_LABELS,
   STORED_COPY_MAX_AGE_MS,
@@ -39,7 +39,6 @@ import {
   judgeCopyAge,
   readConfirmedCopy,
   type StoredCopyKind,
-  type StoredCopyRefusal,
 } from './stored-copy-age'
 import { ENDPOINT_PREFIX, PARTNER_PREFIX, WORKFLOW_PREFIX, listKeys, type SweepResult } from './stored-copy-sweep'
 import { envVarsLastGoodKey } from './env-loader'
@@ -202,10 +201,11 @@ const minutesWord = (ms: number) => {
   return m === 1 ? '1 minute' : `${m} minutes`
 }
 
-const REFUSAL_WORDS: Record<StoredCopyRefusal, string> = {
+const REFUSAL_WORDS: Record<LedgerRefusal, string> = {
   copy_too_old: `the stored copy was past the ${MAX_AGE_MINUTES} minute limit`,
   no_copy: 'there was no stored copy',
   copy_age_unknown: 'the stored copy carried no readable time',
+  copy_unusable: 'the stored copy could not be read or was not fit to serve',
 }
 
 /** The copies whose labels are plural, for the verb that follows them. */
@@ -228,7 +228,7 @@ export function servingMessage(reading: LedgerReading): TitledMessage & { refusi
       const oldest = t.oldestServedAgeMs === null ? '' : `; the oldest was last confirmed ${minutesWord(t.oldestServedAgeMs)} ago`
       lines.push(`${label} ${verb} served from a stored copy at least ${times(t.served)}${oldest}.`)
     }
-    for (const reason of ['copy_too_old', 'no_copy', 'copy_age_unknown'] as const) {
+    for (const reason of ['copy_too_old', 'no_copy', 'copy_age_unknown', 'copy_unusable'] as const) {
       const n = t.refused[reason]
       if (n === 0) continue
       refusing = true
@@ -426,7 +426,14 @@ export async function findStaleCopies(copies: KVNamespace, nowMs: number): Promi
   let workflowsRead = false
   await kind('workflow definition copies', async () => {
     for (const key of await listKeys(copies, WORKFLOW_PREFIX)) {
-      const copy = await copies.get<WorkflowCopyShape>(key, 'json').catch(() => null)
+      let copy: WorkflowCopyShape | null
+      try {
+        copy = await copies.get<WorkflowCopyShape>(key, 'json')
+      } catch (e) {
+        // Not read is not fresh (L215): named, and the rest still judged.
+        unmeasured.push(`${key}: ${formatErr(e)}`)
+        continue
+      }
       if (!copy || copy.is_active !== true || copy.unverified === true) continue
       const name = copy.workflow?.workflow_name
       judge('workflow_definition', key, typeof name === 'string' && name !== '' ? name : key.slice(WORKFLOW_PREFIX.length), copy.written_at)

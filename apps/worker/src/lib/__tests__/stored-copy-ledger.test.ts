@@ -88,8 +88,8 @@ describe('noting a stored copy', () => {
 
     const reading = await readStoredCopyLedger(asKv(kv), T0, 5)
     expect(reading.activeMinutes).toBe(1)
-    expect(reading.kinds.workflow_definition).toEqual({ served: 2, refused: { no_copy: 0, copy_too_old: 0, copy_age_unknown: 0 }, oldestServedAgeMs: 9 * MINUTE })
-    expect(reading.kinds.env_vars).toEqual({ served: 0, refused: { no_copy: 0, copy_too_old: 1, copy_age_unknown: 0 }, oldestServedAgeMs: null })
+    expect(reading.kinds.workflow_definition).toEqual({ served: 2, refused: { no_copy: 0, copy_too_old: 0, copy_age_unknown: 0, copy_unusable: 0 }, oldestServedAgeMs: 9 * MINUTE })
+    expect(reading.kinds.env_vars).toEqual({ served: 0, refused: { no_copy: 0, copy_too_old: 1, copy_age_unknown: 0, copy_unusable: 0 }, oldestServedAgeMs: null })
   })
 
   it('a later flush in the same minute rewrites that minute with the running totals, never a second count of the first', async () => {
