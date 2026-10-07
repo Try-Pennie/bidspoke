@@ -368,7 +368,10 @@ workflows.put('/:id', async (c) => {
   // real save), so a client edit that silently failed to reach the payload
   // looked "Saved" with an unchanged DB (the reported bug). Report `no_changes`
   // instead and skip the snapshot / cache churn / audit entry so the UI can flag
-  // the discrepancy loudly ("fail loud, not silent").
+  // the discrepancy loudly ("fail loud, not silent"). The stored copies are still
+  // refreshed (#1845): a save whose refresh failed tells the person to save
+  // again, and that second save is unchanged, so skipping the refresh here would
+  // make the remedy do nothing.
   const nameUnchanged = body.name === undefined || body.name === existing.name
   const slackUnchanged =
     body.slack_channel === undefined ||
@@ -381,7 +384,10 @@ workflows.put('/:id', async (c) => {
     descriptionNotTouched &&
     jsonEqual(body.definition, existing.definition)
   ) {
-    return c.json({ id, no_changes: true })
+    const copyRefreshed = await copyCleared(async () => {
+      await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
+    }, `workflow ${id} caches`)
+    return c.json({ id, no_changes: true, ...copyWarning(copyRefreshed) })
   }
 
   // Get next version number. `.single()` reports "no prior versions" (first save)

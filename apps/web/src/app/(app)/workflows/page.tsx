@@ -405,7 +405,8 @@ export default function WorkflowsPage() {
       })
     }
     try {
-      await api.workflows.setFolder(workflowId, folderId)
+      const r = await api.workflows.setFolder(workflowId, folderId)
+      if (r.stored_copy_warning) setError(r.stored_copy_warning)
     } catch (e) {
       setWorkflows((ws) => ws.map((w) => (w.id === workflowId ? original : w)))
       setError(e instanceof Error ? e.message : 'Failed to move workflow')
@@ -506,7 +507,9 @@ export default function WorkflowsPage() {
 
     setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: next } : w))
     try {
-      await api.workflows.setActive(wf.id, next)
+      const r = await api.workflows.setActive(wf.id, next)
+      // Saved, but the old copy may still be served for a while: say so (#1845).
+      if (r.stored_copy_warning) setError(r.stored_copy_warning)
     } catch (e) {
       setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: wf.is_active } : w))
       setError(e instanceof Error ? e.message : 'Failed to update workflow')
@@ -564,7 +567,8 @@ export default function WorkflowsPage() {
       setRemovingId(null)
     }, 150)
     try {
-      await api.workflows.delete(id)
+      const r = await api.workflows.delete(id)
+      if (r.stored_copy_warning) setError(r.stored_copy_warning)
     } catch (e) {
       if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
       setRemovingId(null)

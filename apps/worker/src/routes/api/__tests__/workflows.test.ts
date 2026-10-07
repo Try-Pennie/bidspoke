@@ -400,9 +400,42 @@ describe('PUT /workflows/:id', () => {
     const body = await res.json() as { no_changes?: boolean; version_id?: string }
     expect(body.no_changes).toBe(true)
     expect(body.version_id).toBeUndefined()
-    // No snapshot, no cache churn, no audit entry for a no-op.
-    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    // No snapshot and no audit entry for a no-op.
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  // #1845: a save whose stored copy could not be refreshed tells the person to
+  // save again, and that second save is unchanged. It must still refresh the
+  // copies, or the remedy the warning names does nothing.
+  it('refreshes the stored copies on an unchanged save, so saving again clears a stale one', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', {
+      body: { name: 'Lead Routing', definition: { nodes: [] } },
+    })
+    expect(((await res.json()) as { no_changes?: boolean }).no_changes).toBe(true)
+    expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
+  })
+
+  it('warns on an unchanged save whose stored copies still cannot be refreshed', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    const res = await request(app, 'PUT', '/workflows/wf-1', {
+      body: { name: 'Lead Routing', definition: { nodes: [] } },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { no_changes?: boolean; stored_copy_warning?: string }
+    expect(body.no_changes).toBe(true)
+    expect(body.stored_copy_warning).toMatch(/save it again/i)
   })
 
   it('treats a key-reordered but structurally identical definition as no_changes (jsonb round-trip)', async () => {
@@ -422,7 +455,6 @@ describe('PUT /workflows/:id', () => {
     })
     const body = await res.json() as { no_changes?: boolean }
     expect(body.no_changes).toBe(true)
-    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
   })
 
   it('saves and creates a version when the definition content actually changed', async () => {

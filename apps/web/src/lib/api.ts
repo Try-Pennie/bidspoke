@@ -518,7 +518,7 @@ export const api = {
         `/api/workflows/${id}/draft-changelog`,
         { method: 'POST', body: JSON.stringify({ definition }) }
       ),
-    delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
+    delete: (id: string) => req<{ ok: boolean; stored_copy_warning?: string }>(`/api/workflows/${id}`, { method: 'DELETE' }),
     // Server-side clone — carries the full version history (and the latest saved
     // definition), unlike a name+definition copy which restarts at v1.
     duplicate: (id: string) =>
@@ -528,12 +528,12 @@ export const api = {
     timeoutSuggestions: (id: string) =>
       req<WorkflowTimeoutSuggestions>(`/api/workflows/${id}/timeout-suggestions`),
     setActive: (id: string, is_active: boolean) =>
-      req<{ id: string; is_active: boolean }>(`/api/workflows/${id}`, {
+      req<{ id: string; is_active: boolean; stored_copy_warning?: string }>(`/api/workflows/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ is_active }),
       }),
     setFolder: (id: string, folder_id: string | null) =>
-      req<{ id: string; folder_id: string | null }>(`/api/workflows/${id}`, {
+      req<{ id: string; folder_id: string | null; stored_copy_warning?: string }>(`/api/workflows/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ folder_id }),
       }),
@@ -552,7 +552,7 @@ export const api = {
         deploy?: { deployed: boolean; skipped: boolean; error?: string }
       }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data) }),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
-      req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
+      req<{ test_payloads: Array<{ name: string; payload: unknown }>; stored_copy_warning?: string }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',
         body: JSON.stringify({ test_payloads }),
       }),
@@ -583,7 +583,7 @@ export const api = {
         `/api/workflows/${workflowId}/versions/${versionId}`
       ),
     restore: (workflowId: string, versionId: string) =>
-      req<{ ok: boolean; version_number: number }>(
+      req<{ ok: boolean; version_number: number; stored_copy_warning?: string }>(
         `/api/workflows/${workflowId}/versions/${versionId}/restore`,
         { method: 'POST' }
       ),

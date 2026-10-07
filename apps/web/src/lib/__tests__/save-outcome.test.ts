@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { saveOutcomeMessage } from '../save-outcome'
+import { saveOutcomeMessage, saveFinished } from '../save-outcome'
 
 /**
  * What the canvas tells the person after a save the server accepted (#1845):
@@ -23,5 +23,19 @@ describe('saveOutcomeMessage', () => {
   it('shows both when both happened', () => {
     const msg = saveOutcomeMessage({ deploy_errors: [{ namespace: 'a', error: 'x' }], stored_copy_warning: 'Copy not refreshed.' })
     expect(msg).toBe('Saved, but one code node failed to deploy:\na: x\n\nCopy not refreshed.')
+  })
+})
+
+describe('saveFinished', () => {
+  // A stored copy warning is about the copy, not the save: the save landed, so
+  // the canvas leaves edit mode as for any clean save and shows the warning
+  // beside it. Only a code node that failed to deploy keeps the person editing.
+  it('is true for a clean save and for one carrying only the stored copy warning', () => {
+    expect(saveFinished({})).toBe(true)
+    expect(saveFinished({ stored_copy_warning: 'x' })).toBe(true)
+  })
+
+  it('is false while a code node failed to deploy', () => {
+    expect(saveFinished({ deploy_errors: [{ namespace: 'a', error: 'x' }] })).toBe(false)
   })
 })

@@ -19,3 +19,12 @@ export function saveOutcomeMessage(result: SaveResult): string | null {
   if (result.stored_copy_warning) parts.push(result.stored_copy_warning)
   return parts.length > 0 ? parts.join('\n\n') : null
 }
+
+/**
+ * Whether the save finished: true unless a code node failed to deploy, which
+ * keeps the person editing. A stored copy warning is about the copy, not the
+ * save, so it never holds the canvas in edit mode.
+ */
+export function saveFinished(result: SaveResult): boolean {
+  return (result.deploy_errors ?? []).length === 0
+}
