@@ -53,10 +53,10 @@ const testEnv = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
-function request(workflowId: string, apiKey: string | undefined, body: unknown) {
+function request(workflowId: string, apiKey: string | undefined, body: unknown, query = '') {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey !== undefined) headers['X-API-Key'] = apiKey
-  return shadow.request(`/${workflowId}`, { method: 'POST', headers, body: JSON.stringify(body) }, testEnv, mockCtx)
+  return shadow.request(`/${workflowId}${query}`, { method: 'POST', headers, body: JSON.stringify(body) }, testEnv, mockCtx)
 }
 
 describe('POST /shadow/:workflow_id', () => {
@@ -86,6 +86,19 @@ describe('POST /shadow/:workflow_id', () => {
       shadowMode: 'dry_run',
       enforceSourceAssignment: false,
     })
+  })
+
+  // The mode is the one word this route reads from the address, and only as a
+  // word from its own list (#1815): anything else is the default.
+  it.each([
+    ['?mode=stand_in', 'stand_in'],
+    ['?mode=dry_run', 'dry_run'],
+    ['?mode=Stand_In', 'dry_run'],
+    ['?mode=someone%40example.com', 'dry_run'],
+  ])('runs %s as a %s shadow', async (query, mode) => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, query)
+    expect(res.status).toBe(204)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: mode })
   })
 
   // #1708 part B: a shadow run's code runs on a compare bundle in the compare

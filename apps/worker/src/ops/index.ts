@@ -137,8 +137,8 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
       return json(503, { error: 'lane_not_ops', lane })
     }
 
-    const url = new URL(req.url)
-    const match = ROUTE.exec(url.pathname)
+    // The path only: nothing in the query string is read (#1815).
+    const match = ROUTE.exec(new URL(req.url).pathname)
     if (!match) return json(404, { error: 'not_found' })
     if (req.method !== 'POST') return json(405, { error: 'method_not_allowed' })
 
