@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executePartnerBidNode, evaluateFormula, recordBreakerOutcome, meetsBidFloor } from '../partner-bid'
 import { PartnerApiError } from '../../partner-bid-error'
 import { retirePartnerLastGood } from '../../../lib/partner-last-good'
+import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../../../lib/stored-copy-age'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 import type { PartnerBidOutput } from '../partner-bid'
@@ -757,22 +758,30 @@ describe('partner config last-good fallback during a DB outage (#1296)', () => {
     })
     return { from: () => chain }
   }
-  function recordingKv(seed: Record<string, string> = {}) {
-    const store = new Map(Object.entries(seed))
-    const puts: { key: string; value: string; opts?: { expirationTtl?: number } }[] = []
+  // A seed is a bare value (a copy written before #1847, with no confirmation)
+  // or a value with the metadata its put carried.
+  type Seed = string | { value: string; metadata: unknown }
+  function recordingKv(seed: Record<string, Seed> = {}) {
+    const store = new Map<string, { value: string; metadata: unknown }>(
+      Object.entries(seed).map(([k, v]) => [k, typeof v === 'string' ? { value: v, metadata: null } : v]),
+    )
+    const puts: { key: string; value: string; opts?: { expirationTtl?: number; metadata?: unknown } }[] = []
     return {
       puts,
       kv: {
-        get: async (k: string) => store.get(k) ?? null,
-        put: async (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); puts.push({ key: k, value: v, opts }) },
+        get: async (k: string) => store.get(k)?.value ?? null,
+        getWithMetadata: async (k: string) => store.get(k) ?? { value: null, metadata: null },
+        put: async (k: string, v: string, opts?: { expirationTtl?: number; metadata?: unknown }) => { store.set(k, { value: v, metadata: opts?.metadata ?? null }); puts.push({ key: k, value: v, opts }) },
         delete: async (k: string) => { store.delete(k) },
       },
     }
   }
   const partner = makePartner({ updated_at: '2026-09-10T20:00:00Z' })
+  /** The copy as a healthy read `ageMs` ago left it. */
+  const confirmedCopy = (ageMs = 0, value: unknown = partner): Seed => ({ value: JSON.stringify(value), metadata: { confirmed_at: new Date(Date.now() - ageMs).toISOString() } })
 
   it('bids from the last-good copy when the partner_configs read fails', async () => {
-    const { kv } = recordingKv({ 'partner-lastgood:partner-1': JSON.stringify(partner) })
+    const { kv } = recordingKv({ 'partner-lastgood:partner-1': confirmedCopy(60_000) })
     const result = await executePartnerBidNode(
       makeNode({ partner_id: 'partner-1' }),
       makeCtx({ debt_amount: 10000 }),
@@ -782,6 +791,51 @@ describe('partner config last-good fallback during a DB outage (#1296)', () => {
     const out = result.output as PartnerBidOutput
     expect(out.partner).toBe('tripoint')
     expect(out.bid).toBe(6500)
+  })
+
+  // #1847: served for at most thirty minutes after a healthy read or the sweep
+  // last confirmed it; past that, or with no readable confirmation, refused by name.
+  it.each([
+    ['last confirmed more than thirty minutes ago', () => confirmedCopy(STORED_COPY_MAX_AGE_MS + 1_000), 'copy_too_old'],
+    ['written before copies carried a confirmation time', () => JSON.stringify(partner), 'copy_age_unknown'],
+  ] as const)('refuses a copy %s, with its own reason', async (_label, seed, reason) => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { kv } = recordingKv({ 'partner-lastgood:partner-1': seed() })
+    const run = executePartnerBidNode(makeNode({ partner_id: 'partner-1' }), makeCtx({ debt_amount: 10000 }), makeEnv({ WORKFLOW_CACHE: kv }), makeDbDownSupabase() as never)
+    await expect(run).rejects.toBeInstanceOf(StoredCopyRefusedError)
+    await expect(run).rejects.toMatchObject({ reason, copy: 'partner_config' })
+    errSpy.mockRestore()
+  })
+
+  it('stamps every copy it writes with the time the read confirmed it', async () => {
+    const { kv, puts } = recordingKv()
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-stamp' }), makeCtx({ debt_amount: 10000 }), makeEnv({ WORKFLOW_CACHE: kv }), makeSupabase(makePartner({ id: 'partner-stamp' })) as never)
+    const [write] = puts.filter((p) => p.key === 'partner-lastgood:partner-stamp')
+    const stamp = Date.parse((write.opts?.metadata as { confirmed_at?: string }).confirmed_at ?? '')
+    expect(Math.abs(Date.now() - stamp)).toBeLessThan(5_000)
+  })
+
+  it('confirms an unchanged copy again once this isolate last wrote it the reconfirm interval ago, and not before', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const start = Date.parse('2026-10-07T12:00:00Z')
+      vi.setSystemTime(start)
+      const { kv, puts } = recordingKv()
+      const env = makeEnv({ WORKFLOW_CACHE: kv })
+      const steady = makePartner({ id: 'partner-reconfirm', updated_at: '2026-10-07T11:00:00Z' })
+      const bid = () => executePartnerBidNode(makeNode({ partner_id: 'partner-reconfirm' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(steady) as never)
+      await bid()
+      vi.setSystemTime(start + STORED_COPY_RECONFIRM_AFTER_MS - 1)
+      await bid()
+      expect(puts.filter((p) => p.key === 'partner-lastgood:partner-reconfirm')).toHaveLength(1)
+      vi.setSystemTime(start + STORED_COPY_RECONFIRM_AFTER_MS)
+      await bid()
+      const writes = puts.filter((p) => p.key === 'partner-lastgood:partner-reconfirm')
+      expect(writes).toHaveLength(2)
+      expect((writes[1].opts?.metadata as { confirmed_at: string }).confirmed_at).toBe(new Date(start + STORED_COPY_RECONFIRM_AFTER_MS).toISOString())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('still refuses when the read fails and there is no last-good copy', async () => {

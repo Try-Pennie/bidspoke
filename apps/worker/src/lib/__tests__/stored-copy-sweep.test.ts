@@ -3,6 +3,7 @@ import { sweepSources, sweepStoredCopies, type SweepSources } from '../stored-co
 import { endpointHotKey, endpointLastGoodKey } from '../endpoint-copies'
 import { partnerLastGoodKey } from '../partner-last-good'
 import { workflowCopyKey } from '../../engine/definition-loader'
+import { STORED_COPY_RECONFIRM_AFTER_MS } from '../stored-copy-age'
 
 /**
  * The stored copy sweep (#1846). An edit route clears a stored outage copy right
@@ -15,16 +16,25 @@ import { workflowCopyKey } from '../../engine/definition-loader'
  */
 function memoryKv(initial: Record<string, string> = {}, failDeletes: Set<string> = new Set()) {
   const store = new Map(Object.entries(initial))
+  // The metadata each put carried: a copy's confirmation time (#1847).
+  const meta = new Map<string, unknown>()
+  const puts: string[] = []
   const kv = {
     async get(key: string) {
       return store.has(key) ? store.get(key)! : null
     },
-    async put(key: string, value: string) {
+    async getWithMetadata(key: string) {
+      return { value: store.has(key) ? store.get(key)! : null, metadata: meta.get(key) ?? null }
+    },
+    async put(key: string, value: string, opts?: { metadata?: unknown }) {
+      puts.push(key)
       store.set(key, value)
+      meta.set(key, opts?.metadata ?? null)
     },
     async delete(key: string) {
       if (failDeletes.has(key)) throw new Error(`KV refused ${key}`)
       store.delete(key)
+      meta.delete(key)
     },
     async list(opts: { prefix?: string; cursor?: string } = {}) {
       const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort()
@@ -34,7 +44,7 @@ function memoryKv(initial: Record<string, string> = {}, failDeletes: Set<string>
       return { keys: page.map((name) => ({ name })), list_complete: done, cursor: done ? undefined : String(start + 2) }
     },
   }
-  return { kv: kv as unknown as KVNamespace, store }
+  return { kv: kv as unknown as KVNamespace, store, meta, puts }
 }
 
 const endpointCopy = (over: Partial<{ id: string; workflow_id: string; source_name: string; is_active: boolean }> = {}) =>
@@ -56,17 +66,17 @@ function sources(over: Partial<SweepSources> = {}): SweepSources {
 describe('sweepStoredCopies: endpoint copies', () => {
   it('keeps a copy that matches its row', async () => {
     const { kv, store } = memoryKv({ [endpointLastGoodKey('engine', '/bidding')]: endpointCopy() })
-    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: true }] }))
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: true, trigger_auth_method: null }] }))
     expect(store.has(endpointLastGoodKey('engine', '/bidding'))).toBe(true)
     expect(r.repaired).toEqual([])
   })
 
   it.each([
     ['deleted', []],
-    ['switched off', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: false }]],
-    ['pointed at another workflow', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-2', source_name: 'engine', is_active: true }]],
-    ['given another source name', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine-2', is_active: true }]],
-    ['replaced by a new endpoint at the same address', [{ id: 'ep-2', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: true }]],
+    ['switched off', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: false, trigger_auth_method: null }]],
+    ['pointed at another workflow', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-2', source_name: 'engine', is_active: true, trigger_auth_method: null }]],
+    ['given another source name', [{ id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine-2', is_active: true, trigger_auth_method: null }]],
+    ['replaced by a new endpoint at the same address', [{ id: 'ep-2', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: true, trigger_auth_method: null }]],
   ])('clears both copies of an endpoint %s', async (_why, rows) => {
     const { kv, store } = memoryKv({
       [endpointLastGoodKey('engine', '/bidding')]: endpointCopy(),
@@ -94,8 +104,78 @@ describe('sweepStoredCopies: endpoint copies', () => {
 
   it('reads an address whose path itself holds a colon', async () => {
     const { kv, store } = memoryKv({ [endpointLastGoodKey('engine', '/a:b')]: endpointCopy() })
-    await sweepStoredCopies(kv, sources({ endpoints: async () => [{ id: 'ep-1', subdomain: 'engine', path: '/a:b', workflow_id: 'wf-1', source_name: 'engine', is_active: true }] }))
+    await sweepStoredCopies(kv, sources({ endpoints: async () => [{ id: 'ep-1', subdomain: 'engine', path: '/a:b', workflow_id: 'wf-1', source_name: 'engine', is_active: true, trigger_auth_method: null }] }))
     expect(store.has(endpointLastGoodKey('engine', '/a:b'))).toBe(true)
+  })
+})
+
+/**
+ * #1847: a copy is served for at most thirty minutes after it was last
+ * confirmed. A busy address or partner is confirmed by its own lookups; the
+ * sweep confirms the copy no lead has reached, once it is due, by rewriting it
+ * stamped now. It confirms only what it compared: a copy that disagrees with its
+ * row is cleared, never stamped.
+ */
+describe('sweepStoredCopies: confirming copies that agree with their rows (#1847)', () => {
+  const NOW = Date.parse('2026-10-07T12:00:00Z')
+  const now = () => NOW
+  const stamp = (ageMs: number) => ({ confirmed_at: new Date(NOW - ageMs).toISOString() })
+  const row = { id: 'ep-1', subdomain: 'engine', path: '/bidding', workflow_id: 'wf-1', source_name: 'engine', is_active: true, trigger_auth_method: null }
+  const EP = endpointLastGoodKey('engine', '/bidding')
+
+  it('rewrites a matching endpoint copy that is due, stamped now, with the value unchanged', async () => {
+    const { kv, store, meta } = memoryKv({ [EP]: endpointCopy() })
+    meta.set(EP, stamp(STORED_COPY_RECONFIRM_AFTER_MS))
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [row] }), { now })
+    expect(JSON.parse(store.get(EP)!)).toEqual(JSON.parse(endpointCopy()))
+    expect(meta.get(EP)).toEqual({ confirmed_at: new Date(NOW).toISOString() })
+    expect(r.reconfirmed).toEqual([EP])
+    expect(r.repaired).toEqual([])
+  })
+
+  it('confirms a matching endpoint copy written before copies carried a confirmation', async () => {
+    const { kv, meta } = memoryKv({ [EP]: endpointCopy() })
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [row] }), { now })
+    expect(meta.get(EP)).toEqual({ confirmed_at: new Date(NOW).toISOString() })
+    expect(r.reconfirmed).toEqual([EP])
+  })
+
+  it('writes nothing for a matching copy confirmed inside the interval', async () => {
+    const { kv, meta, puts } = memoryKv({ [EP]: endpointCopy() })
+    meta.set(EP, stamp(STORED_COPY_RECONFIRM_AFTER_MS - 1))
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [row] }), { now })
+    expect(puts).toEqual([])
+    expect(r.reconfirmed).toEqual([])
+  })
+
+  it("clears, never confirms, a copy whose auth method is no longer the workflow trigger's", async () => {
+    const { kv, store } = memoryKv({ [EP]: endpointCopy() })
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [{ ...row, trigger_auth_method: 'none' }] }), { now })
+    expect(store.has(EP)).toBe(false)
+    expect(r.repaired).toEqual([EP])
+    expect(r.reconfirmed).toEqual([])
+  })
+
+  it('rewrites a current partner copy that is due, and leaves one confirmed inside the interval', async () => {
+    const due = partnerLastGoodKey('p-due')
+    const fresh = partnerLastGoodKey('p-fresh')
+    const value = (id: string) => JSON.stringify({ id, updated_at: '2026-10-07T10:00:00+00:00', slug: id })
+    const { kv, store, meta, puts } = memoryKv({ [due]: value('p-due'), [fresh]: value('p-fresh') })
+    meta.set(due, stamp(STORED_COPY_RECONFIRM_AFTER_MS))
+    meta.set(fresh, stamp(60_000))
+    const r = await sweepStoredCopies(kv, sources({ partners: async () => [{ id: 'p-due', updated_at: '2026-10-07T10:00:00+00:00' }, { id: 'p-fresh', updated_at: '2026-10-07T10:00:00+00:00' }] }), { now })
+    expect(r.reconfirmed).toEqual([due])
+    expect(puts).toEqual([due])
+    expect(store.get(due)).toBe(value('p-due'))
+    expect(meta.get(due)).toEqual({ confirmed_at: new Date(NOW).toISOString() })
+  })
+
+  it('names a confirmation KV refuses, and carries on', async () => {
+    const { kv, meta } = memoryKv({ [EP]: endpointCopy() })
+    meta.set(EP, stamp(STORED_COPY_RECONFIRM_AFTER_MS))
+    ;(kv as unknown as { put: () => Promise<void> }).put = async () => { throw new Error('KV write limit') }
+    const r = await sweepStoredCopies(kv, sources({ endpoints: async () => [row] }), { now })
+    expect(r.failed).toEqual([expect.stringMatching(/ep-lastgood:engine:\/bidding.*KV write limit/)])
   })
 })
 
@@ -209,11 +289,27 @@ function fakeDb(tables: Record<string, Array<Record<string, unknown>>>, failing:
 
 describe('sweepSources', () => {
   it('pages the endpoint read past the 1,000 row answer limit', async () => {
-    const rows = Array.from({ length: 1001 }, (_, i) => ({ id: `ep-${String(i).padStart(4, '0')}`, subdomain: 's', path: `/${i}`, workflow_id: 'wf', source_name: 'x', is_active: true }))
+    const rows = Array.from({ length: 1001 }, (_, i) => ({ id: `ep-${String(i).padStart(4, '0')}`, subdomain: 's', path: `/${i}`, workflow_id: 'wf', source_name: 'x', is_active: true, workflows: { auth_method: null } }))
     const { db, calls } = fakeDb({ webhook_endpoints: rows })
     const got = await sweepSources(db as never, memoryKv().kv).endpoints()
     expect(got).toHaveLength(1001)
     expect(calls.map((c) => c.range)).toEqual([[0, 999], [1000, 1999]])
+  })
+
+  it("hands each endpoint row its workflow trigger's auth method, read as one field rather than the whole definition (#1847)", async () => {
+    const selects: string[] = []
+    const { db } = fakeDb({ webhook_endpoints: [{ id: 'ep-1', subdomain: 's', path: '/', workflow_id: 'wf', source_name: 'x', is_active: true, workflows: { auth_method: 'none' } }] })
+    const from = db.from.bind(db)
+    db.from = (table: string) => {
+      const q = from(table) as unknown as { select: (cols: string) => unknown }
+      const select = q.select
+      q.select = (cols: string) => { selects.push(cols); return select(cols) }
+      return q as never
+    }
+    const [got] = await sweepSources(db as never, memoryKv().kv).endpoints()
+    expect(got).toEqual({ id: 'ep-1', subdomain: 's', path: '/', workflow_id: 'wf', source_name: 'x', is_active: true, trigger_auth_method: 'none' })
+    expect(selects[0]).toContain('workflows!inner(auth_method:definition->trigger->config->>auth_method)')
+    expect(selects[0]).not.toMatch(/\(definition\)/)
   })
 
   it('reads partners and workflows by id in chunks of 100', async () => {

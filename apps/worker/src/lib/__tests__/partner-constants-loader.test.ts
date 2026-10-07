@@ -3,8 +3,9 @@
  * Cache hit skips Supabase, cache miss fetches + stores, null columns excluded,
  * invalidate removes key.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { loadPartnerConstants, invalidatePartnerConstantsCache } from '../partner-constants-loader'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { loadPartnerConstants, invalidatePartnerConstantsCache, keepPartnerConstantsConfirmed } from '../partner-constants-loader'
+import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
 
 const ORG = 'org-test'
 const CACHE_KEY = `partner-constants-v2-${ORG}`
@@ -267,13 +268,30 @@ describe('loadPartnerConstants — memory cache + single-flight', () => {
 
 // A KV mock whose stored values differ per key (so the last-good copy can be
 // distinguished from the short cache).
+/**
+ * A KV whose entries carry metadata as KV keeps it beside the value. An entry
+ * given as `{ value, metadata }` is held with that metadata (#1847); any other
+ * is a bare value with none, as a copy written before #1847 is.
+ */
 function makeKvByKey(store: Record<string, unknown>) {
+  const held = (key: string) => {
+    const e = store[key]
+    if (e && typeof e === 'object' && 'metadata' in (e as object)) return e as { value: unknown; metadata: unknown }
+    return { value: e ?? null, metadata: null }
+  }
   return {
-    get: vi.fn().mockImplementation((key: string) => Promise.resolve(store[key] ?? null)),
+    get: vi.fn().mockImplementation((key: string) => Promise.resolve(held(key).value)),
+    getWithMetadata: vi.fn().mockImplementation((key: string) => {
+      const { value, metadata } = held(key)
+      return Promise.resolve({ value: value === null ? null : JSON.stringify(value), metadata })
+    }),
     put: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
   } as unknown as KVNamespace
 }
+
+/** A last-good copy as a load `ageMs` ago left it. */
+const confirmed = (value: unknown, ageMs = 0) => ({ value, metadata: { confirmed_at: new Date(Date.now() - ageMs).toISOString() } })
 
 // Supabase whose queries resolve with a DB error (the #391 transient-blip shape).
 function makeSupabaseError() {
@@ -292,7 +310,7 @@ const LASTGOOD_KEY = `partner-constants-v2-${ORG}-lastgood`
 describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () => {
   it('does NOT cache an empty result on a DB error; serves the last-good copy instead', async () => {
     const lastGood = { subAccountIdsMap: { 'uuid-1': 'sofi' }, sellOff: {}, clickUrls: {}, activeBidding: { sofi: true }, subAccountMinBids: {} }
-    const kv = makeKvByKey({ [LASTGOOD_KEY]: lastGood }) // short cache absent, last-good present
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: confirmed(lastGood, 60_000) }) // short cache absent, last-good present
     const sb = makeSupabaseError()
 
     const result = await loadPartnerConstants(ORG, kv, sb as never)
@@ -306,8 +324,24 @@ describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () 
     const kv = makeKvByKey({}) // nothing cached at all
     const sb = makeSupabaseError()
 
-    await expect(loadPartnerConstants(ORG, kv, sb as never)).rejects.toThrow()
+    const load = loadPartnerConstants(ORG, kv, sb as never)
+    await expect(load).rejects.toBeInstanceOf(StoredCopyRefusedError)
+    await expect(load).rejects.toMatchObject({ reason: 'no_copy', copy: 'partner_constants' })
     expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  // #1847: served for at most thirty minutes after a load last confirmed it.
+  it.each([
+    ['last confirmed more than thirty minutes ago', () => confirmed({ subAccountIdsMap: {} }, STORED_COPY_MAX_AGE_MS + 1_000), 'copy_too_old'],
+    ['written before copies carried a confirmation time', () => ({ subAccountIdsMap: {} }), 'copy_age_unknown'],
+  ] as const)('refuses a last-good copy %s, by name', async (_label, seed, reason) => {
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: seed() })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(loadPartnerConstants(ORG, kv, makeSupabaseError() as never)).rejects.toMatchObject({ reason, copy: 'partner_constants' })
+    } finally {
+      logged.mockRestore()
+    }
   })
 
   it('writes a no-TTL last-good copy alongside the short cache on a successful load', async () => {
@@ -317,7 +351,52 @@ describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () 
     await loadPartnerConstants(ORG, kv, sb as never)
 
     expect(kv.put).toHaveBeenCalledWith(CACHE_KEY, expect.any(String), { expirationTtl: 60 * 60 * 24 * 30 })
-    expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.any(String))
+    expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.any(String), { metadata: { confirmed_at: expect.any(String) } })
+  })
+})
+
+/**
+ * The 30 day cache means a lead almost never reads the database, so a load
+ * alone would let the last-good copy age out within half an hour on a healthy
+ * day. The per minute prewarm confirms it against the database once it is due
+ * (#1847).
+ */
+describe('keepPartnerConstantsConfirmed (#1847)', () => {
+  const NOW = Date.parse('2026-10-07T12:00:00Z')
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('reads nothing from the database while the copy was confirmed inside the reconfirm interval', async () => {
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: confirmed({ subAccountIdsMap: {} }, STORED_COPY_RECONFIRM_AFTER_MS - 1) })
+    const sb = makeSupabase()
+    expect(await keepPartnerConstantsConfirmed(ORG, kv, sb as never)).toBe('fresh')
+    expect(sb.from).not.toHaveBeenCalled()
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['due', () => confirmed({ subAccountIdsMap: {} }, STORED_COPY_RECONFIRM_AFTER_MS)],
+    ['unstamped', () => ({ subAccountIdsMap: {} })],
+    ['absent', () => undefined],
+  ])('reads the rows and rewrites both copies, stamped now, when the copy is %s', async (_label, seed) => {
+    const entry = seed()
+    const kv = makeKvByKey(entry === undefined ? {} : { [LASTGOOD_KEY]: entry })
+    const sb = makeSupabase([{ uuid: 'uuid-1', partner_slug: 'sofi' }], [])
+    expect(await keepPartnerConstantsConfirmed(ORG, kv, sb as never)).toBe('confirmed')
+    expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.stringContaining('uuid-1'), { metadata: { confirmed_at: new Date(NOW).toISOString() } })
+    expect(kv.put).toHaveBeenCalledWith(CACHE_KEY, expect.stringContaining('uuid-1'), { expirationTtl: 60 * 60 * 24 * 30 })
+  })
+
+  it('keeps the held copy, writes nothing and never throws when the read fails', async () => {
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: confirmed({ subAccountIdsMap: {} }, STORED_COPY_RECONFIRM_AFTER_MS) })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await keepPartnerConstantsConfirmed(ORG, kv, makeSupabaseError() as never)).toBe('failed')
+      expect(logged.mock.calls.flat().join(' ')).toContain('pool timeout')
+    } finally {
+      logged.mockRestore()
+    }
+    expect(kv.put).not.toHaveBeenCalled()
   })
 })
 

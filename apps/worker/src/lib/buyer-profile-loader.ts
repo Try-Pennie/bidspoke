@@ -19,11 +19,13 @@
  * with no enabled buyer is a true answer, and a transient error must never be
  * cached as one. The last good copy is rewritten when its content hash changes
  * (every field of every enabled buyer, partner rows included, in partner id
- * order), or when the copy held is older than BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS,
- * so a hot path re-reading unchanged rows never hits KV's one write a second per
- * key, and the copy's loaded_at says when its content was last confirmed. It used
- * to be keyed on the newest updated_at over the ENABLED rows, which disabling a
- * buyer that did not hold the newest one never moved (#1557).
+ * order), or when the copy held is STORED_COPY_RECONFIRM_AFTER_MS old, so a hot
+ * path re-reading unchanged rows never hits KV's one write a second per key, and
+ * the copy's loaded_at says when its content was last confirmed. It used to be
+ * keyed on the newest updated_at over the ENABLED rows, which disabling a buyer
+ * that did not hold the newest one never moved (#1557). A copy whose loaded_at is
+ * older than STORED_COPY_MAX_AGE_MS, or cannot be read, is refused by name
+ * rather than served (#1847); the per minute prewarm keeps it confirmed.
  *
  * This module is the only reader of the six profile tables outside the profile
  * routes, the parity route and the mirror job; a web guard fails on any other
@@ -33,21 +35,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 import { leadRead } from './lead-read-budget'
+import { isDueForReconfirm, judgeCopyAge, refuseStoredCopy } from './stored-copy-age'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
 export const BUYER_PROFILES_CACHE_TTL_SECONDS = 300
 /** A cache hit older than this hands a background rebuild, so steady traffic keeps the copy warm long before it expires (#1492). */
 export const BUYER_PROFILES_REFRESH_AFTER_SECONDS = 60
-/**
- * A last good copy whose content is unchanged is still rewritten once it is
- * older than this, so its loaded_at stays recent under traffic (#1557):
- * buyer_click_check refuses to offer from a copy older than
- * CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, and a copy stamped only when its content
- * last changed would read as old however recently it was confirmed. At most one
- * extra write per org per five minutes.
- */
-export const BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS = 5 * 60 * 1000
-
 export interface LoadOptions {
   now?: () => number
   /** Where an early rebuild runs; without it a hit is served as is and the copy expires on its TTL. The work never rejects. */
@@ -234,7 +227,13 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
     const message = err instanceof Error ? err.message : 'unknown error'
     console.error(`[buyer-profiles] read failed for org ${orgId}, not caching: ${message}`)
     const lastGood = await kv.get<BuyerProfilesSnapshot>(lastGoodKey(orgId), 'json')
-    if (lastGood) return { ...lastGood, served_from: 'last_good' }
+    if (lastGood) {
+      // Its loaded_at is when a read last confirmed it (#1557); past the shared
+      // maximum, or unreadable, it is refused by name (#1847).
+      const age = judgeCopyAge(lastGood.loaded_at, now())
+      if (!age.usable) throw refuseStoredCopy({ copy: 'buyer_profiles', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError: message })
+      return { ...lastGood, served_from: 'last_good' }
+    }
     throw new Error(`buyer profiles read failed for org ${orgId}: ${message}`, { cause: err })
   }
   console.log(`[buyer-profiles] cache miss org=${orgId} kv_get_ms=${kvGetMs} db_read_ms=${now() - readStarted}`)
@@ -327,9 +326,11 @@ async function writeSnapshot(orgId: string, kv: KVNamespace, snapshot: BuyerProf
   const serialized = JSON.stringify(snapshot)
   await kv.put(cacheKey(orgId), serialized, { expirationTtl: BUYER_PROFILES_CACHE_TTL_SECONDS })
 
+  // Rewritten when the content changed or the held copy is due to be confirmed
+  // again (#1557, #1847): unchanged content still needs a fresh loaded_at, or a
+  // copy confirmed a minute ago would read as old as its last change.
   const previous = await kv.get<BuyerProfilesSnapshot>(lastGoodKey(orgId), 'json')
-  const previousAgeMs = previous ? now() - Date.parse(previous.loaded_at) : Number.POSITIVE_INFINITY
-  if (!previous || previous.content_hash !== content_hash || !(previousAgeMs <= BUYER_PROFILES_LAST_GOOD_REFRESH_AFTER_MS)) {
+  if (!previous || previous.content_hash !== content_hash || isDueForReconfirm(previous.loaded_at, now())) {
     await kv.put(lastGoodKey(orgId), serialized)
   }
 }

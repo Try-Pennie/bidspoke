@@ -19,11 +19,12 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { WorkflowNotFoundError } from '../../engine/definition-loader'
 import { WorkflowLaneError } from '../../engine/lane'
 import { handleCustomEndpoint } from '../custom-endpoint'
+import { STORED_COPY_MAX_AGE_MS } from '../../lib/stored-copy-age'
 
 // Empty KV so the handler falls through to the DB lookup.
 function makeUncachedEnv(): Env {
   return {
-    WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
+    WORKFLOW_CACHE: { get: async () => null, getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {} },
     API_KEY_MAP: '{}',
   } as unknown as Env
 }
@@ -272,20 +273,28 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
 
   // A KV double that records every put, including its options, so the test can
   // assert which key carried a TTL and which did not.
-  function recordingKv(seed: Record<string, string> = {}) {
-    const store = new Map(Object.entries(seed))
-    const puts: { key: string; value: string; opts?: { expirationTtl?: number } }[] = []
+  // A seed is a bare value (a copy written before #1847, with no confirmation)
+  // or a value with the metadata its put carried.
+  type Seed = string | { value: string; metadata: unknown }
+  function recordingKv(seed: Record<string, Seed> = {}) {
+    const store = new Map<string, { value: string; metadata: unknown }>(
+      Object.entries(seed).map(([k, v]) => [k, typeof v === 'string' ? { value: v, metadata: null } : v]),
+    )
+    const puts: { key: string; value: string; opts?: { expirationTtl?: number; metadata?: unknown } }[] = []
     const deletes: string[] = []
     return {
       puts,
       deletes,
       kv: {
-        get: async (k: string) => store.get(k) ?? null,
-        put: async (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); puts.push({ key: k, value: v, opts }) },
+        get: async (k: string) => store.get(k)?.value ?? null,
+        getWithMetadata: async (k: string) => store.get(k) ?? { value: null, metadata: null },
+        put: async (k: string, v: string, opts?: { expirationTtl?: number; metadata?: unknown }) => { store.set(k, { value: v, metadata: opts?.metadata ?? null }); puts.push({ key: k, value: v, opts }) },
         delete: async (k: string) => { store.delete(k); deletes.push(k) },
       },
     }
   }
+  /** The copy as a healthy lookup `ageMs` ago left it. */
+  const confirmedCopy = (ageMs = 0): Seed => ({ value: lastGood, metadata: { confirmed_at: new Date(Date.now() - ageMs).toISOString() } })
   function postWith(kv: unknown) {
     const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
     return makeApp().request(
@@ -302,7 +311,7 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
     vi.mocked(executeWorkflow).mockResolvedValue({
       executionId: 'x', response: { ok: true }, status: 200, traceId: 't', idempotentReplay: false,
     } as Awaited<ReturnType<typeof executeWorkflow>>)
-    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': lastGood })
+    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': confirmedCopy(60_000) })
     const res = await postWith(kv)
     expect(res.status).toBe(200)
     expect(executeWorkflow).toHaveBeenCalledTimes(1)
@@ -315,6 +324,33 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
     const res = await postWith(kv)
     expect(res.status).toBe(503)
     expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  // #1847: a copy is served for at most thirty minutes after a healthy lookup
+  // last confirmed it, and a copy that cannot say when that was is refused too.
+  it.each([
+    ['last confirmed more than thirty minutes ago', () => confirmedCopy(STORED_COPY_MAX_AGE_MS + 1_000), 'copy_too_old'],
+    ['written before copies carried a confirmation time', () => lastGood, 'copy_age_unknown'],
+  ] as const)('answers 503 and names the refusal when the copy was %s', async (_label, seed, reason) => {
+    const lines: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')) })
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(dbDown))
+    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': seed() })
+    const res = await postWith(kv)
+    expect(res.status).toBe(503)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+    const refused = lines.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.event === 'stored_copy_refused')
+    expect(refused).toEqual([expect.objectContaining({ copy: 'custom_endpoint', subject: 'tripoint/bidding', reason })])
+  })
+
+  it('answers 503, not 500, when KV fails too while reading the copy', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { lines.push(a.map(String).join(' ')) })
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(dbDown))
+    const { kv } = recordingKv()
+    const res = await postWith({ ...kv, getWithMetadata: async () => { throw new Error('kv unavailable') } })
+    expect(res.status).toBe(503)
+    expect(lines.join('\n')).toContain('could not be read: kv unavailable')
   })
 
   it('does not serve a last-good record for a genuinely missing endpoint (PGRST116 stays 404)', async () => {
@@ -388,6 +424,9 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
     expect(hot?.opts?.expirationTtl).toBe(60)
     expect(durable).toBeDefined()
     expect(durable?.opts?.expirationTtl).toBeUndefined()
+    // Stamped as confirmed now, so an outage can tell how old it is (#1847).
+    const stamp = Date.parse((durable?.opts?.metadata as { confirmed_at?: string } | undefined)?.confirmed_at ?? '')
+    expect(Math.abs(Date.now() - stamp)).toBeLessThan(5_000)
     expect(JSON.parse(durable!.value)).toMatchObject({ workflow_id: 'wf-1', source_name: 'tripoint', is_active: true })
   })
 })

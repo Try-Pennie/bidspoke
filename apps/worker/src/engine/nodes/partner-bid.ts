@@ -246,12 +246,13 @@ export async function executePartnerBidNode(
   let p: PartnerConfig
   if (!error && partner) {
     p = partner as unknown as PartnerConfig
-    await rememberPartnerLastGood(env.WORKFLOW_CACHE, p)
+    await rememberPartnerLastGood(env.WORKFLOW_CACHE, p, Date.now())
   } else {
     // The row is genuinely gone: a copy a racing lead wrote after the delete
     // route retired it must not outlive the partner (#1846).
     if (error && isNotFoundError(error)) await dropPartnerLastGoodIfPresent(env.WORKFLOW_CACHE, config.partner_id)
-    const stale = error && !isNotFoundError(error) ? await readPartnerLastGood<PartnerConfig>(env.WORKFLOW_CACHE, config.partner_id) : null
+    // A copy past the maximum age is refused by name inside the read (#1847).
+    const stale = error && !isNotFoundError(error) ? await readPartnerLastGood<PartnerConfig>(env.WORKFLOW_CACHE, config.partner_id, error.message, Date.now()) : null
     if (!stale) {
       throw new Error(`Partner config not found: ${config.partner_id}`)
     }

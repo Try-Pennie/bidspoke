@@ -19,6 +19,7 @@ import {
 } from '../definition-loader'
 import { assertWorkflowServedInLane, WorkflowLaneError } from '../lane'
 import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../lib/lead-read-budget'
+import { STORED_COPY_MAX_AGE_MS, StoredCopyRefusedError } from '../../lib/stored-copy-age'
 import type { Env } from '../../index'
 
 const WF_ID = 'wf-copy-1'
@@ -291,7 +292,7 @@ describe('serving the copy when the database read fails', () => {
     const kv = fakeKv()
     await warm(kv, { ...baseRow, lane: 'ops' })
     kv.store.delete(CACHE_KEY)
-    const loaded = await loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 }))
+    const loaded = await loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 }), { now: () => T0 })
     expect(loaded.lane).toBe('ops')
     expect(() => assertWorkflowServedInLane(WF_ID, loaded.lane, 'money')).toThrow(WorkflowLaneError)
   })
@@ -303,7 +304,7 @@ describe('serving the copy when the database read fails', () => {
     kv.store.set(COPY_KEY, JSON.stringify({ ...damaged, lane: 'sideways', workflow: { ...damaged.workflow, lane: 'sideways' } }))
     kv.store.delete(CACHE_KEY)
     await expect(
-      loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 })),
+      loadWorkflowDefinition(WF_ID, asKv(kv), realClient({ mode: 'down-503', row: baseRow, requests: 0 }), { now: () => T0 }),
     ).rejects.toThrow(/Failed to load workflow/)
     expect(eventsNamed('workflow_definition_copy_refused')[0]).toMatchObject({ reason: 'unreadable' })
   })
@@ -317,6 +318,47 @@ describe('serving the copy when the database read fails', () => {
       loadWorkflowDefinition(WF_ID, asKv(kv), realClient(db), { allowInactive: true }),
     ).rejects.toThrow(/Failed to load workflow/)
     expect(kv.gets).not.toContain(COPY_KEY)
+  })
+})
+
+describe('the copy is served for at most thirty minutes after it was last confirmed (#1847)', () => {
+  const down = (): DbState => ({ mode: 'down-503', row: baseRow, requests: 0 })
+
+  it('serves a copy confirmed exactly the maximum age ago', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.store.delete(CACHE_KEY)
+    const loaded = await loadWorkflowDefinition(WF_ID, asKv(kv), realClient(down()), { now: () => T0 + STORED_COPY_MAX_AGE_MS })
+    expect(loaded.workflow_version_id).toBe('ver-7')
+  })
+
+  it('refuses a copy one millisecond older, by name, as a retryable failure and never as not found', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.store.delete(CACHE_KEY)
+    const promise = loadWorkflowDefinition(WF_ID, asKv(kv), realClient(down()), { now: () => T0 + STORED_COPY_MAX_AGE_MS + 1 })
+    await expect(promise).rejects.toBeInstanceOf(StoredCopyRefusedError)
+    await expect(promise).rejects.toMatchObject({ reason: 'copy_too_old', copy: 'workflow_definition' })
+    expect(eventsNamed('stored_copy_refused')[0]).toMatchObject({ copy: 'workflow_definition', subject: WF_ID, reason: 'copy_too_old', copy_age_ms: STORED_COPY_MAX_AGE_MS + 1 })
+    expect(eventsNamed('workflow_definition_served_from_copy')).toHaveLength(0)
+  })
+
+  it('refuses a copy whose written_at cannot be read, rather than serving it at an unknown age', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    kv.store.set(COPY_KEY, JSON.stringify({ ...heldCopy(kv)!, written_at: 'not a time' }))
+    kv.store.delete(CACHE_KEY)
+    const promise = loadWorkflowDefinition(WF_ID, asKv(kv), realClient(down()), { now: () => T0 })
+    await expect(promise).rejects.toMatchObject({ reason: 'copy_age_unknown' })
+  })
+
+  it('refuses an old tombstone as too old rather than answering not found on an unconfirmed claim', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'up', row: { ...baseRow, is_active: false, updated_at: '2026-10-07T11:10:00+00:00' }, requests: 0 }), { now: () => T0 })
+    const promise = loadWorkflowDefinition(WF_ID, asKv(kv), realClient(down()), { now: () => T0 + STORED_COPY_MAX_AGE_MS + 1 })
+    await expect(promise).rejects.toMatchObject({ reason: 'copy_too_old' })
+    await expect(promise).rejects.not.toBeInstanceOf(WorkflowNotFoundError)
   })
 })
 

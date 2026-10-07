@@ -13,9 +13,15 @@ import { productionDeps } from '../buyer-click-send'
 
 const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 
+// Each seeded entry is held as a load just confirmed it (#1847), so a last good
+// copy is judged on what it holds rather than refused for its age.
 function kvOf(entries: Record<string, unknown>): KVNamespace {
   return {
     get: async (key: string) => entries[key] ?? null,
+    getWithMetadata: async (key: string) => ({
+      value: key in entries ? JSON.stringify(entries[key]) : null,
+      metadata: key in entries ? { confirmed_at: new Date().toISOString() } : null,
+    }),
     put: async () => undefined,
     delete: async () => undefined,
   } as unknown as KVNamespace

@@ -53,6 +53,15 @@
 //   marker names for a workflow is withheld from that workflow's runs, exactly as
 //   an undecryptable workflow secret is: the org's credential is never sent where
 //   a workflow saved its own, and nothing else goes blank (#391).
+//
+// #1847: a last-good copy is served for at most STORED_COPY_MAX_AGE_MS after the
+// load that wrote it, and every load writes it (the prewarm reloads each
+// organization every five minutes or so, as the 300 s cache expires). The time
+// rides in KV metadata, so the encrypted value is exactly what the release before
+// wrote. Past the maximum age, or with no readable time, the org copy is refused
+// by name, and so is a failed read with no copy at all: a run is never handed an
+// empty map in place of its secrets. A workflow copy past the maximum age beside
+// a fresh org copy counts as missing, so its workflow's own keys are withheld.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
@@ -60,6 +69,7 @@ import { isOrgOnlyEnvKey } from './org-only-env-keys'
 import { fetchAllPaged } from './paginate'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import { leadRead } from './lead-read-budget'
+import { confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
@@ -161,7 +171,10 @@ async function readEncrypted(
   key: string,
   secretEncryptionKey: SecretKeyInput
 ): Promise<Record<string, unknown> | null> {
-  const blob = await kv.get(key)
+  return decryptEntry(await kv.get(key), secretEncryptionKey)
+}
+
+async function decryptEntry(blob: string | null, secretEncryptionKey: SecretKeyInput): Promise<Record<string, unknown> | null> {
   if (!blob) return null
   try {
     const parsed: unknown = JSON.parse(await decryptSecret(blob, secretEncryptionKey))
@@ -171,36 +184,67 @@ async function readEncrypted(
   }
 }
 
-/**
- * Read one org entry and, when it names one, the workflow copy beside it.
- *
- * `exact` (the short cache) trusts the workflow copy only when it came from the
- * load the org entry names, and otherwise reports a miss so the caller reloads.
- * `lenient` (last-good, read while the database is down) takes whatever workflow
- * copy is there: two last-good copies disagree only when two successful loads
- * raced moments apart, and either is better than nothing during an outage. When
- * there is no readable workflow copy at all, it withholds every key the marker
- * names for each workflow rather than letting the org value stand in for it.
- */
-async function readCopies(
-  orgId: string,
+/** A last-good entry and the time the load that wrote it confirmed it, or null when there is none it can read. */
+async function readEncryptedConfirmed(
   kv: KVNamespace,
-  keys: { org: string; workflows: string },
-  secretEncryptionKey: SecretKeyInput,
-  match: 'exact' | 'lenient'
-): Promise<OrgEnv | null> {
-  const entry = await readEncrypted(kv, keys.org, secretEncryptionKey)
-  if (!entry) return null
-  const global = Object.fromEntries(
+  key: string,
+  secretEncryptionKey: SecretKeyInput
+): Promise<{ entry: Record<string, unknown>; confirmedAt: unknown } | null> {
+  const held = await readConfirmedCopy(kv, key)
+  const entry = await decryptEntry(held?.value ?? null, secretEncryptionKey)
+  return held && entry ? { entry, confirmedAt: held.confirmedAt } : null
+}
+
+/** The org values in an org entry: every string value but the marker. */
+function globalOf(entry: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
     Object.entries(entry).filter((pair): pair is [string, string] => pair[0] !== MARKER && typeof pair[1] === 'string')
   )
+}
+
+/**
+ * Read the short cache: the org entry and, when it names one, the workflow copy
+ * beside it, trusted only when it came from the load the org entry names, and
+ * otherwise a miss so the caller reloads.
+ */
+async function readCache(orgId: string, kv: KVNamespace, secretEncryptionKey: SecretKeyInput): Promise<OrgEnv | null> {
+  const entry = await readEncrypted(kv, cacheKey(orgId), secretEncryptionKey)
+  if (!entry) return null
+  const global = globalOf(entry)
   // The load that wrote this entry found no workflow values, and says so itself.
+  if (!Object.hasOwn(entry, MARKER)) return { global, workflows: {} }
+  const marker = parseMarker(entry[MARKER])
+  const copy = await readEncrypted(kv, workflowCacheKey(orgId), secretEncryptionKey)
+  const workflows = copy && isPlainObject(copy.workflows) ? (copy.workflows as WorkflowScoped) : null
+  return marker && workflows && copy?.load === marker.load ? { global, workflows } : null
+}
+
+/**
+ * The database read failed: serve the last-good copies, or refuse by name.
+ *
+ * The org copy must exist, decrypt, and be within the maximum age (#1847);
+ * otherwise this throws StoredCopyRefusedError with the reason logged, never an
+ * empty map. The workflow copy beside it is taken whatever load wrote it: two
+ * last-good copies disagree only when two successful loads raced moments apart,
+ * and either is better than nothing during an outage. When there is no readable
+ * workflow copy within the maximum age, every key the marker names for each
+ * workflow is withheld rather than letting the org value stand in for it.
+ */
+async function serveLastGood(orgId: string, kv: KVNamespace, secretEncryptionKey: SecretKeyInput, dbError: string): Promise<OrgEnv> {
+  const now = Date.now()
+  const held = await readEncryptedConfirmed(kv, lastGoodKey(orgId), secretEncryptionKey)
+  if (!held) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  const age = judgeCopyAge(held.confirmedAt, now)
+  if (!age.usable) throw refuseStoredCopy({ copy: 'env_vars', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
+
+  const entry = held.entry
+  const global = globalOf(entry)
   if (!Object.hasOwn(entry, MARKER)) return { global, workflows: {} }
 
   const marker = parseMarker(entry[MARKER])
-  const copy = await readEncrypted(kv, keys.workflows, secretEncryptionKey)
+  const beside = await readEncryptedConfirmed(kv, workflowLastGoodKey(orgId), secretEncryptionKey)
+  const copy = beside && judgeCopyAge(beside.confirmedAt, now).usable ? beside.entry : null
   const workflows = copy && isPlainObject(copy.workflows) ? (copy.workflows as WorkflowScoped) : null
-  if (match === 'exact') return marker && workflows && copy?.load === marker.load ? { global, workflows } : null
   if (workflows) return { global, workflows }
 
   // The database is down and the workflow copy is missing or unreadable. The org
@@ -216,7 +260,7 @@ async function readCopies(
   const withheld: WorkflowScoped = {}
   for (const [workflowId, names] of Object.entries(marker.keys)) {
     withheld[workflowId] = Object.fromEntries(names.map((name) => [name, null]))
-    console.error(`[env-loader] the workflow scoped last-good copy for org ${orgId} is missing or unreadable; withholding ${names.join(', ')} for workflow ${workflowId} until the database answers`)
+    console.error(`[env-loader] the workflow scoped last-good copy for org ${orgId} is missing, unreadable or past its maximum age; withholding ${names.join(', ')} for workflow ${workflowId} until the database answers`)
   }
   return { global, workflows: withheld }
 }
@@ -246,7 +290,7 @@ async function loadOrgEnv(
   supabase: SupabaseClient,
   secretEncryptionKey: SecretKeyInput
 ): Promise<OrgEnv> {
-  const cached = await readCopies(orgId, kv, { org: cacheKey(orgId), workflows: workflowCacheKey(orgId) }, secretEncryptionKey, 'exact')
+  const cached = await readCache(orgId, kv, secretEncryptionKey)
   if (cached) return cached
 
   // Load ALL user env vars, including is_secret ones, so nodes (code-node `env`
@@ -288,11 +332,12 @@ async function loadOrgEnv(
   } catch (e) {
     // Do NOT cache on error: that is the #391 outage. Fall back to the last-good
     // copy (the config vars rarely change) so a transient blip degrades
-    // gracefully instead of blanking creds; empty only if we never had a good load.
+    // gracefully instead of blanking creds. With no copy fit to serve the load
+    // is refused by name (#1847), never answered with an empty map: a run with
+    // blank secrets fails later at a partner call, for a reason it cannot name.
     // A failure on any page is the same failure, so a partial read is never used.
     console.error(`[env-loader] load failed for org ${orgId}, not caching: ${formatErr(e)}`)
-    const lastGood = await readCopies(orgId, kv, { org: lastGoodKey(orgId), workflows: workflowLastGoodKey(orgId) }, secretEncryptionKey, 'lenient')
-    return lastGood ?? { global: {}, workflows: {} }
+    return serveLastGood(orgId, kv, secretEncryptionKey, formatErr(e))
   }
 
   const global: Record<string, string> = {}
@@ -341,7 +386,8 @@ async function loadOrgEnv(
     // encryption it made.
     const serialized = await encryptSecret(JSON.stringify(global), secretEncryptionKey)
     await kv.put(cacheKey(orgId), serialized, { expirationTtl: TTL })
-    await kv.put(lastGoodKey(orgId), serialized)
+    // Stamped with the time this load confirmed it (#1847); the value is unchanged.
+    await kv.put(lastGoodKey(orgId), serialized, confirmedAt(Date.now()))
     // Nothing reads a workflow copy while the org entry names no load, but one an
     // earlier load left would keep a deleted workflow secret's ciphertext in KV
     // for good, so it goes (#491). Tidying only: a failed delete is logged and
@@ -365,10 +411,11 @@ async function loadOrgEnv(
   const workflowsBlob = await encryptSecret(JSON.stringify({ load, workflows }), secretEncryptionKey)
   // The workflow copies first, so an org entry naming this load is never held
   // before the copy it names.
+  const confirmed = confirmedAt(Date.now())
   await kv.put(workflowCacheKey(orgId), workflowsBlob, { expirationTtl: TTL })
-  await kv.put(workflowLastGoodKey(orgId), workflowsBlob)
+  await kv.put(workflowLastGoodKey(orgId), workflowsBlob, confirmed)
   await kv.put(cacheKey(orgId), orgBlob, { expirationTtl: TTL })
-  await kv.put(lastGoodKey(orgId), orgBlob)
+  await kv.put(lastGoodKey(orgId), orgBlob, confirmed)
   return { global, workflows }
 }
 
