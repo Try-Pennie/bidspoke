@@ -167,6 +167,37 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   const program = buildProgram(SOURCE_FILES)
   const offenders = scanQueryReads(program, SOURCE_FILES)
 
+  // The planted files share one program, built here for the same reason: each
+  // program loads the Workers types again.
+  const PLANTED_ROUTE = path.join(WORKER_SRC, 'routes/__planted_query__.ts')
+  const PLANTED_HELPER = path.join(WORKER_SRC, 'lib/__planted_helper__.ts')
+  const PLANTED_FILTER = path.join(WORKER_SRC, 'routes/api/__planted_filter__.ts')
+  const planted = {
+    [PLANTED_ROUTE]: [
+      "import type { Context } from 'hono'",
+      'export function a(c: Context) { return c.req.query("email") }',
+      'export function b(c: Context) { const r = c.req; return r.queries("x") }',
+      'export function d(c: Context) { const { query } = c.req; return query }',
+      'export function e(c: Context) { return c.req["query"]("x") }',
+      'export function f(c: Context) { console.log(c.req.url) }',
+      'export function g(req: Request) { return new URL(req.url).searchParams.get("phone") }',
+      'export function h(req: Request) { const u = new URL(req.url); return u.search }',
+      'export function i(req: Request) { return req.url }',
+      'export function ok1(c: Context) { return new URL(c.req.url).pathname }',
+      'export function ok2(req: Request) { return new URL(req.url).pathname }',
+      '',
+    ].join('\n'),
+    [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
+    [PLANTED_FILTER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n",
+  }
+  const plantedProgram = buildProgram([HELPER_FILE], planted)
+  const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
+  const plantedFindings = (file: string): Finding[] => {
+    const found = plantedResults.get(file)
+    if (!found) throw new Error(`${rel(file)} was not planted`)
+    return found
+  }
+
   it('loads the Workers types, without which every Request and URL is `any` and nothing is found', () => {
     const messages = [...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics()].map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
     expect(messages).toEqual([])
@@ -210,23 +241,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   })
 
   it('fails on each planted way of reading the query, by file, line and kind (L1)', () => {
-    const planted = path.join(WORKER_SRC, 'routes/__planted_query__.ts')
-    const src = [
-      "import type { Context } from 'hono'",
-      'export function a(c: Context) { return c.req.query("email") }',
-      'export function b(c: Context) { const r = c.req; return r.queries("x") }',
-      'export function d(c: Context) { const { query } = c.req; return query }',
-      'export function e(c: Context) { return c.req["query"]("x") }',
-      'export function f(c: Context) { console.log(c.req.url) }',
-      'export function g(req: Request) { return new URL(req.url).searchParams.get("phone") }',
-      'export function h(req: Request) { const u = new URL(req.url); return u.search }',
-      'export function i(req: Request) { return req.url }',
-      'export function ok1(c: Context) { return new URL(c.req.url).pathname }',
-      'export function ok2(req: Request) { return new URL(req.url).pathname }',
-      '',
-    ].join('\n')
-    const found = scanQueryReads(buildProgram([HELPER_FILE], { [planted]: src }), [planted])
-    expect(found.map((f) => `${f.line} ${f.what}`).sort()).toEqual([
+    expect(plantedFindings(PLANTED_ROUTE).map((f) => `${f.line} ${f.what}`).sort()).toEqual([
       '2 hono.query',
       '3 hono.queries',
       '4 hono.query',
@@ -241,14 +256,10 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   })
 
   it('fails on a helper outside routes that is handed the Context and reads the query', () => {
-    const planted = path.join(WORKER_SRC, 'lib/__planted_helper__.ts')
-    const src = "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n"
-    expect(scanQueryReads(buildProgram([HELPER_FILE], { [planted]: src }), [planted]).map((f) => f.what)).toEqual(['hono.query'])
+    expect(plantedFindings(PLANTED_HELPER).map((f) => f.what)).toEqual(['hono.query'])
   })
 
   it('leaves the signed-in app\'s own filters alone', () => {
-    const planted = path.join(WORKER_SRC, 'routes/api/__planted_filter__.ts')
-    const src = "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n"
-    expect(scanQueryReads(buildProgram([HELPER_FILE], { [planted]: src }), [planted])).toEqual([])
+    expect(plantedFindings(PLANTED_FILTER)).toEqual([])
   })
 })
