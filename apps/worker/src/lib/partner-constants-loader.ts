@@ -47,6 +47,16 @@ export interface PartnerConstants {
   slugsById?: Record<string, string>
 }
 
+/**
+ * Forget every organization's constants held in this isolate's memory. Only the
+ * outage drill calls it (#1305, money-gate/harness/isolate-memory.ts), so a down
+ * run meets the outage rather than what an earlier run left in memory.
+ */
+export function forgetPartnerConstantsMemory(): void {
+  memoryCache.clear()
+  inflight.clear()
+}
+
 export async function loadPartnerConstants(
   orgId: string,
   kv: KVNamespace,

@@ -24,6 +24,13 @@ import { runWorkflowScheduleWatch, WATCHED_WORKFLOWS } from '../workflow-schedul
  * credential, a GitHub outage, a rate limit) hits all of them at once, so the
  * registry length decided how many identical messages one fact produced.
  */
+
+/**
+ * A last run older than every watched workflow's stale window, derived from the
+ * registry rather than written as a number, so a workflow added with a longer
+ * cadence (the weekly outage drill) is dark here too (L401).
+ */
+const DARK_FOR_EVERY_WORKFLOW_MS = Math.max(...WATCHED_WORKFLOWS.map((w) => w.staleMs)) + 3_600_000
 const NOW = Date.parse('2026-08-17T12:00:00.000Z')
 const iso = (ms: number) => new Date(ms).toISOString()
 
@@ -121,7 +128,7 @@ describe('runWorkflowScheduleWatch: one message per run, not one per workflow (#
       ENV,
       NOW,
       // Older than every window in the registry.
-      fetchAll(iso(NOW - 40 * 3_600_000)),
+      fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
     expect(results.every((r) => r.status === 'stale')).toBe(true)
     // Two orgs, one message each, however long the registry grows.
@@ -167,7 +174,7 @@ describe('runWorkflowScheduleWatch: one message per run, not one per workflow (#
 describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
   it('stays quiet on the next run while the cooldown holds', async () => {
     const kv = fakeKv()
-    const fetchImpl = fetchAll(iso(NOW - 40 * 3_600_000))
+    const fetchImpl = fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS))
     const supabase = fakeSupabase([{ organization_id: 'org-1' }])
 
     await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, fetchImpl)
@@ -189,7 +196,7 @@ describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
     const kv = fakeKv()
     const supabase = fakeSupabase([{ organization_id: 'org-1' }])
     const fresh = iso(NOW - 60_000)
-    const dark = iso(NOW - 40 * 3_600_000)
+    const dark = iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)
     const [first, second] = WATCHED_WORKFLOWS.map((w) => w.file)
 
     await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, fetchAll(fresh, { perFile: { [first]: dark } }))
@@ -217,7 +224,7 @@ describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
       kv,
       ENV,
       NOW,
-      fetchAll(iso(NOW - 40 * 3_600_000)),
+      fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
     expect([...kv.store.keys()]).toEqual([])
   })
@@ -289,7 +296,7 @@ describe('runWorkflowScheduleWatch: no Slack connection', () => {
       fakeKv(),
       ENV,
       NOW,
-      fetchAll(iso(NOW - 40 * 3_600_000)),
+      fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
     expect(results.every((r) => r.status === 'stale')).toBe(true)
     expect(results.every((r) => r.alerted === false)).toBe(true)
@@ -329,7 +336,7 @@ describe('one failure must not silence the rest (L71)', () => {
       fakeKv(),
       ENV,
       NOW,
-      fetchAll(iso(NOW - 40 * 3_600_000)),
+      fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
     // The verdict is what the logs and the return value are for, so it must not be
     // destroyed by a failure to deliver it.
@@ -352,7 +359,7 @@ describe('one failure must not silence the rest (L71)', () => {
       kv,
       ENV,
       NOW,
-      fetchAll(iso(NOW - 40 * 3_600_000)),
+      fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
     expect(results.length).toBe(WATCHED_WORKFLOWS.length)
     expect(results.every((r) => r.status === 'stale'), 'a broken cooldown store erased the real verdict').toBe(true)

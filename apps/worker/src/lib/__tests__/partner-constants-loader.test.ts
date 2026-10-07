@@ -4,7 +4,7 @@
  * invalidate removes key.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { loadPartnerConstants, invalidatePartnerConstantsCache, keepPartnerConstantsConfirmed } from '../partner-constants-loader'
+import { loadPartnerConstants, invalidatePartnerConstantsCache, keepPartnerConstantsConfirmed, forgetPartnerConstantsMemory } from '../partner-constants-loader'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
 
 const ORG = 'org-test'
@@ -426,5 +426,19 @@ describe('invalidatePartnerConstantsCache', () => {
     await invalidatePartnerConstantsCache(ORG, kv)
 
     expect(kv.delete).toHaveBeenCalledWith(CACHE_KEY)
+  })
+})
+
+// The outage drill (#1305) forgets this memory before every run, so a down run
+// meets the outage rather than the constants an earlier run left in memory.
+describe('forgetPartnerConstantsMemory', () => {
+  it('forgets every organization, so the next load reads KV again', async () => {
+    const kv = makeKv(null)
+    await loadPartnerConstants('org-a', kv, makeSupabase() as never)
+    await loadPartnerConstants('org-b', kv, makeSupabase() as never)
+    forgetPartnerConstantsMemory()
+    await loadPartnerConstants('org-a', kv, makeSupabase() as never)
+    await loadPartnerConstants('org-b', kv, makeSupabase() as never)
+    expect(kv.get).toHaveBeenCalledTimes(4)
   })
 })

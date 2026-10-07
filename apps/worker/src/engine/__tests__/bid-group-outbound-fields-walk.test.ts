@@ -47,14 +47,10 @@ const GROUP_ID = '0192a4f0-0000-7000-8000-00000000b1d0'
 const TRIPOINT_ID = '1b9cbd8f-1d23-496c-b046-b11d64edae29'
 const AMONE_ID = '58d50fe7-3e86-4d71-85c7-4533ab08acb0'
 
-// The slug preload is the only database read the walker makes for a bid group.
-const supabase = {
-  from: () => ({
-    select: () => ({
-      in: async () => ({ data: [{ id: TRIPOINT_ID, slug: 'tripoint' }, { id: AMONE_ID, slug: 'amone' }], error: null }),
-    }),
-  }),
-} as unknown as SupabaseClient
+// The walker reads nothing from the database for these tests: attempt names come
+// from the partner constants loader (#1849), which with no cache bound here falls
+// back to positional names, and nothing below reads the names.
+const supabase = {} as unknown as SupabaseClient
 
 const debtStep: NodeDefinition = { id: 'n-debt', namespace: 'pennie_or_eligibility', type: 'code', config: {} }
 const afterWin: NodeDefinition = { id: 'n-win', namespace: 'after_winner', type: 'code', config: {} }

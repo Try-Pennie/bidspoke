@@ -30,6 +30,7 @@ import { readOnlyClient } from '../money-gate/lib/read-only-client'
 import { buildWorkflowShape, renderShapesFile, summarizeShapes, type ShapesFile, type WorkflowShape } from '../money-gate/lib/shape'
 import {
   SNAPSHOT_COLUMNS,
+  SNAPSHOT_WORKFLOW_UPDATED_AT,
   snapshotEnvVar,
   snapshotRow,
   type ConfigSnapshot,
@@ -135,7 +136,7 @@ export async function runExport(deps: ExportDeps): Promise<void> {
 
   const orgIds = [...new Set(live.map((w) => w.organization_id))]
   const tables: ConfigSnapshot['tables'] = {
-    workflows: live.map((w) => ({ id: w.id, name: w.name, organization_id: w.organization_id, slack_channel: null, is_active: true, deleted_at: null, lane: 'money' })),
+    workflows: live.map((w) => ({ id: w.id, name: w.name, organization_id: w.organization_id, slack_channel: null, is_active: true, deleted_at: null, lane: 'money', updated_at: SNAPSHOT_WORKFLOW_UPDATED_AT })),
     workflow_versions: [],
     partner_configs: [],
     buyer_profiles: [],
