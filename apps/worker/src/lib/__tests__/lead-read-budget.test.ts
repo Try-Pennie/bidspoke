@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { createSupabaseClient } from '../supabase'
-import { createLeadSupabaseClient, leadRead, LEAD_DB_DOWN_CODE, LEAD_READ_DEADLINE_MS, noteLeadWriteUnanswered } from '../lead-read-budget'
+import { createLeadSupabaseClient, leadRead, LEAD_DB_DOWN_CODE, LEAD_READ_DEADLINE_MS, leadDatabaseDown, noteLeadWriteUnanswered } from '../lead-read-budget'
 
 /**
  * The read time budget for a lead (#1844, Dan's decision of 2026-10-07: fall
@@ -144,6 +144,15 @@ describe('a write that did not answer trips the lead (#1849)', () => {
     expect(net.calls).toHaveLength(0)
     expect(res.error).toMatchObject({ code: LEAD_DB_DOWN_CODE })
     expect(res.error?.message).toMatch(/held click record/)
+  })
+
+  it('says why the lead knows its database is down, for a write with its own repair to skip waiting on it', async () => {
+    const net = network(['refuse'])
+    const db = createLeadSupabaseClient(env, { fetch: net.fetch, deadline: manualDeadlines().deadline })
+    expect(leadDatabaseDown(db)).toBeNull()
+    await leadRead(db, db.from('partner_configs').select('id'), 'partner config')
+    expect(leadDatabaseDown(db)).toMatch(/partner config/)
+    expect(leadDatabaseDown(createSupabaseClient(env))).toBeNull()
   })
 
   it('changes nothing on any other client', async () => {

@@ -10,6 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../../index'
 import { buildContext } from '../../context'
 import { productionDeps } from '../buyer-click-send'
+import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../../../lib/lead-read-budget'
 
 const LIBERTY1 = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 
@@ -126,5 +127,43 @@ describe('productionDeps.readProfile (#1543, #1639)', () => {
     const org = 'org-cap-unreadable'
     const deps = productionDeps(ctxFor(org), envWith(kvOf({})), failingSupabase())
     await expect(deps.readProfile(LIBERTY1)).rejects.toThrow(/buyer profiles read failed/)
+  })
+})
+
+/**
+ * The held click record in a database the lead has already seen fail (#1849).
+ * The outage drill's hung shape found the click answering two seconds after its
+ * healthy twin: a profile or partner read waited out its deadline, then the
+ * record waited out its own. The record has its own repair (the next click on
+ * the prospect finds the claim and records it), so once the lead knows the
+ * database is down it is not sent, and is reported as not recorded.
+ */
+describe('productionDeps.recordHold in a database the lead has seen fail (#1849)', () => {
+  const hold = { partner_id: LIBERTY1, prospect_id: 'a0B1', reason: 'outcome_unknown' as const, detail: 'http 503', partner_lead_id: null, workflow_id: 'wf-1', execution_id: 'exec-1', trace_id: 'trace-1' }
+  const dbEnv = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env
+
+  function counting() {
+    const state = { calls: 0 }
+    const fetch = (async () => {
+      state.calls++
+      return new Response('null', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof globalThis.fetch
+    return { state, fetch }
+  }
+
+  it('is not sent once a database call in the lead failed, and says why', async () => {
+    const db = counting()
+    const supabase = createLeadSupabaseClient(dbEnv, { fetch: db.fetch })
+    noteLeadWriteUnanswered(supabase, 'buyer profiles')
+    const deps = productionDeps(ctxFor('org-down'), envWith(kvOf({})), supabase)
+    await expect(deps.recordHold(hold)).rejects.toThrow(/record_held_click not sent: an earlier database call in this lead failed \(buyer profiles/)
+    expect(db.state.calls).toBe(0)
+  })
+
+  it('is sent as before on a lead whose database has answered', async () => {
+    const db = counting()
+    const deps = productionDeps(ctxFor('org-up'), envWith(kvOf({})), createLeadSupabaseClient(dbEnv, { fetch: db.fetch }))
+    await deps.recordHold(hold)
+    expect(db.state.calls).toBe(1)
   })
 })

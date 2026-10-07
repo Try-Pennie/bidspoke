@@ -67,7 +67,7 @@ import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '.
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { applyOutboundMapping } from '../../lib/field-mapper'
 import { log as structuredLog } from '../../lib/logger'
-import { noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
+import { leadDatabaseDown, noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
@@ -316,6 +316,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
     breaker: (slug) => new CircuitBreakerClient(env, slug),
     mirror: async (row, entry, partnerId) => {
+      // Not sent into a database this lead has already seen fail (#1849): the
+      // entry stays unmirrored and the minute drain delivers it through the same
+      // idempotent rpc, so waiting out a deadline here would only hold the answer.
+      const down = leadDatabaseDown(supabase)
+      if (down) throw new Error(`record_buyer_sale not sent: ${down}`)
       const ledger = new BuyerLedgerClient(env.BUYER_LEDGER, partnerId)
       await mirrorBuyerSale(supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
     },

@@ -86,6 +86,18 @@ export function noteLeadWriteUnanswered(client: object, what: string): void {
 }
 
 /**
+ * Why this lead already knows its database is not answering (an earlier read
+ * failed, or a write did not answer), or null (#1849). A write the lead waits on
+ * that has its own repair (the buyer_sales drain, the next click re-recording a
+ * held claim) checks it and is not sent, rather than waiting out a deadline on
+ * a database the lead has already seen fail. Null on any other client.
+ */
+export function leadDatabaseDown(client: object): string | null {
+  const failed = leads.get(client)?.failed
+  return failed ? `an earlier database call in this lead failed (${failed.what}, status ${failed.status})` : null
+}
+
+/**
  * Run a read that has a last-good copy. `what` names it in the log line a
  * failure writes. `deadlineMs` lets a caller inside a tighter budget ask for
  * less than LEAD_READ_DEADLINE_MS.

@@ -17,7 +17,7 @@ import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
-import { createLeadSupabaseClient } from '../../../lib/lead-read-budget'
+import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../../../lib/lead-read-budget'
 import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, productionDeps, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -1070,6 +1070,17 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('the production copy is not sent into a database the lead has already seen fail; the minute drain delivers it', async () => {
+    let requests = 0
+    const counting = (async () => { requests++; return new Response('null', { status: 200 }) }) as typeof globalThis.fetch
+    const supabase = createLeadSupabaseClient({ SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env, { fetch: counting })
+    noteLeadWriteUnanswered(supabase, 'buyer profiles')
+    const objects = { idFromName: () => 'id', get: () => ({}) }
+    const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, supabase)
+    await expect(production.mirror({} as never, {} as never, 'p-1')).rejects.toThrow(/record_buyer_sale not sent: an earlier database call in this lead failed \(buyer profiles/)
+    expect(requests).toBe(0)
   })
 
   it('a copy the database refused is reported as not mirrored, because a refused write did not land', async () => {

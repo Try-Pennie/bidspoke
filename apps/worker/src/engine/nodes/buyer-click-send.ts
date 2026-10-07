@@ -86,7 +86,7 @@ import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
 import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason, type HoldRecorded } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
-import { noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
+import { leadDatabaseDown, noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
 
@@ -399,6 +399,11 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     // The one production alert, shared with buyer_click_check (#1557).
     alert: productionClickAlert(orgId, env, supabase),
     recordHold: async (hold) => {
+      // Not sent into a database this lead has already seen fail (#1849): the
+      // next click on the prospect finds the claim and records it, so waiting
+      // out a deadline here would only hold the answer back.
+      const down = leadDatabaseDown(supabase)
+      if (down) throw new Error(`record_held_click not sent: ${down}`)
       const { error } = await supabase.rpc('record_held_click', {
         p_org: orgId,
         p_partner: hold.partner_id,
