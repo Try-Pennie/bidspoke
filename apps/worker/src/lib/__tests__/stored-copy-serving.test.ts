@@ -208,6 +208,27 @@ describe('every loader counts what it serves and refuses in an outage (#1848)', 
       if (copy !== 'workflow_definition') expect(refused.map((l) => (JSON.parse(l) as { reason: string }).reason)).toEqual(['copy_unusable'])
     })
 
+    it(`${copy}: a copy KV fails to hand back is counted as unusable, never as missing`, async () => {
+      let up = true
+      const kv = expiringKv()
+      const d = db(() => up)
+      await loader.warm(kv, d)
+      const kept = new Set([...kv.store.entries()].filter(([, e]) => e.expiresAt === Number.POSITIVE_INFINITY).map(([k]) => k))
+      expect(kept.size).toBeGreaterThan(0)
+      const failing = (k: string) => { if (kept.has(k)) throw new Error('KV GET failed: 500 Internal Server Error') }
+      const get = kv.get.bind(kv)
+      const getWithMetadata = kv.getWithMetadata.bind(kv)
+      kv.get = async (k: string, type?: string) => { failing(k); return get(k, type) }
+      kv.getWithMetadata = async (k: string) => { failing(k); return getWithMetadata(k) }
+      vi.setSystemTime(T0 + 10 * MINUTE)
+      up = false
+      await loader.serve(kv, d).catch(() => undefined)
+
+      const tally = await counted(copy)
+      expect(tally?.served ?? 0).toBe(0)
+      expect(tally?.refused).toMatchObject({ copy_unusable: 1, no_copy: 0 })
+    })
+
     it(`${copy}: no copy at all is counted as refused for want of one`, async () => {
       const kv = expiringKv()
       await loader.serve(kv, db(() => false)).catch(() => undefined)

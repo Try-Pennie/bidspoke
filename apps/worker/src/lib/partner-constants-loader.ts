@@ -112,7 +112,13 @@ async function loadFromKvOrDb(
 }
 
 async function serveLastGood(orgId: string, kv: KVNamespace, dbError: string): Promise<PartnerConstants> {
-  const held = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  let held: Awaited<ReturnType<typeof readConfirmedCopy>>
+  try {
+    held = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  } catch (err) {
+    console.error(`[partner-constants] the last-good copy for org ${orgId} could not be read: ${formatErr(err)}`)
+    throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'copy_unusable', ageMs: null, dbError })
+  }
   let lastGood: PartnerConstants | null
   try {
     lastGood = held ? (JSON.parse(held.value) as PartnerConstants) : null

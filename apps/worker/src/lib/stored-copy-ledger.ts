@@ -30,7 +30,9 @@
  * Module state (an isolate's memory, by design): `pending`, `isolateId`,
  * `lastFlushAt` and `flushing`. `forgetStoredCopyLedger` clears all four.
  */
-import type { StoredCopyKind, StoredCopyRefusal } from './stored-copy-age'
+// stored-copy-age imports this module too, so its lists are read where they are
+// used, never captured when this module loads, before they exist.
+import { STORED_COPY_KINDS, STORED_COPY_REFUSALS, type StoredCopyKind, type StoredCopyRefusal } from './stored-copy-age'
 import { formatErr } from './format-error'
 
 export const STORED_COPY_LEDGER_PREFIX = 'stored-copy-ledger:'
@@ -60,15 +62,17 @@ const MINUTE_MS = 60_000
 
 export type StoredCopyOutcome = 'served' | StoredCopyRefusal
 
-const KINDS: readonly StoredCopyKind[] = ['workflow_definition', 'custom_endpoint', 'partner_config', 'env_vars', 'partner_constants', 'buyer_profiles']
-const REFUSALS: readonly StoredCopyRefusal[] = ['no_copy', 'copy_too_old', 'copy_age_unknown', 'copy_unusable']
 
 /** One copy's counts in one minute, as held in KV metadata: short names, since metadata is capped at 1024 bytes. */
 interface StoredTally {
   /** Served. */
   s: number
-  /** Refused, by reason. */
-  r: Partial<Record<StoredCopyRefusal, number>>
+  /**
+   * Refused, by reason, positionally in STORED_COPY_REFUSALS order: a list
+   * rather than named keys keeps a minute with every copy refused for every
+   * reason well inside the metadata limit.
+   */
+  r: number[]
   /** The oldest copy served, in ms, or null when none was served. */
   a: number | null
 }
@@ -127,12 +131,14 @@ export function noteStoredCopy(event: { copy: StoredCopyKind; outcome: StoredCop
     held = { entry: { m: minute, k: {} }, dirty: false }
     pending.set(minute, held)
   }
-  const tally = (held.entry.k[event.copy] ??= { s: 0, r: {}, a: null })
+  const tally = (held.entry.k[event.copy] ??= { s: 0, r: [], a: null })
   if (event.outcome === 'served') {
     tally.s += 1
     if (event.ageMs !== null && Number.isFinite(event.ageMs)) tally.a = Math.max(tally.a ?? 0, event.ageMs)
   } else {
-    tally.r[event.outcome] = (tally.r[event.outcome] ?? 0) + 1
+    const at = STORED_COPY_REFUSALS.indexOf(event.outcome)
+    while (tally.r.length <= at) tally.r.push(0)
+    tally.r[at] += 1
   }
   held.dirty = true
 }
@@ -192,7 +198,7 @@ async function writeDirty(kv: LedgerKv, nowMs: number): Promise<boolean> {
 }
 
 function emptyTally(): KindTally {
-  return { served: 0, refused: { no_copy: 0, copy_too_old: 0, copy_age_unknown: 0, copy_unusable: 0 }, oldestServedAgeMs: null }
+  return { served: 0, refused: Object.fromEntries(STORED_COPY_REFUSALS.map((r) => [r, 0])) as Record<StoredCopyRefusal, number>, oldestServedAgeMs: null }
 }
 
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
@@ -218,14 +224,15 @@ export async function readStoredCopyLedger(kv: LedgerKv, nowMs: number, windowMi
       }
       if (entry.m < oldest || entry.m > newest) continue
       let used = false
-      for (const kind of KINDS) {
+      for (const kind of STORED_COPY_KINDS) {
         const raw = (entry.k as Record<string, unknown>)[kind]
         if (!raw || typeof raw !== 'object') continue
         const stored = raw as Partial<StoredTally>
         const tally = (reading.kinds[kind] ??= emptyTally())
         const served = count(stored.s)
         tally.served += served
-        for (const reason of REFUSALS) tally.refused[reason] += count(stored.r?.[reason])
+        const refused = Array.isArray(stored.r) ? stored.r : []
+        STORED_COPY_REFUSALS.forEach((reason, i) => { tally.refused[reason] += count(refused[i]) })
         if (served > 0 && typeof stored.a === 'number' && Number.isFinite(stored.a)) {
           tally.oldestServedAgeMs = Math.max(tally.oldestServedAgeMs ?? 0, stored.a)
         }

@@ -84,7 +84,15 @@ export async function rememberPartnerLastGood(kv: KVNamespace | undefined, partn
  */
 export async function readPartnerLastGood<T>(kv: KVNamespace | undefined, partnerId: string, dbError: string, nowMs: number): Promise<T | null> {
   if (!kv) return null
-  const held = await readConfirmedCopy(kv, partnerLastGoodKey(partnerId))
+  let held: Awaited<ReturnType<typeof readConfirmedCopy>>
+  try {
+    held = await readConfirmedCopy(kv, partnerLastGoodKey(partnerId))
+  } catch (err) {
+    // Counted as unusable, and answered as a null like any other refusal.
+    console.error(`[partner-last-good] the last-good copy of partner ${partnerId} could not be read: ${formatErr(err)}`)
+    refuseStoredCopy({ copy: 'partner_config', subject: partnerId, reason: 'copy_unusable', ageMs: null, dbError })
+    return null
+  }
   let copy: T | null = null
   if (held) {
     try {

@@ -15,7 +15,7 @@ import {
   readStoredCopyLedger,
   type LedgerKv,
 } from '../stored-copy-ledger'
-import type { StoredCopyRefusal } from '../stored-copy-age'
+import { COPY_LABELS, STORED_COPY_MAX_AGE_MS, type StoredCopyKind, type StoredCopyRefusal } from '../stored-copy-age'
 
 const T0 = Date.parse('2026-10-07T20:00:10Z')
 const MINUTE = 60_000
@@ -175,6 +175,33 @@ describe('noting a stored copy', () => {
 })
 
 describe('reading the ledger back', () => {
+  it('reads back every kind of stored copy there is, so a new kind is counted the day it is added', async () => {
+    const kinds = Object.keys(COPY_LABELS) as StoredCopyKind[]
+    for (const copy of kinds) noteStoredCopy({ copy, outcome: 'served', ageMs: 60_000, atMs: T0 })
+    const kv = ledgerKv()
+    await flushStoredCopyLedger(asKv(kv), testClock())
+    const reading = await readStoredCopyLedger(asKv(kv), T0, 5)
+    expect(Object.keys(reading.kinds).sort()).toEqual([...kinds].sort())
+    expect(reading.unreadable).toBe(0)
+  })
+
+  it('keeps a minute with every kind refused for every reason well inside the 1024 byte metadata limit, with room for two more kinds', async () => {
+    const kinds = Object.keys(COPY_LABELS) as StoredCopyKind[]
+    const reasons: StoredCopyRefusal[] = ['no_copy', 'copy_too_old', 'copy_age_unknown', 'copy_unusable']
+    for (const copy of kinds) {
+      noteStoredCopy({ copy, outcome: 'served', ageMs: STORED_COPY_MAX_AGE_MS, atMs: T0 })
+      for (const outcome of reasons) noteStoredCopy({ copy, outcome, ageMs: null, atMs: T0 })
+    }
+    const kv = ledgerKv()
+    await flushStoredCopyLedger(asKv(kv), testClock())
+    const [entry] = [...kv.store.values()]
+    const atOne = JSON.stringify(entry.metadata).length
+    // Each count is 1 here; a million a minute is six more digits apiece.
+    const counts = kinds.length * (1 + reasons.length)
+    const perKind = (atOne + counts * 6) / kinds.length
+    expect(perKind * (kinds.length + 2)).toBeLessThan(1024)
+  })
+
   it('counts every refusal reason a loader can give, each under its own name', async () => {
     // Keyed by the shared type, so a reason added there fails to compile here
     // until it is listed, and then fails below until the ledger counts it.

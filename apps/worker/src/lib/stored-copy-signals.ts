@@ -212,7 +212,9 @@ const REFUSAL_WORDS: Record<StoredCopyRefusal, string> = {
 /** The copies whose labels are plural, for the verb that follows them. */
 const PLURAL_LABELS: ReadonlySet<StoredCopyKind> = new Set(['env_vars', 'partner_constants', 'buyer_profiles'])
 
-const KIND_ORDER: readonly StoredCopyKind[] = ['workflow_definition', 'custom_endpoint', 'env_vars', 'partner_constants', 'partner_config', 'buyer_profiles']
+/** The order kinds are listed in the alert, keyed by the type so a new kind cannot be left out of it. */
+const KIND_RANK: Record<StoredCopyKind, number> = { workflow_definition: 0, custom_endpoint: 1, env_vars: 2, partner_constants: 3, partner_config: 4, buyer_profiles: 5 }
+const KIND_ORDER = (Object.keys(KIND_RANK) as StoredCopyKind[]).sort((a, b) => KIND_RANK[a] - KIND_RANK[b])
 
 /** The alert's words, from what the ledger measured and nothing more. */
 export function servingMessage(reading: LedgerReading): TitledMessage & { refusing: boolean } {
@@ -229,7 +231,8 @@ export function servingMessage(reading: LedgerReading): TitledMessage & { refusi
       const oldest = t.oldestServedAgeMs === null ? '' : `; the oldest was last confirmed ${minutesWord(t.oldestServedAgeMs)} ago`
       lines.push(`${label} ${verb} served from a stored copy at least ${times(t.served)}${oldest}.`)
     }
-    for (const reason of ['copy_too_old', 'no_copy', 'copy_age_unknown', 'copy_unusable'] as const) {
+    // REFUSAL_WORDS is keyed by the type and written in the order the alert lists them.
+    for (const reason of Object.keys(REFUSAL_WORDS) as StoredCopyRefusal[]) {
       const n = t.refused[reason]
       if (n === 0) continue
       refusing = true

@@ -22,7 +22,7 @@ import {
   type StoredCopyCheckDeps,
 } from '../stored-copy-signals'
 import { LEDGER_KEY_TTL_SECONDS, STORED_COPY_LEDGER_PREFIX } from '../stored-copy-ledger'
-import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, confirmedAt } from '../stored-copy-age'
+import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, STORED_COPY_REFUSALS, confirmedAt, type StoredCopyRefusal } from '../stored-copy-age'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../volume-cliff'
 import { encryptSecret } from '../secret-crypto'
 import { endpointLastGoodKey } from '../endpoint-copies'
@@ -113,7 +113,10 @@ async function ledgerMinute(kv: Kv, clock: { now: number }, minutesAgo: number, 
   await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute}:${isolate}`, '', { metadata: { m: minute, k }, expirationTtl: LEDGER_KEY_TTL_SECONDS })
 }
 
-const served = (s: number, a = 4 * MINUTE) => ({ workflow_definition: { s, r: {}, a } })
+const served = (s: number, a = 4 * MINUTE) => ({ workflow_definition: { s, r: [], a } })
+
+/** Refusal counts as the ledger stores them: positionally, in the shared order. */
+const refusedAs = (counts: Partial<Record<StoredCopyRefusal, number>>) => STORED_COPY_REFUSALS.map((r) => counts[r] ?? 0)
 
 const cleanSweep: SweepResult = { checked: 3, repaired: [], reconfirmed: [], failed: [] }
 
@@ -188,7 +191,7 @@ describe('while leads are being served from stored copies', () => {
     await rememberSlack(h.kv)
     await ledgerMinute(h.kv, h.clock, 2, served(40, 9 * MINUTE))
     await ledgerMinute(h.kv, h.clock, 1, served(50, 10 * MINUTE))
-    await ledgerMinute(h.kv, h.clock, 0, { ...served(10, 11 * MINUTE), env_vars: { s: 30, r: {}, a: 2 * MINUTE } }, 'iso-b')
+    await ledgerMinute(h.kv, h.clock, 0, { ...served(10, 11 * MINUTE), env_vars: { s: 30, r: [], a: 2 * MINUTE } }, 'iso-b')
 
     const r = await runStoredCopyChecks(h.deps())
 
@@ -209,7 +212,7 @@ describe('while leads are being served from stored copies', () => {
   it('says a stored copy could not be used, not that there was none, when one existed', async () => {
     const h = harness()
     await rememberSlack(h.kv)
-    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, { workflow_definition: { s: 0, r: { copy_unusable: 4 }, a: null } })
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, { workflow_definition: { s: 0, r: refusedAs({ copy_unusable: 4 }), a: null } })
     await runStoredCopyChecks(h.deps())
     const text = h.posted.flatMap((p) => p.errors).join('\n')
     expect(text).toMatch(/could not be read or was not fit to serve/)
@@ -253,7 +256,7 @@ describe('while leads are being served from stored copies', () => {
 
     h.clock.now += MINUTE
     h.claimsHeld.clear()
-    await ledgerMinute(h.kv, h.clock, 0, { env_vars: { s: 0, r: { copy_too_old: 7 }, a: null } }, 'iso-c')
+    await ledgerMinute(h.kv, h.clock, 0, { env_vars: { s: 0, r: refusedAs({ copy_too_old: 7 }), a: null } }, 'iso-c')
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('posted')
     const last = h.posted.at(-1)!
     expect(last.title).toBe('Leads are being refused: stored copies are past their limit or missing')

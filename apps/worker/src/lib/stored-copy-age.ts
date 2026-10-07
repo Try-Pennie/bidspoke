@@ -61,12 +61,23 @@ export const COPY_LABELS: Record<StoredCopyKind, string> = {
   buyer_profiles: 'the buyer profiles',
 }
 
+/** Every kind of stored copy, from the one record keyed by the type, so a new kind cannot be left out. */
+export const STORED_COPY_KINDS = Object.keys(COPY_LABELS) as StoredCopyKind[]
+
 /**
  * Why a copy is not served. Each is its own reason, so a log or an alert can
  * tell an outage with no copy from one whose copy had gone stale, or one whose
  * copy was there but could not be read, parsed or decrypted (`copy_unusable`).
  */
 export type StoredCopyRefusal = 'no_copy' | 'copy_too_old' | 'copy_age_unknown' | 'copy_unusable'
+
+/**
+ * Every refusal, in a fixed order the stored copy ledger keys its counts by
+ * position on: a new reason goes on the END, or minutes already written are
+ * read under the wrong names. Keyed by the type, so none can be left out.
+ */
+const REFUSAL_ORDER: Record<StoredCopyRefusal, number> = { no_copy: 0, copy_too_old: 1, copy_age_unknown: 2, copy_unusable: 3 }
+export const STORED_COPY_REFUSALS = (Object.keys(REFUSAL_ORDER) as StoredCopyRefusal[]).sort((a, b) => REFUSAL_ORDER[a] - REFUSAL_ORDER[b])
 
 export type CopyAgeVerdict =
   | { usable: true; ageMs: number }
