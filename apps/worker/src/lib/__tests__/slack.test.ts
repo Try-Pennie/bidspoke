@@ -930,6 +930,18 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
     expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
     expect(text).toContain('https://app.test/workflows/wf-1?execution=ex-1')
   })
+
+  it('keeps that wording when the payload carries no run', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toMatch(/did not finish/i)
+    expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
+  })
 })
 
 describe('sendOutcomeDeadLetterAlert (#309)', () => {

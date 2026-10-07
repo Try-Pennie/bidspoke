@@ -328,7 +328,9 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     })
     // The remaining work ends 60 s after the answer on the virtual clock: well past
     // the whole budget, where Cloudflare would already have cancelled it.
-    let late: () => Promise<{ output: unknown }> = () => new Promise(() => {})
+    // Set from the run's own clock on its first database call, which comes before
+    // the walk reaches patch_sf; reached unset, it fails rather than hangs.
+    let late: () => Promise<{ output: unknown }> = () => Promise.reject(new Error('the late step ran before the clock was wired'))
     vi.mocked(executeNode).mockImplementation(async (node) => {
       if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
       return late()
