@@ -21,12 +21,13 @@ const PROFILE_ROW = {
   buyer_operating_windows: [], buyer_blackout_dates: [], buyer_pricing_tiers: [],
 }
 
-/** Answers the workflows and buyer_profiles reads; every other table the prewarm touches is refused, which each of those loaders swallows. */
-function fakeSupabase(profiles: { data: unknown; error: { message: string } | null }) {
+/** Answers the workflows and buyer_profiles reads, and any table in `more`; every other table the prewarm touches is refused, which each of those loaders swallows. */
+function fakeSupabase(profiles: { data: unknown; error: { message: string } | null }, more: Record<string, unknown[]> = {}) {
   const tables: string[] = []
   const answer = (table: string) => {
     if (table === 'workflows') return { data: [{ id: 'wf-1', organization_id: 'org-1' }, { id: 'wf-2', organization_id: 'org-1' }], error: null }
     if (table === 'buyer_profiles') return profiles
+    if (Object.hasOwn(more, table)) return { data: more[table], error: null }
     return { data: null, error: { message: `table ${table} is not part of this test` } }
   }
   const supabase = {
@@ -48,14 +49,18 @@ function fakeSupabase(profiles: { data: unknown; error: { message: string } | nu
 }
 
 function fakeKv() {
-  const store = new Map<string, { value: string; ttl?: number }>()
+  const store = new Map<string, { value: string; ttl?: number; metadata?: unknown }>()
   const kv = {
     get: vi.fn(async (key: string, type?: string) => {
       const hit = store.get(key)
       if (!hit) return null
       return type === 'json' ? JSON.parse(hit.value) : hit.value
     }),
-    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => { store.set(key, { value, ttl: opts?.expirationTtl }) }),
+    getWithMetadata: vi.fn(async (key: string) => {
+      const hit = store.get(key)
+      return { value: hit?.value ?? null, metadata: hit?.metadata ?? null }
+    }),
+    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number; metadata?: unknown }) => { store.set(key, { value, ttl: opts?.expirationTtl, metadata: opts?.metadata }) }),
     delete: vi.fn(async (key: string) => { store.delete(key) }),
     list: vi.fn(async () => ({ keys: [], list_complete: true })),
   }
@@ -101,5 +106,32 @@ describe('prewarmKvCaches keeps the buyer profile copy warm (#1632)', () => {
       errors.mockRestore()
     }
     expect(JSON.parse(store.get('buyer-profiles:org-1')!.value).content_hash).toBe('held')
+  })
+})
+
+/**
+ * #1847: the partner constants copy is served for at most thirty minutes after
+ * it was confirmed, and its 30 day cache means no lead reads the database to
+ * confirm it, so the prewarm does, once it is due.
+ */
+describe('prewarmKvCaches keeps the partner constants copy confirmed (#1847)', () => {
+  it('confirms a copy that is due, while the 30 day cache is still a hit', async () => {
+    const { kv, store } = fakeKv()
+    const constants = { subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {}, slugsById: { 'p-1': 'old' } }
+    store.set('partner-constants-v2-org-1', { value: JSON.stringify(constants), ttl: 2_592_000 })
+    store.set('partner-constants-v2-org-1-lastgood', { value: JSON.stringify(constants), metadata: { confirmed_at: '2026-09-30T00:00:00.000Z' } })
+    const { supabase } = fakeSupabase({ data: [], error: null }, { partner_uuid_map: [], partner_configs: [{ id: 'p-1', slug: 'tripoint', is_active: true }] })
+    const before = Date.now()
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await prewarmKvCaches(supabase, envWith(kv))
+    } finally {
+      logs.mockRestore()
+      errors.mockRestore()
+    }
+    const held = store.get('partner-constants-v2-org-1-lastgood')!
+    expect(JSON.parse(held.value).slugsById).toEqual({ 'p-1': 'tripoint' })
+    expect(Date.parse((held.metadata as { confirmed_at: string }).confirmed_at)).toBeGreaterThanOrEqual(before)
   })
 })

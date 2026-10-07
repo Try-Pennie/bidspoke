@@ -10,6 +10,7 @@
  * injected, so nothing waits and nothing leaves the process.
  */
 import { describe, expect, it } from 'vitest'
+import { StoredCopyRefusedError } from '../../../lib/stored-copy-age'
 import { CLICK_CHECK_BUDGET_MS as PACKAGE_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, OUT_REASONS, OUT_REASON_LABELS, type JudgedLead, type JudgedLimits, type OutReason, type Timers } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@bidspoke/node-types'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
@@ -257,6 +258,24 @@ describe('a last good copy of the profiles', () => {
     expect(r.failure).toBeUndefined()
     expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_copy_stale', profile_served_from: 'last_good' })
     expect(h.counterReads).toEqual([])
+  })
+
+  // #1847: past the shared thirty minute maximum the loader itself refuses the
+  // copy, by name. That is the same stale copy, so the check says so, rather
+  // than reporting a failed read.
+  it.each(['copy_too_old', 'copy_age_unknown'] as const)('a copy the loader refuses as %s is profile_copy_stale too, and the counter is never read', async (reason) => {
+    const refused = new StoredCopyRefusedError('buyer_profiles', 'org-1', reason, reason === 'copy_too_old' ? 31 * 60_000 : null, 'fetch failed')
+    const h = harness({ profiles: async () => { throw refused } })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_copy_stale' })
+    expect(r.output.detail).toContain(refused.message)
+    expect(h.counterReads).toEqual([])
+  })
+
+  it('a stored copy with no readable loaded_at is not offered from either', async () => {
+    const r = await run(harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: 'garbled' } }))
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_copy_stale' })
   })
 
   it('a cached copy of any age is not judged by the bound: the cache has its own TTL', async () => {

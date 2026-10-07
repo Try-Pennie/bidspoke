@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ENV_READ_MAX_PAGES, loadEnvVars, invalidateEnvCache, rowReach } from '../env-loader'
 import { decryptSecret, encryptSecret } from '../secret-crypto'
 import { buildSandboxEnv } from '../sandbox-env'
+import { STORED_COPY_MAX_AGE_MS, StoredCopyRefusedError } from '../stored-copy-age'
 import type { Env } from '../../index'
 
 // A throwaway 32-byte base64 key for round-tripping encrypt/decrypt in tests.
@@ -11,8 +12,15 @@ const WRONG_KEY = btoa('1'.repeat(32))
 
 function fakeKv(initial: Record<string, string> = {}) {
   const store = new Map<string, string>(Object.entries(initial))
+  // The metadata each put carried, as KV keeps it beside the value (#1847).
+  const meta = new Map<string, unknown>()
   return {
     store,
+    meta,
+    getWithMetadata: vi.fn(async (k: string) => {
+      const v = store.get(k)
+      return v == null ? { value: null, metadata: null } : { value: v, metadata: meta.get(k) ?? null }
+    }),
     // Mirrors the real KV: `get(k, 'json')` parses, a bare `get(k)` returns the
     // raw string. The cache is stored as an encrypted string, so the loader reads
     // it raw and decrypts before parsing.
@@ -21,9 +29,9 @@ function fakeKv(initial: Record<string, string> = {}) {
       if (v == null) return null
       return type === 'json' ? JSON.parse(v) : v
     }),
-    put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
-    delete: vi.fn(async (k: string) => { store.delete(k) }),
-  } as unknown as KVNamespace & { store: Map<string, string> }
+    put: vi.fn(async (k: string, v: string, opts?: { metadata?: unknown }) => { store.set(k, v); meta.set(k, opts?.metadata ?? null) }),
+    delete: vi.fn(async (k: string) => { store.delete(k); meta.delete(k) }),
+  } as unknown as KVNamespace & { store: Map<string, string>; meta: Map<string, unknown> }
 }
 
 // Everything the fake KV is currently holding, as one string. If a secret's
@@ -89,11 +97,72 @@ describe('loadEnvVars (#391)', () => {
     expect(r.EQUIFAX_PASSWORD).toBeUndefined()
   })
 
-  it('on a DB error, does NOT cache an empty result (the bug that caused the outage)', async () => {
+  // #1847: with no copy to fall back on, a failed read is refused by name. It
+  // used to hand back an empty map, so the run went ahead with blank secrets
+  // and failed at whichever partner call needed one, saying the wrong thing.
+  it('on a DB error with no last-good copy, refuses by name and caches nothing (the bug that caused the outage)', async () => {
     const kv = fakeKv()
-    const r = await loadEnvVars('org1', kv, fakeSupabase({ data: null, error: { message: 'pool exhausted' } }), KEY, 'global-only')
-    expect(r).toEqual({})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const load = loadEnvVars('org1', kv, fakeSupabase({ data: null, error: { message: 'pool exhausted' } }), KEY, 'global-only')
+      await expect(load).rejects.toBeInstanceOf(StoredCopyRefusedError)
+      await expect(load).rejects.toMatchObject({ reason: 'no_copy', copy: 'env_vars' })
+      await expect(load).rejects.toThrow(/pool exhausted/)
+    } finally {
+      logged.mockRestore()
+    }
     expect(kv.store.has('env-vars-org1')).toBe(false)
+  })
+
+  it('stamps the last-good copy with the time the load confirmed it, and leaves the short cache unstamped', async () => {
+    const kv = fakeKv()
+    await loadEnvVars('org1', kv, fakeSupabase({ data: [{ key: 'A', value: '1', is_secret: false, scope: 'global', workflow_id: null }], error: null }), KEY, 'global-only')
+    const stamp = Date.parse((kv.meta.get('env-vars-org1-lastgood') as { confirmed_at?: string } | null)?.confirmed_at ?? '')
+    expect(Math.abs(Date.now() - stamp)).toBeLessThan(5_000)
+    expect(kv.meta.get('env-vars-org1')).toBeNull()
+  })
+
+  describe('a last-good copy is served for at most thirty minutes after it was confirmed (#1847)', () => {
+    const T0 = Date.parse('2026-10-07T12:00:00Z')
+    beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(T0) })
+    afterEach(() => { vi.useRealTimers() })
+
+    async function warmThenDown(kv: ReturnType<typeof fakeKv>) {
+      await loadEnvVars('org1', kv, fakeSupabase({ data: [{ key: 'SALESFORCE_CLIENT_ID', value: 'good', is_secret: false, scope: 'global', workflow_id: null }], error: null }), KEY, 'global-only')
+      kv.store.delete('env-vars-org1')
+      return fakeSupabase({ data: null, error: { message: 'timeout' } })
+    }
+
+    it('serves a copy confirmed exactly thirty minutes ago', async () => {
+      const kv = fakeKv()
+      const down = await warmThenDown(kv)
+      vi.setSystemTime(T0 + STORED_COPY_MAX_AGE_MS)
+      expect(await loadEnvVars('org1', kv, down, KEY, 'global-only')).toEqual({ SALESFORCE_CLIENT_ID: 'good' })
+    })
+
+    it('refuses a copy one millisecond older, as too old', async () => {
+      const kv = fakeKv()
+      const down = await warmThenDown(kv)
+      vi.setSystemTime(T0 + STORED_COPY_MAX_AGE_MS + 1)
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await expect(loadEnvVars('org1', kv, down, KEY, 'global-only')).rejects.toMatchObject({ reason: 'copy_too_old', copy: 'env_vars' })
+      } finally {
+        logged.mockRestore()
+      }
+    })
+
+    it('refuses a copy written before copies carried a confirmation time', async () => {
+      const kv = fakeKv()
+      const down = await warmThenDown(kv)
+      kv.meta.set('env-vars-org1-lastgood', null)
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await expect(loadEnvVars('org1', kv, down, KEY, 'global-only')).rejects.toMatchObject({ reason: 'copy_age_unknown' })
+      } finally {
+        logged.mockRestore()
+      }
+    })
   })
 
   it('on a DB error, serves the last-good values so a transient blip does not blank creds', async () => {
@@ -410,11 +479,35 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
     expect(shortKeys()).toEqual([])
   })
 
-  it('on a DB error with no last-good copy, returns nothing and caches nothing', async () => {
+  it('on a DB error with no last-good copy, refuses by name for a workflow run too, and caches nothing (#1847)', async () => {
     const kv = fakeKv()
     const down = filteringSupabase([], { message: 'pool exhausted' })
-    expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_A })).toEqual({})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_A })).rejects.toMatchObject({ reason: 'no_copy' })
+    } finally {
+      logged.mockRestore()
+    }
     expect(kv.store.size).toBe(0)
+  })
+
+  it("withholds a workflow's own keys when its workflow copy is past the maximum age, while the org copy is fresh (#1847)", async () => {
+    const T0 = Date.parse('2026-10-07T12:00:00Z')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      vi.setSystemTime(T0)
+      const kv = fakeKv()
+      await loadEnvVars(ORG, kv, filteringSupabase(ROWS), KEY, { workflowId: WF_A })
+      for (const k of [...kv.store.keys()]) if (!k.endsWith('-lastgood')) kv.store.delete(k)
+      // Only the workflow copy has aged: its confirmation is from long before.
+      kv.meta.set(`env-vars-${ORG}-workflow-scoped-lastgood`, { confirmed_at: new Date(T0 - STORED_COPY_MAX_AGE_MS - 1).toISOString() })
+      const down = filteringSupabase([], { message: 'pool exhausted' })
+      expect(await loadEnvVars(ORG, kv, down, KEY, { workflowId: WF_A })).toEqual({ API_URL: '', SHARED: 'org-shared', ONLY_A: '' })
+    } finally {
+      logged.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('reloads when the org copy is held but the workflow copy it names is not, rather than serving the org values alone', async () => {
@@ -689,7 +782,7 @@ describe('loadEnvVars: every row or none (#1681)', () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       const { sb, seen } = pagedSupabase([], { endless: true })
-      expect(await loadEnvVars(ORG, kv, sb, KEY, { workflowId: WF_A })).toEqual({})
+      await expect(loadEnvVars(ORG, kv, sb, KEY, { workflowId: WF_A })).rejects.toMatchObject({ reason: 'no_copy' })
       expect(seen.pages).toBe(ENV_READ_MAX_PAGES)
       expect(logged.mock.calls.flat().join(' ')).toContain(`within ${ENV_READ_MAX_PAGES} pages`)
     } finally {

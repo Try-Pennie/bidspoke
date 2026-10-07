@@ -9,7 +9,7 @@ import { loadWorkflowDefinition } from '../engine/definition-loader'
 import { keepBuyerProfilesWarm } from './buyer-profile-loader'
 import { loadEnvVars } from './env-loader'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
-import { loadPartnerConstants } from './partner-constants-loader'
+import { keepPartnerConstantsConfirmed, loadPartnerConstants } from './partner-constants-loader'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import type { Env } from '../index'
 import { secretKeys } from './secret-crypto'
@@ -40,7 +40,12 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
     const tasks: Promise<unknown>[] = [
       // One load warms the org values and every workflow's own (#1681).
       loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, secretKeys(env), 'global-only').catch(() => undefined),
-      loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+      // Warm the 30 day cache, then confirm the last-good copy against the
+      // database once it is due, which no lead does while that cache is a hit,
+      // so it never ages past the maximum on a healthy day (#1847). Never throws.
+      loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase)
+        .catch(() => undefined)
+        .then(() => keepPartnerConstantsConfirmed(orgId, env.WORKFLOW_CACHE, supabase)),
       // Never throws; a failure is logged inside and the held copy is kept.
       keepBuyerProfilesWarm(orgId, env.WORKFLOW_CACHE, supabase),
     ]

@@ -6,7 +6,7 @@ import type { Env } from '../index'
  * result is logged. Invokes the real scheduled handler rather than reading the
  * source, so the cron is proven to reach the sweep.
  */
-const sweepStoredCopies = vi.fn().mockResolvedValue({ checked: 3, repaired: ['partner-lastgood:p-1'], failed: [] })
+const sweepStoredCopies = vi.fn().mockResolvedValue({ checked: 3, repaired: ['partner-lastgood:p-1'], reconfirmed: [], failed: [] })
 
 vi.mock('../lib/stored-copy-sweep', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/stored-copy-sweep')>()),
@@ -58,9 +58,16 @@ describe('the stored copy sweep dispatch (#1846)', () => {
   })
 
   it('logs a failure it reports as an error', async () => {
-    sweepStoredCopies.mockResolvedValueOnce({ checked: 1, repaired: [], failed: ['partner copies: database down'] })
+    sweepStoredCopies.mockResolvedValueOnce({ checked: 1, repaired: [], reconfirmed: [], failed: ['partner copies: database down'] })
     await fire('* * * * *')
     expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(/stored-copy-sweep.*partner copies: database down/)
+  })
+
+  it('logs how many copies it confirmed (#1847)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    sweepStoredCopies.mockResolvedValueOnce({ checked: 4, repaired: [], reconfirmed: ['ep-lastgood:a:/b', 'partner-lastgood:p-2'], failed: [] })
+    await fire('* * * * *')
+    expect(log.mock.calls.flat().join(' ')).toMatch(/stored-copy-sweep.*reconfirmed=2/)
   })
 
   it('runs from no other cron', async () => {

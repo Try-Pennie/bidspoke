@@ -46,6 +46,7 @@
  * executeNode's retry loop, so the budget is the only bound on it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { StoredCopyRefusedError, judgeCopyAge } from '../../lib/stored-copy-age'
 import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, judgedLimits, parseLead, partnerIdOf, POPULATIONS, withDeadline, type JudgedLead, type JudgedLimits, type LeadInput, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
@@ -251,14 +252,20 @@ async function decide(partnerId: string, lead: LeadInput, instantMs: number, dep
   try {
     snapshot = await deps.loadProfiles()
   } catch (err) {
+    // The loader refuses a copy past the shared maximum age by name (#1847): the
+    // same stale copy as below, so the same reason, not a failed read.
+    if (err instanceof StoredCopyRefusedError && err.reason !== 'no_copy') {
+      return { kind: 'route', route: 'not_eligible', reason: 'profile_copy_stale', detail: err.message }
+    }
     return { kind: 'route', route: 'not_eligible', reason: 'cap_check_error', detail: `the buyer profiles could not be read, so the buyer is not offered: ${messageOf(err)}` }
   }
   const servedFrom = snapshot.served_from
   // A last good copy is served only when the database read failed. Past the
-  // bound it may still offer a buyer switched off, or a cap lowered, since.
+  // bound it may still offer a buyer switched off, or a cap lowered, since. The
+  // check's own bound is stricter than the shared one, and judged by the same
+  // rule (#1847).
   if (servedFrom === 'last_good') {
-    const ageMs = instantMs - Date.parse(snapshot.loaded_at)
-    if (!(ageMs <= CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)) {
+    if (!judgeCopyAge(snapshot.loaded_at, instantMs, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS).usable) {
       return { kind: 'route', route: 'not_eligible', reason: 'profile_copy_stale', detail: `the database read failed and the last good copy of the buyer profiles was loaded at ${snapshot.loaded_at}, older than ${CLICK_CHECK_LAST_GOOD_MAX_AGE_MS / 60_000} minutes`, servedFrom }
     }
   }

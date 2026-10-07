@@ -64,6 +64,7 @@
  * profiles are read only when a judged partner had no sales.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { judgeCopyAge } from './stored-copy-age'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, isOpenDuring } from '@bidspoke/buyer-profile'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type TitledRemedy } from './export-alerts'
@@ -444,9 +445,9 @@ async function readProfiles(loadProfiles: () => Promise<BuyerProfilesSnapshot>, 
     return { err: formatErr(err) }
   }
   if (snapshot.served_from === 'last_good') {
-    const ageMs = now.getTime() - Date.parse(snapshot.loaded_at)
-    if (!(ageMs <= CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)) {
-      const age = Number.isFinite(ageMs) ? `${Math.round(ageMs / 60_000)} minutes old` : `of unknown age (${snapshot.loaded_at})`
+    const verdict = judgeCopyAge(snapshot.loaded_at, now.getTime(), CLICK_CHECK_LAST_GOOD_MAX_AGE_MS)
+    if (!verdict.usable) {
+      const age = verdict.reason === 'copy_too_old' && verdict.ageMs !== null ? `${Math.round(verdict.ageMs / 60_000)} minutes old` : `of unknown age (${snapshot.loaded_at})`
       return { err: `the database read failed and the saved copy is ${age}.` }
     }
   }

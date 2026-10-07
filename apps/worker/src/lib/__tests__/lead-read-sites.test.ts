@@ -24,6 +24,8 @@ const KEY = btoa('0'.repeat(32))
 
 function fakeKv() {
   const store = new Map<string, string>()
+  // The metadata each put carried, which carries a copy's confirmation (#1847).
+  const meta = new Map<string, unknown>()
   return {
     store,
     get: vi.fn(async (k: string, type?: string) => {
@@ -31,8 +33,9 @@ function fakeKv() {
       if (v == null) return null
       return type === 'json' ? JSON.parse(v) : v
     }),
-    put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
-    delete: vi.fn(async (k: string) => { store.delete(k) }),
+    getWithMetadata: vi.fn(async (k: string) => ({ value: store.get(k) ?? null, metadata: meta.get(k) ?? null })),
+    put: vi.fn(async (k: string, v: string, opts?: { metadata?: unknown }) => { store.set(k, v); meta.set(k, opts?.metadata ?? null) }),
+    delete: vi.fn(async (k: string) => { store.delete(k); meta.delete(k) }),
   } as unknown as KVNamespace & { store: Map<string, string> }
 }
 

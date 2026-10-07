@@ -11,9 +11,25 @@
  *
  * - Endpoint copies (`ep-lastgood:`): cleared, with their hot copy, when no row
  *   holds the address, or the row there is another endpoint, is switched off or
- *   on, or points at another workflow or source.
+ *   on, points at another workflow or source, or its workflow trigger now asks
+ *   for another auth method.
  * - Partner copies (`partner-lastgood:`): cleared when the partner is gone or its
  *   updated_at has moved since the copy was written.
+ *
+ * It also CONFIRMS (#1847). A copy is served for at most STORED_COPY_MAX_AGE_MS
+ * after it was last confirmed against the database, and a busy address or
+ * partner is confirmed by its own lookups, but one no lead has reached for half
+ * an hour would age out on a healthy day. So an endpoint or partner copy that
+ * agrees with its row, and is due (STORED_COPY_RECONFIRM_AFTER_MS old or
+ * unstamped), is rewritten stamped now: the endpoint copy from the row, the
+ * partner copy as held, since an equal updated_at means an equal row (the
+ * partner_configs_updated_at trigger moves it on every update). Only what was
+ * compared is confirmed; a copy that disagrees is cleared, never stamped.
+ *
+ * A confirmation races an edit like any other writer: one whose row read came
+ * before an edit can rewrite the old copy just after the edit's route retired
+ * it. The next run, a minute later, finds it disagreeing with the row and clears
+ * it, so the window is one run, the same one every lookup's own write has.
  * - Workflow definition copies (`workflow-def-lastgood:`): refreshed through the
  *   route's own refreshWorkflowCaches when the row is gone, its stamp is newer
  *   than the copy's, or the copy is marked unverified. The refresh writes a
@@ -28,7 +44,8 @@
  * than reading absence as deletion (L211). A clear KV refuses is named and
  * retried on the next run.
  */
-import { endpointLastGoodKey, retireEndpointCopies } from './endpoint-copies'
+import { endpointCopyOf, endpointLastGoodKey, retireEndpointCopies, sameEndpointCopy } from './endpoint-copies'
+import { confirmedAt, isDueForReconfirm, readConfirmedCopy } from './stored-copy-age'
 import { partnerLastGoodKey, retirePartnerLastGood } from './partner-last-good'
 import { postgresTimeMicros, refreshWorkflowCaches, workflowCopyKey } from '../engine/definition-loader'
 import { formatErr } from './format-error'
@@ -36,7 +53,16 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '../types/database'
 import { fetchAllPaged } from './paginate'
 
-export interface EndpointRow { id: string; subdomain: string; path: string; workflow_id: string; source_name: string; is_active: boolean }
+export interface EndpointRow {
+  id: string
+  subdomain: string
+  path: string
+  workflow_id: string
+  source_name: string
+  is_active: boolean
+  /** The auth method the endpoint's workflow trigger names, as the lookup reads it. */
+  trigger_auth_method: string | null
+}
 export interface StampedRow { id: string; updated_at: string }
 
 /** Where the sweep reads rows from. Each read throws when it cannot answer. */
@@ -56,6 +82,8 @@ export interface SweepResult {
   checked: number
   /** Keys of copies cleared or refreshed. */
   repaired: string[]
+  /** Keys of copies that agreed with their rows and were stamped as confirmed now (#1847). */
+  reconfirmed: string[]
   /** What could not be swept, and why. */
   failed: string[]
 }
@@ -77,18 +105,35 @@ async function listKeys(kv: KVNamespace, prefix: string): Promise<string[]> {
 }
 
 async function readJson(kv: KVNamespace, key: string): Promise<Record<string, unknown> | null> {
-  const raw = await kv.get(key)
-  if (raw === null) return null
-  try {
-    const v = JSON.parse(raw) as unknown
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
-  } catch {
-    return {}
-  }
+  return (await readJsonConfirmed(kv, key))?.copy ?? null
 }
 
-export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources): Promise<SweepResult> {
-  const result: SweepResult = { checked: 0, repaired: [], failed: [] }
+/** A copy parsed (an unparseable one as an empty object, which matches no row) with its confirmation time. */
+async function readJsonConfirmed(kv: KVNamespace, key: string): Promise<{ copy: Record<string, unknown>; raw: string; confirmedAt: unknown } | null> {
+  const held = await readConfirmedCopy(kv, key)
+  if (held === null) return null
+  let copy: Record<string, unknown> = {}
+  try {
+    const v = JSON.parse(held.value) as unknown
+    if (v && typeof v === 'object') copy = v as Record<string, unknown>
+  } catch {
+    copy = {}
+  }
+  return { copy, raw: held.value, confirmedAt: held.confirmedAt }
+}
+
+export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, options: { now?: () => number } = {}): Promise<SweepResult> {
+  const now = options.now ?? Date.now
+  const result: SweepResult = { checked: 0, repaired: [], reconfirmed: [], failed: [] }
+
+  const reconfirm = async (key: string, value: string) => {
+    try {
+      await kv.put(key, value, confirmedAt(now()))
+      result.reconfirmed.push(key)
+    } catch (e) {
+      result.failed.push(`${key}: ${formatErr(e)}`)
+    }
+  }
 
   const repair = async (key: string, work: () => Promise<void>) => {
     try {
@@ -124,11 +169,15 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources):
       }
       const subdomain = rest.slice(0, cut)
       const path = rest.slice(cut + 1)
-      const copy = await readJson(kv, key)
-      if (copy === null) continue
+      const held = await readJsonConfirmed(kv, key)
+      if (held === null) continue
       const row = byAddress.get(key)
-      const same = row !== undefined && copy.id === row.id && copy.is_active === row.is_active && copy.workflow_id === row.workflow_id && copy.source_name === row.source_name
-      if (!same) await repair(key, () => retireEndpointCopies(kv, subdomain, path))
+      const expected = row === undefined ? undefined : endpointCopyOf(row, row.trigger_auth_method)
+      if (expected === undefined || !sameEndpointCopy(held.copy, expected)) {
+        await repair(key, () => retireEndpointCopies(kv, subdomain, path))
+      } else if (isDueForReconfirm(held.confirmedAt, now())) {
+        await reconfirm(key, JSON.stringify(expected))
+      }
     }
   })
 
@@ -140,10 +189,14 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources):
     for (const id of ids) {
       result.checked++
       const key = partnerLastGoodKey(id)
-      const copy = await readJson(kv, key)
-      if (copy === null) continue
+      const held = await readJsonConfirmed(kv, key)
+      if (held === null) continue
       const stamp = stamps.get(id)
-      if (stamp === undefined || copy.updated_at !== stamp) await repair(key, () => retirePartnerLastGood(kv, id))
+      if (stamp === undefined || held.copy.updated_at !== stamp) {
+        await repair(key, () => retirePartnerLastGood(kv, id))
+      } else if (isDueForReconfirm(held.confirmedAt, now())) {
+        await reconfirm(key, held.raw)
+      }
     }
   })
 
@@ -189,13 +242,22 @@ async function inChunks(ids: string[], read: (chunk: string[]) => PromiseLike<{ 
  */
 export function sweepSources(supabase: SupabaseClient<Database>, kv: KVNamespace): SweepSources {
   return {
-    endpoints: () =>
-      fetchAllPaged<EndpointRow>(
-        (from, to) => supabase.from('webhook_endpoints').select('id, subdomain, path, workflow_id, source_name, is_active').order('id').range(from, to),
+    endpoints: async () => {
+      // The trigger's auth method is read as one field, not the whole
+      // definition, and through the same inner join the lookup uses, so an
+      // endpoint whose workflow is gone has no row here, as it has none there.
+      const rows = await fetchAllPaged<Omit<EndpointRow, 'trigger_auth_method'> & { workflows: { auth_method: string | null } | null }>(
+        (from, to) => supabase
+          .from('webhook_endpoints')
+          .select('id, subdomain, path, workflow_id, source_name, is_active, workflows!inner(auth_method:definition->trigger->config->>auth_method)')
+          .order('id')
+          .range(from, to),
         'stored copy sweep: webhook_endpoints',
         // Every row or none: a short read would clear copies whose rows exist.
         { maxPages: 50 },
-      ),
+      )
+      return rows.map(({ workflows, ...row }) => ({ ...row, trigger_auth_method: workflows?.auth_method ?? null }))
+    },
     // paginate-ok: at most ID_CHUNK rows a request, one per id asked for.
     partners: (ids) => inChunks(ids, (chunk) => supabase.from('partner_configs').select('id, updated_at').in('id', chunk)),
     // paginate-ok: at most ID_CHUNK rows a request, one per id asked for.

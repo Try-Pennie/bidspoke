@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { leadRead } from './lead-read-budget'
+import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { formatErr } from './format-error'
 
 // Partner constants change rarely and every mutating route busts this cache
 // explicitly (see invalidatePartnerConstantsCache call sites). The long TTL keeps
@@ -9,7 +11,11 @@ import { leadRead } from './lead-read-budget'
 const TTL = 60 * 60 * 24 * 30 // 30 days (KV)
 const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
 // No-TTL last-good copy, served during a transient DB blip so a cold load never
-// degrades to empty bidding constants (the #391 shape — see loadFromKvOrDb).
+// degrades to empty bidding constants (the #391 shape, see loadFromKvOrDb). It is
+// served for at most STORED_COPY_MAX_AGE_MS after a load last confirmed it
+// (#1847), and carries that time in its KV metadata. The 30 day cache means a
+// lead almost never reads the database, so the per minute prewarm confirms the
+// copy once it is due (keepPartnerConstantsConfirmed).
 const lastGoodKey = (orgId: string) => `partner-constants-v2-${orgId}-lastgood`
 
 // In front of KV sits a per-isolate memory cache + single-flight. A warm isolate
@@ -75,6 +81,47 @@ async function loadFromKvOrDb(
   // without it; the 30 day TTL would otherwise keep it for a month (#1553).
   if (cached && cached.slugsById) return cached
 
+  const read = await readFromDb(orgId, supabase)
+
+  // A transient DB error must NEVER be turned into empty bidding constants and
+  // cached for 30 days: that silently marks every partner inactive, drops bids,
+  // and breaks routing with no signal (the #391 outage shape, the same mistake
+  // env-loader.ts was fixed for). On error: do not cache; serve the no-TTL
+  // last-good copy while it is within the maximum age (#1847), else throw the
+  // named refusal so the Constants node surfaces a real failure instead of
+  // fabricating empty data.
+  if ('error' in read) {
+    console.error(`[partner-constants] load failed for org ${orgId}, not caching: ${read.error}`)
+    return serveLastGood(orgId, kv, read.error)
+  }
+
+  await writeCopies(orgId, kv, read.constants, Date.now())
+  return read.constants
+}
+
+async function serveLastGood(orgId: string, kv: KVNamespace, dbError: string): Promise<PartnerConstants> {
+  const held = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  let lastGood: PartnerConstants | null
+  try {
+    lastGood = held ? (JSON.parse(held.value) as PartnerConstants) : null
+  } catch {
+    lastGood = null
+  }
+  if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  const age = judgeCopyAge(held.confirmedAt, Date.now())
+  if (!age.usable) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
+  return lastGood
+}
+
+/** Short cache for the hot path; no-TTL last-good, stamped as confirmed now, for blip resilience. */
+async function writeCopies(orgId: string, kv: KVNamespace, constants: PartnerConstants, nowMs: number): Promise<void> {
+  const serialized = JSON.stringify(constants)
+  await kv.put(cacheKey(orgId), serialized, { expirationTtl: TTL })
+  await kv.put(lastGoodKey(orgId), serialized, confirmedAt(nowMs))
+}
+
+/** The constants from the database, or the read's error message. */
+async function readFromDb(orgId: string, supabase: SupabaseClient): Promise<{ constants: PartnerConstants } | { error: string }> {
   const [uuidRes, partnerRes] = await Promise.all([
     leadRead(supabase, supabase.from('partner_uuid_map').select('uuid, partner_slug').eq('org_id', orgId), 'partner uuid map'),
     leadRead(
@@ -87,22 +134,14 @@ async function loadFromKvOrDb(
     ),
   ])
 
-  // A transient DB error must NEVER be turned into empty bidding constants and
-  // cached for 30 days — that silently marks every partner inactive, drops bids,
-  // and breaks routing with no signal (the #391 outage shape, the same mistake
-  // env-loader.ts was fixed for). On error: do not cache; serve the no-TTL
-  // last-good copy if we have one, else throw so the Constants node surfaces a
-  // real failure instead of fabricating empty data.
+  // Either read failing fails the whole load: the caller serves the last-good
+  // copy or refuses, and never caches a half read.
   if (uuidRes.error || partnerRes.error) {
-    const msg = (uuidRes.error ?? partnerRes.error)?.message
-    console.error(`[partner-constants] load failed for org ${orgId}, not caching: ${msg}`)
-    const lastGood = await kv.get<PartnerConstants>(lastGoodKey(orgId), 'json')
-    if (lastGood) return lastGood
-    throw new Error(`partner_constants load failed for org ${orgId}: ${msg}`)
+    return { error: (uuidRes.error ?? partnerRes.error)?.message ?? 'unknown error' }
   }
 
   // read-guard-ok (#439): both errors are checked in the block directly above,
-  // which serves the last-good copy or throws. By here the reads have succeeded.
+  // which hands the failure back. By here the reads have succeeded.
   const { data: uuidRows } = uuidRes // read-guard-ok: checked in the block above (#439)
   const { data: partnerRows } = partnerRes // read-guard-ok: checked in the block above (#439)
 
@@ -141,13 +180,32 @@ async function loadFromKvOrDb(
     }
   }
 
-  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids, slugsById }
-  const serialized = JSON.stringify(result)
-  // Short cache for the hot path; no-TTL last-good for blip resilience (overwritten
-  // by the next successful load, so it can't go stale while edits keep flowing).
-  await kv.put(cacheKey(orgId), serialized, { expirationTtl: TTL })
-  await kv.put(lastGoodKey(orgId), serialized)
-  return result
+  return { constants: { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids, slugsById } }
+}
+
+/**
+ * Called by the per minute prewarm (#1847): when the last-good copy is due to
+ * be confirmed (STORED_COPY_RECONFIRM_AFTER_MS old, unstamped or absent), read
+ * the rows and rewrite both copies, so a quiet organization's copy never ages
+ * past the maximum on a healthy day. Answers what it did and never throws: a
+ * failed read keeps the held copy, which is as right as it was.
+ */
+export async function keepPartnerConstantsConfirmed(orgId: string, kv: KVNamespace, supabase: SupabaseClient): Promise<'fresh' | 'confirmed' | 'failed'> {
+  try {
+    const { metadata } = await kv.getWithMetadata<{ confirmed_at?: unknown }>(lastGoodKey(orgId))
+    if (!isDueForReconfirm(metadata?.confirmed_at, Date.now())) return 'fresh'
+    const read = await readFromDb(orgId, supabase)
+    if ('error' in read) {
+      console.error(`[partner-constants] confirming the last-good copy for org ${orgId} failed, keeping the held copy: ${read.error}`)
+      return 'failed'
+    }
+    await writeCopies(orgId, kv, read.constants, Date.now())
+    memoryCache.set(orgId, { value: read.constants, expiresAt: Date.now() + MEMORY_TTL_MS })
+    return 'confirmed'
+  } catch (e) {
+    console.error(`[partner-constants] confirming the last-good copy for org ${orgId} failed: ${formatErr(e)}`)
+    return 'failed'
+  }
 }
 
 export async function invalidatePartnerConstantsCache(orgId: string, kv: KVNamespace): Promise<void> {

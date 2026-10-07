@@ -5,6 +5,7 @@ import { formatErr } from '../lib/format-error'
 import { stripUrlQueriesInText } from '../lib/url-redact'
 import { isWorkflowLane } from '@bidspoke/node-types'
 import { leadRead } from '../lib/lead-read-budget'
+import { STORED_COPY_RECONFIRM_AFTER_MS, judgeCopyAge, refuseStoredCopy } from '../lib/stored-copy-age'
 
 // Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
 // A typed error so routes can map it to 404 by instanceof rather than matching
@@ -29,13 +30,14 @@ const cacheKey = (workflowId: string) => `workflow-def-${workflowId}`
 export const workflowCopyKey = (workflowId: string) => `workflow-def-lastgood:${workflowId}`
 
 /**
- * A held copy whose order key is unchanged is rewritten only once it is this
- * old, so its `written_at` stays fresh while the database is healthy without a
- * KV write on every cache miss. The per minute prewarm misses the 300 s cache
- * about every five minutes, so a healthy copy is never much more than ten
- * minutes old; #1847 refuses a copy past 30.
+ * A held copy whose order key is unchanged is rewritten only once it is
+ * STORED_COPY_RECONFIRM_AFTER_MS old, so its `written_at`, which is when it was
+ * last confirmed, stays fresh while the database is healthy without a KV write
+ * on every cache miss. The per minute prewarm misses the 300 s cache about every
+ * five minutes, so a healthy copy is never much more than eleven minutes old
+ * (stored-copy-freshness.test.ts measures it), and one older than
+ * STORED_COPY_MAX_AGE_MS is refused (#1847).
  */
-const COPY_REFRESH_AFTER_MS = 5 * 60 * 1000
 
 /**
  * What the last-good copy holds. A copy of a workflow that was switched off or
@@ -55,7 +57,11 @@ export interface WorkflowDefinitionCopy {
    * write may go back on: a save, a switch off and a delete all move it.
    */
   row_updated_at: string
-  /** When this copy was written (ISO). #1847 refuses a copy older than its maximum age. */
+  /**
+   * When this copy was written (ISO), which is when it was last confirmed
+   * against the row: an unchanged row rewrites it once it has aged. A copy older
+   * than STORED_COPY_MAX_AGE_MS, or with no readable time, is refused (#1847).
+   */
   written_at: string
   /** What the engine runs; null on a tombstone. */
   workflow: LoadedWorkflow | null
@@ -222,6 +228,13 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unverified', db_error: failure.message })
     throw failure
   }
+  // Judged before anything the copy claims, a tombstone's not found included:
+  // a claim nobody has confirmed for longer than the maximum age is refused as
+  // a retryable failure, never answered (#1847).
+  const age = judgeCopyAge(held.written_at, now())
+  if (!age.usable) {
+    throw refuseStoredCopy({ copy: 'workflow_definition', subject: workflowId, reason: age.reason, ageMs: age.ageMs, dbError: failure.message })
+  }
   // The copy says the workflow was switched off or deleted: the same answer
   // the database gives for that row when it is up.
   if (held.is_active !== true) {
@@ -234,12 +247,11 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
     throw failure
   }
 
-  const writtenAt = Date.parse(held.written_at)
   logEvent('workflow_definition_served_from_copy', {
     workflow_id: workflowId,
     workflow_version_id: workflow.workflow_version_id,
     copy_written_at: held.written_at,
-    copy_age_ms: Number.isFinite(writtenAt) ? now() - writtenAt : null,
+    copy_age_ms: age.ageMs,
     db_error: failure.message,
   })
   // Only the fields the engine runs, never the copy's own bookkeeping.
@@ -312,8 +324,9 @@ function compareOrder(a: [number, number], b: [number, number]): number {
  * database read began before a save, a switch off or a delete cannot put the
  * older row back when it lands afterwards. KV has no compare and swap and its
  * reads can be served from an edge cache, so this narrows that race to the gap
- * between the read here and the put rather than closing it; #1847's maximum age
- * bounds how long anything that slips through can be served.
+ * between the read here and the put rather than closing it; the next write from
+ * a newer row replaces anything that slips through, and the maximum age (#1847)
+ * bounds how long it can be served if none comes.
  */
 async function writeCopyForward(workflowId: string, kv: KVNamespace, incoming: WorkflowDefinitionCopy, now: () => number): Promise<void> {
   const incomingOrder = copyOrder(incoming)
@@ -343,7 +356,7 @@ async function writeCopyForward(workflowId: string, kv: KVNamespace, incoming: W
     }
     const heldWrittenAt = Date.parse(held.written_at)
     const sameState = order === 0 && held.is_active === incoming.is_active
-    if (sameState && Number.isFinite(heldWrittenAt) && now() - heldWrittenAt < COPY_REFRESH_AFTER_MS) return
+    if (sameState && Number.isFinite(heldWrittenAt) && now() - heldWrittenAt < STORED_COPY_RECONFIRM_AFTER_MS) return
   }
   await kv.put(workflowCopyKey(workflowId), JSON.stringify(incoming))
 }
