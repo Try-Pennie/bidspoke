@@ -1683,8 +1683,10 @@ export async function sendMatrixSyncFailureAlert(
  * A titled alert: the title, the findings, an optional context line and an
  * optional fix, nothing else (Dan, 2026-10-01). The failing since, intermittent
  * and reminder lines are kept, because they say whether this is a new incident.
+ * Exported for the stored copy alert (#1848), which must post from the last-good
+ * Slack connection while the database that holds the connection is down.
  */
-async function sendTitledAlert(
+export async function sendTitledAlert(
   connection: { bot_token: string; default_channel: string },
   channelOverride: string | null,
   payload: {

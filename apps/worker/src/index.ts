@@ -39,7 +39,9 @@ import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
-import { sweepSources, sweepStoredCopies } from './lib/stored-copy-sweep'
+import { sweepSources, sweepStoredCopies, type SweepResult } from './lib/stored-copy-sweep'
+import { flushStoredCopyLedger } from './lib/stored-copy-ledger'
+import { runStoredCopyChecks } from './lib/stored-copy-signals'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
@@ -57,6 +59,23 @@ export type { Env } from './env'
 import type { Env } from './env'
 
 const app = new Hono<{ Bindings: Env }>()
+
+// The count of stored copies a request served or refused (#1848) is written
+// after the response, never on it, and not at all when nothing was noted.
+// Registered first so it wraps every route, the custom endpoint one included.
+app.use('*', async (c, next) => {
+  await next()
+  const kv = c.env?.IDEMPOTENCY
+  if (!kv) return
+  let ctx: { waitUntil(promise: Promise<unknown>): void } | undefined
+  try {
+    ctx = c.executionCtx
+  } catch {
+    // A request with no execution context (a unit test) has nowhere to put it.
+    ctx = undefined
+  }
+  ctx?.waitUntil(flushStoredCopyLedger(kv))
+})
 
 app.use(
   '*',
@@ -108,8 +127,18 @@ app.route('/api', api)
 // Scheduled handler — dispatches on cron string (see wrangler.toml [triggers])
 export default {
   fetch: app.fetch.bind(app),
-  scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): void {
+  scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): void {
     const supabase = createSupabaseClient(env)
+    // Every job's work is tracked, so once it has all settled the stored copies
+    // any of them served or refused (#1848) are counted, in one write.
+    const work: Promise<unknown>[] = []
+    // Only waitUntil is used below, and the type holds every job to that.
+    const ctx: Pick<ExecutionContext, 'waitUntil'> = {
+      waitUntil: (p: Promise<unknown>) => {
+        work.push(p)
+        platformCtx.waitUntil(p)
+      },
+    }
     // Stamps a watched job "completed" once its work has SETTLED, whichever way
     // it settled (#985). The work's own handler owns logging and alerting; this
     // only records that the run reached its end. It is deliberately not chained
@@ -742,15 +771,35 @@ export default {
       )
       // Repairs any stored outage copy an edit route could not refresh or clear
       // (#1846), so the copy never serves an old version for longer than this.
+      // Then the stored copy alerts (#1848), after the sweep so they judge what it
+      // just did, and whatever the sweep did: one that threw counts as failing.
       ctx.waitUntil(
         sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE))
-          .then((r) => {
+          .then((r): SweepResult => {
             if (r.repaired.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} repaired=${r.repaired.length} ${r.repaired.join(' ')}`)
             // Copies no lead reached, stamped as confirmed so they do not age out (#1847).
             if (r.reconfirmed.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} reconfirmed=${r.reconfirmed.length}`)
             if (r.failed.length > 0) console.error(`[stored-copy-sweep] could not sweep: ${r.failed.join(' | ')}`)
+            return r
+          }, (e: unknown): SweepResult => {
+            console.error('[stored-copy-sweep] failed:', e)
+            return { checked: 0, repaired: [], reconfirmed: [], failed: [`every copy: ${formatErr(e)}`] }
           })
-          .catch((e) => console.error('[stored-copy-sweep] failed:', e))
+          .then((sweep) => runStoredCopyChecks({
+            kv: env.IDEMPOTENCY,
+            copies: env.WORKFLOW_CACHE,
+            supabase,
+            secretKeys: secretKeys(env),
+            claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+            appUrl: env.APP_URL,
+            sweep,
+          }))
+          .then((c) => {
+            if (c.serving !== 'quiet' || c.stale > 0 || c.sweepFailingSince !== null) {
+              console.log(`[stored-copy-checks] serving=${c.serving} active_minutes=${c.activeMinutes ?? 'unmeasured'} stale=${c.stale} sweep_failing_since=${c.sweepFailingSince ?? '-'}${c.suppressed ? ' suppressed=true' : ''}`)
+            }
+          })
+          .catch((e) => console.error('[stored-copy-checks] failed:', e))
       )
       // The buyer ledger outbox drain (#1413): delivers every ledger entry the
       // inline mirror did not copy to buyer_sales, through the same write. Both
@@ -807,5 +856,7 @@ export default {
           .catch((e) => console.error('[cron-heartbeat] check failed:', e))
       )
     }
+    // A cron that started nothing (a retired one) leaves nothing to count.
+    if (work.length > 0) platformCtx.waitUntil(Promise.allSettled(work).then(() => flushStoredCopyLedger(env.IDEMPOTENCY)))
   },
 }

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { leadRead } from './lead-read-budget'
-import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 import { formatErr } from './format-error'
 
 // Partner constants change rarely and every mutating route busts this cache
@@ -17,6 +17,8 @@ const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
 // lead almost never reads the database, so the per minute prewarm confirms the
 // copy once it is due (keepPartnerConstantsConfirmed).
 const lastGoodKey = (orgId: string) => `partner-constants-v2-${orgId}-lastgood`
+/** The last-good copy, which the stale copy check judges (#1848). */
+export const partnerConstantsLastGoodKey = lastGoodKey
 
 // In front of KV sits a per-isolate memory cache + single-flight. A warm isolate
 // serves from memory without touching KV (sub-ms), and concurrent loads on a cold
@@ -110,16 +112,23 @@ async function loadFromKvOrDb(
 }
 
 async function serveLastGood(orgId: string, kv: KVNamespace, dbError: string): Promise<PartnerConstants> {
-  const held = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  let held: Awaited<ReturnType<typeof readConfirmedCopy>>
+  try {
+    held = await readConfirmedCopy(kv, lastGoodKey(orgId))
+  } catch (err) {
+    console.error(`[partner-constants] the last-good copy for org ${orgId} could not be read: ${formatErr(err)}`)
+    throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'copy_unusable', ageMs: null, dbError })
+  }
   let lastGood: PartnerConstants | null
   try {
     lastGood = held ? (JSON.parse(held.value) as PartnerConstants) : null
   } catch {
     lastGood = null
   }
-  if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: 'no_copy', ageMs: null, dbError })
+  if (!held || !lastGood) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: held ? 'copy_unusable' : 'no_copy', ageMs: null, dbError })
   const age = judgeCopyAge(held.confirmedAt, Date.now())
   if (!age.usable) throw refuseStoredCopy({ copy: 'partner_constants', subject: orgId, reason: age.reason, ageMs: age.ageMs, dbError })
+  serveStoredCopy({ copy: 'partner_constants', subject: orgId, ageMs: age.ageMs, dbError })
   return lastGood
 }
 

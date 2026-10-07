@@ -20,6 +20,7 @@ import {
 import { assertWorkflowServedInLane, WorkflowLaneError } from '../lane'
 import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../lib/lead-read-budget'
 import { STORED_COPY_MAX_AGE_MS, StoredCopyRefusedError } from '../../lib/stored-copy-age'
+import { flushStoredCopyLedger, forgetStoredCopyLedger, readStoredCopyLedger, type LedgerKv } from '../../lib/stored-copy-ledger'
 import type { Env } from '../../index'
 
 const WF_ID = 'wf-copy-1'
@@ -255,9 +256,9 @@ describe('serving the copy when the database read fails', () => {
 
     expect(db.requests).toBeGreaterThan(0) // the database was really asked first
     expect(loaded).toEqual(heldCopy(kv)!.workflow)
-    const served = eventsNamed('workflow_definition_served_from_copy')
+    const served = eventsNamed('stored_copy_served')
     expect(served).toHaveLength(1)
-    expect(served[0]).toMatchObject({ workflow_id: WF_ID, workflow_version_id: 'ver-7', copy_age_ms: 90_000, copy_written_at: new Date(T0).toISOString() })
+    expect(served[0]).toMatchObject({ copy: 'workflow_definition', subject: WF_ID, workflow_version_id: 'ver-7', copy_age_ms: 90_000, copy_written_at: new Date(T0).toISOString() })
   })
 
   it('with no copy, the failure is thrown as a retryable error, never an empty definition', async () => {
@@ -321,6 +322,62 @@ describe('serving the copy when the database read fails', () => {
   })
 })
 
+/** What the per minute check will read for the workflow copy: the ledger, flushed to a KV double and read back. */
+async function workflowTally(): Promise<Record<string, number>> {
+  const store = new Map<string, unknown>()
+  const ledger = {
+    async put(key: string, _value: string, opts?: { metadata?: unknown }) { store.set(key, opts?.metadata ?? null) },
+    async list() {
+      return { keys: [...store.entries()].map(([name, metadata]) => ({ name, metadata })), list_complete: true as const, cursor: undefined, cacheStatus: null }
+    },
+  } as unknown as LedgerKv
+  await flushStoredCopyLedger(ledger, { now: () => Date.now(), sleep: async () => {} })
+  const reading = await readStoredCopyLedger(ledger, Date.now(), 2)
+  return reading.kinds.workflow_definition?.refused ?? {}
+}
+
+describe('the ledger names a copy that was there but unusable apart from one that was missing (#1848)', () => {
+  beforeEach(() => { forgetStoredCopyLedger() })
+  afterEach(() => { forgetStoredCopyLedger() })
+  const down = () => realClient({ mode: 'down-503', row: baseRow, requests: 0 })
+
+  it('no copy at all is counted as no_copy', async () => {
+    await expect(loadWorkflowDefinition(WF_ID, asKv(fakeKv()), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 1, copy_unusable: 0 })
+  })
+
+  it('a copy KV would not hand back is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    kv.get.mockImplementation(async (key: string) => {
+      if (key === COPY_KEY) throw new Error('KV GET failed: 500')
+      return null
+    })
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
+  })
+
+  it('a copy left unverified by a change is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    await refreshWorkflowCaches(WF_ID, asKv(kv), realClient({ mode: 'down-500', row: { ...baseRow, is_active: false }, requests: 0 }))
+    kv.store.delete(CACHE_KEY)
+    forgetStoredCopyLedger()
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down())).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
+  })
+
+  it('a copy the engine cannot run is counted as copy_unusable', async () => {
+    const kv = fakeKv()
+    await warm(kv)
+    const damaged = heldCopy(kv)!
+    kv.store.set(COPY_KEY, JSON.stringify({ ...damaged, lane: 'sideways', workflow: { ...damaged.workflow, lane: 'sideways' } }))
+    kv.store.delete(CACHE_KEY)
+    forgetStoredCopyLedger()
+    await expect(loadWorkflowDefinition(WF_ID, asKv(kv), down(), { now: () => T0 })).rejects.toThrow(/Failed to load workflow/)
+    expect(await workflowTally()).toMatchObject({ no_copy: 0, copy_unusable: 1 })
+  })
+})
+
 describe('the copy is served for at most thirty minutes after it was last confirmed (#1847)', () => {
   const down = (): DbState => ({ mode: 'down-503', row: baseRow, requests: 0 })
 
@@ -340,7 +397,7 @@ describe('the copy is served for at most thirty minutes after it was last confir
     await expect(promise).rejects.toBeInstanceOf(StoredCopyRefusedError)
     await expect(promise).rejects.toMatchObject({ reason: 'copy_too_old', copy: 'workflow_definition' })
     expect(eventsNamed('stored_copy_refused')[0]).toMatchObject({ copy: 'workflow_definition', subject: WF_ID, reason: 'copy_too_old', copy_age_ms: STORED_COPY_MAX_AGE_MS + 1 })
-    expect(eventsNamed('workflow_definition_served_from_copy')).toHaveLength(0)
+    expect(eventsNamed('stored_copy_served')).toHaveLength(0)
   })
 
   it('refuses a copy whose written_at cannot be read, rather than serving it at an unknown age', async () => {

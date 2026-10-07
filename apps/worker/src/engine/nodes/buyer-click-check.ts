@@ -254,7 +254,7 @@ async function decide(partnerId: string, lead: LeadInput, instantMs: number, dep
   } catch (err) {
     // The loader refuses a copy past the shared maximum age by name (#1847): the
     // same stale copy as below, so the same reason, not a failed read.
-    if (err instanceof StoredCopyRefusedError && err.reason !== 'no_copy') {
+    if (err instanceof StoredCopyRefusedError && (err.reason === 'copy_too_old' || err.reason === 'copy_age_unknown')) {
       return { kind: 'route', route: 'not_eligible', reason: 'profile_copy_stale', detail: err.message }
     }
     return { kind: 'route', route: 'not_eligible', reason: 'cap_check_error', detail: `the buyer profiles could not be read, so the buyer is not offered: ${messageOf(err)}` }

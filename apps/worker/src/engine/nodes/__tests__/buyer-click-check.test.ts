@@ -273,6 +273,16 @@ describe('a last good copy of the profiles', () => {
     expect(h.counterReads).toEqual([])
   })
 
+  // A copy missing or unusable is not a stale copy: the profiles could not be
+  // read at all, which is cap_check_error, the same as a failed read.
+  it.each(['no_copy', 'copy_unusable'] as const)('a copy the loader refuses as %s is a failed read, not a stale copy', async (reason) => {
+    const refused = new StoredCopyRefusedError('buyer_profiles', 'org-1', reason, null, 'fetch failed')
+    const h = harness({ profiles: async () => { throw refused } })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'cap_check_error' })
+    expect(h.counterReads).toEqual([])
+  })
+
   it('a stored copy with no readable loaded_at is not offered from either', async () => {
     const r = await run(harness({ profiles: { ...snapshot(clickBuyer()), served_from: 'last_good', loaded_at: 'garbled' } }))
     expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'profile_copy_stale' })

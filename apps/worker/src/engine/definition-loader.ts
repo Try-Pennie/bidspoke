@@ -5,7 +5,8 @@ import { formatErr } from '../lib/format-error'
 import { stripUrlQueriesInText } from '../lib/url-redact'
 import { isWorkflowLane } from '@bidspoke/node-types'
 import { leadRead } from '../lib/lead-read-budget'
-import { STORED_COPY_RECONFIRM_AFTER_MS, judgeCopyAge, refuseStoredCopy } from '../lib/stored-copy-age'
+import { STORED_COPY_RECONFIRM_AFTER_MS, judgeCopyAge, refuseStoredCopy, serveStoredCopy } from '../lib/stored-copy-age'
+import { noteStoredCopy } from '../lib/stored-copy-ledger'
 
 // Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
 // A typed error so routes can map it to 404 by instanceof rather than matching
@@ -215,15 +216,18 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
     held = await kv.get<WorkflowDefinitionCopy>(workflowCopyKey(workflowId), 'json')
   } catch (err) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'copy_read_failed', detail: formatErr(err), db_error: failure.message })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
   if (!held) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'no_copy', db_error: failure.message })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'no_copy', ageMs: null })
     throw failure
   }
   // A route changed the workflow and its new state could not be confirmed.
   if (held.unverified === true) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unverified', db_error: failure.message })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
   // Judged before anything the copy claims, a tombstone's not found included:
@@ -242,15 +246,17 @@ async function serveCopyOrThrow(workflowId: string, kv: KVNamespace, failure: Er
   const workflow = held.workflow
   if (!isServableWorkflow(workflow)) {
     logEvent('workflow_definition_copy_refused', { workflow_id: workflowId, reason: 'unreadable', db_error: failure.message })
+    noteStoredCopy({ copy: 'workflow_definition', outcome: 'copy_unusable', ageMs: null })
     throw failure
   }
 
-  logEvent('workflow_definition_served_from_copy', {
-    workflow_id: workflowId,
-    workflow_version_id: workflow.workflow_version_id,
-    copy_written_at: held.written_at,
-    copy_age_ms: age.ageMs,
-    db_error: failure.message,
+  // Logged and counted through the one serve function every loader uses (#1848).
+  serveStoredCopy({
+    copy: 'workflow_definition',
+    subject: workflowId,
+    ageMs: age.ageMs,
+    dbError: failure.message,
+    detail: { workflow_version_id: workflow.workflow_version_id, copy_written_at: held.written_at },
   })
   // Only the fields the engine runs, never the copy's own bookkeeping.
   return {

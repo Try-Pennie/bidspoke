@@ -27,6 +27,7 @@ import { endpointCopyOf, endpointLastGoodKey, writeEndpointLastGood } from '../e
 import { partnerLastGoodKey, rememberPartnerLastGood } from '../partner-last-good'
 import { sweepStoredCopies, type SweepSources } from '../stored-copy-sweep'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS } from '../stored-copy-age'
+import { findStaleCopies } from '../stored-copy-signals'
 
 const KEY = btoa('0'.repeat(32))
 const ORG = 'org-fresh'
@@ -145,6 +146,8 @@ describe('on a healthy day, every stored copy stays well inside the maximum age 
           expect(Number.isFinite(age), `${name} has no readable confirmation at minute ${minute}`).toBe(true)
           worst[name] = Math.max(worst[name], age)
         }
+        // The stale copy alert (#1848) finds nothing on a healthy day, at every minute.
+        expect(await findStaleCopies(asKv, Date.now()), `stale copy found at minute ${minute}`).toEqual({ stale: [], unmeasured: [] })
       }
       // What the per minute cron runs: the prewarm's loads, then the sweep.
       await loadWorkflowDefinition(WF, asKv, db)
@@ -169,5 +172,38 @@ describe('on a healthy day, every stored copy stays well inside the maximum age 
     for (const [name, age] of Object.entries(worst)) {
       expect(age, `${name} never aged, so nothing was measured`).toBeGreaterThanOrEqual(STORED_COPY_RECONFIRM_AFTER_MS - MINUTE)
     }
+  })
+})
+
+describe('the stale copy alert against a sweep that has stopped (#1848)', () => {
+  it('finds exactly the copies only the sweep confirms, once they pass the maximum age, and nothing before', async () => {
+    const kv = expiringKv()
+    const asKv = kv as unknown as KVNamespace
+    const db = healthyDb()
+    await writeEndpointLastGood(asKv, 'idle', '/bidding', endpointCopyOf({ id: 'ep-idle', workflow_id: WF, source_name: 'idle', is_active: true }, null), Date.now())
+    // Its own id: the partner copy writer remembers per isolate what it wrote.
+    await rememberPartnerLastGood(asKv, { ...PARTNER_ROW, id: 'p-idle-stopped' }, Date.now())
+    const broken: SweepSources = {
+      ...sources,
+      endpoints: async () => { throw new Error('database read failed') },
+      partners: async () => { throw new Error('database read failed') },
+    }
+
+    let firstStaleMinute: number | null = null
+    for (let minute = 0; minute < 60; minute++) {
+      vi.setSystemTime(T0 + minute * MINUTE)
+      await loadWorkflowDefinition(WF, asKv, db)
+      await loadEnvVars(ORG, asKv, db, KEY, 'global-only')
+      await loadPartnerConstants(ORG, asKv, db).catch(() => undefined)
+      await keepPartnerConstantsConfirmed(ORG, asKv, db)
+      await keepBuyerProfilesWarm(ORG, asKv, db)
+      await sweepStoredCopies(asKv, broken)
+      const { stale } = await findStaleCopies(asKv, Date.now())
+      if (stale.length > 0 && firstStaleMinute === null) {
+        firstStaleMinute = minute
+        expect(stale.map((s) => s.copy).sort()).toEqual(['custom_endpoint', 'partner_config'])
+      }
+    }
+    expect(firstStaleMinute).toBe(STORED_COPY_MAX_AGE_MS / MINUTE + 1)
   })
 })

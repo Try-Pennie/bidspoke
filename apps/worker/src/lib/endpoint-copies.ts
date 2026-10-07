@@ -24,7 +24,7 @@
  * against its row, so an endpoint no lead has reached for an hour is still
  * served in an outage.
  */
-import { confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 import { formatErr } from './format-error'
 
 /** The endpoint record both copies hold. */
@@ -89,6 +89,7 @@ export async function readEndpointLastGood(kv: KVNamespace, subdomain: string, p
   } catch (e) {
     // KV failing as well leaves nothing to serve: the same retryable answer.
     console.error(`[custom-endpoint] endpoint lookup failed (${dbError}) and the last-good copy of ${subject} could not be read: ${formatErr(e)}`)
+    refuseStoredCopy({ copy: 'custom_endpoint', subject, reason: 'copy_unusable', ageMs: null, dbError })
     return null
   }
   let endpoint: CachedEndpoint | null = null
@@ -100,7 +101,7 @@ export async function readEndpointLastGood(kv: KVNamespace, subdomain: string, p
     }
   }
   if (!held || !endpoint || typeof endpoint !== 'object') {
-    refuseStoredCopy({ copy: 'custom_endpoint', subject, reason: 'no_copy', ageMs: null, dbError })
+    refuseStoredCopy({ copy: 'custom_endpoint', subject, reason: held ? 'copy_unusable' : 'no_copy', ageMs: null, dbError })
     return null
   }
   const age = judgeCopyAge(held.confirmedAt, nowMs)
@@ -108,5 +109,6 @@ export async function readEndpointLastGood(kv: KVNamespace, subdomain: string, p
     refuseStoredCopy({ copy: 'custom_endpoint', subject, reason: age.reason, ageMs: age.ageMs, dbError })
     return null
   }
+  serveStoredCopy({ copy: 'custom_endpoint', subject, ageMs: age.ageMs, dbError })
   return endpoint
 }
