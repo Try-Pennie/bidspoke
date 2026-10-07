@@ -16,7 +16,10 @@
  * Reads only. A write is never given a deadline here: a write that timed out
  * may still have landed, and nothing here could tell. A read with no copy to
  * fall back on is not routed through this either, because a deadline would turn
- * a slow healthy read into a failed lead. Scheduled jobs and the signed-in app
+ * a slow healthy read into a failed lead. It does lose the library's retries:
+ * the lead's client is built with them off, as plan A1 says for every read a
+ * lead waits on, so in an outage such a read fails after one attempt instead of
+ * after 7 s of retrying. Those reads get copies of their own in #1849. Scheduled jobs and the signed-in app
  * use plain clients, on which leadRead runs the read exactly as before.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -51,7 +54,7 @@ export interface LeadClientOptions {
 
 /** A database client for one lead. Make one per request and pass it down. */
 export function createLeadSupabaseClient(env: Env, options: LeadClientOptions = {}): SupabaseClient<Database> {
-  const client = createSupabaseClient(env, { fetch: options.fetch })
+  const client = createSupabaseClient(env, { fetch: options.fetch, retry: false })
   leads.set(client, { deadline: options.deadline ?? ((ms) => AbortSignal.timeout(ms)), failed: null })
   return client
 }
