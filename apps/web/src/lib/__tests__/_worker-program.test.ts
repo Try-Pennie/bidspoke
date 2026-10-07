@@ -37,6 +37,10 @@ describe('buildWorkerProgram', () => {
       expect(symbol, name).toBeDefined()
       const type = checker.getDeclaredTypeOfSymbol(symbol as ts.Symbol)
       expect(type.flags & ts.TypeFlags.Any, `${name} resolved to any`).toBe(0)
+      // From the Workers package itself: the worker's lib is ES2022 alone, and
+      // a browser lib added later would declare these too, from elsewhere.
+      const from = (symbol as ts.Symbol).declarations?.map((d) => d.getSourceFile().fileName) ?? []
+      expect(from.some((f) => f.includes('@cloudflare/workers-types')), `${name} declared in ${from.join(', ')}`).toBe(true)
     }
   })
 
