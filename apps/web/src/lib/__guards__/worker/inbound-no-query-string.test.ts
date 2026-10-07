@@ -161,7 +161,11 @@ export function scanQueryReads(program: ts.Program, files: string[]): Finding[] 
 const SOURCE_FILES = listTsFiles(WORKER_SRC)
 
 describe('no code a sender reaches reads the query string (#1815)', () => {
+  // Built and scanned once, while the suite is collected, as
+  // ops-reads-through-helper.test.ts does: type checking the whole worker took
+  // 7.4s on a CI runner (1.4s locally), past a single test's 5s limit.
   const program = buildProgram(SOURCE_FILES)
+  const offenders = scanQueryReads(program, SOURCE_FILES)
 
   it('loads the Workers types, without which every Request and URL is `any` and nothing is found', () => {
     const messages = [...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics()].map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
@@ -202,7 +206,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   })
 
   it('finds no query string read in the worker outside the signed-in app', () => {
-    expect(scanQueryReads(program, SOURCE_FILES)).toEqual([])
+    expect(offenders).toEqual([])
   })
 
   it('fails on each planted way of reading the query, by file, line and kind (L1)', () => {
