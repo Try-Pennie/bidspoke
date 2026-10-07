@@ -29,15 +29,13 @@ const cacheKey = (workflowId: string) => `workflow-def-${workflowId}`
  */
 export const workflowCopyKey = (workflowId: string) => `workflow-def-lastgood:${workflowId}`
 
-/**
- * A held copy whose order key is unchanged is rewritten only once it is
- * STORED_COPY_RECONFIRM_AFTER_MS old, so its `written_at`, which is when it was
- * last confirmed, stays fresh while the database is healthy without a KV write
- * on every cache miss. The per minute prewarm misses the 300 s cache about every
- * five minutes, so a healthy copy is never much more than eleven minutes old
- * (stored-copy-freshness.test.ts measures it), and one older than
- * STORED_COPY_MAX_AGE_MS is refused (#1847).
- */
+// How fresh the copy stays: a held copy whose order key is unchanged is
+// rewritten only once it is STORED_COPY_RECONFIRM_AFTER_MS old, so its
+// `written_at`, which is when it was last confirmed, stays fresh while the
+// database is healthy without a KV write on every cache miss. The per minute
+// prewarm misses the 300 s cache about every five minutes, so a healthy copy is
+// never much more than eleven minutes old (stored-copy-freshness.test.ts
+// measures it), and one older than STORED_COPY_MAX_AGE_MS is refused (#1847).
 
 /**
  * What the last-good copy holds. A copy of a workflow that was switched off or
