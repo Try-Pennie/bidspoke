@@ -22,7 +22,8 @@ import {
   type StoredCopyCheckDeps,
 } from '../stored-copy-signals'
 import { LEDGER_KEY_TTL_SECONDS, STORED_COPY_LEDGER_PREFIX } from '../stored-copy-ledger'
-import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, STORED_COPY_REFUSALS, confirmedAt, type StoredCopyRefusal } from '../stored-copy-age'
+import { STORED_COPY_KINDS, STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, STORED_COPY_REFUSALS, confirmedAt, type StoredCopyRefusal } from '../stored-copy-age'
+import { bidMatrixLastGoodKey } from '../bid-matrix-lookup'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../volume-cliff'
 import { encryptSecret } from '../secret-crypto'
 import { endpointLastGoodKey } from '../endpoint-copies'
@@ -375,9 +376,13 @@ describe('a stored copy that has gone stale', () => {
     await h.copies.put(envVarsLastGoodKey(ORG), 'blob') // written before stamps existed
     await h.copies.put(partnerConstantsLastGoodKey(ORG), '{}', confirmedAt(old))
     await h.copies.put(buyerProfilesLastGoodKey(ORG), JSON.stringify({ loaded_at: new Date(old).toISOString() }))
+    await h.copies.put(bidMatrixLastGoodKey('cfg-1', true), '{"config":{},"rows":[]}', confirmedAt(old))
 
     const { stale } = await findStaleCopies(h.copies as unknown as KVNamespace, T0)
+    // Every kind of stored copy there is, so a kind added later is judged too.
+    expect(new Set(stale.map((s) => s.copy))).toEqual(new Set(STORED_COPY_KINDS))
     expect(stale.map((s) => [s.copy, s.subject, s.reason]).sort()).toEqual([
+      ['bid_matrix', 'cfg-1 (sell off)', 'copy_too_old'],
       ['buyer_profiles', ORG, 'copy_too_old'],
       ['custom_endpoint', 'engine/bid', 'copy_too_old'],
       ['env_vars', ORG, 'copy_age_unknown'],

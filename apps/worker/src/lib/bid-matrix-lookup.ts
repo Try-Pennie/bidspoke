@@ -25,7 +25,7 @@ import { isNotFoundError } from './api-error'
 import { formatErr } from './format-error'
 import { leadRead } from './lead-read-budget'
 import { fetchAllPaged } from './paginate'
-import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
 export interface MatrixDimension {
   name: string
@@ -168,23 +168,40 @@ async function dropBidMatrixCopies(kv: KVNamespace | undefined, configId: string
 }
 
 /**
- * The copy, read only after a failed database read: null when there is none or
- * it does not parse. Throws StoredCopyRefusedError, with the refusal logged,
- * when it is past the maximum age or carries no readable confirmation (#1847).
+ * The copy, read only after a failed database read: null when there is none, or
+ * when KV would not hand it back or it does not parse, each counted and logged
+ * as its own refusal (#1848). Throws StoredCopyRefusedError, with the refusal
+ * logged, when it is past the maximum age or carries no readable confirmation
+ * (#1847). A copy served is counted and logged through the shared serve.
  */
 async function readBidMatrixLastGood(kv: KVNamespace | undefined, configId: string, sellOff: boolean, dbError: string, nowMs: number): Promise<BidMatrix | null> {
   if (!kv) return null
-  const held = await readConfirmedCopy(kv, bidMatrixLastGoodKey(configId, sellOff))
-  if (!held) return null
-  let copy: BidMatrix
+  const subject = `${configId} (${sellOff ? 'sell off' : 'offer'})`
+  let held: Awaited<ReturnType<typeof readConfirmedCopy>>
+  try {
+    held = await readConfirmedCopy(kv, bidMatrixLastGoodKey(configId, sellOff))
+  } catch (e) {
+    console.error(`[bid-matrix] the last-good copy of ${subject} could not be read: ${formatErr(e)}`)
+    refuseStoredCopy({ copy: 'bid_matrix', subject, reason: 'copy_unusable', ageMs: null, dbError })
+    return null
+  }
+  if (!held) {
+    refuseStoredCopy({ copy: 'bid_matrix', subject, reason: 'no_copy', ageMs: null, dbError })
+    return null
+  }
+  let copy: BidMatrix | null
   try {
     copy = JSON.parse(held.value) as BidMatrix
   } catch {
+    copy = null
+  }
+  if (!copy || typeof copy !== 'object' || !copy.config || !Array.isArray(copy.rows)) {
+    refuseStoredCopy({ copy: 'bid_matrix', subject, reason: 'copy_unusable', ageMs: null, dbError })
     return null
   }
-  if (!copy || typeof copy !== 'object' || !copy.config || !Array.isArray(copy.rows)) return null
   const age = judgeCopyAge(held.confirmedAt, nowMs)
-  if (!age.usable) throw refuseStoredCopy({ copy: 'bid_matrix', subject: `${configId} (${sellOff ? 'sell off' : 'offer'})`, reason: age.reason, ageMs: age.ageMs, dbError })
+  if (!age.usable) throw refuseStoredCopy({ copy: 'bid_matrix', subject, reason: age.reason, ageMs: age.ageMs, dbError })
+  serveStoredCopy({ copy: 'bid_matrix', subject, ageMs: age.ageMs, dbError })
   return copy
 }
 

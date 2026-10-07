@@ -102,10 +102,10 @@ export const ENDPOINT_PREFIX = endpointLastGoodKey('', '').slice(0, -1)
 export const PARTNER_PREFIX = partnerLastGoodKey('')
 export const WORKFLOW_PREFIX = workflowCopyKey('')
 /** `bid-matrix-lastgood:`, taken from the key builder so the two cannot drift. */
-const MATRIX_PREFIX = `${bidMatrixLastGoodKey('', false).split(':')[0]}:`
+export const MATRIX_PREFIX = `${bidMatrixLastGoodKey('', false).split(':')[0]}:`
 
 /** A matrix copy's config and side, read back through the key builder; null for a key no lookup writes. */
-function matrixCopyOf(key: string): { configId: string; sellOff: boolean } | null {
+export function matrixCopyOf(key: string): { configId: string; sellOff: boolean } | null {
   const rest = key.slice(MATRIX_PREFIX.length)
   const cut = rest.lastIndexOf(':')
   if (cut <= 0) return null

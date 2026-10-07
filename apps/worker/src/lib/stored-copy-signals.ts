@@ -41,7 +41,7 @@ import {
   type StoredCopyKind,
   type StoredCopyRefusal,
 } from './stored-copy-age'
-import { ENDPOINT_PREFIX, PARTNER_PREFIX, WORKFLOW_PREFIX, listKeys, type SweepResult } from './stored-copy-sweep'
+import { ENDPOINT_PREFIX, MATRIX_PREFIX, PARTNER_PREFIX, WORKFLOW_PREFIX, listKeys, matrixCopyOf, type SweepResult } from './stored-copy-sweep'
 import { envVarsLastGoodKey } from './env-loader'
 import { partnerConstantsLastGoodKey } from './partner-constants-loader'
 import { buyerProfilesLastGoodKey } from './buyer-profile-loader'
@@ -213,7 +213,7 @@ const REFUSAL_WORDS: Record<StoredCopyRefusal, string> = {
 const PLURAL_LABELS: ReadonlySet<StoredCopyKind> = new Set(['env_vars', 'partner_constants', 'buyer_profiles'])
 
 /** The order kinds are listed in the alert, keyed by the type so a new kind cannot be left out of it. */
-const KIND_RANK: Record<StoredCopyKind, number> = { workflow_definition: 0, custom_endpoint: 1, env_vars: 2, partner_constants: 3, partner_config: 4, buyer_profiles: 5 }
+const KIND_RANK: Record<StoredCopyKind, number> = { workflow_definition: 0, custom_endpoint: 1, env_vars: 2, partner_constants: 3, partner_config: 4, buyer_profiles: 5, bid_matrix: 6 }
 const KIND_ORDER = (Object.keys(KIND_RANK) as StoredCopyKind[]).sort((a, b) => KIND_RANK[a] - KIND_RANK[b])
 
 /** The alert's words, from what the ledger measured and nothing more. */
@@ -427,6 +427,14 @@ export async function findStaleCopies(copies: KVNamespace, nowMs: number): Promi
         slug = undefined
       }
       judge('partner_config', key, typeof slug === 'string' && slug !== '' ? slug : key.slice(PARTNER_PREFIX.length), held.confirmedAt)
+    }
+  })
+
+  await kind('bid matrix copies', async () => {
+    for (const key of await listKeys(copies, MATRIX_PREFIX)) {
+      const which = matrixCopyOf(key)
+      const held = await readConfirmedCopy(copies, key)
+      if (held) judge('bid_matrix', key, which ? `${which.configId} (${which.sellOff ? 'sell off' : 'offer'})` : key.slice(MATRIX_PREFIX.length), held.confirmedAt)
     }
   })
 
