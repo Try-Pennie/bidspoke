@@ -13,7 +13,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
-import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerClickDelivery, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
+import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
   partner_id: 'p-1',
@@ -81,7 +81,8 @@ describe('loadBuyerProfiles', () => {
     const snapshot = await loadBuyerProfiles('org-1', kv, supabase)
     expect(calls).toHaveLength(1)
     expect(calls[0].table).toBe('buyer_profiles')
-    expect(calls[0].filters).toEqual([['organization_id', 'org-1'], ['is_enabled', true]])
+    // Every profile of the org, switched off ones included (#1849); only enabled ones are buyers.
+    expect(calls[0].filters).toEqual([['organization_id', 'org-1']])
     for (const joined of ['partner_configs!inner(', 'buyer_operating_windows(', 'buyer_blackout_dates(', 'buyer_pricing_tiers(']) {
       expect(calls[0].select, joined).toContain(joined)
     }
@@ -665,29 +666,6 @@ describe('readBuyerSoldOn', () => {
       await expect(readBuyerSale(maybeSingleSupabase({ data: null, error: { message: 'timeout' } }).supabase, 'org-1', 'p-1')).rejects.toThrow(/timeout/)
       await expect(readBuyerSale(maybeSingleSupabase({ data: { sold_on: 'phone', is_enabled: true }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/phone/)
       await expect(readBuyerSale(maybeSingleSupabase({ data: { sold_on: 'click' }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/is_enabled/)
-    })
-  })
-
-  // Dan, 2026-09-30: a click on an offer shown before the profile was switched off still
-  // goes out, so buyer_click_send reads a profile the enabled snapshot does not hold from
-  // its one row, with the same kind and flag checks, shaped by the snapshot's own shaper.
-  describe('readBuyerClickDelivery', () => {
-    const doc = { routes: [{ name: 'DV1', url: 'https://a.example/dv1', states: ['WA'] }, { name: 'DI4', url: 'https://a.example/di4', states: [] }], success_pattern: '(?<id>\\w+)' }
-
-    it('answers the kind, the enabled flag and the delivery shaped as the snapshot shapes it, for the partner in this org', async () => {
-      const { supabase, filters } = maybeSingleSupabase({ data: { sold_on: 'click', is_enabled: false, click_delivery: doc }, error: null })
-      expect(await readBuyerClickDelivery(supabase, 'org-1', 'p-1')).toEqual({ soldOn: 'click', isEnabled: false, clickDelivery: { routes: doc.routes, successPattern: doc.success_pattern } })
-      expect(filters).toEqual(expect.arrayContaining([['partner_id', 'p-1'], ['organization_id', 'org-1']]))
-    })
-
-    it('answers a null delivery for a profile holding none, and null for no profile', async () => {
-      expect(await readBuyerClickDelivery(maybeSingleSupabase({ data: { sold_on: 'click', is_enabled: false, click_delivery: null }, error: null }).supabase, 'org-1', 'p-1')).toEqual({ soldOn: 'click', isEnabled: false, clickDelivery: null })
-      expect(await readBuyerClickDelivery(maybeSingleSupabase({ data: null, error: null }).supabase, 'org-1', 'p-1')).toBeNull()
-    })
-
-    it('throws on a failed read or a malformed row, never answering no delivery', async () => {
-      await expect(readBuyerClickDelivery(maybeSingleSupabase({ data: null, error: { message: 'timeout' } }).supabase, 'org-1', 'p-1')).rejects.toThrow(/timeout/)
-      await expect(readBuyerClickDelivery(maybeSingleSupabase({ data: { sold_on: 'phone', is_enabled: false, click_delivery: null }, error: null }).supabase, 'org-1', 'p-1')).rejects.toThrow(/phone/)
     })
   })
 })

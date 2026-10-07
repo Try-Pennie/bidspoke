@@ -4,7 +4,7 @@
  * the mirror, the bid logger and the clock. What the walker does with the
  * result (step rows, routing) is covered in engine/__tests__/buyer-select-walk.test.ts.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DeadlineError } from '@bidspoke/buyer-profile'
 import { OBJECT_CALL_DEADLINE_MS, type ClientOptions } from '../../../lib/buyer-object-clients'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
@@ -17,7 +17,8 @@ import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
-import { BUYER_CALL_TIMEOUT_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
+import { createLeadSupabaseClient } from '../../../lib/lead-read-budget'
+import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, productionDeps, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -183,6 +184,8 @@ interface Harness {
   ledgers: Map<string, FakeLedger>
   buyerCalls: Array<{ slug: string; body: unknown }>
   mirrored: unknown[]
+  /** Copies started that never answer (mirrorHangs). */
+  mirrorsHanging: number
   bidRows: Array<Record<string, unknown>>
   breakerCalls: string[]
   logs: Array<Record<string, unknown>>
@@ -201,6 +204,8 @@ function harness(opts: {
   /** A breaker whose check throws, by slug: an unreadable breaker, not an open one. */
   breakerError?: Record<string, Error>
   mirrorError?: Error
+  /** A buyer_sales copy that never answers: the rpc hangs (#1849). */
+  mirrorHangs?: boolean
   ledgerError?: Error
   advanceOnBuyerCall?: number
   /** Time the breaker takes to record the call's result, after the buyer answered (#1804). */
@@ -212,7 +217,7 @@ function harness(opts: {
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
 } = {}): Harness {
-  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
+  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
   const spend = (op: ObjectOp) => { h.clockMs += opts.advanceOnObject?.[op] ?? 0 }
   h.deps = {
@@ -278,6 +283,10 @@ function harness(opts: {
     }),
     mirror: async (row) => {
       h.clockMs += opts.advanceOnMirror ?? 0
+      if (opts.mirrorHangs) {
+        h.mirrorsHanging++
+        return new Promise<void>(() => {})
+      }
       if (opts.mirrorError) throw opts.mirrorError
       h.mirrored.push(row)
     },
@@ -998,5 +1007,75 @@ describe('the time of each object call around a live buyer call (#1804)', () => 
     const r = await run(h)
     expect(out(r)._route).toBe('sold')
     expect(r.attempts[0].output.timing).toMatchObject({ mirror_ms: 900 })
+  })
+})
+
+/**
+ * The buyer_sales copy is a database write the lead waits on after the buyer
+ * accepted (#1849). It had no deadline, so in a database hang the sold lead
+ * waited for ever. record_buyer_sale is idempotent and the minute drain delivers
+ * any entry left unmirrored, so the wait is bounded, and a copy that ran out of
+ * time is reported as outcome unknown: the write may have landed, so it is not
+ * reported as not recorded, and nothing undoes it.
+ */
+describe('the buyer_sales copy is bounded (#1849)', () => {
+  it('a copy that does not answer in time ends the wait, keeps the sale, and is reported as outcome unknown', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness({ mirrorHangs: true })
+      let settled = false
+      const pending = run(h).then((r) => { settled = true; return r })
+      // Let the attempt reach the copy before any time passes.
+      // The row id is a WebCrypto digest, which settles off the microtask queue.
+      for (let i = 0; i < 1_000 && h.mirrorsHanging === 0; i++) await new Promise((resolve) => setImmediate(resolve))
+      expect(h.mirrorsHanging).toBe(1)
+      await vi.advanceTimersByTimeAsync(BUYER_SALE_MIRROR_DEADLINE_MS - 1)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      const r = await pending
+      expect(out(r)).toMatchObject({ _route: 'sold', reason: 'sold', mirrored: 'outcome_unknown' })
+      expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted', mirrored: 'outcome_unknown' })
+      expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'outcome_unknown' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a sold lead answers with the database hung beneath the real supabase-js client: the production copy is bounded too', async () => {
+    // The outage drill's hung shape (#1851): a request ends only when its signal aborts.
+    let requests = 0
+    const hung = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests++
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      })
+    }) as typeof globalThis.fetch
+    const supabase = createLeadSupabaseClient({ SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env, { fetch: hung })
+    const objects = { idFromName: () => 'id', get: () => ({}) }
+    const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, supabase)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness()
+      h.deps = { ...h.deps, mirror: production.mirror }
+      const pending = run(h)
+      for (let i = 0; i < 1_000 && requests === 0; i++) await new Promise((resolve) => setImmediate(resolve))
+      expect(requests).toBe(1)
+      await vi.advanceTimersByTimeAsync(BUYER_SALE_MIRROR_DEADLINE_MS)
+      expect(out(await pending)).toMatchObject({ _route: 'sold', mirrored: 'outcome_unknown' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a copy the database refused is reported as not mirrored, because a refused write did not land', async () => {
+    const h = harness({ mirrorError: new Error('record_buyer_sale failed: connection refused') })
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'sold', mirrored: false })
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_mirror_failed', mirror_outcome: 'not_mirrored' }))
+  })
+
+  it('the deadline sits well above the healthy write: record_buyer_sale took at most 488 ms over the 24 hours to 2026-10-07 (p99 403 ms, 50 calls)', () => {
+    expect(BUYER_SALE_MIRROR_DEADLINE_MS).toBeGreaterThanOrEqual(2 * 488)
+    expect(BUYER_SALE_MIRROR_DEADLINE_MS).toBeLessThanOrEqual(OBJECT_CALL_DEADLINE_MS)
   })
 })

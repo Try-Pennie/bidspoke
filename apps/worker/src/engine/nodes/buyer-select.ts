@@ -30,6 +30,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   BUYER_SELECT_MODES,
+  DeadlineError,
   canaryBucket,
   canonicalBodySha256,
   evaluateEligibility,
@@ -60,7 +61,7 @@ import type { CapLimits, EntryKey, LedgerEntry, SaleOutcomeRecord } from '../../
 import type { CheckResult } from '../../durable-objects/circuit-breaker'
 import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, SALE_FREE_OP, type ClientOptions } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
-import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type BuyerCall, type LedgerApi, type SaleApi } from '../../lib/buyer-sale-attempt'
+import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type BuyerCall, type LedgerApi, type MirrorOutcome, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
 import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
@@ -111,6 +112,15 @@ export const BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS = 2_000
 export { MEASURED_OBJECT_CALL_P99_MS }
 /** The whole buyer call, the same budget tripoint_ping's fetch carried. */
 export const BUYER_CALL_TIMEOUT_MS = 20_000
+/**
+ * How long a lead waits on its buyer_sales copy (record_buyer_sale) after the
+ * buyer answered (#1849). It had no deadline, so a database that hung held a
+ * sold lead's answer for ever. Measured 2026-10-07 from Supabase edge logs over
+ * 24 hours: 50 calls, p99 403 ms, the slowest 488 ms. Past it the copy is left
+ * to the minute drain, which writes the same row through the same idempotent
+ * rpc, and the copy is reported as outcome_unknown, never undone.
+ */
+export const BUYER_SALE_MIRROR_DEADLINE_MS = 1_000
 /** How often a live attempt re-reads a claim another execution holds. */
 export const CLAIM_WAIT_INTERVAL_MS = 250
 export const REHEARSAL_CAPS_ENV = 'BUYER_SELECT_REHEARSAL_CAPS'
@@ -189,7 +199,8 @@ export interface BuyerSelectOutput {
   caps_in_force: Array<{ partner: string } & CapLimits>
   profiles_served_from?: BuyerProfilesSnapshot['served_from']
   would_send_body_sha256?: string
-  mirrored?: boolean
+  /** Whether the buyer_sales copy landed; outcome_unknown when it ran out of time and may have (#1849). */
+  mirrored?: MirrorOutcome
   replay?: boolean
   retries_ignored?: number
   /**
@@ -698,9 +709,12 @@ class Run {
         caps_in_force: limits,
       })
       try {
-        await this.deps.mirror(row, entry, partner.id)
+        // Bounded (#1849), by what is left of a budget when the node is under one.
+        // A copy that runs out of time may still land, so nothing undoes it.
+        await withDeadline(this.deps.mirror(row, entry, partner.id), Math.min(BUYER_SALE_MIRROR_DEADLINE_MS, Math.max(1, this.remaining())), 'buyer_sales copy', this.deps.timers)
       } catch (err) {
-        this.deps.log({ event: 'buyer_select_mirror_failed', step_namespace: this.node.namespace, partner_id: partner.id, error_message: messageOf(err) })
+        const mirrorOutcome = err instanceof DeadlineError ? 'outcome_unknown' : 'not_mirrored'
+        this.deps.log({ event: 'buyer_select_mirror_failed', step_namespace: this.node.namespace, partner_id: partner.id, mirror_outcome: mirrorOutcome, error_message: messageOf(err) })
         throw err
       }
     }

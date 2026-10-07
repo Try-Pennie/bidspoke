@@ -22,6 +22,7 @@ import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflo
 import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { leadRead } from './lead-read-budget'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -64,12 +65,7 @@ export async function getSlackConnection(
   let data: { config?: unknown } | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     if (attempt > 0) await sleep(delaysMs[attempt - 1])
-    const res = await supabase
-      .from('service_connections')
-      .select('config')
-      .eq('organization_id', orgId)
-      .eq('service_type', 'slack')
-      .maybeSingle()
+    const res = await slackConnectionQuery(supabase, orgId)
     if (!res.error) {
       data = res.data as { config?: unknown } | null
       break
@@ -90,6 +86,29 @@ export async function getSlackConnection(
   }
 
   return parseSlackConnection(data?.config)
+}
+
+/** The one read of an org's Slack connection row, for both readers below. */
+function slackConnectionQuery(supabase: SupabaseClient, orgId: string) {
+  return supabase
+    .from('service_connections')
+    .select('config')
+    .eq('organization_id', orgId)
+    .eq('service_type', 'slack')
+    .maybeSingle()
+}
+
+/**
+ * The org's Slack connection for a page sent while a lead waits (#1849): one
+ * read through leadRead, so on a lead's client it is bounded and never retried,
+ * and a database outage reaches the caller's fallback (the last-good copy of the
+ * Slack connections) at once instead of after getSlackConnection's retries.
+ * Null when the org has no usable connection; throws when the row cannot be read.
+ */
+export async function readSlackConnectionForLead(supabase: SupabaseClient, orgId: string): Promise<SlackConnection | null> {
+  const res = await leadRead(supabase, slackConnectionQuery(supabase, orgId), 'slack connection')
+  if (res.error) throw new Error(`service_connections: ${res.error.message}`)
+  return parseSlackConnection((res.data as { config?: unknown } | null)?.config)
 }
 
 // ── Alert senders ─────────────────────────────────────────────────────────────
@@ -1992,9 +2011,11 @@ export async function sendCircuitAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: CircuitAlertPayload
+  payload: CircuitAlertPayload,
+  /** Where the connection comes from; a caller on a lead's path passes one with a fallback (#1849). */
+  resolveConnection: () => Promise<Pick<SlackConnection, 'bot_token' | 'default_channel'> | null> = () => getSlackConnection(supabase, orgId),
 ): Promise<void> {
-  const connection = await getSlackConnection(supabase, orgId)
+  const connection = await resolveConnection()
   if (!connection) return
 
   const channel = channelOverride || connection.default_channel

@@ -44,6 +44,7 @@ import type { Env } from '../../index'
 import { resolveValue } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { shadowOf } from '../run-reality'
+import { loadPartnerConfigForLead } from './partner-bid'
 
 interface LatencyGateConfig {
   operation?: 'mark' | 'check'
@@ -107,7 +108,7 @@ export async function executeLatencyGateNode(
   }
 
   if (operation === 'check') {
-    const thresholdMs = await resolveThreshold(config, supabase)
+    const thresholdMs = await resolveThreshold(config, env, supabase)
     const res = await stub.fetch('http://do/check', { method: 'POST' })
     const { marked_at: markedAt } = await res.json<{ marked_at: number | null }>()
 
@@ -160,6 +161,7 @@ function buildKey(config: LatencyGateConfig, ctx: ExecutionContext): string {
 
 async function resolveThreshold(
   config: LatencyGateConfig,
+  env: Env,
   supabase?: SupabaseClient
 ): Promise<number> {
   if (typeof config.threshold_ms === 'number') return config.threshold_ms
@@ -171,17 +173,18 @@ async function resolveThreshold(
     throw new Error('Latency Gate check node requires a Supabase client to resolve partner threshold')
   }
 
-  const { data, error } = await supabase
-    .from('partner_configs')
-    .select('confirmation_window_ms')
-    .eq('id', config.partner_id)
-    .single()
-
-  if (error || !data) {
+  // The partner read partner_bid makes, with its last-good copy (#1849): the
+  // window was read with no copy behind it, so in a database outage every
+  // confirmation threw. A copy past the maximum age is refused by name.
+  const loaded = await loadPartnerConfigForLead(supabase, env.WORKFLOW_CACHE, config.partner_id)
+  if (!loaded) {
     throw new Error(`Latency Gate check: partner config not found: ${config.partner_id}`)
   }
+  if (loaded.fromCopy && !('confirmation_window_ms' in loaded.partner)) {
+    throw new Error(`Latency Gate check: the database read failed and the stored copy of partner ${config.partner_id} was written before it carried confirmation_window_ms, so the threshold is not known`)
+  }
 
-  const window = (data as { confirmation_window_ms: number | null }).confirmation_window_ms
+  const window = loaded.partner.confirmation_window_ms
   if (typeof window !== 'number') {
     throw new Error(
       'Latency Gate check: partner has no confirmation_window_ms; set one or provide threshold_ms'

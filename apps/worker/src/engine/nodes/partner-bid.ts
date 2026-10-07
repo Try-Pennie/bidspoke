@@ -20,7 +20,11 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
-import { sendCircuitAlert } from '../../lib/slack'
+import { readSlackConnectionForLead, sendCircuitAlert, type SlackConnection } from '../../lib/slack'
+import { resolveSlackForBlockAlert } from '../../lib/partner-block-alert'
+import { readLastGoodSlackConnections } from '../../lib/volume-cliff'
+import { secretKeys } from '../../lib/secret-crypto'
+import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import { parseJson } from '../../lib/json'
 import { formatErr } from '../../lib/format-error'
 import { isNotFoundError } from '../../lib/api-error'
@@ -71,6 +75,12 @@ interface PartnerConfig {
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
   is_active: boolean
+  /**
+   * The latency gate's window for this partner (#1849), read with the rest of the
+   * row so the gate shares this read and its last-good copy. Absent only on a copy
+   * written before it was selected.
+   */
+  confirmation_window_ms?: number | null
   updated_at?: string | null
 }
 
@@ -127,7 +137,7 @@ const PARTNER_SELECT =
   'bid_mode, bid_comparison_source, extra_extraction, ' +
   'dedup_endpoint, response_classification, alert_config, ' +
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
-  'circuit_enabled, is_active, updated_at'
+  'circuit_enabled, is_active, confirmation_window_ms, updated_at'
 
 // ── Last-good partner config (#1296, #1846) ───────────────────────────────────
 //
@@ -195,12 +205,32 @@ export interface CircuitAlertGate {
   isTest?: boolean
 }
 
+/**
+ * The longest the lead waits on a circuit breaker page (#1849): the connection
+ * lookup (at most LEAD_READ_DEADLINE_MS, then the KV copy) and the Slack post.
+ * The page runs on partner_bid's error path while the lead waits, and neither
+ * half had a deadline. A page that runs out of time is logged, never thrown.
+ */
+export const CIRCUIT_ALERT_DEADLINE_MS = 3_000
+
+export interface CircuitAlertDeps {
+  /**
+   * The last-good copy of the Slack connections (lib/volume-cliff.ts), the page's
+   * fallback when the connection row cannot be read. Required, so no caller can
+   * page without one by forgetting it (L168).
+   */
+  lastGoodSlack: () => Promise<Map<string, Pick<SlackConnection, 'bot_token' | 'default_channel'>>>
+  /** Tests fire the page deadline by hand. */
+  timers?: Timers
+}
+
 export async function alertIfTripped(
   supabase: SupabaseClient,
   orgId: string,
   slug: string,
   outcome: BreakerRecordResult | undefined,
-  gate: CircuitAlertGate = {},
+  gate: CircuitAlertGate,
+  deps: CircuitAlertDeps,
 ): Promise<boolean> {
   if (!outcome?.tripped) return false
   // LOCAL_DEV (set only in .dev.vars, never in production) means this run is
@@ -212,7 +242,11 @@ export async function alertIfTripped(
   // someone clicking Test Run, not an incident. Every other failure alert (execution
   // failure, duration, dead-letter) already skips test runs; this one did not (#547).
   if (gate.isTest) return false
-  await sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }).catch(() => {})
+  // The connection from the database in one bounded read, else from the last-good
+  // copy, so a database outage neither holds the lead nor drops the page (#1849).
+  const connection = () => resolveSlackForBlockAlert(orgId, () => readSlackConnectionForLead(supabase, orgId), deps.lastGoodSlack)
+  await withDeadline(sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }, connection), CIRCUIT_ALERT_DEADLINE_MS, 'circuit breaker page', deps.timers)
+    .catch((e: unknown) => console.error(`[partner-bid] circuit breaker page for ${slug} was not sent: ${formatErr(e)}`))
   return true
 }
 
@@ -241,24 +275,9 @@ export async function executePartnerBidNode(
 
   // 1. Load partner config. A failed READ falls back to the last-good copy
   // (#1296); a row that is genuinely absent does not.
-  const { data: partner, error } = await readPartnerConfig(supabase, config.partner_id)
-
-  let p: PartnerConfig
-  if (!error && partner) {
-    p = partner as unknown as PartnerConfig
-    await rememberPartnerLastGood(env.WORKFLOW_CACHE, p, Date.now())
-  } else {
-    // The row is genuinely gone: a copy a racing lead wrote after the delete
-    // route retired it must not outlive the partner (#1846).
-    if (error && isNotFoundError(error)) await dropPartnerLastGoodIfPresent(env.WORKFLOW_CACHE, config.partner_id)
-    // A copy past the maximum age is refused by name inside the read (#1847).
-    const stale = error && !isNotFoundError(error) ? await readPartnerLastGood<PartnerConfig>(env.WORKFLOW_CACHE, config.partner_id, error.message, Date.now()) : null
-    if (!stale) {
-      throw new Error(`Partner config not found: ${config.partner_id}`)
-    }
-    console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${config.partner_id}: ${formatErr(error)}`)
-    p = stale
-  }
+  const loaded = await loadPartnerConfigForLead(supabase, env.WORKFLOW_CACHE, config.partner_id)
+  if (!loaded) throw new Error(`Partner config not found: ${config.partner_id}`)
+  const p = loaded.partner
 
   // Built once and merged onto every return/throw path so the Results panel
   // surfaces both the partner config the author set up and the resolved values
@@ -515,6 +534,8 @@ export async function executePartnerBidNode(
       await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome, {
         isLocalDev: reality.localDev,
         isTest: reality.isTest,
+      }, {
+        lastGoodSlack: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
       })
     }
 
@@ -695,4 +716,31 @@ export async function checkDedup(
  */
 export function readPartnerConfig(supabase: SupabaseClient, partnerId: string) {
   return leadRead(supabase, supabase.from('partner_configs').select(PARTNER_SELECT).eq('id', partnerId).single(), 'partner config')
+}
+
+/**
+ * A partner's config for a lead, the one way the nodes that read partner_configs
+ * on a lead's path get it (partner_bid, and the latency gate's threshold since
+ * #1849): the bounded read, the last-good copy rewritten when due, and the copy
+ * served only when the read FAILS. Null when the partner is genuinely gone (its
+ * copy removed too, #1846) or the read failed with no copy to serve. Throws
+ * StoredCopyRefusedError, logged, for a copy past the maximum age (#1847).
+ */
+export async function loadPartnerConfigForLead(supabase: SupabaseClient, kv: KVNamespace | undefined, partnerId: string): Promise<{ partner: PartnerConfig; fromCopy: boolean } | null> {
+  const { data, error } = await readPartnerConfig(supabase, partnerId)
+  if (!error && data) {
+    const partner = data as unknown as PartnerConfig
+    await rememberPartnerLastGood(kv, partner, Date.now())
+    return { partner, fromCopy: false }
+  }
+  if (!error || isNotFoundError(error)) {
+    // The row is genuinely gone: a copy a racing lead wrote after the delete
+    // route retired it must not outlive the partner (#1846).
+    await dropPartnerLastGoodIfPresent(kv, partnerId)
+    return null
+  }
+  const stale = await readPartnerLastGood<PartnerConfig>(kv, partnerId, error.message, Date.now())
+  if (!stale) return null
+  console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${partnerId}: ${formatErr(error)}`)
+  return { partner: stale, fromCopy: true }
 }

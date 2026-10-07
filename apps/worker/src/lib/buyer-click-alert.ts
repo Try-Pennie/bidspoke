@@ -34,6 +34,12 @@ import { etTime, getSlackConnection, sendBuyerClickAlert, type BuyerClickAlertMe
 import { readLastGoodSlackConnections } from './volume-cliff'
 import { secretKeys } from './secret-crypto'
 
+/**
+ * Whether a held click record landed (#1552): true, false when the write was
+ * refused, or outcome_unknown when it ran out of time and may have (#1849).
+ */
+export type HoldRecorded = boolean | 'outcome_unknown'
+
 /** One page per buyer per reason per quarter hour. */
 export const CLICK_PAGE_COOLDOWN_SECONDS = 15 * 60
 /** Longer than any day, so the per date key cannot post twice inside one. */
@@ -72,8 +78,10 @@ export type ClickAlert =
        * Held clicks list has it, false when the record failed, null for a page
        * that holds no claim. The page points at that list only on true, because
        * the reason alone cannot say whether the list has the click.
+       * outcome_unknown when the record ran out of time, since a write that
+       * timed out may still have landed (#1849).
        */
-      hold_recorded: boolean | null
+      hold_recorded: HoldRecorded | null
       workflow_id: string
       trace_id: string
       at: number
@@ -161,6 +169,13 @@ function releaseLine(alert: Extract<ClickAlert, { kind: 'page' }>, appUrl: strin
   const partnerPage = `${appUrl}/partners?selected=${encodeURIComponent(alert.partner_slug)}`
   if (alert.hold_recorded === true) return `Release it under Held clicks on the ${alert.partner_slug} partner page: ${partnerPage}`
   const claim = alert.prospect_id === null ? `the claim for ${alert.partner_slug}` : `the claim on prospect \`${alert.prospect_id}\` for ${alert.partner_slug}`
+  if (alert.hold_recorded === 'outcome_unknown') {
+    return [
+      `The record of this click did not answer in time, so it may or may not be on the Held clicks list on the ${alert.partner_slug} partner page: ${partnerPage}`,
+      `If it is there, release it there. If not, ${claim} is held with nothing there to release it, and the next click on this prospect after the claim's send window finds it and records it there.`,
+      'Why the record did not answer is on the execution linked below.',
+    ].join(' ')
+  }
   return [
     `This click could not be added to the Held clicks list on the ${alert.partner_slug} partner page, so ${claim} is held with nothing there to release it.`,
     'The next click on this prospect after the claim\'s send window finds it and records it there, and it can be released then.',

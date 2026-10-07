@@ -23,6 +23,7 @@ import {
   CLICK_CLAIM_DEADLINE_MS,
   CLICK_CLAIM_MARGIN_MS,
   CLICK_COUNT_RETRY_COST_MS,
+  CLICK_HOLD_RECORD_DEADLINE_MS,
   CLICK_POST_TIMEOUT_MS,
   CLICK_RUN_BUDGET_MS,
   classifyClickAnswer,
@@ -103,6 +104,8 @@ interface Harness {
   resolved: string[]
   holds: HeldClickRecord[]
   profileReads: number
+  /** Held click records started that never answer (holdHangs). */
+  holdsHanging: number
 }
 
 function harness(opts: {
@@ -131,6 +134,8 @@ function harness(opts: {
   cap?: number | null | 'none' | (() => Promise<ProfileRead>)
   /** The held click record write throws (#1552). */
   holdFails?: boolean
+  /** The held click record write never answers (#1849). */
+  holdHangs?: boolean
   /** The enabled profile's click delivery (#1639); absent means DEFAULT_DELIVERY, null means the profile holds none. */
   delivery?: ClickDelivery | null
 } = {}): Harness {
@@ -138,7 +143,7 @@ function harness(opts: {
   let now = NOW
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, holdsHanging: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
   }
   const script: CounterAsk[] = opts.counter ?? (opts.addFails ? [{ kind: 'refused' }] : [])
   h.deps = {
@@ -224,6 +229,10 @@ function harness(opts: {
       return opts.alert ? opts.alert(a) : 'posted'
     },
     recordHold: async (hold) => {
+      if (opts.holdHangs) {
+        h.holdsHanging++
+        return new Promise<void>(() => undefined)
+      }
       if (opts.holdFails) throw new Error('record_held_click failed: relation does not exist')
       h.holds.push(hold)
     },
@@ -898,6 +907,30 @@ describe('a held claim is recorded so a person can find it on the partner page (
     expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && /relation does not exist/.test(String(l.error_message)))).toBe(true)
   })
 
+  it('a record that runs out of time is reported as outcome unknown, not as not recorded, because it may have landed (#1849)', async () => {
+    const pending: Array<{ fn: () => void; ms: number }> = []
+    const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
+    const h = harness({ post: answer(503, 'down'), holdHangs: true, timers })
+    const p = run(h)
+    await vi.waitFor(() => expect(h.holdsHanging).toBe(1))
+    // The newest bound is the record's: it is set as the write starts.
+    const bound = pending[pending.length - 1]
+    expect(bound.ms).toBe(CLICK_HOLD_RECORD_DEADLINE_MS)
+    bound.fn()
+    const r = await p
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'unknown', hold_recorded: 'outcome_unknown' })
+    expect(r.output.hold_record_error).toMatch(/did not answer within/)
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown', hold_recorded: 'outcome_unknown' })])
+    expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'outcome_unknown')).toBe(true)
+  })
+
+  it('a record the database refused is reported as not recorded', async () => {
+    const h = harness({ post: answer(503, 'down'), holdFails: true })
+    await run(h)
+    expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'not_recorded')).toBe(true)
+  })
+
   it('each held page says whether its hold was recorded, so the page never points at a list that lacks the click', async () => {
     const cases: Array<[string, Parameters<typeof harness>[0]]> = [
       ['outcome_unknown', { post: answer(503, 'down') }],
@@ -1083,39 +1116,31 @@ describe('classifyClickAnswer', () => {
 /**
  * The profile the node reads (Dan, 2026-09-30): the enabled profile from the one
  * cached snapshot, as buyer_select and buyer_click_check read it, and only when the
- * buyer is not in it, the buyer's own profile row, for a profile switched off after
- * its offers went out. Both reads live in buyer-profile-loader.ts.
+ * buyer is not in it, the switched off profile the same snapshot carries, for a
+ * profile switched off after its offers went out (#1849: it used to be a row read
+ * with no copy behind it). The reads through the real client are in
+ * lib/__tests__/buyer-profile-switched-off.test.ts.
  */
 describe('readClickProfile', () => {
   const DELIVERY: ClickDelivery = { routes: [{ name: 'ALL', url: 'https://a.example/x', states: [] }], successPattern: '(?<id>\\w+)' }
+  const DOC = { routes: DELIVERY.routes, success_pattern: DELIVERY.successPattern }
   const enabledBuyer = { partner: { id: PARTNER_ID }, profile: { dailyLeadCap: 50, soldOn: 'click' as const, clickDelivery: DELIVERY } }
 
-  it('an enabled buyer is answered from the snapshot, and the row is never read', async () => {
-    const row = vi.fn()
-    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [enabledBuyer] }), row)
+  it('an enabled buyer is answered from the snapshot', async () => {
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [enabledBuyer], switched_off: [] }))
     expect(r).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: DELIVERY })
-    expect(row).not.toHaveBeenCalled()
   })
 
-  it('a buyer the snapshot does not hold is read from its row: switched off, with its delivery, and no cap', async () => {
-    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async (id) => {
-      expect(id).toBe(PARTNER_ID)
-      return { soldOn: 'click', isEnabled: false, clickDelivery: DELIVERY }
-    })
+  it('a buyer the snapshot holds as switched off is answered with its delivery, and no cap', async () => {
+    const r = await readClickProfile(PARTNER_ID, async () => ({ buyers: [], switched_off: [{ partner_id: PARTNER_ID, sold_on: 'click', click_delivery: DOC }] }))
     expect(r).toEqual({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: DELIVERY })
   })
 
-  it('a buyer with no row at all is not found', async () => {
-    expect(await readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => null)).toEqual({ found: false })
+  it('a buyer the snapshot holds in neither list is not found', async () => {
+    expect(await readClickProfile(PARTNER_ID, async () => ({ buyers: [], switched_off: [] }))).toEqual({ found: false })
   })
 
-  it('a row read that fails throws, so the click is refused as profile_unreadable rather than guessed', async () => {
-    await expect(readClickProfile(PARTNER_ID, async () => ({ buyers: [] }), async () => { throw new Error('buyer_profiles: timeout') })).rejects.toThrow(/timeout/)
-  })
-
-  it('a snapshot read that fails throws without falling back to the row', async () => {
-    const row = vi.fn()
-    await expect(readClickProfile(PARTNER_ID, async () => { throw new Error('kv and database both down') }, row)).rejects.toThrow(/down/)
-    expect(row).not.toHaveBeenCalled()
+  it('a snapshot read that fails throws, so the click is refused as profile_unreadable rather than guessed', async () => {
+    await expect(readClickProfile(PARTNER_ID, async () => { throw new Error('kv and database both down') })).rejects.toThrow(/down/)
   })
 })

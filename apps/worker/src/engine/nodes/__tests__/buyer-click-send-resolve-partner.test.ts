@@ -97,32 +97,29 @@ describe('productionDeps.readProfile (#1543, #1639)', () => {
     expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, enabled: true, cap: 50, soldOn: 'click', clickDelivery: delivery })
   })
 
-  /** The buyer's own profile row, as readBuyerClickDelivery reads it through maybeSingle. */
-  function rowSupabase(result: { data: unknown; error: { message: string } | null }): SupabaseClient {
-    const builder = { select: () => builder, eq: () => builder, maybeSingle: async () => result }
-    return { from: () => builder } as unknown as SupabaseClient
-  }
-  const emptySnapshotKv = (org: string) => kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [] } })
+  const snapshotWithSwitchedOff = (org: string, switchedOff: unknown[] | undefined) =>
+    kvOf({ [`buyer-profiles:${org}`]: { ...buyerSnapshot(org, 50), buyers: [], ...(switchedOff === undefined ? {} : { switched_off: switchedOff }) } })
 
   // Dan, 2026-09-30: switching a profile off stops new offers only, so a click on an
-  // offer already shown is still sent through the switched off profile's delivery.
-  it('a buyer the enabled snapshot does not hold is read from its own row: switched off, with its delivery, and no cap', async () => {
+  // offer already shown is still sent through the switched off profile's delivery,
+  // which the same snapshot carries (#1849), so the database is never asked.
+  it('a buyer the enabled snapshot does not hold is read from its switched off profiles: switched off, with its delivery, and no cap', async () => {
     const org = 'org-switched-off'
     const doc = { routes: [{ name: 'All', url: 'https://a.example/all', states: [] }], success_pattern: '(?<id>\\w+)' }
-    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: { sold_on: 'click', is_enabled: false, click_delivery: doc }, error: null }))
+    const deps = productionDeps(ctxFor(org), envWith(snapshotWithSwitchedOff(org, [{ partner_id: LIBERTY1, sold_on: 'click', click_delivery: doc }])), failingSupabase())
     expect(await deps.readProfile(LIBERTY1)).toEqual({ found: true, enabled: false, cap: null, soldOn: 'click', clickDelivery: { routes: doc.routes, successPattern: doc.success_pattern } })
   })
 
   it('answers found false when the buyer has no profile at all', async () => {
     const org = 'org-cap-none'
-    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: null, error: null }))
+    const deps = productionDeps(ctxFor(org), envWith(snapshotWithSwitchedOff(org, [])), failingSupabase())
     expect(await deps.readProfile(LIBERTY1)).toEqual({ found: false })
   })
 
-  it('throws when the row read fails, never answering no profile', async () => {
-    const org = 'org-row-fails'
-    const deps = productionDeps(ctxFor(org), envWith(emptySnapshotKv(org)), rowSupabase({ data: null, error: { message: 'pool timeout' } }))
-    await expect(deps.readProfile(LIBERTY1)).rejects.toThrow(/pool timeout/)
+  it('throws for a snapshot written before it carried the switched off profiles, never answering no profile', async () => {
+    const org = 'org-old-snapshot'
+    const deps = productionDeps(ctxFor(org), envWith(snapshotWithSwitchedOff(org, undefined)), failingSupabase())
+    await expect(deps.readProfile(LIBERTY1)).rejects.toThrow(/written before it carried the switched off profiles/)
   })
 
   it('throws when the profiles cannot be read and there is no copy, never answering no profile', async () => {
