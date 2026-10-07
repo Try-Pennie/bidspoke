@@ -21,12 +21,9 @@
  *     sender reaches, a raw Request handed to any function defined outside it,
  *     so the request never leaves the code rules 1 and 2 watch.
  *
- * Two shapes are allowed. `new URL(<request>.url).pathname`, which keeps only
- * the path. And controlWordFromQuery in apps/worker/src/lib/control-word.ts,
- * which answers only with a word from a fixed list the caller names (the shadow
- * route's `?mode=stand_in`), so a sender can choose between our words but no
- * text of theirs is ever read back. Any other read of the query goes through
- * neither and fails here.
+ * One shape is allowed: `new URL(<request>.url).pathname`, which keeps only
+ * the path. There is no exception for a control word either: the shadow route
+ * takes its mode from a header (Dan, 2026-10-07).
  *
  * It asks the TypeScript checker for each receiver's TYPE rather than matching
  * `c.req`, so an alias, a parameter or a helper handed the Context is caught
@@ -40,8 +37,7 @@ import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
 import { buildWorkerProgram, workerProgramLoadErrors } from './_worker-program'
 
 const WORKER_ROOT = path.dirname(WORKER_SRC)
-const HELPER_FILE = path.join(WORKER_SRC, 'lib/control-word.ts')
-const HELPER = 'controlWordFromQuery'
+const ANCHOR_FILE = path.join(WORKER_SRC, 'index.ts')
 
 const rel = (file: string) => path.relative(WORKER_SRC, file).replace(/\\/g, '/')
 
@@ -86,14 +82,6 @@ function isPathnameOnly(access: ts.Node): boolean {
   return !!next && ts.isPropertyAccessExpression(next) && next.expression === call && next.name.text === 'pathname'
 }
 
-function helperBody(sf: ts.SourceFile): [number, number] | null {
-  let span: [number, number] | null = null
-  sf.forEachChild((node) => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === HELPER && node.body) span = [node.body.getStart(sf), node.body.getEnd()]
-  })
-  return span
-}
-
 export function scanQueryReads(program: ts.Program, files: string[]): Finding[] {
   const checker = program.getTypeChecker()
   const offenders: Finding[] = []
@@ -102,15 +90,13 @@ export function scanQueryReads(program: ts.Program, files: string[]): Finding[] 
     if (!sf) throw new Error(`${rel(file)} is not in the program, so it was not scanned`)
     const inbound = isInbound(file)
     const signedIn = isSignedInApp(file)
-    const helper = file === HELPER_FILE ? helperBody(sf) : null
 
     const judge = (node: ts.Node, receiver: ts.Node, name: string) => {
       const kind = kindOf(checker, checker.getTypeAtLocation(receiver))
       if (kind === null) return
-      const inHelper = helper !== null && node.getStart(sf) >= helper[0] && node.getEnd() <= helper[1]
       let bad = false
       if (kind === 'hono' && HONO_REQUEST_READS.has(name)) {
-        bad = !signedIn && !inHelper && !(name === 'url' && isPathnameOnly(node))
+        bad = !signedIn && !(name === 'url' && isPathnameOnly(node))
       } else if (inbound && kind === 'request' && REQUEST_READS.has(name)) {
         bad = !isPathnameOnly(node)
       } else if (inbound && kind === 'url' && URL_READS.has(name)) {
@@ -189,7 +175,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
     [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
     [PLANTED_FILTER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n",
   }
-  const plantedProgram = buildWorkerProgram([HELPER_FILE], planted)
+  const plantedProgram = buildWorkerProgram([ANCHOR_FILE], planted)
   const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
   const plantedFindings = (file: string): Finding[] => {
     const found = plantedResults.get(file)
@@ -208,9 +194,9 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
     expect(url && kindOf(checker, checker.getDeclaredTypeOfSymbol(url))).toBe('url')
   })
 
-  it('scans both entry points, every inbound route and the helper', () => {
+  it('scans both entry points and every inbound route', () => {
     const scanned = new Set(SOURCE_FILES.map(rel))
-    for (const f of ['index.ts', 'ops/index.ts', 'routes/webhooks.ts', 'routes/custom-endpoint.ts', 'routes/shadow.ts', 'lib/control-word.ts']) {
+    for (const f of ['index.ts', 'ops/index.ts', 'routes/webhooks.ts', 'routes/custom-endpoint.ts', 'routes/shadow.ts']) {
       expect(scanned.has(f)).toBe(true)
     }
   })
