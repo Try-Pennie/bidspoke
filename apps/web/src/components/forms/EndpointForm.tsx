@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
-import type { WebhookEndpoint } from '@/lib/api'
+import type { StoredCopyAnswer, WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
 import { deriveSourceName } from './endpoint-source-name'
 
@@ -53,8 +53,9 @@ export interface EndpointFormProps {
   submitLabel: string
   submittingLabel: string
   /** Performs the create or the update, and returns the endpoint to hand back. */
-  onSubmit: (values: EndpointFormValues) => Promise<WebhookEndpoint>
-  onSaved: (endpoint: WebhookEndpoint) => void
+  onSubmit: (values: EndpointFormValues) => Promise<WebhookEndpoint & StoredCopyAnswer>
+  /** The server's answer, with any stored copy warning for the caller to show (#1846). */
+  onSaved: (endpoint: WebhookEndpoint & StoredCopyAnswer) => void
   onCancel: () => void
   /** Shown when onSubmit throws something that is not an Error. */
   failureMessage: string

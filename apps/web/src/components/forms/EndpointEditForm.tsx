@@ -1,7 +1,7 @@
 'use client'
 
 import { api } from '@/lib/api'
-import type { WebhookEndpoint } from '@/lib/api'
+import type { StoredCopyAnswer, WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
 import EndpointForm from './EndpointForm'
 
@@ -14,7 +14,7 @@ import EndpointForm from './EndpointForm'
 interface Props {
   endpoint: WebhookEndpoint
   workflows: WorkflowSummary[]
-  onSaved: (endpoint: WebhookEndpoint) => void
+  onSaved: (endpoint: WebhookEndpoint & StoredCopyAnswer) => void
   onCancel: () => void
 }
 

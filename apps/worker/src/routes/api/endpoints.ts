@@ -5,6 +5,10 @@
  * POST   /api/endpoints          — create endpoint
  * PUT    /api/endpoints/:id      — update endpoint (invalidates KV cache)
  * DELETE /api/endpoints/:id      — delete endpoint (invalidates KV cache)
+ *
+ * Every write retires BOTH stored copies of the record at every address it
+ * touched, the 60 second hot copy and the no-expiry last-good copy, after the
+ * write lands (#1846, lib/endpoint-copies.ts).
  */
 
 import { Hono } from 'hono'
@@ -14,6 +18,8 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import type { Database } from '../../types/database'
+import { retireEndpointCopies } from '../../lib/endpoint-copies'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
 
 type Variables = AuthVariables
 
@@ -55,10 +61,6 @@ function validatePath(path: string): string | null {
   if (!PATH_RE.test(path)) return 'Path must start with / and contain only letters, numbers, hyphens, underscores, and slashes'
   if (path.length > 64) return 'Path must be 64 characters or less'
   return null
-}
-
-function cacheKey(subdomain: string, path: string): string {
-  return `ep:${subdomain}:${path}`
 }
 
 const endpoints = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -150,13 +152,19 @@ endpoints.post('/', async (c) => {
     return dbError(c, error)
   }
 
+  // A copy can survive at this address from an endpoint that used it before
+  // (#1846), and the new record must never be answered with the old one.
+  // Straight after the write and never throwing, so nothing after it can leave
+  // the copy standing; a failure is warned about and repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
+
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', data.id, 'created', userId, {
     subdomain,
     path,
     action: 'webhook_endpoint_created',
   })
 
-  return c.json(data, 201)
+  return c.json({ ...data, ...copyWarning(cleared) }, 201)
 })
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -227,20 +235,21 @@ endpoints.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!data) return c.json({ error: 'Endpoint not found' }, 404)
 
-  // Invalidate KV cache for old and new subdomain+path
-  const oldKey = cacheKey(existing.subdomain, existing.path)
-  const newSub = (updates.subdomain as string | undefined) ?? existing.subdomain
-  const newPath = (updates.path as string | undefined) ?? existing.path
-  const newKey = cacheKey(newSub, newPath)
-
-  await c.env.WORKFLOW_CACHE.delete(oldKey)
-  if (newKey !== oldKey) await c.env.WORKFLOW_CACHE.delete(newKey)
+  // Retire both copies at the old address and the new one (#1846). A switched
+  // off endpoint must not be served as active from its last-good copy, and a
+  // moved one must not keep answering at the address it left. Each address on
+  // its own, straight after the write, so one failing cannot leave the other;
+  // a failure is warned about and repaired by the sweep.
+  const moved = data.subdomain !== existing.subdomain || data.path !== existing.path
+  const clearedOld = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
+  const clearedNew = !moved || await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, data.subdomain, data.path), `endpoint copy ${data.subdomain}${data.path}`)
+  const cleared = clearedOld && clearedNew
 
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'updated', userId, {
     action: 'webhook_endpoint_updated',
   })
 
-  return c.json(data)
+  return c.json({ ...data, ...copyWarning(cleared) })
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -265,7 +274,11 @@ endpoints.delete('/:id', async (c) => {
   )
   if (deleteBlocked) return deleteBlocked
 
-  await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
+  // Both copies, so a deleted endpoint is never served from KV in an outage
+  // (#1846). Straight after the write, so the audit below cannot skip it.
+  // Deleting again would find no row, so a failure is warned about and
+  // repaired by the sweep.
+  const cleared = await copyCleared(() => retireEndpointCopies(c.env.WORKFLOW_CACHE, existing.subdomain, existing.path), `endpoint copy ${existing.subdomain}${existing.path}`)
 
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'deleted', userId, {
     subdomain: existing.subdomain,
@@ -273,7 +286,7 @@ endpoints.delete('/:id', async (c) => {
     action: 'webhook_endpoint_deleted',
   })
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(cleared) })
 })
 
 export default endpoints

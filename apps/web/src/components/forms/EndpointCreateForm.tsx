@@ -1,7 +1,7 @@
 'use client'
 
 import { api } from '@/lib/api'
-import type { WebhookEndpoint } from '@/lib/api'
+import type { StoredCopyAnswer, WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
 import EndpointForm from './EndpointForm'
 
@@ -22,7 +22,7 @@ interface Props {
   lockWorkflow?: boolean
   /** Auto-focus the first input on mount. */
   autoFocus?: boolean
-  onCreated: (endpoint: WebhookEndpoint) => void
+  onCreated: (endpoint: WebhookEndpoint & StoredCopyAnswer) => void
   onCancel: () => void
 }
 

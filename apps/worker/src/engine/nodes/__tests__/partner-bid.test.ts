@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executePartnerBidNode, evaluateFormula, recordBreakerOutcome, meetsBidFloor } from '../partner-bid'
 import { PartnerApiError } from '../../partner-bid-error'
+import { retirePartnerLastGood } from '../../../lib/partner-last-good'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 import type { PartnerBidOutput } from '../partner-bid'
@@ -806,5 +807,68 @@ describe('partner config last-good fallback during a DB outage (#1296)', () => {
     const edited = makePartner({ updated_at: '2026-09-10T21:00:00Z', bid_formula: 'debt_amount * 0.5' })
     await executePartnerBidNode(makeNode({ partner_id: 'partner-1' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(edited) as never)
     expect(puts.filter((p) => p.key === 'partner-lastgood:partner-1')).toHaveLength(2)
+  })
+
+  // #1846. A partner route retires the copy when it changes or removes the
+  // partner. The isolate's record of what it already wrote is keyed on
+  // updated_at, so if retiring left that record in place, a later read of a row
+  // whose updated_at had not moved would skip the write and leave no copy at all.
+  it('writes the copy again after it is retired, even when updated_at has not moved', async () => {
+    const { kv, puts } = recordingKv()
+    const env = makeEnv({ WORKFLOW_CACHE: kv })
+    const steady = makePartner({ id: 'partner-retire', updated_at: '2026-10-07T12:00:00Z' })
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-retire' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(steady) as never)
+    await retirePartnerLastGood(kv as unknown as KVNamespace, 'partner-retire')
+    expect(await kv.get('partner-lastgood:partner-retire')).toBeNull()
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-retire' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(steady) as never)
+    expect(puts.filter((p) => p.key === 'partner-lastgood:partner-retire')).toHaveLength(2)
+    expect(await kv.get('partner-lastgood:partner-retire')).not.toBeNull()
+  })
+
+  // A route retires the copy after its write lands, but a lead that read the row
+  // just BEFORE the delete can write the copy just AFTER the retire. The first
+  // read that finds the partner gone removes that copy, so it cannot outlive it.
+  it('a read that finds the partner gone removes a copy that is still there', async () => {
+    const { kv } = recordingKv({ 'partner-lastgood:partner-1': JSON.stringify(partner) })
+    const notFound: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'single') return () => Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+        return () => notFound
+      },
+    })
+    await expect(executePartnerBidNode(
+      makeNode({ partner_id: 'partner-1' }),
+      makeCtx({ debt_amount: 10000 }),
+      makeEnv({ WORKFLOW_CACHE: kv }),
+      { from: () => notFound } as never,
+    )).rejects.toThrow('Partner config not found')
+    expect(await kv.get('partner-lastgood:partner-1')).toBeNull()
+  })
+
+  // The removal is a tidy up beside the refusal: KV failing there must not
+  // replace "Partner config not found" with a KV error, and is logged.
+  it('a KV failure while removing a missing partner copy keeps the named refusal and is logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = {
+      get: async () => JSON.stringify(partner),
+      put: async () => {},
+      delete: async () => { throw new Error('kv unavailable') },
+    }
+    const notFound: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'single') return () => Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+        return () => notFound
+      },
+    })
+    await expect(executePartnerBidNode(
+      makeNode({ partner_id: 'partner-1' }),
+      makeCtx({ debt_amount: 10000 }),
+      makeEnv({ WORKFLOW_CACHE: kv }),
+      { from: () => notFound } as never,
+    )).rejects.toThrow('Partner config not found: partner-1')
+    expect(errSpy.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining('could not remove the last-good copy of missing partner partner-1'))
+    errSpy.mockRestore()
   })
 })

@@ -85,6 +85,7 @@ import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
 import { restoreVersion } from '@/lib/version-restore'
+import { applyFormulaRenames } from '@/lib/formula-renames'
 
 
 const edgeTypes = {
@@ -2824,16 +2825,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       // failed, the formulas wouldn't be rewritten).
       const queuedRenames = pendingFormulaRenamesRef.current
       pendingFormulaRenamesRef.current = []
-      const rewriteFailures: string[] = []
-      for (const rn of queuedRenames) {
-        try {
-          await api.workflows.renameApply(workflow.id, rn.oldNs, rn.newNs, rn.partner_ids)
-        } catch (e) {
-          // Don't block save UX — surface as a non-fatal banner.
-          const msg = e instanceof Error ? e.message : 'Formula rewrite failed'
-          rewriteFailures.push(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
-        }
-      }
+      // Failures never block the save; they join its message below.
+      const rewriteFailures = await applyFormulaRenames(workflow.id, queuedRenames)
       // #92: if the user edited during the save window (any await above), the
       // snapshot we just persisted is already stale. Re-baseline to what we saved,
       // then compare against the live signature: if an edit landed, stay dirty and

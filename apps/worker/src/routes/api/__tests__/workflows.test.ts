@@ -58,9 +58,11 @@ const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.c
 // test and test-node routes refuse a row without one (#1725).
 const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [] }, lane: 'money' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
+// The keys the cache was asked to delete, read by the rename-apply tests (#1846).
+const kvDeleted: string[] = []
 const testEnv = {
   SUPABASE_JWKS_URL: 'https://fake.jwks',
-  WORKFLOW_CACHE: {},
+  WORKFLOW_CACHE: { delete: async (k: string) => { kvDeleted.push(k) } },
   IDEMPOTENCY: {},
   APP_URL: 'https://app.test',
   GITHUB_TOKEN: 'gh-tok',
@@ -236,7 +238,7 @@ describe('PUT /workflows/:id', () => {
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
   })
 
@@ -435,7 +437,7 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { no_changes?: boolean; stored_copy_warning?: string }
     expect(body.no_changes).toBe(true)
-    expect(body.stored_copy_warning).toMatch(/save it again/i)
+    expect(body.stored_copy_warning).toMatch(/repaired automatically/i)
   })
 
   it('treats a key-reordered but structurally identical definition as no_changes (jsonb round-trip)', async () => {
@@ -679,7 +681,7 @@ describe('PATCH /workflows/:id', () => {
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -726,7 +728,7 @@ describe('DELETE /workflows/:id', () => {
     const res = await request(app, 'DELETE', '/workflows/wf-1')
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 
@@ -910,7 +912,7 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
@@ -1856,8 +1858,48 @@ describe('POST /workflows/:id/rename-apply rewrites partner formulas through the
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    kvDeleted.length = 0
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     app = await makeApp()
+  })
+
+  // #1846: a rewritten formula makes the partner's stored copy (the one the
+  // Partner Bid node bids from in a database outage) describe a formula that no
+  // longer exists, so each partner the function touched has its copy retired.
+  it('retires the stored copy of each partner it rewrote, and of no other', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 1, error: null })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow }, partner_configs: { list: partners } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1', 'p-2'] } })
+    expect(res.status).toBe(200)
+    expect(kvDeleted).toEqual(['partner-lastgood:p-1'])
+  })
+
+  // One partner's copy that cannot be retired must not stop the others being
+  // rewritten, or the rename is left half applied with no way to tell which (#1846).
+  it('rewrites every partner when one copy cannot be retired, and answers with a warning naming that partner', async () => {
+    const both = [partners[0], { ...partners[0], id: 'p-3', name: 'Dot818', slug: 'dot818' }]
+    const rpc = vi.fn().mockResolvedValue({ data: 1, error: null })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow }, partner_configs: { list: both } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const cache = testEnv.WORKFLOW_CACHE as unknown as { delete: (k: string) => Promise<void> }
+    const realDelete = cache.delete
+    cache.delete = async (k: string) => { if (k === 'partner-lastgood:p-1') throw new Error('kv unavailable'); kvDeleted.push(k) }
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1', 'p-3'] } })
+      expect(rpc).toHaveBeenCalledTimes(2)
+      expect(kvDeleted).toEqual(['partner-lastgood:p-3'])
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { updated: number; copies_not_cleared: string[]; stored_copy_warning?: string }
+      expect(body.updated).toBe(2)
+      expect(body.copies_not_cleared).toEqual(['p-1'])
+      expect(body.stored_copy_warning).toMatch(/repaired automatically/i)
+    } finally {
+      cache.delete = realDelete
+    }
   })
 
   it('calls the function once per partner whose formulas reference the old namespace, with both rewritten columns and the context', async () => {
@@ -1889,6 +1931,7 @@ describe('POST /workflows/:id/rename-apply rewrites partner formulas through the
     const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1'] } })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ updated: 0 })
+    expect(kvDeleted).toEqual([])
     const warned = warnSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
     expect(warned).toContainEqual(expect.objectContaining({
       event: 'zero_row_write',

@@ -91,7 +91,9 @@ export default function PartnersPage() {
     try {
       // Wait for the server before removing the row, so the button shows a real
       // in-flight state and a failure leaves the config in place (#495).
-      await api.partners.delete(id)
+      const r = await api.partners.delete(id)
+      // Deleted, but its stored outage copy could not be cleared yet: say so (#1846).
+      if (r.stored_copy_warning) setError(r.stored_copy_warning)
       setConfirmDelete(null)
       if (selected?.id === id) clearSelection()
       setRemovingId(id)
@@ -109,7 +111,9 @@ export default function PartnersPage() {
 
   async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[]) {
     if (id) {
-      const updated = await api.partners.update(id, body)
+      const { stored_copy_warning: copyWarning, ...updated } = await api.partners.update(id, body)
+      // Saved, but its stored outage copy could not be cleared yet: say so (#1846).
+      if (copyWarning) setError(copyWarning)
       setPartners((prev) => prev.map((p) => p.id === id ? updated : p))
       selectPartner(updated)
     } else {

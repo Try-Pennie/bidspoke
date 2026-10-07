@@ -39,6 +39,7 @@ import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
+import { sweepSources, sweepStoredCopies } from './lib/stored-copy-sweep'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
@@ -738,6 +739,16 @@ export default {
       ctx.waitUntil(
         prewarmKvCaches(supabase, env)
           .catch((e) => console.error('[prewarm] failed:', e))
+      )
+      // Repairs any stored outage copy an edit route could not refresh or clear
+      // (#1846), so the copy never serves an old version for longer than this.
+      ctx.waitUntil(
+        sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE))
+          .then((r) => {
+            if (r.repaired.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} repaired=${r.repaired.length} ${r.repaired.join(' ')}`)
+            if (r.failed.length > 0) console.error(`[stored-copy-sweep] could not sweep: ${r.failed.join(' | ')}`)
+          })
+          .catch((e) => console.error('[stored-copy-sweep] failed:', e))
       )
       // The buyer ledger outbox drain (#1413): delivers every ledger entry the
       // inline mirror did not copy to buyer_sales, through the same write. Both
