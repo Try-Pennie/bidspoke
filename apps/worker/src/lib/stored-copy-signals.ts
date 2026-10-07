@@ -282,6 +282,10 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
   const post = deps.post ?? ((slack: SlackTarget, message: TitledMessage) => sendTitledAlert(slack, null, message))
 
   if (reading.activeMinutes < STORED_COPY_SERVING_ALERT_MINUTES) {
+    // Below the threshold is not over: a copy used at all in the window moves
+    // the incident's running end, so the all-clear waits the re-arm window from
+    // the last use rather than from the last tick that met the threshold.
+    if (reading.lastActiveMs !== null) await markSpikeSeen(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, reading.lastActiveMs)
     const due = await recoveryDue(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, { now: nowMs })
     if (!due) return reading.activeMinutes > 0 ? 'below_threshold' : 'quiet'
     const targets = await servingAlertTargets(kv, deps.secretKeys, deps.supabase)

@@ -306,6 +306,29 @@ describe('while leads are being served from stored copies', () => {
     expect(h.recoveries).toHaveLength(1)
   })
 
+  it('holds the all-clear while copies are still used now and then, below the threshold, and counts the re-arm from the last use', async () => {
+    const h = harness()
+    await rememberSlack(h.kv)
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
+    expect((await runStoredCopyChecks(h.deps())).serving).toBe('posted')
+
+    // A copy is used in one minute of every five: never enough to page again,
+    // and never a stop either.
+    for (let i = 1; i <= RECOVERY_REARM_MINUTES + 10; i++) {
+      h.clock.now += MINUTE
+      if (i % 5 === 0) await ledgerMinute(h.kv, h.clock, 0, served(1))
+      expect((await runStoredCopyChecks(h.deps())).serving).not.toBe('recovered')
+    }
+    expect(h.recoveries).toEqual([])
+
+    // The last use was this minute; the all-clear comes the re-arm window after it.
+    h.clock.now += (RECOVERY_REARM_MINUTES - 1) * MINUTE
+    expect((await runStoredCopyChecks(h.deps())).serving).not.toBe('recovered')
+    h.clock.now += 2 * MINUTE
+    expect((await runStoredCopyChecks(h.deps())).serving).toBe('recovered')
+    expect(h.recoveries).toHaveLength(1)
+  })
+
   it('says it could not measure when the ledger cannot be read, and still runs the other two checks', async () => {
     const h = harness()
     h.kv.failList = true

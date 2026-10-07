@@ -97,6 +97,12 @@ export interface KindTally {
 export interface LedgerReading {
   /** Minutes in the window with at least one copy served or refused. */
   activeMinutes: number
+  /**
+   * The last moment of the newest minute in the window with a copy served or
+   * refused, or null when none was. A minute is the ledger's grain, so this is
+   * the latest a use can have happened, never later than it could have.
+   */
+  lastActiveMs: number | null
   kinds: Partial<Record<StoredCopyKind, KindTally>>
   /** Entries that could not be read and were left out. */
   unreadable: number
@@ -207,7 +213,7 @@ const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(
 export async function readStoredCopyLedger(kv: LedgerKv, nowMs: number, windowMinutes: number): Promise<LedgerReading> {
   const newest = Math.floor(nowMs / MINUTE_MS)
   const oldest = newest - windowMinutes + 1
-  const reading: LedgerReading = { activeMinutes: 0, kinds: {}, unreadable: 0 }
+  const reading: LedgerReading = { activeMinutes: 0, lastActiveMs: null, kinds: {}, unreadable: 0 }
   const active = new Set<number>()
   let cursor: string | undefined
   do {
@@ -239,6 +245,7 @@ export async function readStoredCopyLedger(kv: LedgerKv, nowMs: number, windowMi
     cursor = page.list_complete ? undefined : page.cursor
   } while (cursor)
   reading.activeMinutes = active.size
+  if (active.size > 0) reading.lastActiveMs = Math.min(nowMs, (Math.max(...active) + 1) * MINUTE_MS - 1)
   return reading
 }
 
