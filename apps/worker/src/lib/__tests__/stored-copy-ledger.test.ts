@@ -219,7 +219,7 @@ describe('reading the ledger back', () => {
   it('adds up every isolate, and counts each minute with any activity once', async () => {
     const kv = ledgerKv()
     const minute = Math.floor(T0 / MINUTE)
-    const entry = (m: number, served: number) => ({ m, k: { workflow_definition: { s: served, r: {}, a: 60_000 } } })
+    const entry = (m: number, served: number) => ({ m, k: { workflow_definition: { s: served, r: [], a: 60_000 } } })
     await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute}:isolate-a`, '', { metadata: entry(minute, 3) })
     await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute}:isolate-b`, '', { metadata: entry(minute, 4) })
     await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute - 2}:isolate-a`, '', { metadata: entry(minute - 2, 1) })
@@ -232,7 +232,7 @@ describe('reading the ledger back', () => {
   it('leaves out minutes before the window, which the key expiry would remove anyway', async () => {
     const kv = ledgerKv()
     const minute = Math.floor(T0 / MINUTE)
-    await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute - 5}:isolate-a`, '', { metadata: { m: minute - 5, k: { env_vars: { s: 9, r: {}, a: 0 } } } })
+    await kv.put(`${STORED_COPY_LEDGER_PREFIX}${minute - 5}:isolate-a`, '', { metadata: { m: minute - 5, k: { env_vars: { s: 9, r: [], a: 0 } } } })
     const reading = await readStoredCopyLedger(asKv(kv), T0, 5)
     expect(reading.activeMinutes).toBe(0)
     expect(reading.kinds).toEqual({})

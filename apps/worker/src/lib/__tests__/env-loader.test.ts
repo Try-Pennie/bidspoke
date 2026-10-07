@@ -491,6 +491,29 @@ describe('loadEnvVars: workflow scoped variables (#1681)', () => {
     expect(kv.store.size).toBe(0)
   })
 
+  it("withholds a workflow's own keys when KV fails to hand back the workflow copy, rather than failing the lead", async () => {
+    const T0 = Date.parse('2026-10-07T12:00:00Z')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      vi.setSystemTime(T0)
+      const kv = fakeKv()
+      await loadEnvVars(ORG, kv, filteringSupabase(ROWS), KEY, { workflowId: WF_A })
+      for (const k of [...kv.store.keys()]) if (!k.endsWith('-lastgood')) kv.store.delete(k)
+      const failing = Object.assign(Object.create(kv) as typeof kv, {
+        getWithMetadata: async (k: string) => {
+          if (k === `env-vars-${ORG}-workflow-scoped-lastgood`) throw new Error('KV GET failed: 500')
+          return kv.getWithMetadata(k)
+        },
+      }) as typeof kv
+      const down = filteringSupabase([], { message: 'pool exhausted' })
+      expect(await loadEnvVars(ORG, failing, down, KEY, { workflowId: WF_A })).toEqual({ API_URL: '', SHARED: 'org-shared', ONLY_A: '' })
+    } finally {
+      logged.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it("withholds a workflow's own keys when its workflow copy is past the maximum age, while the org copy is fresh (#1847)", async () => {
     const T0 = Date.parse('2026-10-07T12:00:00Z')
     vi.useFakeTimers({ toFake: ['Date'] })

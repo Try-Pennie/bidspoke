@@ -838,14 +838,14 @@ describe('partner config last-good fallback during a DB outage (#1296)', () => {
     }
   })
 
-  it('still refuses when the read fails and there is no last-good copy', async () => {
+  it('still refuses when the read fails and there is no last-good copy, saying it could not be read rather than not found', async () => {
     const { kv } = recordingKv()
     await expect(executePartnerBidNode(
       makeNode({ partner_id: 'partner-1' }),
       makeCtx({ debt_amount: 10000 }),
       makeEnv({ WORKFLOW_CACHE: kv }),
       makeDbDownSupabase() as never,
-    )).rejects.toThrow('Partner config not found')
+    )).rejects.toThrow(/partner config partner-1 could not be read .*and there is no stored copy to use/)
   })
 
   it('writes the last-good copy when the row changes, and not again while it is unchanged', async () => {
