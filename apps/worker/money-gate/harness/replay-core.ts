@@ -22,6 +22,7 @@ import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
+import { waitAtMost } from '../lib/wait-at-most'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
 
@@ -496,9 +497,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     if (hooks.postResponseLimitMs === undefined) {
       await settled
     } else {
-      let cut: ReturnType<typeof setTimeout> | undefined
-      await Promise.race([settled, new Promise<void>((resolve) => { cut = setTimeout(resolve, hooks.postResponseLimitMs) })])
-      if (cut !== undefined) clearTimeout(cut)
+      await waitAtMost(settled, hooks.postResponseLimitMs)
     }
     response = { status: result.status, body: result.response, headers: result.responseHeaders }
   } catch (err) {

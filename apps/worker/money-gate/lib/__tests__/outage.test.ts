@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { waitAtMost } from '../wait-at-most'
 import {
   OUTAGE_DRILL_TIMEOUT_MS,
   OUTAGE_SHAPES,
@@ -292,9 +293,11 @@ describe('lateAnswer', () => {
 describe('the drill has room to finish (#1851)', () => {
   const workflowMinutes = (file: string): number => {
     const text = readFileSync(join(__dirname, '..', '..', '..', '..', '..', '.github', 'workflows', file), 'utf8')
-    const m = /timeout-minutes:\s*(\d+)/.exec(text)
-    if (!m) throw new Error(`${file} names no timeout-minutes`)
-    return Number(m[1])
+    // One job per file, so its one limit is the drill's; a second job would make
+    // the first limit found possibly someone else's.
+    const all = [...text.matchAll(/timeout-minutes:\s*(\d+)/g)]
+    if (all.length !== 1) throw new Error(`${file} names ${all.length} timeout-minutes, not the one drill job's`)
+    return Number(all[0][1])
   }
 
   it('gives the drill well over its measured run time, and ends it inside each job, so a slow run fails with a verdict', () => {
@@ -304,6 +307,35 @@ describe('the drill has room to finish (#1851)', () => {
     for (const file of ['outage-drill.yml', 'outage-drill-weekly.yml']) {
       // Install, build and the report upload need minutes of their own.
       expect(OUTAGE_DRILL_TIMEOUT_MS + 4 * 60_000).toBeLessThanOrEqual(workflowMinutes(file) * 60_000)
+    }
+  })
+})
+
+describe('waiting at most a while for post-response work (#1851)', () => {
+  it('returns when the work settles, and when the limit passes first, leaving no timer behind either way', async () => {
+    vi.useFakeTimers()
+    try {
+      await waitAtMost(Promise.resolve(), 250)
+      expect(vi.getTimerCount()).toBe(0)
+      let done = false
+      const hung = waitAtMost(new Promise<void>(() => {}), 250).then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(249)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await hung
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears its timer when the work rejects, and passes the rejection on', async () => {
+    vi.useFakeTimers()
+    try {
+      await expect(waitAtMost(Promise.reject(new Error('post-response write failed')), 250)).rejects.toThrow('post-response write failed')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

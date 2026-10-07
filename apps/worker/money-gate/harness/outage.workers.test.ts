@@ -17,13 +17,17 @@
  *  3. The twin: from that state, run the lead with the database up.
  *  4. For each outage shape (outage.ts), from that same state, run the lead with
  *     the database failing: the engine is handed the Worker's own lead client
- *     over a network that refuses, answers 503, or answers an HTML 522.
+ *     over a network that refuses, answers 503, answers an HTML 522, or hangs
+ *     until the caller's own deadline aborts the request (#1851).
  *  5. Require the failing run to match its twin (outage.ts compareOutage), unless
- *     outage-exemptions.json names that flow's first difference with an open issue.
+ *     outage-exemptions.json names that flow's first difference with an open issue,
+ *     and in the hang to answer within HUNG_ANSWER_ALLOWANCE_MS of it (lateAnswer).
  *
  * Decisions are read from the engine's step observer, because a failing run
  * never writes its step rows. Every post-response retry waits on an injected
- * clock that answers at once, so no run waits in real time (L524).
+ * clock that answers at once. The hung shape is the exception: it waits out each
+ * lead's real deadlines, because how long the caller waits is what it measures
+ * (#1876 tracks moving those onto the drill's clock).
  *
  * Not drilled, named in README: test and shadow runs (not lead bearing), the
  * custom endpoint route (the replay calls the engine directly; its stored record
@@ -110,7 +114,7 @@ const RUN_DEADLINE_MS = 30_000
 async function withinDeadline<T>(what: string, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
   const late = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`outage drill: ${what} did not finish within ${RUN_DEADLINE_MS / 1000} s, so it waits on the database with no deadline; the drill stops here`)), RUN_DEADLINE_MS)
+    timer = setTimeout(() => reject(new Error(`outage drill: ${what} did not finish within ${RUN_DEADLINE_MS / 1000} s of real time, far past every deadline a lead waits on, so something in it waits with no deadline or one too long; the drill stops here`)), RUN_DEADLINE_MS)
   })
   try {
     return await Promise.race([work, late])
