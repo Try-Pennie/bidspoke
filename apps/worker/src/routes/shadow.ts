@@ -6,7 +6,6 @@ import { loadWorkflowDefinition, WorkflowNotFoundError } from '../engine/definit
 import { runReality, shadowRunRefusal } from '../engine/run-reality'
 import { createSupabaseClient } from '../lib/supabase'
 import { deployCompareCodeBundle } from '../lib/code-node-deployer'
-import { controlWordFromQuery } from '../lib/control-word'
 
 // Shadow mirror endpoint (Phase 4.3). Pipedream fires a fire-and-forget copy of
 // each real engine request here. We acknowledge with 204 once the checks below
@@ -36,11 +35,19 @@ const shadow = new Hono<{ Bindings: Env; Variables: Variables }>()
 shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
   const workflowId = c.req.param('workflow_id') as string
   const source = c.get('source')
-  // Default dry_run (all outbound stubbed). `?mode=stand_in` additionally lets
-  // Partner Bid resolve a deterministic bid (no outbound submission) so winner
-  // selection and routing are rehearsed too. See engine/shadow.ts and #232.
-  // Read as a fixed word, never as the sender's text (#1815).
-  const shadowMode = controlWordFromQuery(c.req, 'mode', ['stand_in']) ?? 'dry_run'
+  // Default dry_run (all outbound stubbed). An `X-Shadow-Mode: stand_in` header
+  // additionally lets Partner Bid resolve a deterministic bid (no outbound
+  // submission) so winner selection and routing are rehearsed too. See
+  // engine/shadow.ts and #232. A header, never the address: nothing a sender
+  // puts in a query string is read (#1815).
+  // An unknown value is refused rather than run as a dry run, so a misspelled
+  // stand_in cannot rehearse as a dry run and look like a run that bid nothing.
+  // The value itself is not echoed back.
+  const requestedMode = c.req.header('X-Shadow-Mode')
+  if (requestedMode !== undefined && requestedMode !== 'dry_run' && requestedMode !== 'stand_in') {
+    return c.json({ error: 'X-Shadow-Mode must be dry_run or stand_in, or be left out for dry_run' }, 400)
+  }
+  const shadowMode = requestedMode === 'stand_in' ? 'stand_in' : 'dry_run'
 
   let payload: unknown
   try {

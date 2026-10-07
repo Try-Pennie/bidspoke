@@ -53,10 +53,11 @@ const testEnv = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
-function request(workflowId: string, apiKey: string | undefined, body: unknown, query = '') {
+function request(workflowId: string, apiKey: string | undefined, body: unknown, extra: { query?: string; mode?: string } = {}) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey !== undefined) headers['X-API-Key'] = apiKey
-  return shadow.request(`/${workflowId}${query}`, { method: 'POST', headers, body: JSON.stringify(body) }, testEnv, mockCtx)
+  if (extra.mode !== undefined) headers['X-Shadow-Mode'] = extra.mode
+  return shadow.request(`/${workflowId}${extra.query ?? ''}`, { method: 'POST', headers, body: JSON.stringify(body) }, testEnv, mockCtx)
 }
 
 describe('POST /shadow/:workflow_id', () => {
@@ -88,17 +89,39 @@ describe('POST /shadow/:workflow_id', () => {
     })
   })
 
-  // The mode is the one word this route reads from the address, and only as a
-  // word from its own list (#1815): anything else is the default.
+  // The mode comes from a header, never the address (#1815): nothing a sender
+  // puts in a query string is read, a fixed word included.
   it.each([
-    ['?mode=stand_in', 'stand_in'],
-    ['?mode=dry_run', 'dry_run'],
-    ['?mode=Stand_In', 'dry_run'],
-    ['?mode=someone%40example.com', 'dry_run'],
-  ])('runs %s as a %s shadow', async (query, mode) => {
-    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, query)
+    ['stand_in', 'stand_in'],
+    ['dry_run', 'dry_run'],
+  ])('runs an X-Shadow-Mode of %s as a %s shadow', async (mode, expected) => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, { mode })
     expect(res.status).toBe(204)
-    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: mode })
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: expected })
+  })
+
+  it('runs a dry run when no mode is sent', async () => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 })
+    expect(res.status).toBe(204)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: 'dry_run' })
+  })
+
+  // A misspelled mode must not quietly rehearse as a dry run and look like a
+  // stand-in run that bid nothing.
+  it.each(['Stand_In', 'standin', 'someone@example.com'])('refuses an X-Shadow-Mode of %s by name, and runs nothing', async (mode) => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, { mode })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('dry_run')
+    expect(body.error).toContain('stand_in')
+    expect(body.error).not.toContain(mode)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('ignores a mode in the address', async () => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, { query: '?mode=stand_in' })
+    expect(res.status).toBe(204)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: 'dry_run' })
   })
 
   // #1708 part B: a shadow run's code runs on a compare bundle in the compare
