@@ -128,6 +128,19 @@ describe('leadRead on a lead client (#1844)', () => {
   })
 })
 
+// Plan A1 (Dan, 2026-10-07): no library retries on the reads a lead waits on,
+// including a read with no copy, which goes through the client directly. With
+// retries on, each such read in an outage waited 1, 2 and 4 s before failing.
+describe('a lead client never retries a read', () => {
+  it.each(['503', 'refuse'] as const)('answers a %s read on the plain query after one request', async (answer) => {
+    const net = network([answer, 'ok'])
+    const db = createLeadSupabaseClient(env, { fetch: net.fetch, deadline: manualDeadlines().deadline })
+    const res = await db.from('bid_matrix_rows').select('id')
+    expect(res.error).not.toBeNull()
+    expect(net.calls).toHaveLength(1)
+  })
+})
+
 describe('leadRead on any other client (#1844)', () => {
   afterEach(() => vi.unstubAllGlobals())
 
