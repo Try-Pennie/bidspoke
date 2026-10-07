@@ -94,12 +94,28 @@ describe('POST /shadow/:workflow_id', () => {
   it.each([
     ['stand_in', 'stand_in'],
     ['dry_run', 'dry_run'],
-    ['Stand_In', 'dry_run'],
-    ['someone@example.com', 'dry_run'],
   ])('runs an X-Shadow-Mode of %s as a %s shadow', async (mode, expected) => {
     const res = await request('wf-1', 'sk_test_key', { lead: 1 }, { mode })
     expect(res.status).toBe(204)
     expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: expected })
+  })
+
+  it('runs a dry run when no mode is sent', async () => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 })
+    expect(res.status).toBe(204)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ shadowMode: 'dry_run' })
+  })
+
+  // A misspelled mode must not quietly rehearse as a dry run and look like a
+  // stand-in run that bid nothing.
+  it.each(['Stand_In', 'standin', 'someone@example.com'])('refuses an X-Shadow-Mode of %s by name, and runs nothing', async (mode) => {
+    const res = await request('wf-1', 'sk_test_key', { lead: 1 }, { mode })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('dry_run')
+    expect(body.error).toContain('stand_in')
+    expect(body.error).not.toContain(mode)
+    expect(executeWorkflow).not.toHaveBeenCalled()
   })
 
   it('ignores a mode in the address', async () => {

@@ -73,7 +73,7 @@ creates the compare namespace if it is missing
 
 ## Stand-in bid sub-mode
 
-`shadow_mode: 'stand_in'` (triggered with the header `X-Shadow-Mode: stand_in`; the address's query string is never read, #1815) is
+`shadow_mode: 'stand_in'` (triggered with the header `X-Shadow-Mode: stand_in`; any other value is refused with a 400, and the address's query string is never read, #1815) is
 dry run plus one difference: a Partner Bid resolves a deterministic bid instead
 of returning a `shadow` skip, so downstream Bid Group, bid evaluation, and
 routing are exercised too — not just the pre-bid path (filters, eligibility,

@@ -40,7 +40,14 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
   // submission) so winner selection and routing are rehearsed too. See
   // engine/shadow.ts and #232. A header, never the address: nothing a sender
   // puts in a query string is read (#1815).
-  const shadowMode = c.req.header('X-Shadow-Mode') === 'stand_in' ? 'stand_in' : 'dry_run'
+  // An unknown value is refused rather than run as a dry run, so a misspelled
+  // stand_in cannot rehearse as a dry run and look like a run that bid nothing.
+  // The value itself is not echoed back.
+  const requestedMode = c.req.header('X-Shadow-Mode')
+  if (requestedMode !== undefined && requestedMode !== 'dry_run' && requestedMode !== 'stand_in') {
+    return c.json({ error: 'X-Shadow-Mode must be dry_run or stand_in, or be left out for dry_run' }, 400)
+  }
+  const shadowMode = requestedMode === 'stand_in' ? 'stand_in' : 'dry_run'
 
   let payload: unknown
   try {
