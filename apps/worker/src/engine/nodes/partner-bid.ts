@@ -36,6 +36,7 @@ import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger } from '../bid-logger'
 import { runRealityOf, shadowOf } from '../run-reality'
+import { leadRead } from '../../lib/lead-read-budget'
 
 // Re-exports — keep external imports stable.
 export { PartnerApiError } from '../partner-bid-error'
@@ -271,11 +272,7 @@ export async function executePartnerBidNode(
 
   // 1. Load partner config. A failed READ falls back to the last-good copy
   // (#1296); a row that is genuinely absent does not.
-  const { data: partner, error } = await supabase
-    .from('partner_configs')
-    .select(PARTNER_SELECT)
-    .eq('id', config.partner_id)
-    .single()
+  const { data: partner, error } = await readPartnerConfig(supabase, config.partner_id)
 
   let p: PartnerConfig
   if (!error && partner) {
@@ -719,3 +716,10 @@ export async function checkDedup(
   }
 }
 
+/**
+ * The partner config read for a bid. On a lead's client it is bounded and never
+ * retried, so a database outage reaches the last-good copy at once (#1844).
+ */
+export function readPartnerConfig(supabase: SupabaseClient, partnerId: string) {
+  return leadRead(supabase, supabase.from('partner_configs').select(PARTNER_SELECT).eq('id', partnerId).single(), 'partner config')
+}

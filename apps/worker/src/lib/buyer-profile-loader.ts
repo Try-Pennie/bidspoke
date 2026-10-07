@@ -32,6 +32,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
+import { leadRead } from './lead-read-budget'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
 export const BUYER_PROFILES_CACHE_TTL_SECONDS = 300
@@ -196,6 +197,15 @@ function shape(row: ProfileRow): LoadedBuyer {
 /** A cache hit whose KV get took longer than this is logged with its duration (#1632); a normal hit is 3 to 16 ms. */
 export const BUYER_PROFILES_SLOW_KV_GET_MS = 100
 
+/**
+ * The deadline on a lead's profile read (#1844). Tighter than the lead default
+ * because the read runs inside the buyer steps' own budgets, the tightest 800 ms,
+ * which must also hold the cache read before it and the last-good read after a
+ * failure (a test holds the sum inside every budget). Healthy reads, measured
+ * 2026-10-07: 1 in 100 under 396 ms.
+ */
+export const BUYER_PROFILES_READ_DEADLINE_MS = 500
+
 export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase: SupabaseClient, opts: LoadOptions = {}): Promise<BuyerProfilesSnapshot> {
   const now = opts.now ?? Date.now
   const getStarted = now()
@@ -249,11 +259,12 @@ export async function loadBuyerProfiles(orgId: string, kv: KVNamespace, supabase
 
 /** The one read of the profile tables, shaped and hashed. Throws on a failed read. */
 async function readSnapshot(orgId: string, supabase: SupabaseClient, now: () => number): Promise<BuyerProfilesSnapshot> {
-  const { data, error } = await supabase
-    .from('buyer_profiles')
-    .select(SELECT)
-    .eq('organization_id', orgId)
-    .eq('is_enabled', true)
+  const { data, error } = await leadRead(
+    supabase,
+    supabase.from('buyer_profiles').select(SELECT).eq('organization_id', orgId).eq('is_enabled', true),
+    'buyer profiles',
+    { deadlineMs: BUYER_PROFILES_READ_DEADLINE_MS }
+  )
   if (error) throw new Error(error.message)
 
   const rows = (data ?? []) as unknown as ProfileRow[]

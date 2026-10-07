@@ -26,7 +26,7 @@ import type { Env } from '../index'
 import { executeWorkflow, moneyRuntime, WorkflowLaneError } from '../engine/index'
 import { PUBLIC_WRONG_LANE_ERROR, WRONG_LANE_STATUS } from './lane-refusal'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
-import { createSupabaseClient } from '../lib/supabase'
+import { createLeadSupabaseClient, leadRead } from '../lib/lead-read-budget'
 import { isNotFoundError } from '../lib/api-error'
 import { sourceForApiKey } from '../lib/api-key-map'
 
@@ -77,6 +77,11 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     return c.json({ error: 'Method not allowed' }, 405)
   }
 
+  // One client for this lead: its reads that have a last-good copy are bounded
+  // and never retried, and once one fails the rest go straight to their copies
+  // (#1844).
+  const supabase = createLeadSupabaseClient(c.env)
+
   // Parse partner slug and path from URL: /tripoint/bidding → slug='tripoint', path='/bidding'
   const segments = new URL(c.req.url).pathname.split('/').filter(Boolean)
   if (segments.length < 1) {
@@ -100,19 +105,22 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
 
   // --- DB lookup on cache miss ---
   if (!endpoint) {
-    const supabase = createSupabaseClient(c.env)
-    const { data, error } = await supabase
-      .from('webhook_endpoints')
-      .select('id, workflow_id, source_name, is_active, workflows!inner(definition)')
-      .eq('subdomain', partner)
-      .eq('path', path)
-      .single<{
-        id: string
-        workflow_id: string
-        source_name: string
-        is_active: boolean
-        workflows: { definition: { trigger?: { config?: { auth_method?: string } } } }
-      }>()
+    const { data, error } = await leadRead(
+      supabase,
+      supabase
+        .from('webhook_endpoints')
+        .select('id, workflow_id, source_name, is_active, workflows!inner(definition)')
+        .eq('subdomain', partner)
+        .eq('path', path)
+        .single<{
+          id: string
+          workflow_id: string
+          source_name: string
+          is_active: boolean
+          workflows: { definition: { trigger?: { config?: { auth_method?: string } } } }
+        }>(),
+      'custom endpoint'
+    )
 
     // `.single()` returns PGRST116 when zero rows match — a genuine "not found".
     // Any OTHER error is a real DB failure: returning 404 here tells the lead
@@ -177,7 +185,6 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
   }
 
   const idempotencyKey = c.req.header('X-Idempotency-Key') ?? undefined
-  const supabase = createSupabaseClient(c.env)
 
   try {
     const result = await executeWorkflow(

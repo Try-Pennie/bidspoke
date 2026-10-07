@@ -3,7 +3,7 @@ import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
 import { executeWorkflow, moneyRuntime, WorkflowLaneError, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
-import { createSupabaseClient } from '../lib/supabase'
+import { createLeadSupabaseClient } from '../lib/lead-read-budget'
 import { PUBLIC_WRONG_LANE_ERROR, WRONG_LANE_STATUS } from './lane-refusal'
 
 const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -20,7 +20,8 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const supabase = createSupabaseClient(c.env)
+  // A client for this lead, so its reads with a last-good copy are bounded (#1844).
+  const supabase = createLeadSupabaseClient(c.env)
 
   try {
     const result = await executeWorkflow(
