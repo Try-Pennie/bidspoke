@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionRecord, updateExecutionRecord, flushStepLogs, NO_ROW_MATCHED_CODE, UPDATE_RETRY_DELAYS_MS } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord, flushStepLogs, NO_ROW_MATCHED_CODE, UPDATE_RETRY_DELAYS_MS, CREATE_RETRY_DELAYS_MS, FLUSH_RETRY_DELAYS_MS } from '../step-logger'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from '../../lib/stranded-executions'
+import {
+  PostResponseBudget,
+  POST_RESPONSE_BUDGET_MS,
+  DEAD_LETTER_RESERVE_MS,
+  FINALIZE_RESERVE_MS,
+} from '../../lib/post-response-budget'
+import { DB_WRITE_RETRY_DELAYS_MS } from '../../lib/db-retry'
+import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 
 // Total wall-clock the finalize ladder spans before it gives up.
 const ladderSpanMs = () => UPDATE_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)
@@ -413,33 +421,40 @@ describe('flushStepLogs stamping', () => {
 // HTTP 500 at 21:32:22, 21:32:24 and 21:32:31 UTC. The ladder was [2s, 5s], so
 // three attempts spanning seven seconds, and it was spent while the wobble was
 // still running. The run stranded, an alert fired, and the row sat at 'running'
-// for 30 minutes waiting for the drain. These retries live in a post-response
-// waitUntil, so the wall-clock they spend costs the lead nothing.
-describe('updateExecutionRecord: the ladder must outlast a real outage (#1113)', () => {
+// for 30 minutes waiting for the drain. #1113 then stretched the ladder to 112
+// seconds on the belief that post-response time was free; it is not (#1850).
+describe('updateExecutionRecord: a real outage, and the finalize ladder (#1113, #1850)', () => {
   // Measured from that incident: first 500 to last 500 was about 90 seconds.
   const OBSERVED_OUTAGE_MS = 90_000
 
-  it('still lands the finalize when the database is down for the observed outage', async () => {
-    vi.useFakeTimers()
-    try {
-      const startedAtMs = Date.now()
-      const keyedSelect = vi.fn(async () =>
-        Date.now() - startedAtMs < OBSERVED_OUTAGE_MS
-          ? { data: null, error: { code: 'PGRST002', message: 'schema cache' } }
-          : { data: [{ id: 'exec-1' }], error: null },
-      )
-      const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
-      const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: vi.fn().mockResolvedValue({ data: [], error: null }) })
-      const update = vi.fn().mockReturnValue({ eq: eqId })
-      const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+  // #1850 reverses #1113's sizing. The 112 second ladder could not outlast the
+  // observed outage anyway: Cloudflare cancels post-response work 30 seconds
+  // after the answer, so its later rungs and the dead letter behind them never
+  // ran. What the ladder owes now is to give up, with its error in hand, early
+  // enough for that dead letter to be written.
+  it('ends a 90 second outage with its error inside the budget, so the dead letter can follow', async () => {
+    const clock = new VirtualClock()
+    const budget = new PostResponseBudget(clock)
+    budget.arm()
+    const keyedSelect = vi.fn(async () =>
+      clock.now() < OBSERVED_OUTAGE_MS
+        ? { data: null, error: { code: 'PGRST002', message: 'schema cache' } }
+        : { data: [{ id: 'exec-1' }], error: null },
+    )
+    const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
+    const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: vi.fn().mockResolvedValue({ data: [], error: null }) })
+    const update = vi.fn().mockReturnValue({ eq: eqId })
+    const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
 
-      const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
-      await vi.advanceTimersByTimeAsync(ladderSpanMs() + 1_000)
+    const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, undefined, undefined, {
+      clock,
+      budget,
+      reserveMs: DEAD_LETTER_RESERVE_MS,
+    })
+    await clock.run()
 
-      expect(await p).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
+    expect((await p)?.code).toBe('PGRST002')
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
   })
 
   // LESSONS L77: an error classified as survivable must still be countable. The
@@ -566,5 +581,122 @@ describe('flushStepLogs redaction of the logs column', () => {
     const noLogs = { ...entryWithSsnInLogs(), logs: undefined }
     await flushStepLogs(client, [noLogs] as never, 'social_security_number')
     expect((rows[0][0] as { logs?: unknown }).logs).toBeUndefined()
+  })
+})
+
+// #1850: every ladder takes its time from an injected clock and stops at the
+// shared post-response cut-off, so the dead letter behind it is written before
+// Cloudflare cancels the request's waitUntil work.
+describe('post-response budget (#1850)', () => {
+  const down = { error: { code: 'PGRST002', message: 'schema cache' } }
+
+  function armedAt(clock: VirtualClock) {
+    const budget = new PostResponseBudget(clock)
+    budget.arm()
+    return budget
+  }
+
+  it('createExecutionRecord waits the CREATE ladder through the injected clock', async () => {
+    const clock = new VirtualClock()
+    const { client, insert } = clientWith([down])
+    const p = createExecutionRecord(client, record, undefined, { clock })
+    const settled = p.catch((e: Error) => e)
+    await clock.run()
+    expect(await settled).toBeInstanceOf(Error)
+    expect(clock.sleeps).toEqual(CREATE_RETRY_DELAYS_MS)
+    expect(insert).toHaveBeenCalledTimes(CREATE_RETRY_DELAYS_MS.length + 1)
+  })
+
+  it('createExecutionRecord gives up at its cut-off, leaving finalize its share', async () => {
+    const clock = new VirtualClock()
+    const budget = armedAt(clock)
+    const { client } = clientWith([down])
+    const late = clock.delay(POST_RESPONSE_BUDGET_MS - FINALIZE_RESERVE_MS - 3_000)
+    await clock.run()
+    await late
+    const p = createExecutionRecord(client, record, undefined, { clock, budget, reserveMs: FINALIZE_RESERVE_MS })
+    const settled = p.catch((e: Error) => e)
+    await clock.run()
+    const err = await settled
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('schema cache')
+    // Only the waits that end before the cut-off were taken.
+    expect(clock.sleeps).toEqual([CREATE_RETRY_DELAYS_MS[0]])
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - FINALIZE_RESERVE_MS)
+  })
+
+  it('flushStepLogs waits the FLUSH ladder through the injected clock', async () => {
+    const clock = new VirtualClock()
+    const insert = vi.fn().mockResolvedValue(down)
+    const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+    const p = flushStepLogs(client, [stepEntry], '', undefined, { clock })
+    await clock.run()
+    expect(await p).toContain('1/1 step rows failed')
+    expect(clock.sleeps).toEqual(FLUSH_RETRY_DELAYS_MS)
+  })
+
+  it('flushStepLogs does not start the row by row fallback past its cut-off, and says so', async () => {
+    const clock = new VirtualClock()
+    const budget = armedAt(clock)
+    const late = clock.delay(POST_RESPONSE_BUDGET_MS - FINALIZE_RESERVE_MS + 1)
+    await clock.run()
+    await late
+    const insert = vi.fn().mockResolvedValue(down)
+    const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+    const p = flushStepLogs(client, [stepEntry, { ...stepEntry, step_order: 2 }], '', undefined, {
+      clock,
+      budget,
+      reserveMs: FINALIZE_RESERVE_MS,
+    })
+    await clock.run()
+    const result = await p
+    // One batch attempt and nothing after it: no waits, no per row inserts.
+    expect(insert).toHaveBeenCalledTimes(1)
+    expect(clock.sleeps).toEqual([])
+    expect(result).toContain('2/2 step rows failed')
+    expect(result).toContain('post-response budget')
+  })
+
+  it('updateExecutionRecord waits the UPDATE ladder through the injected clock', async () => {
+    const clock = new VirtualClock()
+    const { client } = updateClientWith(down, { data: [] })
+    const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, undefined, undefined, { clock })
+    await clock.run()
+    expect((await p)?.code).toBe('PGRST002')
+    expect(clock.sleeps).toEqual(UPDATE_RETRY_DELAYS_MS)
+  })
+
+  it('updateExecutionRecord stops sleeping at its cut-off and returns the last error', async () => {
+    const clock = new VirtualClock()
+    const budget = armedAt(clock)
+    const late = clock.delay(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS - 2_500)
+    await clock.run()
+    await late
+    const { client } = updateClientWith(down, { data: [] })
+    const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, undefined, undefined, {
+      clock,
+      budget,
+      reserveMs: DEAD_LETTER_RESERVE_MS,
+    })
+    await clock.run()
+    expect((await p)?.code).toBe('PGRST002')
+    expect(clock.sleeps).toEqual(UPDATE_RETRY_DELAYS_MS.slice(0, 1))
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
+  })
+
+  it('a reconstruction after a missing row retries on the same clock and stops at the same cut-off', async () => {
+    const clock = new VirtualClock()
+    const budget = armedAt(clock)
+    const { client, insert } = reconClientWith(down)
+    const p = updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields, undefined, {
+      clock,
+      budget,
+      reserveMs: DEAD_LETTER_RESERVE_MS,
+    })
+    await clock.run()
+    expect((await p)?.code).toBe('PGRST002')
+    expect(clock.sleeps).toEqual(DB_WRITE_RETRY_DELAYS_MS)
+    expect(insert).toHaveBeenCalledTimes(DB_WRITE_RETRY_DELAYS_MS.length + 1)
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
   })
 })

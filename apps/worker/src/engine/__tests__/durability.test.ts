@@ -14,6 +14,9 @@ vi.mock('../../lib/slack', () => ({
 
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../../lib/slack'
 import { writeOutcome, writeObservability, recordOutcomeDeadLetter } from '../durability'
+import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
+import { DB_WRITE_RETRY_DELAYS_MS } from '../../lib/db-retry'
+import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 
 const PERMANENT = { code: '23502', message: 'not-null violation' } // permanent → no retry sleeps
 const supabase = {} as never
@@ -185,5 +188,66 @@ describe('recordOutcomeDeadLetter', () => {
       expect.objectContaining({ error_code: 'BIDSPOKE_NO_ROW_MATCHED' }),
       'https://app.test',
     )
+  })
+})
+
+// #1850: a tier-2 write that loses its row must still be dead-lettered before
+// Cloudflare cancels the request's waitUntil work, 30 seconds after the answer.
+describe('writeOutcome inside the post-response budget (#1850)', () => {
+  const DOWN = { code: 'PGRST002', message: 'schema cache' }
+
+  function budgetedDeps(kv: ReturnType<typeof fakeKv>) {
+    const clock = new VirtualClock()
+    const budget = new PostResponseBudget(clock)
+    budget.arm()
+    // The moment the window counter is written is the moment the loss is recorded.
+    const putAt: number[] = []
+    const put = kv.put
+    kv.put = vi.fn(async (k: string, v: string) => {
+      putAt.push(clock.now())
+      await put(k, v)
+    })
+    return { clock, putAt, d: { ...deps(kv), timing: { clock, budget, reserveMs: DEAD_LETTER_RESERVE_MS } } }
+  }
+
+  it('dead-letters a database down for the whole window before the deadline', async () => {
+    const kv = fakeKv()
+    const { clock, putAt, d } = budgetedDeps(kv)
+    const op = vi.fn(async () => ({ error: DOWN }))
+
+    const p = writeOutcome('lead_sightings.insert', op, d)
+    await clock.run()
+
+    expect((await p).error).toEqual(DOWN)
+    expect(clock.sleeps).toEqual(DB_WRITE_RETRY_DELAYS_MS)
+    expect(putAt.length).toBeGreaterThan(0)
+    expect(Math.max(...putAt)).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
+  })
+
+  it('lands without a dead letter when the database comes back halfway', async () => {
+    const kv = fakeKv()
+    const { clock, putAt, d } = budgetedDeps(kv)
+    const op = vi.fn(async () => (clock.now() < 5_000 ? { error: DOWN } : { error: null }))
+
+    const p = writeOutcome('lead_sightings.insert', op, d)
+    await clock.run()
+
+    expect((await p).error).toBeNull()
+    expect(putAt).toEqual([])
+  })
+
+  it('dead-letters a write that never answers, at the cut-off, as unconfirmed', async () => {
+    const kv = fakeKv()
+    const { clock, putAt, d } = budgetedDeps(kv)
+    const op = vi.fn(() => clock.hang())
+
+    const p = writeOutcome('lead_sightings.finalize', op, d)
+    await clock.run()
+
+    const { error } = await p
+    expect(error?.message).toContain('lead_sightings.finalize')
+    expect(error?.message).toContain('may still land')
+    expect(putAt.length).toBeGreaterThan(0)
+    expect(Math.min(...putAt)).toBe(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
   })
 })

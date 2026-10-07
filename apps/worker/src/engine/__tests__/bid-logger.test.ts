@@ -61,6 +61,18 @@ describe('makeBidLogger', () => {
     expect(c.pendingBidWrites).toHaveLength(1)
   })
 
+  // #1850: the row is written after the response on most runs, so its retry
+  // ladder takes the run's post-response budget from the context.
+  it('hands the write the run\'s retry timing', () => {
+    vi.mocked(recordBidAttempt).mockClear()
+    const c = ctx('sighting-1')
+    const timing = { reserveMs: 3_000 }
+    c.retryTiming = timing
+    makeBidLogger(supabase, c, 'api')({ partner_slug: 'tripoint', attempted_at_utc: AT })
+    expect(vi.mocked(recordBidAttempt).mock.calls[0][2]).toBeUndefined()
+    expect(vi.mocked(recordBidAttempt).mock.calls[0][3]).toBe(timing)
+  })
+
   it('a missing execution id is written as an empty string, as before, never undefined', () => {
     vi.mocked(recordBidAttempt).mockClear()
     const c = ctx('sighting-1')

@@ -42,6 +42,17 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
+import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
+import {
+  PostResponseBudget,
+  DEAD_LETTER_RESERVE_MS,
+  FINALIZE_RESERVE_MS,
+  realClock,
+  withReserve,
+  withinBudget,
+  type RetryClock,
+  type RetryTiming,
+} from '../lib/post-response-budget'
 import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
@@ -147,6 +158,11 @@ export interface EngineRuntime {
   lane: WorkflowLane
   config: SupabaseClient
   run: SupabaseClient
+  /**
+   * The clock the run's post-response retry ladders wait on (#1850). Absent in
+   * production, which uses real time; a test passes one it drives.
+   */
+  clock?: RetryClock
 }
 
 /** The bidding Worker's runtime: one client for config and run alike. */
@@ -183,6 +199,23 @@ export async function executeWorkflow(
   // through it, which is the same client in the money lane and never runs in
   // the ops lane.
   const { config: configDb, run: runDb } = runtime
+  // One deadline for every write this run makes after its response (#1850).
+  // Cloudflare cancels waitUntil work 30 seconds after the response, shared by
+  // every waitUntil of the request, so the ladders below share this budget
+  // rather than each carrying a span of its own. It starts when the response
+  // goes out (`postResponse.arm()` below); nothing before that is bounded here.
+  //   writeTiming: a write whose loss is dead-lettered stops retrying, and
+  //     stops waiting, DEAD_LETTER_RESERVE_MS before the deadline, so the dead
+  //     letter still fits.
+  //   beforeFinalizeTiming: the create and the step flush stop retrying earlier,
+  //     because finalize can rebuild a missing execution row by itself.
+  //   traceTiming: the step log re-flush after a rebuild, tier 1 with no dead
+  //     letter, may use the budget to its end.
+  const retryClock = runtime.clock ?? realClock
+  const postResponse = new PostResponseBudget(retryClock)
+  const writeTiming: RetryTiming = { clock: retryClock, budget: postResponse, reserveMs: DEAD_LETTER_RESERVE_MS }
+  const beforeFinalizeTiming = withReserve(writeTiming, FINALIZE_RESERVE_MS)
+  const traceTiming = withReserve(writeTiming, 0)
   // What kind of run this is, decided once (#1708).
   const reality = runRealityOfOptions(options, env)
 
@@ -313,7 +346,12 @@ export async function executeWorkflow(
     is_test: reality.isTest,
     parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
     resumed_from_execution_id: options.resumeFromExecutionId,
-  })
+  }, undefined, beforeFinalizeTiming)
+  // Whether the row above is known to exist, read by the finalize dead letter
+  // (#1850): a finalize lost on a row that exists leaves it at 'running' for the
+  // strand drain, and one lost on a row that was never created leaves nothing.
+  let executionRowConfirmed = false
+  executionRecordPromise.then(() => { executionRowConfirmed = true }, () => {})
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
@@ -336,7 +374,7 @@ export async function executeWorkflow(
   // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
   // lead_sighting_bids writes through writeOutcome so a loss after retries
   // dead-letters instead of vanishing into a log line.
-  const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL }
+  const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL, timing: writeTiming }
 
   // Awaited by the finalize block below: finalize UPDATEs the row this promise
   // INSERTs, and both run in waitUntil after the response is sent. Left
@@ -377,6 +415,9 @@ export async function executeWorkflow(
   // along on it. The circuit-breaker trip alert needs it to stay silent on Test
   // Runner runs (#547).
   stampRunReality(ctx, options)
+  // The lead_sighting_bids rows nodes write are usually still retrying after
+  // the response when the database is down, so they take the same budget.
+  ctx.retryTiming = writeTiming
   // A node that must never repeat a send refuses a recovery run (#1542): resume re-runs
   // every node from the entry, so it would post a click a second time.
   if (options.resumeFromExecutionId) ctx.recovery = 'resume'
@@ -551,9 +592,24 @@ export async function executeWorkflow(
   // Also: if we returned early due to continueExecution, the remaining walk
   // is still running. Chain the flush AFTER the walk fully completes so
   // post-response steps get their logs written too.
+  //
+  // #1850: the wait for the create and the flush stops at the write cut-off, so
+  // a database that never answers cannot hold finalize, and the dead letter
+  // behind it, past Cloudflare's limit. The walk itself is not raced here.
   const flushPromise: Promise<string | null> = walkPromiseCaught
-    .then(() => executionRecordPromise)
-    .then(() => flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }))
+    .then(() =>
+      withinBudget(
+        executionRecordPromise.then(() =>
+          flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }, beforeFinalizeTiming),
+        ),
+        writeTiming,
+      ),
+    )
+    .then((flushed) =>
+      flushed.settled
+        ? flushed.value
+        : 'the execution record and step rows did not answer within the post-response budget; they may still land, but nothing confirmed them',
+    )
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
       return formatErr(e)
@@ -569,6 +625,10 @@ export async function executeWorkflow(
     // Also keep idempotencyProcessing alive past the response so it can complete
     executionCtx.waitUntil(idempotencyProcessingPromise.catch(() => {}))
   }
+
+  // The response goes out when this function returns, with nothing awaited
+  // between here and there: Cloudflare's waitUntil clock starts now (#1850).
+  postResponse.arm()
 
   const completedAt = new Date().toISOString()
   const durationMs = Date.now() - new Date(startedAt).getTime()
@@ -715,7 +775,11 @@ export async function executeWorkflow(
         // insert, which failed, so it never ran and left no trace. Once the
         // parent row exists again we re-flush the queue below.
         let reconstructed = false
-        const finalizeError = await updateExecutionRecord(runDb, executionId, startedAt, {
+        // #1850: the finalize ladder stops at the write cut-off and the wait for
+        // it stops there too, so the dead letter below is written before
+        // Cloudflare cancels this work. An update still unanswered then is not
+        // cancelled and may land; it is dead-lettered as unconfirmed.
+        const finalized = await withinBudget(updateExecutionRecord(runDb, executionId, startedAt, {
           status: finalStatus,
           outcome,
           final_node_namespace: finalNodeNamespace,
@@ -748,7 +812,12 @@ export async function executeWorkflow(
           is_test: reality.isTest,
           parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
           resumed_from_execution_id: options.resumeFromExecutionId,
-        }, () => { reconstructed = true })
+        }, () => { reconstructed = true }, writeTiming), writeTiming)
+        const finalizeError = finalized.settled
+          ? finalized.value
+          : {
+              message: `workflow_executions (id=${executionId}): the finalize did not answer within the post-response budget; it may still land, but nothing confirmed it`,
+            }
 
         // #629: the base row was missing and has now been reconstructed, so the
         // FK that blocked the step-log inserts is satisfied. The original flush
@@ -762,7 +831,7 @@ export async function executeWorkflow(
             flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
               workflowId,
               isTest: reality.isTest,
-            })
+            }, traceTiming)
               .then((flushErr) => {
                 if (flushErr) {
                   console.error('[step-logger] step-log recovery re-flush reported errors', {
@@ -788,7 +857,7 @@ export async function executeWorkflow(
         // writeback uses rather than accepting the loss silently (#487).
         if (finalizeError && !reality.isTest) {
           executionCtx.waitUntil(
-            recordOutcomeDeadLetter('execution_finalize', finalizeError, { ...outcomeDeps, supabase: runDb }).catch((e) =>
+            recordOutcomeDeadLetter('execution_finalize', finalizeLossOf(finalizeError, executionRowConfirmed, executionId), { ...outcomeDeps, supabase: runDb }).catch((e) =>
               console.error('[durability] execution_finalize dead-letter failed:', e),
             ),
           )
@@ -891,7 +960,10 @@ export async function executeWorkflow(
           // would match zero rows and leave the winner is_winner=false forever.
           // These inserts are otherwise unawaited (registered here, not in the
           // walk), so this await is also what keeps them alive past teardown.
-          await Promise.allSettled(ctx.pendingBidWrites ?? [])
+          // #1850: bounded at the write cut-off, so a bid row that never
+          // answers cannot keep the sighting finalize (and its dead letter)
+          // waiting past Cloudflare's limit.
+          await withinBudget(Promise.allSettled(ctx.pendingBidWrites ?? []), writeTiming)
 
           await finalizeSighting(runDb, {
             sighting_id: sightingId,
@@ -989,6 +1061,22 @@ export async function executeWorkflow(
     status: executionStatus === 'completed' ? walkStatus : 500,
     traceId,
     responseHeaders: walkHeaders,
+  }
+}
+
+/**
+ * The error the execution_finalize dead letter carries (#1850). Its alert reads
+ * a finalize failure that is not a missing row as a row left at 'running',
+ * which the strand drain recovers. That holds only if the row was created: when
+ * the create never confirmed either (a database down for the whole window),
+ * there is no row for any drain to find, so the loss is reported as a missing
+ * row, which the alert words as a served lead with no audit record.
+ */
+function finalizeLossOf(error: DbError, rowConfirmed: boolean, executionId: string): DbError {
+  if (rowConfirmed || isNoRowMatchedError(error)) return error
+  return {
+    code: NO_ROW_MATCHED_CODE,
+    message: `workflow_executions (id=${executionId}): the execution record was never confirmed created, and finalize could not create it either: ${error.message}`,
   }
 }
 

@@ -15,7 +15,8 @@
 //    withDbRetry — an HTTP PATCH is not a PostgREST op).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { withDbRetry, isDuplicateError, toDbError, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, toDbError, DB_WRITE_RETRY_DELAYS_MS, type DbError } from '../lib/db-retry'
+import { withinBudget, type RetryTiming } from '../lib/post-response-budget'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
 
@@ -30,6 +31,13 @@ export interface OutcomeDeps {
   supabase: SupabaseClient
   orgId: string
   appUrl: string
+  /**
+   * The run's clock and post-response budget (#1850). When present the retry
+   * ladder stops at the cut-off and a write still unanswered there is
+   * dead-lettered as unconfirmed, so the dead letter lands before Cloudflare
+   * cancels the request's waitUntil work. Absent, nothing is bounded.
+   */
+  timing?: RetryTiming
 }
 
 // The deps an outcome-write function carries when its caller already holds the
@@ -77,14 +85,21 @@ export async function writeOutcome(
   // wasteful retry ladder, no dead-letter), but remember it so the caller's own
   // isDuplicateError check still sees it.
   let duplicate: DbError | null = null
-  const result = await withDbRetry(async () => {
+  const attempt = withDbRetry(async () => {
     const r = await op()
     if (r.error && isDuplicateError(r.error)) {
       duplicate = r.error
       return { error: null }
     }
     return r
-  })
+  }, DB_WRITE_RETRY_DELAYS_MS, deps.timing)
+  // A request that never answers would hold the dead letter past the platform's
+  // limit, so the wait stops at the cut-off. The request is not cancelled: the
+  // write may still land, which is why the loss is worded as unconfirmed.
+  const raced = await withinBudget(attempt, deps.timing)
+  const result: { error: DbError | null } = raced.settled
+    ? raced.value
+    : { error: { message: `${label}: no answer within the post-response budget; the write may still land, but nothing confirmed it` } }
 
   // A duplicate landed (success), and a clean success both do nothing to the
   // window counter: it must survive interleaved successes to count a partial

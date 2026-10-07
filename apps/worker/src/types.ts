@@ -8,6 +8,7 @@
 export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 export type { NodeType, NodeTraits } from '@bidspoke/node-types'
 import type { NodeType, WorkflowLane } from '@bidspoke/node-types'
+import type { RetryTiming } from './lib/post-response-budget'
 
 export interface WorkflowDefinition {
   id: string
@@ -169,6 +170,12 @@ export interface ExecutionContext {
    * doesn't race the inserts and match zero rows (#88). Populated lazily.
    */
   pendingBidWrites?: Promise<void>[]
+  /**
+   * The run's clock and post-response budget (#1850), for writes a node starts
+   * that may still be retrying after the response: the lead_sighting_bids rows.
+   * Stamped by executeWorkflow; absent outside a run, which leaves them unbounded.
+   */
+  retryTiming?: RetryTiming
   /**
    * Shadow execution mode. 'dry_run' runs the workflow logic but every outbound
    * node returns a stub instead of firing (no Salesforce/Equifax/partner/HTTP/KV

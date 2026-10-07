@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
+import type { RetryTiming } from '../lib/post-response-budget'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, deriveClickOffer, withClickOffer, type ProjectedBidAttempt } from './bid-log'
 import { resolveValue } from './context'
 import { readEquifaxOutcome, readEquifaxReportOutput } from './nodes/achieve-credit-report'
@@ -13,14 +14,16 @@ import { readEquifaxOutcome, readEquifaxReportOutput } from './nodes/achieve-cre
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
 // a bare withDbRetry (tests, one-off backfills). Re-exported convenience so each
-// write site stays a one-liner (#309).
+// write site stays a one-liner (#309). The retry timing (#1850) rides on the
+// deps when there are any, and is passed on its own by a writer that has none.
 function runOutcome(
   label: string,
   supabase: SupabaseClient,
   deps: OutcomeAlertDeps | undefined,
   op: () => Promise<{ error: DbError | null }>,
+  timing: RetryTiming | undefined = deps?.timing,
 ): Promise<{ error: DbError | null }> {
-  return deps ? writeOutcome(label, op, { ...deps, supabase }) : withDbRetry(op)
+  return deps ? writeOutcome(label, op, { ...deps, supabase, timing }) : withDbRetry(op, undefined, timing)
 }
 
 // Slack subtracted from execution start to derive the attempted_at_utc lower
@@ -408,6 +411,9 @@ export async function recordBidAttempt(
   supabase: SupabaseClient,
   input: BidAttemptInsert,
   deps?: OutcomeAlertDeps,
+  // #1850: the run's clock and post-response budget, for the bid logger, which
+  // carries no dead-letter deps.
+  timing?: RetryTiming,
 ): Promise<void> {
   const row = {
     sighting_id: input.sighting_id,
@@ -447,7 +453,7 @@ export async function recordBidAttempt(
       .from('lead_sighting_bids')
       .upsert(row, { onConflict: 'execution_id,partner_slug,attempted_at_utc', ignoreDuplicates: true })
     return { error: res.error }
-  })
+  }, timing ?? deps?.timing)
   if (error && !isDuplicateError(error)) {
     console.error('[lead-sightings] recordBidAttempt failed:', error.message)
   }

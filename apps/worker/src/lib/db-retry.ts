@@ -11,6 +11,7 @@
 // classification (shared with step-logger) and a PostgREST-only retry helper for
 // the writes that don't go through the Hyperdrive path.
 import { formatErr } from './format-error'
+import { waitToRetry, type RetryTiming } from './post-response-budget'
 
 export interface DbError {
   code?: string
@@ -126,11 +127,13 @@ export function toDbError(e: unknown): DbError {
 
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-// Retry delays for best-effort writes. These run inside waitUntil(), off the
-// request critical path, so the added wall-clock is free. The ladder mirrors the
-// execution-log CREATE ladder so it outlasts the same partition-purge
-// schema-cache reload window.
-export const DB_WRITE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
+// Retry delays for best-effort writes. On the engine path these run inside
+// waitUntil(), which Cloudflare cancels 30 seconds after the response, so the
+// wall clock is NOT free: the ladder plus its dead letter must fit the shared
+// post-response budget (lib/post-response-budget.ts, #1850). 14 seconds still
+// outlasts the partition-purge schema-cache reload (a few seconds), and the
+// caller's timing cuts it shorter when the run's budget is already spent.
+export const DB_WRITE_RETRY_DELAYS_MS = [2_000, 4_000, 8_000]
 
 /**
  * What a caller wants to happen when the write touched no row (#590).
@@ -205,13 +208,17 @@ export async function requireRowsAffected<T = unknown>(
 // Runs a PostgREST operation (one that resolves to `{ error }`), retrying on
 // transient errors and failing fast on permanent ones. Returns the final
 // `{ error }` so callers can branch (e.g. treat a duplicate as success).
+// `timing` supplies the clock and the post-response budget (#1850): a retry
+// whose wait would run past the cut-off is not made, and the last error is
+// returned instead so the caller's dead letter still has time to run.
 export async function withDbRetry(
   op: () => Promise<{ error: DbError | null }>,
-  delaysMs: number[] = DB_WRITE_RETRY_DELAYS_MS,
+  delaysMs: readonly number[] = DB_WRITE_RETRY_DELAYS_MS,
+  timing?: RetryTiming,
 ): Promise<{ error: DbError | null }> {
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
-    if (attempt > 0) await sleep(delaysMs[attempt - 1])
+    if (attempt > 0 && !(await waitToRetry(delaysMs[attempt - 1], timing))) break
     const { error } = await op()
     if (!error) return { error: null }
     if (isPermanentDbError(error)) return { error }
