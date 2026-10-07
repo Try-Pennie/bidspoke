@@ -131,8 +131,9 @@ describe('the stored copy count is written after the work that noted it (#1848)'
   it('after a cron, once every job it started has settled', async () => {
     const { env, IDEMPOTENCY } = makeEnv()
     sweepStoredCopies.mockImplementationOnce(async () => {
-      // Noted late in the job, as a loader reached after real I/O would.
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      // Noted after the handler returned and every queued microtask ran, as a
+      // loader reached after real I/O would. An ordering, not a wait on the clock.
+      await new Promise((resolve) => setTimeout(resolve, 0))
       noteStoredCopy({ copy: 'partner_config', outcome: 'served', ageMs: 60_000 })
       return { checked: 1, repaired: [], reconfirmed: [], failed: [] }
     })
