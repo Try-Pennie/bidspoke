@@ -11,8 +11,8 @@
  * metadata with when it was confirmed, and a read that FAILS bids from it. A
  * config that is genuinely gone is refused and its copy removed, never served.
  * Past STORED_COPY_MAX_AGE_MS the copy is refused by name, like every stored
- * copy. A read rewrites the copy only when its content changed or this isolate
- * last wrote it STORED_COPY_RECONFIRM_AFTER_MS ago, keeping KV inside one write
+ * copy. A read rewrites the copy only when it differs from the held copy or the
+ * held copy is STORED_COPY_RECONFIRM_AFTER_MS old, keeping KV inside one write
  * a second per key; the per minute stored copy sweep compares every held copy
  * with the database and rewrites one that differs or is due, so a matrix edit
  * reaches the copy within a minute and an idle copy never ages out on a healthy
@@ -25,7 +25,7 @@ import { isNotFoundError } from './api-error'
 import { formatErr } from './format-error'
 import { leadRead } from './lead-read-budget'
 import { fetchAllPaged } from './paginate'
-import { STORED_COPY_RECONFIRM_AFTER_MS, confirmedAt, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
+import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy } from './stored-copy-age'
 
 export interface MatrixDimension {
   name: string
@@ -135,36 +135,20 @@ export async function readBidMatrix(supabase: SupabaseClient, configId: string, 
   }
 }
 
-// The content digest this isolate last wrote, per copy, and when. Module state on
-// purpose, as in partner-last-good.ts: it lives as long as the isolate, which is
-// what keeps the write rate down.
-const matrixWritten = new Map<string, { digest: string; atMs: number }>()
-
-/** Forget what this isolate wrote, as a fresh isolate would. Tests only. */
-export function forgetBidMatrixWrites(): void {
-  matrixWritten.clear()
-}
-
-async function digestOf(text: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
-  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 /**
- * Write the copy, stamped as confirmed at `nowMs`, when its content changed
- * since this isolate last wrote it or that write is due to be confirmed again.
- * Never throws: the bid must not fail because the safety copy could not be written.
+ * Write the copy, stamped as confirmed at `nowMs`, when the held copy differs or
+ * is due to be confirmed again. Judged against the held copy itself rather than
+ * a record kept in the isolate, so the module holds no state. Never throws: the
+ * bid must not fail because the safety copy could not be written.
  */
 export async function rememberBidMatrix(kv: KVNamespace | undefined, configId: string, sellOff: boolean, matrix: BidMatrix, nowMs: number): Promise<void> {
   if (!kv) return
   const key = bidMatrixLastGoodKey(configId, sellOff)
   try {
     const value = JSON.stringify(matrix)
-    const digest = await digestOf(value)
-    const written = matrixWritten.get(key)
-    if (written && written.digest === digest && nowMs - written.atMs < STORED_COPY_RECONFIRM_AFTER_MS) return
+    const held = await readConfirmedCopy(kv, key)
+    if (held && held.value === value && !isDueForReconfirm(held.confirmedAt, nowMs)) return
     await kv.put(key, value, confirmedAt(nowMs))
-    matrixWritten.set(key, { digest, atMs: nowMs })
   } catch (e) {
     console.error(`[bid-matrix] last-good write failed for ${key}: ${formatErr(e)}`)
   }
@@ -174,7 +158,6 @@ export async function rememberBidMatrix(kv: KVNamespace | undefined, configId: s
 async function dropBidMatrixCopies(kv: KVNamespace | undefined, configId: string): Promise<void> {
   for (const sellOff of [false, true]) {
     const key = bidMatrixLastGoodKey(configId, sellOff)
-    matrixWritten.delete(key)
     if (!kv) continue
     try {
       if ((await kv.get(key)) !== null) await kv.delete(key)

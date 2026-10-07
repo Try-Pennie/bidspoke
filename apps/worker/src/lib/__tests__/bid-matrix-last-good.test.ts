@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import type { ExecutionContext } from '../../types'
 import { createLeadSupabaseClient } from '../lead-read-budget'
-import { bidMatrixLastGoodKey, forgetBidMatrixWrites, lookupMatrixBid } from '../bid-matrix-lookup'
+import { bidMatrixLastGoodKey, lookupMatrixBid } from '../bid-matrix-lookup'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
 
 const T0 = Date.UTC(2026, 9, 7, 12)
@@ -68,7 +68,6 @@ const lookup = (db: ReturnType<typeof database>, kv: Kv, nowMs: number, payload 
   lookupMatrixBid('c-1', payload, createLeadSupabaseClient(env, { fetch: db.fetch }), { kv: kv as unknown as KVNamespace, now: () => nowMs })
 
 beforeEach(() => {
-  forgetBidMatrixWrites()
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
