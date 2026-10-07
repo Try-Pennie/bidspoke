@@ -11,6 +11,7 @@ import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
+import { COPY_NOT_CLEARED_MESSAGE, copyCleared } from '../../lib/stored-copy'
 import { executeWorkflow, moneyRuntime, nodeExecutorForLane } from '../../engine/index'
 import { dashboardLaneRefusal, refuseRowOutsideLane } from '../lane-refusal'
 import { buildContext } from '../../engine/context'
@@ -434,10 +435,6 @@ workflows.put('/:id', async (c) => {
   if (updateBlocked) return updateBlocked
   if (!updated) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Drop the KV cache and bring the last-good copy up to this save (#1845), so
-  // a database outage straight after it runs the definition just saved.
-  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
-
   // Deploy code node scripts — run synchronously so errors surface in the save response
   const deployErrors: { namespace: string; error: string }[] = []
   if (body.definition) {
@@ -520,6 +517,13 @@ workflows.put('/:id', async (c) => {
     changed_by_name: email,
   })
 
+  // Drop the KV cache and bring the last-good copy up to this save (#1845), so
+  // a database outage straight after it runs the definition just saved. Last,
+  // after the deploy and the audit, so a KV failure cannot skip either for a
+  // save that has already committed.
+  if (!(await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
   return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined })
 })
 
@@ -641,12 +645,14 @@ workflows.patch('/:id', async (c) => {
 
   // A switch off leaves a copy that refuses (#1845): an outage must not run a
   // workflow somebody turned off.
-  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     is_active: body.is_active,
     folder_id: 'folder_id' in body ? body.folder_id : undefined,
     changed_by_name: email,
   })
+  if (!(await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
 
   return c.json(data)
 })
@@ -674,8 +680,10 @@ workflows.delete('/:id', async (c) => {
   )
   if (blocked) return blocked
 
-  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
+  if (!(await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
   return c.json({ ok: true })
 })
 
@@ -704,7 +712,9 @@ workflows.patch('/:id/test-payloads', async (c) => {
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
   // Every write to the row moves its stamp, which orders the last-good copy, so
   // the copy is brought up to it here too (#1845).
-  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
+  if (!(await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
   return c.json(data)
 })
 
@@ -849,11 +859,13 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   )
   if (restoreBlocked) return restoreBlocked
 
-  await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     restored_from_version: version.version_number,
     new_version: nextVersion,
   })
+  if (!(await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`))) {
+    return c.json({ error: COPY_NOT_CLEARED_MESSAGE }, 500)
+  }
 
   return c.json({ ok: true, version_number: nextVersion })
 })

@@ -219,6 +219,26 @@ describe('PUT /workflows/:id', () => {
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
+  // The save has committed by the time the caches are refreshed, so a KV failure
+  // there must not skip the audit of a change that happened, and the answer says
+  // what was saved and how to clear the copy (#1845).
+  it('still audits a committed save when the cache refresh fails, and says the save landed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    const newVersion = { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
+  })
+
   // Drain the promises handed to ctx.waitUntil so the backup .then/.catch settles.
   const drainWaitUntil = () =>
     Promise.all(mockCtx.waitUntil.mock.calls.map((call: unknown[]) => call[0]))
@@ -611,6 +631,22 @@ describe('PATCH /workflows/:id', () => {
     )
     await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
+  })
+
+  it('still audits a committed switch off when the cache refresh fails (#1845)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
+    const updated = { id: 'wf-1', name: 'Lead Routing', is_active: false, updated_at: '2026-01-01' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: updated }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toMatch(/saved.*save it again/i)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledTimes(1)
   })
 })
 
