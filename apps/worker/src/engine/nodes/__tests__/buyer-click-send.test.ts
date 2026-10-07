@@ -23,6 +23,7 @@ import {
   CLICK_CLAIM_DEADLINE_MS,
   CLICK_CLAIM_MARGIN_MS,
   CLICK_COUNT_RETRY_COST_MS,
+  CLICK_HOLD_RECORD_DEADLINE_MS,
   CLICK_POST_TIMEOUT_MS,
   CLICK_RUN_BUDGET_MS,
   classifyClickAnswer,
@@ -103,6 +104,8 @@ interface Harness {
   resolved: string[]
   holds: HeldClickRecord[]
   profileReads: number
+  /** Held click records started that never answer (holdHangs). */
+  holdsHanging: number
 }
 
 function harness(opts: {
@@ -131,6 +134,8 @@ function harness(opts: {
   cap?: number | null | 'none' | (() => Promise<ProfileRead>)
   /** The held click record write throws (#1552). */
   holdFails?: boolean
+  /** The held click record write never answers (#1849). */
+  holdHangs?: boolean
   /** The enabled profile's click delivery (#1639); absent means DEFAULT_DELIVERY, null means the profile holds none. */
   delivery?: ClickDelivery | null
 } = {}): Harness {
@@ -138,7 +143,7 @@ function harness(opts: {
   let now = NOW
   const h: Harness = {
     sold: [], freed: [], posts: [], members: opts.memberSet ?? new Set(opts.members ?? []), alerts: [], claims: [], logs: [],
-    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
+    saleKeys: [], counterNames: [], resolved: [], holds: [], profileReads: 0, holdsHanging: 0, adds: [], advance: (ms) => { now += ms }, deps: undefined as never,
   }
   const script: CounterAsk[] = opts.counter ?? (opts.addFails ? [{ kind: 'refused' }] : [])
   h.deps = {
@@ -224,6 +229,10 @@ function harness(opts: {
       return opts.alert ? opts.alert(a) : 'posted'
     },
     recordHold: async (hold) => {
+      if (opts.holdHangs) {
+        h.holdsHanging++
+        return new Promise<void>(() => undefined)
+      }
       if (opts.holdFails) throw new Error('record_held_click failed: relation does not exist')
       h.holds.push(hold)
     },
@@ -896,6 +905,30 @@ describe('a held claim is recorded so a person can find it on the partner page (
     expect(r.output.hold_record_error).toMatch(/relation does not exist/)
     expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown', hold_recorded: false })])
     expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && /relation does not exist/.test(String(l.error_message)))).toBe(true)
+  })
+
+  it('a record that runs out of time is reported as outcome unknown, not as not recorded, because it may have landed (#1849)', async () => {
+    const pending: Array<{ fn: () => void; ms: number }> = []
+    const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
+    const h = harness({ post: answer(503, 'down'), holdHangs: true, timers })
+    const p = run(h)
+    await vi.waitFor(() => expect(h.holdsHanging).toBe(1))
+    // The newest bound is the record's: it is set as the write starts.
+    const bound = pending[pending.length - 1]
+    expect(bound.ms).toBe(CLICK_HOLD_RECORD_DEADLINE_MS)
+    bound.fn()
+    const r = await p
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'unknown', hold_recorded: 'outcome_unknown' })
+    expect(r.output.hold_record_error).toMatch(/did not answer within/)
+    expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'outcome_unknown', hold_recorded: 'outcome_unknown' })])
+    expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'outcome_unknown')).toBe(true)
+  })
+
+  it('a record the database refused is reported as not recorded', async () => {
+    const h = harness({ post: answer(503, 'down'), holdFails: true })
+    await run(h)
+    expect(h.logs.some((l) => l.event === 'buyer_click_hold_record_failed' && l.hold_outcome === 'not_recorded')).toBe(true)
   })
 
   it('each held page says whether its hold was recorded, so the page never points at a list that lacks the click', async () => {

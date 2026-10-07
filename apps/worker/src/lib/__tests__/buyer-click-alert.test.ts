@@ -227,6 +227,18 @@ describe('a page about a held claim says where a person releases it (#1552)', ()
     }
   })
 
+  it('a held reason whose record ran out of time says it may or may not be listed, never that it could not be added (#1849)', () => {
+    for (const reason of HELD_CLICK_REASONS) {
+      const body = clickAlertMessage({ ...page, reason, hold_recorded: 'outcome_unknown' }, 'https://app.example').body
+      expect(body, reason).not.toMatch(/Release it under Held clicks/)
+      expect(body, reason).not.toMatch(/could not be added/)
+      expect(body, reason).toMatch(/did not answer in time, so it may or may not be on the Held clicks list on the liberty1 partner page/)
+      expect(body, reason).toMatch(/claim on prospect `a0B000000000001` for liberty1/)
+      expect(body, reason).toMatch(/next click on this prospect/)
+      expect(body, reason).toMatch(/execution linked below/)
+    }
+  })
+
   it('a held reason with no word on the record is treated as not recorded, never as listed', () => {
     const body = clickAlertMessage({ ...page, reason: 'outcome_unknown', hold_recorded: null }, 'https://app.example').body
     expect(body).not.toMatch(/Release it under Held clicks/)

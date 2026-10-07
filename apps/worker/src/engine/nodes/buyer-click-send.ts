@@ -74,7 +74,7 @@
  * before anything is claimed or sent.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { alertOverPercentOf, canonicalBodySha256, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
+import { DeadlineError, alertOverPercentOf, canonicalBodySha256, isCap, isHttpsUrl, partnerIdOf, pickClickRoute, successPatternOf, withDeadline, type ClickDelivery, type HeldClickReason, type PickedClickRoute, type SoldOn, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
@@ -84,7 +84,7 @@ import { addAskingOnceMore, addKnownRefused, ClickCounterClient, LeadSaleClient,
 import { loadBuyerProfiles, readBuyerClickDelivery } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
-import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason } from '../../lib/buyer-click-alert'
+import { productionClickAlert, type ClickAlert, type ClickAlertOutcome, type ClickPageReason, type HoldRecorded } from '../../lib/buyer-click-alert'
 import { log as structuredLog } from '../../lib/logger'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
@@ -246,9 +246,13 @@ export interface BuyerClickSendOutput {
   daily_lead_cap_ignored?: unknown
   claim_freed?: boolean
   pages: Array<{ reason: ClickPageReason; outcome: ClickAlertOutcome }>
-  /** Present only when the claim is held: whether the partner page's record of it was written (#1552). */
-  hold_recorded?: boolean
-  /** Why the record failed, when hold_recorded is false: the page sends the person here for it. */
+  /**
+   * Present only when the claim is held: whether the partner page's record of it
+   * was written (#1552), or outcome_unknown when the write ran out of time and
+   * may have landed (#1849).
+   */
+  hold_recorded?: HoldRecorded
+  /** Why the record failed or did not answer, when hold_recorded is not true: the page sends the person here for it. */
   hold_record_error?: string
   would_send_body_sha256?: string
   /** The profile route posted to (#1639); null until a route was chosen. */
@@ -737,9 +741,10 @@ class Run {
    * Bounded and caught like an alert: the click it records already happened, so a
    * failure is reported, never thrown. Answers whether the record landed, which the
    * page for this hold carries, so it points at the Held clicks list only when the
-   * list has the click.
+   * list has the click. A record that ran out of time may still land (the rpc is
+   * an idempotent upsert), so it answers outcome_unknown, never false (#1849).
    */
-  private async recordHold(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<boolean> {
+  private async recordHold(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<HoldRecorded> {
     try {
       await withDeadline(
         this.deps.recordHold({
@@ -751,10 +756,11 @@ class Run {
       this.out.hold_recorded = true
       return true
     } catch (err) {
-      this.out.hold_recorded = false
+      const recorded: HoldRecorded = err instanceof DeadlineError ? 'outcome_unknown' : false
+      this.out.hold_recorded = recorded
       this.out.hold_record_error = messageOf(err)
-      this.deps.log({ event: 'buyer_click_hold_record_failed', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, reason, error_message: messageOf(err) })
-      return false
+      this.deps.log({ event: 'buyer_click_hold_record_failed', step_namespace: this.node.namespace, partner_id: v.partnerId, partner_slug: v.slug, reason, hold_outcome: recorded === false ? 'not_recorded' : recorded, error_message: messageOf(err) })
+      return recorded
     }
   }
 
@@ -763,7 +769,7 @@ class Run {
   }
 
   /** holdRecorded: what recordHold answered for this page's hold, null for a page that holds no claim. */
-  private async page(v: Validated, reason: ClickPageReason, detail: string, holdRecorded: boolean | null): Promise<void> {
+  private async page(v: Validated, reason: ClickPageReason, detail: string, holdRecorded: HoldRecorded | null): Promise<void> {
     const outcome = await this.alert({
       kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail, hold_recorded: holdRecorded,
       workflow_id: this.ctx.trigger.workflow_id, trace_id: this.ctx.trigger.trace_id, at: this.deps.clock(),

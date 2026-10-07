@@ -175,8 +175,18 @@ export class ClaimTally {
 /** The attempt's reasons: every out reason, plus the rehearsal budget ending (a node reason, never recorded as an out reason). */
 export type AttemptReason = OutReason | 'rehearsal_deadline'
 
+/**
+ * What became of the buyer_sales copy (#1849): true when the row landed, false
+ * when it did not (the write was refused, or there was no copy to make), and
+ * outcome_unknown when the write ran out of time, since a write that timed out
+ * may still have landed. Either way the entry stays unmirrored in the ledger and
+ * the minute drain delivers it through the same idempotent rpc; nothing undoes
+ * a write that may have landed.
+ */
+export type MirrorOutcome = boolean | 'outcome_unknown'
+
 export type AttemptResult =
-  | { result: 'sold'; outcome: SaleOutcomeRecord; replay: boolean; mirrored: boolean }
+  | { result: 'sold'; outcome: SaleOutcomeRecord; replay: boolean; mirrored: MirrorOutcome }
   | { result: 'no_sale'; reason: AttemptReason; detail?: string; page?: boolean }
 
 /** How many times the in_doubt resolution may re-read the claim before giving up. */
@@ -285,7 +295,7 @@ export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps
 
   // ── 6. mirror ───────────────────────────────────────────────────────────────
   const mirrored = await mirrorQuietly(deps, entry)
-  if (mirrored) await step('mirrored')
+  if (mirrored === true) await step('mirrored')
   return { result: 'sold', outcome: call.record, replay: false, mirrored }
 }
 
@@ -513,15 +523,16 @@ async function releaseAnswered(deps: AttemptDeps, key: EntryKey, status: 'declin
   await freeQuietly(deps, generation)
   if (!released) return
   await step('released')
-  if (await mirrorQuietly(deps, released)) await step('mirrored')
+  if ((await mirrorQuietly(deps, released)) === true) await step('mirrored')
 }
 
-async function mirrorQuietly(deps: AttemptDeps, entry: LedgerEntry): Promise<boolean> {
+/** Never throws. A copy that ran out of time (a DeadlineError) may have landed, so it answers outcome_unknown, not false (#1849). */
+async function mirrorQuietly(deps: AttemptDeps, entry: LedgerEntry): Promise<MirrorOutcome> {
   try {
     await deps.mirror(entry)
     return true
-  } catch {
-    return false
+  } catch (err) {
+    return err instanceof DeadlineError ? 'outcome_unknown' : false
   }
 }
 
