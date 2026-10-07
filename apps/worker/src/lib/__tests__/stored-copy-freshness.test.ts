@@ -14,7 +14,7 @@
  * readings is the worst age a lead in an outage could meet, less KV's own
  * propagation delay (up to 60 seconds between locations), which the bound adds.
  *
- * The idle endpoint and partner are written ONCE, by a single lookup at the
+ * The idle endpoint, partner and bid matrix are written ONCE, by a single lookup at the
  * start, and then only the cron reaches them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -26,6 +26,7 @@ import { keepBuyerProfilesWarm } from '../buyer-profile-loader'
 import { endpointCopyOf, endpointLastGoodKey, writeEndpointLastGood } from '../endpoint-copies'
 import { partnerLastGoodKey, rememberPartnerLastGood } from '../partner-last-good'
 import { sweepStoredCopies, type SweepSources } from '../stored-copy-sweep'
+import { bidMatrixLastGoodKey, lookupMatrixBid, readBidMatrix } from '../bid-matrix-lookup'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS } from '../stored-copy-age'
 import { findStaleCopies } from '../stored-copy-signals'
 
@@ -77,6 +78,8 @@ const WORKFLOW_ROW = {
   updated_at: '2026-10-06T00:00:00.000000+00:00', deleted_at: null, workflow_versions: [{ id: 'ver-1', version_number: 1 }],
 }
 const PARTNER_ROW = { id: 'p-idle', slug: 'idle', is_active: true, updated_at: '2026-10-06T00:00:00+00:00' }
+const MATRIX_CONFIG = { id: 'c-idle', is_active: true, dimensions: [{ name: 'debt', payload_field: 'debt', column: 'row' }], last_synced_at: null }
+const MATRIX_ROWS = [{ id: 'r1', is_sell_off: false, row_id: null, row_low: 0, row_high: null, range_low: null, range_high: null, bid_amount: 10 }]
 
 /** A healthy database behind the real supabase-js client. */
 function healthyDb(): SupabaseClient {
@@ -86,6 +89,8 @@ function healthyDb(): SupabaseClient {
     partner_uuid_map: [{ uuid: 'u1', partner_slug: 'idle' }],
     partner_configs: [PARTNER_ROW],
     buyer_profiles: [],
+    partner_bid_configs: [MATRIX_CONFIG],
+    bid_matrix_rows: MATRIX_ROWS,
   }
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const table = new URL(String(input)).pathname.split('/').pop() ?? ''
@@ -102,6 +107,7 @@ const sources: SweepSources = {
   partners: async () => [{ id: PARTNER_ROW.id, updated_at: PARTNER_ROW.updated_at }],
   workflows: async () => [{ id: WF, updated_at: WORKFLOW_ROW.updated_at }],
   refreshWorkflow: async () => {},
+  bidMatrix: (configId, sellOff) => readBidMatrix(healthyDb(), configId, sellOff),
 }
 
 type Kv = ReturnType<typeof expiringKv>
@@ -113,6 +119,7 @@ const COPIES: Record<string, (kv: Kv) => unknown> = {
   'buyer profiles': (kv) => JSON.parse(kv.store.get(`buyer-profiles:${ORG}:lastgood`)?.value ?? '{}').loaded_at,
   'idle endpoint': (kv) => (kv.store.get(endpointLastGoodKey('idle', '/bidding'))?.metadata as { confirmed_at?: string } | null)?.confirmed_at,
   'idle partner': (kv) => (kv.store.get(partnerLastGoodKey(PARTNER_ROW.id))?.metadata as { confirmed_at?: string } | null)?.confirmed_at,
+  'idle bid matrix': (kv) => (kv.store.get(bidMatrixLastGoodKey(MATRIX_CONFIG.id, false))?.metadata as { confirmed_at?: string } | null)?.confirmed_at,
 }
 
 beforeEach(() => {
@@ -135,6 +142,7 @@ describe('on a healthy day, every stored copy stays well inside the maximum age 
     // The single lookup and bid that ever reach the idle endpoint and partner.
     await writeEndpointLastGood(asKv, 'idle', '/bidding', endpointCopyOf({ id: 'ep-idle', workflow_id: WF, source_name: 'idle', is_active: true }, null), Date.now())
     await rememberPartnerLastGood(asKv, PARTNER_ROW, Date.now())
+    await lookupMatrixBid(MATRIX_CONFIG.id, { trigger: { payload: { debt: 1 } } } as never, db, { kv: asKv })
 
     const worst: Record<string, number> = Object.fromEntries(Object.keys(COPIES).map((k) => [k, 0]))
     for (let minute = 0; minute < 180; minute++) {

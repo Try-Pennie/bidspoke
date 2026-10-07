@@ -150,7 +150,7 @@ export async function resolveBid(
         )
       }
       const useSellOff = typeof cfg?.use_sell_off === 'boolean' ? cfg.use_sell_off : false
-      const result = await lookupMatrixBid(configId, ctx, supabase, { use_sell_off: useSellOff })
+      const result = await lookupMatrixBid(configId, ctx, supabase, { use_sell_off: useSellOff, kv: env.WORKFLOW_CACHE })
       return {
         bid: result.bid,
         raw: null,

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { sweepSources, sweepStoredCopies, type SweepSources } from '../stored-copy-sweep'
 import { endpointHotKey, endpointLastGoodKey } from '../endpoint-copies'
 import { partnerLastGoodKey } from '../partner-last-good'
+import { bidMatrixLastGoodKey } from '../bid-matrix-lookup'
 import { workflowCopyKey } from '../../engine/definition-loader'
 import { STORED_COPY_RECONFIRM_AFTER_MS } from '../stored-copy-age'
 
@@ -59,9 +60,70 @@ function sources(over: Partial<SweepSources> = {}): SweepSources {
     partners: async () => [],
     workflows: async () => [],
     refreshWorkflow: vi.fn(async () => {}),
+    bidMatrix: async () => null,
     ...over,
   }
 }
+
+/**
+ * Bid matrix copies (#1849): a matrix has no single stamp that moves when a row
+ * changes, so the sweep reads each held copy's config and rows through the
+ * lookup's own reader and compares the content, every run.
+ */
+describe('sweepStoredCopies: bid matrix copies (#1849)', () => {
+  const NOW = Date.parse('2026-10-07T12:00:00Z')
+  const now = () => NOW
+  const stamp = (ageMs: number) => ({ confirmed_at: new Date(NOW - ageMs).toISOString() })
+  const matrix = (bid: number) => ({ config: { id: 'c-1', is_active: true, dimensions: [], last_synced_at: null }, rows: [{ id: 'r1', is_sell_off: false, row_id: null, row_low: 0, row_high: null, range_low: null, range_high: null, bid_amount: bid }] })
+  const OFFER = bidMatrixLastGoodKey('c-1', false)
+  const SELL_OFF = bidMatrixLastGoodKey('c-1', true)
+
+  it('rewrites a copy whose matrix changed, stamped now, and reads each side as its own', async () => {
+    const { kv, store, meta } = memoryKv({ [OFFER]: JSON.stringify(matrix(25)), [SELL_OFF]: JSON.stringify(matrix(5)) })
+    meta.set(OFFER, stamp(60_000))
+    meta.set(SELL_OFF, stamp(60_000))
+    const bidMatrix = vi.fn(async (_id: string, sellOff: boolean) => (sellOff ? matrix(5) : matrix(30)))
+    const r = await sweepStoredCopies(kv, sources({ bidMatrix }), { now })
+    expect(bidMatrix.mock.calls.map((c) => c.slice(0, 2)).sort()).toEqual([['c-1', false], ['c-1', true]])
+    expect(JSON.parse(store.get(OFFER)!)).toEqual(matrix(30))
+    expect(meta.get(OFFER)).toEqual({ confirmed_at: new Date(NOW).toISOString() })
+    expect(r.repaired).toEqual([OFFER])
+    // The unchanged side, confirmed a minute ago, is left as it is.
+    expect(meta.get(SELL_OFF)).toEqual(stamp(60_000))
+  })
+
+  it('confirms an unchanged copy that is due, and writes nothing for one confirmed inside the interval', async () => {
+    const { kv, meta, puts } = memoryKv({ [OFFER]: JSON.stringify(matrix(25)), [SELL_OFF]: JSON.stringify(matrix(5)) })
+    meta.set(OFFER, stamp(STORED_COPY_RECONFIRM_AFTER_MS))
+    meta.set(SELL_OFF, stamp(STORED_COPY_RECONFIRM_AFTER_MS - 1))
+    const r = await sweepStoredCopies(kv, sources({ bidMatrix: async (_id, sellOff) => (sellOff ? matrix(5) : matrix(25)) }), { now })
+    expect(r.reconfirmed).toEqual([OFFER])
+    expect(puts).toEqual([OFFER])
+  })
+
+  it('removes the copy of a config that is gone', async () => {
+    const { kv, store } = memoryKv({ [OFFER]: JSON.stringify(matrix(25)) })
+    const r = await sweepStoredCopies(kv, sources({ bidMatrix: async () => null }), { now })
+    expect(store.has(OFFER)).toBe(false)
+    expect(r.repaired).toEqual([OFFER])
+  })
+
+  it('leaves a copy alone when its matrix cannot be read, names it, and sweeps the rest', async () => {
+    const other = bidMatrixLastGoodKey('c-2', false)
+    const { kv, store } = memoryKv({ [OFFER]: JSON.stringify(matrix(25)), [other]: JSON.stringify(matrix(1)) })
+    const r = await sweepStoredCopies(kv, sources({ bidMatrix: async (id) => { if (id === 'c-1') throw new Error('database down'); return null } }), { now })
+    expect(store.get(OFFER)).toBe(JSON.stringify(matrix(25)))
+    expect(store.has(other)).toBe(false)
+    expect(r.failed).toEqual([expect.stringMatching(/bid-matrix-lastgood:c-1:offer.*database down/)])
+  })
+
+  it('deletes a key it cannot parse exactly, since no lookup reads it', async () => {
+    const odd = 'bid-matrix-lastgood:c-1:sideways'
+    const { kv, store } = memoryKv({ [odd]: '{}' })
+    await sweepStoredCopies(kv, sources(), { now })
+    expect(store.has(odd)).toBe(false)
+  })
+})
 
 describe('sweepStoredCopies: endpoint copies', () => {
   it('keeps a copy that matches its row', async () => {

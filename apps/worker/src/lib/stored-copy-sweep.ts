@@ -34,6 +34,12 @@
  *   route's own refreshWorkflowCaches when the row is gone, its stamp is newer
  *   than the copy's, or the copy is marked unverified. The refresh writes a
  *   refusing tombstone for a deleted or switched off workflow, never deletes.
+ * - Bid matrix copies (`bid-matrix-lastgood:`, #1849): no single stamp moves
+ *   when a matrix row changes, so each held copy's config and rows are read
+ *   through the lookup's own reader every run and compared by content: a copy
+ *   that differs is rewritten stamped now, one whose config is gone is deleted,
+ *   and an equal one is confirmed when due. No route retires these copies, so
+ *   this run is what bounds a matrix edit's reach into an outage, to a minute.
  *
  * The copies a healthy read rewrites (org env vars, partner constants, buyer
  * profiles) are rebuilt from the database by the prewarm in the same cron, so
@@ -47,6 +53,7 @@
 import { endpointCopyOf, endpointLastGoodKey, retireEndpointCopies, sameEndpointCopy } from './endpoint-copies'
 import { confirmedAt, isDueForReconfirm, readConfirmedCopy } from './stored-copy-age'
 import { partnerLastGoodKey, retirePartnerLastGood } from './partner-last-good'
+import { bidMatrixLastGoodKey, readBidMatrix, type BidMatrix } from './bid-matrix-lookup'
 import { postgresTimeMicros, refreshWorkflowCaches, workflowCopyKey } from '../engine/definition-loader'
 import { formatErr } from './format-error'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -75,6 +82,8 @@ export interface SweepSources {
   workflows(ids: string[]): Promise<StampedRow[]>
   /** Rewrite a workflow's caches and copy from its row. */
   refreshWorkflow(id: string): Promise<void>
+  /** A bid matrix config and one side of its rows, read as the lookup reads them; null when the config is gone. */
+  bidMatrix(configId: string, sellOff: boolean): Promise<BidMatrix | null>
 }
 
 export interface SweepResult {
@@ -92,6 +101,18 @@ export interface SweepResult {
 export const ENDPOINT_PREFIX = endpointLastGoodKey('', '').slice(0, -1)
 export const PARTNER_PREFIX = partnerLastGoodKey('')
 export const WORKFLOW_PREFIX = workflowCopyKey('')
+/** `bid-matrix-lastgood:`, taken from the key builder so the two cannot drift. */
+const MATRIX_PREFIX = `${bidMatrixLastGoodKey('', false).split(':')[0]}:`
+
+/** A matrix copy's config and side, read back through the key builder; null for a key no lookup writes. */
+function matrixCopyOf(key: string): { configId: string; sellOff: boolean } | null {
+  const rest = key.slice(MATRIX_PREFIX.length)
+  const cut = rest.lastIndexOf(':')
+  if (cut <= 0) return null
+  const configId = rest.slice(0, cut)
+  for (const sellOff of [false, true]) if (bidMatrixLastGoodKey(configId, sellOff) === key) return { configId, sellOff }
+  return null
+}
 
 /** Every key under `prefix`, all pages. Throws when KV does. The stale copy check lists with it too (#1848). */
 export async function listKeys(kv: KVNamespace, prefix: string): Promise<string[]> {
@@ -220,6 +241,39 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
     }
   })
 
+  await kind('bid matrix copies', async () => {
+    const keys = await listKeys(kv, MATRIX_PREFIX)
+    for (const key of keys) {
+      result.checked++
+      const subject = matrixCopyOf(key)
+      if (subject === null) {
+        // No lookup reads a key it cannot have written, so it is deleted exactly.
+        await repair(key, () => kv.delete(key))
+        continue
+      }
+      const held = await readConfirmedCopy(kv, key)
+      if (held === null) continue
+      let fresh: BidMatrix | null
+      try {
+        fresh = await sources.bidMatrix(subject.configId, subject.sellOff)
+      } catch (e) {
+        // A read that failed is not a config that is gone (L211): leave the copy.
+        result.failed.push(`${key}: ${formatErr(e)}`)
+        continue
+      }
+      if (fresh === null) {
+        await repair(key, () => kv.delete(key))
+        continue
+      }
+      const value = JSON.stringify(fresh)
+      if (value !== held.value) {
+        await repair(key, () => kv.put(key, value, confirmedAt(now())))
+      } else if (isDueForReconfirm(held.confirmedAt, now())) {
+        await reconfirm(key, value)
+      }
+    }
+  })
+
   return result
 }
 
@@ -264,5 +318,7 @@ export function sweepSources(supabase: SupabaseClient<Database>, kv: KVNamespace
     // paginate-ok: at most ID_CHUNK rows a request, one per id asked for.
     workflows: (ids) => inChunks(ids, (chunk) => supabase.from('workflows').select('id, updated_at').in('id', chunk)),
     refreshWorkflow: (id) => refreshWorkflowCaches(id, kv, supabase),
+    // The lookup's own reader, so the sweep compares exactly what a lead would copy.
+    bidMatrix: (configId, sellOff) => readBidMatrix(supabase as unknown as SupabaseClient, configId, sellOff),
   }
 }
