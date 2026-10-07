@@ -552,7 +552,7 @@ export const api = {
         deploy?: { deployed: boolean; skipped: boolean; error?: string }
       }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data) }),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
-      req<{ test_payloads: Array<{ name: string; payload: unknown }>; stored_copy_warning?: string }>(`/api/workflows/${id}/test-payloads`, {
+      req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',
         body: JSON.stringify({ test_payloads }),
       }),

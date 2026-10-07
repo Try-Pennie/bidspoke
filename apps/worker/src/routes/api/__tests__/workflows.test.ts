@@ -1569,8 +1569,11 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
-  it('answers saved payloads as saved, with a warning, when the cache refresh fails (#1845)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+  // Test payloads change nothing a live lead runs: a copy left holding the old
+  // payloads serves the same definition, so warning the person would be untrue.
+  // The failed refresh is logged, and the answer is the plain success.
+  it('answers saved payloads as saved, with no warning and a logged failure, when the cache refresh fails (#1845)', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -1579,9 +1582,9 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PATCH', '/workflows/wf-1/test-payloads', { body: payloadBody })
-    // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*save it again/i)
+    expect(await res.json()).toEqual({ test_payloads: payloadBody.test_payloads })
+    expect(logged.mock.calls.flat().join(' ')).toMatch(/workflow wf-1 caches could not be refreshed/)
   })
 })
 

@@ -2824,13 +2824,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       // failed, the formulas wouldn't be rewritten).
       const queuedRenames = pendingFormulaRenamesRef.current
       pendingFormulaRenamesRef.current = []
+      const rewriteFailures: string[] = []
       for (const rn of queuedRenames) {
         try {
           await api.workflows.renameApply(workflow.id, rn.oldNs, rn.newNs, rn.partner_ids)
         } catch (e) {
           // Don't block save UX — surface as a non-fatal banner.
           const msg = e instanceof Error ? e.message : 'Formula rewrite failed'
-          setSaveError(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
+          rewriteFailures.push(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
         }
       }
       // #92: if the user edited during the save window (any await above), the
@@ -2842,7 +2843,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setSavedSignatureToken((t) => t + 1)
       const { switchToView } = resolvePostSaveStateBySignature(savedSignature, currentSignatureRef.current)
 
-      const outcome = saveOutcomeMessage(result)
+      const outcome = saveOutcomeMessage(result, rewriteFailures)
       if (outcome) setSaveError(outcome)
       if (saveFinished(result)) {
         setSavedOk(true)

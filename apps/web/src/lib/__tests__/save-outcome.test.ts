@@ -54,3 +54,18 @@ describe('noChangesMessage', () => {
     expect(msg).toContain('A stored copy could not be refreshed.')
   })
 })
+
+// A save also rewrites partner formulas for renamed steps, and each rewrite can
+// fail on its own. One message carries every failure, so a stored copy warning
+// or a failed deploy never replaces a failed rewrite on screen.
+describe('saveOutcomeMessage with other failures from the same save', () => {
+  it('keeps a failed formula rewrite beside the stored copy warning', () => {
+    const msg = saveOutcomeMessage({ stored_copy_warning: 'A stored copy could not be refreshed.' }, ['Saved, but failed to rewrite partner formulas for a to b: boom'])
+    expect(msg).toContain('failed to rewrite partner formulas for a to b')
+    expect(msg).toContain('A stored copy could not be refreshed.')
+  })
+
+  it('reports a failed rewrite on its own when the save was otherwise clean', () => {
+    expect(saveOutcomeMessage({}, ['Saved, but failed to rewrite partner formulas for a to b: boom'])).toBe('Saved, but failed to rewrite partner formulas for a to b: boom')
+  })
+})

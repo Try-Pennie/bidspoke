@@ -713,8 +713,10 @@ workflows.patch('/:id/test-payloads', async (c) => {
   if (!data) return c.json({ error: 'Workflow not found' }, 404)
   // Every write to the row moves its stamp, which orders the last-good copy, so
   // the copy is brought up to it here too (#1845).
-  const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
-  return c.json({ ...data, ...copyWarning(copyRefreshed) })
+  // Test payloads change nothing a live lead runs, so a copy still holding the
+  // old ones serves the same definition: the failure is logged, never warned.
+  await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
+  return c.json(data)
 })
 
 // GET /api/workflows/:id/versions

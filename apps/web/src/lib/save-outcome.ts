@@ -2,6 +2,8 @@
  * What the canvas tells the person after a save the server accepted: null when
  * everything landed, otherwise what landed and what did not (#1845). The save
  * itself succeeded in every case here, so each message starts from that.
+ * `otherFailures` are the save's own follow-on failures (a partner formula
+ * rewrite), kept in the one message so nothing here replaces them on screen.
  */
 export interface SaveResult {
   deploy_errors?: { namespace: string; error: string }[]
@@ -9,8 +11,8 @@ export interface SaveResult {
   stored_copy_warning?: string
 }
 
-export function saveOutcomeMessage(result: SaveResult): string | null {
-  const parts: string[] = []
+export function saveOutcomeMessage(result: SaveResult, otherFailures: string[] = []): string | null {
+  const parts: string[] = [...otherFailures]
   const failed = result.deploy_errors ?? []
   if (failed.length > 0) {
     const list = failed.map((e) => `${e.namespace}: ${e.error}`).join('\n')
