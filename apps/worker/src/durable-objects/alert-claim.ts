@@ -18,7 +18,7 @@
  * claim only decides who posts.
  *
  * The same object also answers "does this delivery of a cron tick run?" (#1899)
- * under `/tick-claim` and `/tick-done`; see TickClaimResult below.
+ * under `/tick-claim`, `/tick-done` and `/tick-release`; see TickClaimResult below.
  */
 
 interface ClaimStorage {

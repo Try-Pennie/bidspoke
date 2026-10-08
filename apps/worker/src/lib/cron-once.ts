@@ -139,6 +139,11 @@ async function settleTick(
  * error rethrown, so the invocation fails as it did before the claim existed,
  * Cloudflare can retry it, and a later delivery of the tick is not skipped on
  * the word of a run that never ran anything.
+ *
+ * If `jobs` threw PART way, after some jobs had already started, the retry runs
+ * those again. That is deliberate: in the scheduled handler the only throw that
+ * escapes is building the database client, before any job starts, and where it
+ * is not, running a job twice is the side to err on, never skipping it.
  */
 export async function runCronTickOnce(
   ns: DurableObjectNamespace | undefined,

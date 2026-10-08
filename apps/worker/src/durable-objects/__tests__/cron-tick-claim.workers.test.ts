@@ -41,11 +41,13 @@ describe('the cron tick claim in workerd (#1899)', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const minute = MINUTE + 60 * 60_000
-    void runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, () => new Promise(() => {}), { ...SLOW_OK, now: () => minute, holder: () => 'killed' })
-    await vi.waitFor(async () => {
-      const probe = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute + 36_000 }, async () => {}, { ...SLOW_OK, now: () => minute + 36_000 })
-      expect(probe).toBe('skipped')
-    })
+    // The jobs are called only once the claim is granted, so waiting on them
+    // proves the killed run holds the tick before anything else asks.
+    const killedJobs = vi.fn(() => new Promise<void>(() => {}))
+    void runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, killedJobs, { ...SLOW_OK, now: () => minute, holder: () => 'killed' })
+    await vi.waitFor(() => expect(killedJobs).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    const twin = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute + 36_000 }, async () => {}, { ...SLOW_OK, now: () => minute + 36_000 })
+    expect(twin).toBe('skipped')
     const retry = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute + TICK_RETRY_AFTER_MS + 1, holder: () => 'retry' })
     expect(retry).toBe('ran')
     const other = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '*/5 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute })
