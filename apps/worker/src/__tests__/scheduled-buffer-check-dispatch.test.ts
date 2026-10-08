@@ -39,7 +39,7 @@ async function fire(cron: string) {
   } as unknown as ExecutionContext
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+  void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
   await Promise.allSettled(waited)
 }
 

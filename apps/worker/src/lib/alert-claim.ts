@@ -46,7 +46,37 @@ export interface AlertClaimOptions {
 const realDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** What a raced call produced: an answer, a thrown error, or nothing in time. */
-type Raced<T> = { kind: 'ok'; value: T } | { kind: 'threw'; error: unknown } | { kind: 'timed_out' }
+export type Raced<T> = { kind: 'ok'; value: T } | { kind: 'threw'; error: unknown } | { kind: 'timed_out' }
+
+/**
+ * Races a call to a Durable Object against a deadline, the one implementation
+ * the alert claim and the cron tick claim (#1899) both use.
+ *
+ * Takes the work as a THUNK, not a promise, and calls it inside this async
+ * arrow. Looking the object up can throw OUTRIGHT rather than returning a
+ * rejected promise, and a promise handed in as an argument has already been
+ * built by the time this is entered, so such a throw would escape past the
+ * caller entirely. Calling it here makes every failure a rejection, and makes
+ * that true for the next call site too rather than for the ones that
+ * remembered (L30).
+ *
+ * The work arm is then folded into a value BEFORE the race, so a call that
+ * eventually rejects after losing has already had its rejection handled and
+ * cannot surface as an unhandled one long after the caller has moved on.
+ */
+export async function raceDeadline<T>(
+  work: () => Promise<T>,
+  deadlineMs: number,
+  delay: (ms: number) => Promise<void> = realDelay,
+): Promise<Raced<T>> {
+  const attempt = async (): Promise<T> => work()
+  const settled: Promise<Raced<T>> = attempt().then(
+    (value) => ({ kind: 'ok', value }),
+    (error: unknown) => ({ kind: 'threw' as const, error }),
+  )
+  const expired: Promise<Raced<T>> = delay(deadlineMs).then(() => ({ kind: 'timed_out' }))
+  return Promise.race([settled, expired])
+}
 
 export function makeAlertClaims(
   ns: DurableObjectNamespace,
@@ -56,27 +86,7 @@ export function makeAlertClaims(
   const deadlineMs = options.deadlineMs ?? CLAIM_DEADLINE_MS
   const delay = options.delay ?? realDelay
   const stub = (key: string) => ns.get(ns.idFromName(key))
-
-  // Takes the work as a THUNK, not a promise, and calls it inside this async
-  // arrow. Looking the object up can throw OUTRIGHT rather than returning a
-  // rejected promise, and a promise handed in as an argument has already been
-  // built by the time this is entered, so such a throw would escape past the
-  // caller entirely. Calling it here makes every failure a rejection, and makes
-  // that true for the next call site too rather than for the ones that
-  // remembered (L30).
-  //
-  // The work arm is then folded into a value BEFORE the race, so a call that
-  // eventually rejects after losing has already had its rejection handled and
-  // cannot surface as an unhandled one long after the check has moved on.
-  const race = async <T>(work: () => Promise<T>): Promise<Raced<T>> => {
-    const attempt = async (): Promise<T> => work()
-    const settled: Promise<Raced<T>> = attempt().then(
-      (value) => ({ kind: 'ok', value }),
-      (error: unknown) => ({ kind: 'threw' as const, error }),
-    )
-    const expired: Promise<Raced<T>> = delay(deadlineMs).then(() => ({ kind: 'timed_out' }))
-    return Promise.race([settled, expired])
-  }
+  const race = <T>(work: () => Promise<T>): Promise<Raced<T>> => raceDeadline(work, deadlineMs, delay)
 
   return {
     async claim(key, ttlSeconds) {
