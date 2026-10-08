@@ -950,6 +950,24 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
     expect(text).not.toMatch(/salesforce/i)
   })
 
+  // A step's name is its label, which anyone editing the canvas types. Slack reads
+  // <, > and & as markup, so a label like <!channel> would ping the whole channel.
+  it('escapes a step label so it cannot become a Slack mention or link', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: 'x',
+      run: {
+        workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
+        still_running: ['<!channel> & <https://evil.test|click> (patch_a)'],
+      },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('&lt;!channel&gt; &amp; &lt;https://evil.test|click&gt; (patch_a)')
+    expect(text).not.toContain('<!channel>')
+  })
+
   it('lists every step when more than one was still running', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
