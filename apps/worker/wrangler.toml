@@ -172,8 +172,9 @@ PARTNER_PROBE_ALERTS = "on"
 #                                    12 runs/day keeps well ahead. Its own trigger so
 #                                    it gets a full per-run subrequest budget.
 #                                    At :37, NOT :00: the top of the hour is the DB's
-#                                    busiest window (:00/:30 strand-recovery pg_cron
-#                                    runs 30s+ on the same table, stats refreshes,
+#                                    busiest window (the strand-recovery pg_cron job,
+#                                    at :00/:30 until #1884 and :27/:57 since, runs
+#                                    30s+ on the same table; stats refreshes,
 #                                    hourly SF sync) and this job's per-statement
 #                                    PostgREST budget lost that race every run.
 #   (The sightings buffer PURGE is not a Worker cron any more. It ran here on
@@ -185,8 +186,8 @@ PARTNER_PROBE_ALERTS = "on"
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
 #   "23 * * * *"    hourly          : execution archive to Snowflake (#871). Deliberately
-#                                    at :23: :00 and :30 carry the hourly partner sync and
-#                                    the every-30-minute pg_cron drain, 08:17 the timeout
+#                                    at :23: :00 carries the hourly partner sync, :27 and
+#                                    :57 the pg_cron strand drain (:00 and :30 until #1884), 08:17 the timeout
 #                                    audit (08:15 until #1884), and :37 the sightings export.
 #                                    This job reads execution_steps in bulk, which is the
 #                                    same table the timeout audit's percentile queries hit.
