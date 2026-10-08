@@ -73,6 +73,16 @@ describe('liftEngineTimers (#1872)', () => {
     }
   })
 
+  it('refuses a handler that is not a function by name, rather than recording a timer that did nothing', () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    try {
+      expect(() => h.setTimeout('alert(1)' as unknown as () => void, 5)).toThrow('setTimeout handler that is not a function')
+    } finally {
+      lift.restore()
+    }
+  })
+
   it('a timer cleared before it fires is not recorded', async () => {
     const h = host()
     const lift = liftEngineTimers(h, { floorMs: 5 })

@@ -51,11 +51,14 @@ export function liftEngineTimers(host: TimerHost, opts: { floorMs?: number } = {
   const fired: FiredTimer[] = []
 
   host.setTimeout = ((handler: unknown, ms?: number, ...args: unknown[]) => {
+    // Workers refuse a string handler, so the engine never sets one; one here is a fault, not a timer.
+    if (typeof handler !== 'function') throw new TypeError('money gate: a setTimeout handler that is not a function cannot be lifted')
+    const run = handler as (...a: unknown[]) => void
     const requestedMs = Number(ms ?? 0) || 0
     const where = setAt(new Error().stack)
     return realSetTimeout.call(globalThis, () => {
       fired.push({ kind: 'setTimeout', requestedMs, where })
-      if (typeof handler === 'function') (handler as (...a: unknown[]) => void)(...args)
+      run(...args)
     }, Math.max(requestedMs, floorMs))
   }) as typeof setTimeout
 
