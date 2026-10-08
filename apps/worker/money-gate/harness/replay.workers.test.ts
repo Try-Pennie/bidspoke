@@ -25,7 +25,7 @@ import { describeFiredTimers } from '../lib/engine-timers'
 import { compareTranscripts, formatDifferences, type FixtureRecord, type Transcript } from '../lib/compare'
 import type { WorkflowShape } from '../lib/shape'
 import { fixtureId } from '../lib/run-kinds'
-import { runPlan } from './replay-env'
+import { FIXED_TIME_MS, runPlan } from './replay-env'
 import { armsOf, definitions, hostBundles, recordFixture, runOnce, shapes, variantFiles, type GateEnv } from './replay-core'
 
 it('replays every fixture through the engine under test and writes the transcript', async () => {
@@ -141,3 +141,19 @@ it('gives the same record however slow the database is', async () => {
     await e.GATE_IO.fetch('https://gate/dispose', { method: 'POST' })
   }
 }, 900_000)
+
+/**
+ * A run asking for a real timer cut (postResponseLimitMs) while its engine timers
+ * are lifted is refused before anything global is replaced (#1872), so a caller's
+ * mistake cannot leave the next run with this one's fetch, clock or console.
+ */
+it('refuses a lifted run with a post-response cut before it touches anything global', async () => {
+  const e = env as unknown as GateEnv
+  const def = definitions[0]
+  const shape = shapes.workflows.find((w) => w.workflow_id === def.id) as WorkflowShape
+  const fetchBefore = globalThis.fetch
+  await expect(runOnce(e, def, { id: 'refused', seed: 'refused', kind: 'live' }, {}, { name: 'refused' }, {}, shape, { postResponseLimitMs: 1 }))
+    .rejects.toThrow('postResponseLimitMs needs engineTimers: real')
+  expect(globalThis.fetch).toBe(fetchBefore)
+  expect(Date.now()).not.toBe(FIXED_TIME_MS)
+})

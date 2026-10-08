@@ -22,7 +22,7 @@ import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
-import { liftEngineTimers, type FiredTimer, type TimerHost } from '../lib/engine-timers'
+import { liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
 import { waitAtMost } from '../lib/wait-at-most'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
@@ -405,6 +405,11 @@ export interface RunHooks {
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
 export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape, hooks: RunHooks = {}): Promise<RunResult> {
   const { id, seed } = spec
+  // Refused before anything global is replaced (#1872): waitAtMost cuts post-response
+  // work with a timer the lift would raise to the gate deadline.
+  if (hooks.engineTimers !== 'real' && hooks.postResponseLimitMs !== undefined) {
+    throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because its cut is a timer the lift would raise to the gate deadline')
+  }
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
 
@@ -485,11 +490,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(FIXED_TIME_MS))
   pinRandomness(seed)
-  // waitAtMost cuts post-response work with a timer the lift would stretch.
-  if (hooks.engineTimers !== 'real' && hooks.postResponseLimitMs !== undefined) {
-    throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because its cut is a timer the lift would raise to the gate deadline')
-  }
-  const lifted = hooks.engineTimers === 'real' ? null : liftEngineTimers(globalThis as unknown as TimerHost)
+  let lifted: LiftedTimers | null = null
   let timersFired: FiredTimer[] = []
 
   const partnerSecrets = (snapshot.tables.partner_configs ?? []).map((p) => p.cf_secret_key).filter((k): k is string => typeof k === 'string' && k.length > 0)
@@ -511,6 +512,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   let answeredMs: number | null = null
   let error: string | undefined
   try {
+    // Inside the try, so the finally puts back whatever the lift replaced.
+    if (hooks.engineTimers !== 'real') lifted = liftEngineTimers(globalThis as unknown as TimerHost)
     const ctx = createExecutionContext()
     // The runtime the bidding Worker's routes pass, built by the engine under test.
     if (hooks.before) await hooks.before(runEnv, db)
