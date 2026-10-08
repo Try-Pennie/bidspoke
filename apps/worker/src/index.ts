@@ -16,6 +16,7 @@ import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB } from './li
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
+import { runCronTickOnce } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
@@ -125,10 +126,11 @@ app.route('/shadow', shadow)
 // REST API — JWT authenticated
 app.route('/api', api)
 
-// Scheduled handler — dispatches on cron string (see wrangler.toml [triggers])
-export default {
-  fetch: app.fetch.bind(app),
-  scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): void {
+// The scheduled jobs, dispatched on the cron string (see wrangler.toml [triggers]).
+// Reached only through `scheduled` below, once the tick has been claimed (#1899).
+const scheduledJobs = {
+  /** Starts every job the cron names and returns their work, to be awaited. */
+  start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<unknown>[] {
     const supabase = createSupabaseClient(env)
     // Every job's work is tracked, so once it has all settled the stored copies
     // any of them served or refused (#1848) are counted, in one write.
@@ -877,7 +879,35 @@ export default {
           .catch((e) => console.error('[cron-heartbeat] check failed:', e))
       )
     }
-    // A cron that started nothing (a retired one) leaves nothing to count.
-    if (work.length > 0) platformCtx.waitUntil(Promise.allSettled(work).then(() => flushStoredCopyLedger(env.IDEMPOTENCY)))
+    return work
+  },
+}
+
+export default {
+  fetch: app.fetch.bind(app),
+  // Claims (cron expression, scheduled minute) before any job starts, and skips
+  // the whole invocation when another delivery of the same tick holds it (#1899):
+  // Cloudflare has delivered every tick twice since 2026-10-08 13:38 UTC. A retry
+  // of a killed run still runs, and a claim that cannot be asked fails open.
+  // The rule is in lib/cron-once.ts and on TICK_RETRY_AFTER_MS.
+  //
+  // The run is RETURNED as well as handed to waitUntil: if the jobs cannot even
+  // start (a throw building the database client), the invocation fails as it
+  // did before the claim, so Cloudflare can retry it, and the claim is released
+  // rather than marked done. The waitUntil copy is caught only so the failure
+  // is not reported twice.
+  scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<void> {
+    const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
+      const work = scheduledJobs.start(event, env, platformCtx)
+      await Promise.allSettled(work)
+      // A cron that started nothing (a retired one) leaves nothing to count.
+      // The count is bookkeeping, never a reason to run the jobs again.
+      if (work.length > 0) {
+        await flushStoredCopyLedger(env.IDEMPOTENCY)
+          .catch((e) => console.error('[stored-copy-ledger] flush after the scheduled run failed:', e))
+      }
+    }).then(() => undefined)
+    platformCtx.waitUntil(run.catch(() => undefined))
+    return run
   },
 }
