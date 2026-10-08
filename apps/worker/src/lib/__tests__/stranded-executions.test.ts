@@ -370,7 +370,7 @@ function makeSupabase(opts: {
   sightingsByExecutionId?: Record<string, { outcome: string | null }>
   sightingError?: { message: string } | null
 }) {
-  const updates: { id: string; payload: Record<string, unknown> }[] = []
+  const updates: { id: string; payload: Record<string, unknown>; filters: Record<string, unknown> }[] = []
   const stepLookups: string[] = []
   const stepLimitCalls: number[] = []
   const stepOrderCalls: { column: string; ascending: boolean }[] = []
@@ -407,18 +407,26 @@ function makeSupabase(opts: {
                 }),
               }),
             }),
-            update: (payload: Record<string, unknown>) => ({
+            update: (payload: Record<string, unknown>) => {
               // The real query ends in .select('id') so a zero-row match is
               // detectable rather than reported as a silent success (#583).
-              eq: (_col: string, id: string) => ({
+              // Every eq is recorded, so a test can see the filters an update used.
+              const filters: Record<string, unknown> = {}
+              const chain = {
+                eq: (col: string, value: unknown) => {
+                  filters[col] = value
+                  return chain
+                },
                 select: async () => {
-                  updates.push({ id, payload })
+                  const id = filters.id as string
+                  updates.push({ id, payload, filters })
                   if (opts.updateErrorForId === id) return { data: null, error: { message: 'update failed' } }
                   if (opts.updateMatchesNoRowsForId === id) return { data: [], error: null }
                   return { data: [{ id }], error: null }
                 },
-              }),
-            }),
+              }
+              return chain
+            },
           }
         }
         if (table === 'execution_steps') {
@@ -825,6 +833,9 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
     })
     // The journal is the engine's own record, so no step inference is needed.
     expect(stepLookups).toEqual([])
+    // Only a row still at running, in its own partition: a finalize that landed
+    // after the scan must not be overwritten by the journal.
+    expect(updates[0].filters).toEqual({ id: 'exec-j', started_at: journal.started_at, status: 'running' })
   })
 
   it('falls back to the existing evidence when there is no journal, or it cannot be read', async () => {

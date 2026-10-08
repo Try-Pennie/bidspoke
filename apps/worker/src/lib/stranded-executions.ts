@@ -318,13 +318,6 @@ async function loadSightingOutcome(
   return { outcome: (data as { outcome: string | null }).outcome ?? null }
 }
 
-/**
- * Finds workflow_executions rows stuck at status='running' past MIN_AGE_MINUTES
- * and finalizes them via resolveStrandedExecution. Bounded to MAX_PER_RUN per
- * invocation (matches the bounded-per-call pattern used elsewhere, e.g. the
- * sightings admin backfill) -- a large backlog catches up over a few runs
- * rather than risking one invocation's CPU/time budget.
- */
 export interface ReduceFinalizeOptions {
   /**
    * The run's answer journal (#1883): what the engine answered, written to KV at
@@ -346,6 +339,13 @@ async function journalFor(options: ReduceFinalizeOptions, executionId: string): 
   }
 }
 
+/**
+ * Finds workflow_executions rows stuck at status='running' past MIN_AGE_MINUTES
+ * and finalizes them via resolveStrandedExecution. Bounded to MAX_PER_RUN per
+ * invocation (matches the bounded-per-call pattern used elsewhere, e.g. the
+ * sightings admin backfill) -- a large backlog catches up over a few runs
+ * rather than risking one invocation's CPU/time budget.
+ */
 export async function runReduceFinalizeStrandedExecutions(
   supabase: SupabaseClient,
   options: ReduceFinalizeOptions = {},
@@ -402,6 +402,10 @@ export async function runReduceFinalizeStrandedExecutions(
               failed_step_type: journal.failed_step_type,
             })
             .eq('id', exec.id as string)
+            // Its own partition, and only while still at running: the run's own
+            // finalize can land after the scan read it, and must not be overwritten.
+            .eq('started_at', exec.started_at as string)
+            .eq('status', 'running')
             .select('id'),
         { onMiss: 'warn', context: { id: exec.id } },
       )
