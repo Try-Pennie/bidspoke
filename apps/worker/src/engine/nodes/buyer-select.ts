@@ -248,6 +248,16 @@ export interface AttemptTiming {
   mirror_ms?: number
 }
 
+/**
+ * Every object call an attempt's timing names, in the order they run, so the Stage B report can
+ * state each one (#1909). The check below fails to compile when a call is added to AttemptTiming
+ * and not here, so the report never silently leaves one out.
+ */
+export const ATTEMPT_CALLS = ['claim_ms', 'reserve_ms', 'breaker_ms', 'commit_ms', 'mark_sold_ms', 'release_ms', 'mirror_ms'] as const satisfies ReadonlyArray<keyof AttemptTiming>
+type AttemptCallField = Exclude<keyof AttemptTiming, 'before_call_ms' | 'call_ms' | 'after_call_ms'>
+const everyCallNamed: [AttemptCallField] extends [(typeof ATTEMPT_CALLS)[number]] ? true : never = true
+void everyCallNamed
+
 /** One `partner_bid` child step row, written by the walker under the node's id. */
 export interface BuyerAttemptRow {
   partner_slug: string

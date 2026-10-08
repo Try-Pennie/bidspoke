@@ -7,13 +7,14 @@
  * 2026-10-06 took a few dozen hand queries over tables purged within a week,
  * with the bid rows already gone for most of the period. This row outlives both.
  *
- * Computed from the rows the parity refresh already reads (no new read of
- * execution_steps), plus one read of Tripoint's bid rows for the day. Those
- * drain within about a day of export, so a day whose bid rows are no longer all
+ * Computed from the rows the parity refresh already reads, plus the canary
+ * attempts' own rows for where the node's time went call by call (#1909), and
+ * one read of Tripoint's bid rows for the day. The bid rows drain within
+ * about a day of export, so a day whose bid rows are no longer all
  * held is unmeasured, never a count of zero missing (L98, L90), and an
  * execution too recent for its bid row to have landed is settling, never
- * missing. A failed bid read marks that check unmeasured and leaves every other
- * figure, and the Stage A counts, standing (L73).
+ * missing. A failed bid or timing read marks that one figure unmeasured and
+ * leaves every other figure, and the Stage A counts, standing (L73).
  *
  * Not part of the counts hash: a sign off approves the Stage A counts, and a
  * Stage B figure moving must not clear it.
@@ -22,6 +23,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { easternDayStartUtc } from '@bidspoke/buyer-profile'
 import { nextIsoDate, type ParityExecution } from './buyer-select-parity'
 import { fetchAllPaged } from './paginate'
+import { ATTEMPT_CALLS } from '../engine/nodes/buyer-select'
 
 /** The buyer whose bid rows the report checks; the only buyer selling on the Engine flow. */
 export const STAGE_B_BUYER_SLUG = 'tripoint'
@@ -50,6 +52,47 @@ export interface StageBCanary extends StageBArm {
   own_p95_ms: number | null
   /** Attempts written before the call was timed: in the duration figures, not in the call or own figures. */
   buyer_call_unmeasured: number
+  /** Where the node's own time went, call by call, read from the attempt rows (#1909). */
+  timing: StageBTiming
+}
+
+/** One spread of milliseconds over the attempts that recorded it. Percentiles are null, never zero, over none. */
+export interface TimingSpread {
+  attempts: number
+  p50_ms: number | null
+  p95_ms: number | null
+  /** The sum, so each call's share of the overhead can be read off one row. */
+  total_ms: number
+}
+
+/** An object call's name in the report: the node's timing field without its unit. */
+export type AttemptCallName = (typeof ATTEMPT_CALLS)[number] extends `${infer N}_ms` ? N : never
+
+export type StageBTiming =
+  | {
+      /** Attempt rows whose three phases could be read. */
+      attempts: number
+      /** From the attempt's start to the request leaving: the claim and the reservation. */
+      before_call: TimingSpread
+      /** The buyer call alone. */
+      call: TimingSpread
+      /** From the answer to the attempt's end: breaker, commit or release, mark sold and the mirror. */
+      after_call: TimingSpread
+      /** Our own time around the call, before plus after, the figure the latency ceiling is about. */
+      overhead: TimingSpread
+      /** Each object call, over only the attempts that reached it, so an absent call is never a zero (L90). */
+      calls: Partial<Record<AttemptCallName, TimingSpread>>
+      /** Attempts written before the per call figures existed (#1835): in the phases, in no call. */
+      calls_unmeasured: number
+      /** Rows whose phases could not be read, left out of every figure rather than read as zero (L11). */
+      unreadable: number
+    }
+  | { unmeasured: string }
+
+/** One live attempt row's timing as stored, unread. */
+export interface AttemptTimingRow {
+  execution_id: string
+  timing: unknown
 }
 
 export type StageBBidRows =
@@ -104,7 +147,7 @@ function isLegacyAttempt(e: ParityExecution): boolean {
   return e.incumbent !== null && e.incumbent.skipped === false
 }
 
-export function summariseStageB(executions: ParityExecution[], bids: StageBBids, settleBeforeMs: number, windowComplete: boolean): StageBCounts {
+export function summariseStageB(executions: ParityExecution[], bids: StageBBids, settleBeforeMs: number, windowComplete: boolean, timing: StageBTiming): StageBCounts {
   const percents = new Set<number>()
   const canaryCodes: Record<string, number> = {}
   const legacyCodes: Record<string, number> = {}
@@ -176,6 +219,7 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
       own_p50_ms: nearestRank(ownDurations, 0.5),
       own_p95_ms: nearestRank(ownDurations, 0.95),
       buyer_call_unmeasured: callUnmeasured,
+      timing,
     },
     legacy: {
       attempts: legacyAttempts,
@@ -187,6 +231,117 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
     added_p50_ms: minus(canaryP50, legacyP50),
     added_p95_ms: minus(canaryP95, legacyP95),
     bid_rows: 'rows' in bids ? bidCheck : { unmeasured: bids.unmeasured },
+  }
+}
+
+// ── The per call split (#1909) ────────────────────────────────────────────────
+
+const finiteMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+function spread(values: number[]): TimingSpread {
+  return { attempts: values.length, p50_ms: nearestRank(values, 0.5), p95_ms: nearestRank(values, 0.95), total_ms: values.reduce((a, b) => a + b, 0) }
+}
+
+const callName = (field: (typeof ATTEMPT_CALLS)[number]): AttemptCallName => field.slice(0, -'_ms'.length) as AttemptCallName
+
+export function summariseAttemptTiming(rows: AttemptTimingRow[]): StageBTiming {
+  const before: number[] = []
+  const call: number[] = []
+  const after: number[] = []
+  const overhead: number[] = []
+  const perCall = new Map<AttemptCallName, number[]>()
+  let callsUnmeasured = 0
+  let unreadable = 0
+  for (const row of rows) {
+    const t = row.timing
+    if (!isRecord(t) || !finiteMs(t.before_call_ms) || !finiteMs(t.call_ms) || !finiteMs(t.after_call_ms)) {
+      unreadable += 1
+      continue
+    }
+    before.push(t.before_call_ms)
+    call.push(t.call_ms)
+    after.push(t.after_call_ms)
+    overhead.push(t.before_call_ms + t.after_call_ms)
+    let named = 0
+    for (const field of ATTEMPT_CALLS) {
+      const ms = t[field]
+      if (!finiteMs(ms)) continue
+      named += 1
+      const name = callName(field)
+      perCall.set(name, [...(perCall.get(name) ?? []), ms])
+    }
+    if (named === 0) callsUnmeasured += 1
+  }
+  const calls: Partial<Record<AttemptCallName, TimingSpread>> = {}
+  for (const field of ATTEMPT_CALLS) {
+    const values = perCall.get(callName(field))
+    if (values) calls[callName(field)] = spread(values)
+  }
+  return {
+    attempts: before.length,
+    before_call: spread(before),
+    call: spread(call),
+    after_call: spread(after),
+    overhead: spread(overhead),
+    calls,
+    calls_unmeasured: callsUnmeasured,
+    unreadable,
+  }
+}
+
+export interface StageBTimingReadDeps {
+  /** The stored timing of every live buyer_select attempt row of the executions given, started inside [fromIso, toIso), every page. */
+  listAttemptTiming(executionIds: string[], fromIso: string, toIso: string): Promise<AttemptTimingRow[]>
+}
+
+/**
+ * Reads the day's canary attempts' timing. Its own failure boundary (L73): a failed read is
+ * unmeasured with the reason and leaves the rest of the row to be written, never zero attempts.
+ */
+export async function readStageBTiming(deps: StageBTimingReadDeps, executions: ParityExecution[], day: string): Promise<StageBTiming> {
+  const ids = executions.filter(isCanaryAttempt).map((e) => e.execution_id)
+  if (ids.length === 0) return summariseAttemptTiming([])
+  const from = new Date(easternDayStartUtc(day)).toISOString()
+  // The next Eastern day's own start, never start plus 24 hours, which is wrong on a clock change.
+  const to = new Date(easternDayStartUtc(nextIsoDate(day))).toISOString()
+  try {
+    return summariseAttemptTiming(await deps.listAttemptTiming(ids, from, to))
+  } catch (err) {
+    return { unmeasured: `the attempt rows could not be read: ${err instanceof Error ? err.message : 'non Error thrown'}` }
+  }
+}
+
+/** Executions asked for per query; at most a few attempt rows each, and the reader pages past the cap anyway. */
+export const TIMING_ID_SLICE = 200
+
+export function productionStageBTimingDeps(supabase: SupabaseClient): StageBTimingReadDeps {
+  return {
+    // About 25 canary attempts a day at 1 percent, one or two rows each; at a full
+    // live share a slice could pass PostgREST's 1,000 row cap, so every slice is
+    // paged in a stable order rather than trusted to fit (L24, L746).
+    listAttemptTiming: async (executionIds, fromIso, toIso) => {
+      const out: AttemptTimingRow[] = []
+      for (let i = 0; i < executionIds.length; i += TIMING_ID_SLICE) {
+        const slice = executionIds.slice(i, i + TIMING_ID_SLICE)
+        const rows = await fetchAllPaged<AttemptTimingRow>(
+          (from, to) => supabase
+            .from('execution_steps')
+            .select('execution_id, timing:output->timing')
+            .eq('step_type', 'partner_bid')
+            .in('execution_id', slice)
+            .not('output->timing', 'is', null)
+            .gte('execution_started_at', fromIso)
+            .lt('execution_started_at', toIso)
+            .order('execution_started_at', { ascending: true })
+            .order('id', { ascending: true })
+            .range(from, to),
+          'execution_steps attempt timing',
+          { maxPages: 20 },
+        )
+        out.push(...rows)
+      }
+      return out
+    },
   }
 }
 
