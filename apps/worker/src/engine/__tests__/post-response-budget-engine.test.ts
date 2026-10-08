@@ -172,7 +172,7 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps }
 }
 
-function makeKV(clock: VirtualClock, slowFirstJournalPut = false) {
+function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false) {
   const store = new Map<string, string>()
   const puts: Array<{ at: number; key: string }> = []
   let journalPuts = 0
@@ -183,7 +183,12 @@ function makeKV(clock: VirtualClock, slowFirstJournalPut = false) {
     },
     async put(k: string, v: string) {
       // A KV write that is slow to land, to prove two writes of one key keep their order.
-      if (slowFirstJournalPut && k.startsWith(ANSWER_JOURNAL_PREFIX) && journalPuts++ === 0) await clock.delay(20_000)
+      if (k.startsWith(ANSWER_JOURNAL_PREFIX)) {
+        const n = journalPuts++
+        if (slowFirstJournalPut && n === 0) await clock.delay(20_000)
+        // KV allows about one write a second to a key, and refuses the next one.
+        if (refuseSecondJournalPutOnce && n === 1) throw new Error('KV PUT failed: 429 Too Many Requests')
+      }
       puts.push({ at: clock.now(), key: k })
       store.set(k, v)
     },
@@ -201,11 +206,11 @@ function makeKV(clock: VirtualClock, slowFirstJournalPut = false) {
 async function run(
   availability: (clock: VirtualClock, table: string, op: string) => Availability,
   envExtra: Record<string, string> = {},
-  options: { slowFirstJournalPut?: boolean } = {},
+  options: { slowFirstJournalPut?: boolean; refuseSecondJournalPutOnce?: boolean } = {},
 ) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
-  const idempotency = makeKV(clock, options.slowFirstJournalPut)
+  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce)
   const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
@@ -580,6 +585,12 @@ describe('the answer is recorded at the answer (#1883)', () => {
 
   it('keeps the demoted journal when the first journal write is the slower one', async () => {
     const { idempotency, result } = await run(stepsHang, {}, { slowFirstJournalPut: true })
+    const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
+    expect(journal.status).toBe('degraded')
+  })
+
+  it('retries a journal write KV refused for writing the same key too soon', async () => {
+    const { idempotency, result } = await run(stepsHang, {}, { refuseSecondJournalPutOnce: true })
     const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
     expect(journal.status).toBe('degraded')
   })

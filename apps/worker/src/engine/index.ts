@@ -42,7 +42,7 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
-import { putAnswerJournal } from './unconfirmed-writes'
+import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
 import { redactPii, parsePiiFields } from './pii-redactor'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import {
@@ -869,27 +869,32 @@ export async function executeWorkflow(
         let journalWritten: Promise<void> = Promise.resolve()
         const journalAnswer = (status: string, runOutcome: string, message: string | undefined) => {
           if (reality.isTest) return
-          journalWritten = journalWritten.then(() =>
-            putAnswerJournal(env.IDEMPOTENCY, {
-              execution_id: executionId,
-              started_at: startedAt,
-              status,
-              outcome: runOutcome,
-              final_node_namespace: finalNodeNamespace,
-              final_node_id: finalNodeId,
-              completed_at: completedAt,
-              duration_ms: durationMs,
-              response_status: responseStatus,
-              response_body: journalBody(response, env.PII_REDACTION_FIELDS ?? ''),
-              error_message: message ?? null,
-              failed_step_type: resolveFailedStepType(definition.nodes, failedStep) ?? null,
-              ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
-              cost_usd: cost,
-              ...(fieldPresence ? { field_presence: fieldPresence } : {}),
-              ...(emailDropped ? { email_dropped: true } : {}),
-              written_at: new Date().toISOString(),
-            }).catch((e) => console.error('[answer-journal] write failed:', formatErr(e))),
-          )
+          const journal: AnswerJournal = {
+            execution_id: executionId,
+            started_at: startedAt,
+            status,
+            outcome: runOutcome,
+            final_node_namespace: finalNodeNamespace,
+            final_node_id: finalNodeId,
+            completed_at: completedAt,
+            duration_ms: durationMs,
+            response_status: responseStatus,
+            response_body: journalBody(response, env.PII_REDACTION_FIELDS ?? ''),
+            error_message: message ?? null,
+            failed_step_type: resolveFailedStepType(definition.nodes, failedStep) ?? null,
+            ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
+            cost_usd: cost,
+            ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+            ...(emailDropped ? { email_dropped: true } : {}),
+            written_at: new Date().toISOString(),
+          }
+          // KV takes about one write a second to a key, so a demotion written
+          // right after the first write can be refused: it is tried once more
+          // a second later, on the run's own clock.
+          journalWritten = journalWritten
+            .then(() => putAnswerJournal(env.IDEMPOTENCY, journal))
+            .catch(() => retryClock.sleep(1_100).then(() => putAnswerJournal(env.IDEMPOTENCY, journal)))
+            .catch((e) => console.error('[answer-journal] write failed:', formatErr(e)))
           executionCtx.waitUntil(journalWritten)
         }
         journalAnswer(finalStatus, outcome, finalErrorMessage)
