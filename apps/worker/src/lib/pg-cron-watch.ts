@@ -34,15 +34,6 @@ const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
 /**
- * The longest gap between runs a schedule can legitimately produce, in ms, or
- * null when this cannot tell.
- *
- * Deliberately conservative and deliberately partial. It recognises the shapes
- * pg_cron is actually used with here and refuses everything else, because a
- * wrong number is worse than an admitted gap: too small pages on a healthy job,
- * and too large is a staleness check that can never fire.
- */
-/**
  * The minutes past the hour a cron minute field fires on, sorted and distinct,
  * or null for anything malformed: a value past 59, a backwards range, a zero
  * step or an empty list member is refused rather than read generously.
@@ -69,6 +60,15 @@ function minutesOf(field: string): number[] | null {
   return out.size === 0 ? null : [...out].sort((a, b) => a - b)
 }
 
+/**
+ * The longest gap between runs a schedule can legitimately produce, in ms, or
+ * null when this cannot tell.
+ *
+ * Deliberately conservative and deliberately partial. It recognises the shapes
+ * pg_cron is actually used with here and refuses everything else, because a
+ * wrong number is worse than an admitted gap: too small pages on a healthy job,
+ * and too large is a staleness check that can never fire.
+ */
 export function expectedGapMs(schedule: string): number | null {
   const fields = schedule.trim().split(/\s+/)
   if (fields.length !== 5) return null

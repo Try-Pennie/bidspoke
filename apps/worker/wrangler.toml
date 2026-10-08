@@ -186,8 +186,8 @@ PARTNER_PROBE_ALERTS = "on"
 #                                    so a 1-min cadence keeps it warm)
 #   "23 * * * *"    hourly          : execution archive to Snowflake (#871). Deliberately
 #                                    at :23: :00 and :30 carry the hourly partner sync and
-#                                    the every-30-minute pg_cron drain, :15 the timeout
-#                                    audit, and :37 the sightings export.
+#                                    the every-30-minute pg_cron drain, 08:17 the timeout
+#                                    audit (08:15 until #1884), and :37 the sightings export.
 #                                    This job reads execution_steps in bulk, which is the
 #                                    same table the timeout audit's percentile queries hit.
 #   "*/15 * * * *" every 15 min : fill each Tripoint win with what the lead was
@@ -231,9 +231,9 @@ cpu_ms = 30000
 # "17 8 * * *" is the timeout audit, deliberately off peak (#251). Its grouped
 # percentile queries are the heaviest thing we run against execution_steps, and
 # 08:00 UTC is the quietest hour of the day: 9,541 executions over 7 days to
-# 13:00's 31,617 and 17:00's 50,536. The :17 is a minute no other job starts in
-# (#1884): not the hourly job at :00, the export at :37, any worker cron (all on
-# multiples of five), nor any pg_cron job. It was :15 until 2026-10-08, the same
+# 13:00's 31,617 and 17:00's 50,536. 08:17 is a minute no other job starts in
+# (#1884): no other worker cron (the rest run on multiples of five, at :23 and at
+# :37) and no pg_cron job starts then. It was :15 until 2026-10-08, the same
 # minute both rollup refreshes started, and lead requests slowed to 8.5 s. The
 # audit also runs its percentile queries two at a time (lib/timeout-audit.ts).
 
