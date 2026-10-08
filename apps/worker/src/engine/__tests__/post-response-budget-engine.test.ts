@@ -583,6 +583,15 @@ describe('the answer is recorded at the answer (#1883)', () => {
     expect(db.steps).toHaveLength(1)
   })
 
+  it('leaves out an answer too large for the journal, measured in bytes', async () => {
+    // 30,000 characters of three byte text: under the limit in characters, over it in bytes.
+    const big = { status: 200, headers: {}, body: { note: '\u20ac'.repeat(30_000) } }
+    vi.mocked(executeNode).mockResolvedValue({ output: big, earlyResponse: big })
+    const { idempotency, result } = await run(() => 'up')
+    const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
+    expect(journal.response_body).toEqual({ omitted: expect.stringMatching(/bytes/) })
+  })
+
   it('keeps the demoted journal when the first journal write is the slower one', async () => {
     const { idempotency, result } = await run(stepsHang, {}, { slowFirstJournalPut: true })
     const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)

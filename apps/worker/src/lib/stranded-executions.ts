@@ -379,6 +379,9 @@ export async function runReduceFinalizeStrandedExecutions(
   // don't re-fetch it per row.
   const graphCache = new Map<string, StrandGraph | null>()
   let fromJournal = 0
+  // A journal restore that matched no row: the run's own finalize reached it
+  // first (the restore only takes a row still at running). Not a purge.
+  let superseded = 0
 
   for (const exec of stranded) {
     const journal = await journalFor(options, exec.id as string)
@@ -419,7 +422,7 @@ export async function runReduceFinalizeStrandedExecutions(
         console.error('[stranded-executions] update failed', { id: exec.id, error: journalUpdateErr })
         errors++
       } else if (rows.length === 0) {
-        vanished++
+        superseded++
       } else {
         processed++
         fromJournal++
@@ -501,7 +504,7 @@ export async function runReduceFinalizeStrandedExecutions(
   }
 
   console.log(
-    `[stranded-executions] processed=${processed} from_journal=${fromJournal} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
+    `[stranded-executions] processed=${processed} from_journal=${fromJournal} superseded=${superseded} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
   )
   return { processed, errors, vanished }
 }

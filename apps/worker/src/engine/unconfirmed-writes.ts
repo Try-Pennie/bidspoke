@@ -318,6 +318,12 @@ export async function readAnswerJournal(
     if (typeof v.completed_at !== 'string' || !Number.isFinite(Date.parse(v.completed_at))) return null
     if (typeof v.duration_ms !== 'number' || !Number.isFinite(v.duration_ms)) return null
     if (typeof v.response_status !== 'number' || !Number.isInteger(v.response_status)) return null
+    // Everything the drain writes into the row is held to the row's own types.
+    const textOrNull = (x: unknown) => x === null || x === undefined || typeof x === 'string'
+    if (![v.outcome, v.final_node_namespace, v.final_node_id, v.error_message, v.failed_step_type].every(textOrNull)) return null
+    if (v.cost_usd !== undefined && (typeof v.cost_usd !== 'number' || !Number.isFinite(v.cost_usd))) return null
+    if (v.field_presence !== undefined && (typeof v.field_presence !== 'object' || v.field_presence === null || Array.isArray(v.field_presence))) return null
+    if (v.email_dropped !== undefined && typeof v.email_dropped !== 'boolean') return null
     return v as AnswerJournal
   } catch {
     return null

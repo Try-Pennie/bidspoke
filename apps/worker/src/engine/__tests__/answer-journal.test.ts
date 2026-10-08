@@ -64,7 +64,17 @@ describe('the answer journal', () => {
 
   it('refuses a journal whose status, duration or response status is not one the row can hold', async () => {
     const store = kv()
-    for (const bad of [{ status: 'running' }, { duration_ms: 'soon' }, { response_status: null }]) {
+    for (const bad of [
+      { status: 'running' },
+      { duration_ms: 'soon' },
+      { response_status: null },
+      { outcome: 7 },
+      { final_node_namespace: {} },
+      { error_message: ['x'] },
+      { failed_step_type: 1 },
+      { cost_usd: 'free' },
+      { field_presence: 'all' },
+    ]) {
       store.store.set(`${ANSWER_JOURNAL_PREFIX}ex-1`, JSON.stringify({ ...journal, ...bad }))
       expect(await readAnswerJournal(store, 'ex-1'), JSON.stringify(bad)).toBeNull()
     }

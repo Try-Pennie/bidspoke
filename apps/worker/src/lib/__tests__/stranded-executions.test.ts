@@ -857,6 +857,16 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
     expect(updates.map((u) => u.payload.outcome)).toEqual([null, null])
   })
 
+  it('does not count a row its own finalize reached first as vanished', async () => {
+    const { client } = makeSupabase({
+      stranded: [{ id: 'exec-j', started_at: journal.started_at }],
+      stepsByExecutionId: { 'exec-j': [] },
+      updateMatchesNoRowsForId: 'exec-j',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never, { readJournal: async () => journal })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0 })
+  })
+
   it('ignores a journal written for another run', async () => {
     const { client, updates } = makeSupabase({
       stranded: [{ id: 'exec-j', started_at: journal.started_at }],

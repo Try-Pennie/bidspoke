@@ -1295,7 +1295,8 @@ export async function executeWorkflow(
 const JOURNAL_BODY_MAX_BYTES = 64 * 1024
 function journalBody(response: unknown, piiFieldsRaw: string): unknown {
   const redacted = redactPii(response, parsePiiFields(piiFieldsRaw))
-  const size = JSON.stringify(redacted ?? null)?.length ?? 0
+  // In bytes, which is what KV counts, not the UTF-16 characters `length` would.
+  const size = new TextEncoder().encode(JSON.stringify(redacted ?? null) ?? '').length
   return size > JOURNAL_BODY_MAX_BYTES ? { omitted: `the answer was ${size} bytes, over the journal's ${JOURNAL_BODY_MAX_BYTES}` } : redacted
 }
 
