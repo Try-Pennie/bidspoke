@@ -141,7 +141,7 @@ describe('export-money-fixture-shapes output guard', () => {
 
   it('writes ASCII only, escaping any other character so the parsed content is unchanged', async () => {
     const { files } = await run()
-    for (const [path, text] of files) expect({ path, nonAscii: /[^\x00-\x7f]/.test(text) }).toEqual({ path, nonAscii: false })
+    for (const [path, text] of files) expect({ path, nonAscii: [...text].some((c) => c.charCodeAt(0) > 0x7f) }).toEqual({ path, nonAscii: false })
     const def = JSON.parse(files.get(`money-gate/fixtures/definitions/${WF}.json`)!) as { definition: unknown }
     expect(def.definition).toEqual(DEFINITION)
   })

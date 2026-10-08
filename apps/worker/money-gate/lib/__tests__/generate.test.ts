@@ -3,6 +3,14 @@ import { buildWorkflowShape } from '../shape'
 import { generatePayload } from '../generate'
 import { scanForPersonalData } from '../fixture-scan'
 
+/** The fields these tests read from a generated payload. */
+type Payload = {
+  personalInformation: Record<string, unknown>
+  financialInformation: { debts: Array<{ amount: unknown }>; creditScore?: unknown }
+  flags: Record<string, unknown>
+  extra: Record<string, unknown>
+}
+
 const sample = (i: number) => ({
   leadUuid: `7f3c2a10-1b2c-4d5e-8f90-0000000000${10 + i}`,
   personalInformation: {
@@ -21,7 +29,7 @@ describe('generatePayload', () => {
   })
 
   it('rebuilds the nested structure, arrays included, from the field paths', () => {
-    const p = generatePayload(shape, { seed: 'a' }) as Record<string, any>
+    const p = generatePayload(shape, { seed: 'a' }) as Payload
     expect(typeof p.personalInformation.firstName).toBe('string')
     expect(Array.isArray(p.financialInformation.debts)).toBe(true)
     expect(typeof p.financialInformation.debts[0].amount).toBe('number')
@@ -48,7 +56,7 @@ describe('generatePayload', () => {
   })
 
   it('draws an enumerated field from its domain', () => {
-    const p = generatePayload(shape, { seed: 'a' }) as Record<string, any>
+    const p = generatePayload(shape, { seed: 'a' }) as Payload
     expect(['NY', 'TX']).toContain(p.personalInformation.state)
   })
 
@@ -57,7 +65,7 @@ describe('generatePayload', () => {
       seed: 'a',
       set: { 'personalInformation.state': 'CA', 'financialInformation.creditScore': 512, 'extra.added': true },
       unset: ['personalInformation.email'],
-    }) as Record<string, any>
+    }) as Payload
     expect(p.personalInformation.state).toBe('CA')
     expect(p.financialInformation.creditScore).toBe(512)
     expect(p.extra.added).toBe(true)

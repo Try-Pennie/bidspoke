@@ -64,14 +64,30 @@ function likeToRegex(pattern: string, flags: string): RegExp {
   return new RegExp(`^${esc}$`, flags)
 }
 
+/**
+ * Two values PostgREST would take as equal: the same value, or two scalars with the
+ * same text, as a number column queried with a string (#1862). Never two objects,
+ * whose text is [object Object] whatever they hold.
+ */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  const scalar = (x: unknown): x is string | number | boolean | bigint => ['string', 'number', 'boolean', 'bigint'].includes(typeof x)
+  return scalar(a) && scalar(b) && String(a) === String(b)
+}
+
+/** A thrown value as an Error, keeping a value that is not one as its cause. */
+function asError(e: unknown): Error {
+  return e instanceof Error ? e : new Error('the Supabase double threw a value that is not an Error', { cause: e })
+}
+
 function matches(row: Row, f: Filter): boolean {
   const [op, col, val] = f
   const v = getPath(row, col)
   switch (op) {
-    case 'eq': return v === val || (v !== null && v !== undefined && val !== null && String(v) === String(val) && typeof v !== 'object')
-    case 'neq': return !(v === val)
+    case 'eq': return sameValue(v, val)
+    case 'neq': return !sameValue(v, val)
     case 'is': return (v ?? null) === val
-    case 'in': return (val as unknown[]).some((x) => x === v || String(x) === String(v))
+    case 'in': return (val as unknown[]).some((x) => sameValue(x, v))
     case 'gt': return v !== null && v !== undefined && cmp(v, val) > 0
     case 'gte': return v !== null && v !== undefined && cmp(v, val) >= 0
     case 'lt': return v !== null && v !== undefined && cmp(v, val) < 0
@@ -155,7 +171,8 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>, doubleOpti
         const list = (Array.isArray(payload) ? payload : [payload]) as Row[]
         writes.push({ op: mode, table, values: clone(list), options: clone(options) })
         const out: Row[] = []
-        const conflict = mode === 'upsert' ? String(options?.onConflict ?? 'id').split(',').map((s) => s.trim()) : null
+        const onConflict = typeof options?.onConflict === 'string' ? options.onConflict : 'id'
+        const conflict = mode === 'upsert' ? onConflict.split(',').map((s) => s.trim()) : null
         for (const r of list) {
           const copy = clone(r)
           const existing = conflict ? base.find((b) => conflict.every((c) => b[c] !== undefined && b[c] === copy[c])) : undefined
@@ -279,15 +296,19 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>, doubleOpti
       throwOnError() { return b },
       csv() { unsupported.push(`${table}.csv`); return b },
       then(resolve: (r: Result) => unknown, reject?: (e: unknown) => unknown) {
+        // Every way out hands back an Error, keeping what was thrown as its cause.
+        const fail = (e: unknown): unknown => (reject ? reject(asError(e)) : Promise.reject(asError(e)))
         if (mode === 'select' && doubleOptions.delayRead) {
           const delayRead = doubleOptions.delayRead
-          return delayRead().then(() => run()).then(resolve, reject)
+          return delayRead().then(() => run()).then(resolve, fail)
         }
+        let result: Result
         try {
-          return Promise.resolve(run()).then(resolve, reject)
+          result = run()
         } catch (e) {
-          return reject ? Promise.resolve(reject(e)) : Promise.reject(e)
+          return Promise.resolve(fail(e))
         }
+        return Promise.resolve(result).then(resolve, fail)
       },
     }
     return b

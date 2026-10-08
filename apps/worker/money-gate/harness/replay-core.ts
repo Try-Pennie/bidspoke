@@ -40,7 +40,9 @@ export const shapes = shapesFile as unknown as ShapesFile
 export const snapshot = snapshotFile as unknown as ConfigSnapshot
 
 /** The engine under test's dispatch namespaces, from its wrangler.toml (vitest.money-gate.config.mts). */
-export const DISPATCH_NAMESPACES = JSON.parse(String((env as Record<string, unknown>).MONEY_GATE_DISPATCH_NAMESPACES ?? '[]')) as Array<{ binding: string; namespace: string; outbound: string | null }>
+const dispatchNamespacesText = (env as Record<string, unknown>).MONEY_GATE_DISPATCH_NAMESPACES
+// Not a string means no namespace reached the replay, which hostBundles refuses by name.
+export const DISPATCH_NAMESPACES = JSON.parse(typeof dispatchNamespacesText === 'string' ? dispatchNamespacesText : '[]') as Array<{ binding: string; namespace: string; outbound: string | null }>
 const DISPATCH_BINDINGS = new Set(DISPATCH_NAMESPACES.map((d) => d.binding))
 
 /**
@@ -97,7 +99,7 @@ function pinRandomness(seed: string) {
     b[6] = (b[6] & 0x0f) | 0x40
     b[8] = (b[8] & 0x3f) | 0x80
     const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
-    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}` as `${string}-${string}-${string}-${string}-${string}`
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
   })
 }
 
@@ -132,14 +134,17 @@ export async function holdAlarms(e: Record<string, unknown>): Promise<void> {
     await runInDurableObject(ns.get(ns.idFromName('money-gate-alarm-probe')), async (_instance: unknown, state: DurableObjectState) => {
       const proto = Object.getPrototypeOf(state.storage) as Record<string, unknown>
       platformGetAlarm ??= proto.getAlarm as typeof platformGetAlarm
-      proto.setAlarm = async function (this: object, at: number | Date) {
+      // Each returns a promise, as the platform's do, without awaiting anything.
+      proto.setAlarm = function (this: object, at: number | Date): Promise<void> {
         heldAlarms.set(this, typeof at === 'number' ? at : at.getTime())
+        return Promise.resolve()
       }
-      proto.getAlarm = async function (this: object) {
-        return heldAlarms.get(this) ?? null
+      proto.getAlarm = function (this: object): Promise<number | null> {
+        return Promise.resolve(heldAlarms.get(this) ?? null)
       }
-      proto.deleteAlarm = async function (this: object) {
+      proto.deleteAlarm = function (this: object): Promise<void> {
         heldAlarms.set(this, null)
+        return Promise.resolve()
       }
       // The stand in must be what an object reaches: an alarm set through storage is
       // answered back as asked, and the platform holds none.
@@ -174,8 +179,10 @@ export async function dumpDurableObjects(e: Record<string, unknown>): Promise<Re
         try {
           const names = state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'sqlite_%' ORDER BY name").toArray()
           for (const t of names) {
-            const rows = state.storage.sql.exec(`SELECT * FROM "${String(t.name)}"`).toArray()
-            tables[String(t.name)] = rows.map((r) => JSON.stringify(r)).sort()
+            // sqlite_master.name is always text.
+            const table = t.name as string
+            const rows = state.storage.sql.exec(`SELECT * FROM "${table}"`).toArray()
+            tables[table] = rows.map((r) => JSON.stringify(r)).sort()
           }
         } catch {
           // A key value object has no SQL storage; its state is the list above.
@@ -238,7 +245,7 @@ async function deployCaptured(e: GateEnv, d: DefinitionFile, label: string, depl
     }
     uploads.push({ url: req.url, read: await scriptFromUpload(await req.formData()) })
     return Response.json({ success: true, errors: [], messages: [], result: {} })
-  }) as typeof fetch
+  })
   const quiet = vi.spyOn(console, 'log').mockImplementation(() => {})
   try {
     const dep = await deploy(d.id, d.definition as never, env.CLOUDFLARE_ACCOUNT_ID as string, env.CLOUDFLARE_API_TOKEN as string, e.WORKFLOW_CACHE as KVNamespace)
@@ -283,11 +290,11 @@ export async function hostBundles(e: GateEnv): Promise<HostedBundles> {
   const compareBundles = new Map<string, string>()
   for (const d of definitions) {
     const scripts = d.definition.nodes
-      .filter((n) => n.type === 'code' && typeof n.config?.script === 'string' && (n.config.script as string).trim().length > 0)
+      .filter((n) => n.type === 'code' && typeof n.config?.script === 'string' && (n.config.script).trim().length > 0)
       .map((n) => ({ namespace: n.namespace, script: n.config!.script as string }))
     if (scripts.length === 0) continue
     bundles.push({ name: codeBundleName(d.id), script: buildBundledWorkerScript(scripts), namespace: moneyNamespace })
-    const test = await deployCaptured(e, d, 'test bundle', deployTestCodeBundle as DeployFn)
+    const test = await deployCaptured(e, d, 'test bundle', deployTestCodeBundle)
     if (test) {
       bundles.push(test)
       testBundles.set(d.id, test.name)
@@ -413,7 +420,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
 
-  const tables: Record<string, Row[]> = JSON.parse(JSON.stringify(snapshot.tables))
+  const tables = JSON.parse(JSON.stringify(snapshot.tables)) as Record<string, Row[]>
   tables.workflows = tables.workflows.map((w) => (w.id === def.id ? { ...w, definition: def.definition } : w))
   for (const [key, value] of Object.entries(variant.env ?? {})) {
     const row = tables.environment_variables.find((r) => r.key === key)
@@ -440,7 +447,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     if (!hit) unstubbed.push(`${url.host}${url.pathname} (${id})`)
     const a = hit?.answer ?? noRuleAnswer(stubReq)
     return toResponse(a)
-  }) as typeof fetch
+  })
 
   // Engine log lines name the step running, which attributes an engine side request.
   const consoleLog = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
@@ -491,7 +498,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   vi.setSystemTime(new Date(FIXED_TIME_MS))
   pinRandomness(seed)
   let lifted: LiftedTimers | null = null
-  let timersFired: FiredTimer[] = []
+  let timersFired: FiredTimer[]
 
   const partnerSecrets = (snapshot.tables.partner_configs ?? []).map((p) => p.cf_secret_key).filter((k): k is string => typeof k === 'string' && k.length > 0)
   const runEnv = buildEnv(e, loaders, def, partnerSecrets)
@@ -540,7 +547,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     vi.restoreAllMocks()
   }
 
-  const drained = (await (await e.GATE_IO.fetch('https://gate/drain')).json()) as { outbound: OutboundRecord[]; unstubbed: string[] }
+  const drained = await (await e.GATE_IO.fetch('https://gate/drain')).json<{ outbound: OutboundRecord[]; unstubbed: string[] }>()
   return {
     db,
     response,
