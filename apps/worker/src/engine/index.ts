@@ -925,6 +925,13 @@ export async function executeWorkflow(
         // finalizes a 90 second stall timed out had landed.
         const finalizeUnconfirmed = !finalized.settled
         const finalizeError = finalized.settled ? finalized.value : null
+        if (finalizeUnconfirmed) {
+          // Logged for every run, a test run included, which records no entry.
+          console.warn('[execution] finalize did not answer within the post-response budget; it may still land', {
+            executionId,
+            isTest: reality.isTest,
+          })
+        }
         if (finalizeUnconfirmed && !reality.isTest) {
           executionCtx.waitUntil(
             recordUnconfirmedOutcome(
