@@ -543,9 +543,25 @@ export type RefreshScope = ({ organizations: 'every' } | { organizationId: strin
 /** The hourly job's scope: every organisation's workflows. Frozen, since every caller shares the one object. */
 export const EVERY_ORGANIZATION: Readonly<RefreshScope> = Object.freeze({ organizations: 'every' })
 
+/**
+ * Which organisations a scope covers, read from what it says and never from an
+ * absence: every one only when it asks for every one, one only when it names a
+ * non blank id, and null for anything else, which the refresh refuses (L42).
+ * One reading, so the refresh and the paging decision cannot disagree.
+ */
+function organizationsOf(only: RefreshScope): { every: true } | { organizationId: string } | null {
+  const scope = only as Record<string, unknown>
+  if ('organizationId' in scope) return typeof scope.organizationId === 'string' && scope.organizationId.length > 0 ? { organizationId: scope.organizationId } : null
+  return scope.organizations === 'every' ? { every: true } : null
+}
+
 export async function runParityRefresh(deps: RefreshDeps, only: RefreshScope): Promise<RefreshSummary> {
   const now = deps.now()
   const days = only.day ? [only.day] : refreshableDays(now, deps.retentionDays)
+  const organizations = organizationsOf(only)
+  if (organizations === null) {
+    return { days, rows_written: 0, errors: ['the refresh scope names no organisation and does not ask for every one, so nothing was read or written'], kept_final: [] }
+  }
   if (deps.localDev) {
     deps.log(`[${BUYER_SELECT_PARITY_JOB}] skipped: local dev`)
     return { skipped: 'local_dev', days, rows_written: 0, errors: [], kept_final: [] }
@@ -557,7 +573,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: RefreshScope): P
 
   let workflows: ParityWorkflow[]
   try {
-    workflows = (await deps.listWorkflows()).filter((w) => ('organizationId' in only ? w.organization_id === only.organizationId : true) && (!only.workflowId || w.id === only.workflowId))
+    workflows = (await deps.listWorkflows()).filter((w) => ('every' in organizations || w.organization_id === organizations.organizationId) && (!only.workflowId || w.id === only.workflowId))
   } catch (err) {
     return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`], kept_final: [] }
   }
@@ -688,7 +704,8 @@ export async function runParityRefreshAndPage(deps: RefreshDeps, notify: (lines:
   // run scoped to one organisation, workflow or day (the route) knows nothing
   // about what it did not touch, so its clean answer must not clear a standing
   // page for them (L11). Its result is the HTTP response.
-  const full = 'organizations' in only && !only.workflowId && !only.day
+  const organizations = organizationsOf(only)
+  const full = organizations !== null && 'every' in organizations && !only.workflowId && !only.day
   if (!summary.skipped && full) await notify(summary.errors)
   return summary
 }

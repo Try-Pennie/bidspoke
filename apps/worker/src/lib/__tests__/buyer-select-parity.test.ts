@@ -462,6 +462,20 @@ describe('runParityRefresh', () => {
     expect(typeof neverRun).toBe('function')
   })
 
+  it.each([
+    ['an empty scope', {}],
+    ['a scope with a blank organisation', { organizationId: '' }],
+    ['a scope asking for something other than every organisation', { organizations: 'some' }],
+  ])('refuses %s at runtime, writes nothing and does not page, rather than reading it as every organisation (L42)', async (_label, scope) => {
+    const { deps, upserts } = refreshDeps()
+    const paged: string[][] = []
+    const summary = await runParityRefreshAndPage(deps, async (lines) => { paged.push(lines) }, scope as never)
+    expect(upserts).toEqual([])
+    expect(summary.rows_written).toBe(0)
+    expect(summary.errors).toEqual([expect.stringMatching(/names no organisation/)])
+    expect(paged).toEqual([])
+  })
+
   it('the hourly job\'s every organisation scope cannot be changed by a caller, so no code can narrow or widen it for the whole process', () => {
     expect(Object.isFrozen(EVERY_ORGANIZATION)).toBe(true)
   })
