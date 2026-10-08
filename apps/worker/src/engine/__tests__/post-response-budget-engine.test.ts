@@ -556,6 +556,19 @@ describe('the answer is recorded at the answer (#1883)', () => {
     expect(JSON.stringify(journal)).not.toContain('123-45-6789')
   })
 
+  // Finalize now runs beside the create, so it can rebuild the row while the
+  // create is still out. When that create then lands, the original flush writes
+  // the step rows, and a second flush after the rebuild would write them twice.
+  it('writes the step rows once when finalize rebuilt the row while the create was still out', async () => {
+    let creates = 0
+    const { db, result } = await run((_c, table, op) => {
+      if (table === 'workflow_executions' && op === 'insert' && creates++ === 0) return 'late'
+      return 'up'
+    })
+    expect(db.executions.get(result.executionId)?.status).not.toBe('running')
+    expect(db.steps).toHaveLength(1)
+  })
+
   it('updates the journal when the run is demoted, so the drain restores the final status', async () => {
     const { idempotency, result } = await run(stepsHang)
     const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
