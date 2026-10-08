@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   commandArg,
   commandRoutine,
-  cronMinute,
+  cronFieldValues,
   latestRoutineBody,
   liveCronJobs,
+  minutesOfDay,
   readMigrations,
+  workerCrons,
 } from './_pg-cron'
 
 /**
@@ -65,10 +67,10 @@ describe('rollup refresh: the parse itself', () => {
   // A regex that matches nothing makes every loop below vacuous and green
   // (LESSONS L100, L143), so assert the inputs exist before asserting anything
   // about them.
-  it('finds both rollup refresh functions and two live jobs for each', () => {
+  it('finds both rollup refresh functions and three live jobs for each (today, recent, nightly)', () => {
     for (const fn of ROLLUP_FUNCTIONS) {
       expect(latestRoutineBody(fn, migrations), `${fn} definition`).not.toBeNull()
-      expect(jobsFor(fn).map((j) => j.name).sort(), `${fn} jobs`).toHaveLength(2)
+      expect(jobsFor(fn).map((j) => j.name).sort(), `${fn} jobs`).toHaveLength(3)
     }
   })
 
@@ -76,6 +78,52 @@ describe('rollup refresh: the parse itself', () => {
     const purge = jobs.find((j) => j.name === RETENTION_JOB)
     expect(purge, RETENTION_JOB).toBeDefined()
     expect(commandArg(purge!.command)).toBeGreaterThan(0)
+  })
+})
+
+describe('the cron parse reads cron.alter_job (#1884)', () => {
+  // Every guard here reads the schedules through liveCronJobs. #1884 changes
+  // them with cron.alter_job, which keeps a job's run history, so a parse that
+  // skipped alter_job would judge the schedules from before the change and pass.
+  const base = {
+    name: '001.sql',
+    sql: "SELECT cron.schedule('a-job', '*/5 * * * *', $$SELECT f(2)$$);",
+  }
+
+  it('applies a schedule and a command altered in place, keeping what was not altered', () => {
+    const live = liveCronJobs([
+      base,
+      {
+        name: '002.sql',
+        sql: "SELECT cron.alter_job(job_id := (SELECT jobid FROM cron.job WHERE jobname = 'a-job'), schedule := '1-59/5 * * * *', command := $$SELECT f(0)$$);",
+      },
+      {
+        name: '003.sql',
+        sql: "SELECT cron.alter_job(job_id := (SELECT jobid FROM cron.job WHERE jobname = 'a-job'), schedule := '2-59/5 * * * *');",
+      },
+    ])
+    expect(live.get('a-job')).toMatchObject({ schedule: '2-59/5 * * * *', command: 'SELECT f(0)', migration: '003.sql' })
+  })
+
+  it('refuses an alter_job written in a shape it cannot read, rather than skipping it', () => {
+    expect(() =>
+      liveCronJobs([base, { name: '002.sql', sql: "SELECT cron.alter_job(42, '1 * * * *');" }]),
+    ).toThrow(/002\.sql: 1 cron\.alter_job call/)
+  })
+
+  it('refuses an alter_job on a job no earlier migration schedules', () => {
+    expect(() =>
+      liveCronJobs([
+        { name: '002.sql', sql: "SELECT cron.alter_job(job_id := (SELECT jobid FROM cron.job WHERE jobname = 'ghost'), schedule := '1 * * * *');" },
+      ]),
+    ).toThrow(/'ghost'/)
+  })
+
+  it('reads every minute a schedule can start in', () => {
+    expect([...(minutesOfDay('27,57 3 * * *') ?? [])]).toEqual([207, 237])
+    expect(minutesOfDay('1-59/5 * * * *')?.size).toBe(12 * 24)
+    expect(minutesOfDay('61 * * * *')).toBeNull()
+    expect(minutesOfDay('0 */2 * * *')?.size).toBe(12)
   })
 })
 
@@ -96,26 +144,126 @@ describe('rollup refresh: serializes with itself', () => {
   })
 })
 
+/** The minutes of the day a job starts in; a schedule the reader cannot parse fails the test that asked. */
+function fires(schedule: string): Set<number> {
+  const set = minutesOfDay(schedule)
+  if (set === null) throw new Error(`unreadable schedule '${schedule}'`)
+  return set
+}
+
+/** More than once an hour: the pass that runs all day long. */
+const isFrequent = (schedule: string) => fires(schedule).size > 24
+
 describe('rollup refresh: schedules cannot coincide', () => {
-  it.each(ROLLUP_FUNCTIONS)('%s nightly job is off the incremental grid', (fn) => {
+  it.each(ROLLUP_FUNCTIONS)('%s hourly and nightly jobs are off the frequent grid', (fn) => {
     const group = jobsFor(fn)
-    const steps = group
-      .map((j) => /^\*\/(\d+)$/.exec(cronMinute(j.schedule))?.[1])
-      .filter((n): n is string => Boolean(n))
-      .map(Number)
-    expect(steps, `${fn} has no every-N-minutes job`).not.toHaveLength(0)
+    const frequent = group.filter((j) => isFrequent(j.schedule))
+    expect(frequent, `${fn} has no frequent job`).toHaveLength(1)
 
-    const fixed = group.filter((j) => /^\d+$/.test(cronMinute(j.schedule)))
-    expect(fixed, `${fn} has no fixed-minute job`).not.toHaveLength(0)
+    const others = group.filter((j) => !isFrequent(j.schedule))
+    expect(others, `${fn} has no hourly or nightly job`).not.toHaveLength(0)
 
-    for (const job of fixed) {
-      for (const step of steps) {
-        expect(
-          Number(cronMinute(job.schedule)) % step,
-          `${job.name} (${job.schedule}) fires on the */${step} grid`,
-        ).not.toBe(0)
-      }
+    const grid = fires(frequent[0].schedule)
+    for (const job of others) {
+      const shared = [...fires(job.schedule)].filter((m) => grid.has(m))
+      expect(shared, `${job.name} (${job.schedule}) starts on the ${frequent[0].schedule} grid`).toEqual([])
     }
+  })
+})
+
+/**
+ * Only today is recounted often (#1884).
+ *
+ * Each pass deletes and rewrites `CURRENT_DATE - lookback` onwards by reading
+ * every workflow_executions row of those days. With a lookback of 2 every 5
+ * minutes, workflow_stats_daily read about 296 MB per run (1,178 GB in two
+ * weeks, 85 GB a day) and was the largest reader on a Micro database that
+ * stalled for 30 s on 2026-10-08. Only today changes between passes, so the
+ * frequent pass reads today alone and an hourly pass keeps the two days before
+ * it current, which is what the frequent pass used to cover: a late completion
+ * or a stranded execution finalised hours later still reaches its own day.
+ */
+describe('rollup refresh: only today is recounted often', () => {
+  it.each(ROLLUP_FUNCTIONS)('%s frequent pass reads today only', (fn) => {
+    const frequent = jobsFor(fn).filter((j) => isFrequent(j.schedule))
+    expect(frequent).toHaveLength(1)
+    expect(commandArg(frequent[0].command), `${frequent[0].name}: ${frequent[0].command}`).toBe(0)
+  })
+
+  it.each(ROLLUP_FUNCTIONS)(
+    '%s past two days are recounted at least hourly, so a late change cannot sit stale for a day',
+    (fn) => {
+      const covering = jobsFor(fn).filter((j) => (commandArg(j.command) ?? 0) >= 2)
+      // The longest wait between two starts of any covering job, across midnight.
+      const starts = [...new Set(covering.flatMap((j) => [...fires(j.schedule)]))].sort((a, b) => a - b)
+      expect(starts.length, `${fn} has no job covering the two days before today`).toBeGreaterThan(0)
+      let longest = 0
+      for (let i = 0; i < starts.length; i++) {
+        const next = i + 1 < starts.length ? starts[i + 1] : starts[0] + 24 * 60
+        longest = Math.max(longest, next - starts[i])
+      }
+      expect(longest, `${fn}: the two days before today can go ${longest} minutes without a recount`).toBeLessThanOrEqual(60)
+    },
+  )
+})
+
+/**
+ * Heavy scheduled readers start alone (#1884).
+ *
+ * On 2026-10-08 three pg_cron jobs (24, 45, 47) and the worker's hourly batch
+ * all started at 12:00, and at 08:15 the timeout audit started a dozen
+ * percentile queries in the same minute as jobs 45 and 47, slowing lead
+ * requests to 8.5 s. A collision is a property of two schedules written in two
+ * places (a migration and wrangler.toml), so no single change shows it.
+ *
+ * Every rollup pass and the stranded execution drain (103 MB read per run,
+ * measured from pg_stat_statements on 2026-10-08) must start in a minute no
+ * other pg_cron job and no worker cron starts in. Every DAILY worker cron (the
+ * timeout audit, the 09:00 and 13:00 batches) must start in a minute no pg_cron
+ * job starts in. The worker's every-minute cron is the one exemption, because no
+ * minute is free of it.
+ */
+describe('heavy scheduled readers start alone', () => {
+  const EVERY_MINUTE = '* * * * *'
+  const STRANDED_DRAIN = 'reduce-finalize-stranded'
+  const worker = workerCrons().filter((c) => c !== EVERY_MINUTE)
+
+  const heavy = jobs.filter(
+    (j) => j.name === STRANDED_DRAIN || (ROLLUP_FUNCTIONS as readonly string[]).includes(commandRoutine(j.command) ?? ''),
+  )
+
+  it('finds the readers it judges', () => {
+    // An empty list would make every assertion below vacuous (L100).
+    expect(heavy.map((j) => j.name)).toContain(STRANDED_DRAIN)
+    expect(heavy.length).toBe(ROLLUP_FUNCTIONS.length * 3 + 1)
+    expect(worker.length).toBeGreaterThan(3)
+  })
+
+  it.each(heavy.map((j) => [j.name, j.schedule] as const))(
+    '%s (%s) starts in minutes nothing else starts in',
+    (name, schedule) => {
+      const mine = fires(schedule)
+      const clashes: string[] = []
+      for (const other of jobs) {
+        if (other.name === name) continue
+        if ([...fires(other.schedule)].some((m) => mine.has(m))) clashes.push(`pg_cron ${other.name} (${other.schedule})`)
+      }
+      for (const cron of worker) {
+        if ([...fires(cron)].some((m) => mine.has(m))) clashes.push(`worker cron ${cron}`)
+      }
+      expect(clashes).toEqual([])
+    },
+  )
+
+  it('every daily worker cron starts in a minute no pg_cron job starts in', () => {
+    const daily = worker.filter((c) => fires(c).size === 1)
+    expect(daily.length, 'no daily worker cron found').toBeGreaterThan(0)
+    const clashes: string[] = []
+    for (const cron of daily) {
+      const [minute] = [...fires(cron)]
+      for (const j of jobs) if (fires(j.schedule).has(minute)) clashes.push(`${cron} with pg_cron ${j.name} (${j.schedule})`)
+    }
+    expect(clashes).toEqual([])
   })
 })
 
@@ -210,7 +358,7 @@ describe('rollup refresh: owns its timeout budget', () => {
     // Without this the three assertions below are vacuous on an empty list
     // (L100, L143), which is exactly how a guard passes hardest when the parse
     // has broken.
-    expect(rollupJobs.length).toBe(ROLLUP_FUNCTIONS.length * 2)
+    expect(rollupJobs.length).toBe(ROLLUP_FUNCTIONS.length * 3)
   })
 
   it.each(rollupJobs.map((j) => [j.name, j.command] as const))(
@@ -273,13 +421,24 @@ describe('rollup refresh: owns its timeout budget', () => {
    */
   const CUSHION_MS = 60_000
 
+  /** The shortest wait between two starts of an every-hour schedule, in minutes. */
+  function shortestGapMinutes(schedule: string): number {
+    const minutes = cronFieldValues(schedule.trim().split(/\s+/)[0] ?? '', 0, 59)
+    if (minutes === null) throw new Error(`unreadable minute field in '${schedule}'`)
+    let shortest = 60
+    for (let i = 0; i < minutes.length; i++) {
+      const next = i + 1 < minutes.length ? minutes[i + 1] : minutes[0] + 60
+      shortest = Math.min(shortest, next - minutes[i])
+    }
+    return shortest
+  }
+
   it.each(
     rollupJobs
-      .filter((j) => /^\*\/\d+$/.test(cronMinute(j.schedule)))
+      .filter((j) => isFrequent(j.schedule))
       .map((j) => [j.name, j.schedule, j.command] as const),
   )('%s cannot outlive its own slot', (_name, schedule, command) => {
-    const everyNMinutes = Number(/^\*\/(\d+)$/.exec(cronMinute(schedule))![1])
-    const intervalMs = everyNMinutes * 60_000
+    const intervalMs = shortestGapMinutes(schedule) * 60_000
     const value = setting(command, 'statement_timeout')
     expect(value, 'no statement_timeout in the cron command').not.toBeNull()
     const budgetMs = timeoutMs(value!)
@@ -291,11 +450,9 @@ describe('rollup refresh: owns its timeout budget', () => {
     ).toBeLessThanOrEqual(intervalMs)
   })
 
-  it('finds at least one every-N-minutes rollup job to judge', () => {
+  it('finds at least one frequent rollup job to judge', () => {
     // The filter above silently empties if the schedule format changes, and an
     // empty it.each is green (L100).
-    expect(
-      rollupJobs.filter((j) => /^\*\/\d+$/.test(cronMinute(j.schedule))).length,
-    ).toBeGreaterThan(0)
+    expect(rollupJobs.filter((j) => isFrequent(j.schedule)).length).toBeGreaterThan(0)
   })
 })
