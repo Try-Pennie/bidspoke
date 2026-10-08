@@ -341,12 +341,6 @@ describe('updateExecutionRecord: reconstruction on missing base row (#584)', () 
     expect(error?.code).toBe('42703')
   })
 
-  it('treats a duplicate on reconstruction as success (row already landed)', async () => {
-    const { client } = reconClientWith({ error: { code: '23505', message: 'duplicate key' } })
-    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields)
-    expect(error).toBeNull()
-  })
-
   it('does not attempt reconstruction when no createFields are supplied (keeps the #487 dead-letter path)', async () => {
     const { client, insert } = reconClientWith({ error: null })
     const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize)
@@ -367,13 +361,6 @@ describe('updateExecutionRecord: reconstruction signal for step recovery (#629)'
     expect(onReconstructed).toHaveBeenCalledTimes(1)
   })
 
-  it('invokes onReconstructed when reconstruction hits a duplicate (the row exists now)', async () => {
-    const { client } = reconClientWith({ error: { code: '23505', message: 'duplicate key' } })
-    const onReconstructed = vi.fn()
-    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
-    expect(onReconstructed).toHaveBeenCalledTimes(1)
-  })
-
   it('does not invoke onReconstructed when the reconstruction insert fails', async () => {
     const { client } = reconClientWith({ error: { code: '42703', message: 'column does not exist' } })
     const onReconstructed = vi.fn()
@@ -385,6 +372,105 @@ describe('updateExecutionRecord: reconstruction signal for step recovery (#629)'
     const { client } = updateClientWith({ data: [{ id: 'exec-1' }] }, { data: [] })
     const onReconstructed = vi.fn()
     await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
+    expect(onReconstructed).not.toHaveBeenCalled()
+  })
+})
+
+// Issue #1883 (defect B): finalize saw the row missing and rebuilt it, but the
+// original create was still in flight and landed at the same moment, so the
+// rebuild insert hit a duplicate key. That duplicate was counted as success and
+// nothing was written: runs 01a11b75-e475 and 01a11b75-e477 on 2026-10-08 stayed
+// 'running' with no response_status until the strand drain relabelled them.
+// The row exists after a duplicate, so the finalize update is applied to it once
+// more, and success is reported only when that update matched the row.
+
+type DbResult = { data?: unknown[]; error?: { code?: string; message: string } | null }
+
+// Every UPDATE is recorded with its payload and filters, and answers from
+// `updates` in order (the last entry repeats). The insert answers from `inserts`.
+function racingClient(updates: DbResult[], inserts: DbResult[]) {
+  const calls: Array<{ payload: Record<string, unknown>; filters: Array<[string, unknown]> }> = []
+  let u = 0
+  let i = 0
+  const update = vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+    const call = { payload, filters: [] as Array<[string, unknown]> }
+    calls.push(call)
+    const chain = {
+      eq: (col: string, val: unknown) => {
+        call.filters.push([col, val])
+        return chain
+      },
+      select: () => Promise.resolve({ error: null, ...updates[Math.min(u++, updates.length - 1)] }),
+    }
+    return chain
+  })
+  const insert = vi.fn().mockImplementation(() =>
+    Promise.resolve({ error: null, ...inserts[Math.min(i++, inserts.length - 1)] }),
+  )
+  const client = { from: vi.fn().mockReturnValue({ update, insert }) } as unknown as SupabaseClient
+  return { client, calls, insert }
+}
+
+const missing: DbResult = { data: [] }
+const duplicate: DbResult = {
+  error: { code: '23505', message: 'duplicate key value violates unique constraint "workflow_executions_2026_10_08_pkey"' },
+}
+
+describe('updateExecutionRecord: the rebuild collides with the original create landing (#1883)', () => {
+  const startedAt = '2026-10-08T12:21:01.000Z'
+
+  it('applies the finalize update to the row that now exists and reports success only once it matched', async () => {
+    // Keyed miss, id-only miss, rebuild duplicate, then the update against the landed row matches.
+    const { client, calls, insert } = racingClient([missing, missing, { data: [{ id: 'exec-race' }] }], [duplicate])
+    const onReconstructed = vi.fn()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const error = await updateExecutionRecord(client, 'exec-race', startedAt, finalize, createFields, onReconstructed)
+      expect(error).toBeNull()
+      expect(insert).toHaveBeenCalledTimes(1)
+      // The third UPDATE goes to the landed row: the final state, pruned to one partition.
+      expect(calls).toHaveLength(3)
+      expect(calls[2].payload).toEqual(finalize)
+      expect(calls[2].filters).toEqual([
+        ['id', 'exec-race'],
+        ['started_at', startedAt],
+      ])
+      // Nothing was rebuilt, so the step log re-flush must not run: the original
+      // create's own flush is still chained behind it.
+      expect(onReconstructed).not.toHaveBeenCalled()
+      const lines = warn.mock.calls.map((c) => String(c[0]))
+      expect(lines.some((l) => l.includes('landed concurrently'))).toBe(true)
+      expect(lines.some((l) => l.includes('base insert had failed'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('takes the failure path when the update against the landed row still matches no row', async () => {
+    const { client, calls } = racingClient([missing, missing, missing], [duplicate])
+    const onReconstructed = vi.fn()
+    const error = await updateExecutionRecord(client, 'exec-race', startedAt, finalize, createFields, onReconstructed)
+    expect(error?.code).toBe(NO_ROW_MATCHED_CODE)
+    expect(calls).toHaveLength(3)
+    expect(onReconstructed).not.toHaveBeenCalled()
+  })
+
+  it('retries a transient failure of that update on the injected clock and stops at the cut-off', async () => {
+    const clock = new VirtualClock()
+    const budget = new PostResponseBudget(clock)
+    budget.arm()
+    const down: DbResult = { error: { code: 'PGRST002', message: 'schema cache' } }
+    const { client } = racingClient([missing, missing, down], [duplicate])
+    const onReconstructed = vi.fn()
+    const p = updateExecutionRecord(client, 'exec-race', startedAt, finalize, createFields, onReconstructed, {
+      clock,
+      budget,
+      reserveMs: DEAD_LETTER_RESERVE_MS,
+    })
+    await clock.run()
+    expect((await p)?.code).toBe('PGRST002')
+    expect(clock.sleeps.length).toBeGreaterThan(0)
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
     expect(onReconstructed).not.toHaveBeenCalled()
   })
 })
