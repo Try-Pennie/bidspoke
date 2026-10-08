@@ -236,6 +236,8 @@ cpu_ms = 30000
 # :37) and no pg_cron job starts then. It was :15 until 2026-10-08, the same
 # minute both rollup refreshes started, and lead requests slowed to 8.5 s. The
 # audit also runs its percentile queries two at a time (lib/timeout-audit.ts).
+# apps/web/src/lib/__tests__/rollup-refresh-collision-guard.test.ts fails when a
+# daily worker cron shares its start minute with any pg_cron job.
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
