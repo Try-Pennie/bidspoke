@@ -48,6 +48,16 @@ const SCHEDULE_RE =
   /cron\.schedule\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*(?:\$\$([\s\S]*?)\$\$|'((?:[^']|'')*)')\s*\)/g
 const UNSCHEDULE_NAME_RE = /cron\.unschedule\(\s*'([^']+)'\s*\)/g
 const UNSCHEDULE_JOBID_RE = /cron\.unschedule\(\s*jobid\s*\)[\s\S]{0,200}?jobname\s*=\s*'([^']+)'/g
+/**
+ * `cron.alter_job` in the one shape this repo writes it (#1884): the job found
+ * by name, then an optional new schedule and an optional new command, each by
+ * named argument. Altering in place keeps the jobid and so the run history,
+ * which an unschedule and reschedule discards.
+ */
+const ALTER_RE =
+  /cron\.alter_job\(\s*job_id\s*:=\s*\(\s*SELECT\s+jobid\s+FROM\s+cron\.job\s+WHERE\s+jobname\s*=\s*'([^']+)'\s*\)\s*(?:,\s*schedule\s*:=\s*'([^']+)'\s*)?(?:,\s*command\s*:=\s*\$\$([\s\S]*?)\$\$\s*)?\)/g
+/** Any alter_job at all, so one written in a shape ALTER_RE misses is refused rather than skipped (L100). */
+const ANY_ALTER_RE = /cron\.alter_job\s*\(/g
 
 /**
  * The cron jobs a fresh database would hold after every migration is applied,
@@ -58,8 +68,24 @@ export function liveCronJobs(migrations: MigrationFile[] = readMigrations()): Ma
   for (const { name: migration, sql } of migrations) {
     // Order matters within a file: the unschedule/reschedule pair is the normal
     // way a schedule is changed, so walk every event in the order it appears.
-    interface Event { at: number; kind: 'schedule' | 'unschedule'; job: CronJob | string }
+    interface Alter { name: string; schedule?: string; command?: string }
+    interface Event { at: number; kind: 'schedule' | 'unschedule' | 'alter'; job: CronJob | string | Alter }
     const events: Event[] = []
+    const alters = [...sql.matchAll(ALTER_RE)]
+    const anyAlters = [...sql.matchAll(ANY_ALTER_RE)]
+    if (alters.length !== anyAlters.length) {
+      throw new Error(
+        `${migration}: ${anyAlters.length} cron.alter_job call(s) but only ${alters.length} in the shape this parser reads ` +
+          "(job_id := (SELECT jobid FROM cron.job WHERE jobname = '...'), schedule := '...', command := $$...$$)",
+      )
+    }
+    for (const m of alters) {
+      events.push({
+        at: m.index ?? 0,
+        kind: 'alter',
+        job: { name: m[1], schedule: m[2], command: m[3]?.trim() },
+      })
+    }
     for (const m of sql.matchAll(SCHEDULE_RE)) {
       events.push({
         at: m.index ?? 0,
@@ -79,10 +105,67 @@ export function liveCronJobs(migrations: MigrationFile[] = readMigrations()): Ma
     }
     for (const e of events.sort((a, b) => a.at - b.at)) {
       if (e.kind === 'schedule') jobs.set((e.job as CronJob).name, e.job as CronJob)
-      else jobs.delete(e.job as string)
+      else if (e.kind === 'unschedule') jobs.delete(e.job as string)
+      else {
+        const alter = e.job as Alter
+        const current = jobs.get(alter.name)
+        // On a fresh database cron.alter_job fails on a job that does not exist,
+        // so a parse that reaches here has found a migration that cannot replay.
+        if (!current) throw new Error(`${migration}: cron.alter_job on '${alter.name}', which no earlier migration schedules`)
+        jobs.set(alter.name, {
+          name: alter.name,
+          schedule: alter.schedule ?? current.schedule,
+          command: alter.command ?? current.command,
+          migration,
+        })
+      }
     }
   }
   return jobs
+}
+
+/** The worker's cron triggers, read from apps/worker/wrangler.toml. */
+export function workerCrons(): string[] {
+  const toml = readFileSync(path.join(REPO_ROOT, 'apps/worker/wrangler.toml'), 'utf8')
+  const m = /^crons\s*=\s*\[([^\]]*)\]/m.exec(toml)
+  if (!m) throw new Error('apps/worker/wrangler.toml declares no crons = [...] line')
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])
+}
+
+/**
+ * The values one cron field names, inside [lo, hi]: `*`, `*\/n`, `a`, `a-b`,
+ * `a-b/n` and comma lists of them. Null for anything else, so a caller cannot
+ * read an unparsed field as firing never.
+ */
+export function cronFieldValues(field: string, lo: number, hi: number): number[] | null {
+  const out = new Set<number>()
+  for (const part of field.split(',')) {
+    const m = /^(\*|(\d+)(?:-(\d+))?)(?:\/(\d+))?$/.exec(part)
+    if (!m) return null
+    const step = m[4] === undefined ? 1 : Number(m[4])
+    const from = m[1] === '*' ? lo : Number(m[2])
+    const to = m[1] === '*' ? hi : m[3] !== undefined ? Number(m[3]) : m[4] !== undefined ? hi : from
+    if (step < 1 || from < lo || to > hi || from > to) return null
+    for (let v = from; v <= to; v += step) out.add(v)
+  }
+  return out.size === 0 ? null : [...out].sort((a, b) => a - b)
+}
+
+/**
+ * Every minute of the day (hour * 60 + minute) a schedule can start in, or null
+ * when the minute or hour field is not readable. The day of month, month and
+ * weekday fields are ignored on purpose: a weekly job is treated as firing every
+ * day, which can only find MORE collisions, never hide one.
+ */
+export function minutesOfDay(schedule: string): Set<number> | null {
+  const fields = schedule.trim().split(/\s+/)
+  if (fields.length !== 5) return null
+  const minutes = cronFieldValues(fields[0], 0, 59)
+  const hours = cronFieldValues(fields[1], 0, 23)
+  if (!minutes || !hours) return null
+  const out = new Set<number>()
+  for (const h of hours) for (const m of minutes) out.add(h * 60 + m)
+  return out
 }
 
 /**
