@@ -145,6 +145,21 @@ describe('compareOutage', () => {
     expect(diffs.map((d) => d.field)).toContain(field)
   })
 
+  // An outage is expected to raise alerts its twin does not, and since #1881 the
+  // outcome dead letter takes its cooldown on the AlertClaim object. Who may post
+  // an alert decides no money, so its state is not a difference; every other
+  // object's still is.
+  it('does not count an alert claim taken only in the down run as a difference', () => {
+    const down = { ...base, do_state: { ...base.do_state, ALERT_CLAIM: { abc: { alarm: 1790868600000, kv: { data: { claimed_until: 1 } }, tables: {} } } } }
+    const up = { ...base, do_state: { ...base.do_state, ALERT_CLAIM: {} } }
+    expect(compareOutage(up, down)).toEqual([])
+  })
+
+  it('still counts any other Durable Object beside the alert claims', () => {
+    const down = { ...base, do_state: { CAPS: { id1: { count: 2 } }, ALERT_CLAIM: { abc: {} } } }
+    expect(compareOutage(base, down).map((d) => d.field)).toEqual(['do_state'])
+  })
+
   it('orders outbound requests before comparing, since parallel calls land in either order', () => {
     const two = { ...base, outbound: [base.outbound[0], { ...base.outbound[0], host: 'am-one-proxy.trypennie.dev' }] }
     const swapped = { ...two, outbound: [two.outbound[1], two.outbound[0]] }

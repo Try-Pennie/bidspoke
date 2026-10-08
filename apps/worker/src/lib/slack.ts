@@ -1042,7 +1042,9 @@ async function sendLostWritebackAlert(
   const isSalesforce = payload.error_message.startsWith('Salesforce')
   const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))
   const n = payload.window_loss_count
-  const affected = n === 1 ? '1 lead was affected' : `${n} leads were affected`
+  // The window count is approximate (#1881): KV increments from isolates writing
+  // at once can overwrite each other, so a count above one says "about".
+  const affected = n === 1 ? '1 lead was affected' : `About ${n} leads were affected`
   const title = isSalesforce ? 'Salesforce update lost' : 'Update lost after a lead was answered'
   const summary = isSalesforce
     ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step after the answer failed, so Salesforce is missing that lead's outcome. ${affected} in the last ${payload.window_minutes} minutes.`
@@ -1083,7 +1085,7 @@ async function sendUnfinishedWorkAlert(
   // A step's name carries its label, typed by whoever edits the canvas. Slack
   // reads <, > and & as markup, so they are escaped: a label cannot become a
   // channel mention or a link.
-  const named = (run?.still_running ?? []).map((s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+  const named = (run?.still_running ?? []).map(slackText)
   const one = named.length === 1
   const steps = named.length > 0 ? `${one ? 'the step' : 'the steps'} ${listSteps(named)}` : 'the steps after the answer'
   const summary =
@@ -1127,13 +1129,16 @@ export async function sendOutcomeDeadLetterAlert(
   // reads as a recoverable delay, not a permanent loss, matching the guidance.
   const err = payload.error_code ? { code: payload.error_code, message: '' } : null
   const drainRecoverable = payload.label === 'execution_finalize' && !isNoRowMatchedError(err)
-  const wasWere = payload.window_loss_count === 1 ? 'write was' : 'writes were'
+  const n = payload.window_loss_count
+  // Approximate above one (#1881): see sendLostWritebackAlert.
+  const count = n === 1 ? '*1*' : `About *${n}*`
+  const wasWere = n === 1 ? 'write was' : 'writes were'
   const how = payload.error_code === READ_BACK_MISSING_CODE
     ? 'timed out, and reading it back afterwards found it never landed'
     : 'failed after all retries'
   const summary = drainRecoverable
-    ? `A finalize write (*${payload.label}*) ${how}, so *${payload.window_loss_count}* execution ${payload.window_loss_count === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
-    : `A must-not-lose outcome write (*${payload.label}*) ${how}. *${payload.window_loss_count}* ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
+    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} execution ${n === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
+    : `A must-not-lose outcome write (*${payload.label}*) ${how}. ${count} ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
   const blocks = [
     {
       type: 'header',
@@ -1156,6 +1161,92 @@ export async function sendOutcomeDeadLetterAlert(
   )) !== null
 }
 
+export interface SlowdownSummaryAlert {
+  /** Runs with at least one record in the slowdown. */
+  runs: number
+  /** Their workflows, with how many runs each, most first. */
+  workflows: Array<{ name: string; runs: number }>
+  /** Records read back, step row sets included. */
+  records: number
+  landed: number
+  /** Outcome records that never landed. */
+  lost: number
+  /**
+   * Records still unreadable when the summary went out, each already named by
+   * the Records could not be confirmed alert (the database was still down).
+   */
+  unconfirmed?: number
+  /** The runs those records belong to, and which records each lost. */
+  lost_runs?: Array<{ workflow_id: string; workflow_name: string; execution_id: string; labels: string[] }>
+  /** Runs whose step rows a read back found incomplete. */
+  steps_missing: number
+  /** First seen time of the earliest and latest timed out write, ISO. */
+  from: string
+  to: string
+}
+
+/**
+ * One message per database slowdown (#1881). On 2026-10-08 a single stall posted
+ * about 35 messages inside a minute, every one with the same cause. The minute
+ * sweep sends this once it has read back everything the slowdown left: how many
+ * runs, which workflows, and whether every record landed.
+ */
+export async function sendSlowdownSummaryAlert(
+  connection: { bot_token: string; default_channel: string },
+  payload: SlowdownSummaryAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const clock = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso))
+  const from = clock(payload.from)
+  const to = clock(payload.to)
+  const when = from === to ? `At ${from} ET` : `Between ${from} and ${to} ET`
+  const unconfirmed = payload.unconfirmed ?? 0
+  const allLanded = payload.lost === 0 && payload.steps_missing === 0 && unconfirmed === 0
+  const title = allLanded
+    ? 'Database slowdown, every record saved'
+    : payload.lost > 0 || payload.steps_missing > 0
+      ? 'Database slowdown, some records not saved'
+      : 'Database slowdown, some records not yet confirmed'
+  const runs = payload.runs === 1 ? '1 run' : `${payload.runs} runs`
+  const shown = payload.workflows.slice(0, 5)
+  const others = payload.workflows.length - shown.length
+  const workflows = shown.map((w) => `${slackText(w.name)} (${w.runs})`).join(', ') + (others > 0 ? ` and ${others} more` : '')
+  const what =
+    `${when} the database answered too slowly for ${runs} to confirm their records in time: ${workflows}. ` +
+    'Every one of them had already answered its lead.'
+  const result = allLanded
+    ? `Bidspoke read every record back afterwards, and all ${payload.records} landed.`
+    : [
+        `Bidspoke read the records back afterwards: ${payload.landed} of ${payload.records} landed.`,
+        payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did.` : '',
+        unconfirmed > 0
+          ? `${unconfirmed === 1 ? '1 record still could not be read back' : `${unconfirmed} records still could not be read back`}, and the Records could not be confirmed alert names ${unconfirmed === 1 ? 'it' : 'them'}.`
+          : '',
+        payload.steps_missing > 0 ? `${payload.steps_missing === 1 ? '1 run is' : `${payload.steps_missing} runs are`} missing some step records, so the step by step view of ${payload.steps_missing === 1 ? 'that run' : 'those runs'} is incomplete.` : '',
+      ].filter(Boolean).join(' ')
+  const fix = allLanded
+    ? '*Fix:* Nothing to do. If this keeps happening, check the database load on Supabase.'
+    : payload.lost > 0
+      ? '*Fix:* Re-derive the lost records from the runs below. Missing step records cannot be recovered and need nothing.'
+      : payload.steps_missing > 0
+        ? '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
+        : '*Fix:* Nothing to redo yet. Bidspoke keeps reading the unconfirmed records back and alerts on any it finds missing.'
+  const lostRuns = payload.lost_runs ?? []
+  const listed = lostRuns.slice(0, 10)
+  const lostLinks =
+    listed
+      .map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${slackLinkLabel(r.workflow_name)} run> (${[...new Set(r.labels.map(recordNoun))].join(', ')})`)
+      .join('\n') + (lostRuns.length > listed.length ? `\nand ${lostRuns.length - listed.length} more` : '')
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: `${what} ${result}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  if (listed.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lostLinks } })
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`)) !== null
+}
+
 export interface UnconfirmedWritesAlert {
   /** Records still unconfirmed in this alert. */
   count: number
@@ -1169,13 +1260,18 @@ export interface UnconfirmedWritesAlert {
   runs: Array<{ workflow_id: string; workflow_name: string; execution_id: string }>
 }
 
+/** A person edited name made safe inside mrkdwn text: `<` and `&` are markup there. */
+function slackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /**
  * A person edited name made safe as the label of a Slack link: Slack's mrkdwn
  * reads `&`, `<` and `>` as markup and `|` as the end of the address, so a name
  * holding one breaks the link or injects markup.
  */
 function slackLinkLabel(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\|/g, '/')
+  return slackText(text).replace(/\|/g, '/')
 }
 
 /** What a dead letter label wrote, as a reader names it. */

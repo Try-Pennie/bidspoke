@@ -29,6 +29,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from '../lib/format-error'
+import { isPermanentDbError, toDbError } from '../lib/db-retry'
 
 export const UNCONFIRMED_WRITE_PREFIX = 'unconfirmed-write:'
 
@@ -58,6 +59,20 @@ export type ReadBack =
   | { kind: 'bid_present'; execution_id: string; partner_slug: string; attempted_at_utc: string }
   /** The winner mark: the partner's bid row in this run carries is_winner. */
   | { kind: 'bid_winner'; execution_id: string; partner_slug: string; attempted_from: string; attempted_to: string }
+  /**
+   * The run's step rows (#1881): at least `expected` of them. execution_steps is
+   * partitioned on each step's own started_at, so the read is bounded by the
+   * run's start and an hour after it. Tier 1: a miss is told in the slowdown
+   * summary, never dead-lettered.
+   */
+  | {
+      kind: 'steps_present'
+      execution_id: string
+      execution_started_at: string
+      started_from: string
+      started_to: string
+      expected: number
+    }
 
 /** The run a write belonged to, for the alert and the slowdown summary. */
 export interface UnconfirmedRun {
@@ -128,7 +143,12 @@ export type ReadBackVerdict =
   | { verdict: 'landed' }
   /** The effect is not there. `row_absent` when the row itself is missing. */
   | { verdict: 'missing'; row_absent: boolean; detail: string }
-  | { verdict: 'unreadable'; error: string }
+  /**
+   * The database did not give an answer. `permanent` when it refused this read
+   * for good (a schema error), which says nothing about whether it would answer
+   * the next one; otherwise it is not answering at all.
+   */
+  | { verdict: 'unreadable'; error: string; permanent?: boolean }
 
 type Rows = { data: unknown; error: unknown }
 
@@ -172,6 +192,15 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
           .eq('attempted_at_utc', check.attempted_at_utc)
           .limit(1)
         break
+      case 'steps_present':
+        res = await supabase
+          .from('execution_steps')
+          .select('id')
+          .eq('execution_id', check.execution_id)
+          .gte('started_at', check.started_from)
+          .lt('started_at', check.started_to)
+          .limit(check.expected)
+        break
       case 'bid_winner':
         res = await supabase
           .from('lead_sighting_bids')
@@ -188,9 +217,15 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
   } catch (e) {
     return { verdict: 'unreadable', error: formatErr(e) }
   }
-  if (res.error) return { verdict: 'unreadable', error: formatErr(res.error) }
+  if (res.error) return { verdict: 'unreadable', error: formatErr(res.error), permanent: isPermanentDbError(toDbError(res.error)) }
   const row = firstRow(res)
   switch (check.kind) {
+    case 'steps_present': {
+      const found = Array.isArray(res.data) ? res.data.length : 0
+      return found >= check.expected
+        ? { verdict: 'landed' }
+        : { verdict: 'missing', row_absent: found === 0, detail: `${found} of ${check.expected} step rows` }
+    }
     case 'execution_finalized':
       if (!row) return { verdict: 'missing', row_absent: true, detail: 'the execution row is not there' }
       if (row.status === 'running') return { verdict: 'missing', row_absent: false, detail: "the execution row is still at status 'running'" }

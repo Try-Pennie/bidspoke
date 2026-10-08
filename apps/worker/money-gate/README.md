@@ -198,7 +198,9 @@ For each live fixture of each money flow it:
    (#1851), with the engine handed the Worker's own lead client over that network;
 5. requires each down run to match its twin on the response, every request sent,
    every code dispatch, every route taken, the nodes run and the Durable Object
-   state. Writes to the database are not compared: losing the logging of a run
+   state, except the alert claims (`DO_STATE_NOT_COMPARED` in `lib/outage.ts`):
+   an outage is expected to raise alerts its twin does not, and since #1881 the
+   outcome dead letter's cooldown is an alert claim. Writes to the database are not compared: losing the logging of a run
    in an outage is allowed (Dan, 2026-09-10); losing the lead is not. In the
    hung shape the lead must also be answered within `HUNG_ANSWER_ALLOWANCE_MS`
    (2 s) of its twin, since Engine's own timeout is recorded nowhere, and a run

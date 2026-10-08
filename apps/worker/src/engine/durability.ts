@@ -18,11 +18,12 @@
 //    withDbRetry — an HTTP PATCH is not a PostgREST op).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { withDbRetry, isDuplicateError, toDbError, DB_WRITE_RETRY_DELAYS_MS, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, toDbError, DB_WRITE_RETRY_DELAYS_MS, READ_BACK_MISSING_CODE, type DbError } from '../lib/db-retry'
 import { withinBudget, type RetryTiming } from '../lib/post-response-budget'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
 import { putUnconfirmedWrite, type ReadBack, type UnconfirmedRun } from './unconfirmed-writes'
+import type { AlertClaims } from '../lib/alert-claim'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -51,6 +52,11 @@ export interface OutcomeDeps {
   run?: UnconfirmedRun
   /** Wall clock for an unconfirmed entry's first seen time; Date.now unless a test sets it. */
   now?: () => number
+  /**
+   * The atomic claim that decides which dead letter of a burst posts (#1881).
+   * Absent, the eventually consistent KV cooldown stands in.
+   */
+  claims?: AlertClaims
 }
 
 // The deps an outcome-write function carries when its caller already holds the
@@ -66,7 +72,10 @@ export const OUTCOME_DEAD_LETTER_THRESHOLD = 1
 export const OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS = 30 * 60
 export const OUTCOME_DEAD_LETTER_WINDOW_MINUTES = OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS / 60
 
-// Count of losses in the current burst, NOT a consecutive streak (#599). The old
+// Count of losses in the current burst, NOT a consecutive streak (#599). It is a
+// KV read then write, so isolates writing at once can overwrite each other's
+// increment: the count is approximate, never above the truth, and the alert says
+// "about" (#1881). Who posts is decided atomically, by the AlertClaim. The old
 // streak was cleared on every success, so a partial outage (only the fast path
 // racing, successes interleaved) almost never exceeded 1 and every alert said
 // "1 in a row" while hundreds were lost. This counter is incremented on every
@@ -148,6 +157,9 @@ export async function recordUnconfirmedOutcome(
   readBack: ReadBack,
   error: DbError,
   deps: OutcomeDeps,
+  // False for a tier 1 record (the step rows, #1881): read back for the slowdown
+  // summary, but its loss is never dead-lettered, so neither is a failed entry.
+  options: { deadLetterOnFailure: boolean } = { deadLetterOnFailure: true },
 ): Promise<void> {
   const nowMs = (deps.now ?? Date.now)()
   try {
@@ -165,6 +177,10 @@ export async function recordUnconfirmedOutcome(
       nowMs,
     )
   } catch (e) {
+    if (!options.deadLetterOnFailure) {
+      console.error(`[durability] ${label}: could not record the unconfirmed write:`, formatErr(e))
+      return
+    }
     console.error(`[durability] ${label}: could not record the unconfirmed write, dead-lettering it instead:`, formatErr(e))
     await recordOutcomeDeadLetter(label, error, deps, deps.run ? { ...deps.run, at: new Date(nowMs).toISOString() } : undefined).catch((err) =>
       console.error('[durability] dead-letter alert failed:', err),
@@ -181,6 +197,10 @@ export async function recordOutcomeDeadLetter(
   error: unknown,
   deps: OutcomeDeps,
   run?: OutcomeDeadLetterAlert['run'],
+  // Why the record was lost, when the caller knows better than the error code:
+  // the read back sweep gives a missing execution row NO_ROW_MATCHED for its
+  // wording, and that loss is still a slowdown's, not a returned error.
+  options: { cause?: 'read-back' | 'error' } = {},
 ): Promise<boolean> {
   const { kv, orgId } = deps
 
@@ -194,11 +214,40 @@ export async function recordOutcomeDeadLetter(
   })
 
   if (windowCount < OUTCOME_DEAD_LETTER_THRESHOLD) return false
-  if (await kv.get(cooldownKey(orgId, label))) return false
 
-  const slack = await getSlackConnection(deps.supabase, orgId)
-  if (!slack || !slack.config_alerts_enabled) return false
+  // Who posts (#1881). The KV cooldown below is a read then a later write, and KV
+  // is eventually consistent across isolates, so every dead letter of one burst
+  // read no cooldown and posted: 11, 12 and 13 within a minute on 2026-10-08. The
+  // AlertClaim object answers that atomically. It is keyed on the CAUSE as well as
+  // the label, so a write that returned an error still pages beside a slowdown's
+  // read back losses of the same label (L707). Without a claim (tests, one off
+  // backfills) the KV cooldown stands in, as before.
+  const errorCode = toDbError(error).code ?? null
+  const cause = options.cause ?? (errorCode === READ_BACK_MISSING_CODE ? 'read-back' : 'error')
+  const claimKey = `outcome-deadletter:${orgId}:${label}:${cause}`
+  if (deps.claims) {
+    if (!(await deps.claims.claim(claimKey, OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS))) return false
+  } else if (await kv.get(cooldownKey(orgId, label))) {
+    return false
+  }
 
+  // A read that throws frees the claim too, or one bad read would silence this
+  // label for the whole window.
+  const slack = await getSlackConnection(deps.supabase, orgId).catch(async (e: unknown) => {
+    await deps.claims?.release(claimKey)
+    throw e
+  })
+  if (!slack) {
+    // No connection could be read, which mid outage is the database: free the
+    // claim so a later loss can still post.
+    await deps.claims?.release(claimKey)
+    return false
+  }
+  // Alerts switched off: the claim is kept, since there is nothing to post and
+  // nothing a later loss could post either.
+  if (!slack.config_alerts_enabled) return false
+
+  // A post that throws (the network, not Slack refusing) frees the claim as well.
   const sent = await sendOutcomeDeadLetterAlert(
     slack,
     {
@@ -208,14 +257,18 @@ export async function recordOutcomeDeadLetter(
       error_message: formatErr(error),
       // Pass the SQLSTATE / PostgREST code so the alert can give cause-specific
       // remediation instead of always blaming Supabase / the purge window (#600).
-      error_code: toDbError(error).code ?? null,
+      error_code: errorCode,
       ...(run ? { run } : {}),
     },
     deps.appUrl,
-  )
+  ).catch(async (e: unknown) => {
+    await deps.claims?.release(claimKey)
+    throw e
+  })
 
-  // Only start the cooldown once the alert delivered, so a failed Slack post
+  // Only hold the cooldown once the alert delivered, so a failed Slack post
   // doesn't suppress the next attempt while the loss goes unannounced.
-  if (sent) await kv.put(cooldownKey(orgId, label), '1', { expirationTtl: OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS })
+  if (!sent) await deps.claims?.release(claimKey)
+  else if (!deps.claims) await kv.put(cooldownKey(orgId, label), '1', { expirationTtl: OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS })
   return sent
 }

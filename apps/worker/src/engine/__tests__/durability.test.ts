@@ -15,7 +15,7 @@ vi.mock('../../lib/slack', () => ({
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../../lib/slack'
 import { writeOutcome, writeObservability, recordOutcomeDeadLetter } from '../durability'
 import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
-import { DB_WRITE_RETRY_DELAYS_MS } from '../../lib/db-retry'
+import { DB_WRITE_RETRY_DELAYS_MS, READ_BACK_MISSING_CODE } from '../../lib/db-retry'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { UNCONFIRMED_WRITE_PREFIX, type ReadBack } from '../unconfirmed-writes'
 
@@ -287,5 +287,101 @@ describe('writeOutcome inside the post-response budget (#1850)', () => {
     await clock.run()
     await p
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+  })
+})
+
+// #1881: the cooldown lived in KV, which is eventually consistent across
+// isolates, so the dead letters of one burst all read no cooldown and each
+// posted (Dan saw counts 11, 12, 13 inside a minute on 2026-10-08). The atomic
+// AlertClaim decides who posts instead.
+describe('the dead letter cooldown on the alert claim (#1881)', () => {
+  function claimsDouble() {
+    const held = new Set<string>()
+    const keys: string[] = []
+    const released: string[] = []
+    return {
+      keys,
+      released,
+      async claim(key: string) {
+        keys.push(key)
+        if (held.has(key)) return false
+        held.add(key)
+        return true
+      },
+      async release(key: string) {
+        released.push(key)
+        held.delete(key)
+      },
+    }
+  }
+
+  it('a burst of concurrent dead letters for one label sends exactly one alert', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    await Promise.all(
+      Array.from({ length: 6 }, () => recordOutcomeDeadLetter('execution_finalize', PERMANENT, { ...deps(kv), claims })),
+    )
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('without the claim the same burst posts more than once, which is the defect', async () => {
+    const kv = fakeKv()
+    await Promise.all(
+      Array.from({ length: 6 }, () => recordOutcomeDeadLetter('execution_finalize', PERMANENT, deps(kv))),
+    )
+    expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('frees the claim when the alert did not deliver, so the next loss can post', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValueOnce(false)
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
+    expect(claims.released).toHaveLength(1)
+  })
+
+  it('keys the claim on the cause, so a returned error still alerts beside a read back loss of the same label', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    await recordOutcomeDeadLetter('lead_sightings.insert', { code: READ_BACK_MISSING_CODE, message: 'read back missing' }, { ...deps(kv), claims })
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
+    expect(new Set(claims.keys).size).toBe(2)
+  })
+
+  it('keys a read back loss on its cause even when its code names a missing row', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    await recordOutcomeDeadLetter('execution_finalize', { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'read back: no row' }, { ...deps(kv), claims }, undefined, { cause: 'read-back' })
+    await recordOutcomeDeadLetter('execution_finalize', { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'returned: no row' }, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('frees the claim when posting the alert throws', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    vi.mocked(sendOutcomeDeadLetterAlert).mockRejectedValueOnce(new Error('network'))
+    await expect(recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })).rejects.toThrow('network')
+    expect(claims.released).toHaveLength(1)
+  })
+
+  it('frees the claim when reading the Slack connection throws', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    vi.mocked(getSlackConnection).mockRejectedValueOnce(new Error('db down'))
+    await expect(recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })).rejects.toThrow('db down')
+    expect(claims.released).toHaveLength(1)
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('still counts every loss into the window while the claim suppresses the alert', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    for (let i = 0; i < 3; i++) await recordOutcomeDeadLetter('lead_sightings.finalize', PERMANENT, { ...deps(kv), claims })
+    expect(kv.store.get('outcome-deadletter-window:org-1:lead_sightings.finalize')).toBe('3')
   })
 })
