@@ -123,3 +123,61 @@ describe('gateVerdict', () => {
     expect(v.output).toContain('money gate: committed definitions the head did not replay: missing-1')
   })
 })
+
+describe('gateVerdict leftover expected changes (#1836)', () => {
+  const entry = (workflow: string, node: string) => ({ workflow, check: 'route', node, field: 'route', reason: `An older change on ${workflow}` })
+  const file = (...entries: Array<ReturnType<typeof entry>>) => JSON.stringify({ entries })
+  const OLD = file(entry('W', 'b'), entry('W', 'c'), entry('Main Flow', 'd'))
+  const LIVE = 'abcdef1234567890abcdef1234567890abcdef12'
+  const same = () => [t('base', [fx('yes')]), t('head', [fx('yes')])] as const
+  const noteLines = (out: string) => out.split('\n').filter((l) => l.includes('carried over from the merge base'))
+
+  it('prints every leftover entry as one line with the count and the workflows, not one line each', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD })
+    expect(v.exitCode).toBe(0)
+    expect(noteLines(v.output)).toEqual(['note: 3 expected change(s) carried over from the merge base, excusing nothing; delete them (Main Flow, W)'])
+  })
+
+  it('fails by name on a leftover entry the live worker already carries, since it can never excuse anything again', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: file(entry('W', 'b')) } })
+    expect(v.exitCode).toBe(1)
+    expect(v.output).toContain('money gate: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1), so they can never excuse a difference again; delete them: W route node b field "route"')
+    // The two the live worker does not carry yet are still only a note.
+    expect(noteLines(v.output)).toEqual(['note: 2 expected change(s) carried over from the merge base, excusing nothing; delete them (Main Flow, W)'])
+  })
+
+  it('never fails on an entry new in this change, even one the live worker carries', () => {
+    const v = verdict(t('base', [fx('yes')]), t('head', [fx('else')]), { expectedHead: EXCUSE, expectedBase: null, expectedLive: { commit: LIVE, text: EXCUSE } })
+    expect(v.exitCode).toBe(0)
+  })
+
+  it('a live worker with no expected-changes.json makes nothing stale', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: null } })
+    expect(v.exitCode).toBe(0)
+  })
+
+  it('a live copy that cannot be read is a note, never a failure, so an outage cannot block a merge', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { unreadable: 'the live worker reported no commit' } })
+    expect(v.exitCode).toBe(0)
+    expect(v.output).toContain("note: the live worker's expected-changes.json could not be read (the live worker reported no commit), so leftover entries were not checked against it")
+  })
+
+  it('a live copy that does not parse is a note, never a failure', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: '{ nope' } })
+    expect(v.exitCode).toBe(0)
+    expect(v.output).toContain("note: the live worker's expected-changes.json could not be read (it does not parse as JSON), so leftover entries were not checked against it")
+  })
+
+  it('names a malformed live entry plainly in the note', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: JSON.stringify({ entries: [{ check: 'route', field: 'route', reason: 'x' }] }) } })
+    expect(v.exitCode).toBe(0)
+    expect(v.output).toMatch(/could not be read \(entry 0: [^)]*workflow/)
+    expect(v.output).not.toContain('it entry')
+  })
+
+  it('says nothing about the live worker when it was not asked, as on a Deploy', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD })
+    expect(v.output).not.toContain('live worker')
+  })
+})
+

@@ -110,6 +110,11 @@ export function applyExpectedChanges(
 
 export { describeEntry }
 
+/** One entry as a comparable string, the form both the merge base and the live copy are matched by. */
+export function canonicalEntry(e: ExpectedChange): string {
+  return canonical(e)
+}
+
 /**
  * What money-gate.sh hands the verdict for the merge base's copy: the path of the
  * file, or this marker when git confirmed the file does not exist at the base
@@ -126,4 +131,40 @@ export function resolveExpectedBase(
   if (handedOver === ABSENT_AT_BASE) return { text: null, failure: null }
   if (!fs.exists(handedOver)) return { text: null, failure: `the merge base's expected-changes.json at ${handedOver} cannot be read, so which entries are new cannot be told` }
   return { text: fs.read(handedOver), failure: null }
+}
+
+/**
+ * The live worker's copy of expected-changes.json (#1836). An entry already in the
+ * commit production runs was added by a change that has shipped, so it can never
+ * excuse a difference again in any comparison: a pull request, a push, or a Deploy
+ * dispatched against the live worker. Only the pull request job asks for it
+ * (money-gate.sh, MONEY_GATE_LIVE_WORKER_URL), so a Deploy never fails on it.
+ */
+export const ABSENT_AT_LIVE = 'absent-at-live'
+const UNREADABLE = 'unreadable:'
+
+export type ExpectedLive = { commit: string; text: string | null } | { unreadable: string }
+
+/** What money-gate.sh handed over, as the verdict reads it; undefined when it was not asked. */
+export function resolveExpectedLive(
+  handedOver: string | undefined,
+  commit: string | undefined,
+  fs: { exists: (p: string) => boolean; read: (p: string) => string },
+): ExpectedLive | undefined {
+  if (!handedOver) return undefined
+  if (handedOver.startsWith(UNREADABLE)) return { unreadable: handedOver.slice(UNREADABLE.length) }
+  if (!commit) return { unreadable: 'no live commit was handed over with it' }
+  if (handedOver === ABSENT_AT_LIVE) return { commit, text: null }
+  if (!fs.exists(handedOver)) return { unreadable: `the file ${handedOver} the script wrote is not there` }
+  return { commit, text: fs.read(handedOver) }
+}
+
+/** The carried over entries the live copy also holds, or why the live copy could not be read. */
+export function shippedEntries(carriedOver: ExpectedChange[], live: ExpectedLive): { shipped: ExpectedChange[]; unreadable: string | null } {
+  if ('unreadable' in live) return { shipped: [], unreadable: live.unreadable }
+  const parsed = parseExpectedChanges(live.text)
+  // "expected-changes.json does not parse" reads as "it does not parse"; an entry's own problem keeps its number.
+  if (parsed.failures.length) return { shipped: [], unreadable: parsed.failures.map((f) => f.replace(/^expected-changes\.json (does not|has no)/, 'it $1').replace(/^expected-changes\.json /, '')).join('; ') }
+  const atLive = new Set(parsed.entries.map(canonical))
+  return { shipped: carriedOver.filter((e) => atLive.has(canonical(e))), unreadable: null }
 }
