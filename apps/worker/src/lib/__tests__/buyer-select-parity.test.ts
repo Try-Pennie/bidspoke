@@ -24,6 +24,7 @@ import {
   refreshableDays,
   runParityRefresh,
   runParityRefreshAndPage,
+  EVERY_ORGANIZATION,
   summariseParityDay,
   windowComplete,
   type ParityExecution,
@@ -288,7 +289,7 @@ describe('runParityRefresh', () => {
 
   it('writes one row per workflow and refreshable day, with the counts, the hash and the window flag, and never a sign off column', async () => {
     const { deps, upserts } = refreshDeps()
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     // Today and yesterday only (#1497): a day's step rows never change once it
     // is over, so older days keep the row they have, and re-reading every day
     // inside retention each hour at the Engine flow's volume would spend the
@@ -312,7 +313,7 @@ describe('runParityRefresh', () => {
         readRows: async () => [],
       },
     })
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(summary.errors.join(' ')).toMatch(/2027-09-19.*statement timeout/)
     expect(upserts.map((r) => r.et_day)).not.toContain('2027-09-19')
     expect(upserts.length).toBe(1)
@@ -320,14 +321,14 @@ describe('runParityRefresh', () => {
 
   it('a workflow whose buyer has no rules is skipped by name rather than classified against nothing', async () => {
     const { deps, upserts } = refreshDeps({ rules: async () => null })
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(upserts).toEqual([])
     expect(summary.errors.join(' ')).toMatch(/wf-engine.*no accept and decline rules/)
   })
 
   it('does nothing in local dev, and says so', async () => {
     const { deps, upserts } = refreshDeps({ localDev: true })
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(summary.skipped).toBe('local_dev')
     expect(upserts).toEqual([])
   })
@@ -342,14 +343,14 @@ describe('runParityRefresh', () => {
     })
     const paged: string[][] = []
     const notify = async (lines: string[]) => { paged.push(lines) }
-    await runParityRefreshAndPage(failing.deps, notify)
+    await runParityRefreshAndPage(failing.deps, notify, EVERY_ORGANIZATION)
     expect(paged).toHaveLength(1)
     expect(paged[0].join(' ')).toMatch(/wf-engine 2027-09-19.*statement timeout/)
     const clean = refreshDeps()
-    await runParityRefreshAndPage(clean.deps, notify)
+    await runParityRefreshAndPage(clean.deps, notify, EVERY_ORGANIZATION)
     expect(paged[1]).toEqual([])
     const skipped = refreshDeps({ localDev: true })
-    await runParityRefreshAndPage(skipped.deps, notify)
+    await runParityRefreshAndPage(skipped.deps, notify, EVERY_ORGANIZATION)
     expect(paged).toHaveLength(2)
   })
 
@@ -386,7 +387,7 @@ describe('runParityRefresh', () => {
 
     it('keeps a final row and does not read the day again', async () => {
       const t = tracking(FINAL)
-      const summary = await runParityRefresh(t.deps)
+      const summary = await runParityRefresh(t.deps, EVERY_ORGANIZATION)
       expect(t.readYesterday()).toBe(false)
       expect(t.upserts.map((r) => r.et_day)).toEqual(['2027-09-20'])
       expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
@@ -395,14 +396,14 @@ describe('runParityRefresh', () => {
 
     it('keeps a final row whose canary timing was measured, so only a failed timing read is retried (#1909)', async () => {
       const t = tracking({ ...FINAL, stage_b: { ...FINAL.stage_b, canary: { timing: { attempts: 3, executions_untimed: 0 } } } })
-      const summary = await runParityRefresh(t.deps)
+      const summary = await runParityRefresh(t.deps, EVERY_ORGANIZATION)
       expect(t.readYesterday()).toBe(false)
       expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
     })
 
     it('never asks about today, which is incomplete by construction', async () => {
       const t = tracking(FINAL)
-      await runParityRefresh(t.deps)
+      await runParityRefresh(t.deps, EVERY_ORGANIZATION)
       expect(t.asked).toEqual(['2027-09-19'])
     })
 
@@ -416,7 +417,7 @@ describe('runParityRefresh', () => {
       ['a row with an unreadable timestamp', { ...FINAL, summarised_at: 'not a time' }],
     ])('reads the day again given %s', async (_label, stored) => {
       const t = tracking(stored)
-      const summary = await runParityRefresh(t.deps)
+      const summary = await runParityRefresh(t.deps, EVERY_ORGANIZATION)
       expect(t.readYesterday()).toBe(true)
       expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
       expect(summary.kept_final).toEqual([])
@@ -424,7 +425,7 @@ describe('runParityRefresh', () => {
 
     it('reads the day again when the stored row cannot be read, and says so, because reading is the safe side', async () => {
       const t = tracking(new Error('buyer_select_parity_days: statement timeout'))
-      const summary = await runParityRefresh(t.deps)
+      const summary = await runParityRefresh(t.deps, EVERY_ORGANIZATION)
       expect(t.readYesterday()).toBe(true)
       expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
       expect(t.logged.join(' ')).toMatch(/2027-09-19.*statement timeout/)
@@ -433,7 +434,7 @@ describe('runParityRefresh', () => {
 
     it('a run asked for one day reads it whatever its row says, so the route can still re-run any day by hand', async () => {
       const t = tracking(FINAL)
-      await runParityRefresh(t.deps, { day: '2027-09-19' })
+      await runParityRefresh(t.deps, { ...EVERY_ORGANIZATION, day: '2027-09-19' })
       expect(t.readYesterday()).toBe(true)
       expect(t.asked).toEqual([])
     })
@@ -443,9 +444,48 @@ describe('runParityRefresh', () => {
     const paged: string[][] = []
     const notify = async (lines: string[]) => { paged.push(lines) }
     const clean = refreshDeps()
-    await runParityRefreshAndPage(clean.deps, notify, { day: '2027-09-19' })
-    await runParityRefreshAndPage(clean.deps, notify, { workflowId: 'wf-engine' })
+    await runParityRefreshAndPage(clean.deps, notify, { ...EVERY_ORGANIZATION, day: '2027-09-19' })
+    await runParityRefreshAndPage(clean.deps, notify, { ...EVERY_ORGANIZATION, workflowId: 'wf-engine' })
+    await runParityRefreshAndPage(clean.deps, notify, { organizationId: 'org-1' })
     expect(paged).toEqual([])
+  })
+
+  it('must be told which organisations it covers: leaving the scope out does not compile, so forgetting it can never mean every tenant (L72)', async () => {
+    const { deps } = refreshDeps()
+    // Type checked, never called: the assertion is the compiler's, and running these would only reject (L749).
+    const neverRun = () => [
+      // @ts-expect-error a refresh with no scope is refused at compile time
+      runParityRefresh(deps),
+      // @ts-expect-error an organisation is named or every one is asked for, never left out
+      runParityRefresh(deps, { day: '2027-09-19' }),
+    ]
+    expect(typeof neverRun).toBe('function')
+  })
+
+  it.each([
+    ['an empty scope', {}],
+    ['a scope with a blank organisation', { organizationId: '' }],
+    ['a scope asking for something other than every organisation', { organizations: 'some' }],
+  ])('refuses %s at runtime, writes nothing and does not page, rather than reading it as every organisation (L42)', async (_label, scope) => {
+    const { deps, upserts } = refreshDeps()
+    const paged: string[][] = []
+    const summary = await runParityRefreshAndPage(deps, async (lines) => { paged.push(lines) }, scope as never)
+    expect(upserts).toEqual([])
+    expect(summary.rows_written).toBe(0)
+    expect(summary.errors).toEqual([expect.stringMatching(/names no organisation/)])
+    expect(paged).toEqual([])
+  })
+
+  it('the hourly job\'s every organisation scope cannot be changed by a caller, so no code can narrow or widen it for the whole process', () => {
+    expect(Object.isFrozen(EVERY_ORGANIZATION)).toBe(true)
+  })
+
+  it('a run scoped to one organisation reads and writes only that organisation\'s workflows, and names no other one in its answer', async () => {
+    const other = { id: 'wf-other', organization_id: 'org-2' }
+    const { deps, upserts } = refreshDeps({ listWorkflows: async () => [WF, other], rules: async (org) => (org === 'org-2' ? null : RULES) })
+    const summary = await runParityRefresh(deps, { organizationId: 'org-1' })
+    expect(new Set(upserts.map((r) => r.workflow_id))).toEqual(new Set(['wf-engine']))
+    expect(JSON.stringify(summary)).not.toContain('wf-other')
   })
 })
 
@@ -482,7 +522,7 @@ describe('the Stage B figures on each row (#1809)', () => {
 
   it('writes the Stage B report beside the counts, outside the counts hash so it cannot clear a sign off', async () => {
     const { deps, upserts } = base()
-    await runParityRefresh(deps)
+    await runParityRefresh(deps, EVERY_ORGANIZATION)
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today?.stage_b).toMatchObject({ legacy: { attempts: 1, accepted: 1, duration_p50_ms: 2750 }, canary: { attempts: 0 }, bid_rows: { legacy_missing: 0, legacy_multiple: 0 } })
     const { stage_b: _b, workflow_id: _w, et_day: _d, organization_id: _o, window_complete: _c, counts_hash, ...counts } = today as ParityRowWrite
@@ -491,7 +531,7 @@ describe('the Stage B figures on each row (#1809)', () => {
 
   it('a bid read that fails leaves the row written, with only the bid check unmeasured and the reason named (L73)', async () => {
     const { deps, upserts } = base({ bids: { earliestBidRowIso: async () => { throw new Error('lead_sighting_bids: statement timeout') }, listBidExecutions: async () => [] } })
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(summary.errors).toEqual([])
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today?.stage_b?.bid_rows).toEqual({ unmeasured: expect.stringMatching(/statement timeout/) })
@@ -514,7 +554,7 @@ describe('the Stage B figures on each row (#1809)', () => {
       read: liveSale,
       timing: { listAttemptTiming: async (ids, from, to) => { asked = [ids, from, to]; return [{ execution_id: 'e1', timing: { before_call_ms: 400, call_ms: 3000, after_call_ms: 200, claim_ms: 300, mirror_ms: 180 } }] } },
     })
-    await runParityRefresh(deps)
+    await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(asked).toEqual([['e1'], '2027-09-20T04:00:00.000Z', '2027-09-21T04:00:00.000Z'])
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today?.stage_b?.canary.timing).toMatchObject({ attempts: 1, overhead: { p50_ms: 600 }, calls: { claim: { p50_ms: 300 }, mirror: { p50_ms: 180 } } })
@@ -522,7 +562,7 @@ describe('the Stage B figures on each row (#1809)', () => {
 
   it('a timing read that fails leaves the row written, with only the timing unmeasured and the reason named (L73)', async () => {
     const { deps, upserts } = base({ read: liveSale, timing: { listAttemptTiming: async () => { throw new Error('execution_steps: statement timeout') } } })
-    const summary = await runParityRefresh(deps)
+    const summary = await runParityRefresh(deps, EVERY_ORGANIZATION)
     expect(summary.errors).toEqual([])
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today?.stage_b?.canary.timing).toEqual({ unmeasured: expect.stringMatching(/statement timeout/) })

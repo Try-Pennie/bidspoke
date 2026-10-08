@@ -12,7 +12,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { dbError } from '../../lib/api-error'
 import { createSupabaseClient } from '../../lib/supabase'
-import { runBuyerSelectParityRefreshForEnv } from '../../lib/buyer-select-parity'
+import { runBuyerSelectParityRefreshForEnv, type RefreshScope } from '../../lib/buyer-select-parity'
 
 const parity = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -45,9 +45,11 @@ parity.get('/', async (c) => {
 parity.post('/refresh', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  // An empty or missing body means every workflow and every refreshable day.
+  // An empty or missing body means every one of the caller's workflows and every
+  // refreshable day. Never another organisation's: the refresh writes rows and
+  // names workflows in its answer, so the scope is the caller's (L18).
   const body = await c.req.json<{ workflow_id?: unknown; day?: unknown }>().catch(() => ({} as { workflow_id?: unknown; day?: unknown }))
-  const only: { workflowId?: string; day?: string } = {}
+  const only: RefreshScope = { organizationId: orgId }
   if (body.workflow_id !== undefined) {
     if (typeof body.workflow_id !== 'string' || !UUID.test(body.workflow_id)) return c.json({ error: 'workflow_id_invalid' }, 400)
     // The workflow must be the caller's; a refresh names a workflow by id, so the

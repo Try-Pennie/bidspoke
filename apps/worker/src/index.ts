@@ -12,7 +12,7 @@ import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
-import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB } from './lib/buyer-select-parity'
+import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { getSlackConnection } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
@@ -534,7 +534,7 @@ const scheduledJobs = {
         completeAfter(
           writeHeartbeat(env.IDEMPOTENCY, BUYER_SELECT_PARITY_JOB)
             .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] heartbeat write failed:`, e))
-            .then(() => runBuyerSelectParityRefreshForEnv(supabase, env))
+            .then(() => runBuyerSelectParityRefreshForEnv(supabase, env, EVERY_ORGANIZATION))
             .then((s) => {
               if (s.skipped) return
               console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} kept_final=${s.kept_final.length} errors=${s.errors.length}`)
