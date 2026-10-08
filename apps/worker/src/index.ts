@@ -167,12 +167,14 @@ export default {
             return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           })
       )
-    } else if (event.cron === '15 8 * * *') {
+    } else if (event.cron === '17 8 * * *') {
       // Timeout audit, on its own off-peak schedule (#251). Its grouped
       // percentile queries are the heaviest thing we run against execution_steps,
       // so they sit in the quietest hour rather than at 9 AM ET. It is a separate
       // cron rather than a move of the whole 13:00 batch, because that batch also
       // carries nine other daily alerts whose arrival time nobody asked to change.
+      // At :17 because no database job starts then (#1884): at :15 it shared the
+      // minute with both rollup refreshes and slowed lead requests to 8.5 s.
       ctx.waitUntil(
         writeHeartbeat(env.IDEMPOTENCY, 'timeout-audit')
           .catch((e) => console.error('[cron-heartbeat] timeout-audit write failed:', e))

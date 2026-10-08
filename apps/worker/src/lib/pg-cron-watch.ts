@@ -42,6 +42,33 @@ const DAY = 24 * HOUR
  * wrong number is worse than an admitted gap: too small pages on a healthy job,
  * and too large is a staleness check that can never fire.
  */
+/**
+ * The minutes past the hour a cron minute field fires on, sorted and distinct,
+ * or null for anything malformed: a value past 59, a backwards range, a zero
+ * step or an empty list member is refused rather than read generously.
+ */
+function minutesOf(field: string): number[] | null {
+  const out = new Set<number>()
+  for (const part of field.split(',')) {
+    const m = /^(\*|(\d+)(?:-(\d+))?)(?:\/(\d+))?$/.exec(part)
+    if (!m) return null
+    const step = m[4] === undefined ? 1 : Number(m[4])
+    let from: number
+    let to: number
+    if (m[1] === '*') {
+      from = 0
+      to = 59
+    } else {
+      from = Number(m[2])
+      // A bare `a/n` means from a to the end of the hour, as cron reads it.
+      to = m[3] !== undefined ? Number(m[3]) : m[4] !== undefined ? 59 : from
+    }
+    if (step < 1 || step > 59 || from > 59 || to > 59 || from > to) return null
+    for (let v = from; v <= to; v += step) out.add(v)
+  }
+  return out.size === 0 ? null : [...out].sort((a, b) => a - b)
+}
+
 export function expectedGapMs(schedule: string): number | null {
   const fields = schedule.trim().split(/\s+/)
   if (fields.length !== 5) return null
@@ -52,19 +79,23 @@ export function expectedGapMs(schedule: string): number | null {
   const literal = (f: string) => /^\d+$/.test(f)
   const any = (f: string) => f === '*'
 
-  // `*/N * * * *`: every N minutes.
-  const step = /^\*\/(\d+)$/.exec(minute)
-  if (step && any(hour) && any(dom) && any(month) && any(dow)) {
-    const n = Number(step[1])
-    if (!Number.isInteger(n) || n < 1 || n > 59) return null
-    return n * MINUTE
+  // Every hour, at the minutes the minute field names: `*/N`, an offset step
+  // such as `1-59/5` (#1884 spreads the rollup refreshes onto these so no two
+  // heavy readers start together), a list such as `27,57`, or one literal. The
+  // gap is the longest one between consecutive fires, across the hour included.
+  if (any(hour) && any(dom) && any(month) && any(dow)) {
+    const minutes = minutesOf(minute)
+    if (minutes === null) return null
+    let longest = 0
+    for (let i = 0; i < minutes.length; i++) {
+      const next = i + 1 < minutes.length ? minutes[i + 1] : minutes[0] + 60
+      longest = Math.max(longest, next - minutes[i])
+    }
+    return longest * MINUTE
   }
 
-  if (!literal(minute)) return null
+  if (!literal(minute) || Number(minute) > 59) return null
   if (!any(month)) return null
-
-  // `M * * * *`: hourly.
-  if (any(hour) && any(dom) && any(dow)) return HOUR
 
   if (!literal(hour)) return null
 

@@ -214,7 +214,7 @@ globs = ["**/engine-bidding/*.js", "**/liberty1-click/*.js"]
 fallthrough = true
 
 [triggers]
-crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "*/5 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "17 8 * * *", "0 13 * * *", "37 */2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "*/5 * * * *", "* * * * *"]
 
 # CPU ceiling, stated explicitly rather than inherited (#871).
 #
@@ -228,11 +228,14 @@ crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "0 * * * *", "
 # inside this ceiling instead.
 [limits]
 cpu_ms = 30000
-# "15 8 * * *" is the timeout audit, deliberately off peak (#251). Its grouped
+# "17 8 * * *" is the timeout audit, deliberately off peak (#251). Its grouped
 # percentile queries are the heaviest thing we run against execution_steps, and
 # 08:00 UTC is the quietest hour of the day: 9,541 executions over 7 days to
-# 13:00's 31,617 and 17:00's 50,536. The :15 avoids the hourly job at :00, the
-# every-30-minute pg_cron drain at :00 and :30, and the export cron at :37.
+# 13:00's 31,617 and 17:00's 50,536. The :17 is a minute no other job starts in
+# (#1884): not the hourly job at :00, the export at :37, any worker cron (all on
+# multiples of five), nor any pg_cron job. It was :15 until 2026-10-08, the same
+# minute both rollup refreshes started, and lead requests slowed to 8.5 s. The
+# audit also runs its percentile queries two at a time (lib/timeout-audit.ts).
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.

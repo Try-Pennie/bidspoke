@@ -264,7 +264,7 @@ describe('runParityRefresh', () => {
       listWorkflows: async () => [WF],
       rules: async () => RULES,
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         // The ET day 2027-09-20 starts at 04:00Z and is read in three hour windows; the 13:00Z window holds the one execution.
         listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: fromIso }] : []),
         readRows: async (ids) => ids.flatMap((id) => [
@@ -303,7 +303,7 @@ describe('runParityRefresh', () => {
   it('a day whose reads fail is reported by name and the other days are still written (L98)', async () => {
     const { deps, upserts } = refreshDeps({
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         // The ET day 2027-09-19 runs from 2027-09-19T04:00Z to 2027-09-20T04:00Z; every window inside it fails.
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
@@ -332,7 +332,7 @@ describe('runParityRefresh', () => {
   it('a run with failed days pages them and a clean run clears the condition; a skipped run says nothing either way (L13)', async () => {
     const failing = refreshDeps({
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
       },
@@ -371,7 +371,7 @@ describe('the Stage B figures on each row (#1809)', () => {
         listWorkflows: async () => [WF],
         rules: async () => RULES,
         read: {
-          countNodeRows: async () => 1,
+          nodeRanIn: async () => true,
           listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: '2027-09-20T13:10:00.000Z' }] : []),
           readRows: async (ids) => ids.flatMap((id) => [
             { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: { ...exec(id).node, mode_effective: 'live', reason: 'canary_out' }, duration_ms: 0 },
@@ -479,12 +479,12 @@ describe('refreshableDays', () => {
 })
 
 describe('readParityDay skips windows the node never ran in', () => {
-  it('asks for the node row count first and lists executions only where it is above zero, so a day before the node was placed costs eight counts and nothing else', async () => {
+  it('asks whether the node ran first and lists executions only where it did, so a day before the node was placed costs eight probes and nothing else', async () => {
     const listed: string[] = []
     const counted: string[] = []
     const executions = await readParityDay(
       {
-        countNodeRows: async (_wf, fromIso) => { counted.push(fromIso); return fromIso.startsWith('2027-09-20T13') ? 3 : 0 },
+        nodeRanIn: async (_wf, fromIso) => { counted.push(fromIso); return fromIso.startsWith('2027-09-20T13') },
         listExecutions: async (_wf, fromIso) => { listed.push(fromIso); return [{ id: 'e1', started_at: fromIso }] },
         readRows: async (ids) => ids.flatMap((id) => [
           { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: exec(id).node, duration_ms: 120 },
@@ -499,5 +499,71 @@ describe('readParityDay skips windows the node never ran in', () => {
     expect(executions).toHaveLength(1)
     // The legacy step's own duration is kept for the Stage B latency comparison (#1809).
     expect(executions[0].incumbent_duration_ms).toBe(900)
+  })
+})
+
+describe('productionReadDeps.nodeRanIn (#1884)', () => {
+  /**
+   * The question readParityDay asks of a window is only whether the node ran
+   * there at all. It used to be answered with an exact COUNT, which visits every
+   * execution_steps row of the three hour window: about 94 MB read from disk per
+   * call, 16 calls an hour, 514 GB between 2026-09-24 and 2026-10-08, the second
+   * largest reader on the database. One row answers the same question, and
+   * ordered by execution_started_at the scan walks the window's own index and
+   * stops at the first match (measured on production 2026-10-08: 94 buffers
+   * touched, against about 30,000 for the count).
+   */
+  function probeSupabase(answer: { data: unknown; error: { message: string } | null }) {
+    const calls: {
+      table?: string
+      select?: unknown[]
+      eq: Array<[string, unknown]>
+      gte: Array<[string, unknown]>
+      lt: Array<[string, unknown]>
+      order: Array<[string, unknown]>
+      limit?: number
+    } = { eq: [], gte: [], lt: [], order: [] }
+    const builder: Record<string, unknown> = {}
+    builder.select = (...args: unknown[]) => { calls.select = args; return builder }
+    builder.eq = (c: string, v: unknown) => { calls.eq.push([c, v]); return builder }
+    builder.gte = (c: string, v: unknown) => { calls.gte.push([c, v]); return builder }
+    builder.lt = (c: string, v: unknown) => { calls.lt.push([c, v]); return builder }
+    builder.order = (c: string, o: unknown) => { calls.order.push([c, o]); return builder }
+    builder.limit = (n: number) => { calls.limit = n; return builder }
+    builder.then = (resolve: (v: unknown) => void) => resolve(answer)
+    const supabase = { from: (table: string) => { calls.table = table; return builder } } as unknown as SupabaseClient
+    return { supabase, calls }
+  }
+  const FROM = '2027-09-20T13:00:00.000Z'
+  const TO = '2027-09-20T16:00:00.000Z'
+
+  it('asks for one row, never a count, ordered so the window index answers it', async () => {
+    const fake = probeSupabase({ data: [{ execution_id: 'e1' }], error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(true)
+    expect(fake.calls.table).toBe('execution_steps')
+    // No second argument: a { count } option is the whole window scan this replaces.
+    expect(fake.calls.select).toEqual(['execution_id'])
+    expect(fake.calls.limit).toBe(1)
+    expect(fake.calls.order[0]?.[0]).toBe('execution_started_at')
+    expect(fake.calls.eq).toEqual(expect.arrayContaining([['workflow_id', 'wf'], ['step_type', 'buyer_select']]))
+    expect(fake.calls.gte).toEqual([['execution_started_at', FROM]])
+    expect(fake.calls.lt).toEqual([['execution_started_at', TO]])
+  })
+
+  it('answers no when the window holds no node row', async () => {
+    const fake = probeSupabase({ data: [], error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(false)
+  })
+
+  it('reads the window when the answer is missing, because an unanswered question is not zero rows (L215)', async () => {
+    const fake = probeSupabase({ data: null, error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(true)
+  })
+
+  it('throws a read failure rather than skipping the window', async () => {
+    const fake = probeSupabase({ data: null, error: { message: 'canceling statement due to statement timeout' } })
+    await expect(productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).rejects.toThrow(
+      /execution_steps probe: canceling statement due to statement timeout/,
+    )
   })
 })

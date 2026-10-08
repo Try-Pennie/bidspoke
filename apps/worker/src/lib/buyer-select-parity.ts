@@ -298,8 +298,8 @@ export function countsHash(counts: ParityCounts): Promise<string> {
 // ── Reading a day ─────────────────────────────────────────────────────────────
 
 export interface ParityReadDeps {
-  /** How many buyer_select rows the workflow wrote inside [fromIso, toIso); zero means the node was not on the canvas then. */
-  countNodeRows(workflowId: string, fromIso: string, toIso: string): Promise<number>
+  /** Whether the workflow wrote any buyer_select row inside [fromIso, toIso); false means the node was not on the canvas then. */
+  nodeRanIn(workflowId: string, fromIso: string, toIso: string): Promise<boolean>
   /** Executions of the workflow started inside [fromIso, toIso), oldest first, every one of them (paged past the row cap). */
   listExecutions(workflowId: string, fromIso: string, toIso: string): Promise<Array<{ id: string; started_at: string }>>
   /** The node and incumbent rows for the executions given. */
@@ -317,13 +317,13 @@ export async function readParityDay(deps: ParityReadDeps, workflowId: string, da
     const to = Math.min(from + READ_WINDOW_MS, end)
     const fromIso = new Date(from).toISOString()
     const toIso = new Date(to).toISOString()
-    // One cheap count before the expensive listing (#1497): a window with no
+    // One cheap probe before the expensive listing (#1497): a window with no
     // node row at all is one the node was not on the canvas for, and listing
     // its executions (about 10,000 per window on the Engine flow, in pages of
     // 1,000) would only count every one of them as unpaired. A window where the
     // node ran and some executions lack its row is still read in full, and
     // those executions are the unpaired count.
-    if ((await deps.countNodeRows(workflowId, fromIso, toIso)) === 0) continue
+    if (!(await deps.nodeRanIn(workflowId, fromIso, toIso))) continue
     const executions = await deps.listExecutions(workflowId, fromIso, toIso)
     if (executions.length === 0) continue
     const rows = await deps.readRows(executions.map((e) => e.id), fromIso, toIso)
@@ -358,18 +358,26 @@ export async function incumbentRules(orgId: string, env: Env, supabase: Supabase
 
 export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   return {
-    countNodeRows: async (workflowId, fromIso, toIso) => {
-      const { count, error } = await supabase
+    // One row, never a count (#1884). An exact count visits every step row of
+    // the three hour window, about 94 MB from disk per call and 514 GB over the
+    // two weeks to 2026-10-08, to answer a yes or no question. Ordered by
+    // execution_started_at, the scan walks that column's index and stops at the
+    // first buyer_select row: 94 buffers on production instead of about 30,000.
+    // A window the node never ran in still walks the whole window, as before.
+    nodeRanIn: async (workflowId, fromIso, toIso) => {
+      const { data, error } = await supabase
         .from('execution_steps')
-        .select('execution_id', { count: 'exact', head: true })
+        .select('execution_id')
         .eq('workflow_id', workflowId)
         .eq('step_type', 'buyer_select')
         .gte('execution_started_at', fromIso)
         .lt('execution_started_at', toIso)
-      if (error) throw new Error(`execution_steps count: ${error.message}`)
-      // A null count is an unanswered question, not zero rows (L215): read the
-      // window rather than skip it.
-      return count ?? 1
+        .order('execution_started_at', { ascending: true })
+        .limit(1)
+      if (error) throw new Error(`execution_steps probe: ${error.message}`)
+      // A missing answer is an unanswered question, not zero rows (L215): read
+      // the window rather than skip it.
+      return data === null || data.length > 0
     },
     // Paged, because a three hour window of the Engine flow holds about 10,000
     // executions and PostgREST answers at most 1,000 rows however high the limit
