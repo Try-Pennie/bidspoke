@@ -47,6 +47,19 @@ describe('could not confirm alert', () => {
     for (const c of BANNED) expect(text).not.toContain(c)
   })
 
+  it('escapes a workflow name so it cannot break the run link or inject markup', async () => {
+    await sendUnconfirmedWritesAlert(conn, {
+      count: 1,
+      labels: ['execution_finalize'],
+      oldest_at: '2026-10-08T12:20:32Z',
+      minutes: 15,
+      runs: [{ workflow_id: 'wf-1', workflow_name: 'A|B <!here> & co', execution_id: 'ex-1' }],
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('|A/B &lt;!here&gt; &amp; co run>')
+    expect(text).not.toContain('<!here>')
+  })
+
   it('names at most ten runs and counts the rest', async () => {
     const runs = Array.from({ length: 13 }, (_, i) => ({ workflow_id: 'wf', workflow_name: 'Main Flow', execution_id: `ex-${i}` }))
     await sendUnconfirmedWritesAlert(conn, { count: 13, labels: ['execution_finalize'], oldest_at: '2026-10-08T12:20:32Z', minutes: 15, runs }, 'https://app.test')

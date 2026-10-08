@@ -1148,6 +1148,15 @@ export interface UnconfirmedWritesAlert {
   runs: Array<{ workflow_id: string; workflow_name: string; execution_id: string }>
 }
 
+/**
+ * A person edited name made safe as the label of a Slack link: Slack's mrkdwn
+ * reads `&`, `<` and `>` as markup and `|` as the end of the address, so a name
+ * holding one breaks the link or injects markup.
+ */
+function slackLinkLabel(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\|/g, '/')
+}
+
 /** What a dead letter label wrote, as a reader names it. */
 function recordNoun(label: string): string {
   if (label === 'execution_finalize') return 'run records'
@@ -1180,7 +1189,7 @@ export async function sendUnconfirmedWritesAlert(
     '*Fix:* Check the database on the Supabase status page. Nothing needs redoing by hand yet: Bidspoke keeps reading these records back every minute and sends an Outcome Record Lost alert for any it finds missing.'
   const shown = payload.runs.slice(0, 10)
   const more = payload.runs.length > shown.length ? `\nand ${payload.runs.length - shown.length} more` : ''
-  const runs = shown.map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${r.workflow_name} run>`).join('\n') + more
+  const runs = shown.map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${slackLinkLabel(r.workflow_name)} run>`).join('\n') + more
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: summary } },

@@ -162,7 +162,10 @@ export const CRON_JOBS: CronJob[] = [
     staleMs: 10 * MIN,
     // One KV list, then at most 50 entries, each a KV read and one read back
     // bounded at 5 s. The first unreadable answer stops the reads, and so does
-    // READ_PHASE_BUDGET_MS (30 s) on a database that is slow but answering.
+    // READ_PHASE_BUDGET_MS (30 s) on a database that is slow but answering. That
+    // check runs before every entry, so a tick ends at most one read (5 s) and
+    // one dead letter (a claim bounded at 2 s, two KV calls, a Slack post) past
+    // it, then the could-not-confirm and summary posts: well inside 50 s.
     maxRunMs: 50 * 1000,
     dependents:
       'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',
