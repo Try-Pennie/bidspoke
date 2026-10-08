@@ -27,7 +27,7 @@ import type { Env } from '../index'
 import { loadBuyerProfiles } from './buyer-profile-loader'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { fetchAllPaged } from './paginate'
-import { BID_SETTLE_MS, productionStageBBidDeps, readStageBBids, summariseStageB, type StageBBidReadDeps, type StageBBids, type StageBCounts } from './buyer-select-stage-b'
+import { BID_SETTLE_MS, productionStageBBidDeps, productionStageBTimingDeps, readStageBBids, readStageBTiming, summariseStageB, type StageBBidReadDeps, type StageBBids, type StageBCounts, type StageBTimingReadDeps } from './buyer-select-stage-b'
 import { tripointAnswerOf } from '../engine/bid-log'
 
 export { RETENTION_DAYS }
@@ -424,15 +424,17 @@ export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
 export interface StoredParityDay {
   window_complete: boolean
   summarised_at: string
-  stage_b: { bid_rows?: Record<string, unknown> } | null
+  stage_b: { bid_rows?: Record<string, unknown>; canary?: { timing?: unknown } } | null
 }
 
 /**
  * Whether a stored row is the day's final answer, so the hourly refresh can keep
- * it rather than read the day again (#1884). All four must hold: it was written
+ * it rather than read the day again (#1884). All five must hold: it was written
  * with the day complete, after the day's bids had settled (the Stage B bid check
  * judges executions older than now minus BID_SETTLE_MS), with a Stage B report,
- * and with that report's bid check measured. Anything else, an unreadable
+ * with that report's bid check measured, and with its canary timing not left
+ * unmeasured by a failed read (#1909). A row written before the timing existed
+ * has none and stays final. Anything else, an unreadable
  * timestamp included, is not final and the day is read again: reading too often
  * costs reads, keeping a provisional row loses the day's answer (L5).
  */
@@ -443,7 +445,9 @@ export function isFinalParityDay(row: StoredParityDay | null, day: string): bool
   if (writtenAt < easternDayStartUtc(nextIsoDate(day)) + BID_SETTLE_MS) return false
   const bidRows = row.stage_b?.bid_rows
   if (bidRows === null || typeof bidRows !== 'object') return false
-  return !('unmeasured' in bidRows)
+  if ('unmeasured' in bidRows) return false
+  const timing = row.stage_b?.canary?.timing
+  return !(timing !== null && typeof timing === 'object' && 'unmeasured' in timing)
 }
 
 /** The stored row for one workflow and day, or null when there is none; a read failure throws. */
@@ -505,6 +509,8 @@ export interface RefreshDeps {
   read: ParityReadDeps
   /** Tripoint's bid rows, for the Stage B one row per execution check (#1809). */
   bids: StageBBidReadDeps
+  /** The canary attempts' per call timing (#1909). */
+  timing: StageBTimingReadDeps
   /** The stored row for a workflow and day, null when there is none; throws on a read failure. */
   storedDay(workflowId: string, day: string): Promise<StoredParityDay | null>
   upsert(row: ParityRowWrite): Promise<unknown>
@@ -582,6 +588,8 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
         } catch (err) {
           bids = { unmeasured: `the bid rows could not be read: ${messageOf(err)}` }
         }
+        // Its own failure boundary too: a failed read is unmeasured inside, never thrown.
+        const timing = await readStageBTiming(deps.timing, executions, day)
         const row: ParityRowWrite = {
           ...counts,
           workflow_id: wf.id,
@@ -589,7 +597,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
           organization_id: wf.organization_id,
           window_complete: windowComplete(day, now, deps.retentionDays),
           counts_hash: await countsHash(counts),
-          stage_b: summariseStageB(executions, bids, now - BID_SETTLE_MS, windowComplete(day, now, deps.retentionDays)),
+          stage_b: summariseStageB(executions, bids, now - BID_SETTLE_MS, windowComplete(day, now, deps.retentionDays), timing),
         }
         await deps.upsert(row)
         written += 1
@@ -628,6 +636,7 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
     rules: (orgId) => incumbentRules(orgId, env, supabase),
     read: productionReadDeps(supabase),
     bids: productionStageBBidDeps(supabase),
+    timing: productionStageBTimingDeps(supabase),
     storedDay: (workflowId, day) => readStoredParityDay(supabase, workflowId, day),
     upsert: async (row) => {
       const { data, error } = (await supabase.rpc('upsert_buyer_select_parity_day', { p_row: row })) as { data: unknown; error: { message: string } | null }

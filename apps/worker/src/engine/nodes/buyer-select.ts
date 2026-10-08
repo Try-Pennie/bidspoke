@@ -63,6 +63,7 @@ import { BuyerLedgerClient, LEDGER_RELEASE_OP, LeadSaleClient, MEASURED_OBJECT_C
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
 import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type BuyerCall, type LedgerApi, type MirrorOutcome, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
+import type { AttemptTiming } from '../../lib/attempt-timing'
 import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { applyOutboundMapping } from '../../lib/field-mapper'
@@ -222,30 +223,6 @@ export interface BuyerSelectOutput {
    */
   buyer_call_ms?: number
   duration_ms: number
-}
-
-/** One live attempt's time, split at the buyer call (#1804). */
-export interface AttemptTiming {
-  /** From the attempt's start to the request leaving: the claim and the reservation. */
-  before_call_ms: number
-  /** The buyer call alone, up to its answer or its throw. */
-  call_ms: number
-  /** From the answer to the attempt's end: the breaker record, commit, mark sold and the mirror. */
-  after_call_ms: number
-  /**
-   * Each object call inside those phases, so the one costing the most can be named (#1804). A
-   * figure is present only when the attempt reached that call, never as a zero (L90). The claim
-   * includes any wait on another holder; the breaker is recording the buyer's answer; the
-   * release gives back the reservation and frees the claim after a decline; the mirror is the
-   * buyer_sales copy of a sale or a decline, timed even when it fails, since the lead waited for it.
-   */
-  claim_ms?: number
-  reserve_ms?: number
-  breaker_ms?: number
-  commit_ms?: number
-  mark_sold_ms?: number
-  release_ms?: number
-  mirror_ms?: number
 }
 
 /** One `partner_bid` child step row, written by the walker under the node's id. */

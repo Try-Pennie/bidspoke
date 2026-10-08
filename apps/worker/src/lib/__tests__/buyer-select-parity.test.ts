@@ -274,6 +274,7 @@ describe('runParityRefresh', () => {
         ]),
       },
       bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+      timing: { listAttemptTiming: async () => [] },
       storedDay: async () => null,
       upsert: async (row) => { upserts.push(row); return row },
       now: () => NOW,
@@ -392,6 +393,13 @@ describe('runParityRefresh', () => {
       expect(summary.errors).toEqual([])
     })
 
+    it('keeps a final row whose canary timing was measured, so only a failed timing read is retried (#1909)', async () => {
+      const t = tracking({ ...FINAL, stage_b: { ...FINAL.stage_b, canary: { timing: { attempts: 3, executions_untimed: 0 } } } })
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(false)
+      expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
+    })
+
     it('never asks about today, which is incomplete by construction', async () => {
       const t = tracking(FINAL)
       await runParityRefresh(t.deps)
@@ -403,6 +411,7 @@ describe('runParityRefresh', () => {
       ['a row written before the day ended', { ...FINAL, window_complete: false }],
       ['a row written before the bids settled', { ...FINAL, summarised_at: '2027-09-20T04:05:00.000Z' }],
       ['a row whose bid check was unmeasured', { ...FINAL, stage_b: { bid_rows: { unmeasured: 'lead_sighting_bids: statement timeout' } } }],
+      ['a row whose canary timing read failed (#1909)', { ...FINAL, stage_b: { ...FINAL.stage_b, canary: { timing: { unmeasured: 'the attempt rows could not be read: statement timeout' } } } }],
       ['a row with no Stage B report', { ...FINAL, stage_b: null }],
       ['a row with an unreadable timestamp', { ...FINAL, summarised_at: 'not a time' }],
     ])('reads the day again given %s', async (_label, stored) => {
@@ -459,6 +468,7 @@ describe('the Stage B figures on each row (#1809)', () => {
           ]),
         },
         bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+        timing: { listAttemptTiming: async () => [] },
         storedDay: async () => null,
         upsert: async (row) => { upserts.push(row); return row },
         now: () => NOW,
@@ -486,6 +496,37 @@ describe('the Stage B figures on each row (#1809)', () => {
     const today = upserts.find((r) => r.et_day === '2027-09-20')
     expect(today?.stage_b?.bid_rows).toEqual({ unmeasured: expect.stringMatching(/statement timeout/) })
     expect(today?.stage_b?.legacy.attempts).toBe(1)
+  })
+
+  /** One execution the node sold live, so the day has a canary attempt whose timing is read (#1909). */
+  const liveSale = {
+    nodeRanIn: async () => true,
+    listExecutions: async (_wf: string, fromIso: string) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: '2027-09-20T13:10:00.000Z' }] : []),
+    readRows: async (ids: string[]) => ids.map((id) => ({
+      execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', duration_ms: 3600,
+      output: { _route: 'sold', reason: 'sold', mode_effective: 'live', live_percent_in_force: 1, buyer_call_ms: 3000, sale: { skipped: false, accepted: true, result_code: '1001' } },
+    })),
+  }
+
+  it('writes where the canary attempts\' own time went, call by call, read from their attempt rows over the Eastern day (#1909)', async () => {
+    let asked: [string[], string, string] | null = null
+    const { deps, upserts } = base({
+      read: liveSale,
+      timing: { listAttemptTiming: async (ids, from, to) => { asked = [ids, from, to]; return [{ execution_id: 'e1', timing: { before_call_ms: 400, call_ms: 3000, after_call_ms: 200, claim_ms: 300, mirror_ms: 180 } }] } },
+    })
+    await runParityRefresh(deps)
+    expect(asked).toEqual([['e1'], '2027-09-20T04:00:00.000Z', '2027-09-21T04:00:00.000Z'])
+    const today = upserts.find((r) => r.et_day === '2027-09-20')
+    expect(today?.stage_b?.canary.timing).toMatchObject({ attempts: 1, overhead: { p50_ms: 600 }, calls: { claim: { p50_ms: 300 }, mirror: { p50_ms: 180 } } })
+  })
+
+  it('a timing read that fails leaves the row written, with only the timing unmeasured and the reason named (L73)', async () => {
+    const { deps, upserts } = base({ read: liveSale, timing: { listAttemptTiming: async () => { throw new Error('execution_steps: statement timeout') } } })
+    const summary = await runParityRefresh(deps)
+    expect(summary.errors).toEqual([])
+    const today = upserts.find((r) => r.et_day === '2027-09-20')
+    expect(today?.stage_b?.canary.timing).toEqual({ unmeasured: expect.stringMatching(/statement timeout/) })
+    expect(today?.stage_b?.canary).toMatchObject({ attempts: 1, buyer_call_p50_ms: 3000 })
   })
 })
 
