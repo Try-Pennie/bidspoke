@@ -41,7 +41,7 @@ import {
   extractExternalDebt,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
-import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
+import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import {
   PostResponseBudget,
@@ -394,7 +394,14 @@ export async function executeWorkflow(
   // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
   // lead_sighting_bids writes through writeOutcome so a loss after retries
   // dead-letters instead of vanishing into a log line.
-  const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL, timing: writeTiming }
+  // The run rides along so a write that times out is recorded against it (#1880).
+  const outcomeDeps: OutcomeAlertDeps = {
+    kv: env.IDEMPOTENCY,
+    orgId: org_id,
+    appUrl: env.APP_URL,
+    timing: writeTiming,
+    run: { workflow_id: workflowId, workflow_name, execution_id: executionId },
+  }
 
   // Awaited by the finalize block below: finalize UPDATEs the row this promise
   // INSERTs, and both run in waitUntil after the response is sent. Left
@@ -866,11 +873,24 @@ export async function executeWorkflow(
           parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
           resumed_from_execution_id: options.resumeFromExecutionId,
         }, () => { reconstructed = true }, writeTiming), writeTiming)
-        const finalizeError = finalized.settled
-          ? finalized.value
-          : {
-              message: `workflow_executions (id=${executionId}): the finalize did not answer within the post-response budget; it may still land, but nothing confirmed it`,
-            }
+        // A finalize that only timed out is not a lost record: it is read back
+        // by the minute sweep, which dead-letters it only if the row never
+        // reached a terminal status (#1880). On 2026-10-08 every one of the
+        // finalizes a 90 second stall timed out had landed.
+        const finalizeUnconfirmed = !finalized.settled
+        const finalizeError = finalized.settled ? finalized.value : null
+        if (finalizeUnconfirmed && !reality.isTest) {
+          executionCtx.waitUntil(
+            recordUnconfirmedOutcome(
+              'execution_finalize',
+              { kind: 'execution_finalized', execution_id: executionId, started_at: startedAt },
+              {
+                message: `workflow_executions (id=${executionId}): the finalize did not answer within the post-response budget; it may still land, but nothing confirmed it`,
+              },
+              { ...outcomeDeps, supabase: runDb },
+            ),
+          )
+        }
 
         // #629: the base row was missing and has now been reconstructed, so the
         // FK that blocked the step-log inserts is satisfied. The original flush

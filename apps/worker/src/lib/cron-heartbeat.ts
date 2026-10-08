@@ -154,6 +154,19 @@ export const CRON_JOBS: CronJob[] = [
       'ledger entries the inline mirror failed to copy never reach buyer_sales, so the partner page, the unresolved list and the sales checks read an incomplete copy while selling continues (#1413)',
   },
   {
+    id: 'unconfirmed-write-sweep',
+    label: 'Unconfirmed write read back',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack: noticed before the 15 minutes after
+    // which the sweep itself would have said it could not confirm a record.
+    staleMs: 10 * MIN,
+    // One KV list, then at most 50 entries, each a KV read and one read back
+    // bounded at 5 s; the first unreadable answer stops the reads.
+    maxRunMs: 50 * 1000,
+    dependents:
+      'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',

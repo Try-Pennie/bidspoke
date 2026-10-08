@@ -58,7 +58,7 @@ beforeEach(() => vi.clearAllMocks())
 describe('lead-sightings seam routing (#309)', () => {
   it('insertSighting routes through writeOutcome when deps are provided', async () => {
     await insertSighting(client, sightingInput(), deps)
-    expect(writeOutcome).toHaveBeenCalledWith('lead_sightings.insert', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }))
+    expect(writeOutcome).toHaveBeenCalledWith('lead_sightings.insert', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }), expect.objectContaining({ kind: 'sighting_present' }))
   })
 
   it('insertSighting falls back to a bare write when deps are omitted', async () => {
@@ -68,11 +68,11 @@ describe('lead-sightings seam routing (#309)', () => {
 
   it('recordBidAttempt routes through writeOutcome with the bids label when deps are provided', async () => {
     await recordBidAttempt(client, bidInput(), deps)
-    expect(writeOutcome).toHaveBeenCalledWith('lead_sighting_bids.insert', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }))
+    expect(writeOutcome).toHaveBeenCalledWith('lead_sighting_bids.insert', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }), expect.objectContaining({ kind: 'bid_present' }))
   })
 
   it('finalizeSighting routes the sighting update through writeOutcome when deps are provided', async () => {
     await finalizeSighting(client, finalizeInput(), deps)
-    expect(writeOutcome).toHaveBeenCalledWith('lead_sightings.finalize', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }))
+    expect(writeOutcome).toHaveBeenCalledWith('lead_sightings.finalize', expect.any(Function), expect.objectContaining({ orgId: 'org-1' }), expect.objectContaining({ kind: 'sighting_finalized' }))
   })
 })

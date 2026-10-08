@@ -9,6 +9,9 @@
 //  - writeOutcome — tier 2: must-not-lose Supabase outcome ops (lead_sightings,
 //    lead_sighting_bids, planned opportunities). Retried via withDbRetry; on a
 //    returned error (retries exhausted or permanent) the loss is dead-lettered.
+//    A write that only TIMED OUT at the post-response budget is not a loss: it
+//    is recorded as unconfirmed (engine/unconfirmed-writes.ts) and read back by
+//    the minute sweep, which dead-letters it only if it never landed (#1880).
 //  - recordOutcomeDeadLetter — the shared dead-letter handler. Also called
 //    DIRECTLY for the tier-3 external Salesforce writeback, whose own withRetry
 //    already provided at-least-once delivery (so it must not be wrapped in
@@ -19,10 +22,11 @@ import { withDbRetry, isDuplicateError, toDbError, DB_WRITE_RETRY_DELAYS_MS, typ
 import { withinBudget, type RetryTiming } from '../lib/post-response-budget'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
+import { putUnconfirmedWrite, type ReadBack, type UnconfirmedRun } from './unconfirmed-writes'
 
 interface KvLike {
   get(key: string): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
+  put(key: string, value: string, opts?: { expiration?: number; expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
 }
 
@@ -38,6 +42,13 @@ export interface OutcomeDeps {
    * cancels the request's waitUntil work. Absent, nothing is bounded.
    */
   timing?: RetryTiming
+  /**
+   * The run the write belongs to (#1880). Carried onto an unconfirmed entry so
+   * the sweep's alert can name the workflow and link the run.
+   */
+  run?: UnconfirmedRun
+  /** Wall clock for an unconfirmed entry's first seen time; Date.now unless a test sets it. */
+  now?: () => number
 }
 
 // The deps an outcome-write function carries when its caller already holds the
@@ -75,10 +86,15 @@ export async function writeObservability(
 // Tier 2. Must-not-lose Supabase outcome op: retry, then dead-letter on a
 // returned error. Clears the failure streak on success. Safe to call inside
 // waitUntil (off the request path).
+//
+// `readBack` names the record and the effect that prove the write landed. It is
+// required, so no new outcome write can be added without saying how a timed out
+// one is confirmed (#1880).
 export async function writeOutcome(
   label: string,
   op: () => Promise<{ error: DbError | null }>,
   deps: OutcomeDeps,
+  readBack: ReadBack,
 ): Promise<{ error: DbError | null }> {
   // A duplicate-key error means the row already landed — that is success, not a
   // loss. Surface it as a non-error to withDbRetry so it stops immediately (no
@@ -95,11 +111,15 @@ export async function writeOutcome(
   }, DB_WRITE_RETRY_DELAYS_MS, deps.timing)
   // A request that never answers would hold the dead letter past the platform's
   // limit, so the wait stops at the cut-off. The request is not cancelled: the
-  // write may still land, which is why the loss is worded as unconfirmed.
+  // write may still land, so it is recorded as unconfirmed for the sweep to read
+  // back, never dead-lettered as lost on the strength of a timeout (#1880).
   const raced = await withinBudget(attempt, deps.timing)
-  const result: { error: DbError | null } = raced.settled
-    ? raced.value
-    : { error: { message: `${label}: no answer within the post-response budget; the write may still land, but nothing confirmed it` } }
+  if (!raced.settled) {
+    const unconfirmed = { message: `${label}: no answer within the post-response budget; the write may still land, but nothing confirmed it` }
+    await recordUnconfirmedOutcome(label, readBack, unconfirmed, deps)
+    return { error: unconfirmed }
+  }
+  const result = raced.value
 
   // A duplicate landed (success), and a clean success both do nothing to the
   // window counter: it must survive interleaved successes to count a partial
@@ -111,6 +131,43 @@ export async function writeOutcome(
     )
   }
   return result
+}
+
+/**
+ * Records a must-not-lose write that timed out as unconfirmed (#1880): one KV
+ * write naming what the minute sweep reads back. Fits in the dead letter's
+ * reserve, which is three KV operations and a Slack post. When the entry itself
+ * cannot be written the write is dead-lettered as before, because a timed out
+ * write with no record anywhere is the silent loss the dead letter exists for.
+ * Never throws.
+ */
+export async function recordUnconfirmedOutcome(
+  label: string,
+  readBack: ReadBack,
+  error: DbError,
+  deps: OutcomeDeps,
+): Promise<void> {
+  const nowMs = (deps.now ?? Date.now)()
+  try {
+    await putUnconfirmedWrite(
+      deps.kv,
+      {
+        id: crypto.randomUUID(),
+        label,
+        org_id: deps.orgId,
+        first_seen_at: new Date(nowMs).toISOString(),
+        read_back: readBack,
+        ...(deps.run ? { run: deps.run } : {}),
+        error_message: error.message,
+      },
+      nowMs,
+    )
+  } catch (e) {
+    console.error(`[durability] ${label}: could not record the unconfirmed write, dead-lettering it instead:`, formatErr(e))
+    await recordOutcomeDeadLetter(label, error, deps, deps.run ? { ...deps.run, at: new Date(nowMs).toISOString() } : undefined).catch((err) =>
+      console.error('[durability] dead-letter alert failed:', err),
+    )
+  }
 }
 
 // Shared dead-letter handler. Increments a per-(org,label) streak in KV and fires

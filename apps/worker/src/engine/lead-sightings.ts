@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
+import type { ReadBack } from './unconfirmed-writes'
 import type { RetryTiming } from '../lib/post-response-budget'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, deriveClickOffer, withClickOffer, type ProjectedBidAttempt } from './bid-log'
 import { resolveValue } from './context'
@@ -16,14 +17,17 @@ import { readEquifaxOutcome, readEquifaxReportOutput } from './nodes/achieve-cre
 // a bare withDbRetry (tests, one-off backfills). Re-exported convenience so each
 // write site stays a one-liner (#309). The retry timing (#1850) rides on the
 // deps when there are any, and is passed on its own by a writer that has none.
+// `readBack` names what proves the write landed, for a write that times out
+// (#1880).
 function runOutcome(
   label: string,
   supabase: SupabaseClient,
   deps: OutcomeAlertDeps | undefined,
+  readBack: ReadBack,
   op: () => Promise<{ error: DbError | null }>,
   timing: RetryTiming | undefined = deps?.timing,
 ): Promise<{ error: DbError | null }> {
-  return deps ? writeOutcome(label, op, { ...deps, supabase, timing }) : withDbRetry(op, undefined, timing)
+  return deps ? writeOutcome(label, op, { ...deps, supabase, timing }, readBack) : withDbRetry(op, undefined, timing)
 }
 
 // Slack subtracted from execution start to derive the attempted_at_utc lower
@@ -390,7 +394,8 @@ export async function insertSighting(
   // Retry transient failures (schema-cache reload during the nightly purge) so
   // analytics rows aren't silently dropped in that window (#237). A duplicate
   // means a prior attempt landed (the id is caller-generated), which is success.
-  const { error } = await runOutcome('lead_sightings.insert', supabase, deps, async () => {
+  const sightingRow: ReadBack = { kind: 'sighting_present', sighting_id: id, execution_started_at_utc: row.execution_started_at_utc }
+  const { error } = await runOutcome('lead_sightings.insert', supabase, deps, sightingRow, async () => {
     const res = await supabase.from('lead_sightings').insert(row)
     return { error: res.error }
   })
@@ -446,7 +451,8 @@ export async function recordBidAttempt(
   // ping of the same partner in one run carries a distinct attempted_at_utc, so
   // the third key column keeps both rows. A duplicate means the row already
   // landed — success, mirroring insertSighting's convention.
-  const { error } = await runOutcome('lead_sighting_bids.insert', supabase, deps, async () => {
+  const bidRow: ReadBack = { kind: 'bid_present', execution_id: row.execution_id, partner_slug: row.partner_slug, attempted_at_utc: row.attempted_at_utc }
+  const { error } = await runOutcome('lead_sighting_bids.insert', supabase, deps, bidRow, async () => {
     // upsert with ignoreDuplicates => INSERT ... ON CONFLICT DO NOTHING (the
     // onConflict/ignoreDuplicates options live on upsert, not insert).
     const res = await supabase
@@ -506,7 +512,8 @@ export async function finalizeSighting(
   // the finalize doesn't strand the sighting in 'in_flight' (#237).
   // .select('id') so a zero-row match surfaces as an error rather than a silent
   // success that leaves the sighting stuck at 'in_flight' forever (#583).
-  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, () =>
+  const finalized: ReadBack = { kind: 'sighting_finalized', sighting_id, execution_started_at_utc: execution_started_at_utc.toISOString() }
+  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, finalized, () =>
     requireRowsAffected('lead_sightings.finalize', async () => {
       const res = await supabase
         .from('lead_sightings')
@@ -545,7 +552,16 @@ export async function finalizeSighting(
       execution_started_at_utc.getTime() - WINNER_MARK_SLACK_MS,
     ).toISOString()
     const winnerTarget = `lead_sighting_bids.winner (execution_id=${execution_id}, partner_slug=${fields.winning_partner_slug})`
-    const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, () =>
+    // The read back is bounded on both sides, so it prunes to the run's month
+    // (and the one before it near a boundary) rather than every later month.
+    const winnerMarked: ReadBack = {
+      kind: 'bid_winner',
+      execution_id,
+      partner_slug: fields.winning_partner_slug,
+      attempted_from: attemptedLowerBound,
+      attempted_to: new Date(execution_started_at_utc.getTime() + WINNER_MARK_SLACK_MS).toISOString(),
+    }
+    const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, winnerMarked, () =>
       requireRowsAffected(winnerTarget, async () => {
         const res = await supabase
           .from('lead_sighting_bids')

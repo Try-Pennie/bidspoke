@@ -9,7 +9,7 @@ import type { AlertingStatus } from './pg-cron-watch'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
 import { stripUrlQueriesInText } from './url-redact'
-import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
+import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError, READ_BACK_MISSING_CODE } from './db-retry'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
@@ -974,6 +974,10 @@ function outcomeDeadLetterGuidance(label: string, errorCode: string | null | und
 
   const base =
     '*How to fix:* This write is not auto-recovered. The lost record must be re-derived manually from the execution log below.'
+  if (errorCode === READ_BACK_MISSING_CODE) {
+    // #1880: found by reading the record back, not by an error the write returned.
+    return `${base} The write timed out while the database was slow, and reading it back a few minutes later found it never landed. The error above names the record.`
+  }
   if (isNoRowMatchedError(err)) {
     // The finalize/execution case is a served lead whose row could not be
     // created or reconstructed; the lead-sightings case is an ordering race
@@ -1103,9 +1107,12 @@ export async function sendOutcomeDeadLetterAlert(
   const err = payload.error_code ? { code: payload.error_code, message: '' } : null
   const drainRecoverable = payload.label === 'execution_finalize' && !isNoRowMatchedError(err)
   const wasWere = payload.window_loss_count === 1 ? 'write was' : 'writes were'
+  const how = payload.error_code === READ_BACK_MISSING_CODE
+    ? 'timed out, and reading it back afterwards found it never landed'
+    : 'failed after all retries'
   const summary = drainRecoverable
     ? `A finalize write (*${payload.label}*) failed after all retries, so *${payload.window_loss_count}* execution ${payload.window_loss_count === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
-    : `A must-not-lose outcome write (*${payload.label}*) failed after all retries. *${payload.window_loss_count}* ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
+    : `A must-not-lose outcome write (*${payload.label}*) ${how}. *${payload.window_loss_count}* ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
   const blocks = [
     {
       type: 'header',
@@ -1126,6 +1133,61 @@ export async function sendOutcomeDeadLetterAlert(
     blocks,
     drainRecoverable ? `Execution finalize delayed: ${payload.label}` : `Outcome record lost: ${payload.label}`
   )) !== null
+}
+
+export interface UnconfirmedWritesAlert {
+  /** Records still unconfirmed in this alert. */
+  count: number
+  /** Their dead letter labels, e.g. 'lead_sightings.finalize'. */
+  labels: string[]
+  /** When the oldest of them timed out, ISO. */
+  oldest_at: string
+  /** How long the sweep has been trying to read them back, in whole minutes. */
+  minutes: number
+  /** The runs they belong to, distinct. */
+  runs: Array<{ workflow_id: string; workflow_name: string; execution_id: string }>
+}
+
+/** What a dead letter label wrote, as a reader names it. */
+function recordNoun(label: string): string {
+  if (label === 'execution_finalize') return 'run records'
+  if (label.startsWith('lead_sightings.')) return 'lead sightings'
+  if (label.startsWith('lead_sighting_bids.')) return 'bid rows'
+  return label
+}
+
+/**
+ * Records written after leads were answered timed out, and the database has
+ * not answered the read back for 15 minutes (#1880). Their fate is unknown, so
+ * this never says lost: the sweep keeps reading them back and the lost alert
+ * follows for any it finds missing. Posted from whatever connection the caller
+ * found, the last-good copy included, since the database is down.
+ */
+export async function sendUnconfirmedWritesAlert(
+  connection: { bot_token: string; default_channel: string },
+  payload: UnconfirmedWritesAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const title = 'Records could not be confirmed'
+  const since = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(payload.oldest_at))
+  const kinds = [...new Set(payload.labels.map(recordNoun))].join(', ')
+  const n = payload.count
+  const summary =
+    `${n === 1 ? '1 record' : `${n} records`} written after leads were answered (${kinds}) timed out from ${since} ET. ` +
+    `Bidspoke has tried to read them back for ${payload.minutes} minutes and the database still does not answer, so it cannot tell whether they were saved. ` +
+    'This does not mean they were lost.'
+  const fix =
+    '*Fix:* Check the database on the Supabase status page. Nothing needs redoing by hand yet: Bidspoke keeps reading these records back every minute and sends an Outcome Record Lost alert for any it finds missing.'
+  const shown = payload.runs.slice(0, 10)
+  const more = payload.runs.length > shown.length ? `\nand ${payload.runs.length - shown.length} more` : ''
+  const runs = shown.map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${r.workflow_name} run>`).join('\n') + more
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  if (shown.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: runs } })
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} unconfirmed`)) !== null
 }
 
 /**
