@@ -21,9 +21,10 @@ vi.mock('../slack', async (importOriginal) => ({
   getSlackConnection: vi.fn(),
   sendOutcomeDeadLetterAlert: vi.fn(),
   sendUnconfirmedWritesAlert: vi.fn(),
+  sendSlowdownSummaryAlert: vi.fn(),
 }))
 
-import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert } from '../slack'
+import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert, sendSlowdownSummaryAlert } from '../slack'
 import {
   runUnconfirmedWriteSweep,
   READ_BACK_MIN_AGE_MS,
@@ -124,14 +125,14 @@ function makeClaims(): AlertClaims & { held: Set<string> } {
 const RUN = { workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1' }
 
 let seq = 0
-async function seed(kv: ReturnType<typeof makeKv>, label: string, readBack: ReadBack, firstSeenMs = T0, org = 'org-1'): Promise<UnconfirmedWrite> {
+async function seed(kv: ReturnType<typeof makeKv>, label: string, readBack: ReadBack, firstSeenMs = T0, org = 'org-1', run = RUN): Promise<UnconfirmedWrite> {
   const entry: UnconfirmedWrite = {
     id: `entry-${++seq}`,
     label,
     org_id: org,
     first_seen_at: new Date(firstSeenMs).toISOString(),
     read_back: readBack,
-    run: RUN,
+    run,
     error_message: `${label}: no answer within the post-response budget; the write may still land, but nothing confirmed it`,
   }
   await putUnconfirmedWrite(kv, entry)
@@ -172,6 +173,7 @@ beforeEach(() => {
   vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
   vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValue(true)
   vi.mocked(sendUnconfirmedWritesAlert).mockResolvedValue(true)
+  vi.mocked(sendSlowdownSummaryAlert).mockResolvedValue(true)
 })
 
 describe('an entry younger than the read back age', () => {
@@ -438,5 +440,122 @@ describe('the sweep is bounded and safe to run twice', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).toHaveBeenCalledTimes(1)
     expect(recordRun.mock.calls[0][1]).toMatchObject({ outcome: 'resolved', summary: expect.objectContaining({ landed: 1, lost: 0 }) })
+  })
+})
+
+/**
+ * #1881: one database stall produced about 35 Slack messages within a minute.
+ * Once the sweep has resolved every entry a slowdown left, it posts ONE summary:
+ * how many runs, which workflows, and whether every record landed.
+ */
+describe('one summary per slowdown (#1881)', () => {
+  const RUN_B = { workflow_id: 'wf-2', workflow_name: 'Lead Economy', execution_id: 'ex-2' }
+  const SIGHT_B: ReadBack = { kind: 'sighting_present', sighting_id: 's-2', execution_started_at_utc: STARTED }
+  const STEPS: ReadBack = {
+    kind: 'steps_present',
+    execution_id: 'ex-1',
+    execution_started_at: STARTED,
+    started_from: STARTED,
+    started_to: '2026-10-08T13:20:08.000Z',
+    expected: 2,
+  }
+
+  it('waits until the slowdown is fully read back, then posts once for every run in it', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    db.tables.lead_sightings.push({ id: 's-2', execution_started_at_utc: STARTED, outcome_state: 'in_flight' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_B, T0 + 50_000, 'org-1', RUN_B)
+
+    // The second entry is still too young to read: no summary yet.
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 50_000, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 110_000, { claims }))
+
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 2, lost: 0, steps_missing: 0 })
+    expect(payload.workflows.map((w) => w.name).sort()).toEqual(['Engine Bidding Workflow', 'Lead Economy'])
+    expect(payload.from).toBe(new Date(T0).toISOString())
+    expect(payload.to).toBe(new Date(T0 + 50_000).toISOString())
+  })
+
+  it('says how many records never landed', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await seed(kv, 'lead_sightings.insert', SIGHT_B, T0, 'org-1', RUN_B)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 1, lost: 1 })
+  })
+
+  it('posts nothing while the database still does not answer', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.state.mode = 'down'
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+  })
+
+  it('two overlapping sweeps that both finish a slowdown post one summary', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await Promise.all([
+      runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims })),
+      runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims })),
+    ])
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the tally and tries again next tick when the summary did not deliver', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    vi.mocked(sendSlowdownSummaryAlert).mockResolvedValueOnce(false)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 60_000, { claims }))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[1][1]).toMatchObject({ landed: 1 })
+  })
+
+  it('reads step rows back by count, and a missing one is told in the summary, not dead-lettered', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.execution_steps = [{ id: 'st-1', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:09.000Z' }]
+    await seed(kv, 'execution_steps', STEPS)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.steps_missing).toBe(1)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ steps_missing: 1, lost: 0 })
+    // execution_steps is partitioned on each step's own started_at.
+    const read = db.queries.find((q) => q.table === 'execution_steps')
+    expect(read?.eq).toMatchObject({ execution_id: 'ex-1' })
+    expect(read?.gte).toEqual({ started_at: STARTED })
+    expect(read?.lt).toEqual({ started_at: '2026-10-08T13:20:08.000Z' })
+  })
+
+  it('counts step rows that all landed as landed', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.execution_steps = [
+      { id: 'st-1', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:09.000Z' },
+      { id: 'st-2', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:10.000Z' },
+    ]
+    await seed(kv, 'execution_steps', STEPS)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.landed).toBe(1)
   })
 })

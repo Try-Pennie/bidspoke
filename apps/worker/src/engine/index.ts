@@ -405,6 +405,8 @@ export async function executeWorkflow(
     appUrl: env.APP_URL,
     timing: writeTiming,
     run: { workflow_id: workflowId, workflow_name, execution_id: executionId },
+    // One alert per (org, label, cause) per window, decided atomically (#1881).
+    claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
   }
 
   // Awaited by the finalize block below: finalize UPDATEs the row this promise
@@ -655,7 +657,11 @@ export async function executeWorkflow(
           ? o.value
           : { __error: new ContinuationUnfinishedError(CONTINUATION_WINDOW_MS / 1000, [...(ctx.runningSteps ?? [])]) },
       )
-  const flushPromise: Promise<string | null> = walkSettled
+  // #1881: a flush that RETURNED an error and one that only timed out are kept
+  // apart. The first is a lost trace and the run fails as before; the second
+  // says nothing about whether the rows landed, so the run is degraded and the
+  // rows are read back by the minute sweep.
+  const flushPromise: Promise<{ error: string | null; unconfirmed: string | null }> = walkSettled
     .then(() =>
       withinBudget(
         executionRecordPromise.then(() =>
@@ -668,12 +674,16 @@ export async function executeWorkflow(
     )
     .then((flushed) =>
       flushed.settled
-        ? flushed.value
-        : 'the execution record and step rows did not answer within the post-response budget; they may still land, but nothing confirmed them',
+        ? { error: flushed.value, unconfirmed: null }
+        : {
+            error: null,
+            unconfirmed:
+              'the execution record and step rows did not answer within the post-response budget; they may still land, but nothing confirmed them',
+          },
     )
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
-      return formatErr(e)
+      return { error: formatErr(e), unconfirmed: null }
     })
 
   if (reality.isTest) {
@@ -712,7 +722,30 @@ export async function executeWorkflow(
   // reports true cpuTime for the invocation.
   executionCtx.waitUntil(
     Promise.all([walkSettled, flushPromise])
-      .then(async ([walkResult, flushError]) => {
+      .then(async ([walkResult, flushed]) => {
+        const flushError = flushed.error
+        const flushUnconfirmed = flushed.unconfirmed
+        // The step rows that timed out are read back by the minute sweep, for the
+        // slowdown summary (#1881). Tier 1, so a failed entry is only logged.
+        if (flushUnconfirmed && !reality.isTest && stepLogQueue.length > 0) {
+          const runStart = Date.parse(startedAt)
+          executionCtx.waitUntil(
+            recordUnconfirmedOutcome(
+              'execution_steps',
+              {
+                kind: 'steps_present',
+                execution_id: executionId,
+                execution_started_at: startedAt,
+                started_from: new Date(runStart).toISOString(),
+                started_to: new Date(runStart + 60 * 60 * 1000).toISOString(),
+                expected: stepLogQueue.length,
+              },
+              { message: `execution_steps (execution ${executionId}): ${flushUnconfirmed}` },
+              { ...outcomeDeps, supabase: runDb },
+              { deadLetterOnFailure: false },
+            ),
+          )
+        }
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
 
         // Continuation failure: a post-response step (continue_after_response)
@@ -739,6 +772,7 @@ export async function executeWorkflow(
         const finalStatus = resolveContinuationStatus(executionStatus, {
           hasContinuationError: continuationError != null,
           hasFlushError: flushError != null,
+          hasFlushUnconfirmed: flushUnconfirmed != null,
           neverAdvanced: finalNodeNamespace == null,
         })
         let finalErrorMessage = errorMessage
@@ -777,6 +811,11 @@ export async function executeWorkflow(
               ),
             )
           }
+        } else if (finalStatus === 'degraded' && flushUnconfirmed) {
+          // Served, and its step records only went unconfirmed (#1881, part of
+          // #688). Not a step failure, so no failed step, no error type and no per
+          // run page: the slowdown summary reports it once the rows are read back.
+          finalErrorMessage = `Step records were not confirmed saved: ${flushUnconfirmed}`
         } else if (finalStatus === 'failed' && executionStatus === 'completed' && flushError) {
           failedErrorType = failedErrorType ?? 'permanent'
           finalErrorMessage = `Step logs failed to persist: ${flushError}`

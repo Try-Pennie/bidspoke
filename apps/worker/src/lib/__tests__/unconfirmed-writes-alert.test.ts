@@ -4,7 +4,7 @@
  * finds the record missing. Read as Slack would render them.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendUnconfirmedWritesAlert, sendOutcomeDeadLetterAlert, type SlackConnection } from '../slack'
+import { sendUnconfirmedWritesAlert, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert, type SlackConnection } from '../slack'
 import { READ_BACK_MISSING_CODE } from '../db-retry'
 
 let fetchMock: ReturnType<typeof vi.fn>
@@ -66,6 +66,46 @@ describe('could not confirm alert', () => {
     const text = textOf()
     expect(text.match(/Main Flow run/g)).toHaveLength(10)
     expect(text).toContain('and 3 more')
+  })
+})
+
+describe('slowdown summary (#1881)', () => {
+  const base = {
+    runs: 20,
+    workflows: [{ name: 'Engine Bidding Workflow', runs: 12 }, { name: 'RML LendSwift', runs: 5 }, { name: 'Lead Economy', runs: 3 }],
+    records: 62,
+    from: '2026-10-08T12:20:32Z',
+    to: '2026-10-08T12:21:12Z',
+  }
+
+  it('says when, how many runs on which workflows, and that every record landed', async () => {
+    await sendSlowdownSummaryAlert(conn, { ...base, landed: 62, lost: 0, steps_missing: 0 }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('Database slowdown, every record saved')
+    expect(text).toContain('Between 8:20 AM and 8:21 AM ET')
+    expect(text).toContain('20 runs')
+    expect(text).toContain('Engine Bidding Workflow (12), RML LendSwift (5), Lead Economy (3)')
+    expect(text).toContain('all 62 landed')
+    expect(text).toContain('*Fix:* Nothing to do.')
+    for (const c of BANNED) expect(text).not.toContain(c)
+  })
+
+  it('says how many never landed and what to do about them', async () => {
+    await sendSlowdownSummaryAlert(conn, { ...base, landed: 59, lost: 2, steps_missing: 1 }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('some records not saved')
+    expect(text).toContain('59 of 62 landed')
+    expect(text).toContain('2 outcome records never did')
+    expect(text).toContain('1 run is missing some step records')
+    expect(text).toMatch(/\*Fix:\* Re-derive the lost records/)
+    for (const c of BANNED) expect(text).not.toContain(c)
+  })
+})
+
+describe('the dead letter count is approximate (#1881)', () => {
+  it('says about above one, since KV increments can overwrite each other', async () => {
+    await sendOutcomeDeadLetterAlert(conn, { label: 'lead_sightings.insert', window_loss_count: 13, window_minutes: 30, error_message: 'x', error_code: '23502' }, 'https://app.test')
+    expect(textOf()).toContain('About *13* writes were lost')
   })
 })
 

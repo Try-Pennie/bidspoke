@@ -16,6 +16,11 @@
  *    again next minute. Once the oldest unreadable entry is 15 minutes old, one
  *    "could not confirm" alert names them, and never says lost.
  *
+ * Once nothing a slowdown left is still waiting, one summary per org says how
+ * many runs it touched, on which workflows, and whether every record landed
+ * (#1881), in place of the per run and per write messages a stall used to send.
+ * Step rows (tier 1) are read back for that summary only, never dead-lettered.
+ *
  * An entry is read only once it is READ_BACK_MIN_AGE_MS old: a request still
  * queued in the database could otherwise land after a read that found nothing.
  * Two minutes is past the service role's 30 second statement timeout plus
@@ -34,7 +39,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
 import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from './db-retry'
-import { getSlackConnection, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
+import { getSlackConnection, sendSlowdownSummaryAlert, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { readLastGoodSlackConnections } from './volume-cliff'
 import { secretKeys } from './secret-crypto'
@@ -122,7 +127,40 @@ export interface UnconfirmedSweepSummary {
   unread: number
   /** The lost entries' labels, for the run record. */
   lost_labels: string[]
+  /** Runs whose step rows a read back found incomplete (tier 1, never dead-lettered). */
+  steps_missing: number
+  /** Entries left for a later tick: another sweep claimed them, or their lost alert could not be recorded. */
+  deferred: number
+  /** Slowdown summaries posted this tick. */
+  summaries: number
 }
+
+/**
+ * What one slowdown has resolved so far, per org, carried between ticks (#1881).
+ * A slowdown's entries come of age over a minute or two, so they resolve across
+ * ticks; the summary goes out once none is left.
+ */
+export interface SlowdownTally {
+  /** First seen time of the earliest and latest entry, ISO. */
+  from: string
+  to: string
+  /** Execution id to its run. */
+  runs: Record<string, { workflow_id: string; workflow_name: string }>
+  records: number
+  landed: number
+  lost: number
+  steps_missing: number
+}
+
+/**
+ * Where the tallies live. KV, beside the entries: a read modify write by the
+ * sweep alone, once a tick. Two overlapping sweeps can overwrite each other's
+ * merge, which can make a summary's counts slightly off, never doubled in Slack:
+ * the summary itself is posted under an AlertClaim.
+ */
+export const SLOWDOWN_TALLY_KEY = 'unconfirmed-write-slowdown'
+const SLOWDOWN_TALLY_TTL_SECONDS = 24 * 60 * 60
+const SUMMARY_CLAIM_TTL_SECONDS = 60 * 60
 
 /** A read that never answers is given up on (L110); the timer is cleared once the read wins. */
 async function readWithin(deps: UnconfirmedSweepDeps, entry: UnconfirmedWrite): Promise<ReadBackVerdict> {
@@ -167,6 +205,46 @@ function describeReadBack(entry: UnconfirmedWrite): string {
     case 'bid_present':
     case 'bid_winner':
       return `bid by ${r.partner_slug}, execution ${r.execution_id}`
+    case 'steps_present':
+      return `step rows of execution ${r.execution_id}`
+  }
+}
+
+function tallyFor(tallies: Map<string, SlowdownTally>, entry: UnconfirmedWrite): SlowdownTally {
+  let t = tallies.get(entry.org_id)
+  if (!t) {
+    t = { from: entry.first_seen_at, to: entry.first_seen_at, runs: {}, records: 0, landed: 0, lost: 0, steps_missing: 0 }
+    tallies.set(entry.org_id, t)
+  }
+  if (entry.first_seen_at < t.from) t.from = entry.first_seen_at
+  if (entry.first_seen_at > t.to) t.to = entry.first_seen_at
+  if (entry.run) t.runs[entry.run.execution_id] = { workflow_id: entry.run.workflow_id, workflow_name: entry.run.workflow_name }
+  t.records++
+  return t
+}
+
+function mergeTally(into: SlowdownTally | undefined, add: SlowdownTally): SlowdownTally {
+  if (!into) return add
+  return {
+    from: add.from < into.from ? add.from : into.from,
+    to: add.to > into.to ? add.to : into.to,
+    runs: { ...into.runs, ...add.runs },
+    records: into.records + add.records,
+    landed: into.landed + add.landed,
+    lost: into.lost + add.lost,
+    steps_missing: into.steps_missing + add.steps_missing,
+  }
+}
+
+async function readTallies(kv: SweepKv): Promise<Record<string, SlowdownTally>> {
+  const raw = await kv.get(SLOWDOWN_TALLY_KEY)
+  if (!raw) return {}
+  try {
+    const v = JSON.parse(raw) as unknown
+    return v && typeof v === 'object' ? (v as Record<string, SlowdownTally>) : {}
+  } catch {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] slowdown tally unreadable, starting again`)
+    return {}
   }
 }
 
@@ -175,11 +253,13 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   const startedAtMs = now()
   const summary: UnconfirmedSweepSummary = {
     listed: 0, young: 0, landed: 0, lost: 0, unreadable: 0, could_not_confirm: 0, skipped: 0, unread: 0, lost_labels: [],
+    steps_missing: 0, deferred: 0, summaries: 0,
   }
 
   const { keys } = await deps.kv.list({ prefix: UNCONFIRMED_WRITE_PREFIX, limit: SWEEP_LIMIT })
   summary.listed = keys.length
-  if (keys.length === 0) return summary
+  // What this tick resolved, per org, for the slowdown summary (#1881).
+  const resolved = new Map<string, SlowdownTally>()
 
   // Unreadable entries old enough to be reported, by org.
   const unconfirmable = new Map<string, Array<{ key: string; entry: UnconfirmedWrite }>>()
@@ -225,18 +305,30 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
     if (verdict.verdict === 'landed') {
       await deps.kv.delete(name)
       summary.landed++
+      tallyFor(resolved, entry).landed++
       continue
     }
 
     if (verdict.verdict === 'missing') {
-      // Claimed first, so two overlapping sweeps page this record once. The
+      // Claimed first, so two overlapping sweeps act on this record once. The
       // loser leaves the entry for the claimant to delete.
-      if (deps.claims && !(await deps.claims.claim(`unconfirmed-write:${entry.id}`, ENTRY_CLAIM_TTL_SECONDS))) continue
+      if (deps.claims && !(await deps.claims.claim(`unconfirmed-write:${entry.id}`, ENTRY_CLAIM_TTL_SECONDS))) {
+        summary.deferred++
+        continue
+      }
+      if (entry.read_back.kind === 'steps_present') {
+        // Step rows are tier 1: an incomplete trace is told in the summary, and
+        // no Outcome Record Lost alert is sent for it.
+        await deps.kv.delete(name)
+        summary.steps_missing++
+        tallyFor(resolved, entry).steps_missing++
+        continue
+      }
       const minutes = Math.round((startedAtMs - Date.parse(entry.first_seen_at)) / 60_000)
       const recorded = await recordOutcomeDeadLetter(
         entry.label,
         lossOf(entry, verdict, minutes),
-        { kv: deps.kv, supabase: deps.supabase, orgId: entry.org_id, appUrl: deps.appUrl },
+        { kv: deps.kv, supabase: deps.supabase, orgId: entry.org_id, appUrl: deps.appUrl, claims: deps.claims },
         entry.run ? { ...entry.run, at: entry.first_seen_at } : undefined,
       ).then(
         () => true,
@@ -250,11 +342,13 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
       // has counted the loss, whether or not its alert was the one that posted.
       if (!recorded) {
         await deps.claims?.release(`unconfirmed-write:${entry.id}`)
+        summary.deferred++
         continue
       }
       await deps.kv.delete(name)
       summary.lost++
       summary.lost_labels.push(entry.label)
+      tallyFor(resolved, entry).lost++
       continue
     }
 
@@ -271,6 +365,12 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
     summary.could_not_confirm += await reportUnconfirmable(deps, orgId, items, startedAtMs)
   }
 
+  // A slowdown is over once nothing is left to read: no entry too young, none
+  // unreadable, none another sweep holds, and the list was not cut short.
+  const settled =
+    summary.young === 0 && summary.unreadable === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
+  summary.summaries = await carrySlowdownTallies(deps, resolved, settled)
+
   if (deps.recordRun && summary.listed > summary.young) {
     await deps.recordRun(startedAtMs, {
       outcome: summary.lost > 0 ? 'lost-found' : summary.unreadable > 0 ? 'unreadable' : 'resolved',
@@ -279,6 +379,77 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
     })
   }
   return summary
+}
+
+/**
+ * Merges this tick's resolved entries into the stored tallies and, once the
+ * slowdown is settled, posts one summary per org (#1881). Keyed on the cause:
+ * only writes that timed out are in it, so a write that returned an error still
+ * pages through the dead letter on its own (L707). Returns summaries posted.
+ */
+async function carrySlowdownTallies(deps: UnconfirmedSweepDeps, resolved: Map<string, SlowdownTally>, settled: boolean): Promise<number> {
+  const stored = await readTallies(deps.kv)
+  const hadStored = Object.keys(stored).length > 0
+  if (!hadStored && resolved.size === 0) return 0
+  for (const [orgId, t] of resolved) stored[orgId] = mergeTally(stored[orgId], t)
+
+  let posted = 0
+  if (settled) {
+    for (const [orgId, tally] of Object.entries(stored)) {
+      const claimKey = `unconfirmed-write-summary:${orgId}:${tally.from}`
+      if (deps.claims && !(await deps.claims.claim(claimKey, SUMMARY_CLAIM_TTL_SECONDS))) {
+        // Another sweep is posting this slowdown's summary.
+        delete stored[orgId]
+        continue
+      }
+      const done = await postSummary(deps, orgId, tally)
+      if (done) {
+        delete stored[orgId]
+        posted++
+      } else {
+        await deps.claims?.release(claimKey)
+      }
+    }
+  }
+
+  try {
+    if (Object.keys(stored).length === 0) await deps.kv.delete(SLOWDOWN_TALLY_KEY)
+    else await deps.kv.put(SLOWDOWN_TALLY_KEY, JSON.stringify(stored), { expirationTtl: SLOWDOWN_TALLY_TTL_SECONDS })
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] could not store the slowdown tally:`, formatErr(e))
+  }
+  return posted
+}
+
+/** True when the summary is delivered, or there is nobody to deliver it to by choice. */
+async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: SlowdownTally): Promise<boolean> {
+  try {
+    const slack = await deps.slackFor(orgId)
+    if (!slack) {
+      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] slowdown summary for org ${orgId} has no Slack connection to go to`)
+      return false
+    }
+    if (!slack.config_alerts_enabled) return true
+    const byWorkflow = new Map<string, number>()
+    for (const run of Object.values(tally.runs)) byWorkflow.set(run.workflow_name, (byWorkflow.get(run.workflow_name) ?? 0) + 1)
+    return await sendSlowdownSummaryAlert(
+      slack,
+      {
+        runs: Object.keys(tally.runs).length,
+        workflows: [...byWorkflow.entries()].map(([name, runs]) => ({ name, runs })).sort((a, b) => b.runs - a.runs),
+        records: tally.records,
+        landed: tally.landed,
+        lost: tally.lost,
+        steps_missing: tally.steps_missing,
+        from: tally.from,
+        to: tally.to,
+      },
+      deps.appUrl,
+    )
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] slowdown summary failed for org ${orgId}:`, formatErr(e))
+    return false
+  }
 }
 
 /** One could-not-confirm alert for an org's entries; returns how many it named. */

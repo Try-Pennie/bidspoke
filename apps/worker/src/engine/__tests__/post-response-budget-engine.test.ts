@@ -33,12 +33,14 @@ vi.mock('../../lib/slack', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/slack')>()),
   getSlackConnection: vi.fn(),
   sendOutcomeDeadLetterAlert: vi.fn(),
+  sendSlowdownSummaryAlert: vi.fn(),
 }))
 
 import { executeWorkflow, moneyRuntime } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
-import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../../lib/slack'
+import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert } from '../../lib/slack'
+import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
@@ -127,6 +129,11 @@ function makeDb(clock: VirtualClock, availability: () => Availability) {
         Object.assign(row, payload as object)
         return Promise.resolve({ data: [{ id: row.id }], error: null })
       }
+    }
+    if (op === 'select' && table === 'execution_steps') {
+      // The step rows' read back (#1881), by run.
+      const match = steps.filter((r) => r.execution_id === filters.execution_id)
+      return Promise.resolve({ data: match.map((r) => ({ id: r.id })), error: null })
     }
     if (op === 'select' && (table === 'workflow_executions' || table === 'lead_sightings')) {
       // The read back (#1880): by id and by the partition column, as the sweep asks.
@@ -229,6 +236,7 @@ beforeEach(() => {
   vi.mocked(executeNode).mockResolvedValue({ output: RESPONSE, earlyResponse: RESPONSE })
   vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
   vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValue(true)
+  vi.mocked(sendSlowdownSummaryAlert).mockResolvedValue(true)
 })
 
 type Phase = { now: Availability }
@@ -342,7 +350,7 @@ describe('post-response writes with a database that never answers (#1850, #1880)
       .filter(([k]) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))
       .map(([, v]) => (JSON.parse(v) as { label: string }).label)
       .sort()
-    expect(labels).toEqual(['execution_finalize', 'lead_sightings.finalize', 'lead_sightings.insert'])
+    expect(labels).toEqual(['execution_finalize', 'execution_steps', 'lead_sightings.finalize', 'lead_sightings.insert'])
     expect(Math.max(...unconfirmed.map((p) => p.at))).toBeLessThanOrEqual(CUTOFF)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
@@ -359,12 +367,21 @@ describe('writes that answer after the budget, read back by the sweep (#1880)', 
   it('sends no alert once every late row is read back present', async () => {
     const phase: Phase = { now: 'late' }
     const { db, idempotency, result } = await run(() => phase.now)
-    expect(db.executions.get(result.executionId)?.status).not.toBe('running')
+    // #1881: the lead was answered and the step records only went unconfirmed,
+    // so the run is degraded and pages nobody (part of #688).
+    const row = db.executions.get(result.executionId)
+    expect(row?.status).toBe('degraded')
+    expect(String(row?.error_message)).toMatch(/step records were not confirmed/i)
+    expect(fireExecutionAlert).not.toHaveBeenCalled()
 
     const summary = await sweepAfter(phase, idempotency, db)
 
-    expect(summary.landed).toBeGreaterThanOrEqual(3)
+    expect(summary.landed).toBe(4)
     expect(summary.lost).toBe(0)
+    expect(db.steps).toHaveLength(1)
+    // One summary for the slowdown, saying every record landed (#1881).
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ runs: 1, records: 4, landed: 4, lost: 0, steps_missing: 0 })
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect([...idempotency.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toEqual([])
   })
