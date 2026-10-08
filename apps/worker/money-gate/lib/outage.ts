@@ -215,8 +215,20 @@ export function compareOutage(up: OutageRecord, down: OutageRecord): OutageDiffe
   check('routes', up.decisions.routes, down.decisions.routes)
   check('nodes_executed', up.decisions.nodes_executed, down.decisions.nodes_executed)
   check('final_node', up.decisions.final_node, down.decisions.final_node)
-  check('do_state', up.do_state, down.do_state)
+  check('do_state', comparedDoState(up.do_state), comparedDoState(down.do_state))
   return diffs
+}
+
+/**
+ * Durable Object namespaces whose state is not compared. ALERT_CLAIM records who
+ * may post an alert (#1298), and since #1881 the outcome dead letter takes its
+ * cooldown there: an outage is expected to raise alerts its twin does not, and no
+ * alert claim decides anything about a lead. Every other object is compared.
+ */
+export const DO_STATE_NOT_COMPARED = ['ALERT_CLAIM'] as const
+
+function comparedDoState(state: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(state).filter(([ns]) => !(DO_STATE_NOT_COMPARED as readonly string[]).includes(ns)))
 }
 
 /**
