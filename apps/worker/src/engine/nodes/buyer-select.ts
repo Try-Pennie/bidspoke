@@ -286,6 +286,12 @@ export interface BuyerSelectDeps {
   loadProfiles: () => Promise<BuyerProfilesSnapshot>
   /** The node passes a deadline function reading what is left of its budget: the whole run in decide_only (#1491), the steps before the buyer call in live (#1508); cleanup and everything after the call get the client's standard deadline. */
   saleClient: (key: EntryKey, opts?: ClientOptions) => SaleApi
+  /**
+   * A read of the lead's sale record that changes nothing in it, sent without waiting before the
+   * profiles read so the record is already running when the claim arrives (#1804). The first call
+   * to a new record measured p50 270 ms against 24 ms for a later call to the same record.
+   */
+  wakeSale: (key: EntryKey) => Promise<unknown>
   ledgerClient: (partnerId: string, opts?: ClientOptions) => LedgerApi
   /** Where cleanup after a rehearsal budget ending runs, off the response path (#1512). The work never rejects. */
   background?: (work: Promise<void>) => void
@@ -311,6 +317,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
     // The loader rebuilds an ageing cached snapshot in the background (#1492), so the read this lead pays stays a cache hit.
     loadProfiles: () => loadBuyerProfiles(orgId, env.WORKFLOW_CACHE, supabase, { background }),
     saleClient: (key, opts) => new LeadSaleClient(env.LEAD_SALE, key, opts),
+    wakeSale: (key) => new LeadSaleClient(env.LEAD_SALE, key).read(),
     ledgerClient: (partnerId, opts) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId, opts),
     background,
     callBuyer: (target, body, opts) => postToPartner(target, body, env, opts),
@@ -447,6 +454,16 @@ class Run {
         const bucket = canaryBucket(leadKey)
         if (bucket >= percent) return this.done('deferred', 'canary_out', `bucket ${bucket} is outside the ${percent} percent live share`)
       }
+    }
+
+    // The live claim's record, woken now so its start up overlaps the profiles read and the
+    // ranking rather than sitting in front of the buyer call (#1804). Not awaited: the claim does
+    // the real work and reports its own failure, so a failed wake only costs the time it saved.
+    if (this.modeEffective === 'live') {
+      const key: EntryKey = { kind: 'live', population: this.out.population as Population, lead_key: leadKey }
+      this.deps.wakeSale(key).catch((err: unknown) => {
+        this.deps.log({ event: 'buyer_select_wake_failed', step_namespace: this.node.namespace, error_message: messageOf(err) })
+      })
     }
 
     // 5. rehearsal caps.
