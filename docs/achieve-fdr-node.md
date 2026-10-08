@@ -34,8 +34,9 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    targeted products (default FDR only), wait_for_offers toggle, utm_source, optional
    unsecured-debt template override. Single output, pass-through, never fails the flow:
    every outcome (accepted / rejected / auth failure / timeout / missing fields) returns
-   the marked output shape so it gets logged and the flow continues. Internal 12s fetch
-   abort keeps a hung Achieve API from tripping the engine-level step timeout.
+   the marked output shape so it gets logged and the flow continues. Internal 9 s fetch
+   abort keeps a hung Achieve API from tripping the engine-level step timeout, and ends
+   the node inside the 12 s a run waits for its work after the answer (#1882).
 
 ## Canvas setup
 
@@ -48,7 +49,7 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    | `ACHIEVE_UTM_SOURCE` | value from Achieve BizDev (defaults to `pennie`) | no |
 
 2. Drag an **Achieve Offers** node from the palette (defaults: FDR only, wait for
-   offers on, timeout 15000 ms, retries 0 - retrying a transport failure risks
+   offers on, timeout 10000 ms, retries 0, because retrying a transport failure risks
    double-submitting the lead). No script involved; Save the workflow as usual.
 
 3. Placement (Main Flow): recommended at the **tail convergence** `branch_end`

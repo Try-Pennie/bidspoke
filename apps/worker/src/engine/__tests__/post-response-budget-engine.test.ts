@@ -352,4 +352,45 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     expect(deadLetters('continuation_unfinished')).toHaveLength(1)
     expect(deadLetters('sf_writeback')).toEqual([])
   })
+
+  // #1882: the reason and the alert pointed at the Salesforce update, which had
+  // finished 87 ms after the answer; the step still out was the Achieve call after
+  // it. They now name the step the walk was running when the wait gave up.
+  it('names the step still running at the cut-off, not the one before it that finished', async () => {
+    const twoSteps = {
+      trigger: { id: 'trigger', type: 'trigger', config: {} },
+      nodes: [
+        { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+        { id: 's', namespace: 'under_10000_sf_post', label: 'Salesforce post', type: 'code', config: { retries: 0 } },
+        { id: 'a', namespace: 'achieve_under_10k', label: 'Achieve under 10k', type: 'achieve_offers', config: { retries: 0 } },
+      ],
+      edges: [
+        { id: 'e0', source: 'r', target: 's' },
+        { id: 'e1', source: 's', target: 'a' },
+      ],
+    } as unknown as WorkflowDefinition
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: twoSteps,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    let late: () => Promise<{ output: unknown }> = () => Promise.reject(new Error('the late step ran before the clock was wired'))
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.namespace === 'under_10000_sf_post') return { output: { posted: true } }
+      return late()
+    })
+    const { db, result } = await run((c) => {
+      late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
+      return 'up'
+    })
+    const reason = String(db.executions.get(result.executionId)?.error_message)
+    expect(reason).toContain('Achieve under 10k (achieve_under_10k)')
+    expect(reason).not.toContain('under_10000_sf_post')
+    const alert = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.find(([, p]) => p.label === 'continuation_unfinished')?.[1]
+    expect(alert?.run?.still_running).toEqual(['Achieve under 10k (achieve_under_10k)'])
+  })
 })

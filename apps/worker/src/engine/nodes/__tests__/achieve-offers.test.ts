@@ -103,6 +103,29 @@ describe('executeAchieveOffersNode', () => {
     expect((init.signal as AbortSignal).aborted).toBe(true)
   })
 
+  // #1882: the node runs after the lead is answered, and the run stops waiting for
+  // that work 12 s after the answer. A call that may run to the cut-off makes every
+  // slow Achieve reply look like unfinished work, so the node gives up at 9 s.
+  it('gives up on a reply that has not come in 9 s and records the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+      }))
+      vi.stubGlobal('fetch', fetchMock)
+      const pending = executeAchieveOffersNode(makeNode(), makeCtx())
+      await vi.advanceTimersByTimeAsync(8_999)
+      const signal = (fetchMock.mock.calls[0][1] as RequestInit).signal as AbortSignal
+      expect(signal.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(signal.aborted).toBe(true)
+      const { output } = await pending
+      expect((output as { response_reason?: string }).response_reason).toBe('Achieve API timed out after 9000ms')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // Pinned to production: off production the lead's identity is deliberately swapped for
   // Achieve's showroom profile (see the sandbox-profile suite below), so a real-lead
   // assertion is only meaningful against the prod endpoint.
