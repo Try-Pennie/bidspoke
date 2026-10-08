@@ -433,117 +433,122 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   // Outbound from the engine itself: recorded and answered here, never sent.
   const engineOutbound: OutboundRecord[] = []
   let currentStep = '(engine)'
-  const realFetch = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const req = new Request(input, init)
-    const url = new URL(req.url)
-    const headers: Record<string, string> = {}
-    req.headers.forEach((v, k) => { headers[k] = v })
-    const text = await readBodyText(req)
-    const body = parseBody(text, req.headers.get('content-type'))
-    engineOutbound.push({ via: 'engine', node: currentStep, method: req.method, host: url.host, path: redactPathAndQuery(url), headers: redactHeaders(headers), body: redactBody(body) })
-    const stubReq = { method: req.method, url, headers, body }
-    const hit = stubAnswer(stubReq, arms)
-    if (!hit) unstubbed.push(`${url.host}${url.pathname} (${id})`)
-    const a = hit?.answer ?? noRuleAnswer(stubReq)
-    return toResponse(a)
-  })
-
-  // Engine log lines name the step running, which attributes an engine side request.
-  const consoleLog = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-    const first = args[0]
-    if (typeof first === 'string' && first.startsWith('{')) {
-      try {
-        const ev = JSON.parse(first) as { event?: string; step_namespace?: string }
-        if (ev.event === 'step_start' && ev.step_namespace) currentStep = ev.step_namespace
-      } catch { /* not an engine event */ }
-    }
-  })
-  vi.spyOn(console, 'error').mockImplementation(() => {})
-  vi.spyOn(console, 'warn').mockImplementation(() => {})
-  vi.spyOn(console, 'info').mockImplementation(() => {})
-
-  // A fake on every dispatch namespace binding: records the binding, its namespace
-  // and the script each call resolves to, and forwards to the bundle GATE_IO hosts
-  // under that name.
   const codeDispatch: CodeDispatchRecord[] = []
   let codeTrigger: unknown = null
-  let dispatchCount = 0
-  const loaders: Record<string, unknown> = {}
-  for (const ns of DISPATCH_NAMESPACES) {
-    loaders[ns.binding] = {
-      get(name: string) {
-        return {
-          async fetch(input: string, init?: RequestInit) {
-            const path = new URL(input).pathname
-            const bodyText = typeof init?.body === 'string' ? init.body : ''
-            const parsed = (bodyText ? JSON.parse(bodyText) : {}) as { chain?: Array<{ namespace: string }>; payload?: unknown; execution?: unknown }
-            const namespaces = parsed.chain ? parsed.chain.map((c) => c.namespace) : [path.replace(/^\/execute\//, '')]
-            codeDispatch.push({ binding: ns.binding, dispatch_namespace: ns.namespace, name, path, namespaces })
-            if (codeTrigger === null) codeTrigger = { payload: parsed.payload, execution: parsed.execution }
-            const res = await e.GATE_IO.fetch(`https://gate/dispatch?name=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns.namespace)}&path=${encodeURIComponent(path)}&node=${encodeURIComponent(namespaces.join(','))}`, {
-              method: 'POST',
-              headers: { 'x-money-gate-seed': `${seed}#${dispatchCount++}` },
-              body: bodyText,
-            })
-            if (res.headers.get('x-money-gate') === 'worker-not-found') throw new Error(`Worker not found: ${name}`)
-            return res
-          },
-        }
-      },
-    }
-  }
-
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(new Date(FIXED_TIME_MS))
-  pinRandomness(seed)
   let lifted: LiftedTimers | null = null
   let timersFired: FiredTimer[]
-
-  const partnerSecrets = (snapshot.tables.partner_configs ?? []).map((p) => p.cf_secret_key).filter((k): k is string => typeof k === 'string' && k.length > 0)
-  const runEnv = buildEnv(e, loaders, def, partnerSecrets)
-  const start = { workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }
-  // A test run carries what only the Test Runner supplies: the id the canvas mints
-  // (a UUIDv7, here under the pinned clock and randomness), the test bundle and the
-  // canvas definition.
-  const options = runOptions(
-    spec.kind,
-    start,
-    spec.kind === 'test'
-      ? { executionId: uuidv7(), codeBundleName: spec.testBundle ?? null, definitionOverride: def.definition }
-      : spec.kind === 'shadow_dry_run'
-        ? { codeBundleName: spec.compareBundle ?? null }
-        : {},
-  )
   let response: FixtureRecord['response'] = { status: 0, body: null }
   let answeredMs: number | null = null
   let error: string | undefined
+  const realFetch = globalThis.fetch
+  // Everything below replaces something global, so all of it sits inside the try
+  // whose finally puts it back: a setup step that throws still restores it, and its
+  // error still fails the replay, rather than leaking into the next fixture.
   try {
-    // Inside the try, so the finally puts back whatever the lift replaced.
-    if (hooks.engineTimers !== 'real') lifted = liftEngineTimers(globalThis as unknown as TimerHost)
-    const ctx = createExecutionContext()
-    // The runtime the bidding Worker's routes pass, built by the engine under test.
-    if (hooks.before) await hooks.before(runEnv, db)
-    const runtime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
-    // Real time (Date is pinned during a run): how long the caller waited for its answer.
-    const calledAt = performance.now()
-    const result = await executeWorkflow(options as never, runEnv as never, runtime as never, ctx)
-    answeredMs = performance.now() - calledAt
-    const settled = waitOnExecutionContext(ctx)
-    if (hooks.postResponseLimitMs === undefined) {
-      await settled
-    } else {
-      await waitAtMost(settled, hooks.postResponseLimitMs)
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init)
+      const url = new URL(req.url)
+      const headers: Record<string, string> = {}
+      req.headers.forEach((v, k) => { headers[k] = v })
+      const text = await readBodyText(req)
+      const body = parseBody(text, req.headers.get('content-type'))
+      engineOutbound.push({ via: 'engine', node: currentStep, method: req.method, host: url.host, path: redactPathAndQuery(url), headers: redactHeaders(headers), body: redactBody(body) })
+      const stubReq = { method: req.method, url, headers, body }
+      const hit = stubAnswer(stubReq, arms)
+      if (!hit) unstubbed.push(`${url.host}${url.pathname} (${id})`)
+      const a = hit?.answer ?? noRuleAnswer(stubReq)
+      return toResponse(a)
+    })
+
+    // Engine log lines name the step running, which attributes an engine side request.
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      const first = args[0]
+      if (typeof first === 'string' && first.startsWith('{')) {
+        try {
+          const ev = JSON.parse(first) as { event?: string; step_namespace?: string }
+          if (ev.event === 'step_start' && ev.step_namespace) currentStep = ev.step_namespace
+        } catch { /* not an engine event */ }
+      }
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+
+    // A fake on every dispatch namespace binding: records the binding, its namespace
+    // and the script each call resolves to, and forwards to the bundle GATE_IO hosts
+    // under that name.
+    let dispatchCount = 0
+    const loaders: Record<string, unknown> = {}
+    for (const ns of DISPATCH_NAMESPACES) {
+      loaders[ns.binding] = {
+        get(name: string) {
+          return {
+            async fetch(input: string, init?: RequestInit) {
+              const path = new URL(input).pathname
+              const bodyText = typeof init?.body === 'string' ? init.body : ''
+              const parsed = (bodyText ? JSON.parse(bodyText) : {}) as { chain?: Array<{ namespace: string }>; payload?: unknown; execution?: unknown }
+              const namespaces = parsed.chain ? parsed.chain.map((c) => c.namespace) : [path.replace(/^\/execute\//, '')]
+              codeDispatch.push({ binding: ns.binding, dispatch_namespace: ns.namespace, name, path, namespaces })
+              if (codeTrigger === null) codeTrigger = { payload: parsed.payload, execution: parsed.execution }
+              const res = await e.GATE_IO.fetch(`https://gate/dispatch?name=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns.namespace)}&path=${encodeURIComponent(path)}&node=${encodeURIComponent(namespaces.join(','))}`, {
+                method: 'POST',
+                headers: { 'x-money-gate-seed': `${seed}#${dispatchCount++}` },
+                body: bodyText,
+              })
+              if (res.headers.get('x-money-gate') === 'worker-not-found') throw new Error(`Worker not found: ${name}`)
+              return res
+            },
+          }
+        },
+      }
     }
-    response = { status: result.status, body: result.response, headers: result.responseHeaders }
-  } catch (err) {
-    error = err instanceof Error ? `${err.name}: ${err.message}` : 'non Error thrown'
+
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(FIXED_TIME_MS))
+    pinRandomness(seed)
+
+    const partnerSecrets = (snapshot.tables.partner_configs ?? []).map((p) => p.cf_secret_key).filter((k): k is string => typeof k === 'string' && k.length > 0)
+    const runEnv = buildEnv(e, loaders, def, partnerSecrets)
+    const start = { workflowId: def.id, payload, source: variant.source ?? shape.sources?.[0] ?? 'money-gate' }
+    // A test run carries what only the Test Runner supplies: the id the canvas mints
+    // (a UUIDv7, here under the pinned clock and randomness), the test bundle and the
+    // canvas definition.
+    const options = runOptions(
+      spec.kind,
+      start,
+      spec.kind === 'test'
+        ? { executionId: uuidv7(), codeBundleName: spec.testBundle ?? null, definitionOverride: def.definition }
+        : spec.kind === 'shadow_dry_run'
+          ? { codeBundleName: spec.compareBundle ?? null }
+          : {},
+    )
+    try {
+      if (hooks.engineTimers !== 'real') lifted = liftEngineTimers(globalThis as unknown as TimerHost)
+      const ctx = createExecutionContext()
+      // The runtime the bidding Worker's routes pass, built by the engine under test.
+      if (hooks.before) await hooks.before(runEnv, db)
+      const runtime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
+      // Real time (Date is pinned during a run): how long the caller waited for its answer.
+      const calledAt = performance.now()
+      const result = await executeWorkflow(options as never, runEnv as never, runtime as never, ctx)
+      answeredMs = performance.now() - calledAt
+      const settled = waitOnExecutionContext(ctx)
+      if (hooks.postResponseLimitMs === undefined) {
+        await settled
+      } else {
+        await waitAtMost(settled, hooks.postResponseLimitMs)
+      }
+      response = { status: result.status, body: result.response, headers: result.responseHeaders }
+    } catch (err) {
+      // The engine's own failure is part of the record; a setup failure above is not.
+      error = err instanceof Error ? `${err.name}: ${err.message}` : 'non Error thrown'
+    }
   } finally {
     timersFired = lifted?.fired() ?? []
     lifted?.restore()
     globalThis.fetch = realFetch
     vi.useRealTimers()
-    consoleLog.mockRestore()
+    // Every spy: the console, and the seeded randomness pinRandomness installed.
     vi.restoreAllMocks()
   }
 
