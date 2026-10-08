@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ABSENT_AT_BASE, applyExpectedChanges, parseExpectedChanges, resolveExpectedBase, type ExpectedChange } from '../expected-changes'
+import { ABSENT_AT_BASE, applyExpectedChanges, parseExpectedChanges, resolveExpectedBase, resolveExpectedLive, ABSENT_AT_LIVE, type ExpectedChange } from '../expected-changes'
 import type { Difference } from '../compare'
 
 const diff = (over: Partial<Difference> = {}): Difference => ({
@@ -137,5 +137,32 @@ describe('parseExpectedChanges', () => {
 
   it('refuses a file that does not parse, rather than reading it as empty', () => {
     expect(parseExpectedChanges('{ nope').failures[0]).toMatch(/does not parse/)
+  })
+})
+
+describe('resolveExpectedLive (#1836)', () => {
+  const fs = (files: Record<string, string>) => ({ exists: (p: string) => p in files, read: (p: string) => files[p] })
+  const LIVE = 'abcdef1234567890abcdef1234567890abcdef12'
+
+  it('is not asked when nothing was handed over, as on a Deploy', () => {
+    expect(resolveExpectedLive(undefined, undefined, fs({}))).toBeUndefined()
+    expect(resolveExpectedLive('', undefined, fs({}))).toBeUndefined()
+  })
+
+  it('reads the live copy the script wrote, with the commit it came from', () => {
+    expect(resolveExpectedLive('/w/live.json', LIVE, fs({ '/w/live.json': '{"entries":[]}' }))).toEqual({ commit: LIVE, text: '{"entries":[]}' })
+  })
+
+  it('takes the absent marker as a live worker with no file', () => {
+    expect(resolveExpectedLive(ABSENT_AT_LIVE, LIVE, fs({}))).toEqual({ commit: LIVE, text: null })
+  })
+
+  it('passes on why the script could not read it', () => {
+    expect(resolveExpectedLive('unreadable:the live worker reported no commit', undefined, fs({}))).toEqual({ unreadable: 'the live worker reported no commit' })
+  })
+
+  it('a path that is gone or a missing commit is unreadable, never an empty copy', () => {
+    expect(resolveExpectedLive('/w/gone.json', LIVE, fs({}))).toEqual({ unreadable: 'the file /w/gone.json the script wrote is not there' })
+    expect(resolveExpectedLive('/w/live.json', undefined, fs({ '/w/live.json': '{}' }))).toEqual({ unreadable: 'no live commit was handed over with it' })
   })
 })

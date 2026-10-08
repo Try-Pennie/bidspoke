@@ -91,9 +91,43 @@ else
   echo "money gate: the merge base has no ${EXPECTED_PATH}, so every entry at the head is new"
 fi
 
+# The live worker's expected-changes.json (#1836): an entry it already carries has
+# shipped and can never excuse a difference again, so the verdict fails on it by
+# name. Only the pull request job sets MONEY_GATE_LIVE_WORKER_URL, so a Deploy
+# never fails on this housekeeping; a worker that cannot be read, or an address
+# set but empty, is a note.
+EXPECTED_LIVE=""
+LIVE_COMMIT=""
+if [ -n "${MONEY_GATE_LIVE_WORKER_URL+set}" ]; then
+ if [ -z "$MONEY_GATE_LIVE_WORKER_URL" ]; then
+  EXPECTED_LIVE="unreadable:MONEY_GATE_LIVE_WORKER_URL is empty, so the live worker could not be asked"
+ else
+  if BODY=$(curl -fsS --max-time 20 "${MONEY_GATE_LIVE_WORKER_URL}/" 2>/dev/null); then
+    LIVE_COMMIT=$(printf '%s' "$BODY" | jq -r '.version // ""' 2>/dev/null) || LIVE_COMMIT=""
+  fi
+  if ! [[ "$LIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    EXPECTED_LIVE="unreadable:the live worker reported no commit (got '${LIVE_COMMIT:-nothing}')"
+    LIVE_COMMIT=""
+  else
+    git cat-file -e "${LIVE_COMMIT}^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$LIVE_COMMIT" 2>/dev/null || true
+    if ! git cat-file -e "${LIVE_COMMIT}^{commit}" 2>/dev/null; then
+      EXPECTED_LIVE="unreadable:the live worker's commit ${LIVE_COMMIT} could not be fetched"
+    elif ! live_listed="$(git ls-tree --name-only "$LIVE_COMMIT" -- "$EXPECTED_PATH")"; then
+      EXPECTED_LIVE="unreadable:git could not list ${EXPECTED_PATH} at ${LIVE_COMMIT}"
+    elif [ -z "$live_listed" ]; then
+      EXPECTED_LIVE="absent-at-live"
+    elif git show "${LIVE_COMMIT}:${EXPECTED_PATH}" > "$WORK/expected-live.json"; then
+      EXPECTED_LIVE="$WORK/expected-live.json"
+    else
+      EXPECTED_LIVE="unreadable:git could not read ${EXPECTED_PATH} at ${LIVE_COMMIT}"
+    fi
+  fi
+ fi
+fi
+
 set +e
 (cd "$ROOT/apps/worker" && MONEY_GATE_BASE="$WORK/base.json" MONEY_GATE_HEAD="$WORK/head.json" MONEY_GATE_VERDICT_OUT="$WORK/verdict.txt" \
-  MONEY_GATE_EXPECTED_BASE="$EXPECTED_BASE" \
+  MONEY_GATE_EXPECTED_BASE="$EXPECTED_BASE" MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE" MONEY_GATE_LIVE_COMMIT="$LIVE_COMMIT" \
   pnpm exec vitest run --config vitest.money-gate-verdict.config.mts > "$WORK/verdict-run.log" 2>&1)
 status=$?
 set -e
@@ -111,7 +145,7 @@ if grep -q '^warning: the fixture shapes are' "$WORK/verdict.txt"; then
 fi
 if [ "$status" -ne 0 ]; then
   # The first reason the verdict gave, of any kind, so the annotation names it.
-  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
+  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|already in the live worker|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
   echo "::error::${reason:-money gate: the verdict failed}"
 fi
 exit "$status"
