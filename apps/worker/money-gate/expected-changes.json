@@ -435,6 +435,48 @@
       "check": "kv_state",
       "field": "*WORKFLOW_CACHE.buyer-profiles:*",
       "reason": "The buyer profile copies now carry a switched_off list (the partner id, sale kind and delivery of each disabled profile, #1849 item 3), so a click for a switched-off buyer is refused from the same cache and last-good copy during an outage. The list is empty in these fixtures, and content_hash changes with the new field. Nothing sent to a buyer or decided differs."
+    },
+    {
+      "workflow": "Delegate Gmail Access for Offboarded Agents",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "Lead Economy - Bidding Workflow",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "Main Flow",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "kv_state",
+      "field": "kv_state.IDEMPOTENCY.answer-journal:*",
+      "reason": "Each live run now journals its answer in KV at the answer (#1883), so the strand drain can restore a run whose finalize never landed. A new key per run; nothing sent or decided changes."
     }
   ]
 }

@@ -125,6 +125,18 @@ describe('slowdown summary (#1881)', () => {
 })
 
 describe('the dead letter count is approximate (#1881)', () => {
+  it('says about in the unfinished work alert too, which reads the same count', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 12,
+      window_minutes: 30,
+      error_message: "The run's work after the answer did not finish within 12 s of the answer",
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('This happened about 12 times')
+    expect(text).not.toMatch(/This happened 12 times/)
+  })
+
   it('says about above one, since KV increments can overwrite each other', async () => {
     await sendOutcomeDeadLetterAlert(conn, { label: 'lead_sightings.insert', window_loss_count: 13, window_minutes: 30, error_message: 'x', error_code: '23502' }, 'https://app.test')
     expect(textOf()).toContain('About *13* writes were lost')

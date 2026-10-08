@@ -47,6 +47,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
 import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
 import { formatErr } from './format-error'
+import type { AnswerJournal } from '../engine/unconfirmed-writes'
 
 export const MIN_AGE_MINUTES = 30
 export const LOOKBACK_DAYS = 14
@@ -99,8 +100,12 @@ export function buildStrandGraph(definition: WorkflowDefinition): StrandGraph {
   }
 }
 
+// "Isolate evicted" was the cause assumed when this was written. Measured on
+// 2026-10-08 (#1883), the strands of a database stall were Cloudflare cancelling
+// the work after the answer 30 s after it, with the isolate alive, so the label
+// names what is known: that work stopped before finalize.
 const UNRESOLVED_MESSAGE =
-  '[recovered] execution stranded: isolate evicted before finalize, outcome could not be confirmed'
+  '[recovered] execution stranded: the work after the answer was cancelled before finalize, outcome could not be confirmed'
 const FAILED_NO_MESSAGE_FALLBACK = '[recovered] execution stranded after a failed step'
 // Distinct from FAILED_NO_MESSAGE_FALLBACK: that one had a failed STEP naming the
 // node, this one has only the engine's recorded verdict and no failing step to
@@ -313,6 +318,30 @@ async function loadSightingOutcome(
   return { outcome: (data as { outcome: string | null }).outcome ?? null }
 }
 
+export interface ReduceFinalizeOptions {
+  /**
+   * The run's answer journal (#1883): what the engine answered, written to KV at
+   * the answer. A stranded run that has one is restored from it, since it is
+   * the engine's own record and every other source here is inference.
+   */
+  readJournal?: (executionId: string) => Promise<AnswerJournal | null>
+}
+
+/** The journal, or null when there is none, it is another run's, or it cannot be read. */
+async function journalFor(options: ReduceFinalizeOptions, executionId: string, startedAt: string): Promise<AnswerJournal | null> {
+  if (!options.readJournal) return null
+  try {
+    const j = await options.readJournal(executionId)
+    if (!j || j.execution_id !== executionId) return null
+    // The same run, by its start too: a journal for the row's id with another
+    // start is not this row's answer.
+    return Date.parse(j.started_at) === Date.parse(startedAt) ? j : null
+  } catch (e) {
+    console.warn('[stranded-executions] answer journal unreadable, using the step evidence', { executionId, error: formatErr(e) })
+    return null
+  }
+}
+
 /**
  * Finds workflow_executions rows stuck at status='running' past MIN_AGE_MINUTES
  * and finalizes them via resolveStrandedExecution. Bounded to MAX_PER_RUN per
@@ -321,7 +350,8 @@ async function loadSightingOutcome(
  * rather than risking one invocation's CPU/time budget.
  */
 export async function runReduceFinalizeStrandedExecutions(
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  options: ReduceFinalizeOptions = {},
 ): Promise<ReduceFinalizeResult> {
   const now = Date.now()
   const ageFloor = new Date(now - MIN_AGE_MINUTES * 60_000).toISOString()
@@ -351,8 +381,58 @@ export async function runReduceFinalizeStrandedExecutions(
   // cache entry records a version we already tried and could not load, so we
   // don't re-fetch it per row.
   const graphCache = new Map<string, StrandGraph | null>()
+  let fromJournal = 0
+  // A journal restore that matched no row: the run's own finalize reached it
+  // first (the restore only takes a row still at running). Not a purge.
+  let superseded = 0
 
   for (const exec of stranded) {
+    const journal = await journalFor(options, exec.id as string, exec.started_at as string)
+    if (journal) {
+      // What the run actually answered, as the engine recorded it at the answer.
+      const { rows, error: journalUpdateErr } = await requireRowsAffected(
+        'workflow_executions.strand_repair',
+        () =>
+          supabase
+            .from('workflow_executions')
+            .update({
+              status: journal.status,
+              outcome: journal.outcome,
+              completed_at: journal.completed_at,
+              duration_ms: journal.duration_ms,
+              response_status: journal.response_status,
+              response_body: journal.response_body,
+              final_node_namespace: journal.final_node_namespace,
+              final_node_id: journal.final_node_id,
+              error_message: journal.error_message,
+              failed_step_type: journal.failed_step_type,
+              // The rest of the finalize, when the journal carries it: the sighting
+              // drain finalizes a stranded sighting from sighting_finalize.
+              ...(journal.sighting_finalize !== undefined ? { sighting_finalize: journal.sighting_finalize } : {}),
+              ...(journal.cost_usd !== undefined ? { cost_usd: journal.cost_usd } : {}),
+              ...(journal.field_presence !== undefined ? { field_presence: journal.field_presence } : {}),
+              ...(journal.email_dropped ? { email_dropped: true } : {}),
+            })
+            .eq('id', exec.id as string)
+            // Its own partition, and only while still at running: the run's own
+            // finalize can land after the scan read it, and must not be overwritten.
+            .eq('started_at', exec.started_at as string)
+            .eq('status', 'running')
+            .select('id'),
+        { onMiss: 'warn', context: { id: exec.id } },
+      )
+      if (journalUpdateErr && !isNoRowMatchedError(journalUpdateErr)) {
+        console.error('[stranded-executions] update failed', { id: exec.id, error: journalUpdateErr })
+        errors++
+      } else if (rows.length === 0) {
+        superseded++
+      } else {
+        processed++
+        fromJournal++
+      }
+      continue
+    }
+
     const versionId = exec.workflow_version_id as string | null
     let graph: StrandGraph | undefined
     if (versionId) {
@@ -427,7 +507,7 @@ export async function runReduceFinalizeStrandedExecutions(
   }
 
   console.log(
-    `[stranded-executions] processed=${processed} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
+    `[stranded-executions] processed=${processed} from_journal=${fromJournal} superseded=${superseded} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
   )
   return { processed, errors, vanished }
 }

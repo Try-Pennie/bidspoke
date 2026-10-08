@@ -32,6 +32,7 @@ import {
   SWEEP_LIMIT,
   READ_PHASE_BUDGET_MS,
   SUMMARY_QUIET_MS,
+  boundedSlackFor,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
@@ -635,5 +636,43 @@ describe('one summary per slowdown (#1881)', () => {
     await seed(kv, 'execution_steps', STEPS)
     const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     expect(s.landed).toBe(1)
+  })
+})
+
+/**
+ * The sweep reads the Slack connection exactly while the database may be down,
+ * and that read retries on real timers with no deadline. It is bounded, and the
+ * last-good copy answers when it runs out (coordinator review of #1888).
+ */
+describe('the Slack connection read the sweep posts with', () => {
+  const conn = { bot_token: 't', default_channel: 'c', config_alerts_enabled: true } as never
+
+  it('falls back to the last-good copy when the live read does not answer in time', async () => {
+    const slackFor = boundedSlackFor(
+      () => new Promise(() => {}),
+      async () => new Map([['org-1', conn]]),
+      () => Promise.resolve(),
+    )
+    expect(await slackFor('org-1')).toBe(conn)
+  })
+
+  it('uses the live connection when it answers, and stops the deadline timer', async () => {
+    const live = { ...(conn as object), default_channel: 'live' } as never
+    let watched: AbortSignal | undefined
+    const slackFor = boundedSlackFor(async () => live, async () => new Map([['org-1', conn]]), (signal) => {
+      watched = signal
+      return new Promise(() => {})
+    })
+    expect(await slackFor('org-1')).toBe(live)
+    expect(watched?.aborted).toBe(true)
+  })
+
+  it('answers null when neither copy can be read', async () => {
+    const slackFor = boundedSlackFor(
+      async () => { throw new Error('db down') },
+      async () => { throw new Error('kv down') },
+      () => new Promise(() => {}),
+    )
+    expect(await slackFor('org-1')).toBeNull()
   })
 })

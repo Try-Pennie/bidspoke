@@ -244,3 +244,88 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
       return row ? { verdict: 'landed' } : { verdict: 'missing', row_absent: false, detail: "no bid row for this partner in this run is marked the winner" }
   }
 }
+
+// ============================================================
+// The answer journal (#1883)
+// ============================================================
+// What a run answered is recorded by its finalize update, in the database alone.
+// On 2026-10-08 five Engine runs answered HTTP 200 during a stall, their
+// finalize updates never ran, and the strand drain could only label them
+// unresolved: nothing anywhere said what Engine had been told. So the engine
+// also journals the answer here, in the same KV store and for the same reason
+// as the unconfirmed entries above (it is written exactly when the database may
+// not be answering), and the strand drain restores a stranded run from it.
+//
+// One KV write per live run, about 86,000 a day measured on 2026-10-08. The
+// response body is the same class of data the idempotency cache in this KV
+// namespace already keeps per request, redacted here with the step rows' field
+// list, and it expires in three days rather than the execution row's seven.
+
+export const ANSWER_JOURNAL_PREFIX = 'answer-journal:'
+
+/**
+ * Three days: past the strand drain's 30 minute floor many times over, and past
+ * a weekend, so a drain that was itself down for a while still finds it.
+ */
+export const ANSWER_JOURNAL_TTL_SECONDS = 3 * 24 * 60 * 60
+
+export interface AnswerJournal {
+  execution_id: string
+  started_at: string
+  status: string
+  outcome: string | null
+  final_node_namespace: string | null
+  final_node_id: string | null
+  completed_at: string
+  duration_ms: number
+  response_status: number
+  /** Redacted with the same field list the step rows are (PII_REDACTION_FIELDS). */
+  response_body: unknown
+  error_message: string | null
+  failed_step_type: string | null
+  /**
+   * The rest of what the finalize writes, so a restored run is complete: the
+   * sighting projection the sighting drain finalizes a stranded sighting from,
+   * and the run's cost and capture fields.
+   */
+  sighting_finalize?: unknown
+  cost_usd?: number
+  field_presence?: Record<string, boolean>
+  email_dropped?: boolean
+  written_at: string
+}
+
+/** The terminal statuses a finalize writes; anything else is not a journal to restore. */
+const JOURNAL_STATUSES = new Set(['completed', 'failed', 'degraded'])
+
+export async function putAnswerJournal(
+  kv: { put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void> },
+  journal: AnswerJournal,
+): Promise<void> {
+  await kv.put(`${ANSWER_JOURNAL_PREFIX}${journal.execution_id}`, JSON.stringify(journal), { expirationTtl: ANSWER_JOURNAL_TTL_SECONDS })
+}
+
+/** The run's journal, or null when there is none or it is not one. Throws only when KV does. */
+export async function readAnswerJournal(
+  kv: { get(key: string): Promise<string | null> },
+  executionId: string,
+): Promise<AnswerJournal | null> {
+  const raw = await kv.get(`${ANSWER_JOURNAL_PREFIX}${executionId}`)
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as Partial<AnswerJournal>
+    if (v.execution_id !== executionId || typeof v.status !== 'string' || !JOURNAL_STATUSES.has(v.status)) return null
+    if (typeof v.completed_at !== 'string' || !Number.isFinite(Date.parse(v.completed_at))) return null
+    if (typeof v.duration_ms !== 'number' || !Number.isFinite(v.duration_ms)) return null
+    if (typeof v.response_status !== 'number' || !Number.isInteger(v.response_status)) return null
+    // Everything the drain writes into the row is held to the row's own types.
+    const textOrNull = (x: unknown) => x === null || x === undefined || typeof x === 'string'
+    if (![v.outcome, v.final_node_namespace, v.final_node_id, v.error_message, v.failed_step_type].every(textOrNull)) return null
+    if (v.cost_usd !== undefined && (typeof v.cost_usd !== 'number' || !Number.isFinite(v.cost_usd))) return null
+    if (v.field_presence !== undefined && (typeof v.field_presence !== 'object' || v.field_presence === null || Array.isArray(v.field_presence))) return null
+    if (v.email_dropped !== undefined && typeof v.email_dropped !== 'boolean') return null
+    return v as AnswerJournal
+  } catch {
+    return null
+  }
+}

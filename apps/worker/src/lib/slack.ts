@@ -1090,7 +1090,7 @@ async function sendUnfinishedWorkAlert(
   const steps = named.length > 0 ? `${one ? 'the step' : 'the steps'} ${listSteps(named)}` : 'the steps after the answer'
   const summary =
     `${who}, but ${steps} ${one ? 'was' : 'were'} still running when Bidspoke stopped waiting. ` +
-    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened ${n} times`} in the last ${payload.window_minutes} minutes.`
+    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened about ${n} times`} in the last ${payload.window_minutes} minutes.`
   const fix = named.length > 0
     ? `Fix: open the run below and check what ${listSteps(named)} did. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
     : run
