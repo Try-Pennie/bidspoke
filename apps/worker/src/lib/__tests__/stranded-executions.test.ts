@@ -867,6 +867,15 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
     expect(result).toEqual({ processed: 0, errors: 0, vanished: 0 })
   })
 
+  it('ignores a journal whose start time is not the start of the row', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-j', started_at: journal.started_at }],
+      stepsByExecutionId: { 'exec-j': [] },
+    })
+    await runReduceFinalizeStrandedExecutions(client as never, { readJournal: async () => ({ ...journal, started_at: '2026-10-07T12:20:40.000Z' }) })
+    expect(updates[0].payload.outcome).toBeNull()
+  })
+
   it('ignores a journal written for another run', async () => {
     const { client, updates } = makeSupabase({
       stranded: [{ id: 'exec-j', started_at: journal.started_at }],

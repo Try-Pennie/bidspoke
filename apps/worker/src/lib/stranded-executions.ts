@@ -328,11 +328,14 @@ export interface ReduceFinalizeOptions {
 }
 
 /** The journal, or null when there is none, it is another run's, or it cannot be read. */
-async function journalFor(options: ReduceFinalizeOptions, executionId: string): Promise<AnswerJournal | null> {
+async function journalFor(options: ReduceFinalizeOptions, executionId: string, startedAt: string): Promise<AnswerJournal | null> {
   if (!options.readJournal) return null
   try {
     const j = await options.readJournal(executionId)
-    return j && j.execution_id === executionId ? j : null
+    if (!j || j.execution_id !== executionId) return null
+    // The same run, by its start too: a journal for the row's id with another
+    // start is not this row's answer.
+    return Date.parse(j.started_at) === Date.parse(startedAt) ? j : null
   } catch (e) {
     console.warn('[stranded-executions] answer journal unreadable, using the step evidence', { executionId, error: formatErr(e) })
     return null
@@ -384,7 +387,7 @@ export async function runReduceFinalizeStrandedExecutions(
   let superseded = 0
 
   for (const exec of stranded) {
-    const journal = await journalFor(options, exec.id as string)
+    const journal = await journalFor(options, exec.id as string, exec.started_at as string)
     if (journal) {
       // What the run actually answered, as the engine recorded it at the answer.
       const { rows, error: journalUpdateErr } = await requireRowsAffected(
