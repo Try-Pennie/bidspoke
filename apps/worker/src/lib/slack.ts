@@ -1198,7 +1198,7 @@ export async function sendSlowdownSummaryAlert(
   const runs = payload.runs === 1 ? '1 run' : `${payload.runs} runs`
   const shown = payload.workflows.slice(0, 5)
   const others = payload.workflows.length - shown.length
-  const workflows = shown.map((w) => `${w.name} (${w.runs})`).join(', ') + (others > 0 ? ` and ${others} more` : '')
+  const workflows = shown.map((w) => `${slackText(w.name)} (${w.runs})`).join(', ') + (others > 0 ? ` and ${others} more` : '')
   const what =
     `${when} the database answered too slowly for ${runs} to confirm their records in time: ${workflows}. ` +
     'Every one of them had already answered its lead.'
@@ -1236,13 +1236,18 @@ export interface UnconfirmedWritesAlert {
   runs: Array<{ workflow_id: string; workflow_name: string; execution_id: string }>
 }
 
+/** A person edited name made safe inside mrkdwn text: `<` and `&` are markup there. */
+function slackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /**
  * A person edited name made safe as the label of a Slack link: Slack's mrkdwn
  * reads `&`, `<` and `>` as markup and `|` as the end of the address, so a name
  * holding one breaks the link or injects markup.
  */
 function slackLinkLabel(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\|/g, '/')
+  return slackText(text).replace(/\|/g, '/')
 }
 
 /** What a dead letter label wrote, as a reader names it. */

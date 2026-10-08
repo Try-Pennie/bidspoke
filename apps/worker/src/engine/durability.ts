@@ -197,6 +197,10 @@ export async function recordOutcomeDeadLetter(
   error: unknown,
   deps: OutcomeDeps,
   run?: OutcomeDeadLetterAlert['run'],
+  // Why the record was lost, when the caller knows better than the error code:
+  // the read back sweep gives a missing execution row NO_ROW_MATCHED for its
+  // wording, and that loss is still a slowdown's, not a returned error.
+  options: { cause?: 'read-back' | 'error' } = {},
 ): Promise<boolean> {
   const { kv, orgId } = deps
 
@@ -219,20 +223,28 @@ export async function recordOutcomeDeadLetter(
   // read back losses of the same label (L707). Without a claim (tests, one off
   // backfills) the KV cooldown stands in, as before.
   const errorCode = toDbError(error).code ?? null
-  const claimKey = `outcome-deadletter:${orgId}:${label}:${errorCode === READ_BACK_MISSING_CODE ? 'read-back' : 'error'}`
+  const cause = options.cause ?? (errorCode === READ_BACK_MISSING_CODE ? 'read-back' : 'error')
+  const claimKey = `outcome-deadletter:${orgId}:${label}:${cause}`
   if (deps.claims) {
     if (!(await deps.claims.claim(claimKey, OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS))) return false
   } else if (await kv.get(cooldownKey(orgId, label))) {
     return false
   }
 
-  const slack = await getSlackConnection(deps.supabase, orgId)
+  // A read that throws frees the claim too, or one bad read would silence this
+  // label for the whole window.
+  const slack = await getSlackConnection(deps.supabase, orgId).catch(async (e: unknown) => {
+    await deps.claims?.release(claimKey)
+    throw e
+  })
   if (!slack) {
     // No connection could be read, which mid outage is the database: free the
     // claim so a later loss can still post.
     await deps.claims?.release(claimKey)
     return false
   }
+  // Alerts switched off: the claim is kept, since there is nothing to post and
+  // nothing a later loss could post either.
   if (!slack.config_alerts_enabled) return false
 
   const sent = await sendOutcomeDeadLetterAlert(

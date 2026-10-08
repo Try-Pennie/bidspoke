@@ -352,6 +352,24 @@ describe('the dead letter cooldown on the alert claim (#1881)', () => {
     expect(new Set(claims.keys).size).toBe(2)
   })
 
+  it('keys a read back loss on its cause even when its code names a missing row', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    await recordOutcomeDeadLetter('execution_finalize', { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'read back: no row' }, { ...deps(kv), claims }, undefined, { cause: 'read-back' })
+    await recordOutcomeDeadLetter('execution_finalize', { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'returned: no row' }, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('frees the claim when reading the Slack connection throws', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    vi.mocked(getSlackConnection).mockRejectedValueOnce(new Error('db down'))
+    await expect(recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })).rejects.toThrow('db down')
+    expect(claims.released).toHaveLength(1)
+    await recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+  })
+
   it('still counts every loss into the window while the claim suppresses the alert', async () => {
     const kv = fakeKv()
     const claims = claimsDouble()

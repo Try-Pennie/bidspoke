@@ -78,6 +78,13 @@ describe('slowdown summary (#1881)', () => {
     to: '2026-10-08T12:21:12Z',
   }
 
+  it('escapes workflow names, so a name cannot ping the channel or inject markup', async () => {
+    await sendSlowdownSummaryAlert(conn, { ...base, workflows: [{ name: '<!channel> & <x>', runs: 20 }], landed: 62, lost: 0, steps_missing: 0 }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('&lt;!channel&gt; &amp; &lt;x&gt; (20)')
+    expect(text).not.toContain('<!channel>')
+  })
+
   it('says when, how many runs on which workflows, and that every record landed', async () => {
     await sendSlowdownSummaryAlert(conn, { ...base, landed: 62, lost: 0, steps_missing: 0 }, 'https://app.test')
     const text = textOf()

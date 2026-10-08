@@ -133,6 +133,8 @@ export interface UnconfirmedSweepSummary {
   deferred: number
   /** Slowdown summaries posted this tick. */
   summaries: number
+  /** Unreadable entries a could-not-confirm alert has already named. */
+  unreadable_named: number
 }
 
 /**
@@ -253,7 +255,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   const startedAtMs = now()
   const summary: UnconfirmedSweepSummary = {
     listed: 0, young: 0, landed: 0, lost: 0, unreadable: 0, could_not_confirm: 0, skipped: 0, unread: 0, lost_labels: [],
-    steps_missing: 0, deferred: 0, summaries: 0,
+    steps_missing: 0, deferred: 0, summaries: 0, unreadable_named: 0,
   }
 
   const { keys } = await deps.kv.list({ prefix: UNCONFIRMED_WRITE_PREFIX, limit: SWEEP_LIMIT })
@@ -330,6 +332,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
         lossOf(entry, verdict, minutes),
         { kv: deps.kv, supabase: deps.supabase, orgId: entry.org_id, appUrl: deps.appUrl, claims: deps.claims },
         entry.run ? { ...entry.run, at: entry.first_seen_at } : undefined,
+        { cause: 'read-back' },
       ).then(
         () => true,
         (e: unknown) => {
@@ -356,6 +359,10 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
     // the tick stops reading. A read refused for good is about that entry alone.
     if (!verdict.permanent) databaseAnswering = false
     summary.unreadable++
+    // Named by the could-not-confirm alert already: it has its own message, so it
+    // no longer holds the slowdown summary back (it would, until it expired, for
+    // an entry whose read is refused for good).
+    if (entry.could_not_confirm_alerted_at) summary.unreadable_named++
     if (startedAtMs - Date.parse(entry.first_seen_at) >= COULD_NOT_CONFIRM_AFTER_MS && !entry.could_not_confirm_alerted_at) {
       const list = unconfirmable.get(entry.org_id) ?? []
       list.push({ key: name, entry })
@@ -370,7 +377,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   // A slowdown is over once nothing is left to read: no entry too young, none
   // unreadable, none another sweep holds, and the list was not cut short.
   const settled =
-    summary.young === 0 && summary.unreadable === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
+    summary.young === 0 && summary.unreadable - summary.unreadable_named - summary.could_not_confirm === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
   summary.summaries = await carrySlowdownTallies(deps, resolved, settled)
 
   if (deps.recordRun && summary.listed > summary.young) {

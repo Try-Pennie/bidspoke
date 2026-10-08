@@ -330,6 +330,39 @@ describe('a database that still does not answer', () => {
     expect(s.unreadable).toBe(1)
   })
 
+  it('does not hold a slowdown summary back for an entry the could-not-confirm alert has already named', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.state.permanentFor = 'lead_sighting_bids'
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sighting_bids.insert', BID, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0 + 1)
+    // Before 15 minutes the unreadable entry holds the summary back.
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 1, { claims }))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+    // At 15 minutes it is named by its own alert, and the summary goes out.
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + COULD_NOT_CONFIRM_AFTER_MS, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + COULD_NOT_CONFIRM_AFTER_MS + 60_000, { claims }))
+    expect(sendUnconfirmedWritesAlert).toHaveBeenCalledTimes(1)
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('keys a lost execution row found by read back on the read back cause', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    const keys: string[] = []
+    const claim = claims.claim.bind(claims)
+    claims.claim = async (key, ttl) => {
+      keys.push(key)
+      return claim(key, ttl)
+    }
+    await seed(kv, 'execution_finalize', EXEC)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
+    expect(keys).toContain('outcome-deadletter:org-1:execution_finalize:read-back')
+  })
+
   it('does not stop the tick for one entry whose read was refused permanently', async () => {
     const kv = makeKv()
     const db = makeDb()
