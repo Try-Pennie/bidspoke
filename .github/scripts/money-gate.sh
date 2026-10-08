@@ -140,7 +140,7 @@ if grep -q '^warning: the fixture shapes are' "$WORK/verdict.txt"; then
 fi
 if [ "$status" -ne 0 ]; then
   # The first reason the verdict gave, of any kind, so the annotation names it.
-  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
+  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|already in the live worker|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
   echo "::error::${reason:-money gate: the verdict failed}"
 fi
 exit "$status"
