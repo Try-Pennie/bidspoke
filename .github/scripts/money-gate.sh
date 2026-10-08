@@ -94,7 +94,9 @@ fi
 # The live worker's expected-changes.json (#1836), read by its own script so each
 # outcome is tested by running it (#1921). It always exits 0 and prints the value
 # for MONEY_GATE_EXPECTED_LIVE, then the live commit; empty when not asked.
-LIVE_READ="$(bash "$ROOT/.github/scripts/money-gate-live-expected.sh" "$WORK")"
+if ! LIVE_READ="$(bash "$ROOT/.github/scripts/money-gate-live-expected.sh" "$WORK")"; then
+  LIVE_READ="unreadable:money-gate-live-expected.sh could not run"
+fi
 EXPECTED_LIVE="$(printf '%s\n' "$LIVE_READ" | sed -n 1p)"
 LIVE_COMMIT="$(printf '%s\n' "$LIVE_READ" | sed -n 2p)"
 

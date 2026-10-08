@@ -49,7 +49,9 @@ describe('only a pull request asks the live worker about leftover entries (#1836
 
   it('hands the verdict what money-gate-live-expected.sh read, whose outcomes live-expected-script.test.ts runs (#1921)', () => {
     const text = readFileSync(script, 'utf8')
-    expect(text).toContain('LIVE_READ="$(bash "$ROOT/.github/scripts/money-gate-live-expected.sh" "$WORK")"')
+    expect(text).toContain('if ! LIVE_READ="$(bash "$ROOT/.github/scripts/money-gate-live-expected.sh" "$WORK")"; then')
+    // A helper that cannot run is a note, never an unnamed stop under set -e.
+    expect(text).toContain('LIVE_READ="unreadable:money-gate-live-expected.sh could not run"')
     expect(text).toContain('MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE" MONEY_GATE_LIVE_COMMIT="$LIVE_COMMIT"')
   })
 

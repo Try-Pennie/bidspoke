@@ -37,7 +37,9 @@ if [ -n "${MONEY_GATE_LIVE_WORKER_URL+set}" ]; then
     LIVE_COMMIT=""
   else
     if ! [[ "$LIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-      EXPECTED_LIVE="unreadable:the live worker reported no commit (got '${LIVE_COMMIT:-nothing}')"
+      # Line breaks folded to spaces, so the answer stays two lines.
+      SHOWN=$(printf '%s' "$LIVE_COMMIT" | tr '\r\n' '  ' | cut -c1-80)
+      EXPECTED_LIVE="unreadable:the live worker reported no commit (got '${SHOWN:-nothing}')"
       LIVE_COMMIT=""
     else
       git cat-file -e "${LIVE_COMMIT}^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$LIVE_COMMIT" >/dev/null 2>&1 || true

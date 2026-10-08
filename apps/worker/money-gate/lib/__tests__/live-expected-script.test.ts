@@ -86,6 +86,9 @@ describe('money-gate-live-expected.sh (#1921)', () => {
     expect(run('https://worker.example', { body: '{"version":"unknown"}' }).expectedLive).toBe("unreadable:the live worker reported no commit (got 'unknown')")
     expect(run('https://worker.example', { code: 22 }).expectedLive).toBe('unreadable:the live worker at https://worker.example could not be reached')
     expect(run('https://worker.example', { body: '<html>' }).expectedLive).toBe("unreadable:the live worker's answer is not JSON")
+    // A version carrying a line break must not split the two line answer.
+    const split = run('https://worker.example', { body: JSON.stringify({ version: 'one\ntwo' }) })
+    expect(split).toMatchObject({ expectedLive: "unreadable:the live worker reported no commit (got 'one two')", commit: '' })
     expect(run('https://worker.example', { body: '{"version":"x"}' }, { JQ_BIN: 'no-such-jq-here' }).expectedLive).toBe("unreadable:jq is not installed on this runner, so the live worker's answer could not be read")
   })
 
