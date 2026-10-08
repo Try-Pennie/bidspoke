@@ -6,8 +6,10 @@
  * volume to a same-day-type rolling baseline (weekend vs weekday). If volume
  * dropped below 50% or spiked above 200%, sends a Slack alert.
  *
- * Reads from the `workflow_stats_daily` rollup table (refreshed every 5
- * minutes by pg_cron) rather than `workflow_executions` directly. The live
+ * Reads from the `workflow_stats_daily` rollup table rather than
+ * `workflow_executions` directly. pg_cron rewrites today every 5 minutes and
+ * the two days before it hourly (#1884), so yesterday is at most an hour behind
+ * its late completions when this runs at 13:00. The live
  * table can exceed PostgREST's 1000-row default cap in a single high-volume
  * day, so an unbounded SELECT silently dropped most rows and surfaced
  * "yesterday: 0" alerts against a tiny early-window baseline.
