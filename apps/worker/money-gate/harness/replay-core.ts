@@ -22,9 +22,13 @@ import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
+import { liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
 import { waitAtMost } from '../lib/wait-at-most'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
+
+/** The timer the harness itself waits on, taken before any run lifts the engine's (#1872). */
+const harnessSetTimeout = globalThis.setTimeout
 
 export interface DefinitionFile { id: string; name: string; definition: { nodes: Array<{ id: string; namespace: string; type: string; config?: Record<string, unknown> }>; edges: Array<{ source: string; target: string; source_handle?: string }> } }
 
@@ -355,6 +359,8 @@ export interface RunResult {
   codeDispatch: CodeDispatchRecord[]
   codeTrigger: unknown
   unstubbed: string[]
+  /** Engine timers that fired although lifted (#1872); always empty when the run kept real timers. */
+  timersFired: FiredTimer[]
 }
 
 /** Which run: the fixture it records, the seed its randomness and code draw from, its kind, and the test bundle a test run dispatches to. */
@@ -381,11 +387,29 @@ export interface RunHooks {
    * database is logging the outage may lose, not the answer.
    */
   postResponseLimitMs?: number
+  /**
+   * Holds every table read (not rpc calls) this long (#1872), to prove a replay gives the same
+   * record however slow its reads are. The wait uses the harness's own timer, which
+   * a run's lifted engine timers cannot stretch.
+   */
+  dbReadDelayMs?: number
+  /**
+   * Whether the engine's own timers race the runner (#1872). The replay lifts them
+   * (the default), because a budget in code running out on a slow runner made base
+   * and head differ with nothing changed. The outage drill keeps them real: its hung
+   * database ends only when the caller's own deadline aborts the read.
+   */
+  engineTimers?: 'lifted' | 'real'
 }
 
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
 export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape, hooks: RunHooks = {}): Promise<RunResult> {
   const { id, seed } = spec
+  // Refused before anything global is replaced (#1872): waitAtMost cuts post-response
+  // work with a timer the lift would raise to the gate deadline.
+  if (hooks.engineTimers !== 'real' && hooks.postResponseLimitMs !== undefined) {
+    throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because its cut is a timer the lift would raise to the gate deadline')
+  }
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
 
@@ -396,7 +420,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     if (row) row.value = value
     else tables.environment_variables.push({ key, value, is_secret: false, scope: 'global', organization_id: tables.workflows[0]?.organization_id, workflow_id: null })
   }
-  const db = createSupabaseDouble(tables)
+  const readDelayMs = hooks.dbReadDelayMs
+  const db = createSupabaseDouble(tables, readDelayMs ? { delayRead: () => new Promise<void>((resolve) => { harnessSetTimeout(resolve, readDelayMs) }) } : {})
 
   // Outbound from the engine itself: recorded and answered here, never sent.
   const engineOutbound: OutboundRecord[] = []
@@ -465,6 +490,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(FIXED_TIME_MS))
   pinRandomness(seed)
+  let lifted: LiftedTimers | null = null
+  let timersFired: FiredTimer[] = []
 
   const partnerSecrets = (snapshot.tables.partner_configs ?? []).map((p) => p.cf_secret_key).filter((k): k is string => typeof k === 'string' && k.length > 0)
   const runEnv = buildEnv(e, loaders, def, partnerSecrets)
@@ -485,6 +512,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   let answeredMs: number | null = null
   let error: string | undefined
   try {
+    // Inside the try, so the finally puts back whatever the lift replaced.
+    if (hooks.engineTimers !== 'real') lifted = liftEngineTimers(globalThis as unknown as TimerHost)
     const ctx = createExecutionContext()
     // The runtime the bidding Worker's routes pass, built by the engine under test.
     if (hooks.before) await hooks.before(runEnv, db)
@@ -503,6 +532,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   } catch (err) {
     error = err instanceof Error ? `${err.name}: ${err.message}` : 'non Error thrown'
   } finally {
+    timersFired = lifted?.fired() ?? []
+    lifted?.restore()
     globalThis.fetch = realFetch
     vi.useRealTimers()
     consoleLog.mockRestore()
@@ -519,5 +550,6 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     codeDispatch,
     codeTrigger,
     unstubbed: [...unstubbed, ...drained.unstubbed],
+    timersFired,
   }
 }
