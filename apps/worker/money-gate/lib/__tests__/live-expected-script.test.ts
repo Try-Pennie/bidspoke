@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ABSENT_AT_LIVE } from '../expected-changes'
 
 /**
@@ -27,9 +27,20 @@ const git = (cwd: string, ...args: string[]): string => {
 let repo: string
 let withFile: string
 let withoutFile: string
+/** Every directory these tests make, removed when they finish. */
+const made: string[] = []
+const tempDir = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true })
+})
 
 beforeAll(() => {
-  repo = mkdtempSync(join(tmpdir(), 'mg-live-'))
+  repo = tempDir('mg-live-')
   git(repo, 'init', '-q')
   mkdirSync(join(repo, dirname(EXPECTED_PATH)), { recursive: true })
   writeFileSync(join(repo, EXPECTED_PATH), CONTENT)
@@ -42,15 +53,15 @@ beforeAll(() => {
 })
 
 /** Runs the script in the throwaway repository; `url` undefined leaves the address unset. */
-function run(url: string | undefined, curl: { body?: string; code?: number } = {}): { expectedLive: string; commit: string; status: number | null; work: string; curled: boolean } {
-  const dir = mkdtempSync(join(tmpdir(), 'mg-live-run-'))
+function run(url: string | undefined, curl: { body?: string; code?: number } = {}, extraEnv: Record<string, string> = {}): { expectedLive: string; commit: string; status: number | null; work: string; curled: boolean } {
+  const dir = tempDir('mg-live-run-')
   const stub = join(dir, 'curl')
   const called = join(dir, 'called')
   writeFileSync(stub, `#!/usr/bin/env bash\necho "$@" > ${JSON.stringify(called)}\nprintf '%s' ${JSON.stringify(curl.body ?? '')}\nexit ${curl.code ?? 0}\n`)
   chmodSync(stub, 0o755)
   const work = join(dir, 'work')
   mkdirSync(work)
-  const env: Record<string, string | undefined> = { ...gitEnv, CURL_BIN: stub }
+  const env: Record<string, string | undefined> = { ...gitEnv, CURL_BIN: stub, ...extraEnv }
   delete env.MONEY_GATE_LIVE_WORKER_URL
   if (url !== undefined) env.MONEY_GATE_LIVE_WORKER_URL = url
   const r = spawnSync('bash', [script, work], { cwd: repo, encoding: 'utf8', env })
@@ -71,9 +82,11 @@ describe('money-gate-live-expected.sh (#1921)', () => {
     expect(r.curled).toBe(false)
   })
 
-  it('is unreadable when the worker answers with no commit, or not at all', () => {
+  it('names each way the worker answer can fail, and never blames the worker for the runner', () => {
     expect(run('https://worker.example', { body: '{"version":"unknown"}' }).expectedLive).toBe("unreadable:the live worker reported no commit (got 'unknown')")
-    expect(run('https://worker.example', { code: 22 }).expectedLive).toBe("unreadable:the live worker reported no commit (got 'nothing')")
+    expect(run('https://worker.example', { code: 22 }).expectedLive).toBe('unreadable:the live worker at https://worker.example could not be reached')
+    expect(run('https://worker.example', { body: '<html>' }).expectedLive).toBe("unreadable:the live worker's answer is not JSON")
+    expect(run('https://worker.example', { body: '{"version":"x"}' }, { JQ_BIN: 'no-such-jq-here' }).expectedLive).toBe("unreadable:jq is not installed on this runner, so the live worker's answer could not be read")
   })
 
   it('hands over the live commit and a copy of its file', () => {
