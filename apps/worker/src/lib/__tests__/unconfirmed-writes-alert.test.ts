@@ -98,13 +98,20 @@ describe('slowdown summary (#1881)', () => {
   })
 
   it('says how many never landed and what to do about them', async () => {
-    await sendSlowdownSummaryAlert(conn, { ...base, landed: 59, lost: 2, steps_missing: 1 }, 'https://app.test')
+    await sendSlowdownSummaryAlert(conn, {
+      ...base,
+      landed: 59,
+      lost: 2,
+      steps_missing: 1,
+      lost_runs: [{ workflow_id: 'wf-1', workflow_name: 'Lead Economy', execution_id: 'ex-1', labels: ['execution_finalize', 'lead_sightings.insert'] }],
+    }, 'https://app.test')
     const text = textOf()
     expect(text).toContain('some records not saved')
     expect(text).toContain('59 of 62 landed')
     expect(text).toContain('2 outcome records never did')
     expect(text).toContain('1 run is missing some step records')
-    expect(text).toMatch(/\*Fix:\* Re-derive the lost records/)
+    expect(text).toMatch(/\*Fix:\* Re-derive the lost records from the runs below/)
+    expect(text).toContain('<https://app.test/workflows/wf-1?execution=ex-1|Lead Economy run> (run records, lead sightings)')
     for (const c of BANNED) expect(text).not.toContain(c)
   })
 })

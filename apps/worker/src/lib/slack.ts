@@ -1169,8 +1169,10 @@ export interface SlowdownSummaryAlert {
   /** Records read back, step row sets included. */
   records: number
   landed: number
-  /** Outcome records that never landed (each also has its Outcome Record Lost alert). */
+  /** Outcome records that never landed. */
   lost: number
+  /** The runs those records belong to, and which records each lost. */
+  lost_runs?: Array<{ workflow_id: string; workflow_name: string; execution_id: string; labels: string[] }>
   /** Runs whose step rows a read back found incomplete. */
   steps_missing: number
   /** First seen time of the earliest and latest timed out write, ISO. */
@@ -1206,20 +1208,27 @@ export async function sendSlowdownSummaryAlert(
     ? `Bidspoke read every record back afterwards, and all ${payload.records} landed.`
     : [
         `Bidspoke read the records back afterwards: ${payload.landed} of ${payload.records} landed.`,
-        payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did, and an Outcome Record Lost alert names ${payload.lost === 1 ? 'it' : 'them'}.` : '',
+        payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did.` : '',
         payload.steps_missing > 0 ? `${payload.steps_missing === 1 ? '1 run is' : `${payload.steps_missing} runs are`} missing some step records, so the step by step view of ${payload.steps_missing === 1 ? 'that run' : 'those runs'} is incomplete.` : '',
       ].filter(Boolean).join(' ')
   const fix = allLanded
     ? '*Fix:* Nothing to do. If this keeps happening, check the database load on Supabase.'
     : payload.lost > 0
-      ? '*Fix:* Re-derive the lost records from the runs the Outcome Record Lost alert links. Missing step records cannot be recovered and need nothing.'
+      ? '*Fix:* Re-derive the lost records from the runs below. Missing step records cannot be recovered and need nothing.'
       : '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
-  const blocks = [
+  const lostRuns = payload.lost_runs ?? []
+  const listed = lostRuns.slice(0, 10)
+  const lostLinks =
+    listed
+      .map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${slackLinkLabel(r.workflow_name)} run> (${[...new Set(r.labels.map(recordNoun))].join(', ')})`)
+      .join('\n') + (lostRuns.length > listed.length ? `\nand ${lostRuns.length - listed.length} more` : '')
+  const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: `${what} ${result}` } },
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
   ]
+  if (listed.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lostLinks } })
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`)) !== null
 }
 

@@ -247,6 +247,7 @@ export async function recordOutcomeDeadLetter(
   // nothing a later loss could post either.
   if (!slack.config_alerts_enabled) return false
 
+  // A post that throws (the network, not Slack refusing) frees the claim as well.
   const sent = await sendOutcomeDeadLetterAlert(
     slack,
     {
@@ -260,7 +261,10 @@ export async function recordOutcomeDeadLetter(
       ...(run ? { run } : {}),
     },
     deps.appUrl,
-  )
+  ).catch(async (e: unknown) => {
+    await deps.claims?.release(claimKey)
+    throw e
+  })
 
   // Only hold the cooldown once the alert delivered, so a failed Slack post
   // doesn't suppress the next attempt while the loss goes unannounced.

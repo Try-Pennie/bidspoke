@@ -360,6 +360,14 @@ describe('the dead letter cooldown on the alert claim (#1881)', () => {
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
   })
 
+  it('frees the claim when posting the alert throws', async () => {
+    const kv = fakeKv()
+    const claims = claimsDouble()
+    vi.mocked(sendOutcomeDeadLetterAlert).mockRejectedValueOnce(new Error('network'))
+    await expect(recordOutcomeDeadLetter('lead_sightings.insert', PERMANENT, { ...deps(kv), claims })).rejects.toThrow('network')
+    expect(claims.released).toHaveLength(1)
+  })
+
   it('frees the claim when reading the Slack connection throws', async () => {
     const kv = fakeKv()
     const claims = claimsDouble()

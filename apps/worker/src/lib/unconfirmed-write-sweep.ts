@@ -152,6 +152,12 @@ export interface SlowdownTally {
   landed: number
   lost: number
   steps_missing: number
+  /**
+   * The runs whose outcome records never landed, with which records. The dead
+   * letter is claimed once per label and cause, so it names none of them past
+   * the first; the summary names them all.
+   */
+  lost_runs?: Record<string, { workflow_id: string; workflow_name: string; labels: string[] }>
 }
 
 /**
@@ -235,7 +241,19 @@ function mergeTally(into: SlowdownTally | undefined, add: SlowdownTally): Slowdo
     landed: into.landed + add.landed,
     lost: into.lost + add.lost,
     steps_missing: into.steps_missing + add.steps_missing,
+    lost_runs: mergeLostRuns(into.lost_runs, add.lost_runs),
   }
+}
+
+function mergeLostRuns(a: SlowdownTally['lost_runs'], b: SlowdownTally['lost_runs']): SlowdownTally['lost_runs'] {
+  const out: NonNullable<SlowdownTally['lost_runs']> = {}
+  for (const src of [a ?? {}, b ?? {}]) {
+    for (const [id, run] of Object.entries(src)) {
+      const have = out[id]
+      out[id] = have ? { ...have, labels: [...new Set([...have.labels, ...run.labels])] } : { ...run, labels: [...run.labels] }
+    }
+  }
+  return out
 }
 
 async function readTallies(kv: SweepKv): Promise<Record<string, SlowdownTally>> {
@@ -351,7 +369,17 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
       await deps.kv.delete(name)
       summary.lost++
       summary.lost_labels.push(entry.label)
-      tallyFor(resolved, entry).lost++
+      const lostIn = tallyFor(resolved, entry)
+      lostIn.lost++
+      if (entry.run) {
+        const runs = (lostIn.lost_runs ??= {})
+        const have = runs[entry.run.execution_id]
+        runs[entry.run.execution_id] = {
+          workflow_id: entry.run.workflow_id,
+          workflow_name: entry.run.workflow_name,
+          labels: [...new Set([...(have?.labels ?? []), entry.label])],
+        }
+      }
       continue
     }
 
@@ -449,6 +477,7 @@ async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: Slo
         records: tally.records,
         landed: tally.landed,
         lost: tally.lost,
+        lost_runs: Object.entries(tally.lost_runs ?? {}).map(([execution_id, r]) => ({ execution_id, ...r })),
         steps_missing: tally.steps_missing,
         from: tally.from,
         to: tally.to,

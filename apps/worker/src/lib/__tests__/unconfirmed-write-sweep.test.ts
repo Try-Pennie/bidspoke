@@ -539,6 +539,9 @@ describe('one summary per slowdown (#1881)', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
     expect(payload).toMatchObject({ runs: 2, records: 2, landed: 1, lost: 1 })
+    // The dead letter is claimed once per label and cause, so it cannot name every
+    // lost record: the summary names the runs they belong to.
+    expect(payload.lost_runs).toEqual([{ ...RUN_B, labels: ['lead_sightings.insert'] }])
   })
 
   it('posts nothing while the database still does not answer', async () => {
