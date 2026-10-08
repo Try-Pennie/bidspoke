@@ -169,3 +169,14 @@ describe('createSupabaseDouble compares values, never their text (#1862)', () =>
     expect(data).toEqual([{ id: 'e1', n: 2 }])
   })
 })
+
+describe('createSupabaseDouble neq is the opposite of eq (#1862)', () => {
+  it('a row eq matches is never also matched by neq on the same value', async () => {
+    const d = createSupabaseDouble({ events: [{ id: 1 }, { id: 2 }] })
+    const eq = (await d.client.from('events').select('id').eq('id', '2')).data as Array<{ id: number }>
+    const neq = (await d.client.from('events').select('id').neq('id', '2')).data as Array<{ id: number }>
+    expect(eq.map((r) => r.id)).toEqual([2])
+    expect(neq.map((r) => r.id)).toEqual([1])
+  })
+})
+

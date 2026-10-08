@@ -80,7 +80,7 @@ function matches(row: Row, f: Filter): boolean {
   const v = getPath(row, col)
   switch (op) {
     case 'eq': return sameValue(v, val)
-    case 'neq': return !(v === val)
+    case 'neq': return !sameValue(v, val)
     case 'is': return (v ?? null) === val
     case 'in': return (val as unknown[]).some((x) => sameValue(x, v))
     case 'gt': return v !== null && v !== undefined && cmp(v, val) > 0
@@ -298,7 +298,7 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>, doubleOpti
         try {
           return Promise.resolve(run()).then(resolve, reject)
         } catch (e) {
-          return reject ? Promise.resolve(reject(e)) : Promise.reject(e instanceof Error ? e : new Error('the Supabase double threw a value that is not an Error'))
+          return reject ? Promise.resolve(reject(e)) : Promise.reject(e instanceof Error ? e : new Error('the Supabase double threw a value that is not an Error', { cause: e }))
         }
       },
     }
