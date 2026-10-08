@@ -18,9 +18,11 @@
  */
 import { env, reset } from 'cloudflare:test'
 import { it, expect } from 'vitest'
+import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 import { scanForPersonalData } from '../lib/fixture-scan'
 import { generatePayload } from '../lib/generate'
-import type { FixtureRecord, Transcript } from '../lib/compare'
+import { describeFiredTimers } from '../lib/engine-timers'
+import { compareTranscripts, formatDifferences, type FixtureRecord, type Transcript } from '../lib/compare'
 import type { WorkflowShape } from '../lib/shape'
 import { fixtureId } from '../lib/run-kinds'
 import { runPlan } from './replay-env'
@@ -63,10 +65,13 @@ async function replayAll(e: GateEnv): Promise<void> {
       // prospect, say). It goes through the same engine and only its state is kept. It
       // stands for real traffic that came before, so it is always a live run.
       for (let i = 0; i < (variant.prior_runs ?? 0); i++) {
-        await runOnce(e, def, { id: `${id}#prior${i}`, seed: `${seed}#prior${i}`, kind: 'live' }, payload, variant, variant.prior_stubs ?? variant.stubs ?? {}, shape)
+        const prior = await runOnce(e, def, { id: `${id}#prior${i}`, seed: `${seed}#prior${i}`, kind: 'live' }, payload, variant, variant.prior_stubs ?? variant.stubs ?? {}, shape)
+        expect(prior.timersFired, describeFiredTimers(`${id}#prior${i}`, prior.timersFired)).toEqual([])
       }
 
       const run = await runOnce(e, def, { id, seed, kind, testBundle: testBundles.get(def.id), compareBundle: compareBundles.get(def.id) }, payload, variant, variant.stubs ?? {}, shape)
+      // An engine timer that fires decided the record by how long the run took (#1872).
+      expect(run.timersFired, describeFiredTimers(id, run.timersFired)).toEqual([])
       for (const u of run.unstubbed) unstubbed.add(u)
       for (const t of run.db.unknownTables()) unknownTables.add(t)
       for (const q of run.db.unsupportedFilters()) unsupportedQueries.add(q)
@@ -86,3 +91,53 @@ async function replayAll(e: GateEnv): Promise<void> {
   const written = await e.GATE_IO.fetch('https://gate/transcript', { method: 'POST', body: JSON.stringify(transcript, null, 1) })
   expect(written.status, await written.clone().text()).toBe(200)
 }
+
+/**
+ * The same lead twice through the engine under test, once as usual and once with
+ * every database read held past the click check's 800 ms budget (#1872). A replay
+ * that depends on how fast it runs gave base and head different answers with
+ * nothing changed, so the two records here must be identical. The fixture is the
+ * one that flipped on 2026-10-07: a known no from Tripoint offered to the click
+ * buyer. It runs on both sides, so each engine is shown to answer the same under
+ * the harness the gate compares them with.
+ */
+it('gives the same record however slow the database is', async () => {
+  const e = env as unknown as GateEnv
+  const workflow = 'Engine Bidding Workflow'
+  const variantName = 'tripoint_declined_click_eligible'
+  // Each held read alone outlasts the budget, so a budget still racing the clock
+  // cannot finish inside it.
+  const slowReadMs = CLICK_CHECK_BUDGET_MS + 200
+  try {
+    await hostBundles(e)
+    const def = definitions.find((d) => d.name === workflow)
+    expect(def, `no committed definition named ${workflow}`).toBeDefined()
+    const shape = shapes.workflows.find((w) => w.workflow_id === def!.id) as WorkflowShape | undefined
+    expect(shape, `no shape for ${workflow}`).toBeDefined()
+    const planned = runPlan(variantFiles.find((v) => v.workflow_id === def!.id)).find((p) => p.variant.name === variantName && p.kind === 'live')
+    expect(planned, `${workflow} has no live variant named ${variantName}`).toBeDefined()
+    const variant = planned!.variant
+    const id = fixtureId(def!.name, variant.name, 'live')
+    const payload = generatePayload(shape!, { seed: id, set: variant.set, unset: variant.unset })
+
+    const record = async (dbReadDelayMs: number | undefined): Promise<{ fixture: FixtureRecord; answeredMs: number | null }> => {
+      await reset()
+      const run = await runOnce(e, def!, { id, seed: id, kind: 'live' }, payload, variant, variant.stubs ?? {}, shape!, { dbReadDelayMs })
+      expect(run.timersFired, describeFiredTimers(id, run.timersFired)).toEqual([])
+      return { fixture: await recordFixture(e, def!, { id, variant: variant.name, kind: 'live' }, run), answeredMs: run.answeredMs }
+    }
+    const quick = await record(undefined)
+    const slow = await record(slowReadMs)
+
+    // The control: the usual run offers the click buyer, so a slow run that did not
+    // is a real difference, and the slow run really was held past the budget.
+    expect(quick.fixture.routes.find((r) => r.namespace === 'buyer_click_check')?.route, 'the usual run did not reach the click offer, so this check proves nothing').toBe('eligible')
+    expect(slow.answeredMs ?? 0, 'the slow run was not held past the click check budget').toBeGreaterThan(CLICK_CHECK_BUDGET_MS)
+
+    const transcript = (side: 'base' | 'head', fixture: FixtureRecord): Transcript => ({ version: 1, side, fixtures: [fixture], workflows: [], unstubbed_hosts: [], unknown_tables: [] })
+    const differences = compareTranscripts(transcript('base', quick.fixture), transcript('head', slow.fixture))
+    expect(differences, `a slow database changed what the engine did, so the gate depends on how fast the runner is:\n${formatDifferences(differences)}`).toEqual([])
+  } finally {
+    await e.GATE_IO.fetch('https://gate/dispose', { method: 'POST' })
+  }
+}, 900_000)
