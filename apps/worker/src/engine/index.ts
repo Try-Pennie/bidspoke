@@ -867,7 +867,16 @@ export async function executeWorkflow(
         // Each write is chained on the one before, so a demotion's journal can
         // never be overwritten by a slower first write of the same key.
         let journalWritten: Promise<void> = Promise.resolve()
+        // Never throws: an answer the journal cannot hold (one JSON cannot
+        // serialise) must not stop the finalize behind it.
         const journalAnswer = (status: string, runOutcome: string, message: string | undefined) => {
+          try {
+            writeJournal(status, runOutcome, message)
+          } catch (e) {
+            console.error('[answer-journal] could not build the journal:', formatErr(e))
+          }
+        }
+        const writeJournal = (status: string, runOutcome: string, message: string | undefined) => {
           if (reality.isTest) return
           const journal: AnswerJournal = {
             execution_id: executionId,

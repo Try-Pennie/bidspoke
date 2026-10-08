@@ -583,6 +583,15 @@ describe('the answer is recorded at the answer (#1883)', () => {
     expect(db.steps).toHaveLength(1)
   })
 
+  it('still finalizes the run when its answer cannot be journaled', async () => {
+    // An answer JSON cannot serialise: the journal write fails, the finalize does not.
+    const odd = { status: 200, headers: {}, body: { n: BigInt(1) } }
+    vi.mocked(executeNode).mockResolvedValue({ output: odd, earlyResponse: odd })
+    const { db, result } = await run(() => 'up')
+    expect(db.calls.some((c) => c.table === 'workflow_executions' && c.op === 'update')).toBe(true)
+    expect(result.status).toBe(200)
+  })
+
   it('leaves out an answer too large for the journal, measured in bytes', async () => {
     // 30,000 characters of three byte text: under the limit in characters, over it in bytes.
     const big = { status: 200, headers: {}, body: { note: '\u20ac'.repeat(30_000) } }
