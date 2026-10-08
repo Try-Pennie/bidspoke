@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import { resolveContinuationStatus } from '../finalize-status'
 
 describe('resolveContinuationStatus (#310)', () => {
-  const ok = { hasContinuationError: false, hasFlushError: false, neverAdvanced: false }
+  const ok = { hasContinuationError: false, hasFlushError: false, hasFlushUnconfirmed: false, neverAdvanced: false }
 
   it('keeps a clean completed run completed', () => {
     expect(resolveContinuationStatus('completed', ok)).toBe('completed')
@@ -28,7 +28,22 @@ describe('resolveContinuationStatus (#310)', () => {
   })
 
   it('a flush error outranks a continuation error (more severe wins → failed)', () => {
-    expect(resolveContinuationStatus('completed', { hasContinuationError: true, hasFlushError: true, neverAdvanced: false })).toBe('failed')
+    expect(resolveContinuationStatus('completed', { hasContinuationError: true, hasFlushError: true, hasFlushUnconfirmed: false, neverAdvanced: false })).toBe('failed')
+  })
+
+  // #1881: a flush that only timed out (the database answered too slowly) is not
+  // a lost record. The lead was answered, so the run is degraded and does not page
+  // per run; the minute sweep reads the step rows back. Part of #688.
+  it('degrades, not fails, a served lead whose step records were only unconfirmed', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, hasFlushUnconfirmed: true })).toBe('degraded')
+  })
+
+  it('a returned flush error still outranks an unconfirmed one', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, hasFlushError: true, hasFlushUnconfirmed: true })).toBe('failed')
+  })
+
+  it('a run that never advanced stays failed even when its flush was only unconfirmed', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, neverAdvanced: true, hasFlushUnconfirmed: true })).toBe('failed')
   })
 
   it('passes a pre-response failed run straight through', () => {

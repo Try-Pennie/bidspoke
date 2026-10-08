@@ -21,15 +21,17 @@ vi.mock('../slack', async (importOriginal) => ({
   getSlackConnection: vi.fn(),
   sendOutcomeDeadLetterAlert: vi.fn(),
   sendUnconfirmedWritesAlert: vi.fn(),
+  sendSlowdownSummaryAlert: vi.fn(),
 }))
 
-import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert } from '../slack'
+import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert, sendSlowdownSummaryAlert } from '../slack'
 import {
   runUnconfirmedWriteSweep,
   READ_BACK_MIN_AGE_MS,
   COULD_NOT_CONFIRM_AFTER_MS,
   SWEEP_LIMIT,
   READ_PHASE_BUDGET_MS,
+  SUMMARY_QUIET_MS,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
@@ -50,7 +52,7 @@ type Mode = 'up' | 'down' | 'hang'
  */
 function makeDb() {
   const tables: Record<string, Row[]> = { workflow_executions: [], lead_sightings: [], lead_sighting_bids: [] }
-  const state = { mode: 'up' as Mode, reads: 0 }
+  const state = { mode: 'up' as Mode, reads: 0, permanentFor: null as string | null }
   const queries: Array<{ table: string; eq: Record<string, unknown>; gte: Record<string, unknown>; lt: Record<string, unknown> }> = []
   function from(table: string) {
     const q = { table, eq: {} as Record<string, unknown>, gte: {} as Record<string, unknown>, lt: {} as Record<string, unknown> }
@@ -62,6 +64,7 @@ function makeDb() {
             queries.push(q)
             if (state.mode === 'hang') return new Promise(() => {})
             if (state.mode === 'down') return Promise.resolve({ data: null, error: { code: 'PGRST002', message: 'schema cache' } }).then(resolve, reject)
+            if (state.permanentFor === table) return Promise.resolve({ data: null, error: { code: '42703', message: 'column does not exist' } }).then(resolve, reject)
             const rows = tables[table].filter(
               (r) =>
                 Object.entries(q.eq).every(([k, v]) => sameValue(r[k], v)) &&
@@ -124,14 +127,14 @@ function makeClaims(): AlertClaims & { held: Set<string> } {
 const RUN = { workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1' }
 
 let seq = 0
-async function seed(kv: ReturnType<typeof makeKv>, label: string, readBack: ReadBack, firstSeenMs = T0, org = 'org-1'): Promise<UnconfirmedWrite> {
+async function seed(kv: ReturnType<typeof makeKv>, label: string, readBack: ReadBack, firstSeenMs = T0, org = 'org-1', run = RUN): Promise<UnconfirmedWrite> {
   const entry: UnconfirmedWrite = {
     id: `entry-${++seq}`,
     label,
     org_id: org,
     first_seen_at: new Date(firstSeenMs).toISOString(),
     read_back: readBack,
-    run: RUN,
+    run,
     error_message: `${label}: no answer within the post-response budget; the write may still land, but nothing confirmed it`,
   }
   await putUnconfirmedWrite(kv, entry)
@@ -165,6 +168,8 @@ function deps(kv: ReturnType<typeof makeKv>, db: ReturnType<typeof makeDb>, nowM
 
 const remaining = (kv: ReturnType<typeof makeKv>) => [...kv.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))
 const OLD_ENOUGH = T0 + READ_BACK_MIN_AGE_MS
+// When a slowdown whose last record timed out at T0 may be summarised.
+const QUIET = T0 + SUMMARY_QUIET_MS
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -172,6 +177,7 @@ beforeEach(() => {
   vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
   vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValue(true)
   vi.mocked(sendUnconfirmedWritesAlert).mockResolvedValue(true)
+  vi.mocked(sendSlowdownSummaryAlert).mockResolvedValue(true)
 })
 
 describe('an entry younger than the read back age', () => {
@@ -327,6 +333,53 @@ describe('a database that still does not answer', () => {
     expect(s.unreadable).toBe(1)
   })
 
+  it('does not hold a slowdown summary back for an entry the could-not-confirm alert has already named', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.state.permanentFor = 'lead_sighting_bids'
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sighting_bids.insert', BID, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0 + 1)
+    // Before 15 minutes the unreadable entry holds the summary back.
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 1, { claims }))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+    // At 15 minutes it is named by its own alert, and the summary goes out.
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + COULD_NOT_CONFIRM_AFTER_MS, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + COULD_NOT_CONFIRM_AFTER_MS + 60_000, { claims }))
+    expect(sendUnconfirmedWritesAlert).toHaveBeenCalledTimes(1)
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    // It must not read as every record saved while one is still unconfirmed.
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ landed: 1, unconfirmed: 1 })
+  })
+
+  it('keys a lost execution row found by read back on the read back cause', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    const keys: string[] = []
+    const claim = claims.claim.bind(claims)
+    claims.claim = async (key, ttl) => {
+      keys.push(key)
+      return claim(key, ttl)
+    }
+    await seed(kv, 'execution_finalize', EXEC)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
+    expect(keys).toContain('outcome-deadletter:org-1:execution_finalize:read-back')
+  })
+
+  it('does not stop the tick for one entry whose read was refused permanently', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.state.permanentFor = 'lead_sighting_bids'
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sighting_bids.insert', BID, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0 + 1)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 1))
+    expect(s.unreadable).toBe(1)
+    expect(s.landed).toBe(1)
+  })
+
   it('stops reading at the first unreadable answer, so one dead database costs one read a tick', async () => {
     const kv = makeKv()
     const db = makeDb()
@@ -438,5 +491,149 @@ describe('the sweep is bounded and safe to run twice', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).toHaveBeenCalledTimes(1)
     expect(recordRun.mock.calls[0][1]).toMatchObject({ outcome: 'resolved', summary: expect.objectContaining({ landed: 1, lost: 0 }) })
+  })
+})
+
+/**
+ * #1881: one database stall produced about 35 Slack messages within a minute.
+ * Once the sweep has resolved every entry a slowdown left, it posts ONE summary:
+ * how many runs, which workflows, and whether every record landed.
+ */
+describe('one summary per slowdown (#1881)', () => {
+  const RUN_B = { workflow_id: 'wf-2', workflow_name: 'Lead Economy', execution_id: 'ex-2' }
+  const SIGHT_B: ReadBack = { kind: 'sighting_present', sighting_id: 's-2', execution_started_at_utc: STARTED }
+  const STEPS: ReadBack = {
+    kind: 'steps_present',
+    execution_id: 'ex-1',
+    execution_started_at: STARTED,
+    started_from: STARTED,
+    started_to: '2026-10-08T13:20:08.000Z',
+    expected: 2,
+  }
+
+  it('waits until the slowdown is fully read back, then posts once for every run in it', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    db.tables.lead_sightings.push({ id: 's-2', execution_started_at_utc: STARTED, outcome_state: 'in_flight' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_B, T0 + 50_000, 'org-1', RUN_B)
+
+    // The second entry is still too young to read: no summary yet.
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 50_000, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 110_000, { claims }))
+
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 2, lost: 0, steps_missing: 0 })
+    expect(payload.workflows.map((w) => w.name).sort()).toEqual(['Engine Bidding Workflow', 'Lead Economy'])
+    expect(payload.from).toBe(new Date(T0).toISOString())
+    expect(payload.to).toBe(new Date(T0 + 50_000).toISOString())
+  })
+
+  it('waits until the slowdown has been quiet past a KV list lag before summarising', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('posts one summary when every tick is delivered twice, half a minute apart', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    // Cloudflare delivered each minute's tick twice on 2026-10-08, 24 to 36 s apart.
+    for (const at of [OLD_ENOUGH, OLD_ENOUGH + 30_000, QUIET, QUIET + 30_000, QUIET + 60_000, QUIET + 90_000]) {
+      await runUnconfirmedWriteSweep(deps(kv, db, at, { claims }))
+    }
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('says how many records never landed', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await seed(kv, 'lead_sightings.insert', SIGHT_B, T0, 'org-1', RUN_B)
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 1, lost: 1 })
+    // The dead letter is claimed once per label and cause, so it cannot name every
+    // lost record: the summary names the runs they belong to.
+    expect(payload.lost_runs).toEqual([{ ...RUN_B, labels: ['lead_sightings.insert'] }])
+  })
+
+  it('posts nothing while the database still does not answer', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.state.mode = 'down'
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+  })
+
+  it('two overlapping sweeps that both finish a slowdown post one summary', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await Promise.all([
+      runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims })),
+      runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims })),
+    ])
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the tally and tries again next tick when the summary did not deliver', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    vi.mocked(sendSlowdownSummaryAlert).mockResolvedValueOnce(false)
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET + 60_000, { claims }))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[1][1]).toMatchObject({ landed: 1 })
+  })
+
+  it('reads step rows back by count, and a missing one is told in the summary, not dead-lettered', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.execution_steps = [{ id: 'st-1', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:09.000Z' }]
+    await seed(kv, 'execution_steps', STEPS)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
+    expect(s.steps_missing).toBe(1)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
+    expect(payload).toMatchObject({ steps_missing: 1, lost: 0 })
+    // execution_steps is partitioned on each step's own started_at.
+    const read = db.queries.find((q) => q.table === 'execution_steps')
+    expect(read?.eq).toMatchObject({ execution_id: 'ex-1' })
+    expect(read?.gte).toEqual({ started_at: STARTED })
+    expect(read?.lt).toEqual({ started_at: '2026-10-08T13:20:08.000Z' })
+  })
+
+  it('counts step rows that all landed as landed', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.execution_steps = [
+      { id: 'st-1', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:09.000Z' },
+      { id: 'st-2', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:10.000Z' },
+    ]
+    await seed(kv, 'execution_steps', STEPS)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.landed).toBe(1)
   })
 })

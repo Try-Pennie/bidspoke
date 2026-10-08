@@ -11,10 +11,19 @@
 //   - flush error: the step-log rows were rejected by Postgres (data loss).
 //   - never advanced: no node recorded a successful output past the trigger.
 // A flush/never-advanced condition outranks a continuation error.
+//
+// A flush that only TIMED OUT is not a flush error (#1881, part of #688): the
+// database answered too slowly to confirm the step rows inside the post-response
+// budget, which says nothing about whether they landed (on 2026-10-08 all 273 of
+// them had). The lead was answered, so the run is 'degraded', it pages nobody per
+// run, and the minute sweep reads the rows back. A flush that RETURNED an error
+// is still 'failed'.
 
 export interface ContinuationFlags {
   hasContinuationError: boolean
   hasFlushError: boolean
+  /** The step flush timed out at the budget; nothing came back either way. */
+  hasFlushUnconfirmed: boolean
   neverAdvanced: boolean
 }
 
@@ -23,5 +32,6 @@ export function resolveContinuationStatus(executionStatus: string, flags: Contin
   if (flags.hasFlushError) return 'failed'
   if (flags.neverAdvanced) return 'failed'
   if (flags.hasContinuationError) return 'degraded'
+  if (flags.hasFlushUnconfirmed) return 'degraded'
   return 'completed'
 }
