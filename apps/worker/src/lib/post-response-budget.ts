@@ -72,6 +72,16 @@ export const FINALIZE_RESERVE_MS = 10_000
 export const CONTINUATION_RESERVE_MS = FINALIZE_RESERVE_MS + 3_000
 
 /**
+ * How long after the answer a run waits for the rest of its walk: 12 s (#1882).
+ * The budget is fully spent (this, then the flush's 3 s, then finalize's 10 s), so
+ * the window cannot grow. A node that runs after the answer and may wait this long
+ * on a call of its own ends past the cut-off whenever it waits that long, and is
+ * then reported as unfinished work rather than as what it did, so such a node's
+ * own limit stays below this.
+ */
+export const CONTINUATION_WINDOW_MS = POST_RESPONSE_BUDGET_MS - CONTINUATION_RESERVE_MS
+
+/**
  * Time, for the retry ladders. Injected so a test drives it instead of waiting
  * (LESSONS L524); production uses `realClock`.
  */

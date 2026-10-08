@@ -577,10 +577,11 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     return { ...base, data: {} }
   }
   if (type === 'achieve_offers') {
-    // wait_for_offers holds the request up to 10s, so the timeout needs
-    // headroom; retries 0 because retrying a transport failure risks
-    // double-submitting the lead to Achieve.
-    return { ...base, wait_for_offers: true, timeout_ms: 15000, retries: 0 }
+    // The node gives up on Achieve at 9 s by itself, and the node runs after
+    // the answer, where the run waits 12 s at most (#1882), so the step limit
+    // sits between the two. Retries 0 because retrying a transport failure
+    // risks double-submitting the lead to Achieve.
+    return { ...base, wait_for_offers: true, timeout_ms: 10000, retries: 0 }
   }
   if (type === 'bid_group') {
     return {

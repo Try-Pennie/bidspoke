@@ -129,6 +129,12 @@ export interface ExecutionContext {
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
   /**
+   * The step or steps the walk is on right now, by `stepName` (#1882). Set by the
+   * walk as it reaches each node, so a run whose work after the answer is still
+   * out at the cut-off can name what it was waiting on.
+   */
+  runningSteps?: string[]
+  /**
    * How the engine waits out a step's retry backoff (#1063). Undefined in
    * production, which means the real timer.
    *

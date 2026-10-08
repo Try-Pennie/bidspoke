@@ -13,6 +13,7 @@ import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError, READ_BACK_MI
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
+import { listSteps } from '../engine/running-step'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
@@ -948,7 +949,17 @@ export interface OutcomeDeadLetterAlert {
    * after-the-answer writeback). Lets the alert name the workflow, the time
    * and link the run instead of pointing at a log it cannot show.
    */
-  run?: { workflow_id: string; workflow_name: string; execution_id: string; at: string }
+  run?: {
+    workflow_id: string
+    workflow_name: string
+    execution_id: string
+    at: string
+    /**
+     * Work after the answer only (#1882): the steps the run was still on when
+     * Bidspoke stopped waiting, by label and namespace. Absent when not known.
+     */
+    still_running?: string[]
+  }
 }
 
 /**
@@ -1054,7 +1065,9 @@ async function sendLostWritebackAlert(
 /**
  * Work after the answer still running when finalize stopped waiting for it
  * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
- * for a check rather than a repair.
+ * for a check rather than a repair. It names the step the run was still on
+ * (#1882): it used to point at the Salesforce update, which on 2026-10-08 had
+ * finished 87 ms after the answer while the slow step was the Achieve call.
  */
 async function sendUnfinishedWorkAlert(
   connection: SlackConnection,
@@ -1067,12 +1080,20 @@ async function sendUnfinishedWorkAlert(
   const who = run
     ? `${run.workflow_name} answered a lead at ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))} ET`
     : 'A workflow answered a lead'
+  // A step's name carries its label, typed by whoever edits the canvas. Slack
+  // reads <, > and & as markup, so they are escaped: a label cannot become a
+  // channel mention or a link.
+  const named = (run?.still_running ?? []).map((s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+  const one = named.length === 1
+  const steps = named.length > 0 ? `${one ? 'the step' : 'the steps'} ${listSteps(named)}` : 'the steps after the answer'
   const summary =
-    `${who}, but the steps after the answer were still running when Bidspoke stopped waiting for them. ` +
-    `They may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened ${n} times`} in the last ${payload.window_minutes} minutes.`
-  const fix = run
-    ? 'Fix: open the run below and check that its last steps, such as the Salesforce update, landed. If this keeps happening, those steps are running slowly.'
-    : 'Fix: open the recent runs on the dashboard and check that their last steps, such as the Salesforce update, landed. If this keeps happening, those steps are running slowly.'
+    `${who}, but ${steps} ${one ? 'was' : 'were'} still running when Bidspoke stopped waiting. ` +
+    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened ${n} times`} in the last ${payload.window_minutes} minutes.`
+  const fix = named.length > 0
+    ? `Fix: open the run below and check what ${listSteps(named)} did. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
+    : run
+      ? 'Fix: open the run below and check what its last steps did. If this keeps happening, those steps are running slowly.'
+      : 'Fix: open the recent runs on the dashboard and check what their last steps did. If this keeps happening, those steps are running slowly.'
   const link = run
     ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
     : `<${appUrl}/dashboard|Open dashboard →>`

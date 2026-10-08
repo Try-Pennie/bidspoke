@@ -931,6 +931,59 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
     expect(text).toContain('https://app.test/workflows/wf-1?execution=ex-1')
   })
 
+  // #1882: the alert sent the reader to the Salesforce update, which had landed 87
+  // ms after the answer; the step still out was the Achieve call. It names the step.
+  it('names the step that was still running and sends the reader to it, not to Salesforce', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). It may still finish, but nothing confirmed it.",
+      run: {
+        workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
+        still_running: ['Achieve under 10k (achieve_under_10k)'],
+      },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('Main Flow answered a lead at 11:20 PM ET, but the step Achieve under 10k (achieve_under_10k) was still running when Bidspoke stopped waiting.')
+    expect(text).toContain('Fix: open the run below and check what Achieve under 10k (achieve_under_10k) did. If this keeps happening, that step is running slowly.')
+    expect(text).not.toMatch(/salesforce/i)
+  })
+
+  // A step's name is its label, which anyone editing the canvas types. Slack reads
+  // <, > and & as markup, so a label like <!channel> would ping the whole channel.
+  it('escapes a step label so it cannot become a Slack mention or link', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: 'x',
+      run: {
+        workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
+        still_running: ['<!channel> & <https://evil.test|click> (patch_a)'],
+      },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('&lt;!channel&gt; &amp; &lt;https://evil.test|click&gt; (patch_a)')
+    expect(text).not.toContain('<!channel>')
+  })
+
+  it('lists every step when more than one was still running', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 3,
+      window_minutes: 30,
+      error_message: 'x',
+      run: {
+        workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
+        still_running: ['patch_a', 'patch_b', 'patch_c'],
+      },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('the steps patch_a, patch_b and patch_c were still running')
+    expect(text).toContain('those steps are running slowly')
+  })
+
   it('keeps that wording when the payload carries no run', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',

@@ -48,7 +48,7 @@ import {
   CONTINUATION_RESERVE_MS,
   DEAD_LETTER_RESERVE_MS,
   FINALIZE_RESERVE_MS,
-  POST_RESPONSE_BUDGET_MS,
+  CONTINUATION_WINDOW_MS,
   realClock,
   withReserve,
   withinBudget,
@@ -56,6 +56,7 @@ import {
   type RetryTiming,
 } from '../lib/post-response-budget'
 import { resolveContinuationStatus } from './finalize-status'
+import { listSteps, stepName } from './running-step'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
@@ -195,11 +196,14 @@ export function nodeExecutorForLane(lane: WorkflowLane): ExecuteNode {
 
 /**
  * A run's walk still running at its cut-off after the answer (#1860). Its outcome
- * is unknown, not failed: it may still finish, but nothing confirmed it.
+ * is unknown, not failed: it may still finish, but nothing confirmed it. It names
+ * the step or steps the walk was on (#1882), so the reason and the alert point at
+ * what was slow rather than at a guess.
  */
 class ContinuationUnfinishedError extends Error {
-  constructor(seconds: number) {
-    super(`The run's work after the answer did not finish within ${seconds} s of the answer; it may still finish, but nothing confirmed it`)
+  constructor(seconds: number, readonly stillRunning: readonly string[]) {
+    const running = stillRunning.length > 0 ? ` Still running then: ${listSteps(stillRunning)}.` : ''
+    super(`The run's work after the answer did not finish within ${seconds} s of the answer.${running} It may still finish, but nothing confirmed it.`)
     this.name = 'ContinuationUnfinishedError'
   }
 }
@@ -649,7 +653,7 @@ export async function executeWorkflow(
     : withinBudget(walkPromiseCaught, continuationTiming).then((o) =>
         o.settled
           ? o.value
-          : { __error: new ContinuationUnfinishedError((POST_RESPONSE_BUDGET_MS - CONTINUATION_RESERVE_MS) / 1000) },
+          : { __error: new ContinuationUnfinishedError(CONTINUATION_WINDOW_MS / 1000, [...(ctx.runningSteps ?? [])]) },
       )
   const flushPromise: Promise<string | null> = walkSettled
     .then(() =>
@@ -765,6 +769,9 @@ export async function executeWorkflow(
             executionCtx.waitUntil(
               recordOutcomeDeadLetter(label, continuationError, { ...outcomeDeps, supabase: runDb }, {
                 workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),
+                ...(continuationError instanceof ContinuationUnfinishedError && continuationError.stillRunning.length > 0
+                  ? { still_running: [...continuationError.stillRunning] }
+                  : {}),
               }).catch((e) =>
                 console.error(`[durability] ${label} dead-letter failed:`, e),
               ),
@@ -1210,6 +1217,8 @@ export async function walkGraph(
 
   while (current) {
     const node = current
+    // What the walk is on, for a cut-off that has to say what it gave up on (#1882).
+    ctx.runningSteps = [stepName(node)]
 
     if (++walkSteps > MAX_WALK_STEPS) {
       throw new StepFailureError(
@@ -1806,6 +1815,8 @@ export async function walkGraph(
     if (node.type === 'code' && env.DYNAMIC_WORKER_LOADER) {
       const chain = collectCodeChain(node, definition)
       if (chain.length > 1) {
+        // The chain runs as one call, so every node in it is running at once.
+        ctx.runningSteps = chain.map(stepName)
         const chainResult = await executeCodeChain(chain, ctx, env)
         // Log + record each result. Any sentinel or failure in the chain stops
         // further chain processing (bundled worker also stops at the first

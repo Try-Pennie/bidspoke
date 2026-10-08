@@ -28,7 +28,7 @@ The output carries an `_achieve_evaluation` marker. After the run completes, the
 | `unsecured_debt_ref` | string | No | built-in extraction | Template overriding where the verified unsecured debt is read from, for workflows whose payload shape differs from the Main Flow. Example: `{{steps.my_step.output.debt}}`. |
 | `vantage_score_ref` | string | No | `gen_vantage_score` step | Template overriding where the pulled Vantage score is read from, used only when the `ACHIEVE_MIN_VANTAGE_SCORE` floor is active. Example: `{{steps.my_step.output.score}}`. |
 
-Standard node-config fields (`timeout_ms`, `retries`, etc.) also apply. Recommended: timeout `15000` ms (the default when dropped from the palette) and retries `0`, because retrying a transport failure risks double-submitting the lead to Achieve. The node aborts its own fetch at 12 seconds so a hung Achieve API never trips the engine-level step timeout.
+Standard node-config fields (`timeout_ms`, `retries`, etc.) also apply. Recommended: timeout `10000` ms (the default when dropped from the palette) and retries `0`, because retrying a transport failure risks double-submitting the lead to Achieve. The node aborts its own fetch at 9 seconds so a hung Achieve API never trips the engine-level step timeout, and so the node finishes inside the 12 seconds a run waits for its work after the answer (#1882). A reply slower than 9 seconds is recorded as a timeout; Achieve still has the lead. A step timeout above 10000 ms does no harm, because the node's own 9 second limit ends it first, but one below 9000 ms fails the step before Achieve can answer.
 
 ### Environment variables
 
