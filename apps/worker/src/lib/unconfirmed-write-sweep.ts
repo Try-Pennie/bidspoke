@@ -170,6 +170,15 @@ export const SLOWDOWN_TALLY_KEY = 'unconfirmed-write-slowdown'
 const SLOWDOWN_TALLY_TTL_SECONDS = 24 * 60 * 60
 const SUMMARY_CLAIM_TTL_SECONDS = 60 * 60
 
+/**
+ * How long after a slowdown's latest timed out write its summary waits: the read
+ * back age, plus the minute a KV list may lag a write. Cloudflare delivered every
+ * cron tick twice on 2026-10-08, 24 to 36 s apart, so two sweeps routinely meet;
+ * the summary's AlertClaim makes one of them post, and this keeps a late entry of
+ * the same slowdown from starting a second.
+ */
+export const SUMMARY_QUIET_MS = READ_BACK_MIN_AGE_MS + 60_000
+
 /** A read that never answers is given up on (L110); the timer is cleared once the read wins. */
 async function readWithin(deps: UnconfirmedSweepDeps, entry: UnconfirmedWrite): Promise<ReadBackVerdict> {
   let cancel = () => {}
@@ -406,7 +415,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   // unreadable, none another sweep holds, and the list was not cut short.
   const settled =
     summary.young === 0 && summary.unreadable - summary.unreadable_named - summary.could_not_confirm === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
-  summary.summaries = await carrySlowdownTallies(deps, resolved, settled)
+  summary.summaries = await carrySlowdownTallies(deps, resolved, settled, startedAtMs)
 
   if (deps.recordRun && summary.listed > summary.young) {
     await deps.recordRun(startedAtMs, {
@@ -424,7 +433,12 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
  * only writes that timed out are in it, so a write that returned an error still
  * pages through the dead letter on its own (L707). Returns summaries posted.
  */
-async function carrySlowdownTallies(deps: UnconfirmedSweepDeps, resolved: Map<string, SlowdownTally>, settled: boolean): Promise<number> {
+async function carrySlowdownTallies(
+  deps: UnconfirmedSweepDeps,
+  resolved: Map<string, SlowdownTally>,
+  settled: boolean,
+  nowMs: number,
+): Promise<number> {
   const stored = await readTallies(deps.kv)
   const hadStored = Object.keys(stored).length > 0
   if (!hadStored && resolved.size === 0) return 0
@@ -433,6 +447,11 @@ async function carrySlowdownTallies(deps: UnconfirmedSweepDeps, resolved: Map<st
   let posted = 0
   if (settled) {
     for (const [orgId, tally] of Object.entries(stored)) {
+      // Quiet first: a KV list can miss an entry written in the last minute, so
+      // a slowdown is summarised only once its latest record is old enough that
+      // any straggler from it would already be listed (as young). Otherwise the
+      // straggler would start a second summary for the same slowdown.
+      if (nowMs - Date.parse(tally.to) < SUMMARY_QUIET_MS) continue
       const claimKey = `unconfirmed-write-summary:${orgId}:${tally.from}`
       if (deps.claims && !(await deps.claims.claim(claimKey, SUMMARY_CLAIM_TTL_SECONDS))) {
         // Another sweep is posting this slowdown's summary.

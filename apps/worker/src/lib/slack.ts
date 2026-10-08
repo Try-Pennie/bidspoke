@@ -1085,7 +1085,7 @@ async function sendUnfinishedWorkAlert(
   // A step's name carries its label, typed by whoever edits the canvas. Slack
   // reads <, > and & as markup, so they are escaped: a label cannot become a
   // channel mention or a link.
-  const named = (run?.still_running ?? []).map((s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+  const named = (run?.still_running ?? []).map(slackText)
   const one = named.length === 1
   const steps = named.length > 0 ? `${one ? 'the step' : 'the steps'} ${listSteps(named)}` : 'the steps after the answer'
   const summary =

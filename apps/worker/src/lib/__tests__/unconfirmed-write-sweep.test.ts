@@ -31,6 +31,7 @@ import {
   COULD_NOT_CONFIRM_AFTER_MS,
   SWEEP_LIMIT,
   READ_PHASE_BUDGET_MS,
+  SUMMARY_QUIET_MS,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
@@ -167,6 +168,8 @@ function deps(kv: ReturnType<typeof makeKv>, db: ReturnType<typeof makeDb>, nowM
 
 const remaining = (kv: ReturnType<typeof makeKv>) => [...kv.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))
 const OLD_ENOUGH = T0 + READ_BACK_MIN_AGE_MS
+// When a slowdown whose last record timed out at T0 may be summarised.
+const QUIET = T0 + SUMMARY_QUIET_MS
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -530,13 +533,37 @@ describe('one summary per slowdown (#1881)', () => {
     expect(payload.to).toBe(new Date(T0 + 50_000).toISOString())
   })
 
+  it('waits until the slowdown has been quiet past a KV list lag before summarising', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('posts one summary when every tick is delivered twice, half a minute apart', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    // Cloudflare delivered each minute's tick twice on 2026-10-08, 24 to 36 s apart.
+    for (const at of [OLD_ENOUGH, OLD_ENOUGH + 30_000, QUIET, QUIET + 30_000, QUIET + 60_000, QUIET + 90_000]) {
+      await runUnconfirmedWriteSweep(deps(kv, db, at, { claims }))
+    }
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+  })
+
   it('says how many records never landed', async () => {
     const kv = makeKv()
     const db = makeDb()
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await seed(kv, 'lead_sightings.insert', SIGHT_B, T0, 'org-1', RUN_B)
-    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
     const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
     expect(payload).toMatchObject({ runs: 2, records: 2, landed: 1, lost: 1 })
     // The dead letter is claimed once per label and cause, so it cannot name every
@@ -560,8 +587,8 @@ describe('one summary per slowdown (#1881)', () => {
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await Promise.all([
-      runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims })),
-      runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims })),
+      runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims })),
+      runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims })),
     ])
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
   })
@@ -573,8 +600,8 @@ describe('one summary per slowdown (#1881)', () => {
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     vi.mocked(sendSlowdownSummaryAlert).mockResolvedValueOnce(false)
-    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { claims }))
-    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 60_000, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims }))
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET + 60_000, { claims }))
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(2)
     expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[1][1]).toMatchObject({ landed: 1 })
   })
@@ -584,7 +611,7 @@ describe('one summary per slowdown (#1881)', () => {
     const db = makeDb()
     db.tables.execution_steps = [{ id: 'st-1', execution_id: 'ex-1', execution_started_at: STARTED, started_at: '2026-10-08T12:20:09.000Z' }]
     await seed(kv, 'execution_steps', STEPS)
-    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
     expect(s.steps_missing).toBe(1)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
