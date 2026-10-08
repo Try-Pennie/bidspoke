@@ -529,7 +529,18 @@ export interface RefreshSummary {
   kept_final: string[]
 }
 
-export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+/**
+ * What one refresh covers. The hourly job passes nothing and covers every
+ * workflow; the route always passes the caller's organisation, so a person can
+ * neither write nor learn of another organisation's rows (L18).
+ */
+export interface RefreshScope {
+  organizationId?: string
+  workflowId?: string
+  day?: string
+}
+
+export async function runParityRefresh(deps: RefreshDeps, only: RefreshScope = {}): Promise<RefreshSummary> {
   const now = deps.now()
   const days = only.day ? [only.day] : refreshableDays(now, deps.retentionDays)
   if (deps.localDev) {
@@ -543,7 +554,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
 
   let workflows: ParityWorkflow[]
   try {
-    workflows = (await deps.listWorkflows()).filter((w) => !only.workflowId || w.id === only.workflowId)
+    workflows = (await deps.listWorkflows()).filter((w) => (!only.organizationId || w.organization_id === only.organizationId) && (!only.workflowId || w.id === only.workflowId))
   } catch (err) {
     return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`], kept_final: [] }
   }
@@ -668,18 +679,18 @@ export const BUYER_SELECT_PARITY_REMEDY: AlertRemedy = {
  * not all be written pages through the shared alerter (L13), so a day cannot
  * pass out of retention unsummarised with nothing said; a clean run clears it.
  */
-export async function runParityRefreshAndPage(deps: RefreshDeps, notify: (lines: string[]) => Promise<void>, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+export async function runParityRefreshAndPage(deps: RefreshDeps, notify: (lines: string[]) => Promise<void>, only: RefreshScope = {}): Promise<RefreshSummary> {
   const summary = await runParityRefresh(deps, only)
   // Only a FULL run speaks for the job: a skipped run measured nothing, and a
-  // run scoped to one workflow or one day (the route's retry) knows nothing about
-  // the days it did not touch, so its clean answer must not clear a standing
+  // run scoped to one organisation, workflow or day (the route) knows nothing
+  // about what it did not touch, so its clean answer must not clear a standing
   // page for them (L11). Its result is the HTTP response.
-  const full = !only.workflowId && !only.day
+  const full = !only.organizationId && !only.workflowId && !only.day
   if (!summary.skipped && full) await notify(summary.errors)
   return summary
 }
 
-export function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
+export function runBuyerSelectParityRefreshForEnv(supabase: SupabaseClient, env: Env, only: RefreshScope = {}): Promise<RefreshSummary> {
   return runParityRefreshAndPage(
     productionRefreshDeps(supabase, env),
     (lines) => notifyExportFailure(supabase, BUYER_SELECT_PARITY_JOB, lines, env.IDEMPOTENCY, BUYER_SELECT_PARITY_REMEDY),

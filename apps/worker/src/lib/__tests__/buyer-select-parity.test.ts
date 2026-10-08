@@ -445,7 +445,16 @@ describe('runParityRefresh', () => {
     const clean = refreshDeps()
     await runParityRefreshAndPage(clean.deps, notify, { day: '2027-09-19' })
     await runParityRefreshAndPage(clean.deps, notify, { workflowId: 'wf-engine' })
+    await runParityRefreshAndPage(clean.deps, notify, { organizationId: 'org-1' })
     expect(paged).toEqual([])
+  })
+
+  it('a run scoped to one organisation reads and writes only that organisation\'s workflows, and names no other one in its answer', async () => {
+    const other = { id: 'wf-other', organization_id: 'org-2' }
+    const { deps, upserts } = refreshDeps({ listWorkflows: async () => [WF, other], rules: async (org) => (org === 'org-2' ? null : RULES) })
+    const summary = await runParityRefresh(deps, { organizationId: 'org-1' })
+    expect(new Set(upserts.map((r) => r.workflow_id))).toEqual(new Set(['wf-engine']))
+    expect(JSON.stringify(summary)).not.toContain('wf-other')
   })
 })
 
