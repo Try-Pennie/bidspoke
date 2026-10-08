@@ -49,7 +49,7 @@ describe('only a pull request asks the live worker about leftover entries (#1836
 
   it('hands the verdict the live copy, or why it could not be read, only when given a worker address', () => {
     const text = readFileSync(script, 'utf8')
-    expect(text).toContain('if [ -n "${MONEY_GATE_LIVE_WORKER_URL:-}" ]; then')
+    expect(text).toContain('if [ -n "${MONEY_GATE_LIVE_WORKER_URL+set}" ]; then')
     expect(text).toContain('MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE"')
     expect(text).toContain(`EXPECTED_LIVE="${ABSENT_AT_LIVE}"`)
   })
@@ -75,5 +75,12 @@ describe('the failure annotation names a shipped leftover entry (#1836)', () => 
     const failureLines = v.output.split('\n').filter((l) => l.startsWith('money gate: ') && l.includes('live worker'))
     expect(failureLines).toHaveLength(1)
     expect(new RegExp(pattern!).test(failureLines[0]), `annotation pattern misses: ${failureLines[0]}`).toBe(true)
+  })
+})
+
+describe('an empty worker address on a pull request is said, never skipped silently (#1836)', () => {
+  it('the script names it as unreadable', () => {
+    const text = readFileSync(script, 'utf8')
+    expect(text).toContain('EXPECTED_LIVE="unreadable:MONEY_GATE_LIVE_WORKER_URL is empty, so the live worker could not be asked"')
   })
 })

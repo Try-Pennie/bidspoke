@@ -163,7 +163,8 @@ export function resolveExpectedLive(
 export function shippedEntries(carriedOver: ExpectedChange[], live: ExpectedLive): { shipped: ExpectedChange[]; unreadable: string | null } {
   if ('unreadable' in live) return { shipped: [], unreadable: live.unreadable }
   const parsed = parseExpectedChanges(live.text)
-  if (parsed.failures.length) return { shipped: [], unreadable: parsed.failures.map((f) => f.replace(/^expected-changes\.json /, 'it ')).join('; ') }
+  // "expected-changes.json does not parse" reads as "it does not parse"; an entry's own problem keeps its number.
+  if (parsed.failures.length) return { shipped: [], unreadable: parsed.failures.map((f) => f.replace(/^expected-changes\.json (does not|has no)/, 'it $1').replace(/^expected-changes\.json /, '')).join('; ') }
   const atLive = new Set(parsed.entries.map(canonical))
   return { shipped: carriedOver.filter((e) => atLive.has(canonical(e))), unreadable: null }
 }

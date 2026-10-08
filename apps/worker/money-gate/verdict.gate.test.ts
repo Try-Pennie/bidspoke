@@ -7,7 +7,8 @@
  * config (vitest.money-gate-verdict.config.mts), because it needs the two
  * transcripts named by MONEY_GATE_BASE and MONEY_GATE_HEAD, and the merge base's
  * expected-changes.json named by MONEY_GATE_EXPECTED_BASE, and must not run in the
- * ordinary suite, where they do not exist.
+ * ordinary suite, where they do not exist. On a pull request it also reads the live
+ * worker's copy, MONEY_GATE_EXPECTED_LIVE from MONEY_GATE_LIVE_COMMIT (#1836).
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'

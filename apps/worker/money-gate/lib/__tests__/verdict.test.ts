@@ -168,6 +168,13 @@ describe('gateVerdict leftover expected changes (#1836)', () => {
     expect(v.output).toContain("note: the live worker's expected-changes.json could not be read (it does not parse as JSON), so leftover entries were not checked against it")
   })
 
+  it('names a malformed live entry plainly in the note', () => {
+    const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: JSON.stringify({ entries: [{ check: 'route', field: 'route', reason: 'x' }] }) } })
+    expect(v.exitCode).toBe(0)
+    expect(v.output).toMatch(/could not be read \(entry 0: [^)]*workflow/)
+    expect(v.output).not.toContain('it entry')
+  })
+
   it('says nothing about the live worker when it was not asked, as on a Deploy', () => {
     const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD })
     expect(v.output).not.toContain('live worker')

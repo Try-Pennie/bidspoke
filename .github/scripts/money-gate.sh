@@ -93,11 +93,15 @@ fi
 
 # The live worker's expected-changes.json (#1836): an entry it already carries has
 # shipped and can never excuse a difference again, so the verdict fails on it by
-# name. Only the pull request job passes MONEY_GATE_LIVE_WORKER_URL, so a Deploy
-# never fails on this housekeeping, and a worker that cannot be read is a note.
+# name. Only the pull request job sets MONEY_GATE_LIVE_WORKER_URL, so a Deploy
+# never fails on this housekeeping; a worker that cannot be read, or an address
+# set but empty, is a note.
 EXPECTED_LIVE=""
 LIVE_COMMIT=""
-if [ -n "${MONEY_GATE_LIVE_WORKER_URL:-}" ]; then
+if [ -n "${MONEY_GATE_LIVE_WORKER_URL+set}" ]; then
+ if [ -z "$MONEY_GATE_LIVE_WORKER_URL" ]; then
+  EXPECTED_LIVE="unreadable:MONEY_GATE_LIVE_WORKER_URL is empty, so the live worker could not be asked"
+ else
   if BODY=$(curl -fsS --max-time 20 "${MONEY_GATE_LIVE_WORKER_URL}/" 2>/dev/null); then
     LIVE_COMMIT=$(printf '%s' "$BODY" | jq -r '.version // ""' 2>/dev/null) || LIVE_COMMIT=""
   fi
@@ -118,6 +122,7 @@ if [ -n "${MONEY_GATE_LIVE_WORKER_URL:-}" ]; then
       EXPECTED_LIVE="unreadable:git could not read ${EXPECTED_PATH} at ${LIVE_COMMIT}"
     fi
   fi
+ fi
 fi
 
 set +e
