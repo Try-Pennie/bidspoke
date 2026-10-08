@@ -81,7 +81,7 @@ export const CRON_JOBS: CronJob[] = [
   {
     id: 'timeout-audit',
     label: 'Daily step-timeout audit',
-    triggerCron: '15 8 * * *',
+    triggerCron: '17 8 * * *',
     // 24h cadence, 2h slack, matching the other daily job.
     staleMs: 26 * H,
     maxRunMs: 30 * MIN,

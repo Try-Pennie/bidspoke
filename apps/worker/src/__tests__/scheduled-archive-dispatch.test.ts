@@ -301,7 +301,7 @@ describe('the completed heartbeat stamp (#985)', () => {
 
   it('stamps every other watched job completed from its own cron', async () => {
     for (const [cron, id] of [
-      ['15 8 * * *', 'timeout-audit'],
+      ['17 8 * * *', 'timeout-audit'],
       ['37 */2 * * *', 'sightings-export'],
     ] as const) {
       writeHeartbeatCompleted.mockClear()

@@ -398,7 +398,8 @@ export async function collectWorkflowDurationStats(
  */
 export async function getOrgHistoryWarnings(
   supabase: SupabaseClient,
-  orgId: string
+  orgId: string,
+  opts: { concurrency?: number } = {}
 ): Promise<OrgHistoryWarnings> {
   const { data, error: dataError } = await supabase
     .from('workflows')
@@ -409,11 +410,14 @@ export async function getOrgHistoryWarnings(
   logReadFailure('timeout-audit', 'step timeouts', dataError)
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
-  // dashboard load doesn't serialize them. Same sampling rule as the canvas
-  // badge endpoint and the config panel, so the audit never flags a node those
-  // surfaces call fine (or vice versa).
-  const results = await Promise.all(
-    (data ?? []).map(async (w) => {
+  // dashboard load doesn't serialize them; the daily cron passes a small
+  // concurrency instead (#1884). Same sampling rule as the canvas badge endpoint
+  // and the config panel, so the audit never flags a node those surfaces call
+  // fine (or vice versa).
+  const results = await mapWithConcurrency(
+    data ?? [],
+    opts.concurrency ?? Number.POSITIVE_INFINITY,
+    async (w) => {
       const definition = w.definition as WorkflowDefinition | null
       if (!Array.isArray(definition?.nodes) || definition.nodes.length === 0) return null
 
@@ -429,7 +433,7 @@ export async function getOrgHistoryWarnings(
         under: findUnderProvisionedNodes(definition, stats),
         over: findOverProvisionedNodes(definition, stats),
       }
-    })
+    }
   )
 
   const under_provisioned: WorkflowUnderProvisioned[] = []
@@ -440,6 +444,38 @@ export async function getOrgHistoryWarnings(
     if (r.over.length > 0) over_provisioned.push({ workflow_id: r.workflow_id, workflow_name: r.workflow_name, nodes: r.over })
   }
   return { under_provisioned, over_provisioned }
+}
+
+/**
+ * How many workflows the daily audit measures at once (#1884). Each one is a
+ * grouped percentile query over up to a week of execution_steps; on 2026-10-08
+ * at 08:15 UTC the audit started about a dozen of them in the same instant, the
+ * slowest took 23.5 s, and lead requests slowed to 8.5 s behind them. Two at a
+ * time costs the audit some wall time (about 2 s per query at the mean) and
+ * nobody is waiting on it.
+ */
+export const TIMEOUT_AUDIT_RPC_CONCURRENCY = 2
+
+/**
+ * `fn` over every item with at most `limit` calls in flight, results in input
+ * order. A rejection rejects the whole map, as Promise.all does.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!(limit >= 1)) throw new Error(`mapWithConcurrency: limit must be at least 1, got ${limit}`)
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 /**
@@ -459,7 +495,7 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
   for (const orgId of orgIds) {
     const [warnings, history] = await Promise.all([
       getOrgTimeoutWarnings(supabase, orgId),
-      getOrgHistoryWarnings(supabase, orgId),
+      getOrgHistoryWarnings(supabase, orgId, { concurrency: TIMEOUT_AUDIT_RPC_CONCURRENCY }),
     ])
     // Only alert on under-provisioned nodes whose p99 came from a confident
     // sample — a thin sample from a timed-out widening query is the false-alarm

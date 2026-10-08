@@ -19,6 +19,7 @@ import {
   INCUMBENT_NAMESPACE,
   countsHash,
   productionReadDeps,
+  readStoredParityDay,
   readParityDay,
   refreshableDays,
   runParityRefresh,
@@ -264,7 +265,7 @@ describe('runParityRefresh', () => {
       listWorkflows: async () => [WF],
       rules: async () => RULES,
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         // The ET day 2027-09-20 starts at 04:00Z and is read in three hour windows; the 13:00Z window holds the one execution.
         listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: fromIso }] : []),
         readRows: async (ids) => ids.flatMap((id) => [
@@ -273,6 +274,7 @@ describe('runParityRefresh', () => {
         ]),
       },
       bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+      storedDay: async () => null,
       upsert: async (row) => { upserts.push(row); return row },
       now: () => NOW,
       retentionDays: RETENTION_DAYS,
@@ -303,7 +305,7 @@ describe('runParityRefresh', () => {
   it('a day whose reads fail is reported by name and the other days are still written (L98)', async () => {
     const { deps, upserts } = refreshDeps({
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         // The ET day 2027-09-19 runs from 2027-09-19T04:00Z to 2027-09-20T04:00Z; every window inside it fails.
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
@@ -332,7 +334,7 @@ describe('runParityRefresh', () => {
   it('a run with failed days pages them and a clean run clears the condition; a skipped run says nothing either way (L13)', async () => {
     const failing = refreshDeps({
       read: {
-        countNodeRows: async () => 1,
+        nodeRanIn: async () => true,
         listExecutions: async (_wf, fromIso) => { if (fromIso >= '2027-09-19T04:00' && fromIso < '2027-09-20T04:00') throw new Error('execution_steps: statement timeout'); return [] },
         readRows: async () => [],
       },
@@ -348,6 +350,84 @@ describe('runParityRefresh', () => {
     const skipped = refreshDeps({ localDev: true })
     await runParityRefreshAndPage(skipped.deps, notify)
     expect(paged).toHaveLength(2)
+  })
+
+  describe('yesterday is re-read only until its row is final (#1884)', () => {
+    // The ET day 2027-09-19 ends at 2027-09-20T04:00Z, and its bids settle
+    // BID_SETTLE_MS (10 minutes) later. Re-reading it every hour all day cost
+    // about 79 GB (executions) and 75 GB (step rows) of reads in two weeks,
+    // for a day whose step rows no longer change.
+    const FINAL = {
+      window_complete: true,
+      summarised_at: '2027-09-20T05:00:05.000Z',
+      stage_b: { bid_rows: { legacy_missing: 0, legacy_multiple: 0 } },
+    }
+    function tracking(stored: Awaited<ReturnType<RefreshDeps['storedDay']>> | Error) {
+      const listed: string[] = []
+      const asked: string[] = []
+      const logged: string[] = []
+      const { deps, upserts } = refreshDeps({
+        storedDay: async (_wf, day) => {
+          asked.push(day)
+          if (stored instanceof Error) throw stored
+          return stored
+        },
+        read: {
+          nodeRanIn: async () => true,
+          listExecutions: async (_wf, fromIso) => { listed.push(fromIso); return [] },
+          readRows: async () => [],
+        },
+        log: (line) => { logged.push(line) },
+      })
+      const readYesterday = () => listed.some((iso) => iso >= '2027-09-19T04:00' && iso < '2027-09-20T04:00')
+      return { deps, upserts, asked, logged, readYesterday }
+    }
+
+    it('keeps a final row and does not read the day again', async () => {
+      const t = tracking(FINAL)
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(false)
+      expect(t.upserts.map((r) => r.et_day)).toEqual(['2027-09-20'])
+      expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
+      expect(summary.errors).toEqual([])
+    })
+
+    it('never asks about today, which is incomplete by construction', async () => {
+      const t = tracking(FINAL)
+      await runParityRefresh(t.deps)
+      expect(t.asked).toEqual(['2027-09-19'])
+    })
+
+    it.each([
+      ['no row yet', null],
+      ['a row written before the day ended', { ...FINAL, window_complete: false }],
+      ['a row written before the bids settled', { ...FINAL, summarised_at: '2027-09-20T04:05:00.000Z' }],
+      ['a row whose bid check was unmeasured', { ...FINAL, stage_b: { bid_rows: { unmeasured: 'lead_sighting_bids: statement timeout' } } }],
+      ['a row with no Stage B report', { ...FINAL, stage_b: null }],
+      ['a row with an unreadable timestamp', { ...FINAL, summarised_at: 'not a time' }],
+    ])('reads the day again given %s', async (_label, stored) => {
+      const t = tracking(stored)
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(true)
+      expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
+      expect(summary.kept_final).toEqual([])
+    })
+
+    it('reads the day again when the stored row cannot be read, and says so, because reading is the safe side', async () => {
+      const t = tracking(new Error('buyer_select_parity_days: statement timeout'))
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(true)
+      expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
+      expect(t.logged.join(' ')).toMatch(/2027-09-19.*statement timeout/)
+      expect(summary.errors).toEqual([])
+    })
+
+    it('a run asked for one day reads it whatever its row says, so the route can still re-run any day by hand', async () => {
+      const t = tracking(FINAL)
+      await runParityRefresh(t.deps, { day: '2027-09-19' })
+      expect(t.readYesterday()).toBe(true)
+      expect(t.asked).toEqual([])
+    })
   })
 
   it('a run scoped to one workflow or one day neither pages nor clears: its answer is the response, and only a full run speaks for the whole job', async () => {
@@ -371,7 +451,7 @@ describe('the Stage B figures on each row (#1809)', () => {
         listWorkflows: async () => [WF],
         rules: async () => RULES,
         read: {
-          countNodeRows: async () => 1,
+          nodeRanIn: async () => true,
           listExecutions: async (_wf, fromIso) => (fromIso.startsWith('2027-09-20T13') ? [{ id: 'e1', started_at: '2027-09-20T13:10:00.000Z' }] : []),
           readRows: async (ids) => ids.flatMap((id) => [
             { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: { ...exec(id).node, mode_effective: 'live', reason: 'canary_out' }, duration_ms: 0 },
@@ -379,6 +459,7 @@ describe('the Stage B figures on each row (#1809)', () => {
           ]),
         },
         bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+        storedDay: async () => null,
         upsert: async (row) => { upserts.push(row); return row },
         now: () => NOW,
         retentionDays: RETENTION_DAYS,
@@ -479,12 +560,12 @@ describe('refreshableDays', () => {
 })
 
 describe('readParityDay skips windows the node never ran in', () => {
-  it('asks for the node row count first and lists executions only where it is above zero, so a day before the node was placed costs eight counts and nothing else', async () => {
+  it('asks whether the node ran first and lists executions only where it did, so a day before the node was placed costs eight probes and nothing else', async () => {
     const listed: string[] = []
     const counted: string[] = []
     const executions = await readParityDay(
       {
-        countNodeRows: async (_wf, fromIso) => { counted.push(fromIso); return fromIso.startsWith('2027-09-20T13') ? 3 : 0 },
+        nodeRanIn: async (_wf, fromIso) => { counted.push(fromIso); return fromIso.startsWith('2027-09-20T13') },
         listExecutions: async (_wf, fromIso) => { listed.push(fromIso); return [{ id: 'e1', started_at: fromIso }] },
         readRows: async (ids) => ids.flatMap((id) => [
           { execution_id: id, step_type: 'buyer_select', step_namespace: 'sell_off', output: exec(id).node, duration_ms: 120 },
@@ -499,5 +580,103 @@ describe('readParityDay skips windows the node never ran in', () => {
     expect(executions).toHaveLength(1)
     // The legacy step's own duration is kept for the Stage B latency comparison (#1809).
     expect(executions[0].incumbent_duration_ms).toBe(900)
+  })
+})
+
+describe('productionReadDeps.nodeRanIn (#1884)', () => {
+  /**
+   * The question readParityDay asks of a window is only whether the node ran
+   * there at all. It used to be answered with an exact COUNT, which visits every
+   * execution_steps row of the three hour window: about 94 MB read from disk per
+   * call, 16 calls an hour, 514 GB between 2026-09-24 and 2026-10-08, the second
+   * largest reader on the database. One row answers the same question, and
+   * ordered by execution_started_at the scan walks the window's own index and
+   * stops at the first match (measured on production 2026-10-08: 94 buffers
+   * touched, against about 30,000 for the count).
+   */
+  function probeSupabase(answer: { data: unknown; error: { message: string } | null }) {
+    const calls: {
+      table?: string
+      select?: unknown[]
+      eq: Array<[string, unknown]>
+      gte: Array<[string, unknown]>
+      lt: Array<[string, unknown]>
+      order: Array<[string, unknown]>
+      limit?: number
+    } = { eq: [], gte: [], lt: [], order: [] }
+    const builder: Record<string, unknown> = {}
+    builder.select = (...args: unknown[]) => { calls.select = args; return builder }
+    builder.eq = (c: string, v: unknown) => { calls.eq.push([c, v]); return builder }
+    builder.gte = (c: string, v: unknown) => { calls.gte.push([c, v]); return builder }
+    builder.lt = (c: string, v: unknown) => { calls.lt.push([c, v]); return builder }
+    builder.order = (c: string, o: unknown) => { calls.order.push([c, o]); return builder }
+    builder.limit = (n: number) => { calls.limit = n; return builder }
+    builder.then = (resolve: (v: unknown) => void) => resolve(answer)
+    const supabase = { from: (table: string) => { calls.table = table; return builder } } as unknown as SupabaseClient
+    return { supabase, calls }
+  }
+  const FROM = '2027-09-20T13:00:00.000Z'
+  const TO = '2027-09-20T16:00:00.000Z'
+
+  it('asks for one row, never a count, ordered so the window index answers it', async () => {
+    const fake = probeSupabase({ data: [{ execution_id: 'e1' }], error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(true)
+    expect(fake.calls.table).toBe('execution_steps')
+    // No second argument: a { count } option is the whole window scan this replaces.
+    expect(fake.calls.select).toEqual(['execution_id'])
+    expect(fake.calls.limit).toBe(1)
+    expect(fake.calls.order[0]?.[0]).toBe('execution_started_at')
+    expect(fake.calls.eq).toEqual(expect.arrayContaining([['workflow_id', 'wf'], ['step_type', 'buyer_select']]))
+    expect(fake.calls.gte).toEqual([['execution_started_at', FROM]])
+    expect(fake.calls.lt).toEqual([['execution_started_at', TO]])
+  })
+
+  it('answers no when the window holds no node row', async () => {
+    const fake = probeSupabase({ data: [], error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(false)
+  })
+
+  it('reads the window when the answer is missing, because an unanswered question is not zero rows (L215)', async () => {
+    const fake = probeSupabase({ data: null, error: null })
+    expect(await productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).toBe(true)
+  })
+
+  it('throws a read failure rather than skipping the window', async () => {
+    const fake = probeSupabase({ data: null, error: { message: 'canceling statement due to statement timeout' } })
+    await expect(productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).rejects.toThrow(
+      /execution_steps probe: canceling statement due to statement timeout/,
+    )
+  })
+})
+
+describe('readStoredParityDay (#1884)', () => {
+  function rowSupabase(answer: { data: unknown; error: { message: string } | null }) {
+    const calls: { table?: string; select?: string; eq: Array<[string, unknown]>; single?: boolean } = { eq: [] }
+    const builder: Record<string, unknown> = {}
+    builder.select = (cols: string) => { calls.select = cols; return builder }
+    builder.eq = (c: string, v: unknown) => { calls.eq.push([c, v]); return builder }
+    builder.maybeSingle = async () => { calls.single = true; return answer }
+    const supabase = { from: (table: string) => { calls.table = table; return builder } } as unknown as SupabaseClient
+    return { supabase, calls }
+  }
+
+  it('reads the one row by its key, only the columns the finality test needs', async () => {
+    const fake = rowSupabase({ data: { window_complete: true, summarised_at: '2027-09-20T05:00:00Z', stage_b: null }, error: null })
+    const row = await readStoredParityDay(fake.supabase, 'wf', '2027-09-19')
+    expect(row).toEqual({ window_complete: true, summarised_at: '2027-09-20T05:00:00Z', stage_b: null })
+    expect(fake.calls.table).toBe('buyer_select_parity_days')
+    expect(fake.calls.select).toBe('window_complete, summarised_at, stage_b')
+    expect(fake.calls.eq).toEqual([['workflow_id', 'wf'], ['et_day', '2027-09-19']])
+    expect(fake.calls.single).toBe(true)
+  })
+
+  it('answers null for a day with no row yet', async () => {
+    expect(await readStoredParityDay(rowSupabase({ data: null, error: null }).supabase, 'wf', '2027-09-19')).toBeNull()
+  })
+
+  it('throws a read failure rather than answering null, so the caller cannot mistake it for a missing row', async () => {
+    await expect(readStoredParityDay(rowSupabase({ data: null, error: { message: 'permission denied' } }).supabase, 'wf', '2027-09-19')).rejects.toThrow(
+      /buyer_select_parity_days: permission denied/,
+    )
   })
 })

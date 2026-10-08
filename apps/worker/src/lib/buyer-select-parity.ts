@@ -298,8 +298,8 @@ export function countsHash(counts: ParityCounts): Promise<string> {
 // ── Reading a day ─────────────────────────────────────────────────────────────
 
 export interface ParityReadDeps {
-  /** How many buyer_select rows the workflow wrote inside [fromIso, toIso); zero means the node was not on the canvas then. */
-  countNodeRows(workflowId: string, fromIso: string, toIso: string): Promise<number>
+  /** Whether the workflow wrote any buyer_select row inside [fromIso, toIso); false means the node was not on the canvas then. */
+  nodeRanIn(workflowId: string, fromIso: string, toIso: string): Promise<boolean>
   /** Executions of the workflow started inside [fromIso, toIso), oldest first, every one of them (paged past the row cap). */
   listExecutions(workflowId: string, fromIso: string, toIso: string): Promise<Array<{ id: string; started_at: string }>>
   /** The node and incumbent rows for the executions given. */
@@ -317,13 +317,13 @@ export async function readParityDay(deps: ParityReadDeps, workflowId: string, da
     const to = Math.min(from + READ_WINDOW_MS, end)
     const fromIso = new Date(from).toISOString()
     const toIso = new Date(to).toISOString()
-    // One cheap count before the expensive listing (#1497): a window with no
+    // One cheap probe before the expensive listing (#1497): a window with no
     // node row at all is one the node was not on the canvas for, and listing
     // its executions (about 10,000 per window on the Engine flow, in pages of
     // 1,000) would only count every one of them as unpaired. A window where the
     // node ran and some executions lack its row is still read in full, and
     // those executions are the unpaired count.
-    if ((await deps.countNodeRows(workflowId, fromIso, toIso)) === 0) continue
+    if (!(await deps.nodeRanIn(workflowId, fromIso, toIso))) continue
     const executions = await deps.listExecutions(workflowId, fromIso, toIso)
     if (executions.length === 0) continue
     const rows = await deps.readRows(executions.map((e) => e.id), fromIso, toIso)
@@ -358,18 +358,26 @@ export async function incumbentRules(orgId: string, env: Env, supabase: Supabase
 
 export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   return {
-    countNodeRows: async (workflowId, fromIso, toIso) => {
-      const { count, error } = await supabase
+    // One row, never a count (#1884). An exact count visits every step row of
+    // the three hour window, about 94 MB from disk per call and 514 GB over the
+    // two weeks to 2026-10-08, to answer a yes or no question. Ordered by
+    // execution_started_at, the scan walks that column's index and stops at the
+    // first buyer_select row: 94 buffers on production instead of about 30,000.
+    // A window the node never ran in still walks the whole window, as before.
+    nodeRanIn: async (workflowId, fromIso, toIso) => {
+      const { data, error } = await supabase
         .from('execution_steps')
-        .select('execution_id', { count: 'exact', head: true })
+        .select('execution_id')
         .eq('workflow_id', workflowId)
         .eq('step_type', 'buyer_select')
         .gte('execution_started_at', fromIso)
         .lt('execution_started_at', toIso)
-      if (error) throw new Error(`execution_steps count: ${error.message}`)
-      // A null count is an unanswered question, not zero rows (L215): read the
-      // window rather than skip it.
-      return count ?? 1
+        .order('execution_started_at', { ascending: true })
+        .limit(1)
+      if (error) throw new Error(`execution_steps probe: ${error.message}`)
+      // A missing answer is an unanswered question, not zero rows (L215): read
+      // the window rather than skip it.
+      return data === null || data.length > 0
     },
     // Paged, because a three hour window of the Engine flow holds about 10,000
     // executions and PostgREST answers at most 1,000 rows however high the limit
@@ -412,9 +420,49 @@ export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   }
 }
 
+/** The columns of a stored day row that say whether it can still change. */
+export interface StoredParityDay {
+  window_complete: boolean
+  summarised_at: string
+  stage_b: { bid_rows?: Record<string, unknown> } | null
+}
+
+/**
+ * Whether a stored row is the day's final answer, so the hourly refresh can keep
+ * it rather than read the day again (#1884). All four must hold: it was written
+ * with the day complete, after the day's bids had settled (the Stage B bid check
+ * judges executions older than now minus BID_SETTLE_MS), with a Stage B report,
+ * and with that report's bid check measured. Anything else, an unreadable
+ * timestamp included, is not final and the day is read again: reading too often
+ * costs reads, keeping a provisional row loses the day's answer (L5).
+ */
+export function isFinalParityDay(row: StoredParityDay | null, day: string): boolean {
+  if (!row || row.window_complete !== true) return false
+  const writtenAt = Date.parse(row.summarised_at)
+  if (!Number.isFinite(writtenAt)) return false
+  if (writtenAt < easternDayStartUtc(nextIsoDate(day)) + BID_SETTLE_MS) return false
+  const bidRows = row.stage_b?.bid_rows
+  if (bidRows === null || typeof bidRows !== 'object') return false
+  return !('unmeasured' in bidRows)
+}
+
+/** The stored row for one workflow and day, or null when there is none; a read failure throws. */
+export async function readStoredParityDay(supabase: SupabaseClient, workflowId: string, day: string): Promise<StoredParityDay | null> {
+  const { data, error } = await supabase
+    .from('buyer_select_parity_days')
+    .select('window_complete, summarised_at, stage_b')
+    .eq('workflow_id', workflowId)
+    .eq('et_day', day)
+    .maybeSingle()
+  if (error) throw new Error(`buyer_select_parity_days: ${error.message}`)
+  return (data as StoredParityDay | null) ?? null
+}
+
 /**
  * The days the hourly refresh summarises: today (incomplete by construction)
- * and yesterday, so a finished day is re-read once with window_complete true.
+ * and yesterday, so a finished day is re-read with window_complete true. Since
+ * #1884 yesterday is skipped once its stored row is final (isFinalParityDay),
+ * so it is read about twice after midnight rather than every hour all day.
  * Older days keep the row they have: their step rows never change, and reading
  * every day inside retention each hour costs about 300 database requests per
  * day at the Engine flow's volume (10,000 executions per three hour window in
@@ -457,6 +505,8 @@ export interface RefreshDeps {
   read: ParityReadDeps
   /** Tripoint's bid rows, for the Stage B one row per execution check (#1809). */
   bids: StageBBidReadDeps
+  /** The stored row for a workflow and day, null when there is none; throws on a read failure. */
+  storedDay(workflowId: string, day: string): Promise<StoredParityDay | null>
   upsert(row: ParityRowWrite): Promise<unknown>
   now(): number
   retentionDays: number
@@ -469,6 +519,8 @@ export interface RefreshSummary {
   days: string[]
   rows_written: number
   errors: string[]
+  /** "<workflow> <day>" for each past day kept because its row is already final (#1884). */
+  kept_final: string[]
 }
 
 export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
@@ -476,16 +528,18 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
   const days = only.day ? [only.day] : refreshableDays(now, deps.retentionDays)
   if (deps.localDev) {
     deps.log(`[${BUYER_SELECT_PARITY_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', days, rows_written: 0, errors: [] }
+    return { skipped: 'local_dev', days, rows_written: 0, errors: [], kept_final: [] }
   }
   const errors: string[] = []
+  const keptFinal: string[] = []
   let written = 0
+  const today = easternParts(now).date
 
   let workflows: ParityWorkflow[]
   try {
     workflows = (await deps.listWorkflows()).filter((w) => !only.workflowId || w.id === only.workflowId)
   } catch (err) {
-    return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`] }
+    return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`], kept_final: [] }
   }
 
   for (const wf of workflows) {
@@ -501,6 +555,22 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
       continue
     }
     for (const day of days) {
+      // A past day whose stored row is already final is kept, not read again
+      // (#1884). A run asked for one day reads it regardless, so the route can
+      // still redo any day by hand. A stored row that cannot be read means the
+      // day is read: reading is the safe side, and its own failures page.
+      if (!only.day && day !== today) {
+        let stored: StoredParityDay | null = null
+        try {
+          stored = await deps.storedDay(wf.id, day)
+        } catch (err) {
+          deps.log(`[${BUYER_SELECT_PARITY_JOB}] ${wf.id} ${day}: the stored row could not be read, so the day is read again: ${messageOf(err)}`)
+        }
+        if (isFinalParityDay(stored, day)) {
+          keptFinal.push(`${wf.id} ${day}`)
+          continue
+        }
+      }
       try {
         const executions = await readParityDay(deps.read, wf.id, day)
         const counts = summariseParityDay(executions, rules)
@@ -528,7 +598,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
       }
     }
   }
-  return { days, rows_written: written, errors }
+  return { days, rows_written: written, errors, kept_final: keptFinal }
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
@@ -558,6 +628,7 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
     rules: (orgId) => incumbentRules(orgId, env, supabase),
     read: productionReadDeps(supabase),
     bids: productionStageBBidDeps(supabase),
+    storedDay: (workflowId, day) => readStoredParityDay(supabase, workflowId, day),
     upsert: async (row) => {
       const { data, error } = (await supabase.rpc('upsert_buyer_select_parity_day', { p_row: row })) as { data: unknown; error: { message: string } | null }
       if (error) throw new Error(`upsert_buyer_select_parity_day: ${error.message}`)
