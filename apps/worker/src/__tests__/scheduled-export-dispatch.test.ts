@@ -33,10 +33,6 @@ function fakeCtx() {
   return { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext
 }
 
-function fire(cron: string) {
-  worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, fakeCtx())
-}
-
 // The export runs are handed to waitUntil, so a plain fire() returns before the
 // catch block has reported anything. Collect and drain them.
 async function fireAndFlush(cron: string) {
@@ -52,24 +48,24 @@ async function fireAndFlush(cron: string) {
 describe('scheduled export dispatch', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('runs the sightings export on the every-2-hours cron at :37', () => {
+  it('runs the sightings export on the every-2-hours cron at :37', async () => {
     // :37, not :00 — the top of the hour is the DB's busiest moment (the :00/:30
     // strand-recovery pg_cron job alone runs 30s+, plus stats refreshes and the
     // hourly bid-matrix sync), and the export's 8s-per-statement budget lost to
     // that pile-up on every single run (2026-07-03 incident).
-    fire('37 */2 * * *')
+    await fireAndFlush('37 */2 * * *')
     expect(runSightingsExport).toHaveBeenCalledTimes(1)
   })
 
-  it('does NOT run the sightings export at the top of the hour', () => {
-    fire('0 */2 * * *')
+  it('does NOT run the sightings export at the top of the hour', async () => {
+    await fireAndFlush('0 */2 * * *')
     expect(runSightingsExport).not.toHaveBeenCalled()
   })
 
-  it('does NOT run the sightings export on the daily 9am cron', () => {
+  it('does NOT run the sightings export on the daily 9am cron', async () => {
     // The sightings export moved off 9am to its own frequent schedule so it gets a
     // full per-run subrequest budget; only the smaller Achieve export stays at 9am.
-    fire('0 9 * * *')
+    await fireAndFlush('0 9 * * *')
     expect(runAchieveExport).toHaveBeenCalledTimes(1)
     expect(runSightingsExport).not.toHaveBeenCalled()
   })
@@ -127,10 +123,16 @@ describe('the Worker no longer runs the sightings purge (#541)', () => {
   beforeEach(() => vi.clearAllMocks())
 
   for (const cron of ['47 1-23/2 * * *', '47 0-22/2 * * *']) {
-    it(`does nothing on the retired ${cron} cron`, () => {
+    it(`does nothing on the retired ${cron} cron`, async () => {
+      // The handler hands over one promise, the tick claim wrapping the jobs
+      // (#1899); once it settles, no job has handed over any work of its own.
       const ctx = fakeCtx()
       worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
-      expect(ctx.waitUntil).not.toHaveBeenCalled()
+      const handed = vi.mocked(ctx.waitUntil).mock.calls.map((c) => c[0] as Promise<unknown>)
+      await Promise.allSettled(handed)
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(1)
+      expect(runSightingsExport).not.toHaveBeenCalled()
+      expect(runAchieveExport).not.toHaveBeenCalled()
     })
   }
 
