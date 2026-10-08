@@ -6,14 +6,42 @@
  * than five ticks pages, naming the buyer (L13); a ledger that cannot be read
  * is reported as unmeasured, never as an empty outbox (L98, L215).
  */
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
-import { BUYER_SALE_DRAIN_JOB, EXISTING_ROWS_PER_READ, OUTBOX_BACKLOG_MS, numericOrNull, productionDrainDeps, readExistingBuyerSaleRows, runBuyerSaleDrain, type DrainDeps, type DrainLedger } from '../buyer-sale-drain'
+import {
+  BUYER_SALE_DRAIN_JOB,
+  DRAIN_TICK_MS,
+  EXISTING_ROWS_PER_READ,
+  OUTBOX_BACKLOG_MS,
+  BUYER_SALE_DRAIN_BACKLOG_REMEDY,
+  BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY,
+  BUYER_SALE_DRAIN_MIXED_REMEDY,
+  BUYER_SALE_DRAIN_UNLISTED_REMEDY,
+  UNREADABLE_SINCE_KEY,
+  drainRemedyFor,
+  kvUnreadableSince,
+  ledgerClientOptions,
+  notifyBuyerSaleDrain,
+  numericOrNull,
+  productionDrainDeps,
+  readExistingBuyerSaleRows,
+  runBuyerSaleDrain,
+  type DrainDeps,
+  type DrainLedger,
+  type LedgerOptions,
+  type UnreadableSinceStore,
+  type UnreadableStamps,
+} from '../buyer-sale-drain'
 import { isTransientExportError } from '../export-error-hints'
 import { DeadlineError } from '@bidspoke/buyer-profile'
+import { MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, ObjectCallError, ObjectCallLostError } from '../buyer-object-clients'
 import type { Env } from '../../index'
 import { profilesTableDouble } from './_profiles-table-double'
+import { sendExportFailureAlert } from '../slack'
+
+// Only the Slack post is replaced; the drain's duration and time wording stay real.
+vi.mock('../slack', async (importOriginal) => ({ ...(await importOriginal<typeof import('../slack')>()), sendExportFailureAlert: vi.fn(async () => true) }))
 
 const NOW = Date.UTC(2027, 8, 20, 15, 40)
 const PARTNER = '11111111-1111-4111-8111-111111111111'
@@ -48,6 +76,17 @@ function fakeLedger(entries: LedgerEntry[], opts: { unreadable?: string } = {}):
   }
 }
 
+/** The record of when each ledger was first found unreadable, held in memory as the KV copy would hold it. */
+function memoryStamps(initial: UnreadableStamps = {}): UnreadableSinceStore & { stored: UnreadableStamps | null; writes: number } {
+  const store = {
+    stored: { ...initial } as UnreadableStamps | null,
+    writes: 0,
+    async read() { return { ...(store.stored ?? {}) } },
+    async write(stamps: UnreadableStamps) { store.writes += 1; store.stored = { ...stamps } },
+  }
+  return store
+}
+
 function deps(over: Partial<DrainDeps> = {}): DrainDeps & { rpc: ReturnType<typeof vi.fn>; lines: string[] } {
   const rpc = vi.fn(async (_fn: string, args: { p_row: { id: string; status: string } }) => ({ data: { id: args.p_row.id, status: args.p_row.status }, error: null }))
   const notify = vi.fn(async (_lines: string[]) => {})
@@ -56,6 +95,7 @@ function deps(over: Partial<DrainDeps> = {}): DrainDeps & { rpc: ReturnType<type
     rpc,
     notify,
     lines,
+    unreadableSince: memoryStamps(),
     listBuyers: async () => [{ partner_id: PARTNER, organization_id: ORG, slug: 'tripoint' }],
     ledger: () => fakeLedger([entry()]),
     readExistingRows: async () => new Map(),
@@ -120,7 +160,7 @@ describe('runBuyerSaleDrain', () => {
     const lines = vi.mocked(d.notify).mock.calls[0][0] as string[]
     expect(lines).toHaveLength(1)
     expect(lines[0]).toMatch(/tripoint/)
-    expect(lines[0]).toMatch(/1 (entry|entries) not yet copied/)
+    expect(lines[0]).toMatch(/tripoint has 1 ledger entry not yet copied/)
     expect(lines[0]).toMatch(/db down/)
     // Young backlog, even one that failed this tick, does not page yet.
     const young = deps({ ledger: () => fakeLedger([entry()]), supabase: { rpc: rpcFailing } as never })
@@ -147,18 +187,10 @@ describe('runBuyerSaleDrain', () => {
     expect(d.notify).toHaveBeenCalledWith([])
   })
 
-  it('a ledger that only missed its deadline pages a line the alerter holds for one minute, not one it pages at once', async () => {
-    const slow: DrainLedger = { unmirrored: async () => { throw new DeadlineError('buyer ledger unmirrored', 5000) }, markMirrored: async () => 0 }
-    const d = deps({ ledger: () => slow })
-    await runBuyerSaleDrain(d)
-    const lines = vi.mocked(d.notify).mock.calls[0][0] as string[]
-    expect(lines).toHaveLength(1)
-    expect(isTransientExportError(lines[0])).toBe(true)
-  })
-
   it('a ledger that cannot be read is reported unmeasured for that buyer and pages, while the other buyers still drain (L98)', async () => {
     const ok = fakeLedger([entry()])
     const d = deps({
+      unreadableSince: memoryStamps({ '44444444-4444-4444-8444-444444444444': NOW - OUTBOX_BACKLOG_MS }),
       listBuyers: async () => [
         { partner_id: PARTNER, organization_id: ORG, slug: 'tripoint' },
         { partner_id: '44444444-4444-4444-8444-444444444444', organization_id: ORG, slug: 'acme' },
@@ -169,7 +201,7 @@ describe('runBuyerSaleDrain', () => {
     expect(summary.buyers.find((b) => b.slug === 'acme')).toMatchObject({ unmeasured: expect.stringMatching(/answered 500/) })
     expect(summary.buyers.find((b) => b.slug === 'tripoint')).toMatchObject({ delivered: 1 })
     const lines = vi.mocked(d.notify).mock.calls[0][0] as string[]
-    expect(lines.join(' ')).toMatch(/acme.*could not be read/)
+    expect(lines.join(' ')).toMatch(/acme.*not been readable for 5 minutes/)
   })
 
   it('a buyer list that cannot be read is a failed run that pages, never an empty run that clears the alert (L215)', async () => {
@@ -188,6 +220,7 @@ describe('runBuyerSaleDrain', () => {
     const old = entry({ reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
     const rpcFailing = vi.fn(async () => ({ data: null, error: { message: 'db down' } }))
     const d = deps({
+      unreadableSince: memoryStamps({ '44444444-4444-4444-8444-444444444444': NOW - OUTBOX_BACKLOG_MS }),
       listBuyers: async () => [
         { partner_id: PARTNER, organization_id: ORG, slug: 'tripoint' },
         { partner_id: '44444444-4444-4444-8444-444444444444', organization_id: ORG, slug: 'acme' },
@@ -367,5 +400,261 @@ describe('the run record of a tick that had work (#1810)', () => {
     const d = deps({ recordRun: vi.fn(async () => { throw new Error('job_runs refused') }) })
     await expect(runBuyerSaleDrain(d)).resolves.toMatchObject({ buyers: [{ delivered: 1 }] })
     expect(d.notify).toHaveBeenCalledWith([])
+  })
+})
+
+/**
+ * #1895. On 2026-10-08 two runs 24 seconds apart each lost one call to the
+ * tripoint ledger, which answered every lead call in the same seconds and the
+ * drain's own next run in 10 ms, and the drain paged because the rule was two
+ * failed runs in a row while the cron was firing twice a minute. A lost or slow
+ * read is now asked once more on a fresh stub, and an unreadable ledger pages on
+ * how long it has been unreadable, never on how many runs saw it.
+ */
+describe('a lost or slow ledger read (#1895)', () => {
+  beforeEach(() => vi.mocked(sendExportFailureAlert).mockClear())
+
+  const slow = (): DrainLedger => ({ unmirrored: async () => { throw new DeadlineError('buyer ledger unmirrored', OBJECT_CALL_DEADLINE_MS) }, markMirrored: async () => 0 })
+  const lost = (): DrainLedger => ({ unmirrored: async () => { throw new ObjectCallLostError(new Error('Network connection lost.')) }, markMirrored: async () => 0 })
+
+  /** Hands out the given ledgers in order, one per client the drain makes, and records what each was given. */
+  function sequence(...ledgers: DrainLedger[]) {
+    const asked: Array<{ partnerId: string; opts: LedgerOptions | undefined }> = []
+    return {
+      asked,
+      ledger: (partnerId: string, opts?: LedgerOptions): DrainLedger => {
+        asked.push({ partnerId, opts })
+        const next = ledgers.shift()
+        if (!next) throw new Error('the test ran out of ledgers')
+        return next
+      },
+    }
+  }
+
+  it('(a) asks once more on a fresh client when the first read misses its deadline, and a good second read drains as usual', async () => {
+    const good = fakeLedger([entry()])
+    const seq = sequence(slow(), good)
+    const stamps = memoryStamps()
+    const d = deps({ ledger: seq.ledger, unreadableSince: stamps })
+    const summary = await runBuyerSaleDrain(d)
+    expect(seq.asked).toEqual([
+      { partnerId: PARTNER, opts: undefined },
+      { partnerId: PARTNER, opts: { unmirroredDeadlineMs: OBJECT_CALL_DEADLINE_MS } },
+    ])
+    expect(summary.buyers[0]).toMatchObject({ pending: 1, delivered: 1, failed: 0 })
+    expect(summary.buyers[0].unmeasured).toBeUndefined()
+    expect(good.marked).toHaveLength(1)
+    expect(d.notify).toHaveBeenCalledWith([])
+    expect(stamps.stored).toEqual({})
+  })
+
+  it('asks once more after a call lost in transit too', async () => {
+    const seq = sequence(lost(), fakeLedger([]))
+    const summary = await runBuyerSaleDrain(deps({ ledger: seq.ledger }))
+    expect(seq.asked).toHaveLength(2)
+    expect(summary.buyers[0].unmeasured).toBeUndefined()
+  })
+
+  it('never asks again after an answer, such as an error status, or an error nobody classified', async () => {
+    for (const err of [new ObjectCallError('buyer ledger unmirrored', 500, 'boom'), new Error('something else')]) {
+      const seq = sequence({ unmirrored: async () => { throw err }, markMirrored: async () => 0 })
+      const summary = await runBuyerSaleDrain(deps({ ledger: seq.ledger }))
+      expect(seq.asked).toHaveLength(1)
+      expect(summary.buyers[0].unmeasured).toBe(err.message)
+    }
+  })
+
+  it('a second ask that also fails leaves the ledger unmeasured with both errors named', async () => {
+    const seq = sequence(slow(), lost())
+    const summary = await runBuyerSaleDrain(deps({ ledger: seq.ledger }))
+    expect(summary.buyers[0].unmeasured).toMatch(/did not answer within 5000 ms.*asked again.*Network connection lost/)
+  })
+
+  it('gives the second ask only what is left before the next tick, and makes none when too little is left', async () => {
+    let t = NOW
+    const lateBy = (left: number): DrainLedger => ({
+      unmirrored: async () => { t = NOW + DRAIN_TICK_MS - left; throw new DeadlineError('buyer ledger unmirrored', OBJECT_CALL_DEADLINE_MS) },
+      markMirrored: async () => 0,
+    })
+    const seq = sequence(lateBy(3_000), fakeLedger([]))
+    await runBuyerSaleDrain(deps({ ledger: seq.ledger, now: () => t }))
+    expect(seq.asked[1].opts).toEqual({ unmirroredDeadlineMs: 3_000 })
+
+    t = NOW
+    const short = sequence(lateBy(MEASURED_OBJECT_CALL_P99_MS - 1))
+    const summary = await runBuyerSaleDrain(deps({ ledger: short.ledger, now: () => t }))
+    expect(short.asked).toHaveLength(1)
+    expect(summary.buyers[0].unmeasured).toMatch(/not asked again.*too little of this minute was left/)
+  })
+
+  it('(b) two unreadable runs in a row, 24 seconds apart, page nothing and keep the first moment', async () => {
+    let t = NOW
+    const stamps = memoryStamps()
+    const d = deps({ ledger: () => slow(), unreadableSince: stamps, now: () => t })
+    await runBuyerSaleDrain(d)
+    t = NOW + 24_000
+    await runBuyerSaleDrain(d)
+    expect(vi.mocked(d.notify).mock.calls).toEqual([[[]], [[]]])
+    expect(stamps.stored).toEqual({ [PARTNER]: NOW })
+  })
+
+  /** The production page, through the real alerter, with Slack replaced and KV held in memory. */
+  function realAlerter(clock: () => number) {
+    const store = new Map<string, string>()
+    const kv = {
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => { store.set(k, v) },
+      delete: async (k: string) => { store.delete(k) },
+    }
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (prop === 'then') return (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [{ organization_id: ORG }], error: null }).then(resolve)
+        return () => chain
+      },
+    })
+    const supabase = { from: () => chain } as never
+    return (lines: string[], keys?: readonly string[]) => notifyBuyerSaleDrain(supabase, kv, lines, keys, clock())
+  }
+
+  it('(c) a ledger unreadable for longer than the backlog limit pages once, with the cron firing twice a minute', async () => {
+    let t = NOW
+    const clock = () => t
+    const d = deps({ ledger: () => slow(), unreadableSince: memoryStamps(), now: clock, notify: realAlerter(clock) })
+    const pagedAt: number[] = []
+    for (; t <= NOW + 10 * 60_000; t += 30_000) {
+      const before = vi.mocked(sendExportFailureAlert).mock.calls.length
+      await runBuyerSaleDrain(d)
+      if (vi.mocked(sendExportFailureAlert).mock.calls.length > before) pagedAt.push(t - NOW)
+    }
+    expect(pagedAt).toEqual([OUTBOX_BACKLOG_MS])
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.title).toBe(BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY.title)
+    expect(payload.errors).toHaveLength(1)
+    expect(payload.errors[0]).toMatch(/^tripoint's buyer ledger has not been readable for 5 minutes, since .+ E[DS]T, so its copy cannot be checked\. The last error was: buyer ledger unmirrored did not answer within 5000 ms/)
+    // The drain already waited, so the alerter must not hold the line for one more run.
+    expect(isTransientExportError(payload.errors[0])).toBe(false)
+  })
+
+  it('a minute with no run does not restart the clock: the first run past the limit pages', async () => {
+    let t = NOW
+    const clock = () => t
+    const d = deps({ ledger: () => slow(), unreadableSince: memoryStamps(), now: clock, notify: realAlerter(clock) })
+    for (const at of [0, 60_000, 4 * 60_000, OUTBOX_BACKLOG_MS + 10_000]) {
+      t = NOW + at
+      await runBuyerSaleDrain(d)
+    }
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+  })
+
+  it('(d) a good read clears the record, so the next unreadable stretch starts its own clock', async () => {
+    let t = NOW
+    let readable = false
+    const stamps = memoryStamps()
+    const d = deps({ ledger: () => (readable ? fakeLedger([]) : slow()), unreadableSince: stamps, now: () => t })
+    await runBuyerSaleDrain(d)
+    expect(stamps.stored).toEqual({ [PARTNER]: NOW })
+    t = NOW + 4 * 60_000
+    readable = true
+    await runBuyerSaleDrain(d)
+    expect(stamps.stored).toEqual({})
+    t = NOW + 6 * 60_000
+    readable = false
+    await runBuyerSaleDrain(d)
+    expect(stamps.stored).toEqual({ [PARTNER]: NOW + 6 * 60_000 })
+    expect(vi.mocked(d.notify).mock.calls.every(([lines]) => lines.length === 0)).toBe(true)
+  })
+
+  it('a quiet run with nothing recorded writes nothing to the record', async () => {
+    const stamps = memoryStamps()
+    await runBuyerSaleDrain(deps({ ledger: () => fakeLedger([]), unreadableSince: stamps }))
+    expect(stamps.writes).toBe(0)
+  })
+
+  it('forgets a buyer that is no longer listed, so a buyer listed again later starts fresh', async () => {
+    const stamps = memoryStamps({ '55555555-5555-4555-8555-555555555555': NOW - 60 * 60_000 })
+    await runBuyerSaleDrain(deps({ ledger: () => fakeLedger([]), unreadableSince: stamps }))
+    expect(stamps.stored).toEqual({})
+  })
+
+  it('pages at once when the record of when it started cannot be read, rather than holding a page it cannot time', async () => {
+    const d = deps({ ledger: () => slow(), unreadableSince: { read: async () => { throw new Error('KV read refused') }, write: async () => {} } })
+    await runBuyerSaleDrain(d)
+    const [lines, keys] = vi.mocked(d.notify).mock.calls[0] as unknown as [string[], string[]]
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^tripoint's buyer ledger could not be read, and how long that has lasted is unknown because the record of when it started could not be read \(KV read refused\)\. The last error was: /)
+    expect(keys).toEqual(['tripoint:unmeasured'])
+  })
+
+  it('pages at once when the first moment cannot be saved, since no later run could time it', async () => {
+    const d = deps({ ledger: () => slow(), unreadableSince: { read: async () => ({}), write: async () => { throw new Error('KV write refused') } } })
+    await runBuyerSaleDrain(d)
+    const lines = vi.mocked(d.notify).mock.calls[0][0] as string[]
+    expect(lines[0]).toMatch(/could not be saved \(KV write refused\)/)
+  })
+
+  it('a record that cannot be cleared after a good read is logged, and pages nothing', async () => {
+    const d = deps({ ledger: () => fakeLedger([]), unreadableSince: { read: async () => ({ [PARTNER]: NOW - 60_000 }), write: async () => { throw new Error('KV write refused') } } })
+    await runBuyerSaleDrain(d)
+    expect(d.notify).toHaveBeenCalledWith([])
+    expect(d.lines.join(' ')).toMatch(/could not be saved.*KV write refused/)
+  })
+
+  it('a read that only succeeded on the second ask is recorded, so how often the first ask fails stays countable', async () => {
+    const seq = sequence(slow(), fakeLedger([]))
+    const d = deps({ ledger: seq.ledger })
+    await runBuyerSaleDrain(d)
+    const calls = vi.mocked(d.recordRun).mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1].outcome).toBe('ok')
+    expect(calls[0][1].summary).toMatchObject({ buyers: [{ first_read_failed: expect.stringMatching(/did not answer within 5000 ms/) }] })
+  })
+})
+
+describe('drainRemedyFor: one title per kind of page', () => {
+  it('names a backlog, an unreadable ledger, both, and an unread buyer list apart', () => {
+    expect(drainRemedyFor(['tripoint:backlog'])).toBe(BUYER_SALE_DRAIN_BACKLOG_REMEDY)
+    expect(drainRemedyFor(['tripoint:unmeasured'])).toBe(BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY)
+    expect(drainRemedyFor(['tripoint:backlog', 'acme:unmeasured'])).toBe(BUYER_SALE_DRAIN_MIXED_REMEDY)
+    expect(drainRemedyFor(['buyers-unlisted'])).toBe(BUYER_SALE_DRAIN_UNLISTED_REMEDY)
+  })
+})
+
+describe('the production wiring of the second ask and the unreadable record (#1895)', () => {
+  it('gives only the outbox read the shortened deadline; every other call keeps the default', () => {
+    const opts = ledgerClientOptions({ unmirroredDeadlineMs: 2_500 })
+    const deadline = opts.deadlineMs as (op: string) => number
+    expect(deadline('buyer ledger unmirrored')).toBe(2_500)
+    expect(deadline('buyer ledger mark-mirrored')).toBe(OBJECT_CALL_DEADLINE_MS)
+    expect(ledgerClientOptions(undefined)).toEqual({})
+  })
+
+  function kvDouble(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial))
+    const puts: Array<{ key: string; ttl: number | undefined }> = []
+    return {
+      store,
+      puts,
+      kv: {
+        get: async (k: string) => store.get(k) ?? null,
+        put: async (k: string, v: string, o?: { expirationTtl?: number }) => { puts.push({ key: k, ttl: o?.expirationTtl }); store.set(k, v) },
+        delete: async (k: string) => { store.delete(k) },
+      } as unknown as KVNamespace,
+    }
+  }
+
+  it('round trips the record through KV, with a day long expiry, and deletes it when empty', async () => {
+    const { kv, store, puts } = kvDouble()
+    const s = kvUnreadableSince(kv)
+    expect(await s.read()).toEqual({})
+    await s.write({ [PARTNER]: NOW })
+    expect(await s.read()).toEqual({ [PARTNER]: NOW })
+    expect(puts).toEqual([{ key: UNREADABLE_SINCE_KEY, ttl: 24 * 60 * 60 }])
+    await s.write({})
+    expect(store.has(UNREADABLE_SINCE_KEY)).toBe(false)
+  })
+
+  it.each([['not json'], ['[1,2]'], ['null'], [`{"${PARTNER}":"yesterday"}`]])('a damaged record %s throws rather than reading as no ledger unreadable', async (raw) => {
+    const { kv } = kvDouble({ [UNREADABLE_SINCE_KEY]: raw })
+    await expect(kvUnreadableSince(kv).read()).rejects.toThrow()
   })
 })

@@ -52,7 +52,12 @@ import {
 import { TRIPOINT_DUPLICATE_CODES_REMEDY } from '../tripoint-duplicate-codes-check'
 import { LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY } from '../lead-status-check'
 import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export-schema-check'
-import { BUYER_SALE_DRAIN_REMEDY } from '../buyer-sale-drain'
+import {
+  BUYER_SALE_DRAIN_BACKLOG_REMEDY,
+  BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY,
+  BUYER_SALE_DRAIN_MIXED_REMEDY,
+  BUYER_SALE_DRAIN_UNLISTED_REMEDY,
+} from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
 import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
@@ -83,7 +88,6 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['tripoint duplicate codes', TRIPOINT_DUPLICATE_CODES_REMEDY],
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
   ['export schema unreadable', EXPORT_SCHEMA_UNREADABLE_REMEDY],
-  ['buyer sale drain', BUYER_SALE_DRAIN_REMEDY],
   ['buyer sales mismatch', BUYER_SALES_MISMATCH_REMEDY],
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
@@ -117,6 +121,10 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['archive gate at risk', ARCHIVE_GATE_AT_RISK_REMEDY],
   ['archive gate not cleaned up', ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY],
   ['archive gate cost', ARCHIVE_GATE_COST_REMEDY],
+  ['buyer sale drain backlog', BUYER_SALE_DRAIN_BACKLOG_REMEDY],
+  ['buyer sale drain ledger unreadable', BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY],
+  ['buyer sale drain backlog and unreadable ledger', BUYER_SALE_DRAIN_MIXED_REMEDY],
+  ['buyer sale drain buyer list unread', BUYER_SALE_DRAIN_UNLISTED_REMEDY],
 ]
 
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']
