@@ -161,7 +161,8 @@ export const CRON_JOBS: CronJob[] = [
     // which the sweep itself would have said it could not confirm a record.
     staleMs: 10 * MIN,
     // One KV list, then at most 50 entries, each a KV read and one read back
-    // bounded at 5 s; the first unreadable answer stops the reads.
+    // bounded at 5 s. The first unreadable answer stops the reads, and so does
+    // READ_PHASE_BUDGET_MS (30 s) on a database that is slow but answering.
     maxRunMs: 50 * 1000,
     dependents:
       'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',

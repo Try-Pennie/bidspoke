@@ -29,6 +29,7 @@ import {
   READ_BACK_MIN_AGE_MS,
   COULD_NOT_CONFIRM_AFTER_MS,
   SWEEP_LIMIT,
+  READ_PHASE_BUDGET_MS,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
@@ -376,6 +377,44 @@ describe('the sweep is bounded and safe to run twice', () => {
     })
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 1))
     expect(remaining(kv)).toHaveLength(1)
+  })
+
+  it('stops reading once the tick has spent its read budget, leaving the rest for the next tick', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    for (let i = 0; i < 3; i++) await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0 + i)
+    // A slow database: every look at the clock finds the tick further on.
+    let t = OLD_ENOUGH + 10
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, 0, { now: () => (t += READ_PHASE_BUDGET_MS / 2) }))
+    expect(s.landed).toBeLessThan(3)
+    expect(s.unread).toBeGreaterThan(0)
+    expect(s.unreadable).toBe(0)
+    expect(remaining(kv)).toHaveLength(3 - s.landed)
+  })
+
+  it('keeps the entry when the lost alert itself could not be recorded', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    // The dead letter's own count write fails, so nothing recorded the loss.
+    const put = kv.put
+    kv.put = vi.fn(async (k: string, v: string) => {
+      if (k.startsWith('outcome-deadletter-window:')) throw new Error('kv down')
+      await put(k, v)
+    })
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.lost).toBe(0)
+    expect(remaining(kv)).toHaveLength(1)
+  })
+
+  it('drops an entry whose stored value is not a readable entry, so it cannot hold a list slot for a day', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    kv.store.set(`${UNCONFIRMED_WRITE_PREFIX}000000000000001:junk`, 'not json')
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.skipped).toBe(1)
+    expect(remaining(kv)).toEqual([])
   })
 
   it('records the tick in job_runs only when it had entries to look at', async () => {

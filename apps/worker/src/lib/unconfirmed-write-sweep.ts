@@ -65,6 +65,14 @@ export const SWEEP_LIMIT = 50
 /** How long one read back may take before it counts as unreadable. */
 export const READ_BACK_DEADLINE_MS = 5_000
 
+/**
+ * How long one tick spends reading back (L704). A slow database answers every
+ * read just inside its deadline, so the first-unreadable stop never fires and
+ * 50 reads could take minutes; past this, the rest wait for the next tick.
+ * Well inside the heartbeat's maxRunMs for this job.
+ */
+export const READ_PHASE_BUDGET_MS = 30_000
+
 /** How long a claim on one entry's lost alert holds: past KV's minute of propagation. */
 const ENTRY_CLAIM_TTL_SECONDS = 60 * 60
 
@@ -110,6 +118,8 @@ export interface UnconfirmedSweepSummary {
   could_not_confirm: number
   /** Entries whose stored value was gone or unparseable. */
   skipped: number
+  /** Entries left unread because the tick spent its read budget. */
+  unread: number
   /** The lost entries' labels, for the run record. */
   lost_labels: string[]
 }
@@ -164,7 +174,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   const now = deps.now ?? Date.now
   const startedAtMs = now()
   const summary: UnconfirmedSweepSummary = {
-    listed: 0, young: 0, landed: 0, lost: 0, unreadable: 0, could_not_confirm: 0, skipped: 0, lost_labels: [],
+    listed: 0, young: 0, landed: 0, lost: 0, unreadable: 0, could_not_confirm: 0, skipped: 0, unread: 0, lost_labels: [],
   }
 
   const { keys } = await deps.kv.list({ prefix: UNCONFIRMED_WRITE_PREFIX, limit: SWEEP_LIMIT })
@@ -182,8 +192,20 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
       summary.young++
       continue
     }
-    const entry = parseUnconfirmedWrite(await deps.kv.get(name))
+    if (now() - startedAtMs >= READ_PHASE_BUDGET_MS) {
+      summary.unread++
+      continue
+    }
+    const raw = await deps.kv.get(name)
+    const entry = parseUnconfirmedWrite(raw)
     if (!entry) {
+      // Gone (another sweep deleted it after the list), or not an entry this
+      // module wrote, which can never be read back and would hold one of the
+      // tick's list slots until it expired: dropped, and said so.
+      if (raw !== null) {
+        console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] dropping ${name}: not a readable entry`)
+        await deps.kv.delete(name)
+      }
       summary.skipped++
       continue
     }
@@ -203,12 +225,25 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
       // loser leaves the entry for the claimant to delete.
       if (deps.claims && !(await deps.claims.claim(`unconfirmed-write:${entry.id}`, ENTRY_CLAIM_TTL_SECONDS))) continue
       const minutes = Math.round((startedAtMs - Date.parse(entry.first_seen_at)) / 60_000)
-      await recordOutcomeDeadLetter(
+      const recorded = await recordOutcomeDeadLetter(
         entry.label,
         lossOf(entry, verdict, minutes),
         { kv: deps.kv, supabase: deps.supabase, orgId: entry.org_id, appUrl: deps.appUrl },
         entry.run ? { ...entry.run, at: entry.first_seen_at } : undefined,
-      ).catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] lost alert for ${entry.label} failed:`, formatErr(e)))
+      ).then(
+        () => true,
+        (e: unknown) => {
+          console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] lost alert for ${entry.label} failed, keeping the entry:`, formatErr(e))
+          return false
+        },
+      )
+      // A dead letter that threw recorded nothing, not even its count: the entry
+      // stays, and its claim is freed, so the next tick tries again. One that ran
+      // has counted the loss, whether or not its alert was the one that posted.
+      if (!recorded) {
+        await deps.claims?.release(`unconfirmed-write:${entry.id}`)
+        continue
+      }
       await deps.kv.delete(name)
       summary.lost++
       summary.lost_labels.push(entry.label)
@@ -231,7 +266,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   if (deps.recordRun && summary.listed > summary.young) {
     await deps.recordRun(startedAtMs, {
       outcome: summary.lost > 0 ? 'lost-found' : summary.unreadable > 0 ? 'unreadable' : 'resolved',
-      detail: `landed=${summary.landed} lost=${summary.lost} unreadable=${summary.unreadable} young=${summary.young}`,
+      detail: `landed=${summary.landed} lost=${summary.lost} unreadable=${summary.unreadable} unread=${summary.unread} young=${summary.young}`,
       summary: { ...summary },
     })
   }

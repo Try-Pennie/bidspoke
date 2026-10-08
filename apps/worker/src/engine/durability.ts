@@ -37,9 +37,11 @@ export interface OutcomeDeps {
   appUrl: string
   /**
    * The run's clock and post-response budget (#1850). When present the retry
-   * ladder stops at the cut-off and a write still unanswered there is
-   * dead-lettered as unconfirmed, so the dead letter lands before Cloudflare
-   * cancels the request's waitUntil work. Absent, nothing is bounded.
+   * ladder stops at the cut-off, so a returned error is dead-lettered before
+   * Cloudflare cancels the request's waitUntil work, and a write still
+   * unanswered there is recorded as unconfirmed for the minute sweep to read
+   * back (#1880); it is dead-lettered then only if that record cannot be
+   * written. Absent, nothing is bounded.
    */
   timing?: RetryTiming
   /**
