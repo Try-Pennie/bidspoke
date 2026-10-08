@@ -108,7 +108,18 @@ const RELATIONS: Record<string, { local: string; foreign: string; one: boolean }
   'buyer_profiles>buyer_pricing_tiers': { local: 'partner_id', foreign: 'partner_id', one: false },
 }
 
-export function createSupabaseDouble(snapshot: Record<string, Row[]>) {
+export interface SupabaseDoubleOptions {
+  /**
+   * Holds every table read (a select) until it settles (#1872), so a replay can be
+   * run as if the database were slow and compared with one that was not. Writes and
+   * rpc calls are never held.
+   * The caller supplies the wait, so a replay that lifts the engine's timers
+   * cannot stretch it.
+   */
+  delayRead?: () => Promise<void>
+}
+
+export function createSupabaseDouble(snapshot: Record<string, Row[]>, doubleOptions: SupabaseDoubleOptions = {}) {
   const store: Record<string, Row[]> = clone(snapshot)
   const writes: RecordedWrite[] = []
   const unknown = new Set<string>()
@@ -268,6 +279,10 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>) {
       throwOnError() { return b },
       csv() { unsupported.push(`${table}.csv`); return b },
       then(resolve: (r: Result) => unknown, reject?: (e: unknown) => unknown) {
+        if (mode === 'select' && doubleOptions.delayRead) {
+          const delayRead = doubleOptions.delayRead
+          return delayRead().then(() => run()).then(resolve, reject)
+        }
         try {
           return Promise.resolve(run()).then(resolve, reject)
         } catch (e) {

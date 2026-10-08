@@ -227,6 +227,8 @@ async function drill(e: GateEnv): Promise<void> {
       await timed('reset', async () => { await reset(); forgetIsolateMemory() })
       const warmPayload = generatePayload(shape, { seed: `${id}#warm`, set: variant.set, unset: variant.unset })
       const warm = await timed('warm run', () => runOnce(e, def, { id: `${id}#warm`, seed: `${id}#warm`, kind: 'live' }, warmPayload, variant, stubs, shape, {
+        // Real timers on every drill run (#1872): the hung shape ends only when the caller's own deadline fires.
+        engineTimers: 'real',
         before: (runEnv, db) => timed('prewarm', () => prewarmKvCaches(db.client as never, runEnv as never)),
       }))
       const kept = await timed('keep copies', () => keepStoredCopies(e))
@@ -251,6 +253,7 @@ async function drill(e: GateEnv): Promise<void> {
       await fromKept()
       const upSteps: ObservedStep[] = []
       const up = await timed('up run', () => runOnce(e, def, { id, seed: id, kind: 'live' }, payload, variant, stubs, shape, {
+        engineTimers: 'real',
         runtime: (db) => ({ ...moneyRuntime(db.client as never), observeStep: observer(upSteps), clock: instantClock }),
       }))
       const upRecord = recordOf(up, upSteps, await dumpDurableObjects(e))
@@ -261,6 +264,7 @@ async function drill(e: GateEnv): Promise<void> {
         const net = outageNetwork(outage)
         const downSteps: ObservedStep[] = []
         const down = await timed('down run', () => withinDeadline(`${def.name}/${variant.name} [${outage}]`, runOnce(e, def, { id, seed: id, kind: 'live' }, payload, variant, stubs, shape, {
+          engineTimers: 'real',
           runtime: () => {
             const client = createLeadSupabaseClient(DB_ENV as never, { fetch: net.fetch })
             return { lane: 'money', config: client, run: client, observeStep: observer(downSteps), clock: outage === 'hung' ? hungClock : instantClock }
@@ -298,6 +302,6 @@ async function drill(e: GateEnv): Promise<void> {
 /** The variant's prior runs (an earlier click on the same prospect), database up, as the gate replays them. */
 async function priorRuns(e: GateEnv, def: DefinitionFile, id: string, payload: unknown, variant: Variant, shape: WorkflowShape): Promise<void> {
   for (let i = 0; i < (variant.prior_runs ?? 0); i++) {
-    await runOnce(e, def, { id: `${id}#prior${i}`, seed: `${id}#prior${i}`, kind: 'live' }, payload, variant, variant.prior_stubs ?? variant.stubs ?? {}, shape)
+    await runOnce(e, def, { id: `${id}#prior${i}`, seed: `${id}#prior${i}`, kind: 'live' }, payload, variant, variant.prior_stubs ?? variant.stubs ?? {}, shape, { engineTimers: 'real' })
   }
 }

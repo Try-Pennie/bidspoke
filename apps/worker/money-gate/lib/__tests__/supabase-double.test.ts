@@ -117,3 +117,33 @@ describe('createSupabaseDouble writes', () => {
     expect(((await d.client.from('partner_configs').select('*').eq('slug', 'amone').single()).data as { priority: number }).priority).toBe(1)
   })
 })
+
+describe('createSupabaseDouble read delay (#1872)', () => {
+  /** A delay the test releases by hand, so nothing here waits on real time. */
+  function gate() {
+    const waiting: Array<() => void> = []
+    return { delayRead: () => new Promise<void>((resolve) => { waiting.push(resolve) }), release: () => waiting.splice(0).forEach((r) => r()), pending: () => waiting.length }
+  }
+
+  it('holds every read until its delay ends, then answers it as usual', async () => {
+    const g = gate()
+    const d = createSupabaseDouble(tables(), { delayRead: g.delayRead })
+    let answered = false
+    const read = d.client.from('partner_configs').select('slug').eq('slug', 'amone').single().then((r: { data: unknown }) => { answered = true; return r })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(g.pending()).toBe(1)
+    expect(answered).toBe(false)
+    g.release()
+    expect((await read).data).toMatchObject({ slug: 'amone' })
+  })
+
+  it('never holds a write, so the recorded order of writes is the engine order', async () => {
+    const g = gate()
+    const d = createSupabaseDouble(tables(), { delayRead: g.delayRead })
+    await d.client.from('workflow_versions').insert({ id: 'v9', workflow_id: 'w1', version_number: 9 })
+    await d.client.from('partner_configs').update({ priority: 5 }).eq('slug', 'amone')
+    expect(g.pending()).toBe(0)
+    expect(d.writes().map((w) => w.op)).toEqual(['insert', 'update'])
+  })
+})

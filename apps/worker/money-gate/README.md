@@ -40,6 +40,26 @@ check a replay does not depend on how fast it runs, set
 `MONEY_GATE_DISPATCH_DELAY_MS` to hold every code dispatch that long, and compare
 the transcript with one replayed without it: they must have no difference.
 
+The engine's own timers are lifted too (#1872). Budgets written in code, not in a
+definition, are wall clock timers as well: `buyer_click_check` gives its profile
+read and click count 800 ms, `buyer_select` bounds its whole path, the lead read
+budget aborts a slow read. On 2026-10-07 the head replay ran first and cold, the
+click check's budget ran out on that side only, and the lead was refused instead
+of offered, with nothing changed. During each replay run `lib/engine-timers.ts`
+raises every `setTimeout` and `AbortSignal.timeout` the engine sets to
+`GATE_STEP_DEADLINE_MS`, on both sides alike. Measured over every fixture, no
+engine timer fires during a run, so this changes no outcome. One that fires anyway
+fails the replay by name, with the fixture, the length the engine asked for and
+where it was set. The outage drill keeps real timers (`engineTimers: 'real'`),
+because its hung database ends only when the caller's own deadline fires. Code
+node scripts run in the nested workerd, out of reach of the lift, and keep real
+timers: their retry waits are meant to fire.
+
+The replay also runs one lead twice, once as usual and once with every table
+read (rpc calls are not held) held past the click check's budget (`dbReadDelayMs`), and fails on any
+difference between the two records. It is the fixture that flipped on 2026-10-07,
+and it costs a few seconds per side.
+
 ## Three kinds of run
 
 Every lead is replayed as a live run. The variants marked `"also_run_as": ["test",
