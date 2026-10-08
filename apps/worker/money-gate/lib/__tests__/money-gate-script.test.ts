@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { ABSENT_AT_BASE } from '../expected-changes'
+import { ABSENT_AT_BASE, ABSENT_AT_LIVE } from '../expected-changes'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..')
 const script = join(repoRoot, '.github', 'scripts', 'money-gate.sh')
@@ -40,5 +40,21 @@ describe('money-gate.sh refuses a base it cannot use', () => {
     const r = run()
     expect(r.status).not.toBe(0)
     expect(r.out).toContain('no base commit was given')
+  })
+})
+
+describe('only a pull request asks the live worker about leftover entries (#1836)', () => {
+  const workflow = (name: string) => readFileSync(join(repoRoot, '.github', 'workflows', name), 'utf8')
+
+  it('hands the verdict the live copy, or why it could not be read, only when given a worker address', () => {
+    const text = readFileSync(script, 'utf8')
+    expect(text).toContain('if [ -n "${MONEY_GATE_LIVE_WORKER_URL:-}" ]; then')
+    expect(text).toContain('MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE"')
+    expect(text).toContain(`EXPECTED_LIVE="${ABSENT_AT_LIVE}"`)
+  })
+
+  it('the pull request job passes the worker address, and Deploy never does, so a deploy cannot fail on housekeeping', () => {
+    expect(workflow('ci.yml')).toContain('MONEY_GATE_LIVE_WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}')
+    expect(workflow('deploy.yml')).not.toContain('MONEY_GATE_LIVE_WORKER_URL')
   })
 })

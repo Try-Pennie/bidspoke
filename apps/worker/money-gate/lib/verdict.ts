@@ -12,7 +12,7 @@
  * touched them.
  */
 import { compareTranscripts, coverageReport, formatDifferences, type Transcript } from './compare'
-import { applyExpectedChanges, describeEntry, parseExpectedChanges } from './expected-changes'
+import { applyExpectedChanges, canonicalEntry, describeEntry, parseExpectedChanges, shippedEntries, type ExpectedLive } from './expected-changes'
 
 export const STALE_WARN_DAYS = 23
 export const STALE_REMIND_DAYS = 30
@@ -39,6 +39,12 @@ export interface VerdictInput {
    */
   expectedHead: string | null
   expectedBase: string | null
+  /**
+   * The live worker's copy (#1836), asked for only on a pull request. A carried
+   * over entry it also holds can never excuse anything again, and fails by name.
+   * Undefined, as on a Deploy, checks nothing against it.
+   */
+  expectedLive?: ExpectedLive
 }
 
 /** A transcript that replayed nothing would compare equal to anything (L98). */
@@ -73,6 +79,12 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
   const baseUnreadable = base.failures.length > 0
   const applied = baseUnreadable ? applyExpectedChanges(diffs, [], []) : applyExpectedChanges(diffs, head.entries, base.entries)
 
+  const live = input.expectedLive ? shippedEntries(applied.carriedOver, input.expectedLive) : null
+  const shipped = new Set((live?.shipped ?? []).map(canonicalEntry))
+  const shippedFailure = live?.shipped.length && input.expectedLive && 'commit' in input.expectedLive
+    ? [`${live.shipped.length} expected-changes.json entr(ies) already in the live worker's copy (${input.expectedLive.commit.slice(0, 7)}), so they can never excuse a difference again; delete them: ${live.shipped.map(describeEntry).join('; ')}`]
+    : []
+
   const failures = [...new Set([
     ...emptinessFailures(input.head, 'head'),
     ...emptinessFailures(input.base, 'base'),
@@ -82,10 +94,17 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
     ...head.failures,
     ...base.failures.map((f) => `the merge base's ${f}`),
     ...applied.failures,
+    ...shippedFailure,
   ])]
 
-  for (const e of applied.carriedOver) {
-    lines.push(`note: expected change for ${describeEntry(e)} is carried over from the merge base, excusing nothing; delete it`)
+  // One line, not one per entry, so a real difference is not lost among them (#1836).
+  const leftover = applied.carriedOver.filter((e) => !shipped.has(canonicalEntry(e)))
+  if (leftover.length) {
+    const workflows = [...new Set(leftover.map((e) => e.workflow))].sort()
+    lines.push(`note: ${leftover.length} expected change(s) carried over from the merge base, excusing nothing; delete them (${workflows.join(', ')})`)
+  }
+  if (live?.unreadable) {
+    lines.push(`note: the live worker's expected-changes.json could not be read (${live.unreadable}), so leftover entries were not checked against it`)
   }
   if (applied.excused.length) {
     lines.push(`money gate: ${applied.excused.length} difference(s) excused by expected-changes.json, ${applied.unexcused.length} not excused`)

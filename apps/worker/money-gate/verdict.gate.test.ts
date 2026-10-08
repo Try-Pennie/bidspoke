@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { it, expect } from 'vitest'
 import type { Transcript } from './lib/compare'
 import { gateVerdict } from './lib/verdict'
-import { resolveExpectedBase } from './lib/expected-changes'
+import { resolveExpectedBase, resolveExpectedLive } from './lib/expected-changes'
 
 const readIfPresent = (p: string | undefined): string | null => (p && existsSync(p) ? readFileSync(p, 'utf8') : null)
 
@@ -42,6 +42,8 @@ it('the head does what the merge base does with every fixture', () => {
     committedDefinitionIds,
     expectedHead: readIfPresent(join(here, 'expected-changes.json')),
     expectedBase: expectedBase.text,
+    // Only a pull request hands this over (#1836); a Deploy leaves it unset.
+    expectedLive: resolveExpectedLive(process.env.MONEY_GATE_EXPECTED_LIVE, process.env.MONEY_GATE_LIVE_COMMIT, { exists: existsSync, read: (p) => readFileSync(p, 'utf8') }),
   })
   // Written to a file as well, because a passing test's console output is not
   // printed: the coverage report must reach the log on a green run too.

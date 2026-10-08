@@ -186,8 +186,13 @@ out), and `reason` says in words why. The rules (`lib/expected-changes.ts`):
 * Every excused difference still prints, marked excused with its reason.
 * A new entry that matches no difference fails the gate by name: an excuse for a
   change that did not happen is a defect.
-* Once merged, an entry is carried over: it excuses nothing, the verdict lists it
-  as inert, and it can be deleted in any later pull request.
+* Once merged, an entry is carried over: it excuses nothing, and the verdict
+  counts the carried over entries in one note line, naming their workflows.
+* Once the live worker runs the commit that added it, it has shipped and can
+  never excuse a difference again, so a pull request fails on it by name until it
+  is deleted (#1836). Only the pull request job asks the live worker
+  (`MONEY_GATE_LIVE_WORKER_URL`); a Deploy never fails on this, and a worker that
+  cannot be read is a note, not a failure.
 
 The gate also fails, by name, when it checked nothing: a transcript with no
 workflow or no fixture, a committed definition the head did not replay, or a
