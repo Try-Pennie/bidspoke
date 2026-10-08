@@ -570,6 +570,43 @@ async function reportUnconfirmable(
   return items.length
 }
 
+/** How long the sweep waits for the live Slack connection before using the last-good copy. */
+export const SLACK_READ_DEADLINE_MS = 3_000
+
+type SweepSlack = Pick<SlackConnection, 'bot_token' | 'default_channel' | 'config_alerts_enabled'>
+
+/**
+ * The org's Slack connection for the sweep's alerts, which go out exactly while
+ * the database may not be answering. The live read retries on real timers with
+ * no deadline of its own (L110), so it is raced against SLACK_READ_DEADLINE_MS,
+ * and the volume check's last-good copy answers when it fails or runs out.
+ */
+export function boundedSlackFor(
+  live: (orgId: string) => Promise<SweepSlack | null>,
+  lastGood: () => Promise<Map<string, SweepSlack>>,
+  deadline: () => Promise<void> = () => new Promise<void>((resolve) => setTimeout(resolve, SLACK_READ_DEADLINE_MS)),
+): (orgId: string) => Promise<SweepSlack | null> {
+  return async (orgId) => {
+    try {
+      const timedOut = deadline().then(() => 'timed_out' as const)
+      const answer = await Promise.race([live(orgId), timedOut])
+      if (answer === 'timed_out') {
+        console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read for org ${orgId} did not answer in ${SLACK_READ_DEADLINE_MS} ms, trying the last-good copy`)
+      } else if (answer) {
+        return answer
+      }
+    } catch (e) {
+      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read failed for org ${orgId}, trying the last-good copy: ${formatErr(e)}`)
+    }
+    try {
+      return (await lastGood()).get(orgId) ?? null
+    } catch (e) {
+      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] last-good Slack copy unreadable for org ${orgId}: ${formatErr(e)}`)
+      return null
+    }
+  }
+}
+
 /**
  * The production wiring. The Slack connection comes from the database when it
  * answers and from the volume check's last-good copy when it does not, because
@@ -581,20 +618,10 @@ export async function runUnconfirmedWriteSweepForEnv(supabase: SupabaseClient, e
     supabase,
     appUrl: env.APP_URL,
     claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-    slackFor: async (orgId) => {
-      try {
-        const live = await getSlackConnection(supabase, orgId)
-        if (live) return live
-      } catch (e) {
-        console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read failed for org ${orgId}, trying the last-good copy: ${formatErr(e)}`)
-      }
-      try {
-        return (await readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env))).get(orgId) ?? null
-      } catch (e) {
-        console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] last-good Slack copy unreadable for org ${orgId}: ${formatErr(e)}`)
-        return null
-      }
-    },
+    slackFor: boundedSlackFor(
+      (orgId) => getSlackConnection(supabase, orgId),
+      () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+    ),
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, UNCONFIRMED_WRITE_SWEEP_JOB, startedAtMs, ending),
   })
 }

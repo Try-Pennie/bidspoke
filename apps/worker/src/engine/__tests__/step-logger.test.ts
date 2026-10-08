@@ -682,6 +682,27 @@ describe('post-response budget (#1850)', () => {
     return budget
   }
 
+  // #1883: the finalize now goes out at the answer, so its ladder starts at the
+  // budget's start and must reach close to the dead letter's cut-off: a stall
+  // that clears at 20 s still lands it, where the four rung ladder gave up at 15 s.
+  it('a finalize sent at the answer keeps trying until just before the cut-off', async () => {
+    const clock = new VirtualClock()
+    const budget = armedAt(clock)
+    const keyedSelect = vi.fn(async () => (clock.now() < 20_000 ? down : { data: [{ id: 'exec-1' }], error: null }))
+    const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
+    const update = vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: eqStartedAt }) })
+    const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+    const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, undefined, undefined, {
+      clock,
+      budget,
+      reserveMs: DEAD_LETTER_RESERVE_MS,
+    })
+    await clock.run()
+    expect(await p).toBeNull()
+    expect(clock.now()).toBeGreaterThanOrEqual(20_000)
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
+  })
+
   it('createExecutionRecord waits the CREATE ladder through the injected clock', async () => {
     const clock = new VirtualClock()
     const { client, insert } = clientWith([down])
