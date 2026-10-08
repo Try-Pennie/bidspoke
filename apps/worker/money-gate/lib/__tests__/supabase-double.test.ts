@@ -180,3 +180,14 @@ describe('createSupabaseDouble neq is the opposite of eq (#1862)', () => {
   })
 })
 
+describe('createSupabaseDouble rejects with an Error that keeps what was thrown (#1862)', () => {
+  it('a value thrown that is not an Error becomes the cause of the Error the double rejects with', async () => {
+    const d = createSupabaseDouble({ events: [] })
+    // A getter that throws a string: copying the row for the record throws it inside the double.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the case under test is a thrown value that is not an Error
+    const row = { get id(): string { throw 'boom' } }
+    const write = d.client.from('events').insert(row) as { then: (ok: () => void) => Promise<unknown> }
+    await expect(write.then(() => undefined)).rejects.toMatchObject({ message: 'the Supabase double threw a value that is not an Error', cause: 'boom' })
+  })
+})
+
