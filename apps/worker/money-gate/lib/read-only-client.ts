@@ -26,16 +26,16 @@ function refuse(what: string): never {
 function guard<T extends object>(target: T, table: string): T {
   return new Proxy(target, {
     get(obj, prop, receiver) {
-      const v = Reflect.get(obj, prop, receiver)
+      const v: unknown = Reflect.get(obj, prop, receiver)
       if (typeof prop !== 'string') return v
       // A method that is not a read is refused even where this builder does not
       // have it, so a write chained onto a filter fails by name, not as a TypeError.
       if (typeof v !== 'function' && v !== undefined) return v
-      if (PROMISE_METHODS.has(prop) && typeof v === 'function') return v.bind(obj)
+      if (PROMISE_METHODS.has(prop) && typeof v === 'function') return (v as (...a: unknown[]) => unknown).bind(obj)
       if (!READ_METHODS.has(prop) || typeof v !== 'function') return () => refuse(`${table}.${String(prop)}`)
       return (...args: unknown[]) => {
         const out = (v as (...a: unknown[]) => unknown).apply(obj, args)
-        return out && typeof out === 'object' ? guard(out as object, table) : out
+        return out && typeof out === 'object' ? guard(out, table) : out
       }
     },
   })
@@ -47,5 +47,5 @@ export function readOnlyClient(client: SupabaseClient): Pick<SupabaseClient, 'fr
       if (prop === 'from') return (table: string) => guard(obj.from(table) as unknown as object, table)
       return refuse(String(prop))
     },
-  }) as unknown as Pick<SupabaseClient, 'from'>
+  })
 }

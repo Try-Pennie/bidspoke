@@ -22,7 +22,9 @@ export default [
       parserOptions: {
         // tsconfig.json excludes the Workers test files, which tsconfig.do.json
         // owns (#1410); the type aware rules need a project for every file.
-        project: ['./tsconfig.json', './tsconfig.do.json'],
+        // tsconfig.scripts.json holds money-gate/lib and the gate's Node side
+        // code, which is linted too (#1862).
+        project: ['./tsconfig.json', './tsconfig.do.json', './tsconfig.scripts.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },

@@ -138,13 +138,16 @@ const outboundKey = (r: OutboundRecord) => `${r.via} ${r.method} ${r.host}${r.pa
 function rowKey(r: unknown): string {
   if (r && typeof r === 'object' && 'step_namespace' in r) {
     const row = r as Record<string, unknown>
-    return `${String(row.step_order ?? '').padStart(8, '0')} ${String(row.step_namespace)}`
+    // A step order and namespace are a number and a string; anything else keys by its content, never by [object Object].
+    const order = typeof row.step_order === 'number' || typeof row.step_order === 'string' ? String(row.step_order) : canonical(row.step_order ?? '')
+    const namespace = typeof row.step_namespace === 'string' ? row.step_namespace : canonical(row.step_namespace)
+    return `${order.padStart(8, '0')} ${namespace}`
   }
   return canonical(r)
 }
 
 function normalizeWrite(w: RecordedWrite): RecordedWrite {
-  return Array.isArray(w.values) ? { ...w, values: [...w.values].sort((a, b) => (rowKey(a) < rowKey(b) ? -1 : rowKey(a) > rowKey(b) ? 1 : 0)) } : w
+  return Array.isArray(w.values) ? { ...w, values: [...(w.values as unknown[])].sort((a, b) => (rowKey(a) < rowKey(b) ? -1 : rowKey(a) > rowKey(b) ? 1 : 0)) } : w
 }
 
 const byKey = <T>(key: (x: T) => string) => (a: T, b: T) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
@@ -187,7 +190,7 @@ function compareFixture(b0: FixtureRecord, h0: FixtureRecord): Difference[] {
     const y = h.outbound[i]
     const label = (r: OutboundRecord) => `outbound[${i}] ${r.method} ${r.host}${r.path}`
     if (!x || !y) {
-      outDiffs.push({ fixture: id, check: 'outbound_request', node: (x ?? y)!.node, field: label((x ?? y)!), base: x ? 'sent' : '(not sent)', head: y ? 'sent' : '(not sent)' })
+      outDiffs.push({ fixture: id, check: 'outbound_request', node: (x ?? y).node, field: label((x ?? y)), base: x ? 'sent' : '(not sent)', head: y ? 'sent' : '(not sent)' })
       continue
     }
     const keyX = `${x.method} ${x.host}${x.path}`
@@ -207,7 +210,7 @@ function compareFixture(b0: FixtureRecord, h0: FixtureRecord): Difference[] {
   for (let i = 0; i < m; i++) {
     const x = b.code_dispatch[i]
     const y = h.code_dispatch[i]
-    const node = ((y ?? x)!.namespaces ?? []).join(',')
+    const node = ((y ?? x).namespaces ?? []).join(',')
     for (const d of deepDiff(x, y, `code_dispatch[${i}]`)) codeDiffs.push({ fixture: id, check: 'code_namespace', node, field: d.path, base: d.base, head: d.head })
   }
   add(codeDiffs)

@@ -117,6 +117,15 @@ describe('compareTranscripts', () => {
     expect(d).toEqual([])
   })
 
+  it('orders rows by their content when a step order is not a number, never by the text [object Object] (#1862)', () => {
+    const rows = [{ step_namespace: 'bid_race', step_order: { n: 2 }, out: 'b' }, { step_namespace: 'bid_race', step_order: { n: 1 }, out: 'a' }]
+    const d = compareTranscripts(
+      transcript('base', [fixture({ supabase_writes: [{ op: 'insert', table: 'execution_steps', values: rows }] })]),
+      transcript('head', [fixture({ supabase_writes: [{ op: 'insert', table: 'execution_steps', values: [rows[1], rows[0]] }] })]),
+    )
+    expect(d).toEqual([])
+  })
+
   it('compares supabase writes as a set, so an ordering race is not a difference', () => {
     const w = [
       { op: 'insert' as const, table: 'a', values: [1] },
