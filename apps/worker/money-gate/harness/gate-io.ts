@@ -154,12 +154,12 @@ export function createGateIo(opts: GateIoOptions) {
     const url = new URL(request.url)
     switch (url.pathname) {
       case '/bundles': {
-        const { bundles } = (await request.json()) as { bundles: HostedBundle[] }
+        const { bundles } = await request.json<{ bundles: HostedBundle[] }>()
         await hostBundles(bundles)
         return Response.json({ hosted: [...hosted.keys()] })
       }
       case '/begin': {
-        const body = (await request.json()) as { fixture: string; arms: Arms }
+        const body = await request.json<{ fixture: string; arms: Arms }>()
         fixture = body.fixture
         arms = body.arms ?? {}
         outbound = []

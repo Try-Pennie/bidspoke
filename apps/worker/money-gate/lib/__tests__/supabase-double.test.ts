@@ -147,3 +147,25 @@ describe('createSupabaseDouble read delay (#1872)', () => {
     expect(d.writes().map((w) => w.op)).toEqual(['insert', 'update'])
   })
 })
+
+describe('createSupabaseDouble compares values, never their text (#1862)', () => {
+  it('an in filter does not match one object against another because both print as [object Object]', async () => {
+    const d = createSupabaseDouble({ events: [{ id: 'e1', meta: { a: 1 } }, { id: 'e2', meta: { b: 2 } }] })
+    const { data } = await d.client.from('events').select('id').in('meta', [{ c: 3 }])
+    expect(data).toEqual([])
+  })
+
+  it('an in filter still matches a number against the same number sent as text, as PostgREST does', async () => {
+    const d = createSupabaseDouble({ events: [{ id: 1 }, { id: 2 }] })
+    const { data } = await d.client.from('events').select('id').in('id', ['2'])
+    expect((data as Array<{ id: number }>).map((r) => r.id)).toEqual([2])
+  })
+
+  it('an upsert names its conflict columns only from a string, never from the text of an object', async () => {
+    const d = createSupabaseDouble({ events: [{ id: 'e1', n: 1 }] })
+    await d.client.from('events').upsert({ id: 'e1', n: 2 }, { onConflict: { not: 'a string' } as unknown as string })
+    // Falls back to the id column, so the existing row is updated rather than a column named [object Object] matched.
+    const { data } = await d.client.from('events').select('*')
+    expect(data).toEqual([{ id: 'e1', n: 2 }])
+  })
+})
