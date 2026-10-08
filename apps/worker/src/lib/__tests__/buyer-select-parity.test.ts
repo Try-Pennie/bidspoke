@@ -19,6 +19,7 @@ import {
   INCUMBENT_NAMESPACE,
   countsHash,
   productionReadDeps,
+  readStoredParityDay,
   readParityDay,
   refreshableDays,
   runParityRefresh,
@@ -273,6 +274,7 @@ describe('runParityRefresh', () => {
         ]),
       },
       bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+      storedDay: async () => null,
       upsert: async (row) => { upserts.push(row); return row },
       now: () => NOW,
       retentionDays: RETENTION_DAYS,
@@ -350,6 +352,84 @@ describe('runParityRefresh', () => {
     expect(paged).toHaveLength(2)
   })
 
+  describe('yesterday is re-read only until its row is final (#1884)', () => {
+    // The ET day 2027-09-19 ends at 2027-09-20T04:00Z, and its bids settle
+    // BID_SETTLE_MS (10 minutes) later. Re-reading it every hour all day cost
+    // about 79 GB (executions) and 75 GB (step rows) of reads in two weeks,
+    // for a day whose step rows no longer change.
+    const FINAL = {
+      window_complete: true,
+      summarised_at: '2027-09-20T05:00:05.000Z',
+      stage_b: { bid_rows: { legacy_missing: 0, legacy_multiple: 0 } },
+    }
+    function tracking(stored: Awaited<ReturnType<RefreshDeps['storedDay']>> | Error) {
+      const listed: string[] = []
+      const asked: string[] = []
+      const logged: string[] = []
+      const { deps, upserts } = refreshDeps({
+        storedDay: async (_wf, day) => {
+          asked.push(day)
+          if (stored instanceof Error) throw stored
+          return stored
+        },
+        read: {
+          nodeRanIn: async () => true,
+          listExecutions: async (_wf, fromIso) => { listed.push(fromIso); return [] },
+          readRows: async () => [],
+        },
+        log: (line) => { logged.push(line) },
+      })
+      const readYesterday = () => listed.some((iso) => iso >= '2027-09-19T04:00' && iso < '2027-09-20T04:00')
+      return { deps, upserts, asked, logged, readYesterday }
+    }
+
+    it('keeps a final row and does not read the day again', async () => {
+      const t = tracking(FINAL)
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(false)
+      expect(t.upserts.map((r) => r.et_day)).toEqual(['2027-09-20'])
+      expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
+      expect(summary.errors).toEqual([])
+    })
+
+    it('never asks about today, which is incomplete by construction', async () => {
+      const t = tracking(FINAL)
+      await runParityRefresh(t.deps)
+      expect(t.asked).toEqual(['2027-09-19'])
+    })
+
+    it.each([
+      ['no row yet', null],
+      ['a row written before the day ended', { ...FINAL, window_complete: false }],
+      ['a row written before the bids settled', { ...FINAL, summarised_at: '2027-09-20T04:05:00.000Z' }],
+      ['a row whose bid check was unmeasured', { ...FINAL, stage_b: { bid_rows: { unmeasured: 'lead_sighting_bids: statement timeout' } } }],
+      ['a row with no Stage B report', { ...FINAL, stage_b: null }],
+      ['a row with an unreadable timestamp', { ...FINAL, summarised_at: 'not a time' }],
+    ])('reads the day again given %s', async (_label, stored) => {
+      const t = tracking(stored)
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(true)
+      expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
+      expect(summary.kept_final).toEqual([])
+    })
+
+    it('reads the day again when the stored row cannot be read, and says so, because reading is the safe side', async () => {
+      const t = tracking(new Error('buyer_select_parity_days: statement timeout'))
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(true)
+      expect(t.upserts.map((r) => r.et_day).sort()).toEqual(['2027-09-19', '2027-09-20'])
+      expect(t.logged.join(' ')).toMatch(/2027-09-19.*statement timeout/)
+      expect(summary.errors).toEqual([])
+    })
+
+    it('a run asked for one day reads it whatever its row says, so the route can still re-run any day by hand', async () => {
+      const t = tracking(FINAL)
+      await runParityRefresh(t.deps, { day: '2027-09-19' })
+      expect(t.readYesterday()).toBe(true)
+      expect(t.asked).toEqual([])
+    })
+  })
+
   it('a run scoped to one workflow or one day neither pages nor clears: its answer is the response, and only a full run speaks for the whole job', async () => {
     const paged: string[][] = []
     const notify = async (lines: string[]) => { paged.push(lines) }
@@ -379,6 +459,7 @@ describe('the Stage B figures on each row (#1809)', () => {
           ]),
         },
         bids: { earliestBidRowIso: async () => '2027-09-01T00:00:00.000Z', listBidExecutions: async () => ['e1'] },
+        storedDay: async () => null,
         upsert: async (row) => { upserts.push(row); return row },
         now: () => NOW,
         retentionDays: RETENTION_DAYS,
@@ -564,6 +645,38 @@ describe('productionReadDeps.nodeRanIn (#1884)', () => {
     const fake = probeSupabase({ data: null, error: { message: 'canceling statement due to statement timeout' } })
     await expect(productionReadDeps(fake.supabase).nodeRanIn('wf', FROM, TO)).rejects.toThrow(
       /execution_steps probe: canceling statement due to statement timeout/,
+    )
+  })
+})
+
+describe('readStoredParityDay (#1884)', () => {
+  function rowSupabase(answer: { data: unknown; error: { message: string } | null }) {
+    const calls: { table?: string; select?: string; eq: Array<[string, unknown]>; single?: boolean } = { eq: [] }
+    const builder: Record<string, unknown> = {}
+    builder.select = (cols: string) => { calls.select = cols; return builder }
+    builder.eq = (c: string, v: unknown) => { calls.eq.push([c, v]); return builder }
+    builder.maybeSingle = async () => { calls.single = true; return answer }
+    const supabase = { from: (table: string) => { calls.table = table; return builder } } as unknown as SupabaseClient
+    return { supabase, calls }
+  }
+
+  it('reads the one row by its key, only the columns the finality test needs', async () => {
+    const fake = rowSupabase({ data: { window_complete: true, summarised_at: '2027-09-20T05:00:00Z', stage_b: null }, error: null })
+    const row = await readStoredParityDay(fake.supabase, 'wf', '2027-09-19')
+    expect(row).toEqual({ window_complete: true, summarised_at: '2027-09-20T05:00:00Z', stage_b: null })
+    expect(fake.calls.table).toBe('buyer_select_parity_days')
+    expect(fake.calls.select).toBe('window_complete, summarised_at, stage_b')
+    expect(fake.calls.eq).toEqual([['workflow_id', 'wf'], ['et_day', '2027-09-19']])
+    expect(fake.calls.single).toBe(true)
+  })
+
+  it('answers null for a day with no row yet', async () => {
+    expect(await readStoredParityDay(rowSupabase({ data: null, error: null }).supabase, 'wf', '2027-09-19')).toBeNull()
+  })
+
+  it('throws a read failure rather than answering null, so the caller cannot mistake it for a missing row', async () => {
+    await expect(readStoredParityDay(rowSupabase({ data: null, error: { message: 'permission denied' } }).supabase, 'wf', '2027-09-19')).rejects.toThrow(
+      /buyer_select_parity_days: permission denied/,
     )
   })
 })

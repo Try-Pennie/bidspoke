@@ -420,9 +420,49 @@ export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
   }
 }
 
+/** The columns of a stored day row that say whether it can still change. */
+export interface StoredParityDay {
+  window_complete: boolean
+  summarised_at: string
+  stage_b: { bid_rows?: Record<string, unknown> } | null
+}
+
+/**
+ * Whether a stored row is the day's final answer, so the hourly refresh can keep
+ * it rather than read the day again (#1884). All four must hold: it was written
+ * with the day complete, after the day's bids had settled (the Stage B bid check
+ * judges executions older than now minus BID_SETTLE_MS), with a Stage B report,
+ * and with that report's bid check measured. Anything else, an unreadable
+ * timestamp included, is not final and the day is read again: reading too often
+ * costs reads, keeping a provisional row loses the day's answer (L5).
+ */
+export function isFinalParityDay(row: StoredParityDay | null, day: string): boolean {
+  if (!row || row.window_complete !== true) return false
+  const writtenAt = Date.parse(row.summarised_at)
+  if (!Number.isFinite(writtenAt)) return false
+  if (writtenAt < easternDayStartUtc(nextIsoDate(day)) + BID_SETTLE_MS) return false
+  const bidRows = row.stage_b?.bid_rows
+  if (bidRows === null || typeof bidRows !== 'object') return false
+  return !('unmeasured' in bidRows)
+}
+
+/** The stored row for one workflow and day, or null when there is none; a read failure throws. */
+export async function readStoredParityDay(supabase: SupabaseClient, workflowId: string, day: string): Promise<StoredParityDay | null> {
+  const { data, error } = await supabase
+    .from('buyer_select_parity_days')
+    .select('window_complete, summarised_at, stage_b')
+    .eq('workflow_id', workflowId)
+    .eq('et_day', day)
+    .maybeSingle()
+  if (error) throw new Error(`buyer_select_parity_days: ${error.message}`)
+  return (data as StoredParityDay | null) ?? null
+}
+
 /**
  * The days the hourly refresh summarises: today (incomplete by construction)
- * and yesterday, so a finished day is re-read once with window_complete true.
+ * and yesterday, so a finished day is re-read with window_complete true. Since
+ * #1884 yesterday is skipped once its stored row is final (isFinalParityDay),
+ * so it is read about twice after midnight rather than every hour all day.
  * Older days keep the row they have: their step rows never change, and reading
  * every day inside retention each hour costs about 300 database requests per
  * day at the Engine flow's volume (10,000 executions per three hour window in
@@ -465,6 +505,8 @@ export interface RefreshDeps {
   read: ParityReadDeps
   /** Tripoint's bid rows, for the Stage B one row per execution check (#1809). */
   bids: StageBBidReadDeps
+  /** The stored row for a workflow and day, null when there is none; throws on a read failure. */
+  storedDay(workflowId: string, day: string): Promise<StoredParityDay | null>
   upsert(row: ParityRowWrite): Promise<unknown>
   now(): number
   retentionDays: number
@@ -477,6 +519,8 @@ export interface RefreshSummary {
   days: string[]
   rows_written: number
   errors: string[]
+  /** "<workflow> <day>" for each past day kept because its row is already final (#1884). */
+  kept_final: string[]
 }
 
 export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: string; day?: string } = {}): Promise<RefreshSummary> {
@@ -484,16 +528,18 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
   const days = only.day ? [only.day] : refreshableDays(now, deps.retentionDays)
   if (deps.localDev) {
     deps.log(`[${BUYER_SELECT_PARITY_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', days, rows_written: 0, errors: [] }
+    return { skipped: 'local_dev', days, rows_written: 0, errors: [], kept_final: [] }
   }
   const errors: string[] = []
+  const keptFinal: string[] = []
   let written = 0
+  const today = easternParts(now).date
 
   let workflows: ParityWorkflow[]
   try {
     workflows = (await deps.listWorkflows()).filter((w) => !only.workflowId || w.id === only.workflowId)
   } catch (err) {
-    return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`] }
+    return { days, rows_written: 0, errors: [`the workflow list could not be read: ${messageOf(err)}`], kept_final: [] }
   }
 
   for (const wf of workflows) {
@@ -509,6 +555,22 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
       continue
     }
     for (const day of days) {
+      // A past day whose stored row is already final is kept, not read again
+      // (#1884). A run asked for one day reads it regardless, so the route can
+      // still redo any day by hand. A stored row that cannot be read means the
+      // day is read: reading is the safe side, and its own failures page.
+      if (!only.day && day !== today) {
+        let stored: StoredParityDay | null = null
+        try {
+          stored = await deps.storedDay(wf.id, day)
+        } catch (err) {
+          deps.log(`[${BUYER_SELECT_PARITY_JOB}] ${wf.id} ${day}: the stored row could not be read, so the day is read again: ${messageOf(err)}`)
+        }
+        if (isFinalParityDay(stored, day)) {
+          keptFinal.push(`${wf.id} ${day}`)
+          continue
+        }
+      }
       try {
         const executions = await readParityDay(deps.read, wf.id, day)
         const counts = summariseParityDay(executions, rules)
@@ -536,7 +598,7 @@ export async function runParityRefresh(deps: RefreshDeps, only: { workflowId?: s
       }
     }
   }
-  return { days, rows_written: written, errors }
+  return { days, rows_written: written, errors, kept_final: keptFinal }
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
@@ -566,6 +628,7 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
     rules: (orgId) => incumbentRules(orgId, env, supabase),
     read: productionReadDeps(supabase),
     bids: productionStageBBidDeps(supabase),
+    storedDay: (workflowId, day) => readStoredParityDay(supabase, workflowId, day),
     upsert: async (row) => {
       const { data, error } = (await supabase.rpc('upsert_buyer_select_parity_day', { p_row: row })) as { data: unknown; error: { message: string } | null }
       if (error) throw new Error(`upsert_buyer_select_parity_day: ${error.message}`)

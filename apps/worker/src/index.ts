@@ -533,7 +533,7 @@ export default {
             .then(() => runBuyerSelectParityRefreshForEnv(supabase, env))
             .then((s) => {
               if (s.skipped) return
-              console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} errors=${s.errors.length}`)
+              console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} kept_final=${s.kept_final.length} errors=${s.errors.length}`)
               if (s.errors.length) console.error(`[${BUYER_SELECT_PARITY_JOB}] errors=${s.errors.join(' | ')}`)
             })
             .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] refresh failed:`, e)),
