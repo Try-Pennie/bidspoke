@@ -540,8 +540,8 @@ export type RefreshScope = ({ organizations: 'every' } | { organizationId: strin
   day?: string
 }
 
-/** The hourly job's scope: every organisation's workflows. */
-export const EVERY_ORGANIZATION: RefreshScope = { organizations: 'every' }
+/** The hourly job's scope: every organisation's workflows. Frozen, since every caller shares the one object. */
+export const EVERY_ORGANIZATION: Readonly<RefreshScope> = Object.freeze({ organizations: 'every' })
 
 export async function runParityRefresh(deps: RefreshDeps, only: RefreshScope): Promise<RefreshSummary> {
   const now = deps.now()

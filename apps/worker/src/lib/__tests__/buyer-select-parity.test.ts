@@ -462,6 +462,10 @@ describe('runParityRefresh', () => {
     expect(typeof neverRun).toBe('function')
   })
 
+  it('the hourly job\'s every organisation scope cannot be changed by a caller, so no code can narrow or widen it for the whole process', () => {
+    expect(Object.isFrozen(EVERY_ORGANIZATION)).toBe(true)
+  })
+
   it('a run scoped to one organisation reads and writes only that organisation\'s workflows, and names no other one in its answer', async () => {
     const other = { id: 'wf-other', organization_id: 'org-2' }
     const { deps, upserts } = refreshDeps({ listWorkflows: async () => [WF, other], rules: async (org) => (org === 'org-2' ? null : RULES) })
