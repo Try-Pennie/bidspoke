@@ -33,10 +33,11 @@
  *   ACHIEVE_UTM_SOURCE                   optional utm_source fallback
  *   ACHIEVE_UTM_CAMPAIGN                 optional utm_campaign fallback (default '_achieve_pl')
  *
- * The fetch is aborted internally at 12s so a hung Achieve API can never trip
- * the engine-level node timeout (which WOULD fail the step). Recommended node
- * settings: timeout 15000ms, retries 0 (a retry on a transport failure risks
- * double-submitting the lead).
+ * The fetch is aborted internally at 9 s (ACHIEVE_FETCH_TIMEOUT_MS) so a hung
+ * Achieve API can never trip the engine-level node timeout (which WOULD fail the
+ * step), and so the node finishes inside the 12 s a run waits for its work after
+ * the answer (#1882). Recommended node settings: timeout 10000ms, retries 0 (a
+ * retry on a transport failure risks double-submitting the lead).
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
@@ -66,7 +67,21 @@ export interface AchieveOffersConfig {
   vantage_score_ref?: string
 }
 
-const FETCH_TIMEOUT_MS = 12_000
+/**
+ * How long the node waits for Achieve's reply (#1882). The node runs after the
+ * lead is answered, and the run stops waiting for that work 12 s after the answer
+ * (CONTINUATION_WINDOW_MS). A call allowed 12 s of its own ended past that
+ * cut-off whenever it ran to its limit, so every hung reply was reported as
+ * unfinished work and its evaluation was never recorded.
+ *
+ * Measured over 984 sends from 2026-10-01 to 2026-10-08: half answered within
+ * 4.7 s and nine in ten within 5.8 s. Eleven hit the old 12 s limit (a hang: with
+ * wait_for_offers Achieve holds a request for at most 10 s) and two more answered
+ * between 9 s and 10.2 s. So about two replies a week now time out on our side.
+ * Achieve still receives those leads; only its answer goes unrecorded. The node
+ * started at most 2.6 s after the answer, so 9 s ends it inside the window.
+ */
+export const ACHIEVE_FETCH_TIMEOUT_MS = 9_000
 
 // Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
 // every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
@@ -278,10 +293,10 @@ export async function executeAchieveOffersNode(
     console.error(`[achieve-offers] credit metrics derivation failed: ${formatErr(err)}`)
   }
 
-  // Own controller so the internal 12s timeout AND the step-level timeout (#66)
+  // Own controller so the internal 9 s timeout AND the step-level timeout (#66)
   // can both cancel the call.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), ACHIEVE_FETCH_TIMEOUT_MS)
   linkAbort(controller, signal)
   try {
     const res = await fetch(`${baseUrl}/evaluations`, {
@@ -344,7 +359,7 @@ export async function executeAchieveOffersNode(
     const name = (err as { name?: string })?.name
     const message = formatErr(err)
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
-      ? `Achieve API timed out after ${FETCH_TIMEOUT_MS}ms`
+      ? `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms`
       : message
     return { output: result(false, 0, 'error', reason, request, null, !production, NO_RESPONSE_IDS, metrics), resolvedInput }
   } finally {
