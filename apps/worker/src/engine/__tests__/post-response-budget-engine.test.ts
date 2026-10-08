@@ -553,6 +553,8 @@ describe('the answer is recorded at the answer (#1883)', () => {
       final_node_namespace: 'offer_response',
     })
     expect(journal.response_body.applicant.ssn).toBe('[REDACTED]')
+    // The rest of the finalize rides along, so a restored run is complete.
+    expect(typeof journal.cost_usd).toBe('number')
     expect(JSON.stringify(journal)).not.toContain('123-45-6789')
   })
 

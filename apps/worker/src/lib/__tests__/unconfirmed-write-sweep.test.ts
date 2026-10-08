@@ -656,10 +656,15 @@ describe('the Slack connection read the sweep posts with', () => {
     expect(await slackFor('org-1')).toBe(conn)
   })
 
-  it('uses the live connection when it answers', async () => {
+  it('uses the live connection when it answers, and stops the deadline timer', async () => {
     const live = { ...(conn as object), default_channel: 'live' } as never
-    const slackFor = boundedSlackFor(async () => live, async () => new Map([['org-1', conn]]), () => new Promise(() => {}))
+    let watched: AbortSignal | undefined
+    const slackFor = boundedSlackFor(async () => live, async () => new Map([['org-1', conn]]), (signal) => {
+      watched = signal
+      return new Promise(() => {})
+    })
     expect(await slackFor('org-1')).toBe(live)
+    expect(watched?.aborted).toBe(true)
   })
 
   it('answers null when neither copy can be read', async () => {

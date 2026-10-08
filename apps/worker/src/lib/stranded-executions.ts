@@ -400,6 +400,12 @@ export async function runReduceFinalizeStrandedExecutions(
               final_node_id: journal.final_node_id,
               error_message: journal.error_message,
               failed_step_type: journal.failed_step_type,
+              // The rest of the finalize, when the journal carries it: the sighting
+              // drain finalizes a stranded sighting from sighting_finalize.
+              ...(journal.sighting_finalize !== undefined ? { sighting_finalize: journal.sighting_finalize } : {}),
+              ...(journal.cost_usd !== undefined ? { cost_usd: journal.cost_usd } : {}),
+              ...(journal.field_presence !== undefined ? { field_presence: journal.field_presence } : {}),
+              ...(journal.email_dropped ? { email_dropped: true } : {}),
             })
             .eq('id', exec.id as string)
             // Its own partition, and only while still at running: the run's own

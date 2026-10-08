@@ -880,6 +880,10 @@ export async function executeWorkflow(
               response_body: journalBody(response, env.PII_REDACTION_FIELDS ?? ''),
               error_message: message ?? null,
               failed_step_type: resolveFailedStepType(definition.nodes, failedStep) ?? null,
+              ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
+              cost_usd: cost,
+              ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+              ...(emailDropped ? { email_dropped: true } : {}),
               written_at: new Date().toISOString(),
             }).catch((e) => console.error('[answer-journal] write failed:', formatErr(e))),
           )

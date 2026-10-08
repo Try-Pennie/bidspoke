@@ -808,6 +808,8 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
     response_body: { status: 'rejected' },
     error_message: null,
     failed_step_type: null,
+    sighting_finalize: { outcome: 'completed', winning_partner_slug: null },
+    cost_usd: 0.0012,
     written_at: '2026-10-08T12:20:43.701Z',
   }
 
@@ -830,6 +832,9 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
       final_node_namespace: 'reject_response',
       final_node_id: 'node-9',
       error_message: null,
+      // The sighting drain finalizes a stranded sighting from this projection.
+      sighting_finalize: { outcome: 'completed', winning_partner_slug: null },
+      cost_usd: 0.0012,
     })
     // The journal is the engine's own record, so no step inference is needed.
     expect(stepLookups).toEqual([])

@@ -584,12 +584,22 @@ type SweepSlack = Pick<SlackConnection, 'bot_token' | 'default_channel' | 'confi
 export function boundedSlackFor(
   live: (orgId: string) => Promise<SweepSlack | null>,
   lastGood: () => Promise<Map<string, SweepSlack>>,
-  deadline: () => Promise<void> = () => new Promise<void>((resolve) => setTimeout(resolve, SLACK_READ_DEADLINE_MS)),
+  // Resolves when the read has waited long enough; stopped through the signal
+  // once the read answers, so no timer outlives it.
+  deadline: (signal: AbortSignal) => Promise<void> = (signal) =>
+    new Promise<void>((resolve) => {
+      const handle = setTimeout(resolve, SLACK_READ_DEADLINE_MS)
+      signal.addEventListener('abort', () => {
+        clearTimeout(handle)
+        resolve()
+      }, { once: true })
+    }),
 ): (orgId: string) => Promise<SweepSlack | null> {
   return async (orgId) => {
     try {
-      const timedOut = deadline().then(() => 'timed_out' as const)
-      const answer = await Promise.race([live(orgId), timedOut])
+      const stop = new AbortController()
+      const timedOut = deadline(stop.signal).then(() => 'timed_out' as const)
+      const answer = await Promise.race([live(orgId), timedOut]).finally(() => stop.abort())
       if (answer === 'timed_out') {
         console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read for org ${orgId} did not answer in ${SLACK_READ_DEADLINE_MS} ms, trying the last-good copy`)
       } else if (answer) {

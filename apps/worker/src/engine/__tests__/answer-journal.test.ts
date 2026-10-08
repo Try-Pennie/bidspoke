@@ -62,6 +62,14 @@ describe('the answer journal', () => {
     expect(await readAnswerJournal(store, 'ex-1')).toBeNull()
   })
 
+  it('refuses a journal whose status, duration or response status is not one the row can hold', async () => {
+    const store = kv()
+    for (const bad of [{ status: 'running' }, { duration_ms: 'soon' }, { response_status: null }]) {
+      store.store.set(`${ANSWER_JOURNAL_PREFIX}ex-1`, JSON.stringify({ ...journal, ...bad }))
+      expect(await readAnswerJournal(store, 'ex-1'), JSON.stringify(bad)).toBeNull()
+    }
+  })
+
   it('refuses a journal missing its status or completion time', async () => {
     const store = kv()
     const { status: _s, ...noStatus } = journal

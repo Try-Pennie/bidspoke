@@ -283,8 +283,20 @@ export interface AnswerJournal {
   response_body: unknown
   error_message: string | null
   failed_step_type: string | null
+  /**
+   * The rest of what the finalize writes, so a restored run is complete: the
+   * sighting projection the sighting drain finalizes a stranded sighting from,
+   * and the run's cost and capture fields.
+   */
+  sighting_finalize?: unknown
+  cost_usd?: number
+  field_presence?: Record<string, boolean>
+  email_dropped?: boolean
   written_at: string
 }
+
+/** The terminal statuses a finalize writes; anything else is not a journal to restore. */
+const JOURNAL_STATUSES = new Set(['completed', 'failed', 'degraded'])
 
 export async function putAnswerJournal(
   kv: { put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void> },
@@ -302,7 +314,10 @@ export async function readAnswerJournal(
   if (!raw) return null
   try {
     const v = JSON.parse(raw) as Partial<AnswerJournal>
-    if (v.execution_id !== executionId || typeof v.status !== 'string' || typeof v.completed_at !== 'string') return null
+    if (v.execution_id !== executionId || typeof v.status !== 'string' || !JOURNAL_STATUSES.has(v.status)) return null
+    if (typeof v.completed_at !== 'string' || !Number.isFinite(Date.parse(v.completed_at))) return null
+    if (typeof v.duration_ms !== 'number' || !Number.isFinite(v.duration_ms)) return null
+    if (typeof v.response_status !== 'number' || !Number.isInteger(v.response_status)) return null
     return v as AnswerJournal
   } catch {
     return null
