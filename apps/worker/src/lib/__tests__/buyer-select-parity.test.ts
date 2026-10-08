@@ -452,11 +452,14 @@ describe('runParityRefresh', () => {
 
   it('must be told which organisations it covers: leaving the scope out does not compile, so forgetting it can never mean every tenant (L72)', async () => {
     const { deps } = refreshDeps()
-    // @ts-expect-error a refresh with no scope is refused at compile time
-    void runParityRefresh(deps)
-    // @ts-expect-error an organisation is named or every one is asked for, never left out
-    void runParityRefresh(deps, { day: '2027-09-19' })
-    expect(true).toBe(true)
+    // Type checked, never called: the assertion is the compiler's, and running these would only reject (L749).
+    const neverRun = () => [
+      // @ts-expect-error a refresh with no scope is refused at compile time
+      runParityRefresh(deps),
+      // @ts-expect-error an organisation is named or every one is asked for, never left out
+      runParityRefresh(deps, { day: '2027-09-19' }),
+    ]
+    expect(typeof neverRun).toBe('function')
   })
 
   it('a run scoped to one organisation reads and writes only that organisation\'s workflows, and names no other one in its answer', async () => {
