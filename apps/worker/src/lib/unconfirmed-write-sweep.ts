@@ -188,7 +188,15 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   for (const { name } of keys) {
     const firstSeen = firstSeenOfKey(name)
     // Sorted oldest first, so everything after a young entry is young too.
-    if (!Number.isFinite(firstSeen) || startedAtMs - firstSeen < READ_BACK_MIN_AGE_MS) {
+    if (!Number.isFinite(firstSeen)) {
+      // Not a key this module writes, so it can never be read back, and left it
+      // would hold one of the tick's list slots until it expired.
+      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] dropping ${name}: not a key this sweep writes`)
+      await deps.kv.delete(name)
+      summary.skipped++
+      continue
+    }
+    if (startedAtMs - firstSeen < READ_BACK_MIN_AGE_MS) {
       summary.young++
       continue
     }

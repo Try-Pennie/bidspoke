@@ -1111,7 +1111,7 @@ export async function sendOutcomeDeadLetterAlert(
     ? 'timed out, and reading it back afterwards found it never landed'
     : 'failed after all retries'
   const summary = drainRecoverable
-    ? `A finalize write (*${payload.label}*) failed after all retries, so *${payload.window_loss_count}* execution ${payload.window_loss_count === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
+    ? `A finalize write (*${payload.label}*) ${how}, so *${payload.window_loss_count}* execution ${payload.window_loss_count === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
     : `A must-not-lose outcome write (*${payload.label}*) ${how}. *${payload.window_loss_count}* ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
   const blocks = [
     {

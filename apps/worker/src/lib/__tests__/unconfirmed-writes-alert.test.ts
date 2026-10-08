@@ -83,4 +83,18 @@ describe('lost alert for a record a read back found missing', () => {
     expect(text).toMatch(/timed out, and reading it back afterwards found it never landed/)
     expect(text).not.toMatch(/failed after all retries|exhausted its full retry ladder/)
   })
+
+  it('keeps the drain wording for an execution row read back at running, without claiming retries ran out', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'execution_finalize',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: "execution_finalize: the write timed out and a read back found the execution row is still at status 'running'",
+      error_code: READ_BACK_MISSING_CODE,
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('Execution Finalize Delayed')
+    expect(text).toMatch(/timed out, and reading it back afterwards found it never landed/)
+    expect(text).not.toMatch(/failed after all retries/)
+  })
 })

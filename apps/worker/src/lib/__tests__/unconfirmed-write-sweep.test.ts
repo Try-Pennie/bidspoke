@@ -417,6 +417,15 @@ describe('the sweep is bounded and safe to run twice', () => {
     expect(remaining(kv)).toEqual([])
   })
 
+  it('drops a key that does not carry a first seen time, rather than counting it young for a day', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    kv.store.set(`${UNCONFIRMED_WRITE_PREFIX}not-a-time:x`, '{}')
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.young).toBe(0)
+    expect(remaining(kv)).toEqual([])
+  })
+
   it('records the tick in job_runs only when it had entries to look at', async () => {
     const kv = makeKv()
     const db = makeDb()
