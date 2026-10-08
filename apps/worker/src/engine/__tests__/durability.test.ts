@@ -17,6 +17,9 @@ import { writeOutcome, writeObservability, recordOutcomeDeadLetter } from '../du
 import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { DB_WRITE_RETRY_DELAYS_MS } from '../../lib/db-retry'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
+import { UNCONFIRMED_WRITE_PREFIX, type ReadBack } from '../unconfirmed-writes'
+
+const SIGHTING: ReadBack = { kind: 'sighting_present', sighting_id: 's-1', execution_started_at_utc: '2026-10-08T12:20:10.000Z' }
 
 const PERMANENT = { code: '23502', message: 'not-null violation' } // permanent → no retry sleeps
 const supabase = {} as never
@@ -53,7 +56,7 @@ describe('writeObservability (tier 1)', () => {
 describe('writeOutcome (tier 2)', () => {
   it('returns success without alerting', async () => {
     const kv = fakeKv()
-    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv))
+    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv), SIGHTING)
     expect(res.error).toBeNull()
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
   })
@@ -64,13 +67,13 @@ describe('writeOutcome (tier 2)', () => {
   it('leaves the window loss counter untouched on success', async () => {
     const kv = fakeKv()
     kv.store.set('outcome-deadletter-window:org-1:lead_sightings.insert', '5')
-    await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv))
+    await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv), SIGHTING)
     expect(kv.store.get('outcome-deadletter-window:org-1:lead_sightings.insert')).toBe('5')
   })
 
   it('records a dead-letter alert when the write fails after retries', async () => {
     const kv = fakeKv()
-    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), deps(kv))
+    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), deps(kv), SIGHTING)
     expect(res.error).toBe(PERMANENT)
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
@@ -79,7 +82,7 @@ describe('writeOutcome (tier 2)', () => {
     const kv = fakeKv()
     kv.store.set('outcome-deadletter-window:org-1:lead_sightings.insert', '2')
     const dup = { code: '23505', message: 'duplicate key' }
-    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: dup }), deps(kv))
+    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: dup }), deps(kv), SIGHTING)
     expect(res.error).toBe(dup)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect(kv.store.get('outcome-deadletter-window:org-1:lead_sightings.insert')).toBe('2')
@@ -120,7 +123,7 @@ describe('recordOutcomeDeadLetter', () => {
     // 2nd loss inside the cooldown: suppressed but counted (window=2).
     await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
     // a SUCCESS in between must NOT reset the window counter.
-    await writeOutcome(label, async () => ({ error: null }), deps(kv))
+    await writeOutcome(label, async () => ({ error: null }), deps(kv), SIGHTING)
     // 3rd loss inside the cooldown: suppressed but counted (window=3).
     await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
 
@@ -169,7 +172,7 @@ describe('recordOutcomeDeadLetter', () => {
 
   it('renders a DbError that reaches the alert through writeOutcome', async () => {
     const kv = fakeKv()
-    await writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), deps(kv))
+    await writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), deps(kv), SIGHTING)
 
     const { error_message } = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0][1]
     expect(error_message).not.toContain('[object Object]')
@@ -215,7 +218,7 @@ describe('writeOutcome inside the post-response budget (#1850)', () => {
     const { clock, putAt, d } = budgetedDeps(kv)
     const op = vi.fn(async () => ({ error: DOWN }))
 
-    const p = writeOutcome('lead_sightings.insert', op, d)
+    const p = writeOutcome('lead_sightings.insert', op, d, SIGHTING)
     await clock.run()
 
     expect((await p).error).toEqual(DOWN)
@@ -229,25 +232,60 @@ describe('writeOutcome inside the post-response budget (#1850)', () => {
     const { clock, putAt, d } = budgetedDeps(kv)
     const op = vi.fn(async () => (clock.now() < 5_000 ? { error: DOWN } : { error: null }))
 
-    const p = writeOutcome('lead_sightings.insert', op, d)
+    const p = writeOutcome('lead_sightings.insert', op, d, SIGHTING)
     await clock.run()
 
     expect((await p).error).toBeNull()
     expect(putAt).toEqual([])
   })
 
-  it('dead-letters a write that never answers, at the cut-off, as unconfirmed', async () => {
+  // #1880: a write that only TIMED OUT is not a lost write. On 2026-10-08 a 90
+  // second stall dead-lettered 20 runs' records as lost and every one of them
+  // had landed. It is recorded as unconfirmed, naming what to read back, and
+  // the minute sweep decides later whether it was lost.
+  it('records a write that never answers as unconfirmed, not as a dead letter', async () => {
     const kv = fakeKv()
-    const { clock, putAt, d } = budgetedDeps(kv)
+    const { clock, d } = budgetedDeps(kv)
     const op = vi.fn(() => clock.hang())
+    const readBack = { kind: 'sighting_finalized' as const, sighting_id: 's-1', execution_started_at_utc: '2026-10-08T12:20:10.000Z' }
+    const run = { workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1' }
 
-    const p = writeOutcome('lead_sightings.finalize', op, d)
+    const p = writeOutcome('lead_sightings.finalize', op, { ...d, run }, readBack)
     await clock.run()
 
     const { error } = await p
-    expect(error?.message).toContain('lead_sightings.finalize')
     expect(error?.message).toContain('may still land')
-    expect(putAt.length).toBeGreaterThan(0)
-    expect(Math.min(...putAt)).toBe(POST_RESPONSE_BUDGET_MS - DEAD_LETTER_RESERVE_MS)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    expect([...kv.store.keys()].filter((k) => k.startsWith('outcome-deadletter-window:'))).toEqual([])
+    const entries = [...kv.store.entries()].filter(([k]) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))
+    expect(entries).toHaveLength(1)
+    const entry = JSON.parse(entries[0][1])
+    expect(entry).toMatchObject({ label: 'lead_sightings.finalize', org_id: 'org-1', read_back: readBack, run })
+    expect(typeof entry.first_seen_at).toBe('string')
+  })
+
+  it('still dead-letters a write that came back with an error, at once', async () => {
+    const kv = fakeKv()
+    const { clock, d } = budgetedDeps(kv)
+    const op = vi.fn(async () => ({ error: PERMANENT }))
+    const p = writeOutcome('lead_sightings.insert', op, d, SIGHTING)
+    await clock.run()
+    expect((await p).error).toBe(PERMANENT)
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+    expect([...kv.store.keys()].some((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toBe(false)
+  })
+
+  it('falls back to the dead letter when the unconfirmed entry itself cannot be written', async () => {
+    const kv = fakeKv()
+    const { clock, d } = budgetedDeps(kv)
+    const put = kv.put
+    kv.put = vi.fn(async (k: string, v: string) => {
+      if (k.startsWith(UNCONFIRMED_WRITE_PREFIX)) throw new Error('kv down')
+      await put(k, v)
+    })
+    const p = writeOutcome('lead_sightings.finalize', () => clock.hang(), d, SIGHTING)
+    await clock.run()
+    await p
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
 })

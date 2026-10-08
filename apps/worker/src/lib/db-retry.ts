@@ -24,6 +24,11 @@ export interface DbError {
 // cannot make a row that does not exist appear.
 export const NO_ROW_MATCHED_CODE = 'BIDSPOKE_NO_ROW_MATCHED'
 
+// A write that timed out at the post-response budget, read back minutes later
+// and found never to have landed (#1880). Its own code so the lost alert says
+// that, rather than blaming a retry ladder that never reported an error.
+export const READ_BACK_MISSING_CODE = 'BIDSPOKE_READ_BACK_MISSING'
+
 // SQLSTATE / PostgREST codes where retrying cannot help — the row is malformed
 // or the schema drifted. Everything else (lock contention, schema-cache reload,
 // connection blips) is transient and retried. 23505 (unique_violation) is

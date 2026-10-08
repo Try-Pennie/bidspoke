@@ -33,6 +33,7 @@ import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
+import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
@@ -821,6 +822,23 @@ export default {
             })
             .catch((e) => console.error(`[${BUYER_SALE_DRAIN_JOB}] drain failed:`, e)),
           BUYER_SALE_DRAIN_JOB,
+        ),
+      )
+      // Reads back the post-response writes that only timed out (#1880): drops
+      // the ones that landed, reports the ones that did not as lost, and says
+      // so when the database will not answer for 15 minutes.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, UNCONFIRMED_WRITE_SWEEP_JOB)
+            .catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] heartbeat write failed:`, e))
+            .then(() => runUnconfirmedWriteSweepForEnv(supabase, env))
+            .then((s) => {
+              if (s.listed > s.young) {
+                console.log(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] listed=${s.listed} landed=${s.landed} lost=${s.lost} unreadable=${s.unreadable} young=${s.young} could_not_confirm=${s.could_not_confirm}`)
+              }
+            })
+            .catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] sweep failed:`, e)),
+          UNCONFIRMED_WRITE_SWEEP_JOB,
         ),
       )
       ctx.waitUntil(

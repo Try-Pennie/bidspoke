@@ -42,6 +42,8 @@ import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../../lib/slack'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
+import { UNCONFIRMED_WRITE_PREFIX } from '../unconfirmed-writes'
+import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
 
 const WF_ID = 'wf-budget'
 const RESPONSE = { status: 200, headers: {}, body: { accepted: true } }
@@ -53,7 +55,10 @@ const definition = {
   edges: [],
 } as unknown as WorkflowDefinition
 
-type Availability = 'up' | 'down' | 'hang'
+type Availability = 'up' | 'down' | 'hang' | 'late'
+
+/** How long a `late` request takes to answer: past the whole post-response budget. */
+const LATE_MS = 40_000
 
 interface DbCall {
   at: number
@@ -64,7 +69,8 @@ interface DbCall {
 
 /**
  * A PostgREST stand-in. `down` answers the way PostgREST does when it cannot
- * reach Postgres (an empty-bodied 503); `hang` never answers; `up` stores rows,
+ * reach Postgres (an empty-bodied 503); `hang` never answers; `late` answers,
+ * and lands, only after the whole budget (#1880); `up` stores rows,
  * enforces the step rows' foreign key on the execution row, and reports the
  * rows an UPDATE matched, as the real writers require.
  */
@@ -81,6 +87,11 @@ function makeDb(clock: VirtualClock, availability: () => Availability) {
     if (state === 'down') {
       return Promise.resolve({ data: null, error: { message: '' }, status: 503, statusText: 'Service Unavailable' })
     }
+    if (state === 'late') return clock.delay(LATE_MS).then(() => land(table, op, payload, filters))
+    return land(table, op, payload, filters)
+  }
+
+  function land(table: string, op: string, payload: unknown, filters: Record<string, unknown>): Promise<unknown> {
     const rowsOf = (p: unknown) => (Array.isArray(p) ? p : [p]) as Record<string, unknown>[]
     if (table === 'workflow_executions') {
       if (op === 'insert') {
@@ -117,6 +128,14 @@ function makeDb(clock: VirtualClock, availability: () => Availability) {
         return Promise.resolve({ data: [{ id: row.id }], error: null })
       }
     }
+    if (op === 'select' && (table === 'workflow_executions' || table === 'lead_sightings')) {
+      // The read back (#1880): by id and by the partition column, as the sweep asks.
+      const store = table === 'workflow_executions' ? executions : sightings
+      const partition = table === 'workflow_executions' ? 'started_at' : 'execution_started_at_utc'
+      const row = store.get(filters.id as string)
+      const match = row && new Date(row[partition] as string).getTime() === new Date(filters[partition] as string).getTime()
+      return Promise.resolve({ data: match ? [row] : [], error: null })
+    }
     return Promise.resolve({ data: op === 'select' ? null : [], error: null })
   }
 
@@ -135,7 +154,7 @@ function makeDb(clock: VirtualClock, availability: () => Availability) {
             op = prop
             payload = args[0]
           }
-          if (prop === 'eq' && op !== 'select') filters[args[0] as string] = args[1]
+          if (prop === 'eq') filters[args[0] as string] = args[1]
           return chain
         }
       },
@@ -161,8 +180,12 @@ function makeKV(clock: VirtualClock) {
     async delete(k: string) {
       store.delete(k)
     },
+    async list(opts: { prefix?: string; limit?: number }) {
+      const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort()
+      return { keys: names.slice(0, opts.limit ?? 1000).map((name) => ({ name })), list_complete: true }
+    },
   }
-  return { kv: kv as unknown as KVNamespace, puts }
+  return { kv: kv as unknown as KVNamespace, puts, store }
 }
 
 async function run(availability: (clock: VirtualClock) => Availability) {
@@ -190,7 +213,7 @@ async function run(availability: (clock: VirtualClock) => Availability) {
 
   const deadLetters = (label: string) =>
     idempotency.puts.filter((p) => p.key.startsWith('outcome-deadletter-window:') && p.key.endsWith(`:${label}`))
-  return { result, clock, db, deadLetters }
+  return { result, clock, db, deadLetters, idempotency }
 }
 
 beforeEach(() => {
@@ -207,6 +230,20 @@ beforeEach(() => {
   vi.mocked(getSlackConnection).mockResolvedValue({ config_alerts_enabled: true } as never)
   vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValue(true)
 })
+
+type Phase = { now: Availability }
+
+/** The minute sweep, run as if three minutes later, with the database answering by then (#1880). */
+async function sweepAfter(phase: Phase, idempotency: { kv: KVNamespace }, db: { client: SupabaseClient }) {
+  phase.now = 'up'
+  return runUnconfirmedWriteSweep({
+    kv: idempotency.kv as never,
+    supabase: db.client,
+    appUrl: 'https://app.test',
+    now: () => Date.now() + 3 * 60_000,
+    slackFor: async () => ({ config_alerts_enabled: true }) as never,
+  })
+}
 
 /** The alert payload the execution_finalize dead letter would post. */
 function finalizeAlert() {
@@ -254,14 +291,19 @@ describe('post-response writes with the database down for the whole window (#185
 
 describe('a finalize lost after the execution row was created (#1850)', () => {
   it('keeps the drain-recoverable wording, since the row is there at running', async () => {
-    // Up for the create at time zero, down for everything after it.
+    // Up for the create at time zero, down for everything after it. The last
+    // finalize attempt can still be in flight at the cut-off, which makes it
+    // unconfirmed rather than failed (#1880), so the sweep that reads it back
+    // is part of the path: either way the loss must keep the drain wording.
     let created = false
-    const { db, result } = await run(() => {
-      if (created) return 'down'
+    const phase: Phase = { now: 'down' }
+    const { db, result, idempotency } = await run(() => {
+      if (created) return phase.now
       created = true
       return 'up'
     })
     expect(db.executions.get(result.executionId)?.status).toBe('running')
+    await sweepAfter(phase, idempotency, db)
     const alert = finalizeAlert()
     expect(alert).toBeDefined()
     expect(alert?.error_code).not.toBe(NO_ROW_MATCHED_CODE)
@@ -289,15 +331,55 @@ describe('post-response writes with the database back partway through (#1850)', 
   })
 })
 
-describe('post-response writes with a database that never answers (#1850)', () => {
-  it('still writes the dead letters, at the cut-off', async () => {
-    const { deadLetters, clock } = await run(() => 'hang')
+describe('post-response writes with a database that never answers (#1850, #1880)', () => {
+  it('records each timed out write as unconfirmed, at the cut-off, and dead-letters none of them', async () => {
+    const { deadLetters, clock, idempotency } = await run(() => 'hang')
     for (const label of ['execution_finalize', 'lead_sightings.insert', 'lead_sightings.finalize']) {
-      const letters = deadLetters(label)
-      expect(letters, label).toHaveLength(1)
-      expect(letters[0].at, label).toBeLessThanOrEqual(CUTOFF)
+      expect(deadLetters(label), label).toEqual([])
     }
+    const unconfirmed = idempotency.puts.filter((p) => p.key.startsWith(UNCONFIRMED_WRITE_PREFIX))
+    const labels = [...idempotency.store.entries()]
+      .filter(([k]) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))
+      .map(([, v]) => (JSON.parse(v) as { label: string }).label)
+      .sort()
+    expect(labels).toEqual(['execution_finalize', 'lead_sightings.finalize', 'lead_sightings.insert'])
+    expect(Math.max(...unconfirmed.map((p) => p.at))).toBeLessThanOrEqual(CUTOFF)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+  })
+})
+
+/**
+ * #1880, measured on 2026-10-08: a 90 second stall answered every write after
+ * the budget, every row landed, and each one was paged as lost. The writes are
+ * now recorded as unconfirmed and the minute sweep reads them back.
+ */
+describe('writes that answer after the budget, read back by the sweep (#1880)', () => {
+
+  it('sends no alert once every late row is read back present', async () => {
+    const phase: Phase = { now: 'late' }
+    const { db, idempotency, result } = await run(() => phase.now)
+    expect(db.executions.get(result.executionId)?.status).not.toBe('running')
+
+    const summary = await sweepAfter(phase, idempotency, db)
+
+    expect(summary.landed).toBeGreaterThanOrEqual(3)
+    expect(summary.lost).toBe(0)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    expect([...idempotency.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toEqual([])
+  })
+
+  it('alerts that the records were lost when they never landed', async () => {
+    const phase: Phase = { now: 'hang' }
+    const { db, idempotency } = await run(() => phase.now)
+
+    const summary = await sweepAfter(phase, idempotency, db)
+
+    expect(summary.lost).toBe(3)
+    const labels = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label).sort()
+    expect(labels).toEqual(['execution_finalize', 'lead_sightings.finalize', 'lead_sightings.insert'])
+    // No row at all: a served lead with no audit record, never the drain wording.
+    expect(finalizeAlert()?.error_code).toBe(NO_ROW_MATCHED_CODE)
   })
 })
 
