@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { ABSENT_AT_BASE, ABSENT_AT_LIVE } from '../expected-changes'
+import { ABSENT_AT_BASE } from '../expected-changes'
 import { gateVerdict } from '../verdict'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..')
@@ -47,11 +47,12 @@ describe('money-gate.sh refuses a base it cannot use', () => {
 describe('only a pull request asks the live worker about leftover entries (#1836)', () => {
   const workflow = (name: string) => readFileSync(join(repoRoot, '.github', 'workflows', name), 'utf8')
 
-  it('hands the verdict the live copy, or why it could not be read, only when given a worker address', () => {
+  it('hands the verdict what money-gate-live-expected.sh read, whose outcomes live-expected-script.test.ts runs (#1921)', () => {
     const text = readFileSync(script, 'utf8')
-    expect(text).toContain('if [ -n "${MONEY_GATE_LIVE_WORKER_URL+set}" ]; then')
-    expect(text).toContain('MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE"')
-    expect(text).toContain(`EXPECTED_LIVE="${ABSENT_AT_LIVE}"`)
+    expect(text).toContain('if ! LIVE_READ="$(bash "$ROOT/.github/scripts/money-gate-live-expected.sh" "$WORK")"; then')
+    // A helper that cannot run is a note, never an unnamed stop under set -e.
+    expect(text).toContain('LIVE_READ="unreadable:money-gate-live-expected.sh could not run"')
+    expect(text).toContain('MONEY_GATE_EXPECTED_LIVE="$EXPECTED_LIVE" MONEY_GATE_LIVE_COMMIT="$LIVE_COMMIT"')
   })
 
   it('the pull request job passes the worker address, and Deploy never does, so a deploy cannot fail on housekeeping', () => {
@@ -75,12 +76,5 @@ describe('the failure annotation names a shipped leftover entry (#1836)', () => 
     const failureLines = v.output.split('\n').filter((l) => l.startsWith('money gate: ') && l.includes('live worker'))
     expect(failureLines).toHaveLength(1)
     expect(new RegExp(pattern!).test(failureLines[0]), `annotation pattern misses: ${failureLines[0]}`).toBe(true)
-  })
-})
-
-describe('an empty worker address on a pull request is said, never skipped silently (#1836)', () => {
-  it('the script names it as unreadable', () => {
-    const text = readFileSync(script, 'utf8')
-    expect(text).toContain('EXPECTED_LIVE="unreadable:MONEY_GATE_LIVE_WORKER_URL is empty, so the live worker could not be asked"')
   })
 })
