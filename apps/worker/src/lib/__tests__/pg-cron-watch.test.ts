@@ -61,6 +61,26 @@ describe('expectedGapMs: the schedules this project actually uses', () => {
   it('reads an hourly schedule', () => {
     expect(expectedGapMs('17 * * * *')).toBe(HOUR)
   })
+
+  // The schedules #1884 spread the rollup refreshes onto, so that no two heavy
+  // readers start in the same minute. A schedule this cannot read reports as
+  // unknown_schedule on every run, so each one the migration uses is read here.
+  it.each([
+    ['1-59/5 * * * *', 5 * MIN],
+    ['4-59/15 * * * *', 15 * MIN],
+    ['27,57 * * * *', 30 * MIN],
+    ['8 * * * *', HOUR],
+    ['42 * * * *', HOUR],
+  ])('reads the offset schedule %s as %i ms', (schedule, expected) => {
+    expect(expectedGapMs(schedule)).toBe(expected)
+  })
+
+  it('reads an uneven minute list by its LONGEST gap, including the one across the hour', () => {
+    // 10 then 20 is ten minutes; 20 round to the next 10 is fifty. A shorter
+    // answer would page on a healthy job (L601 territory: the wrap is the case
+    // a sorted difference forgets).
+    expect(expectedGapMs('10,20 * * * *')).toBe(50 * MIN)
+  })
 })
 
 describe('expectedGapMs: shapes it refuses rather than guesses at', () => {
@@ -75,6 +95,12 @@ describe('expectedGapMs: shapes it refuses rather than guesses at', () => {
     ['0 3 * * * *', 'too many fields'],
     ['*/0 * * * *', 'a zero step'],
     ['*/99 * * * *', 'a step past an hour'],
+    ['70 * * * *', 'a minute past the hour'],
+    ['5-70/5 * * * *', 'a range past the hour'],
+    ['30-10/5 * * * *', 'a backwards range'],
+    ['1-59/0 * * * *', 'a zero step on a range'],
+    ['5,,10 * * * *', 'an empty list member'],
+    ['1-59/5 3 * * *', 'an offset step inside one hour'],
     ['', 'an empty schedule'],
   ])('refuses %s (%s)', (schedule) => {
     expect(expectedGapMs(schedule)).toBeNull()

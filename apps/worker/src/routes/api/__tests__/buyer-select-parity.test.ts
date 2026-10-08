@@ -85,7 +85,7 @@ describe('GET /admin/buyer-select/parity', () => {
 describe('POST /admin/buyer-select/parity/refresh', () => {
   it('refreshes every workflow and day with an empty body and returns the summary', async () => {
     supabaseWith({})
-    vi.mocked(runBuyerSelectParityRefreshForEnv).mockResolvedValue({ days: ['2027-09-20', '2027-09-19'], rows_written: 2, errors: [] })
+    vi.mocked(runBuyerSelectParityRefreshForEnv).mockResolvedValue({ days: ['2027-09-20', '2027-09-19'], rows_written: 2, errors: [], kept_final: [] })
     const res = await request(app, 'POST', '/admin/buyer-select/parity/refresh', {})
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ rows_written: 2 })
@@ -102,7 +102,7 @@ describe('POST /admin/buyer-select/parity/refresh', () => {
 
   it('passes the named workflow and day through, and answers 207 when a day could not be written', async () => {
     supabaseWith({ workflows: { maybeSingle: { id: WF } } })
-    vi.mocked(runBuyerSelectParityRefreshForEnv).mockResolvedValue({ days: ['2027-09-19'], rows_written: 0, errors: [`${WF} 2027-09-19: execution_steps: statement timeout`] })
+    vi.mocked(runBuyerSelectParityRefreshForEnv).mockResolvedValue({ days: ['2027-09-19'], rows_written: 0, errors: [`${WF} 2027-09-19: execution_steps: statement timeout`], kept_final: [] })
     const res = await request(app, 'POST', '/admin/buyer-select/parity/refresh', { workflow_id: WF, day: '2027-09-19' })
     expect(res.status).toBe(207)
     expect(runBuyerSelectParityRefreshForEnv).toHaveBeenCalledWith(expect.anything(), testEnv, { workflowId: WF, day: '2027-09-19' })

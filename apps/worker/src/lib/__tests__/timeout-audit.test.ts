@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, isAlertWorthyUnderProvision, alertWorthyUnderProvisioned, type NodeDurationStats, type UnderProvisionedNode } from '../timeout-audit'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, TIMEOUT_AUDIT_RPC_CONCURRENCY, mapWithConcurrency, isAlertWorthyUnderProvision, alertWorthyUnderProvisioned, type NodeDurationStats, type UnderProvisionedNode } from '../timeout-audit'
 import { suggestedTimeoutMs, timeoutSeverity, SAMPLE_CONFIDENT } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -482,6 +482,37 @@ describe('runTimeoutAuditCheck — signature recorded only after a delivered ale
     expect(kv.put).toHaveBeenCalled()
   })
 
+  it('runs the percentile queries a few at a time, never all workflows at once (#1884)', async () => {
+    // On 2026-10-08 at 08:15 UTC the audit fired about a dozen of these grouped
+    // percentile queries in the same instant, the slowest took 23.5 s, and lead
+    // requests slowed to 8.5 s behind them.
+    vi.mocked(getSlackConnection).mockResolvedValue(null as never)
+    const workflows = Array.from({ length: 7 }, (_, i) => ({
+      id: `wf${i}`,
+      name: `Workflow ${i}`,
+      definition: def([node({ id: `n${i}`, type: 'code', config: { timeout_ms: 1000 } })]),
+    }))
+    const supabase = makeSupabase(workflows)
+    let inFlight = 0
+    let peak = 0
+    const asked: string[] = []
+    ;(supabase as unknown as { rpc: unknown }).rpc = async (_fn: string, args: { p_workflow_id: string }) => {
+      asked.push(args.p_workflow_id)
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      // One turn of the microtask queue: every call already started has
+      // incremented before any finishes, so an unbounded fan out reads as 7.
+      await Promise.resolve()
+      inFlight -= 1
+      return { data: [], error: null }
+    }
+    await runTimeoutAuditCheck(supabase, makeKv(), 'https://app')
+    expect(peak).toBeGreaterThan(0)
+    expect(peak).toBeLessThanOrEqual(TIMEOUT_AUDIT_RPC_CONCURRENCY)
+    // Every workflow is still measured: the bound slows the pass, it never thins it.
+    expect(new Set(asked)).toEqual(new Set(workflows.map((w) => w.id)))
+  })
+
   it("one org's send failure does not abort the remaining orgs", async () => {
     vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
     vi.mocked(sendTimeoutConfigAlert)
@@ -490,5 +521,33 @@ describe('runTimeoutAuditCheck — signature recorded only after a delivered ale
     const kv = makeKv()
     await runTimeoutAuditCheck(makeSupabase([subFloorWf], ['org-1', 'org-2']), kv, 'https://app')
     expect(vi.mocked(sendTimeoutConfigAlert)).toHaveBeenCalledTimes(2) // loop continued past the failure
+  })
+})
+
+describe('mapWithConcurrency', () => {
+  it('keeps input order whatever order the calls finish in', async () => {
+    // Each call yields a different number of microtask turns, so they finish
+    // out of order without any real wait.
+    const finished: number[] = []
+    const out = await mapWithConcurrency([30, 5, 20, 1], 2, async (turns) => {
+      for (let i = 0; i < turns; i++) await Promise.resolve()
+      finished.push(turns)
+      return turns
+    })
+    expect(finished).not.toEqual([30, 5, 20, 1])
+    expect(out).toEqual([30, 5, 20, 1])
+  })
+
+  it('rejects when any call rejects, as Promise.all does', async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error('rpc refused')
+        return n
+      }),
+    ).rejects.toThrow('rpc refused')
+  })
+
+  it('refuses a limit below one rather than running nothing', async () => {
+    await expect(mapWithConcurrency([1], 0, async (n) => n)).rejects.toThrow(/limit must be at least 1/)
   })
 })
