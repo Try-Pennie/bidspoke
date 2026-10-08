@@ -196,6 +196,10 @@ interface Harness {
   ledgerClientOpts: Array<ClientOptions | undefined>
   /** Work the node handed to the background; a test awaits it before asserting what landed. */
   background: Promise<void>[]
+  /** Each lead sale record the node woke ahead of its claim, by key (#1804). */
+  wakes: Array<{ kind: string; population: string; lead_key: string }>
+  /** How many wakes had been sent when the profiles read began, so a test can assert the order. */
+  wakesBeforeProfiles: number | null
 }
 
 function harness(opts: {
@@ -218,12 +222,17 @@ function harness(opts: {
   advanceOnObject?: Partial<Record<ObjectOp, number>>
   /** A reserve that takes this long: past the deadline the client was given, it throws the client's DeadlineError at that deadline. */
   slowReserveMs?: number
+  /** A wake of the lead sale record that throws (#1804). */
+  wakeError?: Error
+  /** A wake of the lead sale record that never answers (#1804). */
+  wakeHangs?: boolean
 } = {}): Harness {
-  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, unanswered: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], deps: undefined as unknown as BuyerSelectDeps }
+  const h: Harness = { sales: [], ledgers: new Map(), buyerCalls: [], mirrored: [], mirrorsHanging: 0, unanswered: [], bidRows: [], breakerCalls: [], logs: [], clockMs: NOW, ledgerClientOpts: [], background: [], wakes: [], wakesBeforeProfiles: null, deps: undefined as unknown as BuyerSelectDeps }
   const answers = { ...(opts.answers ?? {}) }
   const spend = (op: ObjectOp) => { h.clockMs += opts.advanceOnObject?.[op] ?? 0 }
   h.deps = {
     loadProfiles: async () => {
+      h.wakesBeforeProfiles ??= h.wakes.length
       if (opts.profiles instanceof Error) throw opts.profiles
       return opts.profiles ?? snapshot(buyer('p-1', 'tripoint', 1))
     },
@@ -231,6 +240,11 @@ function harness(opts: {
       const s = new FakeSale(key, spend)
       h.sales.push(s)
       return s
+    },
+    wakeSale: (key) => {
+      h.wakes.push(key)
+      if (opts.wakeHangs) return new Promise<void>(() => {})
+      return opts.wakeError ? Promise.reject(opts.wakeError) : Promise.resolve()
     },
     background: (work) => { h.background.push(work) },
     ledgerClient: (partnerId, clientOpts) => {
@@ -550,6 +564,58 @@ describe('the live share (L72)', () => {
     expect(out(zero)).toMatchObject({ _route: 'deferred', reason: 'canary_out', live_percent_in_force: 0 })
     const all = await run(harness(), ctx({ env: { BUYER_SELECT_LIVE_PERCENT: '100' } }), node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT' }))
     expect(out(all)).toMatchObject({ _route: 'sold', live_percent_in_force: 100 })
+  })
+})
+
+// ── The early wake (#1804) ────────────────────────────────────────────────────
+
+describe("the lead's sale record is woken before the profiles read (#1804)", () => {
+  const share = (percent: string) => ctx({ env: { BUYER_SELECT_LIVE_PERCENT: percent } })
+  const shared = node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT' })
+
+  it('a live lead inside the share wakes the same record the claim then uses, once, before the profiles read', async () => {
+    const h = harness()
+    const r = await run(h, share('100'), shared)
+    expect(out(r)._route).toBe('sold')
+    expect(h.wakes).toEqual([{ kind: 'live', population: 'engine', lead_key: 'lead-1' }])
+    expect(h.wakes[0]).toEqual(h.sales[0].key)
+    expect(h.wakesBeforeProfiles).toBe(1)
+  })
+
+  it('a live lead with no share configured is woken too, since every lead is live', async () => {
+    const h = harness()
+    await run(h)
+    expect(h.wakes).toEqual([{ kind: 'live', population: 'engine', lead_key: 'lead-1' }])
+  })
+
+  it('a lead outside the share creates no record', async () => {
+    const h = harness()
+    const r = await run(h, share('0'), shared)
+    expect(out(r).reason).toBe('canary_out')
+    expect(h.wakes).toEqual([])
+  })
+
+  it('decide only and report only wake nothing: no live claim follows', async () => {
+    const rehearsal = harness()
+    await run(rehearsal, ctx({ env: { BUYER_SELECT_REHEARSAL_CAPS: JSON.stringify({ hourly_lead_cap: 500, daily_lead_cap: null, hourly_spend_cap_cents: null, daily_spend_cap_cents: null }) } }), node({ mode: 'decide_only' }))
+    expect(rehearsal.wakes).toEqual([])
+    const reportOnly = harness()
+    await run(reportOnly, ctx({ isTest: true } as never))
+    expect(reportOnly.wakes).toEqual([])
+  })
+
+  it('a wake that throws is logged and the sale goes on, because the claim does the real work', async () => {
+    const h = harness({ wakeError: new Error('object unreachable') })
+    const r = await run(h)
+    expect(out(r)._route).toBe('sold')
+    await vi.waitFor(() => expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_wake_failed', error_message: 'object unreachable' })))
+  })
+
+  it('a wake that never answers does not hold the lead', async () => {
+    const h = harness({ wakeHangs: true })
+    const r = await run(h)
+    expect(out(r)._route).toBe('sold')
+    expect(h.wakes).toHaveLength(1)
   })
 })
 

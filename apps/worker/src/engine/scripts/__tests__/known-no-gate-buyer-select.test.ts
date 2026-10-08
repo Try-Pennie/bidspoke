@@ -131,6 +131,7 @@ async function buyerSelectOn(answer: Answer, extraction: Record<string, unknown>
   const deps: BuyerSelectDeps = {
     loadProfiles: async () => snapshot,
     saleClient: () => new FakeSale(),
+    wakeSale: async () => undefined,
     ledgerClient: () => new FakeLedger(),
     callBuyer: async () => response,
     breaker: () => ({ check: async () => ({ allowed: true, state: 'closed' }), recordSuccess: async () => undefined, recordError: async () => undefined, releaseProbe: async () => undefined }),
