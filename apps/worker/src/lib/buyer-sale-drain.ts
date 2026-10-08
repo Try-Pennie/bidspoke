@@ -19,19 +19,28 @@
  * Pages, once per job through the shared export alerter so it is muted by the
  * same keys as every other job: a buyer whose oldest uncopied entry is older
  * than OUTBOX_BACKLOG_MS (five ticks), naming the buyer and the last error
- * (L13); a ledger that could not be read, as unmeasured rather than as empty
- * (L98, L215); and a buyer list that could not be read, as a failed run rather
- * than an empty one. An empty page list clears the standing condition.
+ * (L13); a ledger that has been unreadable for OUTBOX_BACKLOG_MS, as unmeasured
+ * rather than as empty (L98, L215); and a buyer list that could not be read, as
+ * a failed run rather than an empty one. An empty page list clears the standing
+ * condition.
+ *
+ * A ledger read that got no answer (a deadline or a call lost in transit) is
+ * asked once more on a fresh stub before the ledger counts as unreadable, and an
+ * unreadable ledger pages on how long it has been unreadable, never on how many
+ * runs saw it (#1895). On 2026-10-08 two runs 24 seconds apart each lost one
+ * call while the object answered every lead call around them, and the old rule,
+ * two failed runs in a row, paged for it because the cron was firing twice a
+ * minute.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { CapLimits, EntryKey, LedgerEntry, UnmirroredResult } from '../durable-objects/buyer-ledger'
 import type { Env } from '../index'
-import { BuyerLedgerClient } from './buyer-object-clients'
+import { BuyerLedgerClient, gotNoAnswer, LEDGER_UNMIRRORED_OP, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, type ClientOptions } from './buyer-object-clients'
 import { chunk } from './chunk'
 import { buildBuyerSaleRow, buyerSaleRowId, mirrorBuyerSale, type BuyerSaleRowMeta } from './buyer-sale-mirror'
-import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
-import { describeDuration } from './slack'
+import { describeDuration, etTime } from './slack'
 
 export const BUYER_SALE_DRAIN_JOB = 'buyer-sale-drain'
 
@@ -41,21 +50,89 @@ export const RUN_RECORD_ROW_IDS = 50
 /** Errors named in a tick's run record detail; the rest are counted. */
 const RUN_RECORD_ERRORS = 5
 
-/** Five ticks of the minute cron: a backlog older than this is a standing failure, not a blip. */
+/**
+ * Five ticks of the minute cron: a backlog older than this is a standing failure, not a blip.
+ * A ledger unreadable for this long pages too (#1895), because this is the
+ * earliest a backlog behind it could have paged had the ledger been readable.
+ */
 export const OUTBOX_BACKLOG_MS = 5 * 60 * 1000
 
-export const BUYER_SALE_DRAIN_REMEDY: AlertRemedy = {
-  consequence:
-    'Buyer ledger entries are not reaching the buyer_sales table, so the partner page, the unresolved list and ' +
-    'the sales checks are reading an incomplete copy. Selling itself is unaffected: the ledger, not the table, decides caps. ' +
-    'The lines below name each buyer and the last error the copy hit:',
-  fixHint:
-    'Read the error on each line. A database error (connection, statement timeout, a refused constraint) is the copy ' +
-    'failing; fix that and the next minute delivers the backlog on its own, nothing needs re-running. A ledger that ' +
-    'could not be read is the Durable Object refusing; check the worker logs for the buyer ledger and the drill at ' +
-    'POST /api/admin/buyer-objects/drill.',
-  headlineVerb: 'has a backlog',
-  itemNoun: { one: 'buyer', many: 'buyers' },
+/**
+ * The minute cron's interval (#1895). The drain had no budget of its own beyond
+ * each object call's deadline, so a second ask of a ledger is given only what is
+ * left of the minute the run started in, and none when less than one measured
+ * worst call is left. A retry therefore never carries a run's reads into the
+ * next run's minute.
+ */
+export const DRAIN_TICK_MS = 60_000
+
+/**
+ * Where the drain keeps, by partner id, the moment each ledger was first found
+ * unreadable with no good read since (#1895). A run that finds a ledger
+ * unreadable adds it if absent; a run that reads it removes it; a buyer no longer
+ * listed is dropped. KV can take up to a minute to show a write to a run in
+ * another data centre, so a run can miss the moment and set a later one: the
+ * page can then come a minute or two past the limit, never early.
+ */
+export const UNREADABLE_SINCE_KEY = 'buyer-sale-drain:unreadable-since'
+
+/**
+ * Refreshed by every run that finds a ledger unreadable, so it lapses only when
+ * the drain itself stops running for a day. A run after that starts the clock
+ * again rather than paging on a moment whose stretch nobody watched.
+ */
+const UNREADABLE_SINCE_TTL_S = 24 * 60 * 60
+
+const UNLISTED_KEY = 'buyers-unlisted'
+
+/** What every drain page says under its findings (Dan, 2026-10-01: plain title, full sentences, one fix line). */
+const SELLING_UNAFFECTED =
+  'Selling is not affected, because the ledger decides caps. The partner page and the sales checks read the sales table, so they may be behind until it catches up.'
+const BACKLOG_FIX = 'Read the last error on each line. A database error clears on its own: once the database answers, the next minute copies everything waiting.'
+const LEDGER_FIX = 'Check the worker logs for the buyer ledger, and run the drill at POST /api/admin/buyer-objects/drill to see whether it answers.'
+
+export const BUYER_SALE_DRAIN_BACKLOG_REMEDY: TitledRemedy = {
+  title: 'Buyer sales are not reaching the sales table',
+  context: SELLING_UNAFFECTED,
+  fixHint: BACKLOG_FIX,
+}
+
+export const BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY: TitledRemedy = {
+  title: "A buyer ledger can't be read",
+  context: SELLING_UNAFFECTED,
+  fixHint: LEDGER_FIX,
+}
+
+export const BUYER_SALE_DRAIN_MIXED_REMEDY: TitledRemedy = {
+  title: "Buyer sales are behind, and a buyer ledger can't be read",
+  context: SELLING_UNAFFECTED,
+  fixHint: `${BACKLOG_FIX} ${LEDGER_FIX}`,
+}
+
+export const BUYER_SALE_DRAIN_UNLISTED_REMEDY: TitledRemedy = {
+  title: "The buyer sales copy couldn't run",
+  context: SELLING_UNAFFECTED,
+  fixHint: 'Check that the database is answering. The next minute tries again on its own.',
+}
+
+/** One title per kind of page, so a title never claims what the lines under it do not say (L11). */
+export function drainRemedyFor(keys: readonly string[]): TitledRemedy {
+  if (keys.includes(UNLISTED_KEY)) return BUYER_SALE_DRAIN_UNLISTED_REMEDY
+  const unreadable = keys.some((k) => k.endsWith(':unmeasured'))
+  const backlog = keys.some((k) => k.endsWith(':backlog'))
+  if (unreadable && backlog) return BUYER_SALE_DRAIN_MIXED_REMEDY
+  return unreadable ? BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY : BUYER_SALE_DRAIN_BACKLOG_REMEDY
+}
+
+/** The drain's page through the shared alerter, with the title its lines earn. An empty list is the clear. */
+export function notifyBuyerSaleDrain(
+  supabase: SupabaseClient,
+  kv: Parameters<typeof notifyExportFailure>[3],
+  lines: string[],
+  keys: readonly string[] | undefined,
+  nowMs: number,
+): Promise<void> {
+  return notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, kv, drainRemedyFor(keys ?? []), nowMs, { keys })
 }
 
 export interface DrainBuyer {
@@ -70,6 +147,21 @@ export interface DrainLedger {
   markMirrored(keys: EntryKey[]): Promise<number>
 }
 
+/** What a second client is told: the outbox read's own deadline. Every other call keeps the client's default. */
+export interface LedgerOptions {
+  unmirroredDeadlineMs: number
+}
+
+/** By partner id, the moment (epoch ms) a ledger was first found unreadable with no good read since. */
+export type UnreadableStamps = Record<string, number>
+
+export interface UnreadableSinceStore {
+  /** Throws when the record cannot be read or does not parse; never answers empty for a failure (L105). */
+  read(): Promise<UnreadableStamps>
+  /** An empty record removes it. */
+  write(stamps: UnreadableStamps): Promise<void>
+}
+
 /** The columns of an existing buyer_sales row that the ledger does not hold. */
 export interface ExistingRowMeta {
   workflow_id: string | null
@@ -82,7 +174,9 @@ export interface ExistingRowMeta {
 
 export interface DrainDeps {
   listBuyers(): Promise<DrainBuyer[]>
-  ledger(partnerId: string): DrainLedger
+  /** A new client, and so a new stub, on every call: the drain asks again on a fresh one (#1895). */
+  ledger(partnerId: string, opts?: LedgerOptions): DrainLedger
+  unreadableSince: UnreadableSinceStore
   readExistingRows(ids: string[]): Promise<Map<string, ExistingRowMeta>>
   supabase: SupabaseClient
   /**
@@ -116,6 +210,8 @@ export interface DrainBuyerSummary {
   remaining_oldest_age_ms: number | null
   /** Set when the ledger could not be read; the counts above are then meaningless and zero. */
   unmeasured?: string
+  /** Set when the first read got no answer and the second read succeeded, naming the first ask's error. */
+  first_read_failed?: string
 }
 
 export interface DrainSummary {
@@ -132,6 +228,13 @@ const NO_META: ExistingRowMeta = { workflow_id: null, trace_id: null, debt: null
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+/** An error message closed as a sentence, so a page line reads as full sentences. */
+const sentence = (text: string): string => `${text.replace(/[\s.]+$/, '')}.`
+
+function sameStamps(a: UnreadableStamps, b: UnreadableStamps): boolean {
+  const ak = Object.keys(a)
+  return ak.length === Object.keys(b).length && ak.every((k) => Object.hasOwn(b, k) && a[k] === b[k])
+}
 
 export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> {
   if (deps.localDev) {
@@ -144,34 +247,82 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
   try {
     buyers = await deps.listBuyers()
   } catch (err) {
-    const reason = `the buyer list could not be read, so no ledger was drained: ${messageOf(err)}`
+    const reason = `The buyer list could not be read, so no buyer ledger was copied. The error was: ${sentence(messageOf(err))}`
     const result: DrainSummary = { unmeasured: reason, buyers: [], paged: [reason], errors: [reason] }
     // Recorded before the page, so an alerter that throws cannot take the record with it.
     await recordTick(deps, startedAtMs, result)
-    await deps.notify([reason], ['buyers-unlisted'])
+    await deps.notify([reason], [UNLISTED_KEY])
     return result
+  }
+
+  // Read before any ledger, so a store that cannot be read is known before a
+  // write could replace a record nobody saw (L105).
+  let stamps: UnreadableStamps | null
+  let stampProblem: string | null = null
+  try {
+    stamps = await deps.unreadableSince.read()
+  } catch (err) {
+    stamps = null
+    stampProblem = `could not be read (${messageOf(err)})`
+    deps.log(`[${BUYER_SALE_DRAIN_JOB}] the record of when each buyer ledger became unreadable ${stampProblem}`)
   }
 
   const summaries: DrainBuyerSummary[] = []
   const paged: string[] = []
   const keys: string[] = []
   const errors: string[] = []
+  const next: UnreadableStamps = {}
+  const tickEndsAt = startedAtMs + DRAIN_TICK_MS
 
   for (const buyer of buyers) {
-    const summary = await drainBuyer(deps, buyer, errors)
+    const readAt = deps.now()
+    const summary = await drainBuyer(deps, buyer, errors, tickEndsAt)
     summaries.push(summary)
-    if (summary.unmeasured) {
-      paged.push(`${buyer.slug}: the buyer ledger could not be read, so its backlog is unmeasured (${summary.unmeasured})`)
-      keys.push(`${buyer.slug}:unmeasured`)
+    // The first moment is kept where it was first seen; a good read leaves the buyer out, which clears it.
+    if (summary.unmeasured !== undefined) next[buyer.partner_id] = stamps?.[buyer.partner_id] ?? readAt
+  }
+
+  // Never written after a failed read, which would replace moments nobody saw.
+  // Written while any ledger is unreadable, so its expiry stays a day ahead.
+  let saveFailed = false
+  if (stamps !== null && (Object.keys(next).length > 0 || !sameStamps(stamps, next))) {
+    try {
+      await deps.unreadableSince.write(next)
+    } catch (err) {
+      saveFailed = true
+      stampProblem = `could not be saved (${messageOf(err)})`
+      deps.log(`[${BUYER_SALE_DRAIN_JOB}] the record of when each buyer ledger became unreadable ${stampProblem}`)
+    }
+  }
+
+  for (let i = 0; i < buyers.length; i++) {
+    const buyer = buyers[i]
+    const summary = summaries[i]
+    if (summary.unmeasured !== undefined) {
+      // A moment no later run can see cannot be timed, so it pages now rather
+      // than never. A moment an earlier run saved still times the stretch.
+      const untimed = stamps === null || (saveFailed && stamps[buyer.partner_id] === undefined)
+      const lastError = `The last error was: ${sentence(summary.unmeasured)}`
+      if (untimed) {
+        paged.push(`${buyer.slug}'s buyer ledger could not be read, and how long that has lasted is unknown because the record of when it started ${stampProblem}. ${lastError}`)
+        keys.push(`${buyer.slug}:unmeasured`)
+        continue
+      }
+      const since = next[buyer.partner_id]
+      const age = deps.now() - since
+      if (age >= OUTBOX_BACKLOG_MS) {
+        paged.push(`${buyer.slug}'s buyer ledger has not been readable for ${describeDuration(age) ?? `${age} ms`}, since ${etTime(since)}, so its copy cannot be checked. ${lastError}`)
+        keys.push(`${buyer.slug}:unmeasured`)
+      }
     } else if (summary.remaining_oldest_age_ms !== null && summary.remaining_oldest_age_ms > OUTBOX_BACKLOG_MS) {
       // The page is about what is LEFT after this tick's attempts, so it is
       // judged on the oldest entry still undelivered, never on the age the
       // ledger reported before delivery.
       const lastError = errors.filter((e) => e.startsWith(`${buyer.slug}:`)).at(-1)
       paged.push(
-        `${buyer.slug}: ${plural(summary.pending - summary.delivered, 'entry', 'entries')} not yet copied to buyer_sales, ` +
-          `oldest ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old` +
-          (lastError ? `; last error: ${lastError.slice(buyer.slug.length + 2)}` : ''),
+        `${buyer.slug} has ${plural(summary.pending - summary.delivered, 'ledger entry', 'ledger entries')} not yet copied to the sales table. ` +
+          `The oldest is ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old.` +
+          (lastError ? ` The last error was: ${sentence(lastError.slice(buyer.slug.length + 2))}` : ''),
       )
       keys.push(`${buyer.slug}:backlog`)
     }
@@ -188,11 +339,16 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
 }
 
 /**
- * Records the tick if it had work: an entry pending, a failure, or a ledger or
- * buyer list it could not read (#1810). A quiet tick records nothing.
+ * Records the tick if it had work: an entry pending, a failure, a ledger or
+ * buyer list it could not read (#1810), or a ledger read only on its second ask
+ * (#1895), which no page reports, so this record is the only count of how often
+ * the first ask fails. A quiet tick records nothing.
  */
 async function recordTick(deps: DrainDeps, startedAtMs: number, result: DrainSummary): Promise<void> {
-  const hadWork = result.unmeasured !== undefined || result.errors.length > 0 || result.buyers.some((b) => b.pending > 0 || b.unmeasured !== undefined)
+  const hadWork =
+    result.unmeasured !== undefined ||
+    result.errors.length > 0 ||
+    result.buyers.some((b) => b.pending > 0 || b.unmeasured !== undefined || b.first_read_failed !== undefined)
   if (!hadWork) return
   const unmeasured = result.unmeasured !== undefined || result.buyers.some((b) => b.unmeasured !== undefined)
   const outcome = unmeasured ? 'unmeasured' : result.errors.length > 0 ? 'partial' : 'ok'
@@ -207,20 +363,48 @@ async function recordTick(deps: DrainDeps, startedAtMs: number, result: DrainSum
   }
 }
 
-async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[]): Promise<DrainBuyerSummary> {
-  const ledger = deps.ledger(buyer.partner_id)
+type OutboxRead = { outbox: UnmirroredResult; ledger: DrainLedger; firstFailed?: string } | { unmeasured: string }
+
+/**
+ * Reads a buyer's outbox, asking once more when the first ask got no answer
+ * (#1895). The second ask is a new client, so a new stub, because a stub whose
+ * call was lost can stay broken, and it is given only what is left of the run's
+ * minute. An answer, even an error status, is never asked again: the ledger said
+ * what it had to say.
+ */
+async function readOutbox(deps: DrainDeps, buyer: DrainBuyer, tickEndsAt: number): Promise<OutboxRead> {
+  const first = deps.ledger(buyer.partner_id)
+  try {
+    return { outbox: await first.unmirrored(), ledger: first }
+  } catch (err) {
+    const firstReason = messageOf(err)
+    if (!gotNoAnswer(err)) return { unmeasured: firstReason }
+    const left = tickEndsAt - deps.now()
+    if (left < MEASURED_OBJECT_CALL_P99_MS) return { unmeasured: `${firstReason}; not asked again, because too little of this minute was left` }
+    const again = deps.ledger(buyer.partner_id, { unmirroredDeadlineMs: Math.min(OBJECT_CALL_DEADLINE_MS, left) })
+    try {
+      return { outbox: await again.unmirrored(), ledger: again, firstFailed: firstReason }
+    } catch (err2) {
+      return { unmeasured: `${firstReason}; asked again, and ${messageOf(err2)}` }
+    }
+  }
+}
+
+async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[], tickEndsAt: number): Promise<DrainBuyerSummary> {
   const base: DrainBuyerSummary = { partner_id: buyer.partner_id, slug: buyer.slug, pending: 0, delivered: 0, failed: 0, oldest_age_ms: null, delivered_row_ids: [], remaining_oldest_age_ms: null }
   const now = deps.now()
   let oldestRemaining: number | null = null
   const leave = (entry: LedgerEntry) => { if (oldestRemaining === null || entry.reserved_at < oldestRemaining) oldestRemaining = entry.reserved_at }
 
-  let outbox: UnmirroredResult
-  try {
-    outbox = await ledger.unmirrored()
-  } catch (err) {
-    const reason = messageOf(err)
-    errors.push(`${buyer.slug}: ledger unreadable: ${reason}`)
-    return { ...base, unmeasured: reason }
+  const read = await readOutbox(deps, buyer, tickEndsAt)
+  if ('unmeasured' in read) {
+    errors.push(`${buyer.slug}: ledger unreadable: ${read.unmeasured}`)
+    return { ...base, unmeasured: read.unmeasured }
+  }
+  const { outbox, ledger } = read
+  if (read.firstFailed !== undefined) {
+    base.first_read_failed = read.firstFailed
+    deps.log(`[${BUYER_SALE_DRAIN_JOB}] ${buyer.slug}: the first ledger read got no answer and the second read it: ${read.firstFailed}`)
   }
   base.pending = outbox.entries.length
   base.oldest_age_ms = outbox.oldest_age_ms
@@ -307,6 +491,37 @@ export async function readExistingBuyerSaleRows(supabase: SupabaseClient, ids: s
   return out
 }
 
+/** The outbox read's own deadline on a second client; every other call keeps the default (#1895). */
+export function ledgerClientOptions(opts: LedgerOptions | undefined): ClientOptions {
+  if (opts === undefined) return {}
+  return { deadlineMs: (op) => (op === LEDGER_UNMIRRORED_OP ? opts.unmirroredDeadlineMs : OBJECT_CALL_DEADLINE_MS) }
+}
+
+/** A stored record that will not parse throws, so the drain pages rather than reading it as no ledger unreadable (L105, L50). */
+export function parseUnreadableStamps(raw: string): UnreadableStamps {
+  const parsed: unknown = JSON.parse(raw)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`the stored record is not an object: ${raw.slice(0, 80)}`)
+  const out: UnreadableStamps = {}
+  for (const [partnerId, at] of Object.entries(parsed)) {
+    if (typeof at !== 'number' || !Number.isFinite(at)) throw new Error(`the stored moment for ${partnerId} is not a time: ${JSON.stringify(at)}`)
+    out[partnerId] = at
+  }
+  return out
+}
+
+export function kvUnreadableSince(kv: KVNamespace): UnreadableSinceStore {
+  return {
+    async read() {
+      const raw = await kv.get(UNREADABLE_SINCE_KEY)
+      return raw === null ? {} : parseUnreadableStamps(raw)
+    },
+    async write(stamps) {
+      if (Object.keys(stamps).length === 0) await kv.delete(UNREADABLE_SINCE_KEY)
+      else await kv.put(UNREADABLE_SINCE_KEY, JSON.stringify(stamps), { expirationTtl: UNREADABLE_SINCE_TTL_S })
+    },
+  }
+}
+
 export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDeps {
   return {
     listBuyers: async () => {
@@ -324,10 +539,11 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
         slug: r.partner_configs.slug,
       }))
     },
-    ledger: (partnerId) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId),
+    ledger: (partnerId, opts) => new BuyerLedgerClient(env.BUYER_LEDGER, partnerId, ledgerClientOptions(opts)),
+    unreadableSince: kvUnreadableSince(env.IDEMPOTENCY),
     readExistingRows: (ids) => readExistingBuyerSaleRows(supabase, ids),
     supabase,
-    notify: (lines, keys) => notifyExportFailure(supabase, BUYER_SALE_DRAIN_JOB, lines, env.IDEMPOTENCY, BUYER_SALE_DRAIN_REMEDY, undefined, { keys }),
+    notify: (lines, keys) => notifyBuyerSaleDrain(supabase, env.IDEMPOTENCY, lines, keys, Date.now()),
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, BUYER_SALE_DRAIN_JOB, startedAtMs, ending),
     now: () => Date.now(),
     localDev: Boolean(env.LOCAL_DEV),

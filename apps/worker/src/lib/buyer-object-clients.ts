@@ -61,6 +61,8 @@ export interface ClientOptions {
 /** The operation names a cleanup after an abandoned attempt uses; a caller exempts these from its budget (#1512). */
 export const SALE_FREE_OP = 'lead sale free'
 export const LEDGER_RELEASE_OP = 'buyer ledger release'
+/** The outbox read the minute drain makes; the drain gives a second ask of it its own deadline (#1895). */
+export const LEDGER_UNMIRRORED_OP = 'buyer ledger unmirrored'
 
 function deadlineOf(opts: ClientOptions, op: string): number {
   const d = opts.deadlineMs
@@ -385,9 +387,19 @@ export interface AddFailure {
   message: string
 }
 
+/**
+ * True when a call to an object got NO answer: its deadline expired, or it was
+ * lost in transit. The object may still have done what it was asked, and asking
+ * again may get the answer the first ask did not. Every other failure is an
+ * answer, or one nobody classified, and is never asked again (#1766, #1895).
+ */
+export function gotNoAnswer(err: unknown): boolean {
+  return err instanceof DeadlineError || err instanceof ObjectCallLostError
+}
+
 export function addFailureOf(err: unknown): AddFailure {
   const message = messageOf(err)
-  if (err instanceof DeadlineError || err instanceof ObjectCallLostError) return { kind: 'no_answer', message }
+  if (gotNoAnswer(err)) return { kind: 'no_answer', message }
   if (err instanceof ObjectCallError) return { kind: err.status >= 400 && err.status < 500 ? 'refused' : 'error_status', message }
   if (err instanceof ObjectAnswerUnreadableError) return { kind: 'unreadable', message }
   return { kind: 'unclassified', message }
@@ -482,7 +494,7 @@ export class BuyerLedgerClient implements LedgerApi {
   }
 
   unmirrored(): Promise<UnmirroredResult> {
-    return call<UnmirroredResult>(this.stub, 'buyer ledger unmirrored', 'http://do/unmirrored', undefined, this.opts)
+    return call<UnmirroredResult>(this.stub, LEDGER_UNMIRRORED_OP, 'http://do/unmirrored', undefined, this.opts)
   }
 
   async unresolved(): Promise<LedgerEntry[]> {
