@@ -86,6 +86,8 @@ export type StageBTiming =
       calls_unmeasured: number
       /** Rows whose phases could not be read, left out of every figure rather than read as zero (L11). */
       unreadable: number
+      /** Canary leads with no timing row at all, such as every lead before #1804: not timed, never zero time (L90). */
+      executions_untimed: number
     }
   | { unmeasured: string }
 
@@ -244,7 +246,8 @@ function spread(values: number[]): TimingSpread {
 
 const callName = (field: (typeof ATTEMPT_CALLS)[number]): AttemptCallName => field.slice(0, -'_ms'.length) as AttemptCallName
 
-export function summariseAttemptTiming(rows: AttemptTimingRow[]): StageBTiming {
+/** `canaryIds` are the day's canary executions, so a lead with no timing row is counted rather than vanishing. */
+export function summariseAttemptTiming(rows: AttemptTimingRow[], canaryIds: string[]): StageBTiming {
   const before: number[] = []
   const call: number[] = []
   const after: number[] = []
@@ -252,6 +255,7 @@ export function summariseAttemptTiming(rows: AttemptTimingRow[]): StageBTiming {
   const perCall = new Map<AttemptCallName, number[]>()
   let callsUnmeasured = 0
   let unreadable = 0
+  const timed = new Set(rows.map((r) => r.execution_id))
   for (const row of rows) {
     const t = row.timing
     if (!isRecord(t) || !finiteMs(t.before_call_ms) || !finiteMs(t.call_ms) || !finiteMs(t.after_call_ms)) {
@@ -286,6 +290,7 @@ export function summariseAttemptTiming(rows: AttemptTimingRow[]): StageBTiming {
     calls,
     calls_unmeasured: callsUnmeasured,
     unreadable,
+    executions_untimed: canaryIds.filter((id) => !timed.has(id)).length,
   }
 }
 
@@ -300,12 +305,12 @@ export interface StageBTimingReadDeps {
  */
 export async function readStageBTiming(deps: StageBTimingReadDeps, executions: ParityExecution[], day: string): Promise<StageBTiming> {
   const ids = executions.filter(isCanaryAttempt).map((e) => e.execution_id)
-  if (ids.length === 0) return summariseAttemptTiming([])
+  if (ids.length === 0) return summariseAttemptTiming([], [])
   const from = new Date(easternDayStartUtc(day)).toISOString()
   // The next Eastern day's own start, never start plus 24 hours, which is wrong on a clock change.
   const to = new Date(easternDayStartUtc(nextIsoDate(day))).toISOString()
   try {
-    return summariseAttemptTiming(await deps.listAttemptTiming(ids, from, to))
+    return summariseAttemptTiming(await deps.listAttemptTiming(ids, from, to), ids)
   } catch (err) {
     return { unmeasured: `the attempt rows could not be read: ${err instanceof Error ? err.message : 'non Error thrown'}` }
   }

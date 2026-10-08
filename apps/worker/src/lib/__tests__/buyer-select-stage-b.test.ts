@@ -61,7 +61,7 @@ const notForSale = (id: string): ParityExecution => ({
 const oneEach = (execs: ParityExecution[]) => ({ rows: new Map(execs.map((e) => [e.execution_id, 1])) })
 
 /** A day whose canary attempts carried no timing rows: the summary of nothing, attempts 0. */
-const NO_TIMING = summariseAttemptTiming([])
+const NO_TIMING = summariseAttemptTiming([], [])
 
 describe('summariseStageB', () => {
   it('counts each arm\'s attempts, accepts and answer codes, and leaves out a lead neither arm tried to sell', () => {
@@ -272,9 +272,12 @@ function attempt(id: string, before: number, call: number, after: number, calls:
   return { execution_id: id, timing: { before_call_ms: before, call_ms: call, after_call_ms: after, ...calls } }
 }
 
+/** The summary of rows whose executions are exactly the canary attempts of the day. */
+const withIds = (rows: AttemptTimingRow[]) => summariseAttemptTiming(rows, [...new Set(rows.map((r) => r.execution_id))])
+
 describe('summariseAttemptTiming', () => {
   it('states the before, call and after phases and our own overhead (before plus after) at p50 and p95, with each total', () => {
-    const t = summariseAttemptTiming([
+    const t = withIds([
       attempt('e1', 400, 3000, 300, { claim_ms: 300, reserve_ms: 100, breaker_ms: 10, commit_ms: 30, mark_sold_ms: 20, mirror_ms: 240 }),
       attempt('e2', 500, 2800, 200, { claim_ms: 350, reserve_ms: 150, breaker_ms: 12, release_ms: 60, mirror_ms: 128 }),
     ])
@@ -290,7 +293,7 @@ describe('summariseAttemptTiming', () => {
   })
 
   it('states every object call over only the attempts that reached it, so a sale\'s commit and a decline\'s release are never a zero', () => {
-    const t = summariseAttemptTiming([
+    const t = withIds([
       attempt('e1', 400, 3000, 300, { claim_ms: 300, reserve_ms: 100, breaker_ms: 10, commit_ms: 30, mark_sold_ms: 20, mirror_ms: 240 }),
       attempt('e2', 500, 2800, 200, { claim_ms: 350, reserve_ms: 150, breaker_ms: 12, release_ms: 60, mirror_ms: 128 }),
     ])
@@ -307,7 +310,7 @@ describe('summariseAttemptTiming', () => {
   })
 
   it('an attempt written before the per call figures existed adds to the phases and is counted as calls unmeasured (L90)', () => {
-    const t = summariseAttemptTiming([attempt('e1', 400, 3000, 300), attempt('e2', 500, 2800, 200, { claim_ms: 350 })])
+    const t = withIds([attempt('e1', 400, 3000, 300), attempt('e2', 500, 2800, 200, { claim_ms: 350 })])
     if ('unmeasured' in t) throw new Error('expected a measured summary')
     expect(t.attempts).toBe(2)
     expect(t.calls_unmeasured).toBe(1)
@@ -315,7 +318,7 @@ describe('summariseAttemptTiming', () => {
   })
 
   it('a row whose phases cannot be read is counted as unreadable and adds to nothing, rather than being read as zero (L11)', () => {
-    const t = summariseAttemptTiming([
+    const t = withIds([
       { execution_id: 'e1', timing: 'not an object' },
       { execution_id: 'e2', timing: { before_call_ms: 400, call_ms: 'slow', after_call_ms: 300 } },
       attempt('e3', 500, 2800, 200, { claim_ms: Number.NaN }),
@@ -327,7 +330,7 @@ describe('summariseAttemptTiming', () => {
   })
 
   it('no rows at all is zero attempts with null percentiles, never zero milliseconds', () => {
-    expect(summariseAttemptTiming([])).toEqual({
+    expect(summariseAttemptTiming([], [])).toEqual({
       attempts: 0,
       before_call: { attempts: 0, p50_ms: null, p95_ms: null, total_ms: 0 },
       call: { attempts: 0, p50_ms: null, p95_ms: null, total_ms: 0 },
@@ -336,12 +339,18 @@ describe('summariseAttemptTiming', () => {
       calls: {},
       calls_unmeasured: 0,
       unreadable: 0,
+      executions_untimed: 0,
     })
+  })
+
+  it('a canary lead with no timing row at all is counted as untimed, so a day from before the timing reads as unmeasured rather than as zero attempts (L90)', () => {
+    const t = summariseAttemptTiming([attempt('c1', 400, 3000, 300)], ['c1', 'c2', 'c3'])
+    expect(t).toMatchObject({ attempts: 1, executions_untimed: 2 })
   })
 
   it('names every object call the node times, so a call added to the node is never silently left out of the report', () => {
     const all = { claim_ms: 1, reserve_ms: 2, breaker_ms: 3, commit_ms: 4, mark_sold_ms: 5, release_ms: 6, mirror_ms: 7 }
-    const t = summariseAttemptTiming([attempt('e1', 3, 10, 25, all)])
+    const t = withIds([attempt('e1', 3, 10, 25, all)])
     if ('unmeasured' in t) throw new Error('expected a measured summary')
     expect(Object.keys(t.calls).sort()).toEqual(['breaker', 'claim', 'commit', 'mark_sold', 'mirror', 'release', 'reserve'])
   })
@@ -350,7 +359,7 @@ describe('summariseAttemptTiming', () => {
 describe('the per call split on the Stage B row', () => {
   it('rides on the canary arm, measured or not, and leaves every other figure standing', () => {
     const execs = [canary('c1', { accepted: true, code: '1001', duration: 3400, call: 3100 })]
-    const measured = summariseStageB(execs, oneEach(execs), SETTLED, true, summariseAttemptTiming([attempt('c1', 200, 3100, 100, { claim_ms: 150 })]))
+    const measured = summariseStageB(execs, oneEach(execs), SETTLED, true, withIds([attempt('c1', 200, 3100, 100, { claim_ms: 150 })]))
     expect(measured.canary.timing).toMatchObject({ attempts: 1, overhead: { p50_ms: 300 } })
     const unmeasured = summariseStageB(execs, oneEach(execs), SETTLED, true, { unmeasured: 'the attempt rows could not be read: statement timeout' })
     expect(unmeasured.canary.timing).toEqual({ unmeasured: 'the attempt rows could not be read: statement timeout' })
