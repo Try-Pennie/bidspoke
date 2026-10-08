@@ -23,7 +23,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { easternDayStartUtc } from '@bidspoke/buyer-profile'
 import { nextIsoDate, type ParityExecution } from './buyer-select-parity'
 import { fetchAllPaged } from './paginate'
-import { ATTEMPT_CALLS } from '../engine/nodes/buyer-select'
+import { ATTEMPT_CALLS } from './attempt-timing'
 
 /** The buyer whose bid rows the report checks; the only buyer selling on the Engine flow. */
 export const STAGE_B_BUYER_SLUG = 'tripoint'

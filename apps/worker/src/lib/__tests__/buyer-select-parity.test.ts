@@ -393,6 +393,13 @@ describe('runParityRefresh', () => {
       expect(summary.errors).toEqual([])
     })
 
+    it('keeps a final row whose canary timing was measured, so only a failed timing read is retried (#1909)', async () => {
+      const t = tracking({ ...FINAL, stage_b: { ...FINAL.stage_b, canary: { timing: { attempts: 3, executions_untimed: 0 } } } })
+      const summary = await runParityRefresh(t.deps)
+      expect(t.readYesterday()).toBe(false)
+      expect(summary.kept_final).toEqual(['wf-engine 2027-09-19'])
+    })
+
     it('never asks about today, which is incomplete by construction', async () => {
       const t = tracking(FINAL)
       await runParityRefresh(t.deps)
@@ -404,6 +411,7 @@ describe('runParityRefresh', () => {
       ['a row written before the day ended', { ...FINAL, window_complete: false }],
       ['a row written before the bids settled', { ...FINAL, summarised_at: '2027-09-20T04:05:00.000Z' }],
       ['a row whose bid check was unmeasured', { ...FINAL, stage_b: { bid_rows: { unmeasured: 'lead_sighting_bids: statement timeout' } } }],
+      ['a row whose canary timing read failed (#1909)', { ...FINAL, stage_b: { ...FINAL.stage_b, canary: { timing: { unmeasured: 'the attempt rows could not be read: statement timeout' } } } }],
       ['a row with no Stage B report', { ...FINAL, stage_b: null }],
       ['a row with an unreadable timestamp', { ...FINAL, summarised_at: 'not a time' }],
     ])('reads the day again given %s', async (_label, stored) => {

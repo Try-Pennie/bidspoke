@@ -424,15 +424,17 @@ export function productionReadDeps(supabase: SupabaseClient): ParityReadDeps {
 export interface StoredParityDay {
   window_complete: boolean
   summarised_at: string
-  stage_b: { bid_rows?: Record<string, unknown> } | null
+  stage_b: { bid_rows?: Record<string, unknown>; canary?: { timing?: unknown } } | null
 }
 
 /**
  * Whether a stored row is the day's final answer, so the hourly refresh can keep
- * it rather than read the day again (#1884). All four must hold: it was written
+ * it rather than read the day again (#1884). All five must hold: it was written
  * with the day complete, after the day's bids had settled (the Stage B bid check
  * judges executions older than now minus BID_SETTLE_MS), with a Stage B report,
- * and with that report's bid check measured. Anything else, an unreadable
+ * with that report's bid check measured, and with its canary timing not left
+ * unmeasured by a failed read (#1909). A row written before the timing existed
+ * has none and stays final. Anything else, an unreadable
  * timestamp included, is not final and the day is read again: reading too often
  * costs reads, keeping a provisional row loses the day's answer (L5).
  */
@@ -443,7 +445,9 @@ export function isFinalParityDay(row: StoredParityDay | null, day: string): bool
   if (writtenAt < easternDayStartUtc(nextIsoDate(day)) + BID_SETTLE_MS) return false
   const bidRows = row.stage_b?.bid_rows
   if (bidRows === null || typeof bidRows !== 'object') return false
-  return !('unmeasured' in bidRows)
+  if ('unmeasured' in bidRows) return false
+  const timing = row.stage_b?.canary?.timing
+  return !(timing !== null && typeof timing === 'object' && 'unmeasured' in timing)
 }
 
 /** The stored row for one workflow and day, or null when there is none; a read failure throws. */
