@@ -29,6 +29,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from '../lib/format-error'
+import { isPermanentDbError, toDbError } from '../lib/db-retry'
 
 export const UNCONFIRMED_WRITE_PREFIX = 'unconfirmed-write:'
 
@@ -142,7 +143,12 @@ export type ReadBackVerdict =
   | { verdict: 'landed' }
   /** The effect is not there. `row_absent` when the row itself is missing. */
   | { verdict: 'missing'; row_absent: boolean; detail: string }
-  | { verdict: 'unreadable'; error: string }
+  /**
+   * The database did not give an answer. `permanent` when it refused this read
+   * for good (a schema error), which says nothing about whether it would answer
+   * the next one; otherwise it is not answering at all.
+   */
+  | { verdict: 'unreadable'; error: string; permanent?: boolean }
 
 type Rows = { data: unknown; error: unknown }
 
@@ -211,7 +217,7 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
   } catch (e) {
     return { verdict: 'unreadable', error: formatErr(e) }
   }
-  if (res.error) return { verdict: 'unreadable', error: formatErr(res.error) }
+  if (res.error) return { verdict: 'unreadable', error: formatErr(res.error), permanent: isPermanentDbError(toDbError(res.error)) }
   const row = firstRow(res)
   switch (check.kind) {
     case 'steps_present': {

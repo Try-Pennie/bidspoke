@@ -352,7 +352,9 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
       continue
     }
 
-    databaseAnswering = false
+    // A database that is not answering will not answer the next read either, so
+    // the tick stops reading. A read refused for good is about that entry alone.
+    if (!verdict.permanent) databaseAnswering = false
     summary.unreadable++
     if (startedAtMs - Date.parse(entry.first_seen_at) >= COULD_NOT_CONFIRM_AFTER_MS && !entry.could_not_confirm_alerted_at) {
       const list = unconfirmable.get(entry.org_id) ?? []

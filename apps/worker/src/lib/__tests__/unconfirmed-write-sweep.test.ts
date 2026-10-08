@@ -51,7 +51,7 @@ type Mode = 'up' | 'down' | 'hang'
  */
 function makeDb() {
   const tables: Record<string, Row[]> = { workflow_executions: [], lead_sightings: [], lead_sighting_bids: [] }
-  const state = { mode: 'up' as Mode, reads: 0 }
+  const state = { mode: 'up' as Mode, reads: 0, permanentFor: null as string | null }
   const queries: Array<{ table: string; eq: Record<string, unknown>; gte: Record<string, unknown>; lt: Record<string, unknown> }> = []
   function from(table: string) {
     const q = { table, eq: {} as Record<string, unknown>, gte: {} as Record<string, unknown>, lt: {} as Record<string, unknown> }
@@ -63,6 +63,7 @@ function makeDb() {
             queries.push(q)
             if (state.mode === 'hang') return new Promise(() => {})
             if (state.mode === 'down') return Promise.resolve({ data: null, error: { code: 'PGRST002', message: 'schema cache' } }).then(resolve, reject)
+            if (state.permanentFor === table) return Promise.resolve({ data: null, error: { code: '42703', message: 'column does not exist' } }).then(resolve, reject)
             const rows = tables[table].filter(
               (r) =>
                 Object.entries(q.eq).every(([k, v]) => sameValue(r[k], v)) &&
@@ -327,6 +328,18 @@ describe('a database that still does not answer', () => {
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { readDeadline: () => Promise.resolve() }))
     expect(s.unreadable).toBe(1)
+  })
+
+  it('does not stop the tick for one entry whose read was refused permanently', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.state.permanentFor = 'lead_sighting_bids'
+    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    await seed(kv, 'lead_sighting_bids.insert', BID, T0)
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0 + 1)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH + 1))
+    expect(s.unreadable).toBe(1)
+    expect(s.landed).toBe(1)
   })
 
   it('stops reading at the first unreadable answer, so one dead database costs one read a tick', async () => {
