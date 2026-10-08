@@ -73,7 +73,7 @@ function makeCtx() {
 
 async function fire(cron: string, env: Env) {
   const { ctx, settle } = makeCtx()
-  worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+  void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
   await settle()
 }
 

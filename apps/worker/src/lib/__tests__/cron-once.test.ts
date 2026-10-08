@@ -20,6 +20,7 @@ function memoryState(): DurableObjectState {
       get: async <T>(key: string) => store.get(key) as T | undefined,
       put: async (key: string, value: unknown) => { store.set(key, value) },
       deleteAll: async () => { store.clear() },
+      delete: async (key: string) => store.delete(key),
       setAlarm: async () => undefined,
     },
   } as unknown as DurableObjectState
@@ -167,11 +168,25 @@ describe('runCronTickOnce (#1899)', () => {
     expect(failedOpen[2]).toContain('no ALERT_CLAIM binding')
   })
 
-  it('marks the tick done even when the jobs threw, so the run is not mistaken for a dead one', async () => {
+  it('marks the tick done once the jobs resolved, so a later delivery of the same time is skipped', async () => {
     const { ns } = claimNamespace()
     const scheduled = MINUTE + 1_000
-    await expect(runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, async () => { throw new Error('job blew up') }, { now: () => scheduled, holder: () => 'req-a' })).rejects.toThrow('job blew up')
+    await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, vi.fn(async () => {}), { now: () => scheduled, holder: () => 'req-a' })
     const later = await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, vi.fn(async () => {}), { now: () => scheduled + 10 * TICK_RETRY_AFTER_MS, holder: () => 'req-b' })
     expect(later).toBe('skipped')
+  })
+
+  it('releases the tick and rethrows when the jobs threw, so the platform retry and any later delivery can run them', async () => {
+    const { ns } = claimNamespace()
+    const scheduled = MINUTE + 1_000
+    await expect(
+      runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, async () => { throw new Error('createSupabaseClient threw') }, { now: () => scheduled, holder: () => 'req-a' }),
+    ).rejects.toThrow('createSupabaseClient threw')
+    expect(errors.join('\n')).toMatch(/released cron="0 13 \* \* \*".*jobs threw.*createSupabaseClient threw/)
+    // a retry inside the 35 s floor runs, which a merely unmarked claim would refuse
+    const retryJobs = vi.fn(async () => {})
+    const retry = await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, retryJobs, { now: () => scheduled + 2_000, holder: () => 'req-b' })
+    expect(retry).toBe('ran')
+    expect(retryJobs).toHaveBeenCalledTimes(1)
   })
 })

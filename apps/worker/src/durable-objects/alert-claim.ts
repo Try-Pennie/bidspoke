@@ -107,6 +107,7 @@ export class AlertClaimObject implements DurableObject {
       case '/release': return this.handleRelease()
       case '/tick-claim': return this.handleTickClaim(request)
       case '/tick-done': return this.handleTickDone(request)
+      case '/tick-release': return this.handleTickRelease(request)
       default:
         return new Response('Not found', { status: 404 })
     }
@@ -181,6 +182,20 @@ export class AlertClaimObject implements DurableObject {
     if (!held || held.holder !== body.holder) return json({ marked: false })
     await this.state.storage.put<TickStorage>('tick', { ...held, status: 'done' })
     return json({ marked: true })
+  }
+
+  /**
+   * Body: { holder }. The holder's jobs threw before they could run, so the
+   * tick is freed for the platform's retry or any later delivery. Only the
+   * holder may free it, for the same reason as tick-done.
+   */
+  private async handleTickRelease(request: Request): Promise<Response> {
+    const body = await request.json<{ holder?: unknown }>()
+    if (typeof body.holder !== 'string' || body.holder === '') return json({ error: 'holder is required' }, 400)
+    const held = await this.state.storage.get<TickStorage>('tick')
+    if (!held || held.holder !== body.holder) return json({ released: false })
+    await this.state.storage.delete('tick')
+    return json({ released: true })
   }
 
   async alarm(): Promise<void> {

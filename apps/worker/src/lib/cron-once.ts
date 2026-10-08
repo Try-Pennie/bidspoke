@@ -106,26 +106,39 @@ async function decide(
   return { run: true, holder }
 }
 
-async function markDone(ns: DurableObjectNamespace, event: CronTickEvent, holder: string, options: CronTickOptions): Promise<void> {
+/** Closes the tick as `done`, or frees it with `release`, for this holder only. */
+async function settleTick(
+  ns: DurableObjectNamespace,
+  event: CronTickEvent,
+  holder: string,
+  how: 'done' | 'release',
+  options: CronTickOptions,
+): Promise<void> {
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
   const key = cronTickKey(event.cron, event.scheduledTime)
   const outcome = await raceDeadline(async () => {
-    const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-done', {
+    const res = await ns.get(ns.idFromName(key)).fetch(`https://do/tick-${how}`, {
       method: 'POST',
       body: JSON.stringify({ holder }),
     })
     if (!res.ok) throw new Error(`claim object answered ${res.status}`)
   }, deadlineMs, options.delay)
-  // Not fatal: an unmarked claim only lets a later delivery of the same
-  // scheduled time take over as a retry, which runs the jobs again.
-  if (outcome.kind === 'timed_out') console.error(`[cron-once] could not mark ${key} done inside ${deadlineMs}ms`)
-  if (outcome.kind === 'threw') console.error(`[cron-once] could not mark ${key} done: ${formatErr(outcome.error)}`)
+  // Not fatal either way. An unmarked claim lets a later delivery of the same
+  // scheduled time take over as a retry after the floor; an unreleased one
+  // does the same, so a failed release delays the retry rather than losing it.
+  if (outcome.kind === 'timed_out') console.error(`[cron-once] could not ${how} ${key} inside ${deadlineMs}ms`)
+  if (outcome.kind === 'threw') console.error(`[cron-once] could not ${how} ${key}: ${formatErr(outcome.error)}`)
 }
 
 /**
- * Runs `jobs` unless another delivery of this tick holds it, then marks the
- * tick done whichever way the jobs ended. `jobs` must resolve only once every
- * job it started has settled, or the claim is closed early.
+ * Runs `jobs` unless another delivery of this tick holds it.
+ *
+ * `jobs` must resolve only once every job it started has settled, and must
+ * reject only when the jobs could not run (each job catches its own failures).
+ * On resolve the tick is marked done. On reject the tick is RELEASED and the
+ * error rethrown, so the invocation fails as it did before the claim existed,
+ * Cloudflare can retry it, and a later delivery of the tick is not skipped on
+ * the word of a run that never ran anything.
  */
 export async function runCronTickOnce(
   ns: DurableObjectNamespace | undefined,
@@ -137,8 +150,11 @@ export async function runCronTickOnce(
   if (!decision.run) return 'skipped'
   try {
     await jobs()
-  } finally {
-    if (ns && decision.holder) await markDone(ns, event, decision.holder, options)
+  } catch (e) {
+    console.error(`[cron-once] released cron="${event.cron}" scheduled=${iso(event.scheduledTime)}: the jobs threw before finishing: ${formatErr(e)}`)
+    if (ns && decision.holder) await settleTick(ns, event, decision.holder, 'release', options)
+    throw e
   }
+  if (ns && decision.holder) await settleTick(ns, event, decision.holder, 'done', options)
   return 'ran'
 }

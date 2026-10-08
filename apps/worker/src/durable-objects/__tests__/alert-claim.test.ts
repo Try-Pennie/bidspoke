@@ -16,6 +16,7 @@ function makeDOState() {
       get: async <T>(key: string) => store.get(key) as T | undefined,
       put: async (key: string, value: unknown) => { store.set(key, value) },
       deleteAll: async () => { store.clear() },
+      delete: async (key: string) => store.delete(key),
       setAlarm: async (time: number) => { alarm = time },
       getAlarm: async () => alarm,
     },
@@ -128,6 +129,17 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     expect(getAlarm()).toBe(NOW + TICK_CLAIM_KEEP_MS)
     await obj.alarm()
     expect(await tick(obj, { now: NOW + 1, scheduled_time: NOW + 1, holder: 'b' })).toMatchObject({ run: true, reason: 'first' })
+  })
+
+  it('tick-release frees the tick only for its holder, so a run whose jobs never started can be run by the next delivery', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    const stranger = await (await obj.fetch(req('/tick-release', { holder: 'b' }))).json<{ released: boolean }>()
+    expect(stranger).toEqual({ released: false })
+    expect(await tick(obj, { now: NOW + 1_000, scheduled_time: NOW + 36_000, holder: 'b' })).toMatchObject({ run: false })
+    const own = await (await obj.fetch(req('/tick-release', { holder: 'a' }))).json<{ released: boolean }>()
+    expect(own).toEqual({ released: true })
+    expect(await tick(obj, { now: NOW + 2_000, scheduled_time: NOW + 36_000, holder: 'c' })).toMatchObject({ run: true, reason: 'first' })
   })
 
   it('answers 400 to a malformed body rather than granting on it', async () => {

@@ -20,9 +20,15 @@ vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   writeHeartbeatCompleted: vi.fn().mockResolvedValue(undefined),
   runHeartbeatChecks: vi.fn().mockResolvedValue([]),
 }))
+const createSupabaseClient = vi.fn(() => ({ from: () => ({ select: () => ({}) }) }))
 vi.mock('../lib/supabase', () => ({
   getSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
-  createSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
+  createSupabaseClient: () => createSupabaseClient(),
+}))
+const flushStoredCopyLedger = vi.fn().mockResolvedValue(undefined)
+vi.mock('../lib/stored-copy-ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/stored-copy-ledger')>()),
+  flushStoredCopyLedger: (...a: unknown[]) => flushStoredCopyLedger(...a),
 }))
 
 const worker = (await import('../index')).default
@@ -36,6 +42,7 @@ function claimNamespace(): DurableObjectNamespace {
         get: async (k: string) => store.get(k),
         put: async (k: string, v: unknown) => { store.set(k, v) },
         deleteAll: async () => { store.clear() },
+      delete: async (key: string) => store.delete(key),
         setAlarm: async () => undefined,
       },
     } as unknown as DurableObjectState
@@ -61,15 +68,20 @@ function envWith(ns: DurableObjectNamespace): Env {
   } as unknown as Env
 }
 
-async function fire(env: Env, cron: string, scheduledTime: number) {
+/** Fires one delivery and returns how the handler itself settled. */
+async function fire(env: Env, cron: string, scheduledTime: number): Promise<PromiseSettledResult<unknown>> {
   const waited: Promise<unknown>[] = []
   const ctx = { waitUntil: (p: Promise<unknown>) => waited.push(p), passThroughOnException: () => undefined } as unknown as ExecutionContext
-  worker.scheduled({ cron, scheduledTime } as ScheduledEvent, env, ctx)
+  const handled = Promise.resolve().then(() => worker.scheduled({ cron, scheduledTime } as ScheduledEvent, env, ctx))
+  const [settled] = await Promise.allSettled([handled])
   await Promise.allSettled(waited)
+  return settled
 }
 
 beforeEach(() => {
   prewarmKvCaches.mockClear()
+  createSupabaseClient.mockClear()
+  flushStoredCopyLedger.mockReset().mockResolvedValue(undefined)
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -98,5 +110,26 @@ describe('the scheduled handler runs each tick once (#1899)', () => {
     await fire(envWith(undefined as unknown as DurableObjectNamespace), '* * * * *', minute)
     expect(prewarmKvCaches).toHaveBeenCalledTimes(1)
     expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toMatch(/FAILED OPEN/)
+  })
+
+  it('fails the invocation and releases the tick when the jobs cannot even start, so the retry runs them', async () => {
+    const env = envWith(claimNamespace())
+    createSupabaseClient.mockImplementationOnce(() => { throw new Error('supabase client could not be built') })
+    const first = await fire(env, '* * * * *', minute + 1_000)
+    expect(first.status).toBe('rejected')
+    expect(prewarmKvCaches).not.toHaveBeenCalled()
+    const retry = await fire(env, '* * * * *', minute + 1_000)
+    expect(retry.status).toBe('fulfilled')
+    expect(prewarmKvCaches).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed stored copy count is logged and does not rerun jobs that already ran', async () => {
+    const env = envWith(claimNamespace())
+    flushStoredCopyLedger.mockRejectedValueOnce(new Error('kv write failed'))
+    const first = await fire(env, '* * * * *', minute + 1_000)
+    expect(first.status).toBe('fulfilled')
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toMatch(/kv write failed/)
+    await fire(env, '* * * * *', minute + 37_000)
+    expect(prewarmKvCaches).toHaveBeenCalledTimes(1)
   })
 })

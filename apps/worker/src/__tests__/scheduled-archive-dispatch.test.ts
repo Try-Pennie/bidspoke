@@ -102,7 +102,7 @@ describe('the scheduled handler', () => {
   it('runs the execution archive on its own cron', async () => {
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.all(waited)
 
     expect(runExecutionArchive).toHaveBeenCalledTimes(1)
@@ -111,7 +111,7 @@ describe('the scheduled handler', () => {
   it('writes the archive heartbeat under the id the registry declares', async () => {
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.all(waited)
 
     expect(writeHeartbeat).toHaveBeenCalledWith(expect.anything(), 'execution-archive')
@@ -125,7 +125,7 @@ describe('the scheduled handler', () => {
       runExecutionArchive.mockClear()
       const waited: Promise<unknown>[] = []
 
-      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
       await Promise.allSettled(waited)
 
       expect(runExecutionArchive, `${cron} ran the archive`).not.toHaveBeenCalled()
@@ -139,7 +139,7 @@ describe('the scheduled handler', () => {
     // 7 day retention window and its staleness limit is one cadence plus slack.
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.allSettled(waited)
 
     expect(runArchiveGate).toHaveBeenCalledTimes(1)
@@ -152,7 +152,7 @@ describe('the scheduled handler', () => {
       runArchiveGate.mockClear()
       const waited: Promise<unknown>[] = []
 
-      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
       await Promise.allSettled(waited)
 
       expect(runArchiveGate, `${cron} ran the gate measurement`).not.toHaveBeenCalled()
@@ -165,7 +165,7 @@ describe('the scheduled handler', () => {
     // nothing saying so.
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.allSettled(waited)
 
     expect(checkArchiveSettings).toHaveBeenCalledTimes(1)
@@ -176,7 +176,7 @@ describe('the scheduled handler', () => {
       checkArchiveSettings.mockClear()
       const waited: Promise<unknown>[] = []
 
-      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
       await Promise.allSettled(waited)
 
       expect(checkArchiveSettings, `${cron} read the settings`).not.toHaveBeenCalled()
@@ -189,7 +189,7 @@ describe('the scheduled handler', () => {
     // never surfaces on its own because nothing ever attempts it.
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.allSettled(waited)
 
     expect(checkArchiveIdentities).toHaveBeenCalledTimes(1)
@@ -202,7 +202,7 @@ describe('the scheduled handler', () => {
       checkArchiveIdentities.mockClear()
       const waited: Promise<unknown>[] = []
 
-      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
       await Promise.allSettled(waited)
 
       expect(checkArchiveIdentities, `${cron} verified the identities`).not.toHaveBeenCalled()
@@ -212,7 +212,7 @@ describe('the scheduled handler', () => {
   it('hands the archive a send function rather than letting it invent one', async () => {
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.all(waited)
 
     const deps = runExecutionArchive.mock.calls[0]?.[2] as { sendBatch?: unknown }
@@ -223,7 +223,7 @@ describe('the scheduled handler', () => {
     archiveSender.mockClear()
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.all(waited)
 
     const deps = runExecutionArchive.mock.calls[runExecutionArchive.mock.calls.length - 1]?.[2] as { sendBatch?: unknown }
@@ -240,7 +240,7 @@ describe('the archive cron passes its scheduled time through (#1181)', () => {
     const waited: Promise<unknown>[] = []
     const scheduledTime = Date.parse('2026-09-05T00:23:00.000Z')
 
-    worker.scheduled({ cron: '23 * * * *', scheduledTime } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *', scheduledTime } as ScheduledEvent, env, ctxWith(waited))
     await Promise.all(waited)
 
     const deps = runExecutionArchive.mock.calls[0][2] as { scheduledFor?: Date }
@@ -264,7 +264,7 @@ describe('the completed heartbeat stamp (#985)', () => {
     runExecutionArchive.mockImplementation(async () => { order.push('archive'); return { stop: 'caught-up', failed: false, hoursArchived: 0, hoursEmpty: 0, executionsArchived: 0, executionsRefused: 0, hoursBehind: 0, detail: 'test' } })
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.allSettled(waited)
 
     expect(order).toEqual(['started:execution-archive', 'archive', 'completed:execution-archive'])
@@ -274,7 +274,7 @@ describe('the completed heartbeat stamp (#985)', () => {
     runExecutionArchive.mockRejectedValue(new Error('snowflake down'))
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
     await Promise.allSettled(waited)
 
     expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'execution-archive')
@@ -287,7 +287,7 @@ describe('the completed heartbeat stamp (#985)', () => {
     runArchiveGate.mockImplementation(() => new Promise((resolve) => { finishGate = resolve }))
     const waited: Promise<unknown>[] = []
 
-    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
     // One turn of the event loop, so every check that CAN settle has done so
     // while the gate is still running.
     await new Promise((r) => setTimeout(r, 0))
@@ -307,7 +307,7 @@ describe('the completed heartbeat stamp (#985)', () => {
       writeHeartbeatCompleted.mockClear()
       const waited: Promise<unknown>[] = []
 
-      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
       await Promise.allSettled(waited)
 
       expect(writeHeartbeatCompleted, `${cron} did not complete ${id}`).toHaveBeenCalledWith(expect.anything(), id)

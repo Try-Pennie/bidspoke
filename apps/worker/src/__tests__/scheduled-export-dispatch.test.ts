@@ -41,7 +41,7 @@ async function fireAndFlush(cron: string) {
     waitUntil: (p: Promise<unknown>) => pending.push(p),
     passThroughOnException: vi.fn(),
   } as unknown as ExecutionContext
-  worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
+  void worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
   await Promise.all(pending)
 }
 
@@ -127,7 +127,7 @@ describe('the Worker no longer runs the sightings purge (#541)', () => {
       // The handler hands over one promise, the tick claim wrapping the jobs
       // (#1899); once it settles, no job has handed over any work of its own.
       const ctx = fakeCtx()
-      worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
+      void worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
       const handed = vi.mocked(ctx.waitUntil).mock.calls.map((c) => c[0] as Promise<unknown>)
       await Promise.allSettled(handed)
       expect(ctx.waitUntil).toHaveBeenCalledTimes(1)

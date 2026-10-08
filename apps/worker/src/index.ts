@@ -889,14 +889,24 @@ export default {
   // Cloudflare has delivered every tick twice since 2026-10-08 13:38 UTC. A retry
   // of a killed run still runs, and a claim that cannot be asked fails open.
   // The rule is in lib/cron-once.ts and on TICK_RETRY_AFTER_MS.
-  scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): void {
-    platformCtx.waitUntil(
-      runCronTickOnce(env.ALERT_CLAIM, event, async () => {
-        const work = scheduledJobs.start(event, env, platformCtx)
-        await Promise.allSettled(work)
-        // A cron that started nothing (a retired one) leaves nothing to count.
-        if (work.length > 0) await flushStoredCopyLedger(env.IDEMPOTENCY)
-      }).catch((e) => console.error('[cron-once] scheduled run failed:', e)),
-    )
+  //
+  // The run is RETURNED as well as handed to waitUntil: if the jobs cannot even
+  // start (a throw building the database client), the invocation fails as it
+  // did before the claim, so Cloudflare can retry it, and the claim is released
+  // rather than marked done. The waitUntil copy is caught only so the failure
+  // is not reported twice.
+  scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<void> {
+    const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
+      const work = scheduledJobs.start(event, env, platformCtx)
+      await Promise.allSettled(work)
+      // A cron that started nothing (a retired one) leaves nothing to count.
+      // The count is bookkeeping, never a reason to run the jobs again.
+      if (work.length > 0) {
+        await flushStoredCopyLedger(env.IDEMPOTENCY)
+          .catch((e) => console.error('[stored-copy-ledger] flush after the scheduled run failed:', e))
+      }
+    }).then(() => undefined)
+    platformCtx.waitUntil(run.catch(() => undefined))
+    return run
   },
 }
