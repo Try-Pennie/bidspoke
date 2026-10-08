@@ -864,9 +864,12 @@ export async function executeWorkflow(
         // #1883: the answer, journaled in KV beside the update, so a run whose
         // update never lands still says what the caller was told. Redacted with
         // the step rows' field list. Rewritten below if the flush demotes the run.
+        // Each write is chained on the one before, so a demotion's journal can
+        // never be overwritten by a slower first write of the same key.
+        let journalWritten: Promise<void> = Promise.resolve()
         const journalAnswer = (status: string, runOutcome: string, message: string | undefined) => {
           if (reality.isTest) return
-          executionCtx.waitUntil(
+          journalWritten = journalWritten.then(() =>
             putAnswerJournal(env.IDEMPOTENCY, {
               execution_id: executionId,
               started_at: startedAt,
@@ -887,6 +890,7 @@ export async function executeWorkflow(
               written_at: new Date().toISOString(),
             }).catch((e) => console.error('[answer-journal] write failed:', formatErr(e))),
           )
+          executionCtx.waitUntil(journalWritten)
         }
         journalAnswer(finalStatus, outcome, finalErrorMessage)
         // #1850: the finalize ladder stops at the write cut-off and the wait for

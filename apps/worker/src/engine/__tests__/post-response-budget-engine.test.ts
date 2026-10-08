@@ -172,15 +172,18 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps }
 }
 
-function makeKV(clock: VirtualClock) {
+function makeKV(clock: VirtualClock, slowFirstJournalPut = false) {
   const store = new Map<string, string>()
   const puts: Array<{ at: number; key: string }> = []
+  let journalPuts = 0
   const kv = {
     async get(k: string, t?: string) {
       const v = store.get(k)
       return v === undefined ? null : t === 'json' ? JSON.parse(v) : v
     },
     async put(k: string, v: string) {
+      // A KV write that is slow to land, to prove two writes of one key keep their order.
+      if (slowFirstJournalPut && k.startsWith(ANSWER_JOURNAL_PREFIX) && journalPuts++ === 0) await clock.delay(20_000)
       puts.push({ at: clock.now(), key: k })
       store.set(k, v)
     },
@@ -195,10 +198,14 @@ function makeKV(clock: VirtualClock) {
   return { kv: kv as unknown as KVNamespace, puts, store }
 }
 
-async function run(availability: (clock: VirtualClock, table: string, op: string) => Availability, envExtra: Record<string, string> = {}) {
+async function run(
+  availability: (clock: VirtualClock, table: string, op: string) => Availability,
+  envExtra: Record<string, string> = {},
+  options: { slowFirstJournalPut?: boolean } = {},
+) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
-  const idempotency = makeKV(clock)
+  const idempotency = makeKV(clock, options.slowFirstJournalPut)
   const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
@@ -569,6 +576,12 @@ describe('the answer is recorded at the answer (#1883)', () => {
     })
     expect(db.executions.get(result.executionId)?.status).not.toBe('running')
     expect(db.steps).toHaveLength(1)
+  })
+
+  it('keeps the demoted journal when the first journal write is the slower one', async () => {
+    const { idempotency, result } = await run(stepsHang, {}, { slowFirstJournalPut: true })
+    const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
+    expect(journal.status).toBe('degraded')
   })
 
   it('updates the journal when the run is demoted, so the drain restores the final status', async () => {
