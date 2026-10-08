@@ -164,7 +164,12 @@ export const FLUSH_RETRY_DELAYS_MS = [2_000, 5_000]
 // (#1113); no ladder inside the platform's 30 seconds can outlast that, so this
 // one backs off quickly and leaves time for the dead letter, and the strand
 // drain (30-minute floor) stays the backstop for a row left at 'running'.
-export const UPDATE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000]
+//
+// Since #1883 the finalize goes out at the answer rather than 15 s after it, so
+// its ladder has the whole 22 s to the dead letter's cut-off, and the fifth rung
+// (at 21 s) uses it: a stall that clears inside the budget still lands the
+// finalize, as it did when it started late.
+export const UPDATE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 6_000]
 
 // Batch-insert an accumulated queue of step logs. Used at end of execution
 // to flush all step logs in a single round-trip instead of one-per-step.

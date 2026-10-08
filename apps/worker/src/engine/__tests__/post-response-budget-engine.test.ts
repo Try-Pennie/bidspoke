@@ -44,7 +44,7 @@ import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
-import { UNCONFIRMED_WRITE_PREFIX } from '../unconfirmed-writes'
+import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
 
 const WF_ID = 'wf-budget'
@@ -76,14 +76,14 @@ interface DbCall {
  * enforces the step rows' foreign key on the execution row, and reports the
  * rows an UPDATE matched, as the real writers require.
  */
-function makeDb(clock: VirtualClock, availability: () => Availability) {
+function makeDb(clock: VirtualClock, availability: (table: string, op: string) => Availability) {
   const calls: DbCall[] = []
   const executions = new Map<string, Record<string, unknown>>()
   const sightings = new Map<string, Record<string, unknown>>()
   const steps: Record<string, unknown>[] = []
 
   function answer(table: string, op: string, payload: unknown, filters: Record<string, unknown>) {
-    const state = availability()
+    const state = availability(table, op)
     calls.push({ at: clock.now(), table, op, answered: state })
     if (state === 'hang') return clock.hang()
     if (state === 'down') {
@@ -195,9 +195,9 @@ function makeKV(clock: VirtualClock) {
   return { kv: kv as unknown as KVNamespace, puts, store }
 }
 
-async function run(availability: (clock: VirtualClock) => Availability) {
+async function run(availability: (clock: VirtualClock, table: string, op: string) => Availability, envExtra: Record<string, string> = {}) {
   const clock = new VirtualClock()
-  const db = makeDb(clock, () => availability(clock))
+  const db = makeDb(clock, (table, op) => availability(clock, table, op))
   const idempotency = makeKV(clock)
   const background: Promise<unknown>[] = []
   const env = {
@@ -205,6 +205,7 @@ async function run(availability: (clock: VirtualClock) => Availability) {
     WORKFLOW_CACHE: makeKV(clock).kv,
     APP_URL: 'https://app.test',
     PII_REDACTION_FIELDS: '',
+    ...envExtra,
   } as unknown as Env
   const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
 
@@ -368,11 +369,16 @@ describe('writes that answer after the budget, read back by the sweep (#1880)', 
     const phase: Phase = { now: 'late' }
     const { db, idempotency, result } = await run(() => phase.now)
     // #1881: the lead was answered and the step records only went unconfirmed,
-    // so the run is degraded and pages nobody (part of #688).
+    // so the run pages nobody (part of #688). Since #1883 the finalize goes out
+    // at the answer, so here it is the answer's own update that lands late, and
+    // the demotion is held back because that update had not confirmed: the row
+    // says what the caller was told, and the journal carries the demotion.
     const row = db.executions.get(result.executionId)
-    expect(row?.status).toBe('degraded')
-    expect(String(row?.error_message)).toMatch(/step records were not confirmed/i)
+    expect(row?.status).toBe('completed')
+    expect(row?.response_status).toBe(200)
     expect(fireExecutionAlert).not.toHaveBeenCalled()
+    const journal = JSON.parse(String(await idempotency.kv.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)))
+    expect(journal.status).toBe('degraded')
 
     const summary = await sweepAfter(phase, idempotency, db)
 
@@ -491,5 +497,68 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     expect(reason).not.toContain('under_10000_sf_post')
     const alert = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.find(([, p]) => p.label === 'continuation_unfinished')?.[1]
     expect(alert?.run?.still_running).toEqual(['Achieve under 10k (achieve_under_10k)'])
+  })
+})
+
+/**
+ * #1883, defect A, measured 2026-10-08: five Engine runs answered HTTP 200, and
+ * the finalize update recording that answer was sent only after the step write
+ * gave up, 15 s later. In the stall none of those updates ran, so the runs kept
+ * no record of what Engine was told. The finalize now goes out at the answer,
+ * beside the step write, and the answer is journaled in KV for the strand drain.
+ */
+describe('the answer is recorded at the answer (#1883)', () => {
+  const stepsHang = (_c: VirtualClock, table: string): Availability => (table === 'execution_steps' ? 'hang' : 'up')
+
+  it('sends the finalize update at the answer, not behind a step write that has not answered', async () => {
+    const { db, result } = await run(stepsHang)
+    const firstUpdate = db.calls.find((c) => c.table === 'workflow_executions' && c.op === 'update')
+    expect(firstUpdate).toBeDefined()
+    // Behind the step write it went out at the flush's cut-off, 15 s after the answer.
+    expect(firstUpdate!.at).toBeLessThan(1_000)
+    const row = db.executions.get(result.executionId)
+    expect(row?.response_status).toBe(200)
+    expect(row?.response_body).toEqual(RESPONSE.body)
+  })
+
+  it('then demotes the run once the step write is known not to have confirmed', async () => {
+    const { db, result } = await run(stepsHang)
+    const row = db.executions.get(result.executionId)
+    expect(row?.status).toBe('degraded')
+    expect(String(row?.error_message)).toMatch(/step records were not confirmed/i)
+  })
+
+  it('still records a step write that returned an error as failed, and pages for it', async () => {
+    const stepsDown = (_c: VirtualClock, table: string): Availability => (table === 'execution_steps' ? 'down' : 'up')
+    const { db, result } = await run(stepsDown)
+    const row = db.executions.get(result.executionId)
+    expect(row?.status).toBe('failed')
+    expect(String(row?.error_message)).toMatch(/Step logs failed to persist/)
+    expect(fireExecutionAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('journals the answer in KV at the answer, keyed by execution id, with PII redacted', async () => {
+    const body = { accepted: true, applicant: { ssn: '123-45-6789' } }
+    const withSsn = { status: 200, headers: {}, body }
+    vi.mocked(executeNode).mockResolvedValue({ output: withSsn, earlyResponse: withSsn })
+    const { idempotency, result } = await run(() => 'up', { PII_REDACTION_FIELDS: 'ssn' })
+    const put = idempotency.puts.find((p) => p.key === `${ANSWER_JOURNAL_PREFIX}${result.executionId}`)
+    expect(put).toBeDefined()
+    expect(put!.at).toBeLessThan(1_000)
+    const journal = JSON.parse(idempotency.store.get(put!.key)!)
+    expect(journal).toMatchObject({
+      execution_id: result.executionId,
+      status: 'completed',
+      response_status: 200,
+      final_node_namespace: 'offer_response',
+    })
+    expect(journal.response_body.applicant.ssn).toBe('[REDACTED]')
+    expect(JSON.stringify(journal)).not.toContain('123-45-6789')
+  })
+
+  it('updates the journal when the run is demoted, so the drain restores the final status', async () => {
+    const { idempotency, result } = await run(stepsHang)
+    const journal = JSON.parse(idempotency.store.get(`${ANSWER_JOURNAL_PREFIX}${result.executionId}`)!)
+    expect(journal.status).toBe('degraded')
   })
 })

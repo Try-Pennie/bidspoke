@@ -42,6 +42,8 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
+import { putAnswerJournal } from './unconfirmed-writes'
+import { redactPii, parsePiiFields } from './pii-redactor'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import {
   PostResponseBudget,
@@ -720,32 +722,16 @@ export async function executeWorkflow(
   // Prospect step that fires after Offer Response runs in the background.)
   // The tail consumer adds the main-Worker CPU slice on top once Cloudflare
   // reports true cpuTime for the invocation.
+  //
+  // #1883: the finalize goes out at the answer (once the walk has settled, which
+  // for a run without work after its answer is at once), BESIDE the step write,
+  // not behind it. Behind it, it went out only when the step write gave up, 15 s
+  // after the answer, and on 2026-10-08 five runs' finalizes queued that late never
+  // ran. Only the flush's own demotion (step logs failed, or unconfirmed) waits for
+  // the flush, as a small second update.
   executionCtx.waitUntil(
-    Promise.all([walkSettled, flushPromise])
-      .then(async ([walkResult, flushed]) => {
-        const flushError = flushed.error
-        const flushUnconfirmed = flushed.unconfirmed
-        // The step rows that timed out are read back by the minute sweep, for the
-        // slowdown summary (#1881). Tier 1, so a failed entry is only logged.
-        if (flushUnconfirmed && !reality.isTest && stepLogQueue.length > 0) {
-          const runStart = Date.parse(startedAt)
-          executionCtx.waitUntil(
-            recordUnconfirmedOutcome(
-              'execution_steps',
-              {
-                kind: 'steps_present',
-                execution_id: executionId,
-                execution_started_at: startedAt,
-                started_from: new Date(runStart).toISOString(),
-                started_to: new Date(runStart + 60 * 60 * 1000).toISOString(),
-                expected: stepLogQueue.length,
-              },
-              { message: `execution_steps (execution ${executionId}): ${flushUnconfirmed}` },
-              { ...outcomeDeps, supabase: runDb },
-              { deadLetterOnFailure: false },
-            ),
-          )
-        }
+    walkSettled
+      .then(async (walkResult) => {
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
 
         // Continuation failure: a post-response step (continue_after_response)
@@ -769,10 +755,11 @@ export async function executeWorkflow(
         // never-advanced — mean the lead was NOT served correctly and stay
         // 'failed'. The HTTP response already sent is unaffected; response_status
         // below still records what the caller received.
-        const finalStatus = resolveContinuationStatus(executionStatus, {
+        // The flush is not known yet: it is weighed after the first update.
+        let finalStatus = resolveContinuationStatus(executionStatus, {
           hasContinuationError: continuationError != null,
-          hasFlushError: flushError != null,
-          hasFlushUnconfirmed: flushUnconfirmed != null,
+          hasFlushError: false,
+          hasFlushUnconfirmed: false,
           neverAdvanced: finalNodeNamespace == null,
         })
         let finalErrorMessage = errorMessage
@@ -811,14 +798,6 @@ export async function executeWorkflow(
               ),
             )
           }
-        } else if (finalStatus === 'degraded' && flushUnconfirmed) {
-          // Served, and its step records only went unconfirmed (#1881, part of
-          // #688). Not a step failure, so no failed step, no error type and no per
-          // run page: the slowdown summary reports it once the rows are read back.
-          finalErrorMessage = `Step records were not confirmed saved: ${flushUnconfirmed}`
-        } else if (finalStatus === 'failed' && executionStatus === 'completed' && flushError) {
-          failedErrorType = failedErrorType ?? 'permanent'
-          finalErrorMessage = `Step logs failed to persist: ${flushError}`
         } else if (finalStatus === 'failed' && executionStatus === 'completed' && finalNodeNamespace == null) {
           failedErrorType = failedErrorType ?? 'permanent'
           finalErrorMessage = 'Execution did not advance past the trigger — no step completed.'
@@ -827,7 +806,7 @@ export async function executeWorkflow(
         const passedThroughSuccessNode = successNamespaces.some(
           (ns) => ctx.steps[ns]?.status === 'completed'
         )
-        const outcome: 'successful' | 'completed' | 'failed' =
+        let outcome: 'successful' | 'completed' | 'failed' =
           finalStatus === 'failed'
             ? 'failed'
             : passedThroughSuccessNode ? 'successful' : 'completed'
@@ -881,10 +860,35 @@ export async function executeWorkflow(
         // insert, which failed, so it never ran and left no trace. Once the
         // parent row exists again we re-flush the queue below.
         let reconstructed = false
+        const responseStatus = executionStatus === 'completed' ? walkStatus : 500
+        // #1883: the answer, journaled in KV beside the update, so a run whose
+        // update never lands still says what the caller was told. Redacted with
+        // the step rows' field list. Rewritten below if the flush demotes the run.
+        const journalAnswer = (status: string, runOutcome: string, message: string | undefined) => {
+          if (reality.isTest) return
+          executionCtx.waitUntil(
+            putAnswerJournal(env.IDEMPOTENCY, {
+              execution_id: executionId,
+              started_at: startedAt,
+              status,
+              outcome: runOutcome,
+              final_node_namespace: finalNodeNamespace,
+              final_node_id: finalNodeId,
+              completed_at: completedAt,
+              duration_ms: durationMs,
+              response_status: responseStatus,
+              response_body: journalBody(response, env.PII_REDACTION_FIELDS ?? ''),
+              error_message: message ?? null,
+              failed_step_type: resolveFailedStepType(definition.nodes, failedStep) ?? null,
+              written_at: new Date().toISOString(),
+            }).catch((e) => console.error('[answer-journal] write failed:', formatErr(e))),
+          )
+        }
+        journalAnswer(finalStatus, outcome, finalErrorMessage)
         // #1850: the finalize ladder stops at the write cut-off and the wait for
         // it stops there too, so the dead letter below is written before
         // Cloudflare cancels this work. An update still unanswered then is not
-        // cancelled and may land; it is dead-lettered as unconfirmed.
+        // cancelled and may land; it is recorded as unconfirmed (#1880).
         const finalized = await withinBudget(updateExecutionRecord(runDb, executionId, startedAt, {
           status: finalStatus,
           outcome,
@@ -896,7 +900,7 @@ export async function executeWorkflow(
           // The status the caller actually received (mirrors the fetch return
           // at the bottom of this function). Read by the sightings backfill,
           // which has no walk context to recompute it from.
-          response_status: executionStatus === 'completed' ? walkStatus : 500,
+          response_status: responseStatus,
           error_message: finalErrorMessage,
           // Node type of the failed step, so the upstream-outage aggregation can
           // attribute a generic timeout/abort to the right service (#332).
@@ -952,12 +956,20 @@ export async function executeWorkflow(
         // the served lead's run is debuggable step by step. Best-effort: a
         // failure here is logged, not surfaced (the top-level row already
         // survived via reconstruction).
+        //
+        // #1883: finalize now runs beside the create rather than behind it, so it
+        // can rebuild the row while the create is still out. A create that then
+        // lands runs the original flush itself, so the re-flush is only for a
+        // create that FAILED, which is the one case the original flush never runs.
         if (reconstructed && stepLogQueue.length > 0) {
           executionCtx.waitUntil(
-            flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
-              workflowId,
-              isTest: reality.isTest,
-            }, traceTiming)
+            executionRecordPromise.then(() => false, () => true).then((createFailed) => {
+              if (!createFailed) return null
+              return flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
+                workflowId,
+                isTest: reality.isTest,
+              }, traceTiming)
+            })
               .then((flushErr) => {
                 if (flushErr) {
                   console.error('[step-logger] step-log recovery re-flush reported errors', {
@@ -987,6 +999,76 @@ export async function executeWorkflow(
               console.error('[durability] execution_finalize dead-letter failed:', e),
             ),
           )
+        }
+
+        // The step write, weighed now (#1883). It ran beside the update above; only
+        // its demotion waited for it. A flush that returned an error fails the run,
+        // as before; one that only timed out degrades it (#1881, part of #688).
+        const flushed = await flushPromise
+        const flushError = flushed.error
+        const flushUnconfirmed = flushed.unconfirmed
+        // The step rows that timed out are read back by the minute sweep, for the
+        // slowdown summary (#1881). Tier 1, so a failed entry is only logged.
+        if (flushUnconfirmed && !reality.isTest && stepLogQueue.length > 0) {
+          const runStart = Date.parse(startedAt)
+          executionCtx.waitUntil(
+            recordUnconfirmedOutcome(
+              'execution_steps',
+              {
+                kind: 'steps_present',
+                execution_id: executionId,
+                execution_started_at: startedAt,
+                started_from: new Date(runStart).toISOString(),
+                started_to: new Date(runStart + 60 * 60 * 1000).toISOString(),
+                expected: stepLogQueue.length,
+              },
+              { message: `execution_steps (execution ${executionId}): ${flushUnconfirmed}` },
+              { ...outcomeDeps, supabase: runDb },
+              { deadLetterOnFailure: false },
+            ),
+          )
+        }
+        const statusAfterFlush = resolveContinuationStatus(executionStatus, {
+          hasContinuationError: continuationError != null,
+          hasFlushError: flushError != null,
+          hasFlushUnconfirmed: flushUnconfirmed != null,
+          neverAdvanced: finalNodeNamespace == null,
+        })
+        let demotedMessage: string | null = null
+        if (statusAfterFlush === 'failed' && finalStatus !== 'failed' && executionStatus === 'completed' && flushError) {
+          failedErrorType = failedErrorType ?? 'permanent'
+          demotedMessage = `Step logs failed to persist: ${flushError}`
+        } else if (statusAfterFlush === 'degraded' && finalStatus === 'completed' && flushUnconfirmed) {
+          // Served, and its step records only went unconfirmed (#1881, part of
+          // #688). Not a step failure, so no failed step, no error type and no per
+          // run page: the slowdown summary reports it once the rows are read back.
+          demotedMessage = `Step records were not confirmed saved: ${flushUnconfirmed}`
+        }
+        if (demotedMessage !== null) {
+          finalStatus = statusAfterFlush
+          finalErrorMessage = demotedMessage
+          if (finalStatus === 'failed') outcome = 'failed'
+          journalAnswer(finalStatus, outcome, finalErrorMessage)
+          // Sent only once the first update confirmed: an update still out could
+          // otherwise land after this one and undo it. Unconfirmed, the journal
+          // and the read back carry the run instead.
+          if (finalized.settled && !finalizeError) {
+            const demoted = await withinBudget(updateExecutionRecord(runDb, executionId, startedAt, {
+              status: finalStatus,
+              outcome,
+              completed_at: completedAt,
+              duration_ms: durationMs,
+              error_message: finalErrorMessage,
+              failed_step_type: resolveFailedStepType(definition.nodes, failedStep),
+            }, undefined, undefined, writeTiming), writeTiming)
+            if (!demoted.settled || demoted.value) {
+              console.error('[execution] the step write demotion did not confirm', {
+                executionId,
+                status: finalStatus,
+                error: demoted.settled ? demoted.value?.message : 'no answer within the post-response budget',
+              })
+            }
+          }
         }
 
         // Mirror the immediate alert gate: skip business rejections
@@ -1190,6 +1272,18 @@ export async function executeWorkflow(
     traceId,
     responseHeaders: walkHeaders,
   }
+}
+
+/**
+ * The answer as the journal keeps it (#1883): redacted with the step rows' field
+ * list, and left out when it is too large to be worth a KV value, which no real
+ * answer is (they are a few hundred bytes).
+ */
+const JOURNAL_BODY_MAX_BYTES = 64 * 1024
+function journalBody(response: unknown, piiFieldsRaw: string): unknown {
+  const redacted = redactPii(response, parsePiiFields(piiFieldsRaw))
+  const size = JSON.stringify(redacted ?? null)?.length ?? 0
+  return size > JOURNAL_BODY_MAX_BYTES ? { omitted: `the answer was ${size} bytes, over the journal's ${JOURNAL_BODY_MAX_BYTES}` } : redacted
 }
 
 /**

@@ -34,6 +34,7 @@ import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
+import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
@@ -852,7 +853,8 @@ export default {
           .catch((e) => console.error('[slow-spike] check failed:', e))
       )
       ctx.waitUntil(
-        runReduceFinalizeStrandedExecutions(supabase)
+        // A stranded run is restored from its answer journal when it has one (#1883).
+        runReduceFinalizeStrandedExecutions(supabase, { readJournal: (id) => readAnswerJournal(env.IDEMPOTENCY, id) })
           .then((r) => { if (r.processed > 0 || r.errors > 0) console.log(`[stranded-executions] processed=${r.processed} errors=${r.errors}`) })
           .catch((e) => console.error('[stranded-executions] check failed:', e))
       )

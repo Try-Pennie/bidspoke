@@ -244,3 +244,67 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
       return row ? { verdict: 'landed' } : { verdict: 'missing', row_absent: false, detail: "no bid row for this partner in this run is marked the winner" }
   }
 }
+
+// ============================================================
+// The answer journal (#1883)
+// ============================================================
+// What a run answered is recorded by its finalize update, in the database alone.
+// On 2026-10-08 five Engine runs answered HTTP 200 during a stall, their
+// finalize updates never ran, and the strand drain could only label them
+// unresolved: nothing anywhere said what Engine had been told. So the engine
+// also journals the answer here, in the same KV store and for the same reason
+// as the unconfirmed entries above (it is written exactly when the database may
+// not be answering), and the strand drain restores a stranded run from it.
+//
+// One KV write per live run, about 86,000 a day measured on 2026-10-08. The
+// response body is the same class of data the idempotency cache in this KV
+// namespace already keeps per request, redacted here with the step rows' field
+// list, and it expires in three days rather than the execution row's seven.
+
+export const ANSWER_JOURNAL_PREFIX = 'answer-journal:'
+
+/**
+ * Three days: past the strand drain's 30 minute floor many times over, and past
+ * a weekend, so a drain that was itself down for a while still finds it.
+ */
+export const ANSWER_JOURNAL_TTL_SECONDS = 3 * 24 * 60 * 60
+
+export interface AnswerJournal {
+  execution_id: string
+  started_at: string
+  status: string
+  outcome: string | null
+  final_node_namespace: string | null
+  final_node_id: string | null
+  completed_at: string
+  duration_ms: number
+  response_status: number
+  /** Redacted with the same field list the step rows are (PII_REDACTION_FIELDS). */
+  response_body: unknown
+  error_message: string | null
+  failed_step_type: string | null
+  written_at: string
+}
+
+export async function putAnswerJournal(
+  kv: { put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void> },
+  journal: AnswerJournal,
+): Promise<void> {
+  await kv.put(`${ANSWER_JOURNAL_PREFIX}${journal.execution_id}`, JSON.stringify(journal), { expirationTtl: ANSWER_JOURNAL_TTL_SECONDS })
+}
+
+/** The run's journal, or null when there is none or it is not one. Throws only when KV does. */
+export async function readAnswerJournal(
+  kv: { get(key: string): Promise<string | null> },
+  executionId: string,
+): Promise<AnswerJournal | null> {
+  const raw = await kv.get(`${ANSWER_JOURNAL_PREFIX}${executionId}`)
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as Partial<AnswerJournal>
+    if (v.execution_id !== executionId || typeof v.status !== 'string' || typeof v.completed_at !== 'string') return null
+    return v as AnswerJournal
+  } catch {
+    return null
+  }
+}

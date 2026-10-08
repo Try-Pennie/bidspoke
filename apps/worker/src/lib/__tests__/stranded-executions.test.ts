@@ -780,3 +780,84 @@ describe('runReduceFinalizeStrandedExecutions: zero-row update (#583)', () => {
     expect(result.processed).toBe(0)
   })
 })
+
+/**
+ * #1883, defect A: a run cut off during a database stall kept no record of what
+ * it answered, so the drain could only label it unresolved. The engine now
+ * journals the answer in KV at the answer, and the drain restores it.
+ */
+describe('restoring a stranded run from its answer journal (#1883)', () => {
+  const journal = {
+    execution_id: 'exec-j',
+    started_at: '2026-10-08T12:20:40.000Z',
+    status: 'completed',
+    outcome: 'completed',
+    final_node_namespace: 'reject_response',
+    final_node_id: 'node-9',
+    completed_at: '2026-10-08T12:20:43.700Z',
+    duration_ms: 3700,
+    response_status: 200,
+    response_body: { status: 'rejected' },
+    error_message: null,
+    failed_step_type: null,
+    written_at: '2026-10-08T12:20:43.701Z',
+  }
+
+  it('writes the answer the run actually gave, read from the journal, before any inference', async () => {
+    const { client, updates, stepLookups } = makeSupabase({
+      stranded: [{ id: 'exec-j', started_at: journal.started_at }],
+      stepsByExecutionId: { 'exec-j': [] },
+    })
+    const readJournal = vi.fn(async (id: string) => (id === 'exec-j' ? journal : null))
+    const result = await runReduceFinalizeStrandedExecutions(client as never, { readJournal })
+    expect(result.processed).toBe(1)
+    expect(readJournal).toHaveBeenCalledWith('exec-j')
+    expect(updates[0].payload).toMatchObject({
+      status: 'completed',
+      outcome: 'completed',
+      completed_at: journal.completed_at,
+      duration_ms: 3700,
+      response_status: 200,
+      response_body: { status: 'rejected' },
+      final_node_namespace: 'reject_response',
+      final_node_id: 'node-9',
+      error_message: null,
+    })
+    // The journal is the engine's own record, so no step inference is needed.
+    expect(stepLookups).toEqual([])
+  })
+
+  it('falls back to the existing evidence when there is no journal, or it cannot be read', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: '2026-07-01T01:00:00.000Z' }, { id: 'exec-2', started_at: '2026-07-01T01:00:00.000Z' }],
+      stepsByExecutionId: { 'exec-1': [], 'exec-2': [] },
+    })
+    const readJournal = vi.fn(async (id: string) => {
+      if (id === 'exec-2') throw new Error('kv down')
+      return null
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never, { readJournal })
+    expect(result.processed).toBe(2)
+    expect(updates.map((u) => u.payload.outcome)).toEqual([null, null])
+  })
+
+  it('ignores a journal written for another run', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-j', started_at: journal.started_at }],
+      stepsByExecutionId: { 'exec-j': [] },
+    })
+    const readJournal = vi.fn(async () => ({ ...journal, execution_id: 'someone-else' }))
+    await runReduceFinalizeStrandedExecutions(client as never, { readJournal })
+    expect(updates[0].payload.outcome).toBeNull()
+  })
+
+  it('names the cause as the work after the answer being cancelled, not an isolate eviction', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-2', started_at: '2026-07-01T01:00:00.000Z' }],
+      stepsByExecutionId: {},
+    })
+    await runReduceFinalizeStrandedExecutions(client as never)
+    expect(updates[0].payload.error_message).toMatch(/work after the answer was cancelled before finalize/)
+    expect(updates[0].payload.error_message).not.toMatch(/isolate evicted/)
+  })
+})
