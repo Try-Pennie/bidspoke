@@ -189,5 +189,17 @@ describe('createSupabaseDouble rejects with an Error that keeps what was thrown 
     const write = d.client.from('events').insert(row) as { then: (ok: () => void) => Promise<unknown> }
     await expect(write.then(() => undefined)).rejects.toMatchObject({ message: 'the Supabase double threw a value that is not an Error', cause: 'boom' })
   })
+
+  it('rejects the same way when awaited, and when its read was held, so every path hands back an Error', async () => {
+    const expected = { message: 'the Supabase double threw a value that is not an Error', cause: 'boom' }
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the case under test is a thrown value that is not an Error
+    const row = { get id(): string { throw 'boom' } }
+    await expect((async () => { await createSupabaseDouble({ events: [] }).client.from('events').insert(row) })()).rejects.toMatchObject(expected)
+    const held = createSupabaseDouble({ events: [{ id: 1 }] }, { delayRead: () => Promise.resolve() })
+    // A held read whose filter value throws a string when it is compared.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the case under test is a thrown value that is not an Error
+    const filterValue = { valueOf(): number { throw 'boom' } }
+    await expect((async () => { await held.client.from('events').select('*').gt('id', filterValue) })()).rejects.toMatchObject(expected)
+  })
 })
 

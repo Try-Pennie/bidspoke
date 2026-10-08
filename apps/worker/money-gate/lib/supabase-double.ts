@@ -75,6 +75,11 @@ function sameValue(a: unknown, b: unknown): boolean {
   return scalar(a) && scalar(b) && String(a) === String(b)
 }
 
+/** A thrown value as an Error, keeping a value that is not one as its cause. */
+function asError(e: unknown): Error {
+  return e instanceof Error ? e : new Error('the Supabase double threw a value that is not an Error', { cause: e })
+}
+
 function matches(row: Row, f: Filter): boolean {
   const [op, col, val] = f
   const v = getPath(row, col)
@@ -291,15 +296,19 @@ export function createSupabaseDouble(snapshot: Record<string, Row[]>, doubleOpti
       throwOnError() { return b },
       csv() { unsupported.push(`${table}.csv`); return b },
       then(resolve: (r: Result) => unknown, reject?: (e: unknown) => unknown) {
+        // Every way out hands back an Error, keeping what was thrown as its cause.
+        const fail = (e: unknown): unknown => (reject ? reject(asError(e)) : Promise.reject(asError(e)))
         if (mode === 'select' && doubleOptions.delayRead) {
           const delayRead = doubleOptions.delayRead
-          return delayRead().then(() => run()).then(resolve, reject)
+          return delayRead().then(() => run()).then(resolve, fail)
         }
+        let result: Result
         try {
-          return Promise.resolve(run()).then(resolve, reject)
+          result = run()
         } catch (e) {
-          return reject ? Promise.resolve(reject(e)) : Promise.reject(e instanceof Error ? e : new Error('the Supabase double threw a value that is not an Error', { cause: e }))
+          return Promise.resolve(fail(e))
         }
+        return Promise.resolve(result).then(resolve, fail)
       },
     }
     return b
