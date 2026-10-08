@@ -470,7 +470,8 @@ export default {
       // ceiling, handled by exportTable's clean-stop) and inflow is ~83K/day, so a
       // once-daily run fell permanently behind; 12 runs/day stays well ahead.
       // At :37, NOT :00 -- the top of the hour is the DB's most congested moment
-      // (the :00/:30 reduce_finalize_stranded pg_cron job alone runs 30s+ against
+      // (the reduce_finalize_stranded pg_cron job, at :00 and :30 when this was
+      // set and at :27 and :57 since #1884, alone runs 30s+ against
       // this same table, plus the 5-minute stats refreshes and the hourly
       // bid-matrix sync), and this job's statements carry PostgREST's 8s budget.
       // Pinned to :00 it lost that race on every run (2026-07-03 incident).

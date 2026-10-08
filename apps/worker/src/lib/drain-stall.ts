@@ -2,7 +2,8 @@
  * Daily drain-stall guard (#350).
  *
  * Two pg_cron jobs finalize stranded lead_sightings before their executions
- * purge: reduce_finalize_stranded (08:00 UTC, recoverable) and
+ * purge: reduce_finalize_stranded (every 30 minutes, at :27 and :57 since
+ * #1884, recoverable) and
  * finalize_unrecoverable_stranded (08:30 UTC, the rest, anything >26h old). If
  * either silently fails (permission change, lock contention with the 03:30
  * partition purge, schema drift) the strand backlog re-accumulates with no
