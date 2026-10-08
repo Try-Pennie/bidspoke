@@ -349,6 +349,8 @@ describe('a database that still does not answer', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, T0 + COULD_NOT_CONFIRM_AFTER_MS + 60_000, { claims }))
     expect(sendUnconfirmedWritesAlert).toHaveBeenCalledTimes(1)
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    // It must not read as every record saved while one is still unconfirmed.
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ landed: 1, unconfirmed: 1 })
   })
 
   it('keys a lost execution row found by read back on the read back cause', async () => {

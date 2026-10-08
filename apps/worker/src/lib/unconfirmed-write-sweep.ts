@@ -289,6 +289,9 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   summary.listed = keys.length
   // What this tick resolved, per org, for the slowdown summary (#1881).
   const resolved = new Map<string, SlowdownTally>()
+  // Entries still unreadable this tick, per org: a summary posted beside them
+  // must say so rather than read as every record saved.
+  const stillUnconfirmed = new Map<string, number>()
 
   // Unreadable entries old enough to be reported, by org.
   const unconfirmable = new Map<string, Array<{ key: string; entry: UnconfirmedWrite }>>()
@@ -400,6 +403,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
     // no longer holds the slowdown summary back (it would, until it expired, for
     // an entry whose read is refused for good).
     if (entry.could_not_confirm_alerted_at) summary.unreadable_named++
+    stillUnconfirmed.set(entry.org_id, (stillUnconfirmed.get(entry.org_id) ?? 0) + 1)
     if (startedAtMs - Date.parse(entry.first_seen_at) >= COULD_NOT_CONFIRM_AFTER_MS && !entry.could_not_confirm_alerted_at) {
       const list = unconfirmable.get(entry.org_id) ?? []
       list.push({ key: name, entry })
@@ -415,7 +419,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   // unreadable, none another sweep holds, and the list was not cut short.
   const settled =
     summary.young === 0 && summary.unreadable - summary.unreadable_named - summary.could_not_confirm === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
-  summary.summaries = await carrySlowdownTallies(deps, resolved, settled, startedAtMs)
+  summary.summaries = await carrySlowdownTallies(deps, resolved, settled, startedAtMs, stillUnconfirmed)
 
   if (deps.recordRun && summary.listed > summary.young) {
     await deps.recordRun(startedAtMs, {
@@ -438,6 +442,7 @@ async function carrySlowdownTallies(
   resolved: Map<string, SlowdownTally>,
   settled: boolean,
   nowMs: number,
+  stillUnconfirmed: Map<string, number> = new Map(),
 ): Promise<number> {
   const stored = await readTallies(deps.kv)
   const hadStored = Object.keys(stored).length > 0
@@ -458,7 +463,7 @@ async function carrySlowdownTallies(
         delete stored[orgId]
         continue
       }
-      const done = await postSummary(deps, orgId, tally)
+      const done = await postSummary(deps, orgId, tally, stillUnconfirmed.get(orgId) ?? 0)
       if (done) {
         delete stored[orgId]
         posted++
@@ -478,7 +483,7 @@ async function carrySlowdownTallies(
 }
 
 /** True when the summary is delivered, or there is nobody to deliver it to by choice. */
-async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: SlowdownTally): Promise<boolean> {
+async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: SlowdownTally, unconfirmed: number): Promise<boolean> {
   try {
     const slack = await deps.slackFor(orgId)
     if (!slack) {
@@ -498,6 +503,7 @@ async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: Slo
         lost: tally.lost,
         lost_runs: Object.entries(tally.lost_runs ?? {}).map(([execution_id, r]) => ({ execution_id, ...r })),
         steps_missing: tally.steps_missing,
+        unconfirmed,
         from: tally.from,
         to: tally.to,
       },

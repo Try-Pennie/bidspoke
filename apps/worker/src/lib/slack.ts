@@ -1171,6 +1171,11 @@ export interface SlowdownSummaryAlert {
   landed: number
   /** Outcome records that never landed. */
   lost: number
+  /**
+   * Records still unreadable when the summary went out, each already named by
+   * the Records could not be confirmed alert (the database was still down).
+   */
+  unconfirmed?: number
   /** The runs those records belong to, and which records each lost. */
   lost_runs?: Array<{ workflow_id: string; workflow_name: string; execution_id: string; labels: string[] }>
   /** Runs whose step rows a read back found incomplete. */
@@ -1195,8 +1200,13 @@ export async function sendSlowdownSummaryAlert(
   const from = clock(payload.from)
   const to = clock(payload.to)
   const when = from === to ? `At ${from} ET` : `Between ${from} and ${to} ET`
-  const allLanded = payload.lost === 0 && payload.steps_missing === 0
-  const title = allLanded ? 'Database slowdown, every record saved' : 'Database slowdown, some records not saved'
+  const unconfirmed = payload.unconfirmed ?? 0
+  const allLanded = payload.lost === 0 && payload.steps_missing === 0 && unconfirmed === 0
+  const title = allLanded
+    ? 'Database slowdown, every record saved'
+    : payload.lost > 0 || payload.steps_missing > 0
+      ? 'Database slowdown, some records not saved'
+      : 'Database slowdown, some records not yet confirmed'
   const runs = payload.runs === 1 ? '1 run' : `${payload.runs} runs`
   const shown = payload.workflows.slice(0, 5)
   const others = payload.workflows.length - shown.length
@@ -1209,13 +1219,18 @@ export async function sendSlowdownSummaryAlert(
     : [
         `Bidspoke read the records back afterwards: ${payload.landed} of ${payload.records} landed.`,
         payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did.` : '',
+        unconfirmed > 0
+          ? `${unconfirmed === 1 ? '1 record still could not be read back' : `${unconfirmed} records still could not be read back`}, and the Records could not be confirmed alert names ${unconfirmed === 1 ? 'it' : 'them'}.`
+          : '',
         payload.steps_missing > 0 ? `${payload.steps_missing === 1 ? '1 run is' : `${payload.steps_missing} runs are`} missing some step records, so the step by step view of ${payload.steps_missing === 1 ? 'that run' : 'those runs'} is incomplete.` : '',
       ].filter(Boolean).join(' ')
   const fix = allLanded
     ? '*Fix:* Nothing to do. If this keeps happening, check the database load on Supabase.'
     : payload.lost > 0
       ? '*Fix:* Re-derive the lost records from the runs below. Missing step records cannot be recovered and need nothing.'
-      : '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
+      : payload.steps_missing > 0
+        ? '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
+        : '*Fix:* Nothing to redo yet. Bidspoke keeps reading the unconfirmed records back and alerts on any it finds missing.'
   const lostRuns = payload.lost_runs ?? []
   const listed = lostRuns.slice(0, 10)
   const lostLinks =

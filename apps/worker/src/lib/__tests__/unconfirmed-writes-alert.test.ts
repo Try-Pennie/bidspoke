@@ -97,6 +97,14 @@ describe('slowdown summary (#1881)', () => {
     for (const c of BANNED) expect(text).not.toContain(c)
   })
 
+  it('does not say every record was saved while some are still unconfirmed', async () => {
+    await sendSlowdownSummaryAlert(conn, { ...base, records: 61, landed: 61, lost: 0, steps_missing: 0, unconfirmed: 1 }, 'https://app.test')
+    const text = textOf()
+    expect(text).not.toContain('every record saved')
+    expect(text).toContain('1 record still could not be read back')
+    expect(text).toContain('Records could not be confirmed')
+  })
+
   it('says how many never landed and what to do about them', async () => {
     await sendSlowdownSummaryAlert(conn, {
       ...base,
