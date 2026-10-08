@@ -94,7 +94,7 @@ async function replayAll(e: GateEnv): Promise<void> {
 
 /**
  * The same lead twice through the engine under test, once as usual and once with
- * every database read held past the click check's 800 ms budget (#1872). A replay
+ * every table read held past the click check's 800 ms budget (#1872). A replay
  * that depends on how fast it runs gave base and head different answers with
  * nothing changed, so the two records here must be identical. The fixture is the
  * one that flipped on 2026-10-07: a known no from Tripoint offered to the click

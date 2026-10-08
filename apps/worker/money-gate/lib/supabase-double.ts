@@ -110,8 +110,9 @@ const RELATIONS: Record<string, { local: string; foreign: string; one: boolean }
 
 export interface SupabaseDoubleOptions {
   /**
-   * Holds every read until it settles (#1872), so a replay can be run as if the
-   * database were slow and compared with one that was not. Writes are never held.
+   * Holds every table read (a select) until it settles (#1872), so a replay can be
+   * run as if the database were slow and compared with one that was not. Writes and
+   * rpc calls are never held.
    * The caller supplies the wait, so a replay that lifts the engine's timers
    * cannot stretch it.
    */

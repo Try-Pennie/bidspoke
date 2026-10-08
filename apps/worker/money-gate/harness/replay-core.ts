@@ -388,7 +388,7 @@ export interface RunHooks {
    */
   postResponseLimitMs?: number
   /**
-   * Holds every database read this long (#1872), to prove a replay gives the same
+   * Holds every table read (not rpc calls) this long (#1872), to prove a replay gives the same
    * record however slow its reads are. The wait uses the harness's own timer, which
    * a run's lifted engine timers cannot stretch.
    */

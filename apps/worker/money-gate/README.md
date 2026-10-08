@@ -55,8 +55,8 @@ because its hung database ends only when the caller's own deadline fires. Code
 node scripts run in the nested workerd, out of reach of the lift, and keep real
 timers: their retry waits are meant to fire.
 
-The replay also runs one lead twice, once as usual and once with every database
-read held past the click check's budget (`dbReadDelayMs`), and fails on any
+The replay also runs one lead twice, once as usual and once with every table
+read (rpc calls are not held) held past the click check's budget (`dbReadDelayMs`), and fails on any
 difference between the two records. It is the fixture that flipped on 2026-10-07,
 and it costs a few seconds per side.
 
