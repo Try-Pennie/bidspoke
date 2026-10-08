@@ -71,23 +71,37 @@ async function updateExecutionOnce(
   started_at: string,
   update: Record<string, unknown>
 ): Promise<{ error: DbError | null }> {
-  const target = `workflow_executions (id=${id}): the execution record is missing`
-
   // Use started_at for partition pruning. A zero-row match here is NOT yet a
   // missing row, so onMiss stays silent and we fall through to the id-only
   // statement below.
-  const first = await requireRowsAffected(target, () =>
-    supabase.from('workflow_executions').update(update).eq('id', id).eq('started_at', started_at).select('id')
-  )
+  const first = await updateExecutionInPartitionOnce(supabase, id, started_at, update)
   if (first.error && !isNoRowMatchedError(first.error)) return { error: first.error }
   if (first.rows.length) return { error: null }
 
   // An UPDATE without the partition key still scans every partition, so zero
   // rows here means the row genuinely does not exist anywhere.
-  const second = await requireRowsAffected(target, () =>
+  const second = await requireRowsAffected(missingRowTarget(id), () =>
     supabase.from('workflow_executions').update(update).eq('id', id).select('id')
   )
   return { error: second.error }
+}
+
+function missingRowTarget(id: string): string {
+  return `workflow_executions (id=${id}): the execution record is missing`
+}
+
+// The partition-keyed statement on its own: (id, started_at) is the primary key,
+// so it prunes to the one partition that can hold the row. Returns the matched
+// ids, and a zero-row match comes back as NO_ROW_MATCHED rather than success.
+function updateExecutionInPartitionOnce(
+  supabase: SupabaseClient,
+  id: string,
+  started_at: string,
+  update: Record<string, unknown>
+): Promise<{ rows: unknown[]; error: DbError | null }> {
+  return requireRowsAffected(missingRowTarget(id), () =>
+    supabase.from('workflow_executions').update(update).eq('id', id).eq('started_at', started_at).select('id')
+  )
 }
 
 // #1214: `logs` is `{ level, message, ts }[]` and `message` is a string, so the
@@ -295,12 +309,22 @@ export interface ExecutionCreateFields {
 }
 
 // #584: recreate a lost workflow_executions row from the create fields plus the
-// final-state finalize columns. Runs only after updateExecutionOnce confirmed the
-// row is genuinely absent (both partition-keyed and id-only statements matched
-// zero rows), so a plain insert is correct. A concurrent writer that landed the
-// row first surfaces as a duplicate, which is success. Any other error is
-// returned so the caller still dead-letters it (#487). Uses the shared transient
-// retry ladder so a schema-cache blip during reconstruction self-heals.
+// final-state finalize columns. Runs only after updateExecutionOnce found no row
+// (both partition-keyed and id-only statements matched zero rows), so a plain
+// insert is correct. Any error other than a duplicate is returned so the caller
+// still dead-letters it (#487). Uses the shared transient retry ladder so a
+// schema-cache blip during reconstruction self-heals.
+//
+// #1883: a duplicate is NOT a reconstruction. It means the original create was
+// still in flight when finalize looked and landed at the same moment, so the row
+// that exists is the create's, still at 'running', and nothing of the final
+// state is in it. It is reported as `landedConcurrently` for the caller to write
+// the final state to that row.
+type ReconstructOutcome =
+  | { kind: 'reconstructed' }
+  | { kind: 'landedConcurrently' }
+  | { kind: 'failed'; error: DbError }
+
 async function reconstructExecutionRecord(
   supabase: SupabaseClient,
   id: string,
@@ -308,13 +332,17 @@ async function reconstructExecutionRecord(
   update: Record<string, unknown>,
   createFields: ExecutionCreateFields,
   timing?: RetryTiming,
-): Promise<DbError | null> {
+): Promise<ReconstructOutcome> {
   const row = { id, started_at, trigger_type: 'http_webhook', ...createFields, ...update }
+  let landedConcurrently = false
   const { error } = await withDbRetry(async () => {
     const res = await insertRowsOnce(supabase, 'workflow_executions', [row])
-    // A duplicate means the row exists now (success, not a loss). Report it as
-    // no-error so withDbRetry stops immediately without burning the ladder.
-    if (res.error && isDuplicateError(res.error)) return { error: null }
+    // Stop the ladder at once: the row exists, and retrying the insert cannot
+    // put the final state into it.
+    if (res.error && isDuplicateError(res.error)) {
+      landedConcurrently = true
+      return { error: null }
+    }
     return res
   }, DB_WRITE_RETRY_DELAYS_MS, timing)
   if (error) {
@@ -324,9 +352,45 @@ async function reconstructExecutionRecord(
       status: update.status,
       error: error.message,
     })
+    return { kind: 'failed', error }
+  }
+  if (landedConcurrently) return { kind: 'landedConcurrently' }
+  console.warn('[step-logger] workflow_executions row reconstructed at finalize (no row existed when finalize looked)', {
+    id,
+    started_at,
+    status: update.status,
+  })
+  return { kind: 'reconstructed' }
+}
+
+// #1883: the rebuild insert hit a duplicate, so the original create landed while
+// finalize was looking. Write the final state to that row, through the same
+// partition-keyed statement and on the same clock and budget as the finalize
+// ladder, and report success only when the update matched it. A zero-row match
+// is returned as NO_ROW_MATCHED (permanent, so it is not retried) for the caller
+// to dead-letter.
+async function finalizeConcurrentlyCreatedRow(
+  supabase: SupabaseClient,
+  id: string,
+  started_at: string,
+  update: Record<string, unknown>,
+  timing?: RetryTiming,
+): Promise<DbError | null> {
+  const { error } = await withDbRetry(
+    async () => ({ error: (await updateExecutionInPartitionOnce(supabase, id, started_at, update)).error }),
+    UPDATE_RETRY_DELAYS_MS,
+    timing,
+  )
+  if (error) {
+    console.error('[step-logger] workflow_executions original create landed concurrently with the finalize rebuild, and the final state did not reach it', {
+      id,
+      started_at,
+      status: update.status,
+      error: error.message,
+    })
     return error
   }
-  console.warn('[step-logger] workflow_executions row reconstructed at finalize (base insert had failed)', {
+  console.warn('[step-logger] workflow_executions original create landed concurrently with the finalize rebuild; final state written to it', {
     id,
     started_at,
     status: update.status,
@@ -370,11 +434,13 @@ export async function updateExecutionRecord(
   // omitted, a missing row still returns NO_ROW_MATCHED for the caller to
   // dead-letter (the pre-#584 behavior, kept for direct callers).
   createFields?: ExecutionCreateFields,
-  // #629: fired once after a missing base row is successfully reconstructed (or
-  // a concurrent writer landed it), i.e. the FK parent now exists. The engine
-  // uses this to re-flush the step logs whose insert was blocked while the row
-  // was missing, so the recovered run keeps its step-by-step trace. Not called
-  // on a normal update or when the reconstruction insert itself fails.
+  // #629: fired once after a missing base row is successfully reconstructed,
+  // i.e. the FK parent now exists. The engine uses this to re-flush the step
+  // logs whose insert was blocked while the row was missing, so the recovered
+  // run keeps its step-by-step trace. Not called on a normal update, when the
+  // reconstruction insert itself fails, or when the original create landed
+  // concurrently (#1883): that create's own flush is chained behind it, so a
+  // re-flush would write every step twice.
   onReconstructed?: () => void,
   // #1850: the clock and the run's post-response budget, shared with the
   // reconstruction below.
@@ -411,11 +477,18 @@ export async function updateExecutionRecord(
       // the create fields. The row carries the FINAL status from `update` (not
       // 'running'), so it is a complete terminal record on the first write.
       if (createFields) {
-        const reconError = await reconstructExecutionRecord(supabase, id, started_at, update, createFields, timing)
-        // Row now exists (reconstructed, or a concurrent writer's duplicate).
-        // Signal the caller so it can re-flush the FK-blocked step logs (#629).
-        if (reconError === null) onReconstructed?.()
-        return reconError
+        const recon = await reconstructExecutionRecord(supabase, id, started_at, update, createFields, timing)
+        if (recon.kind === 'failed') return recon.error
+        // #1883: the original create landed at the same moment. Nothing was
+        // rebuilt, and its own step log flush is chained behind it, so the
+        // re-flush below must not run; the final state still has to be written.
+        if (recon.kind === 'landedConcurrently') {
+          return finalizeConcurrentlyCreatedRow(supabase, id, started_at, update, timing)
+        }
+        // The row was rebuilt with the final state in it. Signal the caller so
+        // it can re-flush the FK-blocked step logs (#629).
+        onReconstructed?.()
+        return null
       }
       console.error('[step-logger] workflow_executions update matched zero rows, execution record lost', {
         id,
