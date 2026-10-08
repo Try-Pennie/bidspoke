@@ -17,7 +17,7 @@
  * routes pass (lib/run-kinds.ts), so base and head are compared on all three.
  */
 import { env, reset } from 'cloudflare:test'
-import { it, expect } from 'vitest'
+import { it, expect, vi } from 'vitest'
 import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 import { scanForPersonalData } from '../lib/fixture-scan'
 import { generatePayload } from '../lib/generate'
@@ -157,3 +157,23 @@ it('refuses a lifted run with a post-response cut before it touches anything glo
   expect(globalThis.fetch).toBe(fetchBefore)
   expect(Date.now()).not.toBe(FIXED_TIME_MS)
 })
+
+/**
+ * A run whose setup throws after the harness has replaced fetch, the console, the
+ * clock and randomness puts every one of them back, and still fails by name, so a
+ * setup mistake cannot leak into the next fixture or be recorded as a result.
+ */
+it('puts back everything it replaced when its own setup throws, and passes the error on', async () => {
+  const e = env as unknown as GateEnv
+  const def = definitions[0]
+  const shape = shapes.workflows.find((w) => w.workflow_id === def.id) as WorkflowShape
+  const fetchBefore = globalThis.fetch
+  // An unknown run kind is refused by runOptions, which runs after every replacement.
+  await expect(runOnce(e, def, { id: 'setup-throws', seed: 'setup-throws', kind: 'bogus' as never }, {}, { name: 'setup-throws' }, {}, shape))
+    .rejects.toThrow('no options for run kind bogus')
+  expect(globalThis.fetch).toBe(fetchBefore)
+  expect(Date.now()).not.toBe(FIXED_TIME_MS)
+  expect(vi.isMockFunction(Math.random)).toBe(false)
+  expect(vi.isMockFunction(console.log)).toBe(false)
+})
+
