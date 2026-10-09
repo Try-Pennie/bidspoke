@@ -37,13 +37,13 @@ describe('the memory short alert', () => {
     expect(text()).toMatch(/9:00 AM EDT/)
     expect(text()).toMatch(/How to fix/)
     expect(text()).toMatch(/Compute and Disk/)
-    expect(text()).not.toMatch(/moving memory to disk/)
+    expect(text()).not.toMatch(/moving to disk/)
     expect(text()).not.toMatch(/undefined|NaN/)
   })
 
   it('says it was moving memory to disk only when swapping was seen, with how much is there now', async () => {
     await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 2_400_000_000, lowFree: false, swapping: true, swapUsedBytes: 536_870_912 })
-    expect(text()).toMatch(/moving memory to disk/)
+    expect(text()).toMatch(/memory moving to disk/)
     expect(text()).toMatch(/537 MB/)
     expect(text()).not.toMatch(/less than 15 percent/)
   })
