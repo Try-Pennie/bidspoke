@@ -216,7 +216,12 @@ interface HostState {
  * skipping left the probe blind to that host on every later run while its heartbeat said it
  * was running (#1933).
  */
-type StateRead = { kind: 'absent' } | { kind: 'unreadable'; error: string } | { kind: 'malformed'; error: string } | { kind: 'present'; state: HostState }
+type StateRead =
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; error: string }
+  /** `controlPassedAt` is kept when it alone still reads as a time: it is recorded once and never re-derived (L557). */
+  | { kind: 'malformed'; error: string; controlPassedAt?: string }
+  | { kind: 'present'; state: HostState }
 
 const PROBE_STATES: readonly ProbeState[] = ['reachable', 'blocked', 'unreachable']
 const isTime = (v: unknown) => typeof v === 'string' && Number.isFinite(Date.parse(v))
@@ -233,7 +238,9 @@ async function readState(kv: RecoveryKv, host: string): Promise<StateRead> {
     const parsed = JSON.parse(raw) as Partial<HostState>
     const valid = PROBE_STATES.includes(parsed.state as ProbeState) && typeof parsed.reason === 'string' && isTime(parsed.since) &&
       (parsed.controlPassedAt === undefined || isTime(parsed.controlPassedAt))
-    if (!valid) return { kind: 'malformed', error: 'the state record is not one this probe wrote' }
+    if (!valid) {
+      return { kind: 'malformed', error: 'the state record is not one this probe wrote', ...(isTime(parsed.controlPassedAt) ? { controlPassedAt: parsed.controlPassedAt } : {}) }
+    }
     return { kind: 'present', state: parsed as HostState }
   } catch (e) {
     return { kind: 'malformed', error: formatErr(e) }
@@ -295,9 +302,11 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       deps.log(`[partner-reachability] event=partner_probe host=${host} state=unreadable reason=${JSON.stringify(prior.error)}`)
       continue
     }
+    // Replaced by the write below once this host is judged; a run that holds it unmeasured
+    // writes nothing, so this says only that the record is malformed.
     if (prior.kind === 'malformed') {
-      summary.errors.push(`${host}: state replaced: ${prior.error}`)
-      deps.log(`[partner-reachability] event=partner_probe host=${host} state_reset=malformed reason=${JSON.stringify(prior.error)}`)
+      summary.errors.push(`${host}: state malformed, a fresh record is written once this host is judged: ${prior.error}`)
+      deps.log(`[partner-reachability] event=partner_probe host=${host} state_malformed=true reason=${JSON.stringify(prior.error)}`)
     }
 
     // A silent control means the probe cannot fetch. Hold every non-blocked reading of a
@@ -310,9 +319,10 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
 
     summary[reading.state] += 1
     const previous = prior.kind === 'present' ? prior.state : null
+    const keptControlPass = previous?.controlPassedAt ?? (prior.kind === 'malformed' ? prior.controlPassedAt : undefined)
     const changed = previous === null || previous.state !== reading.state
     const state: HostState = changed
-      ? { state: reading.state, reason: reading.reason, since: iso(nowMs), ...(previous?.controlPassedAt ? { controlPassedAt: previous.controlPassedAt } : {}) }
+      ? { state: reading.state, reason: reading.reason, since: iso(nowMs), ...(keptControlPass ? { controlPassedAt: keptControlPass } : {}) }
       : { ...previous, reason: reading.reason }
     let dirty = changed
     const heldForMs = nowMs - Date.parse(state.since)

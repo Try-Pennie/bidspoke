@@ -544,13 +544,21 @@ describe('failures of the probe\'s own machinery', () => {
       await kv.put(stateKey('oauth.prd.ffngcp.com'), bad)
       const p = { ...healthy(), 'oauth.prd.ffngcp.com': { kind: 'throw', error: 'connect ECONNRESET' } as Answer }
       const first = await tick(p)
-      expect(first.errors.some((e) => e.includes('oauth.prd.ffngcp.com') && e.includes('state replaced')), bad).toBe(true)
-      expect(logs.some((l) => l.includes('host=oauth.prd.ffngcp.com') && l.includes('state_reset=malformed')), bad).toBe(true)
+      expect(first.errors.some((e) => e.includes('oauth.prd.ffngcp.com') && e.includes('state malformed')), bad).toBe(true)
+      expect(logs.some((l) => l.includes('host=oauth.prd.ffngcp.com') && l.includes('state_malformed=true')), bad).toBe(true)
       expect(JSON.parse(kv.store.get(stateKey('oauth.prd.ffngcp.com'))!.value).state, bad).toBe('unreachable')
       // Judged normally from here: the host reads unreachable long enough to alert.
       await ticksFor(UNREACHABLE_ALERT_AFTER_MS, p)
       expect(sent.filter((s) => s.kind === 'unreachable').length, bad).toBe(1)
     }
+  })
+
+  it('keeps a still readable control pass time when it replaces a malformed control record', async () => {
+    const { tick, kv } = makeDeps()
+    await kv.put(stateKey(CONTROL_HOST), JSON.stringify({ state: 'blocked', reason: 'x', since: 'not a time', controlPassedAt: '2026-09-01T00:00:00.000Z' }))
+    await tick(healthy())
+    const stored = JSON.parse(kv.store.get(stateKey(CONTROL_HOST))!.value)
+    expect(stored.controlPassedAt).toBe('2026-09-01T00:00:00.000Z')
   })
 
   it('one host throwing inside the probe does not stop the others being recorded', async () => {
