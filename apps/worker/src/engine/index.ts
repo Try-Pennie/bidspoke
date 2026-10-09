@@ -42,6 +42,7 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
+import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
 import { redactPii, parsePiiFields } from './pii-redactor'
 import { isNoRowMatchedError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
@@ -786,7 +787,7 @@ export async function executeWorkflow(
           ) {
             // A walk still out at its cut-off is not a failed write: its outcome is
             // unknown, so it is counted under its own label (#1860).
-            const label = continuationError instanceof ContinuationUnfinishedError ? 'continuation_unfinished' : 'sf_writeback'
+            const label = continuationError instanceof ContinuationUnfinishedError ? CONTINUATION_UNFINISHED_LABEL : 'sf_writeback'
             executionCtx.waitUntil(
               recordOutcomeDeadLetter(label, continuationError, { ...outcomeDeps, supabase: runDb }, {
                 workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),

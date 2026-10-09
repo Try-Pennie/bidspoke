@@ -42,6 +42,7 @@ import { executeNode } from '../nodes/index'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert } from '../../lib/slack'
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
+import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD } from '../durability'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
@@ -206,11 +207,20 @@ function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJo
 async function run(
   availability: (clock: VirtualClock, table: string, op: string) => Availability,
   envExtra: Record<string, string> = {},
-  options: { slowFirstJournalPut?: boolean; refuseSecondJournalPutOnce?: boolean } = {},
+  options: {
+    slowFirstJournalPut?: boolean
+    refuseSecondJournalPutOnce?: boolean
+    // Pre-seed the per-label dead-letter window counter so a single run of this
+    // helper can cross a label's threshold (continuation_unfinished needs 3, #1942).
+    seedWindows?: Record<string, number>
+  } = {},
 ) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
   const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce)
+  for (const [label, count] of Object.entries(options.seedWindows ?? {})) {
+    idempotency.store.set(`outcome-deadletter-window:org-1:${label}`, String(count))
+  }
   const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
@@ -468,6 +478,10 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     // Unfinished is not a failed Salesforce write: counted under its own label.
     expect(deadLetters('continuation_unfinished')).toHaveLength(1)
     expect(deadLetters('sf_writeback')).toEqual([])
+    // A single unfinished continuation is "unknown, probably fine", so it is
+    // recorded (the window counter above and the 'degraded' row) but does NOT
+    // page: the label needs several in the window to alert (#1942).
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
   })
 
   // #1882: the reason and the alert pointed at the Salesforce update, which had
@@ -500,10 +514,17 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       if (node.namespace === 'under_10000_sf_post') return { output: { posted: true } }
       return late()
     })
-    const { db, result } = await run((c) => {
-      late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
-      return 'up'
-    })
+    // The window is seeded to one below the threshold so THIS unfinished
+    // continuation is the one that pages (#1942), letting us assert the alert
+    // payload names the step the walk was on.
+    const { db, result } = await run(
+      (c) => {
+        late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
+        return 'up'
+      },
+      {},
+      { seedWindows: { continuation_unfinished: CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1 } },
+    )
     const reason = String(db.executions.get(result.executionId)?.error_message)
     expect(reason).toContain('Achieve under 10k (achieve_under_10k)')
     expect(reason).not.toContain('under_10000_sf_post')

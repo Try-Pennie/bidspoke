@@ -13,7 +13,13 @@ vi.mock('../../lib/slack', () => ({
 }))
 
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../../lib/slack'
-import { writeOutcome, writeObservability, recordOutcomeDeadLetter } from '../durability'
+import {
+  writeOutcome,
+  writeObservability,
+  recordOutcomeDeadLetter,
+  OUTCOME_DEAD_LETTER_THRESHOLD,
+  CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD,
+} from '../durability'
 import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { DB_WRITE_RETRY_DELAYS_MS, READ_BACK_MISSING_CODE } from '../../lib/db-retry'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
@@ -191,6 +197,47 @@ describe('recordOutcomeDeadLetter', () => {
       expect.objectContaining({ error_code: 'BIDSPOKE_NO_ROW_MATCHED' }),
       'https://app.test',
     )
+  })
+})
+
+// #1942: a continuation that did not finish in time is "unknown, probably fine",
+// not a confirmed loss, so its label pages only when SEVERAL land in the window
+// (a real upstream slowdown), while the confirmed-loss labels still page on the
+// first. Every occurrence is still recorded on the run regardless, so the higher
+// bar delays the page, it does not hide the evidence.
+describe('continuation_unfinished has a higher dead-letter threshold (#1942)', () => {
+  const lossCountOf = (callIndex: number) =>
+    (vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.at(callIndex)![1] as unknown as { window_loss_count: number })
+      .window_loss_count
+
+  it('is strictly higher than the confirmed-loss threshold', () => {
+    expect(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD).toBeGreaterThan(OUTCOME_DEAD_LETTER_THRESHOLD)
+  })
+
+  it('stays silent below the threshold, then pages reporting the full window count', async () => {
+    const kv = fakeKv()
+    // Every occurrence below the threshold is counted in the window but not paged.
+    for (let i = 0; i < CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1; i++) {
+      const sent = await recordOutcomeDeadLetter('continuation_unfinished', new Error('slow'), deps(kv))
+      expect(sent).toBe(false)
+    }
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    expect(kv.store.get('outcome-deadletter-window:org-1:continuation_unfinished')).toBe(
+      String(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1),
+    )
+
+    // The occurrence that reaches the threshold pages, reporting the accumulated count.
+    const sent = await recordOutcomeDeadLetter('continuation_unfinished', new Error('slow'), deps(kv))
+    expect(sent).toBe(true)
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+    expect(lossCountOf(0)).toBe(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD)
+  })
+
+  it('does not change the confirmed-loss labels, which still page on the first loss', async () => {
+    const kv = fakeKv()
+    const sent = await recordOutcomeDeadLetter('sf_writeback', new Error('boom'), deps(kv))
+    expect(sent).toBe(true)
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
 })
 
