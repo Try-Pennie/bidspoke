@@ -2725,7 +2725,7 @@ export async function sendDatabaseMemoryShortAlert(
   if (payload.lowFree) signs.push(`less than ${floor} percent of its memory free`)
   if (payload.swapping) signs.push(`memory moving to disk, with ${decimalSize(payload.swapUsedBytes)} there now`)
   const lines = [
-    `Since ${etTime(Date.parse(payload.since))} every reading has found the database short of memory. Over that stretch, readings found ${signs.join(', and ')}. ` +
+    `Since ${etTime(Date.parse(payload.since))} every reading that could be taken has found the database short of memory. Over that stretch, readings found ${signs.join(', and ')}. ` +
       `The least free was ${decimalSize(payload.lowestAvailableBytes)}, ${share} percent of its ${decimalSize(payload.totalBytes)}. ` +
       'When it runs out entirely every query slows at once, which is how the stall of Oct 8 began.',
   ]

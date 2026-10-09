@@ -32,6 +32,8 @@ describe('the memory short alert', () => {
   it('names the size, the lowest free figure as a share, and since when, in Eastern time', async () => {
     await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowFree: true, swapping: false })
     expect(text()).toMatch(/short of memory/)
+    // A failed read does not break the stretch, so it may claim only the readings taken.
+    expect(text()).toMatch(/every reading that could be taken/)
     expect(text()).toMatch(/401 MB/)
     expect(text()).toMatch(/10 percent of its 4\.0 GB/)
     expect(text()).toMatch(/9:00 AM EDT/)
