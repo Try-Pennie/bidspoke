@@ -110,6 +110,7 @@ jobs:
           pnpm --filter @bidspoke/buyer-profile test
           pnpm --filter @bidspoke/node-types test
           pnpm --filter @bidspoke/porting-evidence test
+          pnpm --filter @bidspoke/workflow-definition test
           pnpm --filter compare-outbound test
           pnpm --filter ops-outbound test
           pnpm --filter worker-tail test

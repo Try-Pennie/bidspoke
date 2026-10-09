@@ -19,6 +19,7 @@
     "@bidspoke/buyer-profile": "workspace:*",
     "@bidspoke/node-types": "workspace:*",
     "@bidspoke/porting-evidence": "workspace:*",
+    "@bidspoke/workflow-definition": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "hono": "^4.13.12"
   },

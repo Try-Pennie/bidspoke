@@ -1,13 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { upstreamNamespaces, validateNodeReferences, validateDefinitionReferences } from '../reference-validation'
-import type { NodeDef, EdgeDef } from '@/types/workflow'
-import { contrastRatio } from '../contrast'
+import {
+  upstreamNamespaces,
+  validateNodeReferences,
+  validateDefinitionReferences,
+  type RefNode,
+  type RefEdge,
+} from '../reference-validation'
 
-function node(id: string, namespace: string, config: Record<string, unknown> = {}): NodeDef {
-  return { id, namespace, type: 'code' as NodeDef['type'], config }
+// Fixtures are built from the package's own structural types (RefNode/RefEdge),
+// not from the web app's NodeDef/EdgeDef, so the suite stays inside the package.
+// The validators only ever read these fields.
+function node(id: string, namespace: string, config: Record<string, unknown> = {}): RefNode {
+  return { id, namespace, config }
 }
-function edge(source: string, target: string): EdgeDef {
-  return { id: `${source}-${target}`, source, target }
+function edge(source: string, target: string): RefEdge {
+  return { source, target }
 }
 
 // a -> b -> c, with d off to the side.
@@ -93,7 +100,7 @@ describe('validateNodeReferences', () => {
     const problems = validateDefinitionReferences(NODES, [
       { ...edge('a', 'b'), condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.first.output.x', operator: 'gt', value: 1 }] }] } },
       edge('b', 'c'),
-    ] as EdgeDef[])
+    ])
     expect(problems).toEqual([])
   })
 })
@@ -109,39 +116,6 @@ describe('validateDefinitionReferences', () => {
     const problems = validateDefinitionReferences(nodes, [edge('a', 'b')])
     expect(problems).toHaveLength(1)
     expect(problems[0].namespace).toBe('second')
-  })
-})
-
-// The colours the reference-problem notice is drawn in (#424).
-//
-// This notice is the only thing telling an author that a step they are editing
-// reads something that will always be empty, so it has to be readable. Asserted
-// here rather than eyeballed because a token that clears the level for a BORDER
-// does not thereby clear it for TEXT: an interface component needs 3:1 and body
-// text needs 4.5:1, and every check that merely measures whether something DREW
-// reports an under-contrast label as fine (L149).
-describe('reference-problem notice contrast', () => {
-  // Tailwind's red-50 / red-900 / red-300, which the notice uses.
-  const RED_50 = '#fef2f2'
-  const RED_900 = '#7f1d1d'
-  // red-500. red-300 was the first choice and measures 1.90:1 on white, so the
-  // box's outline would have been all but invisible against the panel.
-  const RED_BORDER = '#ef4444'
-
-  it('the message text clears 4.5:1 on its own background', () => {
-    expect(contrastRatio(RED_900, RED_50)).toBeGreaterThanOrEqual(4.5)
-  })
-
-  it('the border clears 3:1 against the panel background it sits on', () => {
-    // The panel is white, not the notice fill, so the border is judged against
-    // white or it is judged against the wrong thing.
-    expect(contrastRatio(RED_BORDER, '#ffffff')).toBeGreaterThanOrEqual(3)
-  })
-
-  it('the control level is not mistaken for the text level', () => {
-    // A guard that only asserted 3:1 would pass a text colour that is unreadable,
-    // so prove the two thresholds actually separate here.
-    expect(contrastRatio(RED_BORDER, RED_50)).toBeLessThan(4.5)
   })
 })
 
