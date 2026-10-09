@@ -372,6 +372,28 @@ describe('when the alert cannot be delivered', () => {
   })
 })
 
+describe('a state record it cannot use', () => {
+  it('replaces a malformed record and carries on, so one bad write cannot blind every later run', async () => {
+    const h = harness()
+    await h.kv.put(DATABASE_MEMORY_STATE_KEY, '{"state":"short","since":"not a time"}')
+    h.setFeed(h.reading(LOW))
+    const first = await runDatabaseMemoryCheck(h.deps)
+    expect(first.state).toBe('short')
+    expect(first.errors.join(' ')).toMatch(/state replaced/)
+    expect(h.logs.some((l) => l.includes('state_reset=malformed'))).toBe(true)
+    await h.runFor(15, () => h.reading(LOW))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+  })
+
+  it('replaces a record that is not JSON at all', async () => {
+    const h = harness()
+    await h.kv.put(DATABASE_MEMORY_STATE_KEY, 'garbage')
+    const s = await runDatabaseMemoryCheck(h.deps)
+    expect(s.state).toBe('ok')
+    expect(JSON.parse(h.kv.store.get(DATABASE_MEMORY_STATE_KEY)!.value).state).toBe('ok')
+  })
+})
+
 describe('local development', () => {
   it('reads and logs, but never posts', async () => {
     const h = harness({ env: { LOCAL_DEV: 'true' } })

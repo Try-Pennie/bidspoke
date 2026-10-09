@@ -142,7 +142,12 @@ interface MemoryState {
   swapping?: boolean
 }
 
-type StateRead = { kind: 'absent' } | { kind: 'unreadable'; error: string } | { kind: 'present'; state: MemoryState }
+/**
+ * A read that THREW is a storage outage and skips the run. A record that reads but cannot be
+ * parsed is permanent, so it is replaced rather than skipped: skipping would leave the check
+ * blind on every later run while its heartbeat said it was running.
+ */
+type StateRead = { kind: 'absent' } | { kind: 'unreadable'; error: string } | { kind: 'malformed'; error: string } | { kind: 'present'; state: MemoryState }
 
 async function readState(kv: RecoveryKv): Promise<StateRead> {
   let raw: string | null
@@ -154,10 +159,11 @@ async function readState(kv: RecoveryKv): Promise<StateRead> {
   if (raw === null) return { kind: 'absent' }
   try {
     const parsed = JSON.parse(raw) as Partial<MemoryState>
-    if (typeof parsed.state !== 'string' || typeof parsed.since !== 'string') return { kind: 'unreadable', error: 'malformed state record' }
+    const valid = (['ok', 'short', 'unreadable'] as const).includes(parsed.state as MemoryStateName) && typeof parsed.since === 'string' && Number.isFinite(Date.parse(parsed.since))
+    if (!valid) return { kind: 'malformed', error: 'the state record is not one this check wrote' }
     return { kind: 'present', state: parsed as MemoryState }
   } catch (e) {
-    return { kind: 'unreadable', error: formatErr(e) }
+    return { kind: 'malformed', error: formatErr(e) }
   }
 }
 
@@ -205,6 +211,10 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     summary.errors.push(`state unreadable: ${prior.error}`)
     deps.log(`[database-memory] event=database_memory state=error reason=${JSON.stringify(`state unreadable: ${prior.error}`)}`)
     return summary
+  }
+  if (prior.kind === 'malformed') {
+    summary.errors.push(`state replaced: ${prior.error}`)
+    deps.log(`[database-memory] event=database_memory state_reset=malformed reason=${JSON.stringify(prior.error)}`)
   }
   const previous = prior.kind === 'present' ? prior.state : null
 
