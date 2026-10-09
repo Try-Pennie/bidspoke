@@ -133,6 +133,13 @@ describe('reading the feed', () => {
     })
   })
 
+  it('reads the value, not the optional timestamp Prometheus allows after it', () => {
+    const text = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n')
+      .map((l) => (l.startsWith('node_memory_MemTotal_bytes{') ? `${l} 1760000000000` : l)).join('\n')
+    const answer = parseMemoryMetrics(text)
+    expect(answer.kind === 'read' && answer.reading.totalBytes).toBe(4.009828352e9)
+  })
+
   it('refuses by name when a figure it needs is missing', () => {
     const text = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n').filter((l) => !l.startsWith('node_memory_MemAvailable_bytes{')).join('\n')
     expect(parseMemoryMetrics(text)).toEqual({ kind: 'failed', reason: 'the feed carried no node_memory_MemAvailable_bytes for the db service' })

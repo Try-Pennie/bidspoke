@@ -107,7 +107,8 @@ export function parseMemoryMetrics(text: string): FeedAnswer {
     const matches = lines.filter((l) => l.startsWith(`${name}{`) && l.includes('service_type="db"'))
     if (matches.length === 0) return { kind: 'failed', reason: `the feed carried no ${name} for the db service` }
     if (matches.length > 1) return { kind: 'failed', reason: `the feed carried ${matches.length} ${name} lines for the db service` }
-    const value = Number(matches[0].slice(matches[0].lastIndexOf(' ') + 1))
+    // The value is the first field after the labels; Prometheus allows a timestamp after it.
+    const value = Number(matches[0].slice(matches[0].lastIndexOf('}') + 1).trim().split(/\s+/)[0])
     if (!Number.isFinite(value)) return { kind: 'failed', reason: `${name} was not a number` }
     reading[field] = value
   }
