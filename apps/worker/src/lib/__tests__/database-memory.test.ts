@@ -430,6 +430,13 @@ describe('a state record it cannot use', () => {
     expect(h.sent.map((s) => s.kind)).toEqual(['short'])
   })
 
+  it('replaces a record whose feed failure time cannot be read, rather than never alerting on it', async () => {
+    const h = harness()
+    await h.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify({ state: 'ok', reason: 'clear', since: '2026-10-09T12:00:00.000Z', feedFailingSince: 'garbage' }))
+    await h.runFor(30, () => ({ kind: 'failed', reason: 'timeout' }))
+    expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
+  })
+
   it('replaces a record that is not JSON at all', async () => {
     const h = harness()
     await h.kv.put(DATABASE_MEMORY_STATE_KEY, 'garbage')

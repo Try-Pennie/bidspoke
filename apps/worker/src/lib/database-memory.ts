@@ -179,7 +179,9 @@ async function readState(kv: RecoveryKv): Promise<StateRead> {
   if (raw === null) return { kind: 'absent' }
   try {
     const parsed = JSON.parse(raw) as Partial<MemoryState>
-    const valid = (['ok', 'short'] as const).includes(parsed.state as 'ok' | 'short') && typeof parsed.since === 'string' && Number.isFinite(Date.parse(parsed.since))
+    const isTime = (v: unknown) => typeof v === 'string' && Number.isFinite(Date.parse(v))
+    const valid = (['ok', 'short'] as const).includes(parsed.state as 'ok' | 'short') && isTime(parsed.since) &&
+      (parsed.feedFailingSince === undefined || isTime(parsed.feedFailingSince))
     if (!valid) return { kind: 'malformed', error: 'the state record is not one this check wrote' }
     return { kind: 'present', state: parsed as MemoryState }
   } catch (e) {
