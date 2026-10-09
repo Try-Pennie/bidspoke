@@ -10,11 +10,13 @@
  *
  * What it judges, and why:
  *
- *  - Thin means less than `MEMORY_FREE_FLOOR` of memory available, or the swap-out counter
- *    having risen since the previous reading (the database moving memory to disk). Either
- *    one on every reading for `MEMORY_SHORT_ALERT_AFTER_MS` alerts. Swap merely IN USE is
- *    not judged: pages pushed out once can sit there long after the pressure ends, so only
- *    a rising counter is evidence of pressure now.
+ *  - Thin means less than `MEMORY_FREE_FLOOR` of memory available, or the database moving
+ *    memory to disk since the previous reading: the swap-out counter rising, or the swap in
+ *    use growing by more than `SWAP_GROWTH_BYTES`. Either sign on every reading for
+ *    `MEMORY_SHORT_ALERT_AFTER_MS` alerts. Both are read because on 2026-10-09 the host held
+ *    50 MB in swap with the counter still at 0, so the counter alone can miss swapping.
+ *    Swap merely IN USE is not judged: pages pushed out once can sit there long after the
+ *    pressure ends, so only growth is evidence of pressure now.
  *  - Every threshold is judged on the CLOCK from the moment a state began, never on a count
  *    of ticks, because a delayed or retried cron moves a count without moving time (L386).
  *  - A first reading has no earlier counter, and a counter that went BACKWARDS means the
@@ -54,6 +56,8 @@ const FEED_ID = 'feed'
 
 /** Less than this share of memory available is thin. */
 export const MEMORY_FREE_FLOOR = 0.15
+/** Swap in use growing by more than this between readings counts as moving memory to disk. */
+export const SWAP_GROWTH_BYTES = 1024 * 1024
 /** Memory thin on every reading for this long, on the clock, alerts. */
 export const MEMORY_SHORT_ALERT_AFTER_MS = 15 * MIN
 /** The feed unreadable for this long alerts that memory cannot be measured. */
@@ -136,6 +140,8 @@ interface MemoryState {
   since: string
   /** The swap-out counter at the last successful reading, carried across failed ones. */
   lastSwapOut?: number
+  /** Swap in use at the last successful reading, carried across failed ones. */
+  lastSwapUsed?: number
   /** Over the current thin stretch only: the lowest available figure, and which signs were seen. */
   lowestAvailableBytes?: number
   lowFree?: boolean
@@ -231,7 +237,10 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     reading = answer.reading
     const freeShare = reading.availableBytes / reading.totalBytes
     const counterReset = previous?.lastSwapOut !== undefined && reading.swapOutPages < previous.lastSwapOut
-    swapping = previous?.lastSwapOut !== undefined && reading.swapOutPages > previous.lastSwapOut
+    const swapUsed = reading.swapTotalBytes - reading.swapFreeBytes
+    const counterRose = previous?.lastSwapOut !== undefined && reading.swapOutPages > previous.lastSwapOut
+    const swapGrew = previous?.lastSwapUsed !== undefined && swapUsed - previous.lastSwapUsed > SWAP_GROWTH_BYTES
+    swapping = counterRose || swapGrew
     lowFree = freeShare < MEMORY_FREE_FLOOR
     current = lowFree || swapping ? 'short' : 'ok'
     reason = [lowFree ? 'low_free' : null, swapping ? 'swapping' : null].filter(Boolean).join('+') || 'clear'
@@ -246,6 +255,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   const changed = previous === null || previous.state !== current
   const state: MemoryState = changed ? { state: current, reason, since: iso(nowMs) } : { ...previous, reason }
   state.lastSwapOut = reading ? reading.swapOutPages : previous?.lastSwapOut
+  state.lastSwapUsed = reading ? reading.swapTotalBytes - reading.swapFreeBytes : previous?.lastSwapUsed
   if (current === 'short' && reading) {
     state.lowestAvailableBytes = Math.min(state.lowestAvailableBytes ?? Infinity, reading.availableBytes)
     state.lowFree = (state.lowFree ?? false) || lowFree

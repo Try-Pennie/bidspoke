@@ -235,6 +235,21 @@ describe('memory running thin', () => {
     expect(p.swapUsedBytes).toBe(GB / 2)
   })
 
+  it('alerts when the swap in use keeps growing though the swap-out counter never moves', async () => {
+    // Measured on 2026-10-09 at 10:20 ET: 50 MB in swap on Medium with node_vmstat_pswpout
+    // still 0, so on this host memory reaches swap without that counter moving.
+    const h = harness()
+    await h.runFor(20, (i) => h.reading(PLENTY, 0, GB - (i + 1) * 20 * 1024 * 1024))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    expect(h.sent[0].payload.swapping).toBe(true)
+  })
+
+  it('does not count swap in use that holds steady, or shrinks, as swapping', async () => {
+    const h = harness()
+    await h.runFor(60, (i) => h.reading(PLENTY, 0, GB - 50 * 1024 * 1024 + (i % 2) * 1024))
+    expect(h.sent).toEqual([])
+  })
+
   it('does not count the first reading, which has no earlier counter to compare, as swapping', async () => {
     const h = harness()
     h.setFeed(h.reading(PLENTY, 5_000_000))
