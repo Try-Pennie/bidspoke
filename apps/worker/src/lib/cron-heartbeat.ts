@@ -140,6 +140,17 @@ export const CRON_JOBS: CronJob[] = [
       'a partner firewall block appearing or lifting is no longer noticed between leads, and no all-clear is posted for a standing block (#1274)',
   },
   {
+    id: 'database-memory',
+    label: 'Database memory check',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, matching the partner probe on the same cron.
+    staleMs: 15 * MIN,
+    // One GET with a 10s deadline, a few KV reads and writes, and at most two Slack posts.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'the database running short of memory goes unreported until it stalls, as it did on 2026-10-08 after a week of swapping nobody saw (#1928)',
+  },
+  {
     id: 'buyer-sale-drain',
     label: 'Buyer ledger outbox drain',
     triggerCron: '* * * * *',

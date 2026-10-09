@@ -15,6 +15,7 @@ import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { listSteps } from '../engine/running-step'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
+import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
@@ -2681,6 +2682,98 @@ export async function sendProbeBrokenAlert(
     { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: '*How to fix:* open the worker\'s logs and search for `event=partner_probe`. If every host reads unreachable with the same error, the worker\'s outbound fetch is failing: check Cloudflare\'s status page and the worker\'s subrequest usage. Leads are unaffected unless they fail too, which the failure alerts report separately.' } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, header)
+}
+
+/** Bytes in the units Supabase sizes compute in: decimal, so 4 GB of compute reads 4.0 GB. */
+function decimalSize(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`
+}
+
+export interface DatabaseMemoryShortPayload {
+  totalBytes: number
+  /** The share of memory under which a reading counts as thin, as the check judged it. */
+  freeFloor: number
+  /** The lowest available figure seen over the thin stretch. */
+  lowestAvailableBytes: number
+  /** Whether a reading in the stretch found less than the floor free. */
+  lowFree: boolean
+  /** Whether a reading in the stretch found memory moving to disk: the swap-out counter rising or the swap in use growing. */
+  swapping: boolean
+  /** Swap in use at the latest reading. */
+  swapUsedBytes: number
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/**
+ * The database has been short of memory for 15 minutes (#1928). The swap sentence is
+ * there only when swapping was seen, and the floor sentence only when free memory went
+ * under it, so the message never claims a sign the readings did not show (L11).
+ */
+export async function sendDatabaseMemoryShortAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: DatabaseMemoryShortPayload,
+): Promise<string | null> {
+  const header = 'The database is short of memory'
+  const share = Math.round((payload.lowestAvailableBytes / payload.totalBytes) * 100)
+  const signs: string[] = []
+  const floor = Math.round(payload.freeFloor * 100)
+  if (payload.lowFree) signs.push(`less than ${floor} percent of its memory free`)
+  if (payload.swapping) signs.push(`memory moving to disk, with ${decimalSize(payload.swapUsedBytes)} there now`)
+  const lines = [
+    `Since ${etTime(Date.parse(payload.since))} every reading that could be taken has found the database short of memory. Over that stretch, readings found ${signs.join(', and ')}. ` +
+      `The least free was ${decimalSize(payload.lowestAvailableBytes)}, ${share} percent of its ${decimalSize(payload.totalBytes)}. ` +
+      'When it runs out entirely every query slows at once, which is how the stall of Oct 8 began.',
+  ]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`,
+      },
+    },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, header)
+}
+
+export interface DatabaseMemoryUnreadablePayload {
+  reason: string
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/** The memory check has not been able to read Supabase's metrics feed for 30 minutes (#1928). */
+export async function sendDatabaseMemoryUnreadableAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: DatabaseMemoryUnreadablePayload,
+): Promise<string | null> {
+  const header = "Bidspoke cannot read the database's memory"
+  const lines = [
+    `Since ${etTime(Date.parse(payload.since))} the memory check has not been able to read Supabase's metrics feed, so the database running low on memory would go unreported. The last attempt failed with: \`${stripUrlQueriesInText(truncateErrorForAlert(payload.reason))}\`.`,
+  ]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*How to fix:* search the worker's logs for \`event=database_memory\`. HTTP 401 or 403 means the worker's Supabase secret key no longer opens the feed: check it in Supabase under Project Settings, API Keys. A timeout or HTTP 5xx is usually Supabase itself, so check <https://status.supabase.com|status.supabase.com>. Leads are not affected by this check failing. An all-clear follows here once readings have worked for ${RECOVERY_REARM_MINUTES} minutes.`,
+      },
+    },
   ]
   return postMessage(slack.bot_token, channel, blocks, header)
 }
