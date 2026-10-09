@@ -436,6 +436,12 @@ importers:
 
   packages/workflow-definition:
     dependencies:
+      '@bidspoke/buyer-profile':
+        specifier: workspace:*
+        version: link:../buyer-profile
+      '@bidspoke/node-types':
+        specifier: workspace:*
+        version: link:../node-types
       '@bidspoke/references':
         specifier: workspace:*
         version: link:../references

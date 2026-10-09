@@ -7,3 +7,6 @@
 // a later change (#1698 1.1).
 export * from './branch-validation'
 export * from './reference-validation'
+export * from './workflow-validation'
+export * from './filter-condition'
+export * from './handles'

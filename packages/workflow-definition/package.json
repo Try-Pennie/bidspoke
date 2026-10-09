@@ -14,6 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bidspoke/buyer-profile": "workspace:*",
+    "@bidspoke/node-types": "workspace:*",
     "@bidspoke/references": "workspace:*"
   },
   "devDependencies": {
