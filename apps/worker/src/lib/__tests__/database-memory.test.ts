@@ -85,6 +85,7 @@ function harness(opts: { slack?: Array<{ bot_token: string; default_channel: str
   const kv = fakeKv(clock)
   const sent: Sent[] = []
   const logs: string[] = []
+  let slackResolves = 0
   let next: FeedAnswer = { kind: 'read', reading: { totalBytes: TOTAL, availableBytes: 3 * GB, swapTotalBytes: GB, swapFreeBytes: GB, swapOutPages: 0 } }
   const answer = (send: Sent['kind']) => (_s: unknown, _c: string, payload: Record<string, unknown>) => {
     sent.push({ kind: send, payload })
@@ -96,7 +97,7 @@ function harness(opts: { slack?: Array<{ bot_token: string; default_channel: str
     claims: fakeClaims(clock),
     env: opts.env ?? {},
     read: async () => next,
-    resolveSlack: async () => opts.slack ?? [{ bot_token: 't', default_channel: '#ops' }],
+    resolveSlack: async () => { slackResolves += 1; return opts.slack ?? [{ bot_token: 't', default_channel: '#ops' }] },
     senders: {
       short: answer('short') as unknown as DatabaseMemoryDeps['senders']['short'],
       unreadable: answer('unreadable') as unknown as DatabaseMemoryDeps['senders']['unreadable'],
@@ -118,7 +119,7 @@ function harness(opts: { slack?: Array<{ bot_token: string; default_channel: str
     }
     return summaries
   }
-  return { clock, kv, sent, logs, deps, setFeed, reading, runFor }
+  return { clock, kv, sent, logs, deps, setFeed, reading, runFor, get slackResolves() { return slackResolves } }
 }
 
 const LOW = Math.floor(TOTAL * (MEMORY_FREE_FLOOR - 0.05))
@@ -315,6 +316,28 @@ describe('memory running thin', () => {
     const lows = [LOW, LOW - 100_000_000, LOW]
     await h.runFor(15, (i) => h.reading(lows[Math.min(i, 2)]))
     expect(h.sent[0].payload.lowestAvailableBytes).toBe(LOW - 100_000_000)
+  })
+})
+
+describe('load on the database it watches', () => {
+  it('reads the Slack connections only when it is about to post, never on a quiet run', async () => {
+    const h = harness()
+    await h.runFor(60, () => h.reading(PLENTY))
+    await h.runFor(10, () => h.reading(LOW))
+    expect(h.slackResolves).toBe(0)
+    await h.runFor(10, () => h.reading(LOW))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    expect(h.slackResolves).toBeGreaterThan(0)
+  })
+})
+
+describe('a swap baseline from before a long gap in readings', () => {
+  it('is not compared against, so swap that grew across an outage is not read as swapping now', async () => {
+    const h = harness()
+    await h.runFor(10, (i) => h.reading(PLENTY, 1000 + i * 100, GB - (i + 1) * 20 * 1024 * 1024))
+    await h.runFor(60, () => ({ kind: 'failed', reason: 'timeout' }))
+    await h.runFor(10, (i) => h.reading(PLENTY, i === 0 ? 900_000 : 900_000, GB / 2))
+    expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
   })
 })
 

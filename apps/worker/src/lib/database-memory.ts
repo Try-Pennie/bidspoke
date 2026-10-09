@@ -58,6 +58,11 @@ const FEED_ID = 'feed'
 export const MEMORY_FREE_FLOOR = 0.15
 /** Swap in use growing by more than this between readings counts as moving memory to disk. */
 export const SWAP_GROWTH_BYTES = 1024 * 1024
+/**
+ * A swap figure older than this is not compared against: growth across a long gap in
+ * readings happened at some time inside it, not in the last five minutes.
+ */
+export const SWAP_BASELINE_MAX_AGE_MS = 15 * 60 * 1000
 /** Memory thin on every reading for this long, on the clock, alerts. */
 export const MEMORY_SHORT_ALERT_AFTER_MS = 15 * MIN
 /** The feed unreadable for this long alerts that memory cannot be measured. */
@@ -256,8 +261,9 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     const freeShare = reading.availableBytes / reading.totalBytes
     const counterReset = previous?.lastSwapOut !== undefined && reading.swapOutPages < previous.lastSwapOut
     const swapUsed = reading.swapTotalBytes - reading.swapFreeBytes
-    const counterRose = previous?.lastSwapOut !== undefined && reading.swapOutPages > previous.lastSwapOut
-    const swapGrew = previous?.lastSwapUsed !== undefined && swapUsed - previous.lastSwapUsed > SWAP_GROWTH_BYTES
+    const baselineStale = previous?.feedFailingSince !== undefined && nowMs - Date.parse(previous.feedFailingSince) > SWAP_BASELINE_MAX_AGE_MS
+    const counterRose = !baselineStale && previous?.lastSwapOut !== undefined && reading.swapOutPages > previous.lastSwapOut
+    const swapGrew = !baselineStale && previous?.lastSwapUsed !== undefined && swapUsed - previous.lastSwapUsed > SWAP_GROWTH_BYTES
     swapping = counterRose || swapGrew
     lowFree = freeShare < MEMORY_FREE_FLOOR
     const current = lowFree || swapping ? 'short' : 'ok'
@@ -281,7 +287,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     line =
       ` free_pct=${(freeShare * 100).toFixed(1)} available_mb=${Math.round(reading.availableBytes / MB)} total_mb=${Math.round(reading.totalBytes / MB)}` +
       ` swap_used_mb=${Math.round(swapUsed / MB)} swap_out_pages=${reading.swapOutPages}` +
-      ` swapped=${swapping} counter_reset=${counterReset}`
+      ` swapped=${swapping} counter_reset=${counterReset} baseline_stale=${baselineStale}`
   }
   const heldForMs = nowMs - Date.parse(state.since)
 
@@ -296,11 +302,18 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     summary.errors.push(`state write failed: ${formatErr(e)}`)
   }
 
-  let targets: SlackTarget[] = []
-  try {
-    targets = await deps.resolveSlack()
-  } catch (e) {
-    summary.errors.push(`Slack destinations could not be resolved: ${formatErr(e)}`)
+  // Read only when about to post: the connections live in the database this check watches,
+  // so a quiet run must not add a read to it every five minutes.
+  let resolved: SlackTarget[] | null = null
+  const targets = async (): Promise<SlackTarget[]> => {
+    if (resolved !== null) return resolved
+    try {
+      resolved = await deps.resolveSlack()
+    } catch (e) {
+      summary.errors.push(`Slack destinations could not be resolved: ${formatErr(e)}`)
+      resolved = []
+    }
+    return resolved
   }
   const claim = async (key: string): Promise<boolean> => (deps.claims ? deps.claims.claim(key, ALERT_CLAIM_TTL_SECONDS) : true)
   const release = async (key: string): Promise<void> => { if (deps.claims) await deps.claims.release(key) }
@@ -315,7 +328,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     if (!due) return
     const claimKey = `${RECOVERY_PREFIX}-recovery-${id}`
     if (!(await claim(claimKey))) return
-    const delivered = await deliverAll(targets, (s) => deps.senders.recovery(s, s.default_channel, {
+    const delivered = await deliverAll(await targets(), (s) => deps.senders.recovery(s, s.default_channel, {
       signal,
       recoveredPhrase,
       items: [{ subject, alertedAt: due.alertedAt, endedAt: due.endedAt }],
@@ -341,7 +354,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, FEED_ID, nowMs)
     if (nowMs - Date.parse(feedSince) >= FEED_UNREADABLE_ALERT_AFTER_MS) {
       const posted = await postStanding({
-        kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets, nowMs,
+        kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets: await targets(), nowMs,
         alert: { problem: 'feed-unreadable', details: [reason] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.unreadable(s, s.default_channel, { reason, since: feedSince, repeat, at: nowMs }),
@@ -368,7 +381,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
         at: nowMs,
       }
       const posted = await postStanding({
-        kv: deps.kv, key: DATABASE_MEMORY_KEY, claim, release, targets, nowMs,
+        kv: deps.kv, key: DATABASE_MEMORY_KEY, claim, release, targets: await targets(), nowMs,
         alert: { problem: 'memory-short', details: [String(payload.lowFree), String(payload.swapping), String(Math.round(payload.lowestAvailableBytes / MB))] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.short(s, s.default_channel, { ...payload, repeat }),
