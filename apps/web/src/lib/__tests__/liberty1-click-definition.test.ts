@@ -43,7 +43,7 @@ describe('the Liberty1 click definition', () => {
   })
 
   it('has no cycle and no output wired to two different nodes', () => {
-    expect(findWorkflowCycle(flowNodes, flowEdges)).toBeNull()
+    expect(findWorkflowCycle(nodes, edges)).toBeNull()
     expect([...findDuplicateOutEdges(flowNodes, flowEdges).values()]).toEqual([])
   })
 
