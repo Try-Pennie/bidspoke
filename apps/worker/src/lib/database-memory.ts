@@ -273,13 +273,14 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
       ` since=${state.since} for=${Math.round(heldForMs / 1000)}s`,
   )
 
+  // Local dev reads and logs, but writes nothing, as the partner probe does.
+  if (mode === 'silent') return summary
+
   try {
     await deps.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify(state))
   } catch (e) {
     summary.errors.push(`state write failed: ${formatErr(e)}`)
   }
-
-  if (mode === 'silent') return summary
 
   let targets: SlackTarget[] = []
   try {

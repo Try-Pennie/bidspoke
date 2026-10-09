@@ -415,6 +415,8 @@ describe('local development', () => {
     const summaries = await h.runFor(30, () => h.reading(LOW))
     expect(h.sent).toEqual([])
     expect(summaries.at(-1)!.mode).toBe('silent')
+    // A local run must not leave state a later production-shaped run would read.
+    expect(h.kv.store.size).toBe(0)
   })
 })
 
