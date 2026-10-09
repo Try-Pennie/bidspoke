@@ -265,6 +265,13 @@ describe('memory running thin', () => {
     expect((await readCondition(h.kv, DATABASE_MEMORY_KEY))?.alerts).toBe(2)
   })
 
+  it('does not post again as each new low deepens, because a lower figure is the same problem', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(LOW))
+    await h.runFor(60, (i) => h.reading(LOW - (i + 1) * 10_000_000))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+  })
+
   it('keeps the lowest free figure across the stretch, not the latest one', async () => {
     const h = harness()
     const lows = [LOW, LOW - 100_000_000, LOW]
