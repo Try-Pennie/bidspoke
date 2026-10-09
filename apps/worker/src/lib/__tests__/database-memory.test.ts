@@ -464,6 +464,15 @@ describe('a state record it cannot use', () => {
     expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
   })
 
+  it('replaces a record carrying a figure that is not a number, rather than comparing against it', async () => {
+    const h = harness()
+    await h.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify({ state: 'ok', reason: 'clear', since: '2026-10-09T12:00:00.000Z', lastSwapUsed: '5', lastSwapOut: null }))
+    h.setFeed(h.reading(PLENTY, 10, GB - 100 * 1024 * 1024))
+    const s = await runDatabaseMemoryCheck(h.deps)
+    expect(s.errors.join(' ')).toMatch(/state replaced/)
+    expect(s.state).toBe('ok')
+  })
+
   it('replaces a record that is not JSON at all', async () => {
     const h = harness()
     await h.kv.put(DATABASE_MEMORY_STATE_KEY, 'garbage')
