@@ -191,9 +191,10 @@ function makeKv() {
 function makeSupabase(opts: {
   orgs?: string[]
   orgsError?: string
-  rpc?: (orgId: string) => { data: unknown; error: { message: string } | null }
+  /** Answers both reads unless it looks at `fn`: the six hour silence read (v2) and the ratio read (v3, #1929). */
+  rpc?: (orgId: string, fn: string) => { data: unknown; error: { message: string } | null }
 }) {
-  const rpcCalls: Array<{ fn: string; org: string; since: string }> = []
+  const rpcCalls: Array<{ fn: string; org: string; since: string; until?: string }> = []
   const client = {
     from: () => ({
       select: () => ({
@@ -203,9 +204,9 @@ function makeSupabase(opts: {
         }),
       }),
     }),
-    rpc: vi.fn(async (fn: string, args: { p_org_id: string; p_since: string }) => {
-      rpcCalls.push({ fn, org: args.p_org_id, since: args.p_since })
-      return opts.rpc ? opts.rpc(args.p_org_id) : { data: [], error: null }
+    rpc: vi.fn(async (fn: string, args: { p_org_id: string; p_since: string; p_until?: string }) => {
+      rpcCalls.push({ fn, org: args.p_org_id, since: args.p_since, until: args.p_until })
+      return opts.rpc ? opts.rpc(args.p_org_id, fn) : { data: [], error: null }
     }),
   }
   return { client: client as never, rpcCalls }
@@ -241,10 +242,10 @@ function cooldownPuts(kv: ReturnType<typeof makeKv>): string[] {
 }
 
 describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
-  it('reads the v2 coverage function, the one that carries attempt rows (#1413)', async () => {
+  it('reads v2 for the six hour silence check and v3, which takes an end, for the ratio check (#1413, #1929)', async () => {
     const db = makeSupabase({ rpc: () => ({ data: HEALTHY, error: null }) })
     await runBidRecordingCoverageCheck(db.client, makeKv())
-    expect(db.rpcCalls.map((c) => c.fn)).toEqual(['bid_recording_coverage_v2'])
+    expect(db.rpcCalls.map((c) => c.fn)).toEqual(['bid_recording_coverage_v2', 'bid_recording_coverage_v3'])
   })
 
   it('posts once, naming the workflow and its lead volume', async () => {
@@ -277,7 +278,8 @@ describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
     const kv = makeKv()
     const db = makeSupabase({ rpc: () => ({ data: HEALTHY, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
-    const ageHours = (Date.now() - Date.parse(db.rpcCalls[0].since)) / 3_600_000
+    const silence = db.rpcCalls.find((c) => c.fn === 'bid_recording_coverage_v2')!
+    const ageHours = (Date.now() - Date.parse(silence.since)) / 3_600_000
     expect(ageHours).toBeCloseTo(WINDOW_HOURS, 1)
   })
 
@@ -285,7 +287,7 @@ describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
     const kv = makeKv()
     const db = makeSupabase({ orgs: ['org-1', 'org-2'], rpc: () => ({ data: HEALTHY, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
-    expect(db.rpcCalls.map((c) => c.org)).toEqual(['org-1', 'org-2'])
+    expect([...new Set(db.rpcCalls.map((c) => c.org))]).toEqual(['org-1', 'org-2'])
   })
 
   it('does not repeat the same workflow within the cooldown', async () => {
@@ -398,9 +400,10 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
     const kv = makeKv()
     const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
-    // The v2 key: the unit changed from rows to attempts, so old readings are never read (#1413).
-    const stored = JSON.parse(kv.store.get('bid-ratio-history-v2:org-1')!)
-    expect(kv.store.has('bid-ratio-history:org-1')).toBe(false)
+    // The v3 key: the window changed from six overnight hours to a day (#1929), so
+    // older readings are never read, as the v2 key did for rows to attempts (#1413).
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
+    expect(kv.store.has('bid-ratio-history-v2:org-1')).toBe(false)
     expect(stored['wf-le'].ratios).toEqual([0.6])
   })
 
@@ -452,8 +455,7 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
       const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
       await runBidRecordingCoverageCheck(db.client, kv)
     }
-    // The v2 key: the unit changed from rows to attempts, so old readings are never read (#1413).
-    const stored = JSON.parse(kv.store.get('bid-ratio-history-v2:org-1')!)
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
     expect(stored['wf-le'].ratios.every((r: number) => r === 0.6)).toBe(true)
   })
 
@@ -471,12 +473,11 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
 
   it('survives a corrupt history rather than taking the check down', async () => {
     const kv = makeKv()
-    kv.store.set('bid-ratio-history-v2:org-1', 'not json')
+    kv.store.set('bid-ratio-history-v3:org-1', 'not json')
     const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
     await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
     // And it rebuilds from this run rather than staying broken.
-    // The v2 key: the unit changed from rows to attempts, so old readings are never read (#1413).
-    const stored = JSON.parse(kv.store.get('bid-ratio-history-v2:org-1')!)
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
     expect(stored['wf-le'].ratios).toEqual([0.6])
   })
 
@@ -484,8 +485,8 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
     const kv = makeKv()
     const db = makeSupabase({ orgs: ['org-1', 'org-2'], rpc: () => ({ data: BOTH_NORMAL, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
-    expect(kv.store.has('bid-ratio-history-v2:org-1')).toBe(true)
-    expect(kv.store.has('bid-ratio-history-v2:org-2')).toBe(true)
+    expect(kv.store.has('bid-ratio-history-v3:org-1')).toBe(true)
+    expect(kv.store.has('bid-ratio-history-v3:org-2')).toBe(true)
   })
 })
 
@@ -509,7 +510,7 @@ describe('ratio check failure isolation (#1168)', () => {
     // the alert cooldown lookup, which is a separate pre-existing path and not
     // what this asserts.
     kv.get.mockImplementation(async (k: string) => {
-      if (k.startsWith('bid-ratio-history-v2:')) throw new Error('KV down')
+      if (k.startsWith('bid-ratio-history-v3:')) throw new Error('KV down')
       return kv.store.get(k) ?? null
     })
     const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
@@ -534,7 +535,7 @@ describe('ratio history that is not numbers (#1168)', () => {
   it('refuses a history whose readings are not numbers rather than comparing against NaN', async () => {
     const kv = makeKv()
     kv.store.set(
-      'bid-ratio-history-v2:org-1',
+      'bid-ratio-history-v3:org-1',
       JSON.stringify({ 'wf-le': { ratios: Array.from({ length: MIN_BASELINE_SAMPLES }, () => 'oops') } }),
     )
     const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
@@ -542,8 +543,7 @@ describe('ratio history that is not numbers (#1168)', () => {
     // Not judged, and specifically not judged as healthy.
     expect(postMessage).not.toHaveBeenCalled()
     // And the poisoned entry is replaced by a real reading.
-    // The v2 key: the unit changed from rows to attempts, so old readings are never read (#1413).
-    const stored = JSON.parse(kv.store.get('bid-ratio-history-v2:org-1')!)
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
     expect(stored['wf-le'].ratios).toEqual([0.06])
   })
 
@@ -551,11 +551,118 @@ describe('ratio history that is not numbers (#1168)', () => {
     const ratios: unknown[] = Array.from({ length: MIN_BASELINE_SAMPLES }, () => 0.6)
     ratios[2] = null
     const kv = makeKv()
-    kv.store.set('bid-ratio-history-v2:org-1', JSON.stringify({ 'wf-le': { ratios } }))
+    kv.store.set('bid-ratio-history-v3:org-1', JSON.stringify({ 'wf-le': { ratios } }))
     const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
     // One bad entry leaves too few readings to judge, so it stays quiet rather
     // than judging against a shorter history than the design requires.
     expect(postMessage).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * #1929: the ratio check reads a day, not the six overnight hours before 9 AM ET.
+ *
+ * The check runs on the 13:00 UTC cron. A workflow that only takes leads during
+ * the working day (RML GigFi runs 13:00 to 23:00 UTC) had nothing in the six
+ * hour window but its first minute, so it was judged on six leads. The ratio now
+ * reads the day the purge still holds whole, ending a few minutes ago so a lead
+ * that is still running, and so has no bid row yet, is not counted (L696).
+ */
+import { BID_PURGE_HORIZON_MS } from '../sightings-export'
+import { RATIO_IN_FLIGHT_MARGIN_MS } from '../bid-recording-coverage'
+
+const GIGFI = 'RML - Bidding Workflow (GigFi)'
+const ENGINE = { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, winners: 300 }
+const gigfiRow = (sightings: number, attempts: number) =>
+  ({ workflow_id: 'wf-gigfi', workflow_name: GIGFI, is_active: true, sightings, bid_rows: attempts, attempt_rows: attempts, winners: attempts })
+/** A baseline already accumulated under the current key. */
+function seedHistory(kv: ReturnType<typeof makeKv>, ratios: Record<string, number>) {
+  const entry = Object.fromEntries(
+    Object.entries(ratios).map(([id, r]) => [id, { ratios: Array.from({ length: MIN_BASELINE_SAMPLES }, () => r) }]),
+  )
+  kv.store.set('bid-ratio-history-v3:org-1', JSON.stringify(entry))
+}
+
+describe('the ratio check judges a full day (#1929)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('reads from the purge horizon to a few minutes ago', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = Date.parse('2026-10-09T13:01:40Z')
+    vi.setSystemTime(now)
+    const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, makeKv())
+    const ratio = db.rpcCalls.find((c) => c.fn === 'bid_recording_coverage_v3')!
+    expect(Date.parse(ratio.since)).toBe(now - BID_PURGE_HORIZON_MS)
+    expect(Date.parse(ratio.until!)).toBe(now - RATIO_IN_FLIGHT_MARGIN_MS)
+    expect(RATIO_IN_FLIGHT_MARGIN_MS).toBeGreaterThanOrEqual(5 * 60_000)
+  })
+
+  it('does not page on the 2026-10-09 case: six GigFi leads against a stored normal of 100%', async () => {
+    const kv = makeKv()
+    seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 1 })
+    const db = makeSupabase({ rpc: () => ({ data: [ENGINE, gigfiRow(6, 1)], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+    // And the six-lead reading is not stored as part of GigFi's normal.
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
+    expect(stored['wf-gigfi'].ratios).toHaveLength(MIN_BASELINE_SAMPLES)
+  })
+
+  it('still pages when GigFi\u2019s full day halves', async () => {
+    const kv = makeKv()
+    seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
+    const db = makeSupabase({
+      // The six hour read holds GigFi's first minute; the day holds all of it.
+      rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v3' ? [ENGINE, gigfiRow(3000, 1000)] : [ENGINE, gigfiRow(6, 1)], error: null }),
+    })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(postMessage.mock.calls[0][2])).toContain('1000 bid attempts across 3000 leads')
+  })
+
+  it('judges ratios even when the six hour read failed, because it no longer depends on it', async () => {
+    const kv = makeKv()
+    seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
+    const db = makeSupabase({
+      rpc: (_org, fn) => fn === 'bid_recording_coverage_v3'
+        ? { data: [ENGINE, gigfiRow(3000, 1000)], error: null }
+        : { data: null, error: { message: 'statement timeout' } },
+    })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('accuses nobody when its own day was never proven retained', async () => {
+    const kv = makeKv()
+    seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
+    const drained = [{ ...ENGINE, bid_rows: 0, attempt_rows: 0 }, { ...gigfiRow(3000, 0), bid_rows: 0 }]
+    const db = makeSupabase({ rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v3' ? drained : [ENGINE], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+    // Nothing from an unproven day reaches the baseline either.
+    const stored = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)
+    expect(stored['wf-gigfi'].ratios).toHaveLength(MIN_BASELINE_SAMPLES)
+  })
+
+  it('does not page when the ratio read itself failed', async () => {
+    const kv = makeKv()
+    seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
+    const db = makeSupabase({
+      rpc: (_org, fn) => fn === 'bid_recording_coverage_v3' ? { data: null, error: { message: 'statement timeout' } } : { data: [ENGINE], error: null },
+    })
+    await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('starts a fresh history: readings stored under the old key are never read', async () => {
+    const kv = makeKv()
+    // A stored GigFi normal of 100% under v2, against which a real day would page.
+    kv.store.set('bid-ratio-history-v2:org-1', JSON.stringify({ 'wf-gigfi': { ratios: Array.from({ length: MIN_BASELINE_SAMPLES }, () => 1) } }))
+    const db = makeSupabase({ rpc: () => ({ data: [ENGINE, gigfiRow(3000, 2000)], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)['wf-gigfi'].ratios).toHaveLength(1)
   })
 })

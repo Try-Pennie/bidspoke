@@ -59,6 +59,24 @@ export const COLLAPSE_FACTOR = 0.5
  */
 export const MIN_BASELINE_SAMPLES = 7
 
+/**
+ * Leads a workflow must have in the window before its ratio is judged or stored
+ * (#1929).
+ *
+ * Fifty, the same floor the total silence check beside this one applies. A ratio
+ * over a handful of leads is not a measurement (L716, L139): on 2026-10-09 RML
+ * (GigFi) was judged on its first six leads of the day, four of them validation
+ * rejects that never bid by design, and paged at 17% against a stored normal of
+ * 100% that was itself the median of first-minute readings like 1, 0.5 and 0.67.
+ * At fifty the sampling noise on a rate near 0.6 is about 0.07, well inside the
+ * halving this detector looks for.
+ *
+ * Below the floor nothing is judged AND nothing is stored, or the baseline is
+ * built from the same noise. The workflow is named in `unjudged` so the gap is
+ * visible rather than implied.
+ */
+export const MIN_RATIO_SIGHTINGS = 50
+
 /** Readings kept per workflow. Older ones fall off, so the baseline tracks a
  *  genuine change in how a workflow bids rather than defending its first week. */
 export const MAX_BASELINE_SAMPLES = 30
@@ -91,6 +109,8 @@ export interface CollapsedWorkflow {
 
 export interface RatioDecision {
   collapsed: CollapsedWorkflow[]
+  /** Below the lead floor, so neither judged nor recorded (#1929). Named, not implied. */
+  unjudged: string[]
   /** Judged nothing because there is not enough history yet. Named, not implied. */
   unbaselined: string[]
   /** The ratio each workflow measured this run, for the next run's baseline. */
@@ -111,8 +131,10 @@ export function median(xs: number[]): number {
 export function decideRatioCollapse(
   rows: RatioRow[],
   histories: Record<string, RatioHistory>,
+  opts: { minSightings: number },
 ): RatioDecision {
   const collapsed: CollapsedWorkflow[] = []
+  const unjudged: string[] = []
   const unbaselined: string[] = []
   const readings: Array<{ workflow_id: string; ratio: number }> = []
 
@@ -127,6 +149,11 @@ export function decideRatioCollapse(
     // fault. Rows with no attempts among them are NOT that case: #1157 sees rows
     // and stays quiet, so this is the only check that can see it.
     if (r.bid_rows === 0) continue
+
+    if (r.sightings < opts.minSightings) {
+      unjudged.push(r.workflow_name)
+      continue
+    }
 
     // Attempts per sighting, not rows (#1413, L683): Engine writes a `skipped`
     // row for nine leads in ten, rows that appear whether or not anything was
@@ -171,7 +198,7 @@ export function decideRatioCollapse(
     readings.push({ workflow_id: r.workflow_id, ratio })
   }
 
-  return { collapsed, unbaselined, readings }
+  return { collapsed, unjudged, unbaselined, readings }
 }
 
 /** Append a reading, keeping the most recent MAX_BASELINE_SAMPLES. */
