@@ -2766,7 +2766,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     // Block saving a workflow whose graph has a loop — an edge path that returns
     // to an earlier node would loop forever at run time (#334). Always block,
     // live or not; the server rejects it too, this just gives a clean message.
-    const cycle = findWorkflowCycle(nodes, edges)
+    // The shared cycle check reads a node's namespace at the top level, so map the
+    // canvas nodes (which hold it in `data`) before calling it (#1698).
+    const cycle = findWorkflowCycle(
+      nodes.map((n) => ({ id: n.id, namespace: (n.data as unknown as CanvasNodeData).namespace })),
+      edges,
+    )
     if (cycle) {
       setSaveError(`Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.`)
       return

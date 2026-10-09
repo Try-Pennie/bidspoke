@@ -5,27 +5,30 @@
  * before it ever processes a lead.
  */
 import { describe, it, expect } from 'vitest'
-import { detectCycle } from '../graph'
+// The one cycle check both apps share (#1698). This suite drives it with the
+// worker's own NodeDefinition/EdgeDefinition, proving they flow through the
+// shared function exactly as the removed detectCycle did.
+import { findWorkflowCycle } from '@bidspoke/workflow-definition'
 import type { NodeDefinition, EdgeDefinition } from '../../types'
 
 const node = (id: string, namespace = id): NodeDefinition => ({ id, namespace, type: 'code', config: {} })
 const edge = (source: string, target: string): EdgeDefinition => ({ id: `${source}-${target}`, source, target })
 
-describe('detectCycle (#334)', () => {
+describe('findWorkflowCycle (#334)', () => {
   it('returns null for a linear chain', () => {
-    expect(detectCycle([node('a'), node('b'), node('c')], [edge('a', 'b'), edge('b', 'c')])).toBeNull()
+    expect(findWorkflowCycle([node('a'), node('b'), node('c')], [edge('a', 'b'), edge('b', 'c')])).toBeNull()
   })
 
   it('returns null for a diamond (convergent but acyclic)', () => {
     const nodes = [node('a'), node('b'), node('c'), node('d')]
     const edges = [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')]
-    expect(detectCycle(nodes, edges)).toBeNull()
+    expect(findWorkflowCycle(nodes, edges)).toBeNull()
   })
 
   it('detects a back-edge cycle and names the looping nodes', () => {
     const nodes = [node('a'), node('b'), node('c')]
     const edges = [edge('a', 'b'), edge('b', 'c'), edge('c', 'b')]
-    const cycle = detectCycle(nodes, edges)
+    const cycle = findWorkflowCycle(nodes, edges)
     expect(cycle).not.toBeNull()
     // b and c form the loop.
     expect(cycle).toContain('b')
@@ -33,13 +36,13 @@ describe('detectCycle (#334)', () => {
   })
 
   it('detects a self-loop', () => {
-    expect(detectCycle([node('a')], [edge('a', 'a')])).toEqual(['a', 'a'])
+    expect(findWorkflowCycle([node('a')], [edge('a', 'a')])).toEqual(['a', 'a'])
   })
 
   it('reports node namespaces, not raw ids', () => {
     const nodes = [node('n1', 'validate'), node('n2', 'enrich')]
     const edges = [edge('n1', 'n2'), edge('n2', 'n1')]
-    const cycle = detectCycle(nodes, edges)
+    const cycle = findWorkflowCycle(nodes, edges)
     expect(cycle).toContain('validate')
     expect(cycle).toContain('enrich')
   })
@@ -47,10 +50,10 @@ describe('detectCycle (#334)', () => {
   it('ignores the trigger pseudo-node (no incoming edge, can not be in a cycle)', () => {
     const nodes = [node('a'), node('b')]
     const edges = [edge('trigger', 'a'), edge('a', 'b')]
-    expect(detectCycle(nodes, edges)).toBeNull()
+    expect(findWorkflowCycle(nodes, edges)).toBeNull()
   })
 
   it('returns null for an empty graph', () => {
-    expect(detectCycle([], [])).toBeNull()
+    expect(findWorkflowCycle([], [])).toBeNull()
   })
 })

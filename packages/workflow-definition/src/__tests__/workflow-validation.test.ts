@@ -75,19 +75,29 @@ describe('validateWorkflowDef', () => {
 })
 
 describe('findWorkflowCycle', () => {
-  const canvas = (id: string): CanvasNodeLike => ({ id, type: 'code', data: { namespace: id, config: {} } })
+  const cnode = (id: string, namespace = id) => ({ id, namespace })
 
   it('returns null for an acyclic graph', () => {
-    expect(findWorkflowCycle([canvas('a'), canvas('b')], [{ source: 'a', target: 'b' }])).toBeNull()
+    expect(findWorkflowCycle([cnode('a'), cnode('b')], [{ source: 'a', target: 'b' }])).toBeNull()
   })
 
-  it('finds a directed cycle', () => {
-    const edges: CanvasEdgeLike[] = [
+  it('finds a directed cycle and names the looping nodes by namespace', () => {
+    const cycle = findWorkflowCycle(
+      [cnode('a', 'enrich'), cnode('b', 'score')],
+      [{ source: 'a', target: 'b' }, { source: 'b', target: 'a' }],
+    )
+    expect(cycle).toEqual(['enrich', 'score', 'enrich'])
+  })
+
+  it('returns null for an acyclic diamond', () => {
+    const nodes = [cnode('a'), cnode('b'), cnode('c'), cnode('d')]
+    const edges = [
       { source: 'a', target: 'b' },
-      { source: 'b', target: 'a' },
+      { source: 'a', target: 'c' },
+      { source: 'b', target: 'd' },
+      { source: 'c', target: 'd' },
     ]
-    const cycle = findWorkflowCycle([canvas('a'), canvas('b')], edges)
-    expect(cycle).not.toBeNull()
+    expect(findWorkflowCycle(nodes, edges)).toBeNull()
   })
 })
 

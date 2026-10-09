@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import type { Node, Edge } from '@xyflow/react'
 import { findWorkflowCycle } from '../workflow-validation'
 
-const node = (id: string, namespace = id): Node =>
-  ({ id, type: 'code', position: { x: 0, y: 0 }, data: { namespace } }) as unknown as Node
-const edge = (source: string, target: string): Edge => ({ id: `${source}-${target}`, source, target })
+// The shared cycle check reads a node's namespace at the top level (#1698); the
+// canvas maps its React Flow nodes to this shape before calling it.
+const node = (id: string, namespace = id) => ({ id, namespace })
+const edge = (source: string, target: string) => ({ source, target })
 
 describe('findWorkflowCycle (#334)', () => {
   it('returns null for an acyclic chain', () => {
