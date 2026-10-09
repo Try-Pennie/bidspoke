@@ -97,7 +97,7 @@ describe('checkPayloadPrints', () => {
     expect(rec.sent.flat()).toEqual([])
   })
 
-// The nine sites live in production today (#1214). Alerting on them daily until
+// The sites accepted in the baseline are live in production (#1214). Alerting on them daily until
 // the canvas work lands would put a standing, unactionable finding in front of
 // whoever reads the alert, which is what teaches people to skip the whole alert
 // (L36, L269). They are accepted as a baseline so the check reports only what is
@@ -151,7 +151,7 @@ describe('the accepted baseline', () => {
   })
 
   // Added 2026-09-10 after the check's first live alert. This one is accepted on
-  // DIFFERENT grounds from the other nine: it prints one named scalar field off
+  // DIFFERENT grounds from the others: it prints one named scalar field off
   // the partner payload (financialInformation.employmentStatus), not a record,
   // and the branch it sits in runs only when that field is absent or not a
   // string. Named here so the reason is testable rather than only asserted in a
@@ -178,6 +178,36 @@ describe('the accepted baseline', () => {
       notify: rec.notify,
     })
     expect(r.findings).toHaveLength(1)
+    expect(r.newFindings).toEqual([])
+    expect(rec.sent.flat()).toEqual([])
+  })
+
+  // Added 2026-10-09. Version 169 of Main Flow (2026-10-07) gave these two
+  // steps the same Engine call code as fallback_engine_under_10000, print line
+  // included. Same kind of site as the fallback ones, but accepted on its own
+  // decision of 2026-10-09 (see the baseline). The script line is the live
+  // one, verbatim.
+  it('does not alert on the two Engine no bids steps that share the accepted fallback code', async () => {
+    const rec = recordingNotify()
+    const engineCall = (id: string, namespace: string) => ({
+      id,
+      namespace,
+      type: 'code',
+      config: { script: 'console.log(`Sending body to Engine: ${JSON.stringify(sanitizedBody)}`);' },
+    })
+    const r = await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => [
+        {
+          id: 'w1',
+          name: 'Main Flow',
+          definition: {
+            nodes: [engineCall('n1', 'engine_no_bids_call'), engineCall('n2', 'engine_no_bids_call_1')],
+          },
+        },
+      ],
+      notify: rec.notify,
+    })
+    expect(r.findings).toHaveLength(2)
     expect(r.newFindings).toEqual([])
     expect(rec.sent.flat()).toEqual([])
   })
