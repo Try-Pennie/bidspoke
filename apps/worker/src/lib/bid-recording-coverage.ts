@@ -29,17 +29,21 @@
  * SINCE #1167 the purge holds a bid row until its sighting is purged, so once that
  * is deployed the drained-window case above no longer arises: a sighting present
  * in Supabase has its bids present. The peer proof is kept on purpose. It is also
- * what makes an outage report once and an empty window read as unmeasured, and the
- * 6 hour window should be widened only after the aligned purge has run in
- * production for a few days and the pair has been measured to line up.
+ * what makes an outage report once and an empty window read as unmeasured.
+ *
+ * The pair was measured to line up on 2026-10-09 (the oldest sighting and the
+ * oldest bid row were one second apart, about 26 hours back), so the ratio check
+ * now reads a full day of its own (#1929). The silence check keeps six hours.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { formatErr } from './format-error'
+import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import {
   decideRatioCollapse,
   appendReading,
   COLLAPSE_FACTOR,
+  MIN_RATIO_SIGHTINGS,
   type RatioHistory,
 } from './bid-ratio-collapse'
 
@@ -214,6 +218,14 @@ export async function runBidRecordingCoverageCheck(
     } catch (e) {
       console.error(`[bid-recording] event=bid_recording_org_failed org=${orgId} error=${formatErr(e)}`)
     }
+    // Its OWN failure boundary (L73). The two answer different questions over
+    // different windows, and this half touches KV while the other does not, so a
+    // failure in either must not swallow the other.
+    try {
+      await checkOrgRatios(supabase, kv, orgId, appUrl)
+    } catch (e) {
+      console.error(`[bid-recording] event=bid_ratio_check_failed org=${orgId} error=${formatErr(e)}`)
+    }
   }
 }
 
@@ -263,19 +275,6 @@ async function checkOrg(
       `[bid-recording] event=bid_recording_window_unproven org=${orgId} window_h=${WINDOW_HOURS} workflows=${rows.length}`,
     )
     return
-  }
-
-  // The ratio check runs on the SAME proven-retained rows (#1168), and runs
-  // whether or not the total-silence check found anything: a workflow can be
-  // recording far too few while every other one is fine.
-  //
-  // Its OWN failure boundary (L73). The two answer different questions, and this
-  // half touches KV while the other does not, so a KV outage must not swallow
-  // the total-silence alert on its way past.
-  try {
-    await checkRatios(supabase, kv, orgId, rows, appUrl)
-  } catch (e) {
-    console.error(`[bid-recording] event=bid_ratio_check_failed org=${orgId} error=${formatErr(e)}`)
   }
 
   if (!decision.alert) return
@@ -329,13 +328,83 @@ async function checkOrg(
 // ── Far too few, not only none (#1168) ────────────────────────────────────────
 
 /**
- * One KV entry per organization, holding every workflow's recent ratios. The v2
- * suffix is deliberate (#1413, L683): the ratio changed unit from rows to
- * attempts, and a reading in the old unit compared against one in the new would
- * page every workflow at once. The old key is simply never read again; the
- * monitor is unbaselined for MIN_BASELINE_SAMPLES runs per workflow and says so.
+ * How far short of now the ratio window stops (#1929).
+ *
+ * A sighting is written when its run starts and its bid rows when the attempt
+ * is logged, a few seconds later, so the newest leads always read as no attempt
+ * yet (L696). On 2026-10-09 one of the six leads judged had its bid row written
+ * two seconds after the check read. Ten minutes is far longer than any bidding
+ * run, so nothing still in flight is inside the window.
  */
-const historyKey = (orgId: string) => `bid-ratio-history-v2:${orgId}`
+export const RATIO_IN_FLIGHT_MARGIN_MS = 10 * 60 * 1000
+
+/**
+ * The ratio check's window: from the purge horizon to the in-flight margin, so
+ * about a day (#1929).
+ *
+ * It used to share the silence check's six hours, which on the 13:00 UTC cron
+ * are the six overnight hours. A workflow that takes leads only in the working
+ * day (RML GigFi, 13:00 to 23:00 UTC) then had nothing in its window but its
+ * first minute, and was judged on six leads. A day holds every workflow's whole
+ * cycle.
+ *
+ * It starts at BID_PURGE_HORIZON_MS rather than a number of its own: a row is
+ * purged no sooner than that long after its attempt, so everything from there on
+ * is still held, and a shorter purge shortens this window with it (L174).
+ */
+const RATIO_WINDOW_HOURS = Math.round(BID_PURGE_HORIZON_MS / 3_600_000)
+
+/** Read the ratio window, prove it retained, then judge it (#1929). */
+async function checkOrgRatios(
+  supabase: SupabaseClient,
+  kv: KvLike,
+  orgId: string,
+  appUrl?: string,
+): Promise<void> {
+  const now = Date.now()
+  const since = new Date(now - BID_PURGE_HORIZON_MS).toISOString()
+  const until = new Date(now - RATIO_IN_FLIGHT_MARGIN_MS).toISOString()
+
+  const { data, error } = (await supabase.rpc('bid_recording_coverage_v3', {
+    p_org_id: orgId,
+    p_since: since,
+    p_until: until,
+  })) as { data: BidCoverageRow[] | null; error: { message: string } | null }
+
+  // A failed lookup is not a clean window (L98, L11).
+  if (error) {
+    console.error(`[bid-recording] event=bid_ratio_query_failed org=${orgId} error=${error.message}`)
+    return
+  }
+
+  const rows = data ?? []
+  // The same peer proof the silence check uses, over this window: if nothing
+  // recorded a bid, the window is drained or the engine was down, and judging
+  // ratios there would accuse every workflow at once.
+  // Only its no_sightings and window_not_retained answers are read, neither of
+  // which depends on the floor; the ratio's own floor is passed so this function
+  // reads one constant, not both.
+  const proof = decideBidRecordingAlert(rows, { minSightings: MIN_RATIO_SIGHTINGS })
+  if (proof.reason === 'no_sightings' || proof.reason === 'window_not_retained') {
+    console.error(
+      `[bid-recording] event=bid_ratio_window_unproven org=${orgId} reason=${proof.reason} window_h=${RATIO_WINDOW_HOURS} workflows=${rows.length}`,
+    )
+    return
+  }
+
+  await checkRatios(supabase, kv, orgId, rows, appUrl)
+}
+
+/**
+ * One KV entry per organization, holding every workflow's recent ratios. The
+ * suffix is bumped whenever what a reading measures changes (L683): v2 when the
+ * ratio moved from rows to attempts (#1413), v3 when the window moved from six
+ * overnight hours to a day and readings under fifty leads stopped being stored
+ * (#1929). A reading of one kind compared against a median of the other would
+ * page falsely or hide a real collapse. The old key is simply never read again;
+ * the monitor is unbaselined for MIN_BASELINE_SAMPLES runs per workflow and says so.
+ */
+const historyKey = (orgId: string) => `bid-ratio-history-v3:${orgId}`
 
 /** No expiry: the history IS the baseline, and losing it makes the check inert
  *  for MIN_BASELINE_SAMPLES runs with nothing saying why. */
@@ -372,7 +441,7 @@ async function readHistories(kv: KvLike, orgId: string): Promise<Record<string, 
 }
 
 /**
- * Judge each workflow's bid-rows-per-sighting ratio against its own history.
+ * Judge each workflow's attempts-per-sighting ratio against its own history.
  *
  * Runs on rows the caller has already proven retained, which is what makes the
  * ratio trustworthy: a drained window would understate every workflow at once.
@@ -385,11 +454,15 @@ async function checkRatios(
   appUrl?: string,
 ): Promise<void> {
   const histories = await readHistories(kv, orgId)
-  const decision = decideRatioCollapse(rows, histories)
+  const decision = decideRatioCollapse(rows, histories, { minSightings: MIN_RATIO_SIGHTINGS })
 
   console.log(
-    `[bid-recording] event=bid_ratio_checked org=${orgId} judged=${rows.length} collapsed=${decision.collapsed.length} unbaselined=${decision.unbaselined.length}`,
+    `[bid-recording] event=bid_ratio_checked org=${orgId} window_h=${RATIO_WINDOW_HOURS} workflows=${rows.length} collapsed=${decision.collapsed.length} unbaselined=${decision.unbaselined.length} unjudged=${decision.unjudged.length}`,
   )
+  if (decision.unjudged.length > 0) {
+    // The deliberate blind spot, named rather than implied.
+    console.log(`[bid-recording] event=bid_ratio_unjudged org=${orgId} min_leads=${MIN_RATIO_SIGHTINGS} workflows=${decision.unjudged.join(',')}`)
+  }
 
   // Store this run's readings before alerting, so a Slack failure cannot cost
   // the baseline as well as the notification.
@@ -415,7 +488,7 @@ async function checkRatios(
     const text = [
       `*${c.workflow_name}*`,
       '',
-      `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`,
+      `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${RATIO_WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`,
       '',
       'The runs are succeeding and most of the bid history is still there, so nothing else will report this. The usual cause is one partner or one branch dropping out of the recording while the rest carries on.',
     ].join('\n')

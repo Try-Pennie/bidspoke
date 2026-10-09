@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock the export entry points + their alert/supabase deps so we can assert which
 // cron triggers dispatch the sightings export, without running real export work.
-vi.mock('../lib/sightings-export', () => ({
+// Only the two entry points are replaced (L727): the module's constants, such as
+// BID_PURGE_HORIZON_MS that the bid ratio check derives its window from (#1929),
+// stay real, or every module reading one at load breaks the import of index.ts.
+vi.mock('../lib/sightings-export', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/sightings-export')>()),
   runSightingsExport: vi.fn().mockResolvedValue({ errors: [] }),
   notifySetAsideRows: vi.fn().mockResolvedValue(undefined),
 }))
