@@ -340,7 +340,8 @@ describe('a swap baseline from before a long gap in readings', () => {
     const h = harness()
     await h.runFor(10, (i) => h.reading(PLENTY, 1000 + i * 100, GB - (i + 1) * 20 * 1024 * 1024))
     await h.runFor(60, () => ({ kind: 'failed', reason: 'timeout' }))
-    await h.runFor(10, (i) => h.reading(PLENTY, i === 0 ? 900_000 : 900_000, GB / 2))
+    // Both the counter and the swap in use grew across the gap, then hold steady.
+    await h.runFor(10, () => h.reading(PLENTY, 900_000, GB / 2))
     expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
   })
 })
