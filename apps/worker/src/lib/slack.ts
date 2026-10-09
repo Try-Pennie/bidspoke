@@ -14,6 +14,7 @@ import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-exec
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { listSteps } from '../engine/running-step'
+import { CONTINUATION_UNFINISHED_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import type { ErrorType } from '../types'
@@ -1123,7 +1124,7 @@ export async function sendOutcomeDeadLetterAlert(
 ): Promise<boolean> {
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
   // Always its own wording: an unfinished walk is never a lost record (#1860).
-  if (payload.label === 'continuation_unfinished') return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
+  if (payload.label === CONTINUATION_UNFINISHED_LABEL) return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
   const errText = truncateErrorForAlert(payload.error_message)
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it
