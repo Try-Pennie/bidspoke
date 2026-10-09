@@ -2699,7 +2699,7 @@ export interface DatabaseMemoryShortPayload {
   lowestAvailableBytes: number
   /** Whether a reading in the stretch found less than the floor free. */
   lowFree: boolean
-  /** Whether a reading in the stretch found the swap-out counter rising. */
+  /** Whether a reading in the stretch found memory moving to disk: the swap-out counter rising or the swap in use growing. */
   swapping: boolean
   /** Swap in use at the latest reading. */
   swapUsedBytes: number
