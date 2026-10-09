@@ -381,7 +381,10 @@ async function checkOrgRatios(
   // The same peer proof the silence check uses, over this window: if nothing
   // recorded a bid, the window is drained or the engine was down, and judging
   // ratios there would accuse every workflow at once.
-  const proof = decideBidRecordingAlert(rows, { minSightings: MIN_SIGHTINGS })
+  // Only its no_sightings and window_not_retained answers are read, neither of
+  // which depends on the floor; the ratio's own floor is passed so this function
+  // reads one constant, not both.
+  const proof = decideBidRecordingAlert(rows, { minSightings: MIN_RATIO_SIGHTINGS })
   if (proof.reason === 'no_sightings' || proof.reason === 'window_not_retained') {
     console.error(
       `[bid-recording] event=bid_ratio_window_unproven org=${orgId} reason=${proof.reason} window_h=${RATIO_WINDOW_HOURS} workflows=${rows.length}`,

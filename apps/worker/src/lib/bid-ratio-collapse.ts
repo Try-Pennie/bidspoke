@@ -63,8 +63,11 @@ export const MIN_BASELINE_SAMPLES = 7
  * Leads a workflow must have in the window before its ratio is judged or stored
  * (#1929).
  *
- * Fifty, the same floor the total silence check beside this one applies. A ratio
- * over a handful of leads is not a measurement (L716, L139): on 2026-10-09 RML
+ * Fifty, chosen for the sampling noise on a rate and nothing else, so it is
+ * deliberately NOT tied to the total silence check's MIN_SIGHTINGS, which answers
+ * a different question (can fifty leads with no bid be a quiet stretch) and may
+ * move for its own reasons. A ratio over a handful of leads is not a measurement
+ * (L716, L139): on 2026-10-09 RML
  * (GigFi) was judged on its first six leads of the day, four of them validation
  * rejects that never bid by design, and paged at 17% against a stored normal of
  * 100% that was itself the median of first-minute readings like 1, 0.5 and 0.67.
