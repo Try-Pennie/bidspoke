@@ -76,7 +76,8 @@ export interface StandingPost {
   key: string
   claim: (key: string) => Promise<boolean>
   release: (key: string) => Promise<void>
-  targets: SlackTarget[]
+  /** The connections, or a way to read them that runs only once a post is going out. */
+  targets: SlackTarget[] | (() => Promise<SlackTarget[]>)
   nowMs: number
   alert: StandingAlert
   conditionTtlSeconds: number
@@ -99,14 +100,15 @@ export async function postStanding(p: StandingPost): Promise<boolean> {
   const different = recurrence.kind === 'new' && standing !== null
   if (!different && (await inCooldown(p.kv, p.key))) return false
   if (!(await p.claim(p.key))) return false
-  if (p.targets.length === 0) {
+  const targets = typeof p.targets === 'function' ? await p.targets() : p.targets
+  if (targets.length === 0) {
     p.log(`${p.logPrefix} no Slack connection, so ${p.key} was logged but not posted`)
     await p.release(p.key)
     return false
   }
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
   const repeat = describeRepeat(reminderOf, p.nowMs, recurrence.kind === 'reminder' && recurrence.unchanged)
-  const delivered = await deliverAll(p.targets, (s) => p.send(s, repeat))
+  const delivered = await deliverAll(targets, (s) => p.send(s, repeat))
   if (!delivered) {
     await p.release(p.key)
     return false

@@ -354,7 +354,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, FEED_ID, nowMs)
     if (nowMs - Date.parse(feedSince) >= FEED_UNREADABLE_ALERT_AFTER_MS) {
       const posted = await postStanding({
-        kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets: await targets(), nowMs,
+        kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets, nowMs,
         alert: { problem: 'feed-unreadable', details: [reason] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.unreadable(s, s.default_channel, { reason, since: feedSince, repeat, at: nowMs }),
@@ -381,7 +381,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
         at: nowMs,
       }
       const posted = await postStanding({
-        kv: deps.kv, key: DATABASE_MEMORY_KEY, claim, release, targets: await targets(), nowMs,
+        kv: deps.kv, key: DATABASE_MEMORY_KEY, claim, release, targets, nowMs,
         alert: { problem: 'memory-short', details: [String(payload.lowFree), String(payload.swapping), String(Math.round(payload.lowestAvailableBytes / MB))] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.short(s, s.default_channel, { ...payload, repeat }),

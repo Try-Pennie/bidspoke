@@ -328,6 +328,10 @@ describe('load on the database it watches', () => {
     await h.runFor(10, () => h.reading(LOW))
     expect(h.sent.map((s) => s.kind)).toEqual(['short'])
     expect(h.slackResolves).toBeGreaterThan(0)
+    // Inside the reminder gap nothing will post, so nothing is read either.
+    const after = h.slackResolves
+    await h.runFor(60, () => h.reading(LOW))
+    expect(h.slackResolves).toBe(after)
   })
 })
 
