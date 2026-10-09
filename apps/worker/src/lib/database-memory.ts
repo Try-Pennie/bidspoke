@@ -33,7 +33,7 @@
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recoveryDue, recoveryKey, settleRecovery, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type RecoveryKv } from './alert-recovery'
 import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
 import { sendDatabaseMemoryShortAlert, sendDatabaseMemoryUnreadableAlert, sendGroupedRecoveryAlert } from './slack'
 import { formatErr } from './format-error'
@@ -295,7 +295,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     summary.allClears.push(id)
   }
 
-  const feedAllClear = () => allClear(FEED_ID, DATABASE_MEMORY_UNREADABLE_KEY, 'The metrics feed', 'database memory unreadable', 'has answered every reading for 30 minutes')
+  const feedAllClear = () => allClear(FEED_ID, DATABASE_MEMORY_UNREADABLE_KEY, 'The metrics feed', 'database memory unreadable', `has answered every reading for ${RECOVERY_REARM_MINUTES} minutes`)
 
   if (current === 'unreadable') {
     // Memory is unmeasured, not clear: the memory incident's running end moves too, so a
@@ -322,6 +322,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     if (heldForMs >= MEMORY_SHORT_ALERT_AFTER_MS) {
       const payload = {
         totalBytes: reading.totalBytes,
+        freeFloor: MEMORY_FREE_FLOOR,
         lowestAvailableBytes: state.lowestAvailableBytes ?? reading.availableBytes,
         lowFree: state.lowFree ?? lowFree,
         swapping: state.swapping ?? swapping,
@@ -342,7 +343,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   }
 
   await allClear(MEMORY_ID, DATABASE_MEMORY_KEY, 'The database', 'database memory',
-    `has kept more than ${Math.round(MEMORY_FREE_FLOOR * 100)} percent of its memory free, with nothing moved to disk, for 30 minutes`)
+    `has kept more than ${Math.round(MEMORY_FREE_FLOOR * 100)} percent of its memory free, with nothing moved to disk, for ${RECOVERY_REARM_MINUTES} minutes`)
   return summary
 }
 

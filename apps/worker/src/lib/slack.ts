@@ -15,6 +15,7 @@ import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { listSteps } from '../engine/running-step'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
+import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
@@ -2692,6 +2693,8 @@ function decimalSize(bytes: number): string {
 
 export interface DatabaseMemoryShortPayload {
   totalBytes: number
+  /** The share of memory under which a reading counts as thin, as the check judged it. */
+  freeFloor: number
   /** The lowest available figure seen over the thin stretch. */
   lowestAvailableBytes: number
   /** Whether a reading in the stretch found less than the floor free. */
@@ -2718,7 +2721,8 @@ export async function sendDatabaseMemoryShortAlert(
   const header = 'The database is short of memory'
   const share = Math.round((payload.lowestAvailableBytes / payload.totalBytes) * 100)
   const signs: string[] = []
-  if (payload.lowFree) signs.push('it has had less than 15 percent of its memory free')
+  const floor = Math.round(payload.freeFloor * 100)
+  if (payload.lowFree) signs.push(`it has had less than ${floor} percent of its memory free`)
   if (payload.swapping) signs.push(`it has been moving memory to disk, with ${decimalSize(payload.swapUsedBytes)} there now`)
   const lines = [
     `Since ${etTime(Date.parse(payload.since))} every reading has found the database short of memory: ${signs.join(', and ')}. ` +
@@ -2734,7 +2738,7 @@ export async function sendDatabaseMemoryShortAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for 30 minutes.',
+        text: `*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`,
       },
     },
   ]
@@ -2767,7 +2771,7 @@ export async function sendDatabaseMemoryUnreadableAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: "*How to fix:* search the worker's logs for `event=database_memory`. HTTP 401 or 403 means the worker's Supabase secret key no longer opens the feed: check it in Supabase under Project Settings, API Keys. A timeout or HTTP 5xx is usually Supabase itself, so check <https://status.supabase.com|status.supabase.com>. Leads are not affected by this check failing. An all-clear follows here once readings have worked for 30 minutes.",
+        text: `*How to fix:* search the worker's logs for \`event=database_memory\`. HTTP 401 or 403 means the worker's Supabase secret key no longer opens the feed: check it in Supabase under Project Settings, API Keys. A timeout or HTTP 5xx is usually Supabase itself, so check <https://status.supabase.com|status.supabase.com>. Leads are not affected by this check failing. An all-clear follows here once readings have worked for ${RECOVERY_REARM_MINUTES} minutes.`,
       },
     },
   ]

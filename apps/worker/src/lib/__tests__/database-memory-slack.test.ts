@@ -20,6 +20,7 @@ const text = () =>
 
 const base = {
   totalBytes: 4.009828352e9,
+  freeFloor: 0.15,
   lowestAvailableBytes: 401_000_000,
   swapUsedBytes: 0,
   since: '2026-10-09T13:00:00.000Z',
@@ -45,6 +46,11 @@ describe('the memory short alert', () => {
     expect(text()).toMatch(/moving memory to disk/)
     expect(text()).toMatch(/537 MB/)
     expect(text()).not.toMatch(/less than 15 percent/)
+  })
+
+  it('states the floor the check judged by, not a copy of it', async () => {
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, freeFloor: 0.2, lowFree: true, swapping: false })
+    expect(text()).toMatch(/less than 20 percent/)
   })
 
   it('carries the reminder sentence when one is given', async () => {

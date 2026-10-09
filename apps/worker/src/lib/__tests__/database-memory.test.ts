@@ -198,6 +198,7 @@ describe('memory running thin', () => {
     expect(summaries.at(-1)!.alerts).toEqual(['short'])
     const p = h.sent[0].payload
     expect(p.totalBytes).toBe(TOTAL)
+    expect(p.freeFloor).toBe(MEMORY_FREE_FLOOR)
     expect(p.lowestAvailableBytes).toBe(LOW)
     expect(p.lowFree).toBe(true)
     expect(p.swapping).toBe(false)
