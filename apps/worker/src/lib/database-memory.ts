@@ -116,7 +116,10 @@ export function parseMemoryMetrics(text: string): FeedAnswer {
 }
 
 /** The production read: one GET with the secret key as Basic auth, a deadline, and never a throw. */
-export async function fetchMemoryReading(opts: { url: string; secretKey: string; fetchImpl?: typeof fetch }): Promise<FeedAnswer> {
+export async function fetchMemoryReading(opts: { url: string; secretKey: string | undefined; fetchImpl?: typeof fetch }): Promise<FeedAnswer> {
+  // An absent key is its own cause: sent as "undefined" it would come back as a 401 and the
+  // alert would blame a key that was never there (L11).
+  if (!opts.secretKey) return { kind: 'failed', reason: 'SUPABASE_SECRET_KEY is not set on the worker' }
   const fetchImpl = opts.fetchImpl ?? fetch
   try {
     const res = await fetchImpl(opts.url, {

@@ -172,6 +172,16 @@ describe('reading the feed', () => {
     expect(answer.kind === 'failed' && answer.reason).toMatch(/ECONNRESET/)
   })
 
+  it('refuses by name when the secret key is not set, rather than sending it and blaming a 401', async () => {
+    let called = false
+    const spy = (async () => { called = true; return new Response('', { status: 401 }) }) as unknown as typeof fetch
+    for (const secretKey of [undefined, '']) {
+      expect(await fetchMemoryReading({ url: 'https://x.supabase.co/customer/v1/privileged/metrics', secretKey, fetchImpl: spy }))
+        .toEqual({ kind: 'failed', reason: 'SUPABASE_SECRET_KEY is not set on the worker' })
+    }
+    expect(called).toBe(false)
+  })
+
   it('sends the secret key as Basic auth for the service_role user', async () => {
     let auth: string | null = null
     const ok = (async (_u: string, init: RequestInit) => {
