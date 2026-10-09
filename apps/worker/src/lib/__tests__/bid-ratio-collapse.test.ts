@@ -30,11 +30,17 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  decideRatioCollapse,
+  decideRatioCollapse as decide,
   COLLAPSE_FACTOR,
   MIN_BASELINE_SAMPLES,
+  MIN_RATIO_SIGHTINGS,
   type RatioHistory,
 } from '../bid-ratio-collapse'
+
+const opts = { minSightings: MIN_RATIO_SIGHTINGS }
+/** Every case below is judged with the production floor unless it says otherwise. */
+const decideRatioCollapse = (rows: Parameters<typeof decide>[0], histories: Parameters<typeof decide>[1]) =>
+  decide(rows, histories, opts)
 
 /** A workflow with `n` prior readings all at `ratio`. */
 function history(ratio: number, n = MIN_BASELINE_SAMPLES): RatioHistory {
@@ -146,6 +152,53 @@ describe('decideRatioCollapse: what it refuses to judge', () => {
   it('does not flag a ratio ABOVE its baseline', () => {
     const out = decideRatioCollapse([row({ attempt_rows: 900 })], { 'wf-1': history(0.56) })
     expect(out.collapsed).toEqual([])
+  })
+})
+
+/**
+ * #1929: the check judged RML (GigFi) on its first six leads of the day.
+ *
+ * GigFi runs 9 AM to 7 PM ET and the check ran at 9:01 AM ET, so its window held
+ * four validation rejects (no bid by design), one bid, and one lead still
+ * running. 1 in 6 against a stored "normal" of 1.0, itself built from readings
+ * of a handful of leads each, paged as a collapse. A ratio over a few leads is
+ * not a measurement (L716, L139), so below a floor the workflow is not judged
+ * and the reading is not stored.
+ */
+describe('decideRatioCollapse: the minimum number of leads (#1929)', () => {
+  const gigfi = (over: Partial<{ sightings: number; bid_rows: number; attempt_rows: number }>) =>
+    row({ workflow_id: 'gigfi', workflow_name: 'RML - Bidding Workflow (GigFi)', ...over })
+
+  it('does not judge the 2026-10-09 case: six leads, one attempt, a stored normal of 100%', () => {
+    const out = decideRatioCollapse([gigfi({ sightings: 6, bid_rows: 1, attempt_rows: 1 })], { gigfi: history(1) })
+    expect(out.collapsed).toEqual([])
+    expect(out.unjudged).toEqual(['RML - Bidding Workflow (GigFi)'])
+  })
+
+  it('does not store a reading taken over too few leads, so the baseline is not built from noise', () => {
+    const out = decideRatioCollapse([gigfi({ sightings: 6, bid_rows: 1, attempt_rows: 1 })], {})
+    expect(out.readings).toEqual([])
+    expect(out.unbaselined).toEqual([])
+  })
+
+  it('judges a workflow at exactly the floor', () => {
+    const n = MIN_RATIO_SIGHTINGS
+    const out = decideRatioCollapse([gigfi({ sightings: n, bid_rows: 1, attempt_rows: 1 })], { gigfi: history(0.67) })
+    expect(out.unjudged).toEqual([])
+    expect(out.collapsed.map((c) => c.workflow_id)).toEqual(['gigfi'])
+  })
+
+  it('still catches GigFi on a full day whose rate has halved', () => {
+    // A day of GigFi is about 3,000 leads at about 0.67 attempts each.
+    const out = decideRatioCollapse([gigfi({ sightings: 3000, bid_rows: 1000, attempt_rows: 1000 })], { gigfi: history(0.67) })
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0]).toMatchObject({ workflow_id: 'gigfi', sightings: 3000, attempt_rows: 1000 })
+  })
+
+  it('takes the floor from its caller rather than assuming one', () => {
+    const rows = [gigfi({ sightings: 20, bid_rows: 2, attempt_rows: 2 })]
+    expect(decide(rows, { gigfi: history(0.67) }, { minSightings: 10 }).collapsed).toHaveLength(1)
+    expect(decide(rows, { gigfi: history(0.67) }, { minSightings: 21 }).collapsed).toEqual([])
   })
 })
 
