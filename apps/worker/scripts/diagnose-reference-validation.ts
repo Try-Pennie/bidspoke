@@ -19,7 +19,7 @@ import { loadDevVars } from './lib/dev-vars'
 import {
   validateDefinitionReferences,
   type ReferenceProblem,
-} from '../../web/src/lib/reference-validation'
+} from '@bidspoke/workflow-definition'
 import type { NodeDef, EdgeDef } from '../../web/src/types/workflow'
 
 const vars = loadDevVars()

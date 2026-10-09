@@ -18,7 +18,7 @@ describe('duplicateLabelSet', () => {
     expect(duplicateLabelSet(['', ''])).toEqual(new Set(['']))
   })
 
-  it('compares exactly — whitespace-different labels are distinct handles', () => {
+  it('compares exactly, so whitespace-different labels are distinct handles', () => {
     expect(duplicateLabelSet(['Bid', 'Bid ']).size).toBe(0)
   })
 })
