@@ -21,7 +21,14 @@
  *
  * Measured 2026-09-09 by running the scan over all eleven live definitions.
  * `sanitizedBody` is named for forwarding, not redaction: its allowlist includes
- * `personalInformation`, so those sites print name, address and date of birth.
+ * `personalInformation`, so those sites print the full SSN, name, address, date
+ * of birth, email and phone. Measured 2026-10-09: every one of 166 prints from
+ * the two Engine no bids steps in the previous 24 hours carried a real looking
+ * SSN. The same SSN is already stored in the run's trigger payload, so the
+ * print adds a copy only where console output goes, which is Cloudflare's log
+ * viewer (#958), and which PII redaction, if it is ever turned on, cannot reach.
+ * That viewer is Pennie's own Cloudflare account, not an outside vendor, so it
+ * is still "inside our own systems" in the sense the reasoning above uses.
  */
 export interface AcceptedPrintSite {
   readonly workflow: string
@@ -34,12 +41,23 @@ export const ACCEPTED_PRINT_SITES: readonly AcceptedPrintSite[] = [
   { workflow: 'Main Flow', namespace: 'fallback_engine_under_10000', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow', namespace: 'fallback_invalid_state', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow', namespace: 'pennie_or_eligibility', identifier: 'result' },
+  // Added 2026-10-09, on the same grounds as the three Main Flow sanitizedBody
+  // sites above, and accepted by Dan that day with the header's measurement (a
+  // real SSN in every print, landing in Cloudflare's log viewer) in front of
+  // him, rather than carried over from the 2026-09-09 decision, which predates
+  // them. Recorded on #1214:
+  // https://github.com/Try-Pennie/bidspoke/issues/1214#issuecomment-6082797354
+  // Version 169 of Main Flow (saved 2026-10-07 16:39 UTC) gave these two steps
+  // the same Engine call code as fallback_engine_under_10000, and that code
+  // carries the print. Versions 167 and 168 had both steps without it.
+  { workflow: 'Main Flow', namespace: 'engine_no_bids_call', identifier: 'sanitizedBody' },
+  { workflow: 'Main Flow', namespace: 'engine_no_bids_call_1', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'fallback_engine_debt_missing', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'fallback_engine_under_10000', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'fallback_invalid_state', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'parsedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'result' },
-  // Added 2026-09-10, on different grounds from the nine above. This prints ONE
+  // Added 2026-09-10, on different grounds from every site above. This prints ONE
   // named scalar field, `financialInformation.employmentStatus`, not a record,
   // and only on the branch that runs when that field is absent or not a string.
   // Verified against the live definition on 2026-09-10: version 20 of the
