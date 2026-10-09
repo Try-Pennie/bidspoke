@@ -34,7 +34,8 @@
  */
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
-import { clearCondition, inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, backoffCooldownKey, fingerprintAlert, nextFingerprint, recurrenceOf, type BackoffKv } from './alert-backoff'
+import { clearCondition, backoffCooldownKey, type BackoffKv } from './alert-backoff'
+import { deliverAll, postStanding as postStandingAlert, type SlackTarget, type StandingAlert } from './standing-alert'
 import { keepAlerted, markSpikeSeen, recoveryDue, settleRecovery, type RecoveryKv } from './alert-recovery'
 import { detectBlockPage, cloudflareErrorCode, type BlockPage } from './html-error-summary'
 import { reportPartnerBlock, partnerBlockKey, PARTNER_BLOCK_CONDITION_TTL_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN } from './partner-block-alert'
@@ -42,41 +43,6 @@ import { ACHIEVE_HOSTS, achieveIdentityHeaders } from '../engine/nodes/achieve-i
 import { BLOCK_CAPTURE_BODY_HEAD_BYTES } from './code-node-deployer'
 import { sendPartnerBlockAlert, sendPartnerUnreachableAlert, sendProbeControlAlert, sendProbeBrokenAlert, sendGroupedRecoveryAlert } from './slack'
 import { formatErr } from './format-error'
-import type { SupabaseClient } from '@supabase/supabase-js'
-
-/**
- * Every org's Slack connection, for a worker level check that belongs to no org, the way
- * the daily secrets check fans out. The database first, the last-good KV copy when it does
- * not answer (L682): a partner block has nothing to do with Supabase, so this alert must
- * not go quiet during a database wobble. Never throws: an empty list with the reason
- * logged is the honest answer, and the runner reports it in its summary.
- */
-export async function resolveSlackForEveryOrg(deps: {
-  supabase: SupabaseClient
-  getConnection: (supabase: SupabaseClient, orgId: string) => Promise<SlackTarget | null>
-  lastGood: () => Promise<Map<string, SlackTarget>>
-  log: (line: string) => void
-}): Promise<SlackTarget[]> {
-  try {
-    const { data, error } = await deps.supabase.from('service_connections').select('organization_id').eq('service_type', 'slack')
-    if (error) throw new Error(error.message)
-    const orgIds = [...new Set(((data ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id))]
-    const found: SlackTarget[] = []
-    for (const orgId of orgIds) {
-      const conn = await deps.getConnection(deps.supabase, orgId)
-      if (conn) found.push(conn)
-    }
-    if (found.length > 0) return found
-  } catch (e) {
-    deps.log(`[partner-reachability] Slack connections read failed, trying the last-good copy: ${formatErr(e)}`)
-  }
-  try {
-    return [...(await deps.lastGood()).values()]
-  } catch (e) {
-    deps.log(`[partner-reachability] last-good Slack copy unreadable: ${formatErr(e)}`)
-    return []
-  }
-}
 
 export const CONTROL_HOST = 'block-probe.trypennie.dev'
 export const PROBE_USER_AGENT = 'bidspoke-partner-reachability-probe (+https://bidspoke.trypennie.dev)'
@@ -132,8 +98,6 @@ export interface ProbeReading {
   status: number | null
   bodyHead: string
 }
-
-type SlackTarget = { bot_token: string; default_channel: string }
 
 export interface ReachabilityDeps {
   kv: BackoffKv & RecoveryKv
@@ -441,36 +405,8 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
   return summary
 }
 
-/** Deliver one message to every connection; true if any accepted it. */
-async function deliverAll(targets: SlackTarget[], send: (s: SlackTarget) => Promise<string | boolean | null>): Promise<boolean> {
-  let delivered = false
-  for (const s of targets) {
-    try {
-      const r = await send(s)
-      if (r !== null && r !== false) delivered = true
-    } catch {
-      // A throwing send counts as not delivered; the caller keeps its state and retries next tick.
-    }
-  }
-  return delivered
-}
-
-/** What one standing post is about (#1768): the problem, and the details it shows beside it. */
-interface StandingAlert {
-  /** Names the problem. The control key carries two, the probe failing to fetch and the control failing. */
-  problem: 'unreachable' | 'probe-broken' | 'control-failing'
-  /** What the post shows about it, such as the reason; a reminder says nothing changed only when these match. */
-  details: readonly string[]
-}
-
-/**
- * Post under the standing-condition backoff with a claim: quiet inside the cooldown, one
- * poster across isolates, the condition recorded only after delivery, re-armed on every
- * tick it stands. A problem not posted while the condition stood (the control key's other
- * alert) is posted at once as new, never as a reminder of the first (#1768). Returns
- * whether a post went out.
- */
-async function postStanding(
+/** The shared standing post (lib/standing-alert.ts), with this probe's TTL and log prefix. */
+function postStanding(
   deps: ReachabilityDeps,
   key: string,
   claim: (key: string) => Promise<boolean>,
@@ -480,30 +416,10 @@ async function postStanding(
   alert: StandingAlert,
   send: (s: SlackTarget, repeat: string | null) => Promise<string | null>,
 ): Promise<boolean> {
-  const standing = await readCondition(deps.kv, key)
-  if (standing) await touchCondition(deps.kv, key, standing, PARTNER_BLOCK_CONDITION_TTL_SECONDS)
-  const print = await fingerprintAlert({ title: key, findings: [alert.problem], alsoShown: alert.details })
-  const recurrence = recurrenceOf(standing, print)
-  const different = recurrence.kind === 'new' && standing !== null
-  if (!different && (await inCooldown(deps.kv, key))) return false
-  if (!(await claim(key))) return false
-  if (targets.length === 0) {
-    deps.log(`[partner-reachability] no Slack connection, so ${key} was logged but not posted`)
-    await release(key)
-    return false
-  }
-  const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
-  const repeat = describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged)
-  const delivered = await deliverAll(targets, (s) => send(s, repeat))
-  if (!delivered) {
-    await release(key)
-    return false
-  }
-  await recordAlert(deps.kv, key, reminderOf, nowMs, {
-    conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
-    fingerprint: nextFingerprint(standing, print),
+  return postStandingAlert({
+    kv: deps.kv, key, claim, release, targets, nowMs, alert, send,
+    conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS, logPrefix: '[partner-reachability]', log: deps.log,
   })
-  return true
 }
 
 /** Observe mode: every send becomes a log line and reports success, so the state machine runs exactly as it will live. */

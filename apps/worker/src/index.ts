@@ -28,7 +28,9 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
-import { runPartnerReachabilityCheck, fetchProbe, liveSenders, resolveSlackForEveryOrg } from './lib/partner-reachability'
+import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
+import { resolveSlackForEveryOrg } from './lib/standing-alert'
+import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMemorySenders, DATABASE_MEMORY_JOB } from './lib/database-memory'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
@@ -685,6 +687,7 @@ const scheduledJobs = {
                 getConnection: getSlackConnection,
                 lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
                 log: (line) => console.error(line),
+                logPrefix: '[partner-reachability]',
               }),
               senders: liveSenders,
               now: Date.now,
@@ -696,6 +699,44 @@ const scheduledJobs = {
             })
             .catch((e) => console.error('[partner-reachability] check failed:', e)),
           'partner-reachability',
+        ),
+      )
+      // Database memory (#1928): reads Supabase's metrics feed and alerts once memory has
+      // been thin for 15 minutes, the condition that stalled the database on 2026-10-08
+      // after a week unseen. Its own heartbeat, beside the probe rather than after it, so
+      // a slow partner cannot hold it up. The Slack fallback matters most here: this alert
+      // is needed exactly when the database holding the connection is struggling.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, DATABASE_MEMORY_JOB)
+            .catch((e) => console.error('[database-memory] heartbeat write failed:', e))
+            .then(() => {
+              const url = metricsUrl(env.SUPABASE_URL)
+              return runDatabaseMemoryCheck({
+                kv: env.IDEMPOTENCY,
+                claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+                env: env as unknown as Record<string, string | undefined>,
+                read: () => url
+                  ? fetchMemoryReading({ url, secretKey: env.SUPABASE_SECRET_KEY })
+                  : Promise.resolve({ kind: 'failed' as const, reason: 'SUPABASE_URL is not a URL the metrics feed can be built from' }),
+                resolveSlack: () => resolveSlackForEveryOrg({
+                  supabase,
+                  getConnection: getSlackConnection,
+                  lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                  log: (line) => console.error(line),
+                  logPrefix: '[database-memory]',
+                }),
+                senders: liveDatabaseMemorySenders,
+                now: Date.now,
+                log: (line) => console.log(line),
+              })
+            })
+            .then((s) => {
+              console.log(`[database-memory] mode=${s.mode} state=${s.state} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
+              if (s.errors.length) console.error(`[database-memory] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error('[database-memory] check failed:', e)),
+          DATABASE_MEMORY_JOB,
         ),
       )
     } else if (event.cron === '*/15 * * * *') {
