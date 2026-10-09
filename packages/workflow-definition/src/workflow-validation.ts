@@ -226,14 +226,29 @@ export function validateWorkflow(nodes: CanvasNodeLike[], edges: CanvasEdgeLike[
   return errors
 }
 
+// The one cycle check both apps use (#1698): the canvas (mapping its React Flow
+// nodes to id + namespace) and the worker save route (its NodeDefinition, whose
+// namespace is already top level). It reads only a node's id and namespace (for
+// the looping-node labels) and an edge's source and target, so one implementation
+// serves both; the worker's own detectCycle was deleted in favour of this.
+export interface CycleNode {
+  id: string
+  namespace: string
+}
+
+export interface CycleEdge {
+  source: string
+  target: string
+}
+
 // Detect a directed cycle in the graph (#334). Returns the looping node
-// namespaces (back-edge target repeated at both ends, e.g.
-// ['enrich','score','enrich']) or null when acyclic. Mirrors the worker's
-// detectCycle so a cyclic workflow is flagged in the editor at save time with a
-// clean message, before the authoritative server-side reject. All edges are
-// directed source→target; the `trigger` pseudo-source never sits on a cycle.
-export function findWorkflowCycle(nodes: CanvasNodeLike[], edges: CanvasEdgeLike[]): string[] | null {
-  const labelById = new Map(nodes.map((n) => [n.id, (n.data as unknown as CanvasNodeData)?.namespace ?? n.id]))
+// namespaces (the back-edge target repeated at both ends, e.g.
+// ['enrich','score','enrich']) or null when acyclic. Used to reject a cyclic
+// definition at save time, in the editor and on the server, before a lead can be
+// processed. All edges are directed source to target; the `trigger` pseudo-source
+// never sits on a cycle.
+export function findWorkflowCycle(nodes: CycleNode[], edges: CycleEdge[]): string[] | null {
+  const labelById = new Map(nodes.map((n) => [n.id, n.namespace ?? n.id]))
   const label = (id: string) => labelById.get(id) ?? id
 
   const adjacency = new Map<string, string[]>()

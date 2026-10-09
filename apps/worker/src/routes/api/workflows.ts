@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { detectCycle } from '../../engine/graph'
+import { findWorkflowCycle } from '@bidspoke/workflow-definition'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -352,7 +352,7 @@ workflows.put('/:id', async (c) => {
   // before it can process a lead. Only checked when a new definition is sent.
   if (body.definition) {
     const def = body.definition as WorkflowDefinition
-    const cycle = detectCycle(def.nodes ?? [], def.edges ?? [])
+    const cycle = findWorkflowCycle(def.nodes ?? [], def.edges ?? [])
     if (cycle) {
       return c.json(
         { error: `Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.` },
