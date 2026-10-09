@@ -140,6 +140,12 @@ describe('reading the feed', () => {
     expect(answer.kind === 'read' && answer.reading.totalBytes).toBe(4.009828352e9)
   })
 
+  it('refuses a line with no value rather than reading it as zero', () => {
+    const text = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n')
+      .map((l) => (l.startsWith('node_memory_MemAvailable_bytes{') ? l.replace(/\} \S+$/, '}') : l)).join('\n')
+    expect(parseMemoryMetrics(text)).toEqual({ kind: 'failed', reason: 'node_memory_MemAvailable_bytes was not a number' })
+  })
+
   it('refuses by name when a figure it needs is missing', () => {
     const text = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n').filter((l) => !l.startsWith('node_memory_MemAvailable_bytes{')).join('\n')
     expect(parseMemoryMetrics(text)).toEqual({ kind: 'failed', reason: 'the feed carried no node_memory_MemAvailable_bytes for the db service' })
@@ -355,6 +361,13 @@ describe('when the feed cannot be read', () => {
     await h.runFor(15, () => h.reading(LOW))
     await h.runFor(60, () => ({ kind: 'failed', reason: 'timeout' }))
     expect(h.sent.map((s) => s.kind)).toEqual(['short', 'unreadable'])
+  })
+
+  it('keeps the memory stretch running through a feed that fails one read in three', async () => {
+    const h = harness()
+    await h.runFor(20, (i) => (i % 3 === 1 ? { kind: 'failed', reason: 'timeout' } : h.reading(LOW)))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    expect(h.sent[0].payload.since).toBe('2026-10-09T13:00:00.000Z')
   })
 
   it('counts an unreadable stretch as unmeasured, so the memory all-clear still waits for 30 healthy minutes', async () => {

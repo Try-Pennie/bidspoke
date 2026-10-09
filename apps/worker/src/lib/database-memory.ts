@@ -108,7 +108,8 @@ export function parseMemoryMetrics(text: string): FeedAnswer {
     if (matches.length === 0) return { kind: 'failed', reason: `the feed carried no ${name} for the db service` }
     if (matches.length > 1) return { kind: 'failed', reason: `the feed carried ${matches.length} ${name} lines for the db service` }
     // The value is the first field after the labels; Prometheus allows a timestamp after it.
-    const value = Number(matches[0].slice(matches[0].lastIndexOf('}') + 1).trim().split(/\s+/)[0])
+    const token = matches[0].slice(matches[0].lastIndexOf('}') + 1).trim().split(/\s+/)[0]
+    const value = token === '' ? NaN : Number(token)
     if (!Number.isFinite(value)) return { kind: 'failed', reason: `${name} was not a number` }
     reading[field] = value
   }
@@ -137,11 +138,20 @@ export async function fetchMemoryReading(opts: { url: string; secretKey: string 
 
 type MemoryStateName = 'ok' | 'short' | 'unreadable'
 
+/**
+ * Memory and the feed run on two clocks (#1928 review). Memory's state changes only on a
+ * reading that worked, so a failed read in the middle of a thin stretch neither ends it nor
+ * restarts its 15 minutes: a feed failing one read in three would otherwise hold the alert
+ * off for ever while never failing long enough to raise its own.
+ */
 interface MemoryState {
-  state: MemoryStateName
+  /** Memory as last measured. */
+  state: 'ok' | 'short'
   reason: string
-  /** ISO time the current state began. Every threshold is judged from here. */
+  /** ISO time the current memory state began. Every memory threshold is judged from here. */
   since: string
+  /** ISO time the feed began failing, present only while it is failing. */
+  feedFailingSince?: string
   /** The swap-out counter at the last successful reading, carried across failed ones. */
   lastSwapOut?: number
   /** Swap in use at the last successful reading, carried across failed ones. */
@@ -169,7 +179,7 @@ async function readState(kv: RecoveryKv): Promise<StateRead> {
   if (raw === null) return { kind: 'absent' }
   try {
     const parsed = JSON.parse(raw) as Partial<MemoryState>
-    const valid = (['ok', 'short', 'unreadable'] as const).includes(parsed.state as MemoryStateName) && typeof parsed.since === 'string' && Number.isFinite(Date.parse(parsed.since))
+    const valid = (['ok', 'short'] as const).includes(parsed.state as 'ok' | 'short') && typeof parsed.since === 'string' && Number.isFinite(Date.parse(parsed.since))
     if (!valid) return { kind: 'malformed', error: 'the state record is not one this check wrote' }
     return { kind: 'present', state: parsed as MemoryState }
   } catch (e) {
@@ -228,15 +238,17 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   }
   const previous = prior.kind === 'present' ? prior.state : null
 
-  let current: MemoryStateName
-  let reason: string
-  let figures = ''
   let reading: MemoryReading | null = null
+  let state: MemoryState
   let lowFree = false
   let swapping = false
+  let line: string
   if (answer.kind === 'failed') {
-    current = 'unreadable'
-    reason = answer.reason
+    summary.state = 'unreadable'
+    // Memory is carried as last measured; only the feed's clock moves.
+    state = previous ? { ...previous } : { state: 'ok', reason: 'no reading yet', since: iso(nowMs) }
+    state.feedFailingSince = previous?.feedFailingSince ?? iso(nowMs)
+    line = ` reason=${JSON.stringify(answer.reason)} feed_failing_since=${state.feedFailingSince}`
   } else {
     reading = answer.reading
     const freeShare = reading.availableBytes / reading.totalBytes
@@ -246,36 +258,32 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     const swapGrew = previous?.lastSwapUsed !== undefined && swapUsed - previous.lastSwapUsed > SWAP_GROWTH_BYTES
     swapping = counterRose || swapGrew
     lowFree = freeShare < MEMORY_FREE_FLOOR
-    current = lowFree || swapping ? 'short' : 'ok'
-    reason = [lowFree ? 'low_free' : null, swapping ? 'swapping' : null].filter(Boolean).join('+') || 'clear'
+    const current = lowFree || swapping ? 'short' : 'ok'
+    const reason = [lowFree ? 'low_free' : null, swapping ? 'swapping' : null].filter(Boolean).join('+') || 'clear'
+    summary.state = current
     summary.freeShare = freeShare
-    figures =
+    const changed = previous === null || previous.state !== current
+    state = changed ? { state: current, reason, since: iso(nowMs) } : { ...previous, reason }
+    delete state.feedFailingSince
+    state.lastSwapOut = reading.swapOutPages
+    state.lastSwapUsed = swapUsed
+    if (current === 'short') {
+      state.lowestAvailableBytes = Math.min(state.lowestAvailableBytes ?? Infinity, reading.availableBytes)
+      state.lowFree = (state.lowFree ?? false) || lowFree
+      state.swapping = (state.swapping ?? false) || swapping
+    } else {
+      delete state.lowestAvailableBytes
+      delete state.lowFree
+      delete state.swapping
+    }
+    line =
       ` free_pct=${(freeShare * 100).toFixed(1)} available_mb=${Math.round(reading.availableBytes / MB)} total_mb=${Math.round(reading.totalBytes / MB)}` +
-      ` swap_used_mb=${Math.round((reading.swapTotalBytes - reading.swapFreeBytes) / MB)} swap_out_pages=${reading.swapOutPages}` +
+      ` swap_used_mb=${Math.round(swapUsed / MB)} swap_out_pages=${reading.swapOutPages}` +
       ` swapped=${swapping} counter_reset=${counterReset}`
-  }
-  summary.state = current
-
-  const changed = previous === null || previous.state !== current
-  const state: MemoryState = changed ? { state: current, reason, since: iso(nowMs) } : { ...previous, reason }
-  state.lastSwapOut = reading ? reading.swapOutPages : previous?.lastSwapOut
-  state.lastSwapUsed = reading ? reading.swapTotalBytes - reading.swapFreeBytes : previous?.lastSwapUsed
-  if (current === 'short' && reading) {
-    state.lowestAvailableBytes = Math.min(state.lowestAvailableBytes ?? Infinity, reading.availableBytes)
-    state.lowFree = (state.lowFree ?? false) || lowFree
-    state.swapping = (state.swapping ?? false) || swapping
-  } else if (current !== 'short') {
-    delete state.lowestAvailableBytes
-    delete state.lowFree
-    delete state.swapping
   }
   const heldForMs = nowMs - Date.parse(state.since)
 
-  deps.log(
-    `[database-memory] event=database_memory state=${current}${figures}` +
-      (current === 'unreadable' ? ` reason=${JSON.stringify(reason)}` : '') +
-      ` since=${state.since} for=${Math.round(heldForMs / 1000)}s`,
-  )
+  deps.log(`[database-memory] event=database_memory state=${summary.state}${line} memory_since=${state.since} for=${Math.round(heldForMs / 1000)}s`)
 
   // Local dev reads and logs, but writes nothing, as the partner probe does.
   if (mode === 'silent') return summary
@@ -296,8 +304,8 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   const release = async (key: string): Promise<void> => { if (deps.claims) await deps.claims.release(key) }
 
   /** Keep the all-clear marker alive only for an incident that was actually posted (L12). */
-  const keepIfAlerted = async (id: string, posted: boolean) => {
-    if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, state.since)
+  const keepIfAlerted = async (id: string, posted: boolean, since: string) => {
+    if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since)
   }
 
   const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string) => {
@@ -322,27 +330,29 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
 
   const feedAllClear = () => allClear(FEED_ID, DATABASE_MEMORY_UNREADABLE_KEY, 'The metrics feed', 'database memory unreadable', `has answered every reading for ${RECOVERY_REARM_MINUTES} minutes`)
 
-  if (current === 'unreadable') {
+  if (answer.kind === 'failed') {
+    const feedSince = state.feedFailingSince ?? iso(nowMs)
+    const reason = answer.reason
     // Memory is unmeasured, not clear: the memory incident's running end moves too, so a
     // run of failed reads can never count toward its all-clear.
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, MEMORY_ID, nowMs)
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, FEED_ID, nowMs)
-    if (heldForMs >= FEED_UNREADABLE_ALERT_AFTER_MS) {
+    if (nowMs - Date.parse(feedSince) >= FEED_UNREADABLE_ALERT_AFTER_MS) {
       const posted = await postStanding({
         kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets, nowMs,
         alert: { problem: 'feed-unreadable', details: [reason] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
-        send: (s, repeat) => deps.senders.unreadable(s, s.default_channel, { reason, since: state.since, repeat, at: nowMs }),
+        send: (s, repeat) => deps.senders.unreadable(s, s.default_channel, { reason, since: feedSince, repeat, at: nowMs }),
       })
       if (posted) summary.alerts.push('unreadable')
-      await keepIfAlerted(FEED_ID, posted)
+      await keepIfAlerted(FEED_ID, posted, feedSince)
     }
     return summary
   }
 
   await feedAllClear()
 
-  if (current === 'short' && reading) {
+  if (state.state === 'short' && reading) {
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, MEMORY_ID, nowMs)
     if (heldForMs >= MEMORY_SHORT_ALERT_AFTER_MS) {
       const payload = {
@@ -362,7 +372,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
         send: (s, repeat) => deps.senders.short(s, s.default_channel, { ...payload, repeat }),
       })
       if (posted) summary.alerts.push('short')
-      await keepIfAlerted(MEMORY_ID, posted)
+      await keepIfAlerted(MEMORY_ID, posted, state.since)
     }
     return summary
   }
