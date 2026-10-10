@@ -17,6 +17,7 @@ import { sendDurationAlert, sendFailureAlert, sendThreadReply } from './slack'
 import { draftAlertSummary, type AlertSummaryStep } from './alert-summarizer'
 import { getAnthropicKey } from './changelog-drafter'
 import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
+import { failureAlertSignature, failureAlertSuppressed, markFailureAlertSent } from './failure-alert-throttle'
 
 // Minimal slice of Cloudflare's ExecutionContext we actually use. Engine code
 // uses a structural alias for the same reason — `ExecutionContext` is also the
@@ -127,20 +128,43 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
     if (retriesUsed !== undefined) reason.retries_used = retriesUsed
   }
 
-  // Persist the snapshot BEFORE sending Slack — even if Slack fails, the banner
-  // will still render with the structured fallback. Best-effort; a write failure
-  // here shouldn't prevent the alert from going out.
+  // #693: decide burst collapse BEFORE recording the snapshot, so a collapsed run
+  // is not recorded as having fired a Slack alert it never sent. Failure path only;
+  // the first of each signal pages, a different signal pages on its own, and the
+  // claim fails open, so this can never silence a real failure.
+  let signature: string | undefined
+  let collapsed = false
+  if (args.alertType === 'failure') {
+    signature = failureAlertSignature(args.workflowId, args.failedStep, args.errorMessage)
+    // Suppressed only if a page for this signature already went out this window.
+    // failureAlertSuppressed fails open (a KV error reads as not suppressed), so
+    // the throttle can never be the reason a real failure goes unalerted.
+    collapsed = await failureAlertSuppressed(args.env.IDEMPOTENCY, signature)
+  }
+
+  // Persist the snapshot BEFORE sending Slack (even if Slack fails, the banner
+  // still renders with the structured fallback). Best-effort: a write failure here
+  // should not prevent the alert from going out. slack_alert_fired_at marks that an
+  // alert was ATTEMPTED (it is written ahead of the send, so a send that then fails
+  // still carries it, as before): a collapsed burst run never attempts a send, so
+  // it records the reason (marked collapsed, so the banner still explains the
+  // failure) but no fired-at.
   await writeExecutionAlertState(
     args.supabase,
     args.executionId,
     args.executionStartedAt,
     {
       slack_alert_type: args.alertType,
-      slack_alert_fired_at: args.timestamp,
-      slack_alert_reason: reason,
+      slack_alert_reason: collapsed ? { ...reason, collapsed_into_burst: true } : reason,
+      ...(collapsed ? {} : { slack_alert_fired_at: args.timestamp }),
     },
     'record alert metadata',
   )
+
+  if (collapsed) {
+    console.log(`[execution-alerts] failure alert collapsed into an active burst window (${signature})`)
+    return
+  }
 
   const handle = args.alertType === 'duration'
     ? await sendDurationAlert(args.supabase, args.orgId, args.slackChannel, {
@@ -163,6 +187,14 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
         retries_used: retriesUsed,
         timestamp: args.timestamp,
       }, args.env.APP_URL).catch((e) => { console.error('[slack] failure alert failed:', e); return null })
+
+  // #693: open the collapse window ONLY after a page actually went out (handle
+  // present), so a failed or unconfigured Slack send never starts a silent window
+  // that swallows the rest of the burst. Best-effort; failing to write it just
+  // means the next failure of this signature also pages.
+  if (args.alertType === 'failure' && handle && signature) {
+    await markFailureAlertSent(args.env.IDEMPOTENCY, signature)
+  }
 
   // Claude summary: fire-and-forget. Updates the row + posts a thread reply.
   // Even if no Slack handle (Slack down / not configured), we still try to fill
