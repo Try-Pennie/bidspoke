@@ -179,6 +179,10 @@ export async function runFailureRateCheck(
                 subject: wf.name as string,
                 alertedAt,
                 endedAt,
+                // This check judges a trailing window, so a one-tick incident
+                // has a zero span: name the window it measured rather than a
+                // gap it did not (#1108).
+                measuredWindowMinutes: signal.window_minutes,
                 url: `${appUrl}/workflows/${wfId}`,
               },
             )

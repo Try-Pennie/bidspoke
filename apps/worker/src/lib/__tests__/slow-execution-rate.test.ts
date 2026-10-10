@@ -220,6 +220,17 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     expect(kv.store.has('slow-spike-cooldown:wf-1')).toBe(false)
   })
 
+  it('passes the detection window to the all-clear so a one-tick incident is not reported as a tick gap (#1108)', async () => {
+    // This check judges the trailing WINDOW_MINUTES (5), so the notice names the
+    // window it measured rather than the gap between the ticks it looked.
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({ 'slow-spike-recovery:wf-1': alertedAt, 'slow-spike-cooldown:wf-1': '1' })
+
+    await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ measuredWindowMinutes: 5 })
+  })
+
   it('says nothing about a workflow that was never alerted', async () => {
     await runSlowExecutionCheck(healthy() as never, makeKv() as never, 'https://app.example.com')
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
