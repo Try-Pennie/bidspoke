@@ -373,9 +373,11 @@ export async function runExecutionArchive(
   if (typeof pepper !== 'string' || pepper.length === 0) {
     const detail = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
     for (const alert of alertsFor({ ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail })) {
-      // The refusal wording, not the run-stopped wording. Same job name, because
-      // the cooldown is the same condition, but a missing secret is fixed by
-      // setting it rather than by reading a stop reason.
+      // The refusal wording, not the run-stopped wording, and its own job name
+      // (#1259): alertsFor maps the misconfigured stop to execution-archive-
+      // misconfigured, so this condition no longer shares a cooldown with a run
+      // that stopped partway. A missing secret is fixed by setting it rather than
+      // by reading a stop reason.
       await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, ARCHIVE_MISCONFIGURED_REMEDY)
     }
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }

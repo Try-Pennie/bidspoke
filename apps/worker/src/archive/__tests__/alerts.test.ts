@@ -36,6 +36,19 @@ describe('alertsFor', () => {
     expect(alerts[0].errors[0]).toMatch(/snowflake refused/)
   })
 
+  // #1259: the misconfigured exit (a required secret unset, so the archive
+  // refuses to run at all) is an independent condition from a run that stopped
+  // partway. notifyExportFailure keys its grace marker and backstop cooldown on
+  // the job name, so sharing the ingest name let whichever fired first silence
+  // the other for eight hours (L53).
+  it('gives the misconfigured exit its own name, distinct from ingest', () => {
+    const alerts = alertsFor(run({ failed: true, stop: 'misconfigured', detail: 'SSN_HASH_PEPPER is not set' }))
+
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0].jobName).toBe(ARCHIVE_JOB_NAMES.misconfigured)
+    expect(ARCHIVE_JOB_NAMES.misconfigured).not.toBe(ARCHIVE_JOB_NAMES.ingest)
+  })
+
   // Separate names so a per-execution refusal cannot suppress a genuine ingest
   // outage for the next eight hours through the shared backstop cooldown.
   it('gives refusals their own name, distinct from ingest', () => {
@@ -191,9 +204,17 @@ describe('clearedConditionsFor', () => {
   it('clears every condition a healthy run measured', () => {
     expect(clearedConditionsFor(run())).toEqual([
       ARCHIVE_JOB_NAMES.ingest,
+      ARCHIVE_JOB_NAMES.misconfigured,
       ARCHIVE_JOB_NAMES.refusal,
       ARCHIVE_JOB_NAMES.lag,
     ])
+  })
+
+  // #1259: now the misconfigured exit has its own name, a successful run is the
+  // evidence that stands it down (the secret was set and the archive ran), so
+  // its reminder must be cleared here or it would page forever.
+  it('clears the misconfigured condition on a healthy run', () => {
+    expect(clearedConditionsFor(run())).toContain(ARCHIVE_JOB_NAMES.misconfigured)
   })
 
   it('clears nothing at all on a failed run, whatever its other numbers say', () => {

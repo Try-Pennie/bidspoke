@@ -31,6 +31,16 @@ export const ARCHIVE_JOB_NAMES = {
    * and whose hours are simply unarchived until the loop reaches them again.
    */
   killed: 'execution-archive-killed',
+  /**
+   * The archive refusing to run because a required secret is unset (#1259).
+   *
+   * Its own name, not folded into `ingest`. It is a different condition from a
+   * run that stopped partway, and `notifyExportFailure` keys its grace marker
+   * and backstop cooldown on the job name, so sharing `ingest` let whichever
+   * fired first silence the other for eight hours (L53). The remedy also differs:
+   * a missing secret is fixed by setting it, not by reading a stop reason.
+   */
+  misconfigured: 'execution-archive-misconfigured',
 } as const
 
 /**
@@ -171,8 +181,10 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
   const alerts: ArchiveAlert[] = []
 
   if (result.failed) {
+    // The misconfigured exit is its own condition with its own cooldown (#1259),
+    // so it never shares a status field with a run that stopped partway.
     alerts.push({
-      jobName: ARCHIVE_JOB_NAMES.ingest,
+      jobName: result.stop === 'misconfigured' ? ARCHIVE_JOB_NAMES.misconfigured : ARCHIVE_JOB_NAMES.ingest,
       errors: [`archive run stopped on ${result.stop}: ${result.detail}`],
       remedy: ingestRemedyFor(result.stop),
     })
@@ -233,7 +245,11 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
  */
 export function clearedConditionsFor(result: RunResult): string[] {
   if (result.failed) return []
-  const cleared: string[] = [ARCHIVE_JOB_NAMES.ingest]
+  // A run that reached the end is the evidence that both the ingest condition and
+  // the misconfigured one (#1259) have cleared: it ran, so no required secret is
+  // missing. Clear both, or the misconfigured reminder would page forever once it
+  // has its own name.
+  const cleared: string[] = [ARCHIVE_JOB_NAMES.ingest, ARCHIVE_JOB_NAMES.misconfigured]
   if (result.executionsRefused === 0) cleared.push(ARCHIVE_JOB_NAMES.refusal)
   if (result.hoursBehind <= LAG_ALERT_HOURS) cleared.push(ARCHIVE_JOB_NAMES.lag)
   return cleared
