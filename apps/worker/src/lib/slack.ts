@@ -964,8 +964,29 @@ export interface OutcomeDeadLetterAlert {
   }
 }
 
+// The sighting strand drain (reduce_finalize_stranded) runs on pg_cron every 30
+// minutes. Kept in one place so the finalize guidance, the summary and the bid
+// guidance below cannot drift from each other. A guard
+// (alert-strand-cadence-matches-cron) ties this to the cron schedule in
+// supabase/migrations, so the copy cannot silently go stale if the cron changes.
+export const SIGHTING_STRAND_DRAIN_CADENCE_MINUTES = 30
+
+// Whether a dead-lettered write self-heals, shared by the guidance copy and the
+// alert header/summary so the two can never disagree (#1953). Each rebuilds the
+// db-retry error shape from the code, which is the single source of truth for
+// transient vs permanent.
+function execFinalizeSelfHeals(label: string, errorCode: string | null | undefined): boolean {
+  return label === 'execution_finalize' && !isNoRowMatchedError(errorCode ? { code: errorCode, message: '' } : null)
+}
+function sightingFinalizeSelfHeals(label: string, errorCode: string | null | undefined): boolean {
+  return label === 'lead_sightings.finalize' && !isPermanentDbError(errorCode ? { code: errorCode, message: '' } : null)
+}
+function bidInsertConditionalRecovery(label: string, errorCode: string | null | undefined): boolean {
+  return label === 'lead_sighting_bids.insert' && !isPermanentDbError(errorCode ? { code: errorCode, message: '' } : null)
+}
+
 /**
- * Cause-specific remediation line for a dead-lettered outcome write (#600, #585).
+ * Cause-specific remediation line for a dead-lettered outcome write (#600, #585, #1953).
  *
  * The write already survived the full retry ladder before dead-lettering, so the
  * brief nightly-purge 503 is never the real cause. Classification reuses db-retry
@@ -981,8 +1002,27 @@ function outcomeDeadLetterGuidance(label: string, errorCode: string | null | und
   // per-minute cron, so this self-heals. Say so instead of paging as if the
   // record were lost. The no-row case falls through: there is no 'running' row
   // for the drain to find, so it stays genuinely unrecoverable below.
-  if (label === 'execution_finalize' && !isNoRowMatchedError(err)) {
+  if (execFinalizeSelfHeals(label, errorCode)) {
     return `*How to fix:* This left the execution row stuck at status='running'; the record itself is intact. The stranded-execution drain runs every minute and finalizes rows once they are older than ${STRAND_DRAIN_MIN_AGE_MINUTES} minutes, so this recovers automatically. Confirm the row reached a terminal status; only escalate if it is still 'running' beyond ${STRAND_DRAIN_MIN_AGE_MINUTES} minutes.`
+  }
+
+  // #1953: a lost lead-sighting finalize leaves the sighting at
+  // outcome_state='in_flight', which reduce_finalize_stranded (the strand drain)
+  // replays from the execution's saved finalize data, re-inserting any lost bid
+  // rows at the same time. A permanent error or a missing row would recur on the
+  // replay, so those fall through to the copy below (isPermanentDbError already
+  // covers the no-row code).
+  if (sightingFinalizeSelfHeals(label, errorCode)) {
+    return `*How to fix:* The lead sighting is stuck at outcome_state='in_flight' and recovers automatically. The strand drain runs every ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes and replays the outcome, and any lost bid rows, from the execution's saved finalize data. Confirm the sighting reached outcome_state='finalized'; only escalate if it is still 'in_flight' after the next pass.`
+  }
+
+  // #1953: the strand drain re-inserts a lost bid row too, but ONLY when it
+  // finalizes a still-stranded sighting (the re-insert is gated on the drain
+  // having just recovered that sighting). So a bid row self-heals when the
+  // finalize was lost as well (the usual database-slowdown case), but not when
+  // the sighting already finalized and only this bid write was lost.
+  if (bidInsertConditionalRecovery(label, errorCode)) {
+    return `*How to fix:* If the lead sighting is also still at outcome_state='in_flight' (the usual case in a database slowdown), the strand drain re-inserts this bid row automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes when it finalizes the sighting, so no action is needed. If the sighting already finalized, only this bid row is missing and is not auto-recovered: re-derive it from the execution log below.`
   }
 
   const base =
@@ -1113,9 +1153,11 @@ async function sendUnfinishedWorkAlert(
 /**
  * Alert that a must-not-lose outcome write was dead-lettered after its retries
  * were exhausted (or a tier-3 Salesforce writeback was given up on). The record
- * feeds billing / win-tracking / repeat-lead analytics and is NOT auto-recovered.
- * Caller has already fetched the connection and checked config_alerts_enabled.
- * Returns true when delivered. See #309.
+ * feeds billing / win-tracking / repeat-lead analytics. Most labels are NOT
+ * auto-recovered, but the finalize losses self-heal through the strand drains
+ * (execution_finalize and lead_sightings.finalize), so the alert reframes those
+ * as a delay rather than a loss (#585, #1953). Caller has already fetched the
+ * connection and checked config_alerts_enabled. Returns true when delivered. See #309.
  */
 export async function sendOutcomeDeadLetterAlert(
   connection: SlackConnection,
@@ -1129,8 +1171,13 @@ export async function sendOutcomeDeadLetterAlert(
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it
   // reads as a recoverable delay, not a permanent loss, matching the guidance.
-  const err = payload.error_code ? { code: payload.error_code, message: '' } : null
-  const drainRecoverable = payload.label === 'execution_finalize' && !isNoRowMatchedError(err)
+  // The same self-heal predicates the guidance copy uses, so the header/summary
+  // here cannot disagree with the "How to fix" line below (#585, #1953). A lost
+  // bid row self-heals only when the sighting is also stranded, so it is not
+  // reframed as a delay; its summary and guidance both state that condition.
+  const execDrainRecoverable = execFinalizeSelfHeals(payload.label, payload.error_code)
+  const sightingDrainRecoverable = sightingFinalizeSelfHeals(payload.label, payload.error_code)
+  const bidDrainConditional = bidInsertConditionalRecovery(payload.label, payload.error_code)
   const n = payload.window_loss_count
   // Approximate above one (#1881): see sendLostWritebackAlert.
   const count = n === 1 ? '*1*' : `About *${n}*`
@@ -1138,13 +1185,18 @@ export async function sendOutcomeDeadLetterAlert(
   const how = payload.error_code === READ_BACK_MISSING_CODE
     ? 'timed out, and reading it back afterwards found it never landed'
     : 'failed after all retries'
-  const summary = drainRecoverable
+  const summary = execDrainRecoverable
     ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} execution ${n === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
+    : sightingDrainRecoverable
+    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} lead ${n === 1 ? 'sighting is' : 'sightings are'} stuck at outcome_state='in_flight' from the last ${payload.window_minutes} minutes. The records are intact and the strand drain recovers them automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; this is informational unless it persists.`
+    : bidDrainConditional
+    ? `A bid row (*${payload.label}*) ${how}. ${count} ${wasWere} affected in the last ${payload.window_minutes} minutes. If the lead sighting is also stranded, the strand drain re-inserts this within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; if the sighting already finalized, the bid row is lost. Check the sighting before re-deriving.`
     : `A must-not-lose outcome write (*${payload.label}*) ${how}. ${count} ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
+  const header = execDrainRecoverable ? 'Execution Finalize Delayed' : sightingDrainRecoverable ? 'Outcome Record Delayed' : 'Outcome Record Lost'
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: drainRecoverable ? 'Execution Finalize Delayed' : 'Outcome Record Lost', emoji: false },
+      text: { type: 'plain_text', text: header, emoji: false },
     },
     { type: 'section', text: { type: 'mrkdwn', text: summary } },
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
@@ -1159,7 +1211,11 @@ export async function sendOutcomeDeadLetterAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    drainRecoverable ? `Execution finalize delayed: ${payload.label}` : `Outcome record lost: ${payload.label}`
+    execDrainRecoverable
+      ? `Execution finalize delayed: ${payload.label}`
+      : sightingDrainRecoverable
+      ? `Outcome record delayed: ${payload.label}`
+      : `Outcome record lost: ${payload.label}`
   )) !== null
 }
 
