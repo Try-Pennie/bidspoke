@@ -182,6 +182,18 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(false)
   })
 
+  it('passes the recent window to the cliff all-clear so a one-tick cliff is not reported as a tick gap (#1108)', async () => {
+    // The cliff check judges the trailing RECENT_WINDOW_MINUTES (4), so its
+    // notice names the window it measured rather than the gap between ticks.
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+
+    await run(kv)
+
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ measuredWindowMinutes: 4 })
+  })
+
   it('stays silent on a healthy workflow that was never alerted', async () => {
     await run(fakeKv())
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
