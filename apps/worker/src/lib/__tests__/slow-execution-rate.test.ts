@@ -194,8 +194,24 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     definition: { trigger: { type: 'http_webhook', config: { duration_alert_ms: THRESHOLD } } },
   }
 
-  /** No executions at all, so detectSlowSpike finds nothing and the run is healthy. */
+  /**
+   * A genuine recovery: enough fast runs that detectSlowSpike finds no spike AND
+   * there is real evidence the pipe is alive (#817). Each row is read as both a
+   * completed run (duration_ms) and an in-flight one (started_at) by the double,
+   * which only adds more fast runs, so the window is well over MIN_SLOW_COUNT and
+   * none of them is slow.
+   */
   const healthy = () =>
+    makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: new Array(MIN_SLOW_COUNT + 3)
+        .fill(0)
+        .map(() => ({ workflow_id: 'wf-1', duration_ms: 100, started_at: new Date(Date.now() - 1000).toISOString() })),
+    })
+
+  /** A workflow that went quiet: no runs in the window, so nothing to judge (#817). */
+  const quiet = () =>
     makeSupabase({ service_connections: [{ organization_id: 'org-1' }], workflows: [wf], workflow_executions: [] })
 
   beforeEach(() => {
@@ -229,6 +245,18 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
 
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ measuredWindowMinutes: 5 })
+  })
+
+  it('HOLDS the all-clear when the workflow has gone quiet, with no runs to judge (#817)', async () => {
+    // Absence of slow runs is not evidence of recovery when there are no runs at
+    // all: a dead pipe must not read "back to normal".
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({ 'slow-spike-recovery:wf-1': alertedAt, 'slow-spike-cooldown:wf-1': '1' })
+
+    await runSlowExecutionCheck(quiet() as never, kv as never, 'https://app.example.com')
+
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(true)
   })
 
   it('says nothing about a workflow that was never alerted', async () => {

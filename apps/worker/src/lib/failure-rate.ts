@@ -52,7 +52,49 @@ export function detectFailureSpike(count: number, threshold: number): boolean {
   return count >= threshold
 }
 
+/**
+ * Whether the workflow produced at least `min` succeeding runs in the window,
+ * the evidence a recovery is real rather than a dead pipe (#817).
+ *
+ * A succeeding run is one that reached a clean terminal outcome: 'completed' (ran
+ * to the end) or 'exited' (a deliberate early exit). 'failed' is the error state,
+ * 'degraded' finished with unconfirmed writes rather than cleanly, and 'running'
+ * has not finished, so none of those counts as proof the pipe is healthy.
+ *
+ * Bounded by `limit(min)`: it only needs to know the floor was reached, so it
+ * reads at most `min` rows rather than counting every success. Keeps the same
+ * started_at floor the failure query uses so the scan stays partition-pruned.
+ * Throws on a read error so the caller (announceRecovery) holds the all-clear
+ * rather than clearing it on a reading it could not take (L345).
+ */
+export async function hasSucceedingRuns(
+  supabase: SupabaseClient,
+  workflowId: string,
+  windowStartIso: string,
+  lookbackStartIso: string,
+  min: number,
+): Promise<boolean> {
+  if (min <= 0) return true
+  const { data, error } = await supabase
+    .from('workflow_executions')
+    .select('id')
+    .eq('workflow_id', workflowId)
+    .in('status', ['completed', 'exited'])
+    .eq('is_test', false)
+    .gte('started_at', lookbackStartIso)
+    .gte('completed_at', windowStartIso)
+    .limit(min)
+  if (error) throw new Error(`failure-rate succeeding-runs query failed: ${error.message}`)
+  return (data?.length ?? 0) >= min
+}
+
 export const DEFAULT_COOLDOWN_MINUTES = 30
+// The evidence floor for a recovery (#817): one succeeding run in the window is
+// enough to tell a live pipe from a dead one, which is the whole distinction the
+// all-clear was missing. Deliberately NOT tied to the signal's fire count: a
+// higher bar would hold a genuine recovery on a low-traffic workflow until the
+// 24h marker expired, trading the false-all-clear bug for a stuck-incident one.
+export const MIN_RECOVERY_SUCCEEDING_RUNS = 1
 // Bound the started_at floor so the scan stays partition-pruned, and cap how far
 // back any single signal's window can reach.
 export const LOOKBACK_MINUTES = 60
@@ -187,7 +229,26 @@ export async function runFailureRateCheck(
               },
             )
           },
-          { now, rearmMinutes: cooldownMinutes },
+          {
+            now,
+            rearmMinutes: cooldownMinutes,
+            // The absence of matching failures is not evidence of recovery: a
+            // workflow whose leads stopped arriving reads as zero matching
+            // failures too. So the all-clear requires the pipe to be observably
+            // alive, at least one succeeding run in the window, and holds until
+            // then (#817). The query runs only once a recovery is OWED (a marker
+            // is present), which for a dead pipe is every minute until the pipe
+            // revives or the 24h marker expires; it is a single-row lookup, so
+            // that cost is a cheap partition-pruned read, not a scan.
+            hasEvidence: () =>
+              hasSucceedingRuns(
+                supabase,
+                wfId,
+                new Date(windowStartMs).toISOString(),
+                lookbackStart,
+                MIN_RECOVERY_SUCCEEDING_RUNS,
+              ),
+          },
         )
         continue
       }

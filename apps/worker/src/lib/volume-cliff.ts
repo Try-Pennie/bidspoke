@@ -156,33 +156,104 @@ export interface CliffDetection {
   baseline_per_min: number
 }
 
+/** The volume figures the cliff detector and the recovery check both read. */
+interface VolumeAnalysis {
+  /** The baseline carried enough traffic to judge against (median >= minBaseline). */
+  hasBaseline: boolean
+  median: number
+  recentCount: number
+  /** recentCount below this is a cliff, at or above it is normal volume. */
+  threshold: number
+}
+
 /**
- * Pure detection logic — given per-minute counts for the last 60 minutes,
- * decide whether the trailing 5 minutes are a cliff against the prior 55.
+ * The shared volume math behind both the cliff detector and the recovery
+ * evidence check, so the two cannot drift (L370). Returns null only when the
+ * counts are the wrong shape.
  */
-export function detectCliff(
-  perMinuteCounts: number[],  // length 60: index 0 = oldest minute, 59 = most recent
-  lowPct = ALERT_THRESHOLD_PCT,
-  minBaseline = MIN_BASELINE_PER_MIN
-): { recentCount: number; baselinePerMin: number } | null {
+function analyzeVolume(
+  perMinuteCounts: number[],
+  lowPct: number,
+  minBaseline: number,
+): VolumeAnalysis | null {
   if (perMinuteCounts.length !== 60) return null
 
   const baseline = perMinuteCounts.slice(0, BASELINE_WINDOW_MINUTES)
-  // Drop the final bucket (index 59) — the current, in-progress minute is ~empty
+  // Drop the final bucket (index 59): the current, in-progress minute is ~empty
   // at cron-fire time and would deflate the recent count (#110). Compare the last
   // 4 complete minutes against median * 4.
   const recent = perMinuteCounts.slice(BASELINE_WINDOW_MINUTES, perMinuteCounts.length - 1)
 
   const sorted = [...baseline].sort((a, b) => a - b)
   const median = sorted[Math.floor(sorted.length / 2)]
-  if (median < minBaseline) return null
-
   const recentCount = recent.reduce((sum, n) => sum + n, 0)
   const expected = median * recent.length
   const threshold = expected * (lowPct / 100)
-  if (recentCount >= threshold) return null
+  return { hasBaseline: median >= minBaseline, median, recentCount, threshold }
+}
 
-  return { recentCount, baselinePerMin: median }
+/**
+ * Pure detection logic: given per-minute counts for the last 60 minutes, decide
+ * whether the trailing 4 complete minutes are a cliff against the prior 55.
+ * Returns null when there is no cliff, which is true both when volume is healthy
+ * and when the baseline itself has collapsed (see isVolumeRecovered).
+ */
+export function detectCliff(
+  perMinuteCounts: number[],  // length 60: index 0 = oldest minute, 59 = most recent
+  lowPct = ALERT_THRESHOLD_PCT,
+  minBaseline = MIN_BASELINE_PER_MIN
+): { recentCount: number; baselinePerMin: number } | null {
+  const a = analyzeVolume(perMinuteCounts, lowPct, minBaseline)
+  if (!a || !a.hasBaseline) return null
+  if (a.recentCount >= a.threshold) return null
+  return { recentCount: a.recentCount, baselinePerMin: a.median }
+}
+
+/**
+ * Evidence of a genuine volume recovery, as distinct from a workflow that simply
+ * went quiet (#817).
+ *
+ * detectCliff returns null for BOTH a recovered workflow and one whose baseline
+ * collapsed, so the all-clear cannot be decided on "no cliff" alone: a dead pipe
+ * would then announce "back to normal". Recovery is judged on the RECENT window
+ * carrying healthy volume (at least the minimum baseline rate per minute), NOT on
+ * the baseline median: an outage of about half an hour or more fills most of the
+ * 55 minute baseline window with its own low counts, so the median stays near
+ * zero for up to that long after traffic is fully back, and keying recovery on it
+ * would hold the all-clear for the whole time the outage takes to scroll out. The
+ * recent window is the part the outage leaves first, so it is what says the pipe
+ * is alive again. A recent window still near zero is a quiet pipe, not a
+ * recovery, so the all-clear is held until the volume actually returns.
+ *
+ * The bar is minBaseline per minute, NOT a fraction of the workflow's own
+ * baseline. That is deliberate: minBaseline is the very floor detectCliff
+ * requires before it will judge a workflow at all, so a recent rate below it is
+ * by this check's own definition too quiet to judge, which is the state the
+ * all-clear must not call recovered. It is an absolute aliveness bar, so it does
+ * not read the cliff percentage. What a workflow's rate was before a long outage
+ * is unknowable from a trailing window and is not what this guards: the bug it
+ * closes is the all-clear over a dead pipe, and a pipe back above the minimum
+ * judgeable rate is not dead.
+ *
+ * The cost of an absolute bar is a band for a workflow whose baseline sits near
+ * the minimum: once its recent rate climbs back over 25% of its own baseline,
+ * detectCliff stops flagging a cliff, but the all-clear still waits until the
+ * rate reaches the minimum judgeable level, so for such a workflow it can arrive
+ * a little late. That is the safe direction (a late all-clear, never a false
+ * one), and the alternative, a bar relative to the stored baseline, cannot
+ * survive an outage long enough to fill the baseline window, which is the very
+ * failure this is here to close.
+ */
+export function isVolumeRecovered(
+  perMinuteCounts: number[],
+  minBaseline = MIN_BASELINE_PER_MIN,
+): boolean {
+  // The recovery bar is a recent per-minute rate, which does not use the cliff
+  // percentage, so analyzeVolume's threshold is irrelevant here: pass a 0 lowPct
+  // and read only the recent count.
+  const a = analyzeVolume(perMinuteCounts, 0, minBaseline)
+  if (!a) return false
+  return a.recentCount >= minBaseline * RECENT_WINDOW_MINUTES
 }
 
 // KvLike now needs delete(), for clearing the recovery marker (#253). The shared
@@ -306,18 +377,28 @@ export async function runVolumeCliffCheck(
     const cliff = detectCliff(bucket)
     if (!cliff) {
       // Healthy. If we paged for this workflow, say so and stand down (#253);
-      // otherwise this is the ordinary quiet path and costs one KV read.
-      await announceRecovery(kv, 'volume-cliff', wfId, cooldownKeyFor, async (alertedAt, endedAt) => {
-        const slack = await getSlackConnection(supabase, wf.organization_id as string)
-        if (!slack || !slack.volume_alerts_enabled) return false
-        return sendRecoveryAlert(
-          slack,
-          (wf.slack_channel as string | null) ?? slack.default_channel,
-          // Judges the trailing RECENT_WINDOW_MINUTES, so a one-tick cliff has a
-          // zero span: name the window it measured, not a gap it did not (#1108).
-          { signal: 'volume cliff', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
-        )
-      })
+      // otherwise this is the ordinary quiet path and costs one KV read. But
+      // "no cliff" is true both when volume returned and when the baseline itself
+      // collapsed, so the all-clear requires evidence the volume actually came
+      // back (#817): a workflow that went quiet must not read "back to normal".
+      await announceRecovery(
+        kv,
+        'volume-cliff',
+        wfId,
+        cooldownKeyFor,
+        async (alertedAt, endedAt) => {
+          const slack = await getSlackConnection(supabase, wf.organization_id as string)
+          if (!slack || !slack.volume_alerts_enabled) return false
+          return sendRecoveryAlert(
+            slack,
+            (wf.slack_channel as string | null) ?? slack.default_channel,
+            // Judges the trailing RECENT_WINDOW_MINUTES, so a one-tick cliff has a
+            // zero span: name the window it measured, not a gap it did not (#1108).
+            { signal: 'volume cliff', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+          )
+        },
+        { hasEvidence: () => isVolumeRecovered(bucket) },
+      )
       continue
     }
 

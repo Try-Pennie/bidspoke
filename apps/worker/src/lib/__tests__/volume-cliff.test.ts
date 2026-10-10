@@ -194,6 +194,38 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ measuredWindowMinutes: 4 })
   })
 
+  it('HOLDS the all-clear when the baseline itself has collapsed, since a dead pipe is not a recovery (#817)', async () => {
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    // Every minute near zero: the baseline is below MIN_BASELINE_PER_MIN, so
+    // detectCliff finds no cliff, but this is a workflow that went quiet, not one
+    // whose volume returned. The all-clear must be held, not sent.
+    const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
+    const quiet = Array.from({ length: 60 }, (_, i) => ({ minute: new Date(base + i * 60000).toISOString(), cnt: 2 }))
+    await runVolumeCliffCheck(fakeSupabase(quiet), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+  })
+
+  it('announces once recent volume returns, even while the baseline still reflects the outage (#817)', async () => {
+    // After an outage of half an hour or more, the 55-minute baseline median
+    // stays near zero long after traffic is back, so recovery must be judged on
+    // the recent window, not the contaminated baseline. Here the first 55 minutes
+    // are the outage and the last few carry full volume again.
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
+    const returned = Array.from({ length: 60 }, (_, i) => ({
+      minute: new Date(base + i * 60000).toISOString(),
+      cnt: i < 55 ? 2 : 50,
+    }))
+    await runVolumeCliffCheck(fakeSupabase(returned), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(false)
+  })
+
   it('stays silent on a healthy workflow that was never alerted', async () => {
     await run(fakeKv())
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
