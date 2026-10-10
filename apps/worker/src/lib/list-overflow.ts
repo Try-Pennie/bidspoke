@@ -20,15 +20,26 @@ export const SECTION_CHAR_BUDGET = 2800
  * Renders as many lines as fit the line and character caps, plus a tail naming
  * what it left out. `total` is the size of the whole list the lines came from,
  * so a caller that already trimmed can still report the true remainder.
+ *
+ * `reserveChars` is text the caller will append to this list inside the same
+ * Slack section (the one shared timing sentence a grouped all-clear adds below
+ * the subjects, #1270), so the list is held to the budget LESS that reserve and
+ * the whole section still clears the 3,000 character limit, not just the list.
  */
-export function listWithOverflow(lines: string[], total: number, max: number = MAX_LISTED_LINES): string {
+export function listWithOverflow(
+  lines: string[],
+  total: number,
+  max: number = MAX_LISTED_LINES,
+  reserveChars: number = 0,
+): string {
+  const budget = SECTION_CHAR_BUDGET - reserveChars
   const tailFor = (shown: number) => `\n_and ${total - shown} more_`
   const kept: string[] = []
   let length = 0
   for (const line of lines.slice(0, max)) {
     const next = length + line.length + (kept.length ? 1 : 0)
     // Reserve room for the tail whenever this line is not the last one shown.
-    if (next + tailFor(kept.length + 1).length > SECTION_CHAR_BUDGET) break
+    if (next + tailFor(kept.length + 1).length > budget) break
     kept.push(line)
     length = next
   }
