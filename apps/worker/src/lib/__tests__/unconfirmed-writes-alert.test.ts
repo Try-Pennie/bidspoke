@@ -146,10 +146,12 @@ describe('the dead letter count is approximate (#1881)', () => {
 describe('lost alert for a record a read back found missing', () => {
   it('says it timed out and was read back missing, not that the retries ran out', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
-      label: 'lead_sightings.finalize',
+      // lead_sightings.insert is a genuine loss (no in_flight row for the drain to
+      // recover); lead_sightings.finalize now self-heals and is reframed (#1953).
+      label: 'lead_sightings.insert',
       window_loss_count: 1,
       window_minutes: 30,
-      error_message: 'lead_sightings.finalize: the write timed out at 2026-10-08T12:20:32Z and a read back 3 minutes later found the lead sighting row is not there',
+      error_message: 'lead_sightings.insert: the write timed out at 2026-10-08T12:20:32Z and a read back 3 minutes later found the lead sighting row is not there',
       error_code: READ_BACK_MISSING_CODE,
     }, 'https://app.test')
     const text = textOf()

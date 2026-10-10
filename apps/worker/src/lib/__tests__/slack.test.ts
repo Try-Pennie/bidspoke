@@ -1010,7 +1010,9 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
   it('names the lost op, the windowed loss count, the error, and how to fix it', async () => {
     const sent = await sendOutcomeDeadLetterAlert(
       conn,
-      { label: 'lead_sightings.finalize', window_loss_count: 47, window_minutes: 30, error_message: 'PGRST002 schema cache' },
+      // lead_sightings.insert is a genuine, non-self-healing loss (no in_flight
+      // row for the drain to find); lead_sightings.finalize now self-heals (#1953).
+      { label: 'lead_sightings.insert', window_loss_count: 47, window_minutes: 30, error_message: 'PGRST002 schema cache' },
       'https://app.test',
     )
     expect(sent).toBe(true)
@@ -1019,7 +1021,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(body.unfurl_links).toBe(false)
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('Outcome Record Lost')
-    expect(text).toContain('lead_sightings.finalize')
+    expect(text).toContain('lead_sightings.insert')
     // #599: report the true windowed magnitude, not a consecutive streak.
     expect(text).toContain('*47*')
     expect(text).toContain('writes were lost in the last 30 minutes')
@@ -1030,7 +1032,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
   it('uses singular copy when exactly one write was lost', async () => {
     await sendOutcomeDeadLetterAlert(
       conn,
-      { label: 'lead_sightings.finalize', window_loss_count: 1, window_minutes: 30, error_message: 'x' },
+      { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'x' },
       'https://app.test',
     )
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
@@ -1092,7 +1094,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     await sendOutcomeDeadLetterAlert(
       conn,
       {
-        label: 'lead_sightings.finalize',
+        label: 'lead_sightings.insert',
         window_loss_count: 5,
         window_minutes: 30,
         error_message: 'Could not query the database for the schema cache (PGRST002)',
@@ -1171,13 +1173,14 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(text).not.toMatch(/recover(s|ed|ered) automatically|will be recovered/i)
   })
 
-  // #585: the drain note is specific to execution_finalize; a lead_sightings loss
-  // with the same transient code keeps its Supabase-health guidance.
-  it('does not add the drain note for a non-execution_finalize label', async () => {
+  // #585/#1953: the drain note is for the finalize labels that self-heal; a
+  // genuine loss like lead_sightings.insert (no in_flight row to recover) keeps
+  // its Supabase-health guidance and no drain promise.
+  it('does not add the drain note for a genuinely-lost label', async () => {
     await sendOutcomeDeadLetterAlert(
       conn,
       {
-        label: 'lead_sightings.finalize',
+        label: 'lead_sightings.insert',
         window_loss_count: 2,
         window_minutes: 30,
         error_message: 'schema cache (PGRST002)',
@@ -1202,6 +1205,83 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('(23503)')
+  })
+})
+
+// #1953: the lead-sighting finalize and bid-insert losses recover automatically
+// via reduce_finalize_stranded (the :27/:57 strand drain), the same way the
+// execution_finalize loss does via the per-minute execution drain. The alert
+// must say so for the recoverable cases, and must NOT claim recovery for the
+// cases the drain genuinely cannot repair (a permanent error that would recur on
+// the replay, or a bid row whose sighting already finalized).
+describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+  const conn = { bot_token: '[REDACTED]', default_channel: '#alerts' } as unknown as SlackConnection
+  const textOf = () => {
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    return body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+  }
+
+  it('reframes a read-back lead_sightings.finalize loss as a self-healing delay', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 2,
+        window_minutes: 30,
+        error_message: 'timed out; read back found it never landed',
+        error_code: 'BIDSPOKE_READ_BACK_MISSING',
+      },
+      'https://app.test',
+    )
+    const text = textOf()
+    expect(text).toContain('Outcome Record Delayed')
+    expect(text).not.toContain('Outcome Record Lost')
+    expect(text).toMatch(/in_flight/)
+    expect(text).toMatch(/strand drain/i)
+    expect(text).not.toContain('not auto-recovered')
+  })
+
+  it('still reports a permanent lead_sightings.finalize error as a real loss, not self-healing', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'violates check constraint (23514)',
+        error_code: '23514',
+      },
+      'https://app.test',
+    )
+    const text = textOf()
+    expect(text).toContain('Outcome Record Lost')
+    expect(text).toMatch(/permanent/i)
+    expect(text).not.toMatch(/in_flight|strand drain/i)
+  })
+
+  it('tells the reader a lost bid row self-heals only if the sighting is also in_flight', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sighting_bids.insert',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'timed out; read back found the bid row not there',
+        error_code: 'BIDSPOKE_READ_BACK_MISSING',
+      },
+      'https://app.test',
+    )
+    const text = textOf()
+    expect(text).toMatch(/in_flight/)
+    expect(text).toMatch(/strand drain/i)
+    // Honest about the case it does NOT recover: a bid lost while the sighting finalized.
+    expect(text).toContain('not auto-recovered')
   })
 })
 
