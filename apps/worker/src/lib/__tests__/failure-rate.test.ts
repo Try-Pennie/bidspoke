@@ -210,6 +210,21 @@ describe('runFailureRateCheck recovery (#253)', () => {
     expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO_GATEWAY')).toBe(false)
   })
 
+  it('passes the signal window to the all-clear so a one-tick incident is not reported as a tick gap (#1108)', async () => {
+    // This check judges a trailing window (signal.window_minutes), so the notice
+    // must name the window it measured rather than the gap between the ticks it
+    // happened to look. The fixture signal is configured window_minutes: 5.
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({
+      'failure-rate-recovery:wf-1:ACRO_GATEWAY': alertedAt,
+      'failure-rate-cooldown:wf-1:ACRO_GATEWAY': '1',
+    })
+
+    await runFailureRateCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ measuredWindowMinutes: 5 })
+  })
+
   it('says nothing when the signal was never alerted', async () => {
     await runFailureRateCheck(healthy() as never, makeKv() as never, 'https://app.example.com')
     expect(sendRecoveryAlert).not.toHaveBeenCalled()

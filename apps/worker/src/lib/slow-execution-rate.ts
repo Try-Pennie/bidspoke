@@ -198,7 +198,9 @@ export async function runSlowExecutionCheck(
         return sendRecoveryAlert(
           slack,
           (wf.slack_channel as string | null) ?? slack.default_channel,
-          { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, url: `${appUrl}/workflows/${wfId}` },
+          // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
+          // zero span: name the window it measured, not a gap it did not (#1108).
+          { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
         )
       })
       continue
