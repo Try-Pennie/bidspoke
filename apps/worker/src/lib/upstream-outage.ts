@@ -32,6 +32,7 @@
  * built-in and org-wide with no configuration.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from './slack'
 import { fetchAllPaged } from './paginate'
@@ -707,18 +708,13 @@ export async function runUpstreamOutageCheck(
   kv: KvLike,
   appUrl: string,
 ): Promise<void> {
-  const { data: slackOrgs, error: slackOrgsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('upstream-outage', 'slack connections', slackOrgsError)
-  const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
-  if (slackOrgIds.length === 0) return
+  const orgIds = await slackOrgIds(supabase, 'upstream-outage')
+  if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase
     .from('workflows')
     .select('id, name, organization_id')
-    .in('organization_id', slackOrgIds)
+    .in('organization_id', orgIds)
     .eq('is_active', true)
     .is('deleted_at', null)
   logReadFailure('upstream-outage', 'workflows', workflowsError)

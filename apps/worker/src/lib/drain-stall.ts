@@ -17,7 +17,7 @@
  */
 import { describeReadError } from './format-error'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { logReadFailure } from './scheduled-read'
+import { rateLimitedOrgAlert } from './alert-fanout'
 import { sendDrainStallAlert } from './slack'
 
 // Margin past the 26h unrecoverable-drain cutoff, so normal timing never trips it.
@@ -68,19 +68,13 @@ export async function runDrainStallCheck(
   if (!isDrainStalled(stranded)) return { stranded, alerted: false }
 
   // Dedup: one alert per daily run while broken (global signal, not per-org).
-  if (await kv.get(COOLDOWN_KEY)) return { stranded, alerted: false }
-
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('drain-stall', 'slack connections', connsError)
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
-
-  let alerted = false
-  for (const orgId of orgIds) {
-    if (await sendDrainStallAlert(supabase, orgId, stranded)) alerted = true
-  }
-  if (alerted) await kv.put(COOLDOWN_KEY, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  const alerted = await rateLimitedOrgAlert({
+    kv,
+    cooldownKey: COOLDOWN_KEY,
+    ttlSeconds: COOLDOWN_TTL_SECONDS,
+    supabase,
+    logLabel: 'drain-stall',
+    perOrg: (orgId) => sendDrainStallAlert(supabase, orgId, stranded),
+  })
   return { stranded, alerted }
 }

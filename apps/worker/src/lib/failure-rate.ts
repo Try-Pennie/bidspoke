@@ -18,6 +18,7 @@
 // Config (trigger.config.muted_failure_signals, alongside duration_alert_ms) is
 // the domain type MutedFailureSignal in ../types; re-exported so callers can
 // import it from here.
+import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
@@ -94,18 +95,13 @@ export async function runFailureRateCheck(
   kv: KvLike,
   appUrl: string,
 ): Promise<void> {
-  const { data: slackOrgs, error: slackOrgsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('failure-rate', 'slack connections', slackOrgsError)
-  const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
-  if (slackOrgIds.length === 0) return
+  const orgIds = await slackOrgIds(supabase, 'failure-rate')
+  if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase
     .from('workflows')
     .select('id, name, organization_id, slack_channel, definition')
-    .in('organization_id', slackOrgIds)
+    .in('organization_id', orgIds)
     .eq('is_active', true)
     .is('deleted_at', null)
   logReadFailure('failure-rate', 'workflows', workflowsError)

@@ -10,7 +10,7 @@
  * before unbounded reads start truncating.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { logReadFailure } from './scheduled-read'
+import { rateLimitedOrgAlert } from './alert-fanout'
 import { sendBigTableGrowthAlert } from './slack'
 
 // Tables already known to be big and handled (paginated). This is a verbatim
@@ -82,19 +82,13 @@ export async function runBigTableGuard(
   // Dedup by the offending set: re-alert only when the set changes or after the
   // cooldown, so a slow-to-fix table doesn't page every single day.
   const sig = COOLDOWN_PREFIX + names.join(',')
-  if (await kv.get(sig)) return { offenders: names, alerted: false }
-
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('big-table-guard', 'slack connections', connsError)
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
-
-  let alerted = false
-  for (const orgId of orgIds) {
-    if (await sendBigTableGrowthAlert(supabase, orgId, offenders)) alerted = true
-  }
-  if (alerted) await kv.put(sig, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  const alerted = await rateLimitedOrgAlert({
+    kv,
+    cooldownKey: sig,
+    ttlSeconds: COOLDOWN_TTL_SECONDS,
+    supabase,
+    logLabel: 'big-table-guard',
+    perOrg: (orgId) => sendBigTableGrowthAlert(supabase, orgId, offenders),
+  })
   return { offenders: names, alerted }
 }

@@ -17,6 +17,7 @@
  *     history-based suggested value); over-provisioned stays dashboard-only.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
@@ -483,13 +484,7 @@ export async function mapWithConcurrency<T, R>(
  * the offending set changes. Called from the Worker scheduled handler.
  */
 export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string): Promise<void> {
-  const { data: slackOrgs, error: slackOrgsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('timeout-audit', 'slack connections', slackOrgsError)
-
-  const orgIds = [...new Set((slackOrgs ?? []).map((c) => c.organization_id as string))]
+  const orgIds = await slackOrgIds(supabase, 'timeout-audit')
   if (orgIds.length === 0) return
 
   for (const orgId of orgIds) {
