@@ -1745,6 +1745,41 @@ describe('sendGroupedRecoveryAlert', () => {
     expect(text.match(/"Recovered"/g)?.length).toBe(1)
   })
 
+  // #1270: when every subject paged and recovered on the same tick, the timing
+  // sentence is identical on every line, so the two facts that differ (which
+  // fields) are buried in the repetition (L605). Say the timing once.
+  it('says the shared timing once when every subject recovered on the same tick (#1270)', async () => {
+    await sendGroupedRecoveryAlert(
+      slack,
+      'C1',
+      { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    // Both subjects still named.
+    expect(section).toContain('ping_lendswift.data.data*')
+    expect(section).toContain('ping_lendswift.data.data.status*')
+    // The timing clause appears exactly once, not once per subject.
+    expect(section.match(/alert fired at/g)?.length).toBe(1)
+  })
+
+  // The collapse must NOT hide a genuine difference: subjects that recovered at
+  // different ticks keep their own timing sentence.
+  it('keeps a per-subject sentence when the subjects recovered at different ticks (#1270)', async () => {
+    const mixed = [
+      items[0],
+      { ...items[1], alertedAt: '2026-09-10T09:00:00Z', endedAt: '2026-09-10T09:00:00Z' },
+    ]
+    await sendGroupedRecoveryAlert(
+      slack,
+      'C1',
+      { signal: 'output field stopped', measuredWindowMinutes: 60, items: mixed },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    expect(section.match(/alert fired at/g)?.length).toBe(2)
+  })
+
   // The line cap was sized for the page's 120 character lines (L81: size a
   // batch in the unit the limit is expressed in). An all-clear line is nearly
   // three times longer, so twenty of them would be refused by Slack, never

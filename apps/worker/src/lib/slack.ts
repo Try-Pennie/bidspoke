@@ -1,7 +1,7 @@
 // Slack alert sender — Block Kit messages for workflow failures and circuit breaker events
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
-import { listWithOverflow } from './list-overflow'
+import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
 // sendPgCronAlert: the import is erased at compile time.
@@ -2334,13 +2334,24 @@ export interface RecoveryWording {
   recoveredPhrase?: string
 }
 
+/** The Slack link appended to a recovered subject, or nothing. */
+function recoveryLink(item: RecoveredSubject): string {
+  return item.url ? `  <${item.url}|open>` : ''
+}
+
+/** What one subject is now doing again, before any timing or link. */
+function recoveredStatus(item: RecoveredSubject, wording: RecoveryWording): string {
+  const recovered = wording.recoveredPhrase ?? 'is back within normal range'
+  return `*${item.subject}* ${recovered}.`
+}
+
 /**
- * The sentence an all-clear says about one subject, in Slack mrkdwn.
+ * The timing clause: when the alert fired and how long it lasted.
  *
- * One builder for the single and the grouped notice, so the two cannot describe
- * the same incident two different ways.
+ * Depends only on the alert ticks and the wording, never on the subject, so a
+ * group that all paged and cleared on the same tick shares one of these (#1270).
  */
-function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now: number): string {
+function recoveryTiming(item: RecoveredSubject, wording: RecoveryWording, now: number): string {
   const started = Date.parse(item.alertedAt)
   // The all-clear waits out a re-arm window before it is sent (#814), so the
   // duration is measured to the LAST OBSERVED FAILURE. Measuring to now would
@@ -2374,9 +2385,26 @@ function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now:
       ? ` and lasted ${lasted}${clearedAt !== null ? `, clearing at ${etTime(clearedAt)}` : ''}.`
       : '.'
 
-  const link = item.url ? `  <${item.url}|open>` : ''
-  const recovered = wording.recoveredPhrase ?? 'is back within normal range'
-  return `*${item.subject}* ${recovered}. The ${wording.signal} alert fired at ${etTime(started)}${howLong}${link}`
+  return `The ${wording.signal} alert fired at ${etTime(started)}${howLong}`
+}
+
+/**
+ * The full sentence for ONE recovered subject: status, then timing, then link.
+ *
+ * One builder for the single and the grouped notice, so the two cannot describe
+ * the same incident two different ways.
+ */
+function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now: number): string {
+  return `${recoveredStatus(item, wording)} ${recoveryTiming(item, wording, now)}${recoveryLink(item)}`
+}
+
+/** Whether every subject paged and cleared on the same tick, so the timing is one sentence. */
+function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
+  const first = items[0]
+  return (
+    Number.isFinite(Date.parse(first.alertedAt)) &&
+    items.every((i) => i.alertedAt === first.alertedAt && (i.endedAt ?? null) === (first.endedAt ?? null))
+  )
 }
 
 /**
@@ -2461,10 +2489,27 @@ export async function sendGroupedRecoveryAlert(
   payload: RecoveryWording & { items: RecoveredSubject[] },
   now: number = Date.now(),
 ): Promise<boolean> {
-  const lines = payload.items.map((item) => recoverySentence(item, payload, now))
+  // When every subject paged and cleared on the same tick the timing sentence is
+  // identical on each line, so it is said once below the subject list rather than
+  // repeated per subject (#1270). The subjects themselves still differ, so each
+  // keeps its own status line. A group whose ticks differ keeps the full
+  // per-subject sentence, since the timing is then a real difference.
+  let text: string
+  if (payload.items.length > 1 && sameRecoveryTick(payload.items)) {
+    const statusLines = payload.items.map((item) => `${recoveredStatus(item, payload)}${recoveryLink(item)}`)
+    const timing = recoveryTiming(payload.items[0], payload, now)
+    // Reserve the timing clause (plus its blank-line separator) from the section
+    // budget so the subject list plus the timing stays under Slack's 3,000 char
+    // block limit, not just the list on its own.
+    const subjects = listWithOverflow(statusLines, payload.items.length, MAX_LISTED_LINES, timing.length + 2)
+    text = `${subjects}\n\n${timing}`
+  } else {
+    const lines = payload.items.map((item) => recoverySentence(item, payload, now))
+    text = listWithOverflow(lines, payload.items.length)
+  }
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
-    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, payload.items.length) } },
+    { type: 'section', text: { type: 'mrkdwn', text } },
   ]
   const fallback = `Recovered: ${payload.items.map((i) => i.subject).join(', ')}`
   return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
