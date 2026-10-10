@@ -51,7 +51,7 @@
  */
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { logReadFailure } from './scheduled-read'
+import { slackOrgIds } from './alert-fanout'
 import { formatErr } from './format-error'
 import { sendWorkflowScheduleAlert } from './slack'
 
@@ -792,12 +792,7 @@ export async function runWorkflowScheduleWatch(
   nowMs: number = Date.now(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<ScheduleCheckResult[]> {
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('workflow-schedule-watch', 'slack connections', connsError)
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
+  const orgIds = await slackOrgIds(supabase, 'workflow-schedule-watch')
 
   // Configuration and credential first, once. Every workflow shares the answer,
   // so asking per workflow would produce N identical failures and would leave a

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { logReadFailure } from './scheduled-read'
+import { slackOrgIds } from './alert-fanout'
 import { sendWorkflowDispatchAlert } from './slack'
 import {
   type DispatchAttempt,
@@ -109,18 +109,11 @@ export async function runAndReportDispatch(
     console.error('[workflow-dispatch] cooldown unreadable, alerting anyway:', e)
   }
 
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  // The error is READ, not discarded. A failed lookup yields no orgs, the loop
-  // below runs zero times, and the alert silently does not go out, so a
-  // transient database error and a system with no Slack orgs would otherwise
-  // produce the identical outcome with nothing to tell them apart (L10, L11).
-  logReadFailure('workflow-dispatch', 'slack connections', connsError)
-
+  // slackOrgIds reads the lookup error (it is logged, not discarded), so a
+  // transient database error and a system with no Slack orgs are not confused
+  // for each other (L10, L11).
   let delivered = false
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
+  const orgIds = await slackOrgIds(supabase, 'workflow-dispatch')
   for (const orgId of orgIds) {
     // Failing to DELIVER a verdict must not destroy the verdict, nor cost the
     // remaining orgs theirs (L73). The returned results and the run log above

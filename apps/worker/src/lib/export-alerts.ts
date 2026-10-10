@@ -9,7 +9,7 @@
  * is no single org to target. No-ops on a clean run.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { logReadFailure } from './scheduled-read'
+import { slackOrgIds } from './alert-fanout'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
 import { clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
@@ -279,12 +279,7 @@ export async function notifyExportFailure(
   if (kv && !different && (await inCooldown(kv, backoff))) return
   const repeat = recurrence.kind === 'reminder' ? (describeRepeat(recurrence.standing, nowMs, recurrence.unchanged) ?? undefined) : undefined
 
-  const { data: conns, error: connsError } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-  logReadFailure('export-alerts', 'slack connections', connsError)
-  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
+  const orgIds = await slackOrgIds(supabase, 'export-alerts')
 
   let delivered = false
   for (const orgId of orgIds) {
