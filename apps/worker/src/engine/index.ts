@@ -39,6 +39,7 @@ import {
   computeSightingFinalize,
   buildSightingFinalizeProjection,
   extractExternalDebt,
+  type SightingInsert,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
@@ -416,30 +417,37 @@ export async function executeWorkflow(
   // unawaited, finalize beat the insert on ~18% of live leads and its UPDATE
   // matched a row that did not exist yet.
   let sightingWritePromise: Promise<void> = Promise.resolve()
+  // Held so the finalize can rebuild the row from the same fields if the insert
+  // failed in the schema-cache / purge-lock window (#686). Null for a test run or
+  // when capture is off, where no sighting is written.
+  let sightingInsert: SightingInsert | null = null
 
   if (sightingId) {
     const sightingPayloadFields = extractSightingFields(payload)
     const personFields = extractPersonFields(payload)
     const startedAtDate = new Date(startedAt)
-    sightingWritePromise = (async () => {
-      await insertSighting(runDb, {
-        id: sightingId,
-        trace_id: traceId,
-        execution_id: executionId,
-        workflow_id: workflowId,
-        workflow_version_id: workflow_version_id ?? null,
-        source_name: source ?? null,
-        is_test: false,
-        execution_started_at_utc: startedAtDate,
-        execution_started_at_et: startedAtDate,
-        payload_fields: sightingPayloadFields,
-        ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
-        // Always null since #765 removed the persons write. lead_sightings.ssn
-        // above is the value the Snowflake export and repeat-lead grouping read;
-        // person_id was only ever a pointer into a table nothing read back.
-        person_id: null,
-      }, outcomeDeps)
-    })().catch((e) => console.error('[lead-sightings] trigger boundary write failed:', e))
+    const insert: SightingInsert = {
+      id: sightingId,
+      trace_id: traceId,
+      execution_id: executionId,
+      workflow_id: workflowId,
+      workflow_version_id: workflow_version_id ?? null,
+      source_name: source ?? null,
+      is_test: false,
+      execution_started_at_utc: startedAtDate,
+      execution_started_at_et: startedAtDate,
+      payload_fields: sightingPayloadFields,
+      ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
+      // Always null since #765 removed the persons write. lead_sightings.ssn
+      // above is the value the Snowflake export and repeat-lead grouping read;
+      // person_id was only ever a pointer into a table nothing read back.
+      person_id: null,
+    }
+    // Held for the finalize's reconstruction path (#686).
+    sightingInsert = insert
+    sightingWritePromise = insertSighting(runDb, insert, outcomeDeps)
+      .then(() => {})
+      .catch((e) => console.error('[lead-sightings] trigger boundary write failed:', e))
     executionCtx.waitUntil(sightingWritePromise)
   }
 
@@ -1268,7 +1276,9 @@ export async function executeWorkflow(
             // ...sf now carries external_debt (#1212), so it is not repeated here:
             // one derivation reaches both the live finalize and the projection.
             ...sf,
-          }, outcomeDeps)
+            // #686: the insert fields, so finalize rebuilds the base row if the
+            // trigger-boundary insert was lost to the same window.
+          }, outcomeDeps, sightingInsert ?? undefined)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))
     )
