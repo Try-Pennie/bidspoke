@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
-import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, requireRowsAffected, normalizeDbError, NO_ROW_MATCHED_CODE, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import type { ReadBack } from './unconfirmed-writes'
 import type { RetryTiming } from '../lib/post-response-budget'
@@ -361,17 +361,17 @@ export function deriveRejectReason(input: {
 }
 
 // ============================================================
-// insertSighting
+// insertSighting / finalize reconstruction
 // ============================================================
-// Inserts a row in lead_sightings with outcome_state='in_flight'.
-// Returns sighting_id on success, null on failure (caller continues anyway).
-export async function insertSighting(
-  supabase: SupabaseClient,
-  input: SightingInsert,
-  deps?: OutcomeAlertDeps,
-): Promise<string | null> {
+/**
+ * The lead_sightings columns common to the trigger-boundary insert and the
+ * finalize-time reconstruction (#686), without outcome_state (the insert sets it
+ * 'in_flight'; the reconstruction sets it from the finalize update). One builder
+ * so the two row shapes cannot drift.
+ */
+function sightingBaseRow(input: SightingInsert): Record<string, unknown> {
   const { id, payload_fields, execution_started_at_et, execution_started_at_utc, ...rest } = input
-  const row = {
+  return {
     id,
     trace_id: rest.trace_id,
     execution_id: rest.execution_id,
@@ -380,7 +380,6 @@ export async function insertSighting(
     workflow_version_sha: rest.workflow_version_sha ?? null,
     source_name: rest.source_name ?? null,
     is_test: rest.is_test,
-    outcome_state: 'in_flight',
     execution_started_at_et: execution_started_at_et.toISOString(),
     execution_started_at_utc: execution_started_at_utc.toISOString(),
     // ssn is VARCHAR(11) (XXX-XX-XXXX). A non-conforming value from an
@@ -390,11 +389,22 @@ export async function insertSighting(
     person_id: rest.person_id ?? null,
     ...payload_fields,
   }
+}
+
+// Inserts a row in lead_sightings with outcome_state='in_flight'.
+// Returns sighting_id on success, null on failure (caller continues anyway).
+export async function insertSighting(
+  supabase: SupabaseClient,
+  input: SightingInsert,
+  deps?: OutcomeAlertDeps,
+): Promise<string | null> {
+  const { id } = input
+  const row = { ...sightingBaseRow(input), outcome_state: 'in_flight' }
 
   // Retry transient failures (schema-cache reload during the nightly purge) so
   // analytics rows aren't silently dropped in that window (#237). A duplicate
   // means a prior attempt landed (the id is caller-generated), which is success.
-  const sightingRow: ReadBack = { kind: 'sighting_present', sighting_id: id, execution_started_at_utc: row.execution_started_at_utc }
+  const sightingRow: ReadBack = { kind: 'sighting_present', sighting_id: id, execution_started_at_utc: input.execution_started_at_utc.toISOString() }
   const { error } = await runOutcome('lead_sightings.insert', supabase, deps, sightingRow, async () => {
     const res = await supabase.from('lead_sightings').insert(row)
     return { error: res.error }
@@ -474,6 +484,13 @@ export async function finalizeSighting(
   supabase: SupabaseClient,
   input: FinalizeSightingInput,
   deps?: OutcomeAlertDeps,
+  // #686: the trigger-boundary insert fields, so finalize can REBUILD the base
+  // row when it is missing (insertSighting failed in the same schema-cache /
+  // purge-lock window the execution insert did), rather than only reporting the
+  // miss (#583). The same object passed to insertSighting, so the rebuilt row
+  // matches what would have been inserted. Absent means no reconstruction: the
+  // zero-row match is reported and dead-lettered as before.
+  reconstruct?: SightingInsert,
 ): Promise<void> {
   const { sighting_id, execution_id, execution_started_at_utc, ...fields } = input
 
@@ -513,7 +530,7 @@ export async function finalizeSighting(
   // .select('id') so a zero-row match surfaces as an error rather than a silent
   // success that leaves the sighting stuck at 'in_flight' forever (#583).
   const finalized: ReadBack = { kind: 'sighting_finalized', sighting_id, execution_started_at_utc: execution_started_at_utc.toISOString() }
-  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, finalized, () =>
+  const runUpdate = () =>
     requireRowsAffected('lead_sightings.finalize', async () => {
       const res = await supabase
         .from('lead_sightings')
@@ -523,7 +540,32 @@ export async function finalizeSighting(
         .select('id')
       return { data: res.data, error: res.error }
     })
-  )
+  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, finalized, async () => {
+    const upd = await runUpdate()
+    // Row existed and was updated, or a real error (retried/dead-lettered by
+    // runOutcome): nothing to reconstruct.
+    if (!upd.error || upd.error.code !== NO_ROW_MATCHED_CODE || !reconstruct) return { error: upd.error }
+    // #686: the base row was never inserted (insertSighting failed in the same
+    // window). Rebuild it finalized, from the same insert fields plus this
+    // finalize update, mirroring #584's execution-row reconstruction.
+    const row = { ...sightingBaseRow(reconstruct), ...update }
+    const ins = await supabase.from('lead_sightings').insert(row)
+    if (ins.error && isDuplicateError(ins.error)) {
+      // The insert landed between the UPDATE and this INSERT (its transient retry
+      // committing late). Write the finalize state to the row that now exists.
+      console.warn('[lead-sightings] sighting row landed concurrently with the finalize rebuild; applying the finalize to it', { sighting_id })
+      return { error: (await runUpdate()).error }
+    }
+    if (ins.error) {
+      // Not logged as "lost" here: runOutcome retries a transient error and the
+      // next attempt may succeed. The reconstruction is named in the returned
+      // error (code preserved for classification) so the TERMINAL failure, which
+      // the outer handler logs and runOutcome dead-letters, is diagnosable.
+      return { error: normalizeDbError({ error: { code: ins.error.code, message: `sighting row reconstruction insert failed, sighting lost: ${ins.error.message}` } }) }
+    }
+    console.warn('[lead-sightings] sighting row reconstructed at finalize (no row existed when finalize looked)', { sighting_id })
+    return { error: null }
+  })
 
   if (error) {
     console.error('[lead-sightings] finalizeSighting failed:', error.message)
