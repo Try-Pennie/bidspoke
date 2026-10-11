@@ -36,6 +36,7 @@ import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
+import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
@@ -914,7 +915,14 @@ const scheduledJobs = {
       ctx.waitUntil(
         // A stranded run is restored from its answer journal when it has one (#1883).
         runReduceFinalizeStrandedExecutions(supabase, { readJournal: (id) => readAnswerJournal(env.IDEMPOTENCY, id) })
-          .then((r) => { if (r.processed > 0 || r.errors > 0) console.log(`[stranded-executions] processed=${r.processed} errors=${r.errors}`) })
+          .then(async (r) => {
+            if (r.processed > 0 || r.errors > 0) console.log(`[stranded-executions] processed=${r.processed} errors=${r.errors}`)
+            // Watch the mix of resolution branches over a window: one branch taking
+            // effectively everything while another never fires is the shape of a
+            // dead branch (#1133).
+            await recordAndCheckBranchSkew(env.IDEMPOTENCY, r.byBranch, { supabase, appUrl: env.APP_URL })
+              .catch((e) => console.error('[strand-branch-skew] check failed:', e))
+          })
           .catch((e) => console.error('[stranded-executions] check failed:', e))
       )
       ctx.waitUntil(
