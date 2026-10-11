@@ -124,6 +124,39 @@ describe('recordAlert', () => {
   })
 })
 
+describe('a custom schedule for an urgent path (#1337)', () => {
+  // A path whose condition is actively harmful (a database unreachable, a volume
+  // cliff) keeps its short first reminder gap, then joins the shared tail, rather
+  // than waiting the shared six hours for its second reminder.
+  const URGENT = [30 * 60, ...BACKOFF_STEPS_SECONDS]
+
+  it('intervalSecondsFor walks the custom schedule rather than the shared one', () => {
+    expect(intervalSecondsFor(0, URGENT)).toBe(30 * 60)
+    expect(intervalSecondsFor(1, URGENT)).toBe(BACKOFF_STEPS_SECONDS[0])
+    expect(intervalSecondsFor(99, URGENT)).toBe(URGENT[URGENT.length - 1])
+  })
+
+  it('still defaults to the shared schedule when none is given', () => {
+    expect(intervalSecondsFor(0)).toBe(BACKOFF_STEPS_SECONDS[0])
+  })
+
+  it('recordAlert arms the first cooldown from the custom first step, then climbs the custom schedule', async () => {
+    const kv = fakeKv()
+    const first = await recordAlert(kv, 'k', null, NOW, { stepsSeconds: URGENT })
+    expect(kv.ttls.get('k:cooldown')).toBe(30 * 60)
+
+    await recordAlert(kv, 'k', first, NOW + 30 * 60 * 1000, { stepsSeconds: URGENT })
+    expect(kv.ttls.get('k:cooldown')).toBe(BACKOFF_STEPS_SECONDS[0])
+  })
+
+  it('describeRepeat reports the next gap from the custom schedule', () => {
+    // One urgent alert already sent: the gap before the one AFTER the reminder
+    // being posted now is the custom schedule's second step, six hours.
+    const standing = { since: new Date(NOW - H).toISOString(), alerts: 1 }
+    expect(describeRepeat(standing, NOW, false, URGENT)).toContain('~6h')
+  })
+})
+
 describe('clearCondition', () => {
   it('removes both the condition and the cooldown, so a recovery resets the schedule', async () => {
     const kv = fakeKv()

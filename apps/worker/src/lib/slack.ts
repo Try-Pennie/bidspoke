@@ -926,6 +926,8 @@ export interface BackupFailureAlert {
   workflow_name: string
   consecutive_failures: number
   error_message: string
+  /** The reminder sentence when this is a repeat of a standing failure (#1337). */
+  repeat?: string
 }
 
 export interface OutcomeDeadLetterAlert {
@@ -1387,7 +1389,7 @@ export async function sendBackupFailureAlert(
 ): Promise<boolean> {
   const errText = truncateErrorForAlert(payload.error_message)
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Workflow Backup Failing', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `Workflow Backup Failing${payload.repeat ? ' (still)' : ''}`, emoji: false } },
     {
       type: 'section',
       text: {
@@ -1403,6 +1405,7 @@ export async function sendBackupFailureAlert(
         text: 'Check that the GitHub token is valid and the backup repo is configured correctly, or confirm GitHub is reachable.',
       },
     },
+    ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/workflows/${payload.workflow_id}|Open workflow →>` } },
   ]
 
@@ -2429,10 +2432,10 @@ function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
 export async function sendDatabaseUnreachableAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { what: string; error: string; appUrl: string },
+  payload: { what: string; error: string; appUrl: string; repeat?: string },
 ): Promise<string | null> {
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Bidspoke cannot read its database', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `Bidspoke cannot read its database${payload.repeat ? ' (still)' : ''}`, emoji: false } },
     {
       type: 'section',
       text: {
@@ -2450,6 +2453,7 @@ export async function sendDatabaseUnreachableAlert(
         text: '*How to fix:* check <https://status.supabase.com|status.supabase.com> and the project\'s database health in the Supabase dashboard. Nothing on the worker needs restarting; it recovers on its own when the database answers. An all-clear follows here once this check can read again.',
       },
     },
+    ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
   return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
