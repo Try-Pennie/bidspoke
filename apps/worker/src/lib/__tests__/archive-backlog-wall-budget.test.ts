@@ -69,6 +69,7 @@ function deps(opts: { spentBeforeWorkMs: number }): {
       state = next
     },
     alertSetAside: vi.fn(async () => undefined),
+    clearSetAside: vi.fn(async () => undefined),
   }
   return { injected, budgets }
 }

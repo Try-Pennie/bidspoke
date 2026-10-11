@@ -154,9 +154,43 @@ export interface BacklogDeps {
    * with no backup unless a person does something, and nothing else will say so.
    */
   alertSetAside: (message: string) => Promise<void>
+  /**
+   * Stand the set-aside alert down (#1967). The set-aside page was the only alert
+   * this job raised and it never cleared, so a day set aside once left a standing
+   * page until the 30-day condition TTL. Called when no day remains set aside.
+   */
+  clearSetAside: () => Promise<void>
 }
 
 export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSummary> {
+  const summary = await runBacklogPass(deps)
+  // #1967: clear the set-aside alert only when the backlog is genuinely caught
+  // up: this run found no day to archive (summary.day === null) AND no day is
+  // still set aside. Both are needed. A set-aside WINDOW merely expiring drops
+  // the day out of daysSetAside but leaves it short and unarchived, still at risk
+  // of being purged with no backup, and that run returns the now-eligible day as
+  // summary.day, so requiring day === null holds the all-clear until the day is
+  // actually archived rather than reporting a recovery that did not happen (L98).
+  // A run that set a day aside raised the page via alertSetAside and is skipped.
+  //
+  // Best-effort, in its own try/catch: this runs after withJobRun has already
+  // recorded the run's outcome, so a KV or Slack failure here must not reject the
+  // invocation and desync that record (L33). A missed clear is retried by the
+  // next caught-up run, since the condition is left standing.
+  if (!summary.setAside && summary.day === null) {
+    try {
+      const state = await deps.readState()
+      if (daysSetAside(state, deps.now().getTime()).length === 0) {
+        await deps.clearSetAside()
+      }
+    } catch (err) {
+      console.error('[archive-backlog] clearing the set-aside alert failed, the next caught-up run retries:', err)
+    }
+  }
+  return summary
+}
+
+async function runBacklogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
   // Its own run record, so a walk the platform killed part way through is
   // distinguishable from one that found nothing to do. Those two look identical
   // from outside otherwise, and this walk is the repair, so a silently dead one
@@ -449,6 +483,12 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
 
     alertSetAside: async (message: string) => {
       await notifyExportFailure(supabase, ARCHIVE_BACKLOG_JOB, [message], env.IDEMPOTENCY, ARCHIVE_BACKLOG_REMEDY)
+    },
+
+    clearSetAside: async () => {
+      // Empty errors is the clear path (#1967): it drops the standing condition
+      // and its cooldown so a day set aside, then re-archived, stops paging.
+      await notifyExportFailure(supabase, ARCHIVE_BACKLOG_JOB, [], env.IDEMPOTENCY, ARCHIVE_BACKLOG_REMEDY)
     },
   }
 }
