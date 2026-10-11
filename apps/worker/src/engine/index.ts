@@ -821,6 +821,20 @@ export async function executeWorkflow(
         // for strands — so the strand drain can later recover them with full
         // fidelity instead of a reduced finalize. The gate (capture on, non-test)
         // mirrors the live finalize below and lives in the shared helper.
+        //
+        // LOAD-BEARING INVARIANT (#377): winning leads do not strand, so the
+        // strand drain's winner-flip path has never run in production and is
+        // validated only synthetically (#366). That holds only because the
+        // winning Engine path does post-response work. After the Offer Response
+        // is sent, the walk continues to the Salesforce prospect writeback
+        // (patch_prospect), and that continuation is what keeps the isolate alive
+        // long enough for the finalize below to land (0 of 5,450 winners stranded
+        // in a 48h sample). If the Engine flow is ever reordered so the writeback
+        // runs BEFORE the response, or is removed, winners would begin stranding
+        // onto the untested in production winner flip path. The invariant is
+        // guarded against the in repo definition snapshot in
+        // engine/__tests__/winner-no-strand-invariant.test.ts and recorded in
+        // docs/adr/0002-observability-vs-outcome-write-tiers.md.
         const sightingFinalize = buildSightingFinalizeProjection(
           ctx.steps,
           definition.nodes,
