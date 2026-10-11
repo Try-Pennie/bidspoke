@@ -50,6 +50,38 @@ describe('the memory short alert', () => {
     expect(text()).not.toMatch(/less than 15 percent/)
   })
 
+  // #1928 follow-up: swapping alone, with free memory well above the floor, is not
+  // the memory exhaustion that caused Oct 8. The alert must not say "short of memory"
+  // and must not tell someone to resize when they have most of their memory free.
+  it('does not claim memory is short, nor recommend a resize, when only swap grew and free memory stayed healthy', async () => {
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 1_900_000_000, lowFree: false, swapping: true, swapUsedBytes: 290_000_000 })
+    const t = text()
+    expect(t).not.toMatch(/short of memory/)
+    expect(t).not.toMatch(/next compute size up/)
+    expect(t).toContain('memory moving to disk, with 290 MB there now')
+    expect(t).toContain('Free memory stayed healthy over that stretch')
+    // Accurate to what lowFree=false means: no reading went under the floor, not "well above".
+    expect(t).toContain('no reading went under the 15 percent floor')
+    expect(t).toContain('This is not the memory exhaustion that caused the Oct 8 stall')
+    // It frames the remedy on what was measured (a resize does not address swap when
+    // free memory is healthy), not on an unmeasured cause guess (L11).
+    expect(t).toMatch(/a resize would not address this/)
+    expect(t).not.toMatch(/usually a heavy query/)
+    // It does not overclaim that EVERY reading swapped, only that readings found it.
+    expect(t).not.toMatch(/every reading .* moving to disk/)
+    expect(t).not.toMatch(/undefined|NaN/)
+  })
+
+  // When free memory DID go low, swapping beside it is the serious case: keep the
+  // short-of-memory wording and the resize path even though swapping is also true.
+  it('keeps the short-of-memory, resize wording when free memory went low, even with swapping', async () => {
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowFree: true, swapping: true, swapUsedBytes: 1_073_741_824 })
+    const t = text()
+    expect(t).toMatch(/short of memory/)
+    expect(t).toMatch(/next compute size up/)
+    expect(t).toMatch(/memory moving to disk/)
+  })
+
   it('states the floor the check judged by, not a copy of it', async () => {
     await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, freeFloor: 0.2, lowFree: true, swapping: false })
     expect(text()).toMatch(/less than 20 percent/)
