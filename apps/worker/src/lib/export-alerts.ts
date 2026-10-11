@@ -31,26 +31,26 @@ interface KvLike {
 
 // How long a held-back first transient failure stays armed. Must outlive one
 // full cycle of the slowest job (the daily Achieve export) so its "next run"
-// still sees the marker; refreshed on every consecutive failure, cleared by the
-// first clean run.
+// still sees the marker; refreshed on every failure. A clean run stamps it as
+// recovered rather than clearing it (#1445), so it is forgotten only by this
+// TTL.
 export const EXPORT_ALERT_PENDING_TTL_SECONDS = 26 * 60 * 60
 
 /**
  * The grace marker, which now records whether a run has SUCCEEDED since the
  * first failure (#1441).
  *
- * It used to be a bare ISO timestamp, and a success never touched it, because
- * the only way to clear it was a call with no errors and that call deletes the
- * cooldown too. The consequence was measured on 2026-09-22: two archive
- * timeouts 22 successful runs apart were reported as one incident, "failing
- * since" a day earlier, with reminders escalating against a condition that had
- * healed twice.
+ * It used to be a bare ISO timestamp that a success deleted outright. The
+ * consequence was measured on 2026-09-22: two archive timeouts 22 successful
+ * runs apart were reported as one incident, "failing since" a day earlier, with
+ * reminders escalating against a condition that had healed twice.
  *
- * Deleting it on a success is not the answer, and that is why it was never
- * done: a job alternating a failure with a clean run would re-arm the grace
- * every other run and never reach the second consecutive failure that pages. So
- * the marker is KEPT and stamped instead, which leaves the paging behaviour
- * exactly as it was while letting the message say which of the two it is.
+ * Deleting it on a success is not the answer: a job alternating a failure with a
+ * clean run would re-arm the grace every other run and never reach the failure
+ * that pages (#1445). So a clean run now KEEPS the marker and stamps it as
+ * recovered, rather than deleting it, which lets the message say which of the
+ * two it is and keeps the alternating pattern pageable. The marker is forgotten
+ * only by its TTL.
  *
  * A marker written before this change is a bare timestamp, and there is one in
  * production KV as this ships, so the reader accepts both shapes. An
@@ -204,11 +204,15 @@ export async function notifyExportFailure(
   // The reminder schedule for this job's standing failure (#1334).
   const backoff = `export-alert:${jobName}`
 
+  // A clean run is a recovery, so it goes through the same path a caller that
+  // reports its health separately uses (#1441): the standing condition clears,
+  // but the grace marker is KEPT and stamped as interrupted rather than deleted.
+  // Deleting it was the #1445 bug: a job that fails every other run re-armed the
+  // grace on each clean run and never reached the second failure that pages.
+  // Handling it here fixes every clean-run caller at once (L30), not only the
+  // few that could be moved onto notifyExportRecovery by hand.
   if (errors.length === 0) {
-    if (kv) {
-      await clearCondition(kv, backoff)
-      await kv.delete(pendingKey)
-    }
+    await notifyExportRecovery(kv, jobName)
     return
   }
 
@@ -228,17 +232,26 @@ export async function notifyExportFailure(
       console.log(`[export-alerts] ${jobName}: transient failure held (no alert unless the next run also fails):`, errors)
       return
     }
-    // Keep the original first-failure time and re-arm the TTL so a long outage
-    // cannot expire the marker mid-outage and silently restart the grace.
-    await kv.put(pendingKey, writePendingFailure(pending), { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
-    // WHICH of the two sentences this earns is decided here, from what was
-    // recorded rather than from the fact that a marker exists (#1441, L11). A
-    // run succeeded in between means this is intermittent, and saying "failing
-    // since" would name a stretch that demonstrably ended.
+    // WHICH of the two sentences this earns is decided from what was recorded
+    // rather than from the fact that a marker exists (#1441, L11). A run
+    // succeeded in between means this is intermittent, and saying "failing since"
+    // would name a stretch that demonstrably ended.
     const since = validInstant(pending.since)
     if (since === null) console.warn(`[export-alerts] ${jobName}: pending marker holds an unreadable time, alerting without it`)
     else if (pending.recovered) intermittentSince = since
     else failingSince = since
+
+    // Record the marker forward. With no success in between, keep the original
+    // first-failure time and re-arm the TTL so a long outage cannot expire the
+    // marker mid-outage and silently restart the grace. If a success DID come
+    // between (this is the first failure after a recovery), start a FRESH
+    // standing streak from now: a run that then keeps failing is a standing
+    // outage and must read "failing since", not "intermittent since <an old
+    // time>" for ever (#1445).
+    const forward: PendingFailure = pending.recovered
+      ? { since: new Date().toISOString(), recovered: false }
+      : pending
+    await kv.put(pendingKey, writePendingFailure(forward), { expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
   }
 
   // Classify once, not per org: the same errors produce the same advice. The
