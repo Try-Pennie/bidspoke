@@ -2843,35 +2843,55 @@ export interface DatabaseMemoryShortPayload {
  * The database has been short of memory for 15 minutes (#1928). The swap sentence is
  * there only when swapping was seen, and the floor sentence only when free memory went
  * under it, so the message never claims a sign the readings did not show (L11).
+ *
+ * Two shapes, because they call for different actions. When free memory actually went
+ * under the floor, that is the exhaustion that stalled on Oct 8, and the fix is a
+ * resize. When only swap grew while free memory stayed healthy, it is a heavy query
+ * briefly spilling, not exhaustion: the alert says so and does NOT tell someone to
+ * resize when they have most of their memory free, which is what the flat "short of
+ * memory, resize up" wording did on 2026-10-11 with 47 percent free.
  */
 export async function sendDatabaseMemoryShortAlert(
   slack: { bot_token: string },
   channel: string,
   payload: DatabaseMemoryShortPayload,
 ): Promise<string | null> {
-  const header = 'The database is short of memory'
   const share = Math.round((payload.lowestAvailableBytes / payload.totalBytes) * 100)
-  const signs: string[] = []
   const floor = Math.round(payload.freeFloor * 100)
-  if (payload.lowFree) signs.push(`less than ${floor} percent of its memory free`)
-  if (payload.swapping) signs.push(`memory moving to disk, with ${decimalSize(payload.swapUsedBytes)} there now`)
-  const lines = [
-    `Since ${etTime(Date.parse(payload.since))} every reading that could be taken has found the database short of memory. Over that stretch, readings found ${signs.join(', and ')}. ` +
-      `The least free was ${decimalSize(payload.lowestAvailableBytes)}, ${share} percent of its ${decimalSize(payload.totalBytes)}. ` +
-      'When it runs out entirely every query slows at once, which is how the stall of Oct 8 began.',
-  ]
+  const swapHere = `memory moving to disk, with ${decimalSize(payload.swapUsedBytes)} there now`
+  // Swapping alone, with free memory never under the floor: not exhaustion.
+  const swappingOnly = payload.swapping && !payload.lowFree
+
+  const header = swappingOnly ? 'The database moved memory to disk' : 'The database is short of memory'
+  const lines: string[] = []
+  if (swappingOnly) {
+    lines.push(
+      `Since ${etTime(Date.parse(payload.since))} readings have found ${swapHere}. ` +
+        `Free memory stayed healthy over that stretch: the least free was ${decimalSize(payload.lowestAvailableBytes)}, ` +
+        `${share} percent of its ${decimalSize(payload.totalBytes)}, and no reading went under the ${floor} percent floor. ` +
+        'This is not the memory exhaustion that caused the Oct 8 stall, where free memory itself ran out.',
+    )
+  } else {
+    const signs: string[] = []
+    if (payload.lowFree) signs.push(`less than ${floor} percent of its memory free`)
+    if (payload.swapping) signs.push(swapHere)
+    lines.push(
+      `Since ${etTime(Date.parse(payload.since))} every reading that could be taken has found the database short of memory. Over that stretch, readings found ${signs.join(', and ')}. ` +
+        `The least free was ${decimalSize(payload.lowestAvailableBytes)}, ${share} percent of its ${decimalSize(payload.totalBytes)}. ` +
+        'When it runs out entirely every query slows at once, which is how the stall of Oct 8 began.',
+    )
+  }
   if (payload.repeat) lines.push(payload.repeat)
   lines.push(`Seen at ${etTime(payload.at)}.`)
+
+  const fix = swappingOnly
+    ? `*What to do:* a resize would not address this. It adds free memory, and free memory is not what ran low here: it stayed above the floor the whole time. If this recurs and the swap climbs day over day toward the Oct 8 shape, find what is moving memory to disk: the scheduled stats refreshes inside the database (#1884), or a large query. An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`
+    : `*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`
+
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`,
-      },
-    },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
   return postMessage(slack.bot_token, channel, blocks, header)
 }
