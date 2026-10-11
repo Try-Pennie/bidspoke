@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateHeartbeat } from '../cron-heartbeat'
+import { evaluateHeartbeat, CRON_JOBS } from '../cron-heartbeat'
+
+describe('execution-archive vanished-run copy (#1485)', () => {
+  const archive = CRON_JOBS.find((j) => j.id === 'execution-archive')
+  it('does not warn that the purge deletes unarchived rows, since the gate holds them back', () => {
+    // Since early September the deletion gate holds an unarchived day past the
+    // 7-day purge rather than deleting it, so the old "would delete rows with no
+    // backup" turned a routine one-hour stall into a false data-loss warning
+    // (#1480). The copy must say what the gate actually does.
+    expect(archive).toBeDefined()
+    expect(archive!.dependents).not.toMatch(/delete rows with no backup|would delete/i)
+    expect(archive!.dependents).toMatch(/held back|held from|not deleted/i)
+  })
+})
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
 const H = 3_600_000
