@@ -24,12 +24,17 @@ export interface RecoveryKv {
 }
 
 /**
- * How long we remember that we owe an all-clear. Deliberately far longer than
- * the 30 minute cooldown, so a multi-hour outage still gets announced when it
- * ends. It is a backstop, not a schedule: the marker is normally cleared by the
- * recovery itself.
+ * How long we remember that we owe an all-clear. It is a backstop, not a
+ * schedule: the marker is normally cleared by the recovery itself.
+ *
+ * It must exceed the LONGEST cadence of any check that uses it, by a margin, or a
+ * marker written just after one run expires at almost exactly the moment the next
+ * run reads it and the all-clear is lost to a race (#1343). The longest such
+ * cadence is the daily dead-field tier at 24h, so this is 48h: a full day of
+ * margin. A check that ever runs less often than daily must lift this (or derive
+ * its own marker TTL from its cadence).
  */
-export const RECOVERY_TTL_SECONDS = 24 * 60 * 60
+export const RECOVERY_TTL_SECONDS = 48 * 60 * 60
 
 /**
  * How long the condition must stay healthy before the incident counts as OVER
@@ -63,11 +68,11 @@ export function activeKey(prefix: string, id: string): string {
 /**
  * Keep the recovery marker alive from a KNOWN start, on every sighting (#1274).
  *
- * `markAlerted` pins the start of an incident by never overwriting, but its marker
- * expires after a day and a partner block has lasted five. A condition that is
- * re-observed keeps re-writing the same start time with a fresh TTL, so the marker
- * outlives the block without the start moving. An existing EARLIER start wins, so
- * a caller holding a later time cannot move it forward either.
+ * `markAlerted` pins the start from the time it is first called and is called only
+ * on a page; this one takes the start the caller already knows and is called on
+ * every SIGHTING of the condition, whether or not it paged, so a block that is
+ * re-observed between pages still refreshes the marker. An existing EARLIER start
+ * wins, so a caller holding a later time cannot move it forward either.
  */
 export async function keepAlerted(
   kv: RecoveryKv,
@@ -87,9 +92,11 @@ export async function keepAlerted(
  * Record that an alert delivered, so a later healthy check knows to announce the
  * recovery.
  *
- * Does NOT overwrite an existing marker. A long outage re-alerts each time the
- * cooldown lapses, and overwriting would reset the clock, so the all-clear would
- * report a minutes-long blip after hours of downtime.
+ * Keeps the first-alert time: a long outage re-alerts each time the cooldown
+ * lapses, and overwriting the value would reset the clock, so the all-clear would
+ * report a minutes-long blip after hours of downtime. But it REFRESHES the TTL on
+ * every page, so an outage longer than one TTL does not lose the marker mid-way
+ * and with it the all-clear (#1343); the value stays the original start.
  */
 export async function markAlerted(
   kv: RecoveryKv,
@@ -98,8 +105,8 @@ export async function markAlerted(
   now: number = Date.now(),
 ): Promise<void> {
   const key = recoveryKey(prefix, id)
-  if (await kv.get(key)) return
-  await kv.put(key, new Date(now).toISOString(), { expirationTtl: RECOVERY_TTL_SECONDS })
+  const existing = await kv.get(key)
+  await kv.put(key, existing ?? new Date(now).toISOString(), { expirationTtl: RECOVERY_TTL_SECONDS })
 }
 
 /**
