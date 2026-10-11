@@ -62,6 +62,17 @@ export interface StrandStepEvidence {
   step_namespace?: string | null
 }
 
+/**
+ * Which evidence branch resolveStrandedExecution took (#1133). Tallied across a
+ * window so a branch that takes effectively everything, which is the shape of a
+ * branch that cannot fire, is caught (L551): the precise branches hiding behind
+ * the conservative `unresolved` fallback is exactly how #1112 stayed invisible
+ * for 14 days (119 of 119 rows took `unresolved`, none took `graph_dead_end`).
+ */
+export type StrandBranch = 'failed_step' | 'graph_dead_end' | 'sighting_outcome' | 'unresolved'
+
+export const STRAND_BRANCHES: readonly StrandBranch[] = ['failed_step', 'graph_dead_end', 'sighting_outcome', 'unresolved']
+
 export interface ResolvedStrand {
   status: 'failed' | 'completed'
   outcome: 'successful' | 'completed' | 'failed' | null
@@ -69,6 +80,8 @@ export interface ResolvedStrand {
   duration_ms: number
   error_message: string | null
   failed_step_type: string | null
+  /** The evidence branch that produced this resolution (#1133). */
+  branch: StrandBranch
 }
 
 /**
@@ -179,6 +192,7 @@ export function resolveStrandedExecution(
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
       error_message: failedStep.error_message ?? FAILED_NO_MESSAGE_FALLBACK,
       failed_step_type: failedStep.step_type,
+      branch: 'failed_step',
     }
   }
 
@@ -211,6 +225,7 @@ export function resolveStrandedExecution(
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
       error_message: null,
       failed_step_type: null,
+      branch: 'graph_dead_end',
     }
   }
 
@@ -228,6 +243,7 @@ export function resolveStrandedExecution(
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
       error_message: failed ? SIGHTING_FAILED_MESSAGE : null,
       failed_step_type: null,
+      branch: 'sighting_outcome',
     }
   }
 
@@ -238,6 +254,7 @@ export function resolveStrandedExecution(
     duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
     error_message: UNRESOLVED_MESSAGE,
     failed_step_type: null,
+    branch: 'unresolved',
   }
 }
 
@@ -246,6 +263,17 @@ export interface ReduceFinalizeResult {
   errors: number
   /** Rows that vanished between the scan and the update (purged mid-run). Not repairs, not errors. */
   vanished: number
+  /**
+   * How many processed rows each resolveStrandedExecution branch resolved (#1133).
+   * Journal-restored rows are not counted: they bypass the inference branches. Fed
+   * to the branch-skew check, which catches a branch that cannot fire.
+   */
+  byBranch: Record<StrandBranch, number>
+}
+
+/** A zeroed per-branch tally. */
+export function emptyBranchCounts(): Record<StrandBranch, number> {
+  return { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }
 }
 
 /**
@@ -368,13 +396,14 @@ export async function runReduceFinalizeStrandedExecutions(
 
   if (strandedErr) {
     console.error('[stranded-executions] scan failed', strandedErr)
-    return { processed: 0, errors: 1, vanished: 0 }
+    return { processed: 0, errors: 1, vanished: 0, byBranch: emptyBranchCounts() }
   }
-  if (!stranded?.length) return { processed: 0, errors: 0, vanished: 0 }
+  if (!stranded?.length) return { processed: 0, errors: 0, vanished: 0, byBranch: emptyBranchCounts() }
 
   let processed = 0
   let errors = 0
   let vanished = 0
+  const byBranch = emptyBranchCounts()
   // Definitions are fetched at most once per workflow_version_id -- the strand
   // backlog is dominated by a handful of high-volume workflows (822 of the
   // first 1094 rows were one workflow), so many rows share a version. A null
@@ -503,11 +532,13 @@ export async function runReduceFinalizeStrandedExecutions(
       vanished++
     } else {
       processed++
+      byBranch[resolved.branch]++
     }
   }
 
   console.log(
-    `[stranded-executions] processed=${processed} from_journal=${fromJournal} superseded=${superseded} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
+    `[stranded-executions] processed=${processed} from_journal=${fromJournal} superseded=${superseded} errors=${errors} vanished=${vanished} scanned=${stranded.length} ` +
+      `by_branch=${JSON.stringify(byBranch)}`
   )
-  return { processed, errors, vanished }
+  return { processed, errors, vanished, byBranch }
 }
