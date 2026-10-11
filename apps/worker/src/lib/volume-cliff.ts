@@ -12,17 +12,21 @@
  *   skip if baseline_per_min < MIN_BASELINE_PER_MIN (low-volume workflows)
  *   fire  if last_5min_count < (baseline_per_min * 5) * (ALERT_THRESHOLD_PCT / 100)
  *
- * Cooldown: 30 min per workflow via KV (prevents repeat alerts during a sustained outage).
+ * Reminders: the first repeat is held 30 min, then the interval climbs the shared
+ * backoff tail (6h, 12h, daily) for as long as the cliff stands, and resets the
+ * moment it clears (#1337). The database-unreachable alert here uses the same
+ * backoff with a 15 min first step. Both are keyed in KV under `<family>:cooldown`.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, RECOVERY_TTL_SECONDS, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import type { AlertClaims } from './alert-claim'
+import { BACKOFF_STEPS_SECONDS, backoffCooldownKey, clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 // How long a claim (#1298) holds. It only has to outlast the race it exists
@@ -77,7 +81,31 @@ export interface SelfCheckResult {
 export const SLACK_CONNS_LASTGOOD_KEY = 'slack-conns-lastgood'
 export const DB_UNREACHABLE_PREFIX = 'db-unreachable'
 export const DB_UNREACHABLE_COOLDOWN_SECONDS = 15 * 60
-const dbUnreachableCooldownKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}-cooldown:${orgId}`
+
+// Both these conditions are actively harmful while they stand (a database that
+// cannot be read refuses live leads; a volume cliff is a traffic stop), so each
+// keeps its short first reminder gap and then climbs the shared backoff tail (6h,
+// 12h, daily) rather than waiting the shared six hours for its second reminder
+// (#1337). The reminder schedule resets the moment the condition clears.
+const DB_UNREACHABLE_STEPS = [DB_UNREACHABLE_COOLDOWN_SECONDS, ...BACKOFF_STEPS_SECONDS]
+const VOLUME_CLIFF_STEPS = [COOLDOWN_TTL_SECONDS, ...BACKOFF_STEPS_SECONDS]
+// Both paths clear the reminder schedule when the all-clear fires, but that is
+// HELD when the pipe went dead (#817) and its recovery marker expires after
+// RECOVERY_TTL_SECONDS. So the standing condition is given the SAME lifetime as
+// that marker (refreshed on every alert, well inside it since the longest step is
+// a day), rather than the 30-day default: otherwise it outlives the incident and a
+// future, unrelated cliff reads as a reminder of the old one (#1337). The longest
+// backoff step (a day) is under this, so an ongoing incident never expires mid-way.
+const VOLUME_CONDITION_TTL_SECONDS = RECOVERY_TTL_SECONDS
+// Escalating-backoff family keys. readCondition/recordAlert append :condition and
+// :cooldown; these do not collide with the recovery-marker keys (markAlerted writes
+// ${prefix}-recovery / -active) or the claim keys. These cooldown keys differ from
+// the old flat ones (db-unreachable-cooldown:, volume-cliff-cooldown:), so a cliff
+// or database outage standing at the deploy loses its old cooldown and re-pages
+// once as it enters the schedule: a bounded, one-time transition (same as the
+// github-backup path), and re-announcing a still-standing condition is harmless.
+const dbUnreachableBackoffKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}:${orgId}`
+const volumeCliffBackoffKey = (wfId: string) => `volume-cliff:${wfId}`
 
 async function rememberSlackConnections(
   kv: KvLike,
@@ -132,15 +160,22 @@ async function reportDatabaseUnreachable(
   for (const [orgId, conn] of connections) {
     if (!conn.volume_alerts_enabled) continue
     await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId)
-    if (await kv.get(dbUnreachableCooldownKey(orgId))) continue
+    const backoff = dbUnreachableBackoffKey(orgId)
+    if (await inCooldown(kv, backoff)) continue
     const claimKey = `${DB_UNREACHABLE_PREFIX}:${orgId}`
     if (claims && !(await claims.claim(claimKey, ALERT_CLAIM_TTL_SECONDS))) {
       console.log(`[volume-cliff] database unreachable alert claimed by another tick org=${orgId}`)
       continue
     }
-    const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl })
+    // The reminder interval grows while the outage stands (#1337); unchanged is
+    // false since the error text can move, so a reminder says "same problem,
+    // latest details shown" and never falsely claims nothing changed.
+    const nowMs = Date.now()
+    const standing = await readCondition(kv, backoff)
+    const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
+    const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl, repeat })
     if (ts) {
-      await kv.put(dbUnreachableCooldownKey(orgId), '1', { expirationTtl: DB_UNREACHABLE_COOLDOWN_SECONDS })
+      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
       await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId)
     } else if (claims) {
       await claims.release(claimKey)
@@ -338,12 +373,17 @@ export async function runVolumeCliffCheck(
   // Every read succeeded, so if we paged that the database was unreachable, this
   // is the tick that can say it is over (the same re-arm rules as the cliff).
   for (const [orgId, conn] of connections) {
-    await announceRecovery(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableCooldownKey(orgId), async (alertedAt, endedAt) => {
+    const backoff = dbUnreachableBackoffKey(orgId)
+    const recovered = await announceRecovery(kv, DB_UNREACHABLE_PREFIX, orgId, backoffCooldownKey(backoff), async (alertedAt, endedAt) => {
       if (!conn.volume_alerts_enabled) return false
       return sendRecoveryAlert(conn, conn.default_channel, {
         signal: 'database unreachable', subject: 'Bidspoke', alertedAt, endedAt, url: `${appUrl}/dashboard`,
       })
     })
+    // The all-clear settles the recovery markers and the backoff cooldown; also
+    // reset the reminder schedule so the next outage starts at the short first
+    // gap, not wherever this one had backed off to (#1337).
+    if (recovered) await clearCondition(kv, backoff)
   }
   const rows = (counts ?? []) as { workflow_id: string; minute: string; cnt: number | string }[]
   console.log(`[volume-cliff] fetched ${rows.length} minute-buckets across ${workflows.length} workflows`)
@@ -372,7 +412,7 @@ export async function runVolumeCliffCheck(
     const bucket = perWorkflow.get(wfId)
     if (!bucket) continue
 
-    const cooldownKeyFor = `volume-cliff-cooldown:${wfId}`
+    const backoff = volumeCliffBackoffKey(wfId)
 
     const cliff = detectCliff(bucket)
     if (!cliff) {
@@ -381,11 +421,11 @@ export async function runVolumeCliffCheck(
       // "no cliff" is true both when volume returned and when the baseline itself
       // collapsed, so the all-clear requires evidence the volume actually came
       // back (#817): a workflow that went quiet must not read "back to normal".
-      await announceRecovery(
+      const recovered = await announceRecovery(
         kv,
         'volume-cliff',
         wfId,
-        cooldownKeyFor,
+        backoffCooldownKey(backoff),
         async (alertedAt, endedAt) => {
           const slack = await getSlackConnection(supabase, wf.organization_id as string)
           if (!slack || !slack.volume_alerts_enabled) return false
@@ -399,6 +439,9 @@ export async function runVolumeCliffCheck(
         },
         { hasEvidence: () => isVolumeRecovered(bucket) },
       )
+      // Reset the reminder schedule once the cliff clears, so the next one starts
+      // at the short first gap rather than the backed-off interval (#1337).
+      if (recovered) await clearCondition(kv, backoff)
       continue
     }
 
@@ -409,8 +452,7 @@ export async function runVolumeCliffCheck(
     // long ago we last spoke about it (#814).
     await markSpikeSeen(kv, 'volume-cliff', wfId)
 
-    const cooldownKey = cooldownKeyFor
-    if (await kv.get(cooldownKey)) {
+    if (await inCooldown(kv, backoff)) {
       console.log(`[volume-cliff] suppressed by cooldown workflow_id=${wfId}`)
       continue
     }
@@ -431,6 +473,13 @@ export async function runVolumeCliffCheck(
 
     const selfCheck = await getSelfCheck()
 
+    // The reminder interval grows while the cliff stands (#1337); unchanged is
+    // false because the recent count moves each tick, so a reminder says "same
+    // problem, latest details shown" rather than claiming nothing changed.
+    const nowMs = Date.now()
+    const standing = await readCondition(kv, backoff)
+    const repeat = describeRepeat(standing, nowMs, false, VOLUME_CLIFF_STEPS) ?? undefined
+
     // Honor the per-workflow channel override, like every other alert path;
     // fall back to the org default (#110).
     const channel = (wf.slack_channel as string | null) ?? slack.default_channel
@@ -440,15 +489,15 @@ export async function runVolumeCliffCheck(
       organization_id: wf.organization_id as string,
       recent_count: cliff.recentCount,
       baseline_per_min: cliff.baselinePerMin,
-    }, appUrl, selfCheck)
+    }, appUrl, selfCheck, repeat)
 
-    // Only start the cooldown once the alert actually delivered — otherwise a
-    // kicked bot (Slack ok:false) would suppress retries for 30 min while the
-    // outage went unannounced.
+    // Only record the alert (which arms the next, longer cooldown) once it actually
+    // delivered, so a kicked bot (Slack ok:false) does not suppress retries while
+    // the outage goes unannounced.
     if (sent) {
-      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-      // Separate marker, longer TTL: a cliff lasting past the 30 minute cooldown
-      // would otherwise leave nothing to say it had ever been broken (#253).
+      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
+      // Separate marker, longer TTL: a cliff lasting past the cooldown would
+      // otherwise leave nothing to say it had ever been broken (#253).
       await markAlerted(kv, 'volume-cliff', wfId)
     } else if (claims) {
       // Slack refused: free the claim so the next tick can retry, the same way
@@ -544,7 +593,9 @@ export async function sendCliffAlert(
   channel: string,
   cliff: CliffDetection,
   appUrl: string,
-  selfCheck: SelfCheckResult
+  selfCheck: SelfCheckResult,
+  // The reminder sentence when the cliff has been standing across ticks (#1337).
+  repeat?: string | null,
 ): Promise<string | null> {
   const expected = cliff.baseline_per_min * RECENT_WINDOW_MINUTES
   const ratePct = expected > 0 ? Math.round((cliff.recent_count / expected) * 100) : 0
@@ -553,7 +604,7 @@ export async function sendCliffAlert(
   const checkLine = describeSelfCheck(selfCheck)
 
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Workflow Volume Cliff', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `Workflow Volume Cliff${repeat ? ' (still)' : ''}`, emoji: false } },
     {
       type: 'section',
       text: {
@@ -562,6 +613,7 @@ export async function sendCliffAlert(
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: checkLine } },
+    ...(repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` } },
   ]
 

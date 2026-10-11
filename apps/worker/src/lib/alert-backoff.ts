@@ -100,12 +100,19 @@ const cooldownKeyFor = (key: string) => `${key}:cooldown`
 /** The cooldown key for a family key, for a caller that settles a recovery and must name it (#1274). */
 export const backoffCooldownKey = cooldownKeyFor
 
-/** The gap before the next reminder, given how many have already gone out. */
-export function intervalSecondsFor(alertsAlreadySent: number): number {
-  const last = BACKOFF_STEPS_SECONDS.length - 1
-  if (!Number.isFinite(alertsAlreadySent)) return BACKOFF_STEPS_SECONDS[0]
+/**
+ * The gap before the next reminder, given how many have already gone out.
+ *
+ * `steps` defaults to the shared schedule. An urgent path (a database unreachable,
+ * a volume cliff) passes its own, so its FIRST reminder keeps the short gap that
+ * matters when the condition is actively harmful, then it climbs to the same daily
+ * tail as everything else (#1337). The last entry repeats for ever either way.
+ */
+export function intervalSecondsFor(alertsAlreadySent: number, steps: readonly number[] = BACKOFF_STEPS_SECONDS): number {
+  const last = steps.length - 1
+  if (!Number.isFinite(alertsAlreadySent)) return steps[0]
   const index = Math.min(Math.max(Math.floor(alertsAlreadySent), 0), last)
-  return BACKOFF_STEPS_SECONDS[index]
+  return steps[index]
 }
 
 /**
@@ -280,7 +287,10 @@ export async function recordAlert(
   // page, #1265) has no probe to clear it, so its record must expire on its own rather
   // than describe a block from weeks ago as still standing. Defaults to the shared TTL.
   // `fingerprint` is what this alert said (#1768), so the next run can tell a reminder from a new problem.
-  opts: { conditionTtlSeconds?: number; fingerprint?: AlertFingerprint } = {},
+  // `stepsSeconds` lets an urgent path use its own schedule (#1337); it defaults to
+  // the shared one. It must be the same schedule on every call for a key, since the
+  // cooldown is set from it each time.
+  opts: { conditionTtlSeconds?: number; fingerprint?: AlertFingerprint; stepsSeconds?: readonly number[] } = {},
 ): Promise<StandingCondition> {
   const next: StandingCondition = {
     since: standing?.since ?? new Date(nowMs).toISOString(),
@@ -288,7 +298,7 @@ export async function recordAlert(
     ...(opts.fingerprint ? { fingerprint: opts.fingerprint } : {}),
   }
   await kv.put(conditionKey(key), JSON.stringify(next), { expirationTtl: opts.conditionTtlSeconds ?? CONDITION_TTL_SECONDS })
-  await kv.put(cooldownKeyFor(key), '1', { expirationTtl: intervalSecondsFor(next.alerts - 1) })
+  await kv.put(cooldownKeyFor(key), '1', { expirationTtl: intervalSecondsFor(next.alerts - 1, opts.stepsSeconds) })
   return next
 }
 
@@ -335,11 +345,18 @@ export async function inCooldown(kv: BackoffKv, key: string): Promise<boolean> {
  * the last one (recurrenceOf). Otherwise the sentence says it is the same
  * problem with the latest details shown, and nothing more.
  */
-export function describeRepeat(standing: StandingCondition | null, nowMs: number, unchanged: boolean): string | null {
+export function describeRepeat(
+  standing: StandingCondition | null,
+  nowMs: number,
+  unchanged: boolean,
+  // Same schedule the caller passes to recordAlert, so "the next one is in ~Xh"
+  // names the real gap for an urgent path, not the shared one (#1337).
+  steps: readonly number[] = BACKOFF_STEPS_SECONDS,
+): string | null {
   if (!standing || standing.alerts < 1) return null
   const sinceMs = Date.parse(standing.since)
   const hours = Number.isFinite(sinceMs) ? Math.round((nowMs - sinceMs) / 3_600_000) : null
-  const nextHours = Math.round(intervalSecondsFor(standing.alerts) / 3600)
+  const nextHours = Math.round(intervalSecondsFor(standing.alerts, steps) / 3600)
   const next = `The next one is in ~${nextHours}h unless it clears first, and it stops as soon as it does.`
   if (!unchanged) {
     const stood = hours === null ? '' : `, standing for ~${hours}h`
