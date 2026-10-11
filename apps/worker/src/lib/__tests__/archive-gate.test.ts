@@ -894,6 +894,29 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     expect(raised()).toEqual([])
   })
 
+  it('does NOT clear the gate alerts on a restricted run with nothing at risk (#1783)', async () => {
+    // A restricted run sees only its chunk, so days OUTSIDE it may still be at
+    // risk, not cleaned up, or costly. It must never clear the full nightly
+    // pass's standing conditions: a chunk with nothing to say leaves them alone.
+    await run({ restrictDays: { from: daysBeforeNow(CANDIDATE_COUNT - 2) }, daysHeld: async () => [] })
+    const cleared = vi
+      .mocked(notifyExportFailure)
+      .mock.calls.filter((c) => (c[2] as string[]).length === 0)
+      .map((c) => c[1])
+    expect(cleared).toEqual([])
+  })
+
+  it('still posts at-risk days found on a restricted run, it only withholds the clear (#1783)', async () => {
+    // Add-only, not silence: a restricted run that finds something still pages.
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
+    await run({
+      restrictDays: { from: daysBeforeNow(CANDIDATE_COUNT - 2) },
+      daysHeld: async () => [stranded],
+      beneathStatus: async () => new Map([[stranded, { backedUp: false }]]),
+    })
+    expect(sentTo(ARCHIVE_GATE_JOB).join(' ')).toMatch(/not fully backed up/)
+  })
+
   it('asks about the days BELOW its oldest candidate, not the ones above', async () => {
     const asked: Array<{ from: string; to: string }> = []
     await run({
