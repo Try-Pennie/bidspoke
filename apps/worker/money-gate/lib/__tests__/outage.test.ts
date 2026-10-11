@@ -166,6 +166,32 @@ describe('compareOutage', () => {
     expect(compareOutage(two, swapped)).toEqual([])
   })
 
+  // The run's own execution id is minted fresh from the drill's pinned RNG, so a
+  // correct outage path that draws from it (the outcome dead letter firing when a
+  // write aborts rather than hangs, #1484) shifts the id in a `?execution=` link.
+  // Only that link's value is normalised.
+  it('does not count an outbound that differs only by the per-run execution link id', () => {
+    const link = (id: string) => ({ ...base.outbound[0], body: { url: `https://app/workflows/w?execution=${id}` } })
+    const up = { ...base, outbound: [link('01a0f7fa-bd80-7780-ae45-9057801d3651')] }
+    const down = { ...base, outbound: [link('01a0f7fa-bd80-7606-aea2-b53569c3b6c9')] }
+    expect(compareOutage(up, down)).toEqual([])
+  })
+
+  it('still counts a down run that sent to a DIFFERENT partner, buyer or workflow uuid', () => {
+    // Those ids are references, not per-run mints: a different one is a real money
+    // difference and normalising the execution link must NOT hide it.
+    const up = { ...base, outbound: [{ ...base.outbound[0], body: { partner_id: '11111111-1111-4111-8111-111111111111' } }] }
+    const down = { ...base, outbound: [{ ...base.outbound[0], body: { partner_id: '22222222-2222-4222-8222-222222222222' } }] }
+    expect(compareOutage(up, down).map((d) => d.field)).toContain('outbound')
+  })
+
+  it('still counts a real field difference that rides alongside a shifted execution link', () => {
+    const b = (bid: number, id: string) => ({ ...base.outbound[0], body: { bid_cents: bid, url: `https://app/w?execution=${id}` } })
+    const up = { ...base, outbound: [b(25000, '01a0f7fa-bd80-7780-ae45-9057801d3651')] }
+    const down = { ...base, outbound: [b(19000, '01a0f7fa-bd80-7606-aea2-b53569c3b6c9')] }
+    expect(compareOutage(up, down).map((d) => d.field)).toContain('outbound')
+  })
+
   // A long list differing late would be cut off before the difference, so a
   // list's detail names the first position where the two runs part (L445).
   it('names the first position where two lists part, however long they are', () => {

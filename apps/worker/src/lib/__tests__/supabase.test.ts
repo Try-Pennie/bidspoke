@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { createSupabaseClient } from '../supabase'
+import {
+  createSupabaseClient,
+  withRequestDeadline,
+  SupabaseRequestTimeoutError,
+  SUPABASE_REQUEST_DEADLINE_MS,
+} from '../supabase'
 import type { Env } from '../../index'
+
+/** A fetch that never answers on its own; it settles only when its signal aborts. */
+function hangingFetch(): typeof fetch {
+  return ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      // reason is the abort reason, a DOMException (an Error); typed any, so cast.
+      if (signal) signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true })
+    })) as typeof fetch
+}
 
 // The Worker connects as service_role, which bypasses RLS. Local `wrangler dev`
 // shares the real production Supabase project, so without a guard any local run
@@ -107,5 +122,67 @@ describe('createSupabaseClient prod-write guard', () => {
     const supabase = createSupabaseClient(envWith({}))
     expect(() => supabase.from('workflows').insert(WORKFLOW_ROW)).not.toThrow()
     expect(() => supabase.from('workflows').delete()).not.toThrow()
+  })
+})
+
+describe('Supabase request deadline (#1484)', () => {
+  it('sits above the 30s service_role statement_timeout, so a slow query fails with its own message', () => {
+    expect(SUPABASE_REQUEST_DEADLINE_MS).toBeGreaterThan(30_000)
+  })
+
+  it('abandons a stalled request with a named timeout error', async () => {
+    const wrapped = withRequestDeadline(hangingFetch(), 30)
+    await expect(wrapped('https://example.test/anything')).rejects.toBeInstanceOf(SupabaseRequestTimeoutError)
+  })
+
+  it('names the method in the timeout message', async () => {
+    const wrapped = withRequestDeadline(hangingFetch(), 30)
+    await expect(wrapped('https://example.test/x', { method: 'POST' })).rejects.toThrow(/POST .* 30 ms/)
+  })
+
+  it('passes a fast response straight through', async () => {
+    const ok = (() => Promise.resolve(new Response('[]', { status: 200 }))) as typeof fetch
+    const wrapped = withRequestDeadline(ok, 1000)
+    const res = await wrapped('https://example.test/x')
+    expect(res.status).toBe(200)
+  })
+
+  it('still enforces its own deadline when a caller passes a longer signal', async () => {
+    const wrapped = withRequestDeadline(hangingFetch(), 30)
+    const longerCaller = AbortSignal.timeout(5_000)
+    await expect(wrapped('https://example.test/x', { signal: longerCaller })).rejects.toBeInstanceOf(
+      SupabaseRequestTimeoutError,
+    )
+  })
+
+  it("defers to a caller's shorter deadline, propagating that caller's own abort reason", async () => {
+    // The lead-read budget and the volume-cliff probe pass their own, shorter signal.
+    // When that fires first, the exact error raised is theirs, not this wrapper's.
+    const wrapped = withRequestDeadline(hangingFetch(), 5_000)
+    const caller = AbortSignal.timeout(20)
+    let thrown: unknown
+    try {
+      await wrapped('https://example.test/x', { signal: caller })
+    } catch (e) {
+      thrown = e
+    }
+    // The exact reason the caller's signal aborted with, not merely some other throw.
+    expect(thrown).toBe(caller.reason)
+    expect(thrown).not.toBeInstanceOf(SupabaseRequestTimeoutError)
+  })
+
+  it('wires the deadline onto every client request (an AbortSignal reaches the fetch)', async () => {
+    let seenSignal: AbortSignal | null | undefined
+    const recordingFetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      seenSignal = init?.signal
+      return Promise.resolve(
+        new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+      )
+    }) as typeof fetch
+    const supabase = createSupabaseClient(envWith({}), { fetch: recordingFetch })
+    await supabase.from('workflows').select('*')
+    expect(seenSignal, 'the client made a request with no abort signal, so it carries no deadline').toBeInstanceOf(
+      AbortSignal,
+    )
   })
 })
