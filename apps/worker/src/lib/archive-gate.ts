@@ -911,22 +911,33 @@ async function gatePass(
   )
 
   const cost = costNow(measured.length)
+  const costLines = costWarnings(cost, measured.length)
   // Three alerts, each paging and clearing on its own, so a title can never sit
   // above a line it misdescribes. An empty list clears its alert (#1720).
-  await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, atRiskRemedy(atRisk, now))
-  await notifyExportFailure(supabase, ARCHIVE_GATE_CLEANUP_JOB, cleanupLines, env.IDEMPOTENCY, {
-    ...ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
-    fixHint:
-      'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
-      `then find which scheduled job is blocking it at ${etClock(nextPurgeAfter(now))}.`,
-  })
-  await notifyExportFailure(
-    supabase,
-    ARCHIVE_GATE_COST_JOB,
-    costWarnings(cost, measured.length),
-    env.IDEMPOTENCY,
-    ARCHIVE_GATE_COST_REMEDY,
-  )
+  //
+  // A RESTRICTED run only sees its chunk, so days OUTSIDE it may still be at risk,
+  // not cleaned up, or costly. It must never CLEAR a condition the full nightly
+  // pass owns: it adds only, paging when its chunk has something and staying
+  // silent (skipping the empty-list clear) when it does not (#1783). The full
+  // pass stays the authority that clears. The `postsOrAdds` guards are written
+  // inline rather than through a helper so each notifyExportFailure keeps its
+  // literal job name, which the export-alert clear-coverage guard reads (#1967).
+  const restricted = deps.restrictDays !== undefined
+  const postsOrAdds = (lines: string[]): boolean => !restricted || lines.length > 0
+  if (postsOrAdds(atRiskLines)) {
+    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, atRiskRemedy(atRisk, now))
+  }
+  if (postsOrAdds(cleanupLines)) {
+    await notifyExportFailure(supabase, ARCHIVE_GATE_CLEANUP_JOB, cleanupLines, env.IDEMPOTENCY, {
+      ...ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
+      fixHint:
+        'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+        `then find which scheduled job is blocking it at ${etClock(nextPurgeAfter(now))}.`,
+    })
+  }
+  if (postsOrAdds(costLines)) {
+    await notifyExportFailure(supabase, ARCHIVE_GATE_COST_JOB, costLines, env.IDEMPOTENCY, ARCHIVE_GATE_COST_REMEDY)
+  }
 
   const detail =
     `measured ${measured.length} of ${candidates.length} candidate days ` +
