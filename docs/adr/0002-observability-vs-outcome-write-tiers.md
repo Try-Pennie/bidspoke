@@ -34,6 +34,17 @@ The tier-2 in-process `withDbRetry` ladder does **not** survive Worker isolate e
 
 **Timed out is not lost (#1880, 2026-10-08).** `writeOutcome` takes a required `ReadBack` naming the record and the effect that prove the write landed. A write that returns an error is dead-lettered at once, as above. A write that only timed out at the post-response budget is recorded in KV as unconfirmed (`engine/unconfirmed-writes.ts`), and the minute sweep (`lib/unconfirmed-write-sweep.ts`) reads it back after 2 minutes: landed is dropped, missing is dead-lettered with the lost wording, and a database still silent after 15 minutes gets a "could not confirm" alert instead. The `execution_finalize` dead letter follows the same rule. A 90 second stall that day paged every timed out write as lost, and every one had landed.
 
+## Build-now condition (the concrete trigger, #355)
+
+"Watch dead-letter volume for a week" never said what volume means build-now, and a vague trigger never fires. The concrete bar is below, measured by a per-UTC-day dead-letter counter (`lib/deadletter-volume.ts`, incremented in `recordOutcomeDeadLetter`) and a daily check (`runDeadLetterBuildTriggerCheck`, in the 13:00 UTC batch) that announces to Slack when either half is met. It re-surfaces weekly until the store is built.
+
+Build the durable outcome store when EITHER holds:
+
+1. **Any unrecoverable row loss.** A single `lead_sightings.insert` or `lead_sighting_bids.insert` dead-letter. These are the must-not-lose ROW inserts named in "the one limit": no persisted column lets a drain rebuild them, so one is a permanent loss of a billing / win-tracking row, which is exactly the risk this deferral accepted. The finalize losses are excluded, because the strand drains reconstruct them.
+2. **Sustained volume.** Total dead-letters at or above `BUILD_NOW_DAILY_VOLUME` (5) per day for `BUILD_NOW_VOLUME_DAYS` (3) consecutive UTC days. At that outage frequency a lost row is a matter of time rather than luck, even if half 1 has not fired yet.
+
+The counter and the bar's constants live in `lib/deadletter-volume.ts`; change the bar there, not only here, so the sentence and the check cannot drift.
+
 ## Upgrade path (named, not built)
 
 When dead-letter volume proves the loss is real, the durable upgrade goes behind the `writeOutcome` seam — one file. The preferred mechanism is **not a generic outbox**: it is to move `finalizeSighting` out of `waitUntil` into a per-execution Durable Object alarm or the existing 09:00 Snowflake export job (which already reads `lead_sightings`), finalizing from **already-persisted columns**. That sidesteps the `ctx.steps`-reconstruction problem and avoids standing up a new PII-at-rest store. The daily `reduce_finalize_stranded` cron is effectively a coarse, batch-grained prototype of this path.

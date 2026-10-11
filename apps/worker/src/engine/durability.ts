@@ -19,6 +19,15 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { withDbRetry, isDuplicateError, toDbError, DB_WRITE_RETRY_DELAYS_MS, READ_BACK_MISSING_CODE, type DbError } from '../lib/db-retry'
+import { recordDeadLetterVolume } from '../lib/deadletter-volume'
+import { withDeadline } from '../archive/deadline'
+
+// How long the best-effort build-now volume tally may take before the dead letter
+// gives up waiting on it and proceeds to the alert (#355). Short, so a hung KV
+// cannot block the page; a normal KV get plus put is a small fraction of this. It
+// must stay well under DEAD_LETTER_RESERVE_MS so the alert keeps most of the
+// reserve; durability.test.ts asserts that margin.
+export const DEAD_LETTER_VOLUME_DEADLINE_MS = 500
 import { withinBudget, type RetryTiming } from '../lib/post-response-budget'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
@@ -180,7 +189,8 @@ export async function writeOutcome(
 /**
  * Records a must-not-lose write that timed out as unconfirmed (#1880): one KV
  * write naming what the minute sweep reads back. Fits in the dead letter's
- * reserve, which is three KV operations and a Slack post. When the entry itself
+ * reserve, which covers its window and cooldown KV operations, the build-now volume
+ * counter (#355), and a Slack post. When the entry itself
  * cannot be written the write is dead-lettered as before, because a timed out
  * write with no record anywhere is the silent loss the dead letter exists for.
  * Never throws.
@@ -245,6 +255,14 @@ export async function recordOutcomeDeadLetter(
   await kv.put(windowKey(orgId, label), String(windowCount), {
     expirationTtl: OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS,
   })
+
+  // Tally this loss into its UTC day for ADR 0002's build-now condition (#355),
+  // before the alert threshold so the count survives a suppressed alert (a missed
+  // unrecoverable count would miss the build trigger). It is best-effort: bounded by
+  // a short deadline so a hung KV cannot delay the alert or exhaust the reserve, and
+  // on the run's own clock so the loss lands on the run's UTC day. An abandoned or
+  // dropped tally only under-counts, which is the safe side.
+  await withDeadline(DEAD_LETTER_VOLUME_DEADLINE_MS, () => recordDeadLetterVolume(kv, label, (deps.now ?? Date.now)()))
 
   if (windowCount < deadLetterThreshold(label)) return false
 

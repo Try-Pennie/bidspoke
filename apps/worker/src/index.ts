@@ -41,6 +41,7 @@ import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
+import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
@@ -226,6 +227,12 @@ const scheduledJobs = {
       track(
         runEmailDropRateCheck(supabase, env.IDEMPOTENCY)
           .catch((e) => console.error('[email-drop-rate] check failed:', e))
+      )
+      // #355: announce when ADR 0002's build-now condition for the durable outcome
+      // store is met (an unrecoverable row loss, or sustained dead-letter volume).
+      track(
+        runDeadLetterBuildTriggerCheck(env.IDEMPOTENCY, supabase, env.APP_URL)
+          .catch((e) => console.error('[deadletter-build-trigger] check failed:', e))
       )
       track(
         runSecretDriftCheck(supabase, env)
