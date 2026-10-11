@@ -49,4 +49,19 @@ describe('resolveContinuationStatus (#310)', () => {
   it('passes a pre-response failed run straight through', () => {
     expect(resolveContinuationStatus('failed', { ...ok, hasContinuationError: true })).toBe('failed')
   })
+
+  // #688: a run whose base row was missing and was reconstructed at finalize, with
+  // its step logs re-flushed successfully, was SERVED and fully recovered. It is
+  // degraded (the primary write path did fail), not a hard failure.
+  it('degrades a served lead whose record was reconstructed and recovered', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, wasReconstructed: true })).toBe('degraded')
+  })
+
+  it('still fails a reconstructed run whose re-flush genuinely failed (flush error outranks)', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, wasReconstructed: true, hasFlushError: true })).toBe('failed')
+  })
+
+  it('still fails a reconstructed run that never advanced past the trigger', () => {
+    expect(resolveContinuationStatus('completed', { ...ok, wasReconstructed: true, neverAdvanced: true })).toBe('failed')
+  })
 })
