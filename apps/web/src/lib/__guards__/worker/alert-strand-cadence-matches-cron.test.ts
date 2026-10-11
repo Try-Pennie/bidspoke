@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
+import { WORKER_SRC } from '../../__tests__/_scan-utils'
+import { liveCronJobs } from '../../__tests__/_pg-cron'
 
 /**
  * The strand-drain cadence the dead-letter alert copy quotes stays tied to the
@@ -9,15 +10,19 @@ import { REPO_ROOT, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
  *
  * `SIGHTING_STRAND_DRAIN_CADENCE_MINUTES` in apps/worker/src/lib/slack.ts is the
  * single source for the "recovers within N minutes" copy. The schedule itself
- * lives in a migration (cron.schedule('reduce-finalize-stranded', ...)). Nothing
- * in the language links the two, so without this guard a change to the cron would
- * leave the alert quoting a stale number (L316: record a premise so it can be
- * re-measured, not as a dated sentence). This reads both and fails if they
- * disagree.
+ * lives in the migrations. Nothing in the language links the two, so without this
+ * guard a change to the cron would leave the alert quoting a stale number (L316:
+ * record a premise so it can be re-measured, not as a dated sentence). This reads
+ * both and fails if they disagree.
+ *
+ * The schedule is taken from `liveCronJobs`, which folds every cron.schedule,
+ * cron.alter_job and cron.unschedule across the migrations in order and yields the
+ * final one (#1894). That folds a command-only alter (which does not change the
+ * cadence) correctly, where a bespoke "the job name reappears, so re-examine"
+ * scan could not tell a cadence change from a lookback change.
  */
 
 const SLACK = path.join(WORKER_SRC, 'lib/slack.ts')
-const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 const JOB = 'reduce-finalize-stranded'
 
 // Smallest gap between runs in an hour, in minutes, for a cron minute field.
@@ -41,39 +46,14 @@ function constantFromSlack(): number {
   return Number(m[1])
 }
 
-// The cadence in effect is the one from the LAST operation that sets it, which is
-// either `cron.schedule('JOB', '<cron>', ...)` or a `cron.alter_job(...)` whose
-// job_id resolves to this job and which passes `schedule := '<cron>'` (#1884 moved
-// the job to :27,:57 with alter_job, not a reschedule). Both forms are collected
-// in source order; the last one wins. If the job is touched again after that in a
-// way this guard does not understand (e.g. a cron.unschedule removing it), the
-// job name reappears after the last known op and the guard fails loudly, rather
-// than silently trusting a superseded cadence.
+// The minute field of the shallow drain's final schedule, folded across every
+// migration. The copy quotes the cadence of the frequent pass, not the daily deep
+// backstop (reduce-finalize-stranded-deep), so this reads the shallow job by its
+// exact name.
 function scheduledCronMinuteField(): string {
-  // One ordered text, sorted by filename, so "the last op" spans migrations.
-  const text = listFiles(MIGRATIONS, { exts: ['.sql'] })
-    .sort()
-    .map((f) => readFileSync(f, 'utf8'))
-    .join('\n/* --- next migration --- */\n')
-  const ops: { end: number; cron: string }[] = []
-  for (const m of text.matchAll(new RegExp(`cron\\.schedule\\(\\s*'${JOB}',\\s*'([^']+)'`, 'g'))) {
-    ops.push({ end: (m.index ?? 0) + m[0].length, cron: m[1] })
-  }
-  // alter_job keyed on jobname = 'JOB', immediately followed by schedule := '<cron>'.
-  for (const m of text.matchAll(new RegExp(`jobname\\s*=\\s*'${JOB}'\\s*\\)\\s*,\\s*schedule\\s*:=\\s*'([^']+)'`, 'g'))) {
-    ops.push({ end: (m.index ?? 0) + m[0].length, cron: m[1] })
-  }
-  if (ops.length === 0) throw new Error(`no cron.schedule / alter_job cadence for '${JOB}' found in migrations`)
-  ops.sort((a, b) => a.end - b.end)
-  const last = ops[ops.length - 1]
-  // From AFTER the matched op, so the op's own job-name reference is not counted.
-  const after = text.slice(last.end)
-  // The hyphenated job name only reappears when the job is re-touched; the
-  // function (reduce_finalize_stranded, underscored) is a different token.
-  if (after.includes(`'${JOB}'`)) {
-    throw new Error(`'${JOB}' is referenced again after its last known cadence op (unschedule / another alter_job?); update this guard to read the new cadence`)
-  }
-  return last.cron.trim().split(/\s+/)[0]
+  const job = liveCronJobs().get(JOB)
+  if (!job) throw new Error(`no cron schedule for '${JOB}' found in the migrations`)
+  return job.schedule.trim().split(/\s+/)[0]
 }
 
 describe('strand-drain alert cadence matches the cron (#1953)', () => {
