@@ -491,7 +491,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('does nothing and reports zero when no rows are stranded', async () => {
     const { client, updates } = makeSupabase({ stranded: [] })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: expect.any(Object) })
     expect(updates).toHaveLength(0)
   })
 
@@ -505,7 +505,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
+    expect(result.byBranch.failed_step).toBe(1) // #1133: the row is tallied to its branch
     expect(updates).toHaveLength(1)
     expect(updates[0].id).toBe('exec-1')
     expect(updates[0].payload).toMatchObject({
@@ -531,7 +532,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       stepsByExecutionId: {},
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
+    expect(result.byBranch.unresolved).toBe(1) // #1133: the fallback row is tallied to its branch
     expect(updates[0].payload.outcome).toBeNull()
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -539,7 +541,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('counts a scan failure as an error and does not process anything', async () => {
     const { client, updates } = makeSupabase({ stranded: [], strandedError: { message: 'db down' } })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: expect.any(Object) })
+    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }) // #1133: nothing resolved
     expect(updates).toHaveLength(0)
   })
 
@@ -549,7 +552,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       stepsError: { message: 'partition unavailable' },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: expect.any(Object) })
+    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }) // #1133: nothing resolved
     expect(updates).toHaveLength(0)
   })
 
@@ -560,7 +564,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-4',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: expect.any(Object) })
   })
 
   it('marks a stranded row completed when its last step landed on a graph dead end', async () => {
@@ -574,7 +578,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       definitionsByVersionId: { 'ver-1': makeDefinition() },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
+    expect(result.byBranch.graph_dead_end).toBe(1) // #1133: the dead-end row is tallied to its branch
     expect(updates[0].payload).toMatchObject({ status: 'completed', outcome: 'completed', error_message: null })
   })
 
@@ -593,7 +598,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
     const result = await runReduceFinalizeStrandedExecutions(client as never)
 
     // The row is still resolved (unresolved-label fallback), not counted as an error.
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
     expect(updates).toHaveLength(1)
     // The warn log names the cause instead of blanking it to "[object Object]".
     expect(warn).toHaveBeenCalled()
@@ -628,7 +633,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       definitionsByVersionId: {},
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
     expect(updates[0].payload).toMatchObject({ status: 'failed', outcome: null })
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -655,7 +660,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-bad',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 1, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 1, vanished: 0, byBranch: expect.any(Object) })
     expect(updates.map((u) => u.id)).toEqual(['exec-good', 'exec-bad'])
   })
 })
@@ -773,7 +778,7 @@ describe('runReduceFinalizeStrandedExecutions: zero-row update (#583)', () => {
   it('still counts a genuine repair as processed and reports no vanished rows', async () => {
     const { client } = makeSupabase({ stranded, stepsByExecutionId: steps })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
   })
 
   it('still counts a real update failure as an error, not as a vanished row', async () => {
@@ -864,7 +869,7 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
       updateMatchesNoRowsForId: 'exec-j',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never, { readJournal: async () => journal })
-    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0 })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: expect.any(Object) })
   })
 
   it('ignores a journal whose start time is not the start of the row', async () => {
