@@ -33,6 +33,11 @@ import { fetchAllPaged } from './paginate'
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const WINDOW_MINUTES = 5
 export const MIN_SLOW_COUNT = 5
+// The evidence floor for a recovery (#817): one terminal run in the window tells
+// a live pipe from a dead one, the distinction the all-clear was missing. Kept
+// low on purpose, so a genuine recovery on a low-traffic workflow is not held
+// until its marker expires.
+export const MIN_RECOVERY_RUNS = 1
 export const SLOW_FRACTION_PCT = 50
 // How far back to bound started_at so the scan stays partition-pruned on the
 // (started_at-partitioned) workflow_executions table. Long enough to cover any
@@ -181,6 +186,18 @@ export async function runSlowExecutionCheck(
 
   const perWorkflow = buildSlowDurations(completed, running, monitoredIds, now)
 
+  // Finished runs per workflow, the recovery evidence (#817). Counted from the
+  // `completed` set (runs that reached a terminal state with a known duration),
+  // NOT perWorkflow, which also folds in still-running runs: a single hung
+  // in-flight run is not evidence the pipe is finishing work again, and counting
+  // it could stand an alert down on the very hang it is about. Status is NOT
+  // filtered here, unlike the failure-rate evidence, and on purpose: this alert
+  // is about SLOWNESS, so a run that finished fast is evidence the slowness is
+  // gone whether it succeeded or failed. A workflow that is failing fast is the
+  // failure-rate check's business, not this one's.
+  const finishedByWorkflow = new Map<string, number>()
+  for (const r of completed) finishedByWorkflow.set(r.workflow_id, (finishedByWorkflow.get(r.workflow_id) ?? 0) + 1)
+
   for (const wf of workflows) {
     const wfId = wf.id as string
     const threshold = thresholds.get(wfId)
@@ -188,21 +205,35 @@ export async function runSlowExecutionCheck(
 
     const cooldownKey = `slow-spike-cooldown:${wfId}`
 
-    const spike = detectSlowSpike(perWorkflow.get(wfId) ?? [], threshold)
+    const durations = perWorkflow.get(wfId) ?? []
+    const spike = detectSlowSpike(durations, threshold)
     if (!spike) {
       // Healthy again. Announce it if we paged, so silence stops meaning both
-      // "still slow, suppressed" and "fine now" (#253).
-      await announceRecovery(kv, 'slow-spike', wfId, cooldownKey, async (alertedAt, endedAt) => {
-        const slack = await getSlackConnection(supabase, wf.organization_id as string)
-        if (!slack) return false
-        return sendRecoveryAlert(
-          slack,
-          (wf.slack_channel as string | null) ?? slack.default_channel,
-          // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
-          // zero span: name the window it measured, not a gap it did not (#1108).
-          { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
-        )
-      })
+      // "still slow, suppressed" and "fine now" (#253). But the absence of slow
+      // runs is not evidence of recovery when there are no runs at all: a
+      // workflow that stopped getting traffic reads the same as one that got
+      // fast again. So the all-clear requires at least one FINISHED run in the
+      // window, enough to tell a live pipe from a dead one (#817), and holds
+      // until traffic returns. A low floor on purpose: a higher bar would hold a
+      // real recovery on a low-traffic workflow until the marker expired.
+      await announceRecovery(
+        kv,
+        'slow-spike',
+        wfId,
+        cooldownKey,
+        async (alertedAt, endedAt) => {
+          const slack = await getSlackConnection(supabase, wf.organization_id as string)
+          if (!slack) return false
+          return sendRecoveryAlert(
+            slack,
+            (wf.slack_channel as string | null) ?? slack.default_channel,
+            // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
+            // zero span: name the window it measured, not a gap it did not (#1108).
+            { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+          )
+        },
+        { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS },
+      )
       continue
     }
 

@@ -202,10 +202,31 @@ export async function announceRecovery(
   id: string,
   cooldownKey: string,
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
-  opts: { now?: number; rearmMinutes?: number } = {},
+  opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
   const due = await recoveryDue(kv, prefix, id, opts)
   if (!due) return false
+
+  // #817: a check that recovers on the ABSENCE of its condition (the three rate
+  // checks) cannot tell a genuine recovery from a workflow that stopped getting
+  // traffic: both read as zero matching failures. When the caller supplies an
+  // evidence check, the all-clear is HELD until the pipe is observably alive
+  // again, so silence never reads as "back to normal" over a dead pipe (L98).
+  // Checked only once a recovery is actually owed, so the cost (a failure-rate
+  // succeeding-run query) is paid on the rare recovering tick, not every tick.
+  // On a throw the incident is held, not cleared: erring toward still-alarmed is
+  // the safe side, since a false all-clear is the failure this exists to stop
+  // (L345).
+  if (opts.hasEvidence) {
+    let evident: boolean
+    try {
+      evident = await opts.hasEvidence()
+    } catch (err) {
+      console.error(`[alert-recovery] ${prefix} evidence check threw for ${id}, holding the all-clear:`, err)
+      return false
+    }
+    if (!evident) return false
+  }
 
   let delivered: boolean
   try {

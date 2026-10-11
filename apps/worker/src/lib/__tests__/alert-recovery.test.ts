@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   RECOVERY_REARM_MINUTES,
   RECOVERY_TTL_SECONDS,
@@ -68,6 +68,8 @@ describe('markAlerted', () => {
 })
 
 describe('announceRecovery', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('says nothing when we never alerted', async () => {
     const kv = fakeKv()
     const send = vi.fn().mockResolvedValue(true)
@@ -123,6 +125,47 @@ describe('announceRecovery', () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockRejectedValue(new Error('slack exploded'))
     expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(false)
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+  })
+
+  // #817: a check that recovers by the ABSENCE of its condition cannot tell a
+  // genuine recovery from a workflow that simply stopped receiving traffic, so
+  // it supplies evidence that the pipe is alive. Without that evidence the
+  // all-clear is HELD, not sent, so a dead pipe never reads "back to normal".
+  it('HOLDS the all-clear when there is no evidence of recovery', async () => {
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
+    const send = vi.fn().mockResolvedValue(true)
+    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+      hasEvidence: () => false,
+    })
+    expect(held).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+    // Marker kept, so the all-clear fires once real evidence appears.
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+  })
+
+  it('sends the all-clear when evidence of recovery is present', async () => {
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
+    const send = vi.fn().mockResolvedValue(true)
+    expect(
+      await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+        hasEvidence: () => true,
+      }),
+    ).toBe(true)
+    expect(send).toHaveBeenCalledOnce()
+  })
+
+  it('HOLDS the all-clear when the evidence check throws, erring toward still-alarmed', async () => {
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const send = vi.fn().mockResolvedValue(true)
+    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+      hasEvidence: () => {
+        throw new Error('count query failed')
+      },
+    })
+    expect(held).toBe(false)
+    expect(send).not.toHaveBeenCalled()
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
   })
 })
