@@ -17,6 +17,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 
+/**
+ * The slice of KV this module uses: a get and a cooldown put. Narrower than
+ * KVNamespace so a caller holding a minimal KV double (a test, or a helper typed
+ * on get/put) can pass it without an unsafe cast; a real KVNamespace satisfies it.
+ */
+export interface CooldownKv {
+  get(key: string): Promise<string | null>
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
+}
+
 /** Deduped org ids that have a Slack connection. Empty (never throws) on a read failure. */
 export async function slackOrgIds(supabase: SupabaseClient, logLabel: string): Promise<string[]> {
   const { data, error } = await supabase
@@ -51,7 +61,7 @@ export async function forEachSlackOrg(
  * when at least one org was alerted. Returns whether anything was alerted.
  */
 export async function rateLimitedOrgAlert(opts: {
-  kv: KVNamespace
+  kv: CooldownKv
   cooldownKey: string
   ttlSeconds: number
   supabase: SupabaseClient

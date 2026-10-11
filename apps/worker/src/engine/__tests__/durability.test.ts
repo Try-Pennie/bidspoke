@@ -19,11 +19,13 @@ import {
   recordOutcomeDeadLetter,
   OUTCOME_DEAD_LETTER_THRESHOLD,
   CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD,
+  DEAD_LETTER_VOLUME_DEADLINE_MS,
 } from '../durability'
 import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { DB_WRITE_RETRY_DELAYS_MS, READ_BACK_MISSING_CODE } from '../../lib/db-retry'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { UNCONFIRMED_WRITE_PREFIX, type ReadBack } from '../unconfirmed-writes'
+import { utcDay } from '../../lib/deadletter-volume'
 
 const SIGHTING: ReadBack = { kind: 'sighting_present', sighting_id: 's-1', execution_started_at_utc: '2026-10-08T12:20:10.000Z' }
 
@@ -101,6 +103,50 @@ describe('recordOutcomeDeadLetter', () => {
     const run = { workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1', at: '2026-10-03T05:01:03Z' }
     await recordOutcomeDeadLetter('sf_writeback', new Error('boom'), deps(kv), run)
     expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0][1]).toMatchObject({ run })
+  })
+
+  // #355: every loss is tallied into its UTC day for ADR 0002's build-now counter,
+  // flagged unrecoverable when it is a row insert no drain can rebuild. It uses the
+  // run's injected clock (deps.now), so a fixed clock lands the tally on that day
+  // with no UTC-midnight race, and a replayed run tallies on its own day.
+  it('tallies the loss into the daily build-now counter on the run clock, marking an insert unrecoverable', async () => {
+    const at = Date.parse('2026-10-11T13:00:00.000Z')
+    const kv = fakeKv()
+    await recordOutcomeDeadLetter('lead_sightings.insert', new Error('db down'), { ...deps(kv), now: () => at })
+    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(at)}`)!)).toEqual({ total: 1, unrecoverable: 1 })
+  })
+
+  // #355: the build-now tally runs before the alert inside the dead-letter reserve,
+  // so the reserve must leave the alert most of its budget even if the tally waits
+  // its full deadline. Keeps the "the reserve covers it" claim honest rather than
+  // comment-only: the tally's bound is a small fraction of the reserve.
+  it('bounds the build-now tally well inside the dead-letter reserve', () => {
+    expect(DEAD_LETTER_RESERVE_MS - DEAD_LETTER_VOLUME_DEADLINE_MS).toBeGreaterThanOrEqual(2000)
+  })
+
+  // #355: the build-now tally is best-effort, so a hung KV on its day key must not
+  // block the dead-letter alert. withDeadline abandons the tally after 500ms and the
+  // page still goes out.
+  it('still sends the alert, and logs the abandoned tally, when the build-now tally hangs on a slow KV', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.useFakeTimers()
+    try {
+      const kv = fakeKv()
+      // The daily-counter get never resolves; every other key reads normally.
+      kv.get = vi.fn((k: string) =>
+        k.startsWith('outcome-deadletter-daily:') ? new Promise<string | null>(() => {}) : Promise.resolve(kv.store.get(k) ?? null),
+      )
+      const p = recordOutcomeDeadLetter('lead_sightings.insert', new Error('db down'), deps(kv))
+      await vi.advanceTimersByTimeAsync(600)
+      await p
+      expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+      // The dropped count is logged, not swallowed, so a missed unrecoverable tally
+      // leaves a trace.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes('build-now volume tally abandoned'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+      errSpy.mockRestore()
+    }
   })
 
   const cooldownKeyFor = (label: string) => `outcome-deadletter-cooldown:org-1:${label}`
