@@ -467,6 +467,21 @@ export async function runExecutionArchive(
           `but could not report it: ${formatErr(err)}`,
       )
     }
+  } else {
+    // A clean acquisition (lock.action === 'take') is positive evidence that no
+    // predecessor was killed this cycle, so the killed condition, if one is
+    // standing from an earlier incident, has cleared (#1784). Clearing resets its
+    // reminder schedule so a later kill posts as a fresh incident rather than a
+    // weeks-old "(still)"; it is NOT a claim that the past killed invocation
+    // recovered, and it posts no recovery notice (the killed message is not
+    // transient, so there is no grace marker to stamp). Best-effort and in its
+    // own try/catch: this runs before any archiving, so a KV or Slack failure
+    // here must not turn one clean run into a second killed one (L71).
+    try {
+      await notifyExportRecovery(env.IDEMPOTENCY, ARCHIVE_JOB_NAMES.killed)
+    } catch (err) {
+      console.error(`[execution-archive] clearing the killed condition failed: ${formatErr(err)}`)
+    }
   }
   await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, budget.wallMs, deps.scheduledFor), {
     expirationTtl: RUN_LOCK_TTL_SECONDS,

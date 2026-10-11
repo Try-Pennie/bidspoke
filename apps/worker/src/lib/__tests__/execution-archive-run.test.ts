@@ -97,6 +97,7 @@ const envWith = (kv: ReturnType<typeof fakeKv>): Env =>
 beforeEach(() => {
   executeStatement.mockReset()
   notifyExportFailure.mockReset()
+  notifyExportRecovery.mockReset()
   streamHour.mockReset()
   streamHour.mockResolvedValue({
     usable: true,
@@ -244,6 +245,42 @@ describe('runExecutionArchive', () => {
     expect(cleared).toContain('execution-archive-ingest')
     expect(cleared).toContain('execution-archive-refusal')
     expect(cleared).toContain('execution-archive-lag')
+  })
+
+  it('clears the killed condition on a clean-lock run, so a later killed run pages as a fresh incident (#1784)', async () => {
+    // A clean lock acquisition is positive evidence that no predecessor was
+    // killed this cycle. Before #1784 the killed condition was never cleared, so
+    // its standing record lived to its 30 day TTL and a kill weeks later posted
+    // as a lengthened "(still)" reminder rather than a fresh incident.
+    const kv = fakeKv()
+    const { client } = fakeSupabase()
+
+    await runExecutionArchive(envWith(kv), client, {
+      sendBatch: vi.fn(),
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+
+    const cleared = notifyExportRecovery.mock.calls.map((call) => call[1])
+    expect(cleared).toContain(ARCHIVE_JOB_NAMES.killed)
+  })
+
+  it('does not clear the killed condition on a run that took over a killed predecessor (#1784)', async () => {
+    // A take-over is the run that FINDS a killed predecessor and posts the killed
+    // alert. It must not clear the very condition it is raising. The stale lock is
+    // eight days old, far past its deadline and grace, so decideLock takes it over.
+    const kv = fakeKv({ [RUN_LOCK_KEY]: '2026-08-10T00:00:00.000Z' })
+    const { client } = fakeSupabase()
+
+    const result = await runExecutionArchive(envWith(kv), client, {
+      sendBatch: vi.fn(),
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+
+    // Proof this was a take-over, not a skip (which also clears nothing): a skip
+    // returns early with skipped: 'locked'. A take-over proceeds and runs.
+    expect(result.skipped).not.toBe('locked')
+    const cleared = notifyExportRecovery.mock.calls.map((call) => call[1])
+    expect(cleared).not.toContain(ARCHIVE_JOB_NAMES.killed)
   })
 
   it('dispatches each alert under its own job name', async () => {
