@@ -15,17 +15,19 @@ import { liveCronJobs } from './_pg-cron'
 describe('strand drain pg_cron jobs (#1894)', () => {
   const jobs = liveCronJobs()
 
+  // The command carries a `SET statement_timeout = ...` prefix (#1149); the lookback
+  // argument is what matters here, so assert the SELECT it runs rather than exact text.
   it('runs the shallow pass with a 1-day lookback on its 27,57 schedule', () => {
     const shallow = jobs.get('reduce-finalize-stranded')
     expect(shallow, 'reduce-finalize-stranded is not in the migration-derived job set').toBeDefined()
     expect(shallow!.schedule).toBe('27,57 * * * *')
-    expect(shallow!.command).toBe('SELECT public.reduce_finalize_stranded(1)')
+    expect(shallow!.command).toContain('SELECT public.reduce_finalize_stranded(1)')
   })
 
   it('runs the deep pass with an 8-day lookback daily at 07:45 UTC', () => {
     const deep = jobs.get('reduce-finalize-stranded-deep')
     expect(deep, 'the deep pass is invisible to the migration-derived job set').toBeDefined()
     expect(deep!.schedule).toBe('45 7 * * *')
-    expect(deep!.command).toBe('SELECT public.reduce_finalize_stranded(8)')
+    expect(deep!.command).toContain('SELECT public.reduce_finalize_stranded(8)')
   })
 })
