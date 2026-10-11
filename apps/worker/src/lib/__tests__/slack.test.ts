@@ -883,7 +883,10 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
   it('counts several leads and links the latest run', async () => {
     await send({ window_loss_count: 3 })
     const text = textOf()
-    expect(text).toContain('3 leads were affected in the last 30 minutes.')
+    // #1944: a chained burst spans longer than the counter's 30 min TTL, so the
+    // copy says "recently" rather than asserting a fixed window above one loss.
+    expect(text).toContain('3 leads were affected recently.')
+    expect(text).not.toMatch(/in the last \d+ minutes/)
     expect(text).toContain('View the latest run')
   })
 
@@ -919,7 +922,9 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
   it('says the work may have finished and nothing was confirmed, never that a record was lost', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
-      window_loss_count: 2,
+      // This renderer fires only at continuation_unfinished's threshold of 3, so
+      // every fixture here uses a count that can actually reach it (#1944).
+      window_loss_count: 3,
       window_minutes: 30,
       error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-07T20:00:00Z' },
@@ -936,7 +941,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
   it('names the step that was still running and sends the reader to it, not to Salesforce', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
-      window_loss_count: 1,
+      window_loss_count: 3,
       window_minutes: 30,
       error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). It may still finish, but nothing confirmed it.",
       run: {
@@ -955,7 +960,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
   it('escapes a step label so it cannot become a Slack mention or link', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
-      window_loss_count: 1,
+      window_loss_count: 3,
       window_minutes: 30,
       error_message: 'x',
       run: {
@@ -987,13 +992,67 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
   it('keeps that wording when the payload carries no run', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
-      window_loss_count: 1,
+      window_loss_count: 3,
       window_minutes: 30,
       error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
     }, 'https://app.test')
     const text = textOf()
     expect(text).toMatch(/did not finish/i)
     expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
+  })
+
+  // #1944: the window counter rewrites its key with a fresh 30 min TTL on every
+  // loss, so three losses ~25 min apart chain to a count of 3 while spanning ~50
+  // min. "about 3 times in the last 30 minutes" overstates the precision of a
+  // sliding window, so the copy must not assert a fixed clock period.
+  it('does not claim a fixed clock window, since the counter slides past 30 minutes', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 3,
+      window_minutes: 30,
+      error_message: 'x',
+      run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('about 3 times recently')
+    expect(text).not.toMatch(/in the last \d+ minutes/)
+  })
+
+  // #1944: this renderer is reached only for continuation_unfinished, whose
+  // dead-letter threshold is 3, so window_loss_count is always >= 3 when it
+  // fires. The singular "once" / "View the run" branches are unreachable (L29).
+  it('never renders the singular forms, since it only fires at a count of three or more', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 3,
+      window_minutes: 30,
+      error_message: 'x',
+      run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).not.toContain('This happened once')
+    expect(text).not.toContain('|View the run ')
+    expect(text).toContain('View the latest run')
+  })
+
+  // #1944: the renderer is count-agnostic by design, so even though production
+  // never reaches it below a count of 3, a single loss must still read correctly:
+  // the noun is singular ("1 time"), the period keeps the precise window (a lone
+  // loss really is inside it), and the link stays the one shared "View the latest
+  // run". This covers the n = 1 branch of deadLetterPeriod and the pluralisation.
+  it('reads correctly at a count of one, keeping one vocabulary', async () => {
+    await sendOutcomeDeadLetterAlert(conn, {
+      label: 'continuation_unfinished',
+      window_loss_count: 1,
+      window_minutes: 30,
+      error_message: 'x',
+      run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
+    }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('This happened about 1 time in the last 30 minutes.')
+    expect(text).not.toContain('1 times')
+    expect(text).not.toContain('This happened once')
+    expect(text).toContain('View the latest run')
   })
 })
 
@@ -1024,7 +1083,10 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(text).toContain('lead_sightings.insert')
     // #599: report the true windowed magnitude, not a consecutive streak.
     expect(text).toContain('*47*')
-    expect(text).toContain('writes were lost in the last 30 minutes')
+    // #1944: a chained burst spans longer than the 30 min TTL, so above one loss
+    // the copy says "recently" instead of asserting a fixed window.
+    expect(text).toContain('writes were lost recently')
+    expect(text).not.toMatch(/in the last \d+ minutes/)
     expect(text).toContain('PGRST002 schema cache')
     expect(text).toContain('How to fix:')
   })

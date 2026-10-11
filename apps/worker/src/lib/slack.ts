@@ -1071,6 +1071,20 @@ function upstreamSaid(error: string): string {
 }
 
 /**
+ * How a dead-letter alert names the period its loss count covers (#1944).
+ *
+ * The window counter rewrites its key with a fresh `windowMinutes` TTL on every
+ * loss (durability.ts, #1881), so a burst of losses chains for longer than one
+ * window: "in the last 30 minutes" overstates the span above a single loss. A
+ * lone loss, though, really did just happen inside the window, so that case keeps
+ * the precise period. One helper so every dead-letter renderer says it the same
+ * way (L30).
+ */
+function deadLetterPeriod(n: number, windowMinutes: number): string {
+  return n === 1 ? `in the last ${windowMinutes} minutes` : 'recently'
+}
+
+/**
  * A step after the lead was answered failed, so whatever it was writing (almost
  * always the Salesforce outcome) never landed. Plain copy (Dan, 2026-10-03): the
  * workflow, the time in ET, what the upstream said, one fix line, the run.
@@ -1087,10 +1101,11 @@ async function sendLostWritebackAlert(
   // The window count is approximate (#1881): KV increments from isolates writing
   // at once can overwrite each other, so a count above one says "about".
   const affected = n === 1 ? '1 lead was affected' : `About ${n} leads were affected`
+  const period = deadLetterPeriod(n, payload.window_minutes)
   const title = isSalesforce ? 'Salesforce update lost' : 'Update lost after a lead was answered'
   const summary = isSalesforce
-    ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step after the answer failed, so Salesforce is missing that lead's outcome. ${affected} in the last ${payload.window_minutes} minutes.`
-    : `${run.workflow_name} answered a lead at ${when} ET, but a step after the answer failed, so its update never landed. ${affected} in the last ${payload.window_minutes} minutes.`
+    ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step after the answer failed, so Salesforce is missing that lead's outcome. ${affected} ${period}.`
+    : `${run.workflow_name} answered a lead at ${when} ET, but a step after the answer failed, so its update never landed. ${affected} ${period}.`
   const said = `${isSalesforce ? 'Salesforce said' : 'The error was'}: ${upstreamSaid(payload.error_message)}`
   const fix = isSalesforce
     ? 'Fix: open the run below and enter the outcome in Salesforce by hand. Bidspoke will not retry it.'
@@ -1130,16 +1145,23 @@ async function sendUnfinishedWorkAlert(
   const named = (run?.still_running ?? []).map(slackText)
   const one = named.length === 1
   const steps = named.length > 0 ? `${one ? 'the step' : 'the steps'} ${listSteps(named)}` : 'the steps after the answer'
+  // Count-agnostic, like the other dead-letter renderers: the period comes from
+  // the shared deadLetterPeriod helper (a lone loss keeps the precise window, a
+  // chained burst reads "recently") and the count noun is pluralised, so the
+  // sentence is grammatical for any n and says the period the same way the siblings
+  // do (L30). What this renderer drops is the singular alternate wording ("This
+  // happened once", "View the run"): one vocabulary regardless of count (#1944).
+  const period = deadLetterPeriod(n, payload.window_minutes)
   const summary =
     `${who}, but ${steps} ${one ? 'was' : 'were'} still running when Bidspoke stopped waiting. ` +
-    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. ${n === 1 ? 'This happened once' : `This happened about ${n} times`} in the last ${payload.window_minutes} minutes.`
+    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. This happened about ${n} ${n === 1 ? 'time' : 'times'} ${period}.`
   const fix = named.length > 0
     ? `Fix: open the run below and check what ${listSteps(named)} did. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
     : run
       ? 'Fix: open the run below and check what its last steps did. If this keeps happening, those steps are running slowly.'
       : 'Fix: open the recent runs on the dashboard and check what their last steps did. If this keeps happening, those steps are running slowly.'
   const link = run
-    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|View the latest run →>`
     : `<${appUrl}/dashboard|Open dashboard →>`
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
@@ -1182,16 +1204,19 @@ export async function sendOutcomeDeadLetterAlert(
   // Approximate above one (#1881): see sendLostWritebackAlert.
   const count = n === 1 ? '*1*' : `About *${n}*`
   const wasWere = n === 1 ? 'write was' : 'writes were'
+  // #1944: a single loss really is within the window; a chained burst spans past
+  // it, so above one loss the period reads "recently". One helper for the class.
+  const period = deadLetterPeriod(n, payload.window_minutes)
   const how = payload.error_code === READ_BACK_MISSING_CODE
     ? 'timed out, and reading it back afterwards found it never landed'
     : 'failed after all retries'
   const summary = execDrainRecoverable
-    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} execution ${n === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
+    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} execution ${n === 1 ? 'row is' : 'rows are'} stuck at status='running' ${period}. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
     : sightingDrainRecoverable
-    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} lead ${n === 1 ? 'sighting is' : 'sightings are'} stuck at outcome_state='in_flight' from the last ${payload.window_minutes} minutes. The records are intact and the strand drain recovers them automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; this is informational unless it persists.`
+    ? `A finalize write (*${payload.label}*) ${how}, so ${n === 1 ? '*1*' : `about *${n}*`} lead ${n === 1 ? 'sighting is' : 'sightings are'} stuck at outcome_state='in_flight' ${period}. The records are intact and the strand drain recovers them automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; this is informational unless it persists.`
     : bidDrainConditional
-    ? `A bid row (*${payload.label}*) ${how}. ${count} ${wasWere} affected in the last ${payload.window_minutes} minutes. If the lead sighting is also stranded, the strand drain re-inserts this within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; if the sighting already finalized, the bid row is lost. Check the sighting before re-deriving.`
-    : `A must-not-lose outcome write (*${payload.label}*) ${how}. ${count} ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
+    ? `A bid row (*${payload.label}*) ${how}. ${count} ${wasWere} affected ${period}. If the lead sighting is also stranded, the strand drain re-inserts this within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes; if the sighting already finalized, the bid row is lost. Check the sighting before re-deriving.`
+    : `A must-not-lose outcome write (*${payload.label}*) ${how}. ${count} ${wasWere} lost ${period}. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
   const header = execDrainRecoverable ? 'Execution Finalize Delayed' : sightingDrainRecoverable ? 'Outcome Record Delayed' : 'Outcome Record Lost'
   const blocks = [
     {
