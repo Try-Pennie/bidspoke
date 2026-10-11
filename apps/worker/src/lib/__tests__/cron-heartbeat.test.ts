@@ -8,8 +8,14 @@ describe('execution-archive vanished-run copy (#1485)', () => {
     // 7-day purge rather than deleting it, so the old "would delete rows with no
     // backup" turned a routine one-hour stall into a false data-loss warning
     // (#1480). The copy must say what the gate actually does.
+    //
+    // This matches the regression's PHRASINGS, not bare words: the accurate copy
+    // must itself name the "7-day purge", the "deletion gate" and say "nothing is
+    // lost yet", so a negative on "purge"/"delete"/"lost" alone would reject the
+    // correct text. The guarantee that the gate really holds unarchived days is in
+    // supabase/tests/verified_deletion_gate.test.sql; this only guards the copy.
     expect(archive).toBeDefined()
-    expect(archive!.dependents).not.toMatch(/delete rows with no backup|would delete/i)
+    expect(archive!.dependents).not.toMatch(/would delete|will delete|deletes |delete rows|rows with no backup|would be purged|rows are purged|rows are lost|rows would be lost/i)
     expect(archive!.dependents).toMatch(/held back|held from|not deleted/i)
   })
 })
