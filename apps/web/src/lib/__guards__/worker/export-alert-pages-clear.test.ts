@@ -29,14 +29,14 @@ const SOURCE_DIRS = [`${WORKER_SRC}/lib`, `${WORKER_SRC}/archive`]
 const EXTRA_FILES = [`${WORKER_SRC}/index.ts`]
 
 /**
- * Pages that are a point-in-time STATEMENT, not a standing condition, so they
- * are deliberately never cleared. `archive/alerts.ts` documents why the killed
- * takeover is one: it reports that a replacement invocation recovered a dead
- * predecessor's lock, which is a fact about an invocation that is already over,
- * not a state the archive is in, so a later healthy run is not evidence about
- * it. Anything added here needs that same justification in its source.
+ * Every dedicated literal-array page now has a clear path, so there is no
+ * exemption. `ARCHIVE_JOB_NAMES.killed` was the last one: it is still a
+ * point-in-time statement about a dead invocation, but #1784 clears its standing
+ * record at lock acquisition (a clean take is evidence no predecessor was killed
+ * this cycle) so a later kill posts as a fresh incident rather than a stale
+ * "(still)". A genuinely never-cleared page in future re-introduces an exemption
+ * here with its justification, in the same change (L129).
  */
-const POINT_IN_TIME_EXEMPT = new Set<string>(['ARCHIVE_JOB_NAMES.killed'])
 
 function workerSourceFiles(): string[] {
   const files: string[] = []
@@ -94,20 +94,16 @@ describe('every dedicated export-alert page has a clear path (#1967)', () => {
 
   it('every job paged with a non-empty array literal also has a clear path', () => {
     const { pagedWithLiteral, cleared } = scan()
-    const neverCleared = [...pagedWithLiteral].filter(
-      (job) => !cleared.has(job) && !POINT_IN_TIME_EXEMPT.has(job),
-    )
+    const neverCleared = [...pagedWithLiteral].filter((job) => !cleared.has(job))
     expect(neverCleared).toEqual([])
   })
 
-  it('still flags the exempt point-in-time pages as never cleared, so the exemption is doing work', () => {
-    // If one of these ever gained a clear path, or stopped being paged, the
-    // exemption would be stale. Keeping it honest: every exempt job must actually
-    // be a paged-with-literal, never-cleared job, or the list is lying (L129).
+  it('counts the killed takeover as a page that now has a clear path (#1784)', () => {
+    // The last point-in-time exemption. It is still paged with a literal, and
+    // since #1784 it is also cleared (at lock acquisition), so it belongs to the
+    // main guard above rather than to an exemption list.
     const { pagedWithLiteral, cleared } = scan()
-    for (const job of POINT_IN_TIME_EXEMPT) {
-      expect(pagedWithLiteral.has(job), `${job} is exempt but no longer paged with a literal`).toBe(true)
-      expect(cleared.has(job), `${job} is exempt but now has a clear path, so drop the exemption`).toBe(false)
-    }
+    expect(pagedWithLiteral.has('ARCHIVE_JOB_NAMES.killed')).toBe(true)
+    expect(cleared.has('ARCHIVE_JOB_NAMES.killed')).toBe(true)
   })
 })
