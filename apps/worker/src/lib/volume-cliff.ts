@@ -99,7 +99,11 @@ const VOLUME_CLIFF_STEPS = [COOLDOWN_TTL_SECONDS, ...BACKOFF_STEPS_SECONDS]
 const VOLUME_CONDITION_TTL_SECONDS = RECOVERY_TTL_SECONDS
 // Escalating-backoff family keys. readCondition/recordAlert append :condition and
 // :cooldown; these do not collide with the recovery-marker keys (markAlerted writes
-// ${prefix}-recovery / -active) or the claim keys.
+// ${prefix}-recovery / -active) or the claim keys. These cooldown keys differ from
+// the old flat ones (db-unreachable-cooldown:, volume-cliff-cooldown:), so a cliff
+// or database outage standing at the deploy loses its old cooldown and re-pages
+// once as it enters the schedule: a bounded, one-time transition (same as the
+// github-backup path), and re-announcing a still-standing condition is harmless.
 const dbUnreachableBackoffKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}:${orgId}`
 const volumeCliffBackoffKey = (wfId: string) => `volume-cliff:${wfId}`
 

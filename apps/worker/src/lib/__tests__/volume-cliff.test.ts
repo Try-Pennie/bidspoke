@@ -16,6 +16,7 @@ import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUT
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret, decryptSecret } from '../secret-crypto'
 import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
+import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import type { AlertClaims } from '../alert-claim'
 
 // A real 32 byte key so the last-good copy is exercised through the real cipher.
@@ -471,6 +472,15 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
     await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
     expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the recovery window longer than the longest reminder step, so an ongoing incident never expires mid-way (#1337)', async () => {
+    // The volume condition TTL is the recovery window, refreshed on each post. The
+    // longest gap between posts is the last backoff step, so the window must exceed
+    // it or a standing incident's condition could lapse between two reminders and
+    // the next would restart the schedule. The comment at VOLUME_CONDITION_TTL_SECONDS
+    // asserts this; here it is checked.
+    expect(RECOVERY_TTL_SECONDS).toBeGreaterThan(BACKOFF_STEPS_SECONDS[BACKOFF_STEPS_SECONDS.length - 1])
   })
 
   it('caps the condition TTL to the recovery window, so a held all-clear cannot leave it stale (#1337)', async () => {

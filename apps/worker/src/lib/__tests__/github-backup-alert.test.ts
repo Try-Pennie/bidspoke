@@ -87,7 +87,7 @@ describe('recordBackupFailure', () => {
     expect(kv.store.has('github-backup:org-1:cooldown')).toBe(true)
     expect(kv.store.has('github-backup:org-1:condition')).toBe(true)
     // the first alert is not a repeat, so it carries no reminder line
-    expect(payload).not.toHaveProperty('repeat', expect.any(String))
+    expect(payload.repeat).toBeUndefined()
   })
 
   // #1337: a sustained outage no longer repeats at a flat 6h. Once the cooldown
