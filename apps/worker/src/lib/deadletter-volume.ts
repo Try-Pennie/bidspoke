@@ -223,8 +223,9 @@ export async function runDeadLetterBuildTriggerCheck(
 ): Promise<boolean> {
   if (storeBuilt) {
     // The store is built: stop reminding, and clear the mark so a future, separate
-    // deferral would start clean.
-    await kv.delete(BUILD_NOW_TRIPPED_KEY).catch(() => {})
+    // deferral would start clean. Log a failed clear rather than swallowing it, or
+    // the mark could silently survive the flip (L340).
+    await kv.delete(BUILD_NOW_TRIPPED_KEY).catch((e) => console.error('[deadletter-build-trigger] clearing the trip mark failed:', e))
     return false
   }
 

@@ -172,6 +172,18 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     expect(kv.store.has('outcome-deadletter-buildnow-tripped')).toBe(false)
   })
 
+  it('logs, rather than swallows, a failed clear of the trip mark once the store is built', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const kv = fakeKv({ 'outcome-deadletter-buildnow-tripped': '2026-10-01T00:00:00.000Z' })
+      kv.delete = vi.fn(async () => { throw new Error('kv down') })
+      expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW, true)).toBe(false)
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes('clearing the trip mark failed'))).toBe(true)
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
   it('does not set the cooldown when the Slack post fails, so the next run retries', async () => {
     vi.mocked(postMessage).mockResolvedValue(null)
     const kv = fakeKv({ [`outcome-deadletter-daily:${utcDay(NOW)}`]: JSON.stringify({ total: 1, unrecoverable: 1 }) })
@@ -181,7 +193,6 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
 
   it('does not count an unfinished continuation toward the volume bar, since it is not a loss', async () => {
     const kv = fakeKv()
-    const { recordDeadLetterVolume } = await import('../deadletter-volume')
     await recordDeadLetterVolume(kv, 'continuation_unfinished', NOW)
     expect(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)).toBeUndefined()
     await recordDeadLetterVolume(kv, 'lead_sightings.finalize', NOW)

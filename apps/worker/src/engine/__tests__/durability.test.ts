@@ -127,7 +127,8 @@ describe('recordOutcomeDeadLetter', () => {
   // #355: the build-now tally is best-effort, so a hung KV on its day key must not
   // block the dead-letter alert. withDeadline abandons the tally after 500ms and the
   // page still goes out.
-  it('still sends the alert when the build-now tally hangs on a slow KV', async () => {
+  it('still sends the alert, and logs the abandoned tally, when the build-now tally hangs on a slow KV', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.useFakeTimers()
     try {
       const kv = fakeKv()
@@ -139,8 +140,12 @@ describe('recordOutcomeDeadLetter', () => {
       await vi.advanceTimersByTimeAsync(600)
       await p
       expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+      // The dropped count is logged, not swallowed, so a missed unrecoverable tally
+      // leaves a trace.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes('build-now volume tally abandoned'))).toBe(true)
     } finally {
       vi.useRealTimers()
+      errSpy.mockRestore()
     }
   })
 
