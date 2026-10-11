@@ -917,9 +917,9 @@ const scheduledJobs = {
         runReduceFinalizeStrandedExecutions(supabase, { readJournal: (id) => readAnswerJournal(env.IDEMPOTENCY, id) })
           .then(async (r) => {
             if (r.processed > 0 || r.errors > 0) console.log(`[stranded-executions] processed=${r.processed} errors=${r.errors}`)
-            // Watch the mix of resolution branches over a window: one branch taking
-            // effectively everything while another never fires is the shape of a
-            // dead branch (#1133).
+            // Watch the mix of resolution branches over a window: the conservative
+            // unresolved fallback resolving every row while no precise branch ever
+            // fires is the shape of a precise path that cannot match (#1133).
             await recordAndCheckBranchSkew(env.IDEMPOTENCY, r.byBranch, { supabase, appUrl: env.APP_URL })
               .catch((e) => console.error('[strand-branch-skew] check failed:', e))
           })

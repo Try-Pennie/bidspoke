@@ -10,10 +10,13 @@
  * as the drain being careful rather than as a dead branch.
  *
  * So this tallies the branches each drain run took (counted in the drain, fed
- * here), accumulates them across a window, and when one branch has taken
- * effectively everything over a meaningful sample while another never fired,
- * alerts: the shape of a branch that cannot match. It is a slow recalibration
- * signal, not an incident, so it re-surfaces on a monthly cooldown.
+ * here), accumulates them across a window, and when the `unresolved` fallback has
+ * resolved EVERY row over a meaningful sample and NOT ONE precise branch ever
+ * fired, alerts: the shape of a precise path that cannot match. It deliberately
+ * does not flag a single precise branch merely being absent (graph_dead_end is
+ * legitimately zero for a code-node-answering workflow); only the precise
+ * evidence never once helping is the signal (see decideBranchSkew). It is a slow
+ * recalibration signal, not an incident, so it re-surfaces on a monthly cooldown.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { STRAND_BRANCHES, emptyBranchCounts, type StrandBranch } from './stranded-executions'
@@ -23,52 +26,58 @@ import { formatErr } from './format-error'
 
 /** The sample below which the distribution says nothing (a rate needs a denominator, L716). */
 export const SKEW_MIN_SAMPLE = 50
-/** The share one branch must exceed to count as "effectively everything". */
-export const SKEW_DOMINANCE_SHARE = 0.98
+
+/** The fallback branch, and the precise branches that sit in front of it. */
+const FALLBACK_BRANCH: StrandBranch = 'unresolved'
+const PRECISE_BRANCHES: readonly StrandBranch[] = ['failed_step', 'graph_dead_end', 'sighting_outcome']
 
 export interface SkewVerdict {
-  /** Whether one branch dominates while another never fired. */
+  /** Whether the fallback resolved everything while no precise branch ever fired. */
   skewed: boolean
   /** The alert sentence, naming the measurement; null when not skewed. */
   reason: string | null
 }
 
 /**
- * Decide whether the branch tally is the shape of a dead branch (#1133): a
- * meaningful sample, one branch taking at least SKEW_DOMINANCE_SHARE of it, and
- * at least one other branch that never fired. Pure, so it is exercised against
- * measured shapes with no KV or database near the test.
+ * Decide whether the branch tally is the shape #1112 had (#1133): over a
+ * meaningful sample, the conservative `unresolved` FALLBACK resolved every row
+ * and NOT ONE precise branch (failed_step, graph_dead_end, sighting_outcome)
+ * ever fired. Pure, so it is exercised against measured shapes with no KV or
+ * database near the test.
  *
- * A branch at zero is the signal, not merely a dominant branch: 98% down one
- * branch with the rest spread thinly is a drain doing its job, while 98% down
- * one branch with another at a flat zero over fifty-plus rows is a branch that
- * may be unable to match. The never-flagged direction (all branches firing) is
- * deliberately silent.
+ * Deliberately NOT "any branch at zero dominates". A single precise branch at
+ * zero is ambiguous, not a defect: graph_dead_end is legitimately zero for a
+ * workflow that answers from inside a code node (it never reaches a terminal
+ * node), and failed_step is zero whenever nothing failed. Flagging those would
+ * page on a healthy drain. The robust, low-false-positive signal is that the
+ * precise evidence NEVER ONCE helps: even a code-node flow should sometimes see a
+ * failed step or a recorded sighting outcome, so zero precise resolutions over
+ * fifty-plus rows is the fallback hiding a precise path that cannot match (L551),
+ * which is exactly #1112 (119 of 119 unresolved, every precise branch dead). A
+ * single precise resolution clears it: the precise path demonstrably CAN fire.
  */
 export function decideBranchSkew(
   counts: Record<StrandBranch, number>,
-  opts: { minSample?: number; dominanceShare?: number } = {},
+  opts: { minSample?: number } = {},
 ): SkewVerdict {
   const minSample = opts.minSample ?? SKEW_MIN_SAMPLE
-  const dominanceShare = opts.dominanceShare ?? SKEW_DOMINANCE_SHARE
   const total = STRAND_BRANCHES.reduce((sum, b) => sum + (counts[b] ?? 0), 0)
   if (total < minSample) return { skewed: false, reason: null }
 
-  const dominant = STRAND_BRANCHES.reduce((top, b) => ((counts[b] ?? 0) > (counts[top] ?? 0) ? b : top), STRAND_BRANCHES[0])
-  const dominantCount = counts[dominant] ?? 0
-  if (dominantCount / total < dominanceShare) return { skewed: false, reason: null }
+  const preciseTotal = PRECISE_BRANCHES.reduce((sum, b) => sum + (counts[b] ?? 0), 0)
+  // Any precise resolution at all means the precise path can fire: not a dead branch.
+  if (preciseTotal > 0) return { skewed: false, reason: null }
 
-  const deadBranches = STRAND_BRANCHES.filter((b) => (counts[b] ?? 0) === 0)
-  if (deadBranches.length === 0) return { skewed: false, reason: null }
-
-  const pct = Math.round((dominantCount / total) * 100)
+  const fallbackCount = counts[FALLBACK_BRANCH] ?? 0
+  const pct = Math.round((fallbackCount / total) * 100)
+  // Admin-facing: plain, actionable, no internal lesson or issue references.
   return {
     skewed: true,
     reason:
-      `The strand drain resolved ${dominantCount} of ${total} rows (${pct}%) via the ${dominant} branch, and these ` +
-      `branches never fired: ${deadBranches.join(', ')}. That is the shape of a branch that cannot match the data it ` +
-      `is meant to. Check resolveStrandedExecution against a real stranded run before trusting the ${dominant} verdict ` +
-      `(#1133; this is how #1112 stayed invisible for 14 days).`,
+      `The stranded-run cleanup resolved all ${total} of its recent runs (${pct}%) with the conservative "unknown ` +
+      `outcome" fallback, and never once used any of the precise checks (failed step, completed workflow, recorded ` +
+      `outcome). Over this many runs at least one precise check should have matched, so a precise check has likely ` +
+      `stopped working. Have an engineer review how stranded runs are resolved.`,
   }
 }
 
@@ -111,8 +120,12 @@ function parseWindow(raw: string | null, nowIso: string): SkewWindow {
 
 /**
  * Add this run's branch tally to the window, and when it has reached a meaningful
- * sample, evaluate the distribution, reset the window, and alert if a branch has
- * gone dead (#1133). Best-effort; the caller runs it in the drain's waitUntil.
+ * sample, evaluate the distribution and alert if the precise evidence never fired
+ * (#1133). The window is RESET once it has been judged, whatever the alert outcome,
+ * so it can never grow without bound and the Slack fan-out is never re-run tick
+ * after tick while delivery fails. A failed delivery is re-detected on the next
+ * full window (a dead branch is persistent) and the monthly cooldown dedups the
+ * deliveries that land. Best-effort; the caller runs it in the drain's waitUntil.
  * Returns whether it alerted.
  */
 export async function recordAndCheckBranchSkew(
@@ -155,13 +168,14 @@ export async function recordAndCheckBranchSkew(
     return false
   }
 
-  // Enough to judge. Reset the window as soon as it is judged, BEFORE alerting,
-  // and persist that reset. This bounds the window (it can never grow without end,
-  // whatever the alert outcome: delivered, cooldown-suppressed, no Slack org, or a
-  // failed send), and no in-memory tally is stranded by a later throw. Resetting
-  // before the alert is safe here because the signal is a PERSISTENT dead branch:
-  // if an alert does not land, the next window re-detects it, and the monthly
-  // cooldown dedups so re-detection cannot spam. A fix shows up in the next window.
+  // Enough to judge. Reset the window now it has been judged, WHATEVER the alert
+  // outcome, and persist that reset before alerting. This is the one reset rule
+  // that avoids every pathology of keeping the window: a kept window either grows
+  // without bound (no Slack configured) or re-runs the Slack fan-out on every tick
+  // while delivery is failing. A failed alert is not a lost signal here: the dead
+  // branch is PERSISTENT, so the next full window re-detects it, and the monthly
+  // cooldown dedups the deliveries that do land. (A low-volume path pays a delay
+  // of one more window, which is acceptable for a slow recalibration signal.)
   const verdict = decideBranchSkew(window.counts, { minSample })
   await kv.put(WINDOW_KEY, freshWindow())
   if (!verdict.skewed) return false
@@ -177,11 +191,11 @@ export async function recordAndCheckBranchSkew(
       const slack = await getSlackConnection(deps.supabase, orgId)
       if (!slack || !slack.config_alerts_enabled) return false
       const blocks = [
-        { type: 'header', text: { type: 'plain_text', text: 'A strand-drain branch may be unable to fire', emoji: false } },
+        { type: 'header', text: { type: 'plain_text', text: 'Stranded-run cleanup may be missing outcomes', emoji: false } },
         { type: 'section', text: { type: 'mrkdwn', text: reason } },
         { type: 'section', text: { type: 'mrkdwn', text: `<${deps.appUrl}/dashboard|Open dashboard>` } },
       ]
-      return (await postMessage(slack.bot_token, slack.default_channel, blocks, 'A strand-drain branch may be unable to fire')) !== null
+      return (await postMessage(slack.bot_token, slack.default_channel, blocks, 'Stranded-run cleanup may be missing outcomes')) !== null
     },
   })
 }
