@@ -65,6 +65,74 @@ describe('markAlerted', () => {
   it('outlives the 30 minute cooldown by a wide margin', () => {
     expect(RECOVERY_TTL_SECONDS).toBeGreaterThan(30 * 60)
   })
+
+  it('stays above the longest check cadence, so a daily check cannot race its expiry (#1343)', () => {
+    // The longest cadence of any check that writes this marker is the daily
+    // dead-field tier at 24h. The TTL must stay comfortably above that, or the
+    // race this fixed returns. Catches an accidental lowering; a check scheduled
+    // LESS often than daily would still need this lifted (noted at the constant).
+    const ONE_DAY = 24 * 60 * 60
+    expect(RECOVERY_TTL_SECONDS).toBeGreaterThanOrEqual(2 * ONE_DAY)
+  })
+
+  // A KV double that honours expirationTtl against an injectable clock, so a test
+  // can drive a page and a recovery one full check interval apart (#1343) rather
+  // than asserting the TTL constant.
+  function expiringKv(clock: { now: number }) {
+    const store = new Map<string, { value: string; expiresMs: number }>()
+    return {
+      store,
+      get: (k: string) => {
+        const e = store.get(k)
+        if (!e) return Promise.resolve(null)
+        if (clock.now > e.expiresMs) {
+          store.delete(k)
+          return Promise.resolve(null)
+        }
+        return Promise.resolve(e.value)
+      },
+      put: (k: string, value: string, opts?: { expirationTtl?: number }) => {
+        store.set(k, { value, expiresMs: clock.now + (opts?.expirationTtl ?? Infinity) * 1000 })
+        return Promise.resolve()
+      },
+      delete: (k: string) => {
+        store.delete(k)
+        return Promise.resolve()
+      },
+    }
+  }
+
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const PREFIX = 'field-presence-dead'
+  const ID = 'wf-1:ping.data'
+
+  it('keeps the recovery marker alive across a full daily interval, so a daily all-clear does not race its expiry (#1343)', async () => {
+    // The daily dead-field tier runs on a 24h cron; a marker whose TTL equalled
+    // the cadence expired at almost exactly the moment the next run read it.
+    const clock = { now: Date.parse('2026-10-01T13:00:00.000Z') }
+    const kv = expiringKv(clock)
+    await markAlerted(kv, PREFIX, ID, clock.now)
+    // The next daily run, a little over one interval later, must still see it.
+    clock.now += DAY_MS + 60_000
+    expect(await kv.get(recoveryKey(PREFIX, ID))).not.toBeNull()
+  })
+
+  it('refreshes the TTL on each page so a multi-day outage keeps its original start (#1343)', async () => {
+    const clock = { now: Date.parse('2026-10-01T13:00:00.000Z') }
+    const kv = expiringKv(clock)
+    const firstStart = new Date(clock.now).toISOString()
+    await markAlerted(kv, PREFIX, ID, clock.now)
+    // Still failing a day later, and the day after: each page refreshes the TTL
+    // while keeping the first-alert time.
+    clock.now += DAY_MS + 60_000
+    await markAlerted(kv, PREFIX, ID, clock.now)
+    clock.now += DAY_MS + 60_000
+    await markAlerted(kv, PREFIX, ID, clock.now)
+    // The recovery run another interval on still finds the marker, with the
+    // original start, not a reset one.
+    clock.now += DAY_MS + 60_000
+    expect(await kv.get(recoveryKey(PREFIX, ID))).toBe(firstStart)
+  })
 })
 
 describe('announceRecovery', () => {
@@ -364,9 +432,10 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
 })
 
 describe('keepAlerted (#1274)', () => {
-  // markAlerted never overwrites, which pins the start of an incident, but its marker
-  // expires after a day and a block can last five. keepAlerted re-writes the SAME start
-  // time on every sighting, so the marker outlives the block without moving the start.
+  // markAlerted pins the start and is called only on a page. keepAlerted takes the
+  // start the caller already knows and re-writes the SAME start time on every
+  // sighting, whether or not it paged, so a block re-observed between pages still
+  // refreshes the marker without moving the start.
   it('writes the given start time with the recovery TTL, and again on the next call', async () => {
     const kv = fakeKv()
     const put = vi.spyOn(kv, 'put')
