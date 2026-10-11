@@ -76,6 +76,62 @@ describe('scheduled readers lock only the partitions they read', () => {
   })
 })
 
+describe('reduce_finalize_stranded locks only the partitions it reads (#1722)', () => {
+  /**
+   * The strand drain runs every 30 minutes, including on the 03:30 tick the purge
+   * uses. Its scans bounded their partition keys with `now() - make_interval(...)`,
+   * a stable expression the planner cannot fold, and it joins `workflow_executions`
+   * with no time bound at all, so it opened and locked every partition of all three
+   * execution tables for about 3.5s per run (#1722, same shape #1720 fixed in the
+   * two rollups). The partition keys are `execution_started_at_utc` (lead_sightings),
+   * `attempted_at_utc` (lead_sighting_bids) and `started_at` (workflow_executions).
+   */
+  const STRAND_UNPRUNABLE =
+    /\b(?:execution_started_at_utc|attempted_at_utc|e\.started_at|started_at)\s*(?:>=|>|<=|<)\s*\(?\s*(?:CURRENT_DATE|now\s*\(\s*\)|current_timestamp)/i
+
+  const found = latestRoutineBody('reduce_finalize_stranded', migrations)
+
+  it('is defined in a migration (anti-vacuous)', () => {
+    expect(found, 'reduce_finalize_stranded is not defined in any migration').not.toBeNull()
+  })
+
+  it('bounds no execution partition key by a stable date expression', () => {
+    const body = stripSqlComments(found!.body)
+    expect(
+      body,
+      `reduce_finalize_stranded in ${found!.migration} still bounds a partition key by a stable expression`,
+    ).not.toMatch(STRAND_UNPRUNABLE)
+  })
+
+  it('runs its partitioned scans as statements with literal bounds', () => {
+    const body = stripSqlComments(found!.body)
+    // The lead_sightings scan (and, in the same shape, the workflow_executions
+    // join and the lead_sighting_bids scans) reach the planner as literals, the
+    // only form pruned in every plan-cache state.
+    expect(
+      body,
+      'reduce_finalize_stranded does not run its scans as statements with literal bounds',
+    ).toMatch(/EXECUTE\s+format\s*\([\s\S]*execution_started_at_utc\s*>=\s*%L/i)
+    // Every workflow_executions join is bounded on its own partition key, so the
+    // planner prunes it too (the table #1722 measured locked in full). This bound
+    // is pruning-only, so NOTHING else guards it: a behavioural test cannot see a
+    // join that still returns the right rows while locking every partition. So
+    // count, rather than match anywhere: every `workflow_executions e` join must
+    // carry a literal started_at bound, or one statement could drop its bound and
+    // the guard stay green because the other two keep theirs.
+    const joins = (body.match(/workflow_executions\s+e\b/gi) ?? []).length
+    const boundedJoins = (body.match(/\be\.started_at\s*>=\s*%L/gi) ?? []).length
+    expect(joins, 'expected reduce_finalize_stranded to join workflow_executions').toBeGreaterThanOrEqual(1)
+    expect(boundedJoins, 'a workflow_executions join is missing its literal started_at bound').toBe(joins)
+    // The lead_sighting_bids scan (statement 2) is bounded on its own partition
+    // key too; without this assertion that one scan could revert to a stable bound.
+    expect(
+      body,
+      'reduce_finalize_stranded does not bound the lead_sighting_bids scan on attempted_at_utc',
+    ).toMatch(/EXECUTE\s+format\s*\([\s\S]*\battempted_at_utc\s*>=\s*%L/i)
+  })
+})
+
 describe('the purge outlasts an ordinary co-scheduled reader', () => {
   /**
    * The seconds the purge waits on one partition before giving up: every attempt
