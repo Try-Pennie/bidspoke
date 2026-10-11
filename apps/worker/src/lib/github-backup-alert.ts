@@ -17,14 +17,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, sendBackupFailureAlert } from './slack'
 import { formatErr } from './format-error'
+import { clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
 // Alert after this many consecutive failed saves (org-wide). Saves are infrequent
 // and the usual cause (bad token / wrong repo) fails every save, so a low bar both
 // rides out one-off blips and announces a real outage within a couple of saves.
 export const BACKUP_FAILURE_THRESHOLD = 2
-// 6h between alerts for the same org — backups only happen on save, so a tighter
-// window would rarely re-fire anyway; this just guards a burst of saves.
-export const BACKUP_COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 // Let a stale streak expire so a failure months ago doesn't count toward today's.
 const STREAK_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -35,11 +33,20 @@ interface KvLike {
 }
 
 const streakKey = (orgId: string) => `github-backup-failures:${orgId}`
-const cooldownKey = (orgId: string) => `github-backup-alert-cooldown:${orgId}`
+// The escalating-backoff family key (#1337). Backups are save-triggered and
+// slow-burn, so this uses the shared schedule (6h, 12h, daily), not a short first
+// step like the urgent volume-cliff paths. This cooldown key differs from the old
+// flat one (github-backup-alert-cooldown:), so a failure standing at the deploy
+// loses its old cooldown and re-pages once as it enters the schedule: a bounded,
+// one-time transition, and re-announcing a still-standing failure is harmless.
+const backoffKey = (orgId: string) => `github-backup:${orgId}`
 
-/** Clear the failure streak after a successful backup. */
+/** Clear the failure streak and reminder schedule after a successful backup. */
 export async function recordBackupSuccess(kv: KvLike, orgId: string): Promise<void> {
   await kv.delete(streakKey(orgId))
+  // Reset the reminder schedule, so the next outage starts at the first interval
+  // rather than wherever the last one had backed off to (#1337).
+  await clearCondition(kv, backoffKey(orgId))
 }
 
 export interface BackupFailureInput {
@@ -50,6 +57,8 @@ export interface BackupFailureInput {
   workflowName: string
   error: unknown
   appUrl: string
+  /** Injectable clock for the reminder schedule, defaults to Date.now() (#1337). */
+  nowMs?: number
 }
 
 /**
@@ -65,10 +74,18 @@ export async function recordBackupFailure(input: BackupFailureInput): Promise<bo
   await kv.put(streakKey(orgId), String(streak), { expirationTtl: STREAK_TTL_SECONDS })
 
   if (streak < BACKUP_FAILURE_THRESHOLD) return false
-  if (await kv.get(cooldownKey(orgId))) return false
+  if (await inCooldown(kv, backoffKey(orgId))) return false
 
   const slack = await getSlackConnection(input.supabase, orgId)
   if (!slack || !slack.backup_alerts_enabled) return false
+
+  // The reminder interval grows while the outage stands, rather than repeating at a
+  // flat 6h, and the message says which reminder this is (#1337). unchanged is false
+  // because the consecutive-failure count moves each time, so it is never word for
+  // word the last post; the sentence then says "same problem, latest details shown".
+  const nowMs = input.nowMs ?? Date.now()
+  const standing = await readCondition(kv, backoffKey(orgId))
+  const repeat = describeRepeat(standing, nowMs, false) ?? undefined
 
   const sent = await sendBackupFailureAlert(
     slack,
@@ -77,12 +94,14 @@ export async function recordBackupFailure(input: BackupFailureInput): Promise<bo
       workflow_name: input.workflowName,
       consecutive_failures: streak,
       error_message: formatErr(input.error),
+      repeat,
     },
     input.appUrl
   )
 
-  // Only start the cooldown once the alert actually delivered — otherwise a failed
-  // Slack post would suppress retries while the outage went unannounced.
-  if (sent) await kv.put(cooldownKey(orgId), '1', { expirationTtl: BACKUP_COOLDOWN_TTL_SECONDS })
+  // Only record the alert (which arms the next cooldown) once it actually
+  // delivered, so a failed Slack post does not suppress retries while the outage
+  // goes unannounced.
+  if (sent) await recordAlert(kv, backoffKey(orgId), standing, nowMs)
   return sent
 }

@@ -48,6 +48,19 @@ describe('recordBackupSuccess', () => {
     expect(kv.delete).toHaveBeenCalledWith('github-backup-failures:org-1')
     expect(kv.store.has('github-backup-failures:org-1')).toBe(false)
   })
+
+  // #1337: a recovered backup resets the reminder schedule, so the next outage
+  // starts fresh at the first interval rather than the backed-off one.
+  it('clears the standing reminder condition so the next outage starts over', async () => {
+    const kv = makeKv({
+      'github-backup-failures:org-1': '3',
+      'github-backup:org-1:condition': '{"since":"2026-09-13T12:00:00.000Z","alerts":2}',
+      'github-backup:org-1:cooldown': '1',
+    })
+    await recordBackupSuccess(kv, ORG)
+    expect(kv.store.has('github-backup:org-1:condition')).toBe(false)
+    expect(kv.store.has('github-backup:org-1:cooldown')).toBe(false)
+  })
 })
 
 describe('recordBackupFailure', () => {
@@ -70,8 +83,27 @@ describe('recordBackupFailure', () => {
       consecutive_failures: BACKUP_FAILURE_THRESHOLD,
       error_message: 'GitHub push failed (401): Bad credentials',
     })
-    // cooldown set after delivery
-    expect(kv.store.has('github-backup-alert-cooldown:org-1')).toBe(true)
+    // cooldown and standing condition set after delivery (#1337)
+    expect(kv.store.has('github-backup:org-1:cooldown')).toBe(true)
+    expect(kv.store.has('github-backup:org-1:condition')).toBe(true)
+    // the first alert is not a repeat, so it carries no reminder line
+    expect(payload.repeat).toBeUndefined()
+  })
+
+  // #1337: a sustained outage no longer repeats at a flat 6h. Once the cooldown
+  // lapses the next failure is a reminder that says which one it is.
+  it('escalates to a reminder carrying a repeat line once the cooldown lapses', async () => {
+    const kv = makeKv({ 'github-backup-failures:org-1': String(BACKUP_FAILURE_THRESHOLD) })
+    await recordBackupFailure(baseInput(kv))
+    expect(sendBackupFailureAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendBackupFailureAlert).mock.calls[0][1].repeat).toBeUndefined()
+
+    // Simulate the cooldown interval elapsing.
+    kv.store.delete('github-backup:org-1:cooldown')
+
+    await recordBackupFailure(baseInput(kv))
+    expect(sendBackupFailureAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendBackupFailureAlert).mock.calls[1][1].repeat).toContain('reminder 2')
   })
 
   // #628: a Supabase/PostgREST failure is a plain object, not an Error instance,
@@ -90,7 +122,7 @@ describe('recordBackupFailure', () => {
   it('suppresses a repeat alert while the cooldown is active', async () => {
     const kv = makeKv({
       'github-backup-failures:org-1': '5',
-      'github-backup-alert-cooldown:org-1': '1',
+      'github-backup:org-1:cooldown': '1',
     })
     const alerted = await recordBackupFailure(baseInput(kv))
     expect(alerted).toBe(false)
@@ -127,6 +159,6 @@ describe('recordBackupFailure', () => {
     vi.mocked(sendBackupFailureAlert).mockResolvedValue(false)
     const kv = makeKv({ 'github-backup-failures:org-1': String(BACKUP_FAILURE_THRESHOLD - 1) })
     expect(await recordBackupFailure(baseInput(kv))).toBe(false)
-    expect(kv.store.has('github-backup-alert-cooldown:org-1')).toBe(false)
+    expect(kv.store.has('github-backup:org-1:cooldown')).toBe(false)
   })
 })

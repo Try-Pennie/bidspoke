@@ -15,7 +15,8 @@ vi.mock('../slack', () => ({
 import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN, SLACK_CONNS_LASTGOOD_KEY, DB_UNREACHABLE_PREFIX } from '../volume-cliff'
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret, decryptSecret } from '../secret-crypto'
-import { recoveryKey } from '../alert-recovery'
+import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
+import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import type { AlertClaims } from '../alert-claim'
 
 // A real 32 byte key so the last-good copy is exercised through the real cipher.
@@ -166,7 +167,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
   it('announces the all-clear when a previously alerted workflow is healthy again', async () => {
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
     const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
-    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff:wf-1:cooldown': '1' })
 
     await run(kv)
 
@@ -179,7 +180,20 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     // Both keys cleared, so the next genuine cliff pages at once rather than
     // waiting out a cooldown left over from the incident that just ended.
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(false)
-    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(false)
+    expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(false)
+  })
+
+  it('resets the reminder schedule when the cliff clears, so the next one starts over (#1337)', async () => {
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const kv = fakeKv({
+      'volume-cliff-recovery:wf-1': new Date(Date.now() - 45 * 60000).toISOString(),
+      'volume-cliff:wf-1:cooldown': '1',
+      'volume-cliff:wf-1:condition': '{"since":"2026-09-13T12:00:00.000Z","alerts":3}',
+    })
+    await run(kv)
+    // The standing reminder record is cleared, so a fresh cliff starts at the short
+    // first interval rather than the daily one this incident had backed off to.
+    expect(kv.store.has('volume-cliff:wf-1:condition')).toBe(false)
   })
 
   it('passes the recent window to the cliff all-clear so a one-tick cliff is not reported as a tick gap (#1108)', async () => {
@@ -187,7 +201,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     // notice names the window it measured rather than the gap between ticks.
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
     const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
-    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff:wf-1:cooldown': '1' })
 
     await run(kv)
 
@@ -197,7 +211,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
   it('HOLDS the all-clear when the baseline itself has collapsed, since a dead pipe is not a recovery (#817)', async () => {
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
     const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
-    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff:wf-1:cooldown': '1' })
     // Every minute near zero: the baseline is below MIN_BASELINE_PER_MIN, so
     // detectCliff finds no cliff, but this is a workflow that went quiet, not one
     // whose volume returned. The all-clear must be held, not sent.
@@ -215,7 +229,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     // are the outage and the last few carry full volume again.
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
     const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
-    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff-cooldown:wf-1': '1' })
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': alertedAt, 'volume-cliff:wf-1:cooldown': '1' })
     const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
     const returned = Array.from({ length: 60 }, (_, i) => ({
       minute: new Date(base + i * 60000).toISOString(),
@@ -238,13 +252,13 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     vi.mocked(sendRecoveryAlert).mockResolvedValue(false)
     const kv = fakeKv({
       'volume-cliff-recovery:wf-1': new Date(Date.now() - 45 * 60000).toISOString(),
-      'volume-cliff-cooldown:wf-1': '1',
+      'volume-cliff:wf-1:cooldown': '1',
     })
 
     await run(kv)
 
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
-    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(true)
+    expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(true)
   })
 
   it('stamps the running end on a tick where the cliff is live (#814)', async () => {
@@ -255,7 +269,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
       minute: new Date(base + i * 60000).toISOString(),
       cnt: i < BASELINE_WINDOW_MINUTES ? 50 : 0,
     }))
-    const kv = fakeKv({ 'volume-cliff-cooldown:wf-1': '1' }) // already paged, still spiking
+    const kv = fakeKv({ 'volume-cliff:wf-1:cooldown': '1' }) // already paged, still spiking
     await runVolumeCliffCheck(fakeSupabase(cliffMinutes), kv, 'https://app.example', 'https://self.example', TEST_KEY)
     expect(kv.store.has('volume-cliff-active:wf-1')).toBe(true)
   })
@@ -460,6 +474,43 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the recovery window longer than the longest reminder step, so an ongoing incident never expires mid-way (#1337)', async () => {
+    // The volume condition TTL is the recovery window, refreshed on each post. The
+    // longest gap between posts is the last backoff step, so the window must exceed
+    // it or a standing incident's condition could lapse between two reminders and
+    // the next would restart the schedule. The comment at VOLUME_CONDITION_TTL_SECONDS
+    // asserts this; here it is checked.
+    expect(RECOVERY_TTL_SECONDS).toBeGreaterThan(BACKOFF_STEPS_SECONDS[BACKOFF_STEPS_SECONDS.length - 1])
+  })
+
+  it('caps the condition TTL to the recovery window, so a held all-clear cannot leave it stale (#1337)', async () => {
+    // When the pipe goes dead the all-clear is held (#817) and the recovery marker
+    // expires after RECOVERY_TTL_SECONDS. The reminder condition must not outlive
+    // it, or a future unrelated outage reads as a reminder of this one.
+    const ttls = new Map<string, number | undefined>()
+    const store = new Map<string, string>([[SLACK_CONNS_LASTGOOD_KEY, await lastGood()]])
+    const kv = {
+      store,
+      get: (k: string) => Promise.resolve(store.get(k) ?? null),
+      put: (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); ttls.set(k, opts?.expirationTtl); return Promise.resolve() },
+      delete: (k: string) => { store.delete(k); return Promise.resolve() },
+    }
+    await runVolumeCliffCheck(allDownSupabase(), kv as never, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(ttls.get(`${DB_UNREACHABLE_PREFIX}:${ORG}:condition`)).toBe(RECOVERY_TTL_SECONDS)
+  })
+
+  it('escalates to a reminder once the cooldown lapses (#1337)', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls[0][2].repeat).toBeUndefined()
+
+    // The 15-minute first interval elapses; the database is still unreadable.
+    kv.store.delete(`${DB_UNREACHABLE_PREFIX}:${ORG}:cooldown`)
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls[1][2].repeat).toContain('reminder 2')
+  })
+
   it('says it cannot alert, rather than nothing, when no last-good copy exists', async () => {
     const kv = fakeKv()
     await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
@@ -476,6 +527,18 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ signal: 'database unreachable' })
     expect(kv.store.has(recoveryKey(DB_UNREACHABLE_PREFIX, ORG))).toBe(false)
+  })
+
+  it('resets the reminder schedule when the database reads again (#1337)', async () => {
+    const kv = fakeKv({
+      [recoveryKey(DB_UNREACHABLE_PREFIX, ORG)]: new Date(Date.now() - 45 * 60000).toISOString(),
+      [`${DB_UNREACHABLE_PREFIX}-active:${ORG}`]: new Date(Date.now() - 40 * 60000).toISOString(),
+      [`${DB_UNREACHABLE_PREFIX}:${ORG}:condition`]: '{"since":"2026-09-13T12:00:00.000Z","alerts":3}',
+      [`${DB_UNREACHABLE_PREFIX}:${ORG}:cooldown`]: '1',
+    })
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(kv.store.has(`${DB_UNREACHABLE_PREFIX}:${ORG}:condition`)).toBe(false)
   })
 })
 
@@ -606,7 +669,20 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
       runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims),
     ])
     expect(postMessage).toHaveBeenCalledTimes(1)
-    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(true)
+    expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(true)
+  })
+
+  it('escalates a standing cliff to a reminder once the cooldown lapses (#1337)', async () => {
+    const kv = fakeKv()
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])).not.toContain('reminder')
+
+    // The cooldown interval elapses; the cliff still stands.
+    kv.store.delete('volume-cliff:wf-1:cooldown')
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(vi.mocked(postMessage).mock.calls[1][2])).toContain('reminder 2')
   })
 
   it('releases the claim when Slack refuses the post, so the next tick can retry', async () => {
@@ -616,7 +692,7 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
     await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims)
     expect(calls).toEqual(['claim volume-cliff:wf-1', 'release volume-cliff:wf-1'])
     expect(held.size).toBe(0)
-    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(false)
+    expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(false)
   })
 
   it('posts the database unreachable alert once when two ticks find the database down together', async () => {
