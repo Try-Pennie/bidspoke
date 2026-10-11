@@ -204,6 +204,85 @@ describe('finalize update failure (#487)', () => {
     expect(vi.mocked(flushStepLogs)).toHaveBeenCalledTimes(1)
   })
 
+  // #688: a run fully rescued (base row reconstructed, step logs re-flushed OK)
+  // must NOT be recorded as 'failed' with "Step logs failed to persist" (true of
+  // the original FK-blocked flush, untrue by the time the record is written). It
+  // is 'degraded' with a message describing the reconstruction.
+  it('records a reconstructed, fully-recovered run as degraded, not failed (#688)', async () => {
+    vi.mocked(createExecutionRecord).mockRejectedValueOnce(
+      new Error('workflow_executions insert failed: null value in column "workflow_id"')
+    )
+    vi.mocked(flushStepLogs).mockResolvedValue(null) // the recovery re-flush succeeds
+    vi.mocked(updateExecutionRecord).mockImplementation(async (_s, _id, _sa, _u, _cf, onReconstructed) => {
+      onReconstructed?.()
+      return null
+    })
+
+    const { harness, result } = run()
+    const r = await result
+    expect(r.status).toBe(200)
+    await harness.flush()
+
+    const statusWrites = vi.mocked(updateExecutionRecord).mock.calls
+      .map((c) => c[3] as { status?: string; error_message?: string | null })
+      .filter((u) => u.status !== undefined)
+    const finalWrite = statusWrites.at(-1)!
+    expect(finalWrite.status).toBe('degraded')
+    // Not the stale, now-untrue persistence-failure wording.
+    for (const u of statusWrites) {
+      expect(u.status).not.toBe('failed')
+      expect(u.error_message ?? '').not.toContain('Step logs failed to persist')
+    }
+    expect(finalWrite.error_message ?? '').toMatch(/reconstruct/i)
+  })
+
+  it('records a reconstructed run whose re-flush FAILED as failed (#688)', async () => {
+    vi.mocked(createExecutionRecord).mockRejectedValueOnce(
+      new Error('workflow_executions insert failed: null value in column "workflow_id"')
+    )
+    // The recovery re-flush itself fails: the step trace is genuinely lost.
+    vi.mocked(flushStepLogs).mockResolvedValue('execution_steps insert failed: FK still unsatisfied')
+    vi.mocked(updateExecutionRecord).mockImplementation(async (_s, _id, _sa, _u, _cf, onReconstructed) => {
+      onReconstructed?.()
+      return null
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const statusWrites = vi.mocked(updateExecutionRecord).mock.calls
+      .map((c) => c[3] as { status?: string; error_message?: string | null })
+      .filter((u) => u.status !== undefined)
+    const finalWrite = statusWrites.at(-1)!
+    expect(finalWrite.status).toBe('failed')
+    expect(finalWrite.error_message ?? '').toMatch(/reconstruct/i)
+  })
+
+  it('records a reconstructed run whose re-flush THREW as failed, not an escaped error (#688)', async () => {
+    vi.mocked(createExecutionRecord).mockRejectedValueOnce(
+      new Error('workflow_executions insert failed: null value in column "workflow_id"')
+    )
+    // The recovery re-flush throws rather than returning an error string.
+    vi.mocked(flushStepLogs).mockRejectedValue(new Error('connection reset during re-flush'))
+    vi.mocked(updateExecutionRecord).mockImplementation(async (_s, _id, _sa, _u, _cf, onReconstructed) => {
+      onReconstructed?.()
+      return null
+    })
+
+    const { harness, result } = run()
+    // The throw must not escape the finalize; the caller is still served.
+    const r = await result
+    expect(r.status).toBe(200)
+    await harness.flush()
+
+    const statusWrites = vi.mocked(updateExecutionRecord).mock.calls
+      .map((c) => c[3] as { status?: string; error_message?: string | null })
+      .filter((u) => u.status !== undefined)
+    expect(statusWrites.at(-1)!.status).toBe('failed')
+    expect(statusWrites.at(-1)!.error_message ?? '').toMatch(/reconstruct/i)
+  })
+
   it('does not re-flush when finalize did not reconstruct the row (#629)', async () => {
     // Clean finalize (row was present all along): the callback is never fired,
     // so no extra recovery flush runs on top of the normal one.

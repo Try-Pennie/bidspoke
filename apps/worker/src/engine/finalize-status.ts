@@ -25,12 +25,23 @@ export interface ContinuationFlags {
   /** The step flush timed out at the budget; nothing came back either way. */
   hasFlushUnconfirmed: boolean
   neverAdvanced: boolean
+  /**
+   * The base execution row was missing and was reconstructed at finalize (#688).
+   * The lead was served, but the primary write path DID fail, so the run is
+   * degraded rather than a clean completed. This is the floor for a reconstructed
+   * run: a genuine step-persist failure (the recovery re-flush itself failed) is
+   * reported through `hasFlushError` and OUTRANKS this, so such a run is still
+   * failed. Set from "the row was reconstructed" alone; the re-flush outcome is
+   * carried by `hasFlushError`/`hasFlushUnconfirmed`. Defaults false.
+   */
+  wasReconstructed?: boolean
 }
 
 export function resolveContinuationStatus(executionStatus: string, flags: ContinuationFlags): string {
   if (executionStatus !== 'completed') return executionStatus
   if (flags.hasFlushError) return 'failed'
   if (flags.neverAdvanced) return 'failed'
+  if (flags.wasReconstructed) return 'degraded'
   if (flags.hasContinuationError) return 'degraded'
   if (flags.hasFlushUnconfirmed) return 'degraded'
   return 'completed'
