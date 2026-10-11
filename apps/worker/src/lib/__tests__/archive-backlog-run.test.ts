@@ -93,6 +93,7 @@ function deps(h: Harness = {}) {
         state = next
       },
       alertSetAside: vi.fn(async (_message: string) => undefined),
+      clearSetAside: vi.fn(async () => undefined),
       now: () => NOW,
       readWatermark: async () => h.watermark ?? '2026-08-22T23:00:00.000Z',
       daysHeldInPostgres: async () => held,
@@ -203,6 +204,80 @@ describe('runArchiveBacklog', () => {
     // this how much data is about to be purged with no backup.
     expect(message).toMatch(/4 of 24/)
     expect(d.state.setAsideUntil['2026-08-16']).toBe(NOW.getTime() + SET_ASIDE_MS)
+  })
+
+  // #1967: the set-aside alert was the only one this job raised and it NEVER
+  // cleared, so a day set aside once left a standing page until the 30-day TTL.
+  // The condition clears when no day remains set aside.
+  it('clears the set-aside alert on a healthy run with no day set aside (#1967)', async () => {
+    const d = deps({ recorded: { '2026-08-16': 24, '2026-08-17': 24 } })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.injected.clearSetAside).toHaveBeenCalledTimes(1)
+    expect(d.injected.alertSetAside).not.toHaveBeenCalled()
+  })
+
+  it('does NOT clear on the run that sets a day aside (#1967)', async () => {
+    const d = deps({
+      recorded: { '2026-08-16': 4 },
+      archives: { '2026-08-16': 0 },
+      state: { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} },
+    })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.injected.alertSetAside).toHaveBeenCalledTimes(1)
+    expect(d.injected.clearSetAside).not.toHaveBeenCalled()
+  })
+
+  it('does NOT clear while a day is still set aside from before (#1967)', async () => {
+    // Every held day is fully archived so there is no backlog day to walk, but a
+    // day remains set aside, so the condition is still standing and must not clear.
+    const d = deps({
+      held: ['2026-08-16', '2026-08-17'],
+      recorded: { '2026-08-16': 24, '2026-08-17': 24 },
+      state: { noProgress: {}, setAsideUntil: { '2026-08-16': NOW.getTime() + SET_ASIDE_MS } },
+    })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.injected.clearSetAside).not.toHaveBeenCalled()
+    expect(d.injected.alertSetAside).not.toHaveBeenCalled()
+  })
+
+  it('does NOT clear when a formerly set-aside day is short and being retried again (#1967)', async () => {
+    // The set-aside window has expired, so the day is eligible again and no day is
+    // CURRENTLY set aside, but it is still short and unarchived, at risk of purge.
+    // Clearing on "no day currently set aside" alone would announce a recovery
+    // that did not happen; the backlog is not caught up, so the all-clear holds.
+    const d = deps({
+      held: ['2026-08-16', '2026-08-17'],
+      recorded: { '2026-08-16': 4, '2026-08-17': 24 },
+      state: { noProgress: { '2026-08-16': 1 }, setAsideUntil: { '2026-08-16': NOW.getTime() - 1 } },
+    })
+
+    const r = await runArchiveBacklog(d.injected)
+
+    expect(r.day).toBe('2026-08-16') // picked the expired, still-short day back up
+    expect(d.injected.clearSetAside).not.toHaveBeenCalled()
+  })
+
+  it('still resolves with its summary when clearing the set-aside alert throws (#1967, best-effort)', async () => {
+    // The clear runs after the run record is already closed, so a KV or Slack
+    // failure in it must not reject the invocation and desync that record (L33).
+    const d = deps({ recorded: { '2026-08-16': 24, '2026-08-17': 24 } })
+    d.injected.clearSetAside = vi.fn(async () => {
+      throw new Error('KV down')
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const r = await runArchiveBacklog(d.injected)
+      expect(r.day).toBeNull()
+      expect(d.injected.clearSetAside).toHaveBeenCalledTimes(1)
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 
   it('works on the next day once the hard one is set aside, instead of retrying it forever', async () => {
