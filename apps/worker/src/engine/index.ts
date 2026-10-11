@@ -234,15 +234,14 @@ export async function executeWorkflow(
   //     stops waiting, DEAD_LETTER_RESERVE_MS before the deadline, so the dead
   //     letter still fits.
   //   beforeFinalizeTiming: the create and the step flush stop retrying earlier,
-  //     because finalize can rebuild a missing execution row by itself.
-  //   traceTiming: the step log re-flush after a rebuild, tier 1 with no dead
-  //     letter, may use the budget to its end.
+  //     because finalize can rebuild a missing execution row by itself. The step
+  //     log re-flush after a rebuild uses it too (#688), so that re-flush, now
+  //     awaited before the demotion update, leaves that update room to confirm.
   const retryClock = runtime.clock ?? realClock
   const postResponse = new PostResponseBudget(retryClock)
   const writeTiming: RetryTiming = { clock: retryClock, budget: postResponse, reserveMs: DEAD_LETTER_RESERVE_MS }
   const beforeFinalizeTiming = withReserve(writeTiming, FINALIZE_RESERVE_MS)
   const continuationTiming = withReserve(writeTiming, CONTINUATION_RESERVE_MS)
-  const traceTiming = withReserve(writeTiming, 0)
   // What kind of run this is, decided once (#1708).
   const reality = runRealityOfOptions(options, env)
 
@@ -972,44 +971,6 @@ export async function executeWorkflow(
           )
         }
 
-        // #629: the base row was missing and has now been reconstructed, so the
-        // FK that blocked the step-log inserts is satisfied. The original flush
-        // (chained on the failed createExecutionRecord insert) never ran, so a
-        // fresh flush of the queue cannot duplicate rows. Recover the trace so
-        // the served lead's run is debuggable step by step. Best-effort: a
-        // failure here is logged, not surfaced (the top-level row already
-        // survived via reconstruction).
-        //
-        // #1883: finalize now runs beside the create rather than behind it, so it
-        // can rebuild the row while the create is still out. A create that then
-        // lands runs the original flush itself, so the re-flush is only for a
-        // create that FAILED, which is the one case the original flush never runs.
-        if (reconstructed && stepLogQueue.length > 0) {
-          executionCtx.waitUntil(
-            executionRecordPromise.then(() => false, () => true).then((createFailed) => {
-              if (!createFailed) return null
-              return flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
-                workflowId,
-                isTest: reality.isTest,
-              }, traceTiming)
-            })
-              .then((flushErr) => {
-                if (flushErr) {
-                  console.error('[step-logger] step-log recovery re-flush reported errors', {
-                    executionId,
-                    error: flushErr,
-                  })
-                }
-              })
-              .catch((e) =>
-                console.error('[step-logger] step-log recovery re-flush threw', {
-                  executionId,
-                  error: formatErr(e),
-                }),
-              ),
-          )
-        }
-
         // The finalize UPDATE is the only durable record that this lead was
         // served. If it matched zero rows the execution row is gone entirely
         // (its insert failed permanently); if it exhausted the retry ladder the
@@ -1030,9 +991,75 @@ export async function executeWorkflow(
         const flushed = await flushPromise
         const flushError = flushed.error
         const flushUnconfirmed = flushed.unconfirmed
+
+        // #629/#688: when the base row was missing and reconstructed, the original
+        // flush never ran (it was chained on the failed create), so flushPromise's
+        // error is the create rejection, not a step result. Re-flush the queue to
+        // recover the trace and AWAIT it: it is the authoritative step-persist
+        // signal and decides the final status below (#688). Done AFTER awaiting
+        // flushPromise, which has already bounded the wait on the create, so:
+        //  - flush settled: the create has settled too, so the createFailed check
+        //    returns at once (no unbounded wait), and the re-flush runs ONLY when
+        //    the create genuinely failed, never when it landed late (which would
+        //    write the rows twice, since the original flush already wrote them).
+        //  - flush unconfirmed: the create did not answer in budget, so the re-flush
+        //    is skipped (it could double-write if the create then lands); the steps
+        //    are unconfirmed and read back by the minute sweep.
+        // It is bounded by beforeFinalizeTiming so it leaves the demotion update
+        // room; a re-flush that cannot answer is unconfirmed, not a loss. An empty
+        // queue re-flushes nothing but is still not judged by the create rejection,
+        // because reconstructedCreateFailed below ignores flushError.
+        let reflushRan = false
+        let reflushError: string | null = null
+        let reflushUnconfirmed = false
+        let createFailedAtFlush = false
+        if (reconstructed && !flushUnconfirmed) {
+          createFailedAtFlush = await executionRecordPromise.then(() => false, () => true)
+          if (createFailedAtFlush && stepLogQueue.length > 0) {
+            reflushRan = true
+            try {
+              const reflushed = await withinBudget(
+                flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
+                  workflowId,
+                  isTest: reality.isTest,
+                }, beforeFinalizeTiming),
+                beforeFinalizeTiming,
+              )
+              if (reflushed.settled) reflushError = reflushed.value
+              else reflushUnconfirmed = true
+            } catch (e) {
+              // A throw (not a returned error) is still a lost trace: record it as
+              // the re-flush error so the run is failed, the same as the original
+              // flush's own .catch does.
+              reflushError = formatErr(e)
+            }
+            if (reflushError) {
+              console.error('[step-logger] step-log recovery re-flush reported errors', {
+                executionId,
+                error: reflushError,
+              })
+            }
+          }
+        }
+
+        // The step-persist signal. When the create failed (the reconstruction
+        // path), flushPromise's error is the create rejection, not a step result,
+        // so the re-flush is authoritative: its error, its timeout (unconfirmed),
+        // or clean. When the create landed (late or on the ordinary path, so the
+        // original flush actually ran), or the flush was unconfirmed, the original
+        // flush stands (#688).
+        const reconstructedCreateFailed = reconstructed && createFailedAtFlush
+        const stepPersistError = reconstructedCreateFailed ? reflushError : flushError
+        const stepPersistUnconfirmed = reconstructedCreateFailed
+          ? (reflushUnconfirmed
+              ? 'the reconstructed run\'s step logs did not answer within the post-response budget; they may still land'
+              : null)
+          : flushUnconfirmed
         // The step rows that timed out are read back by the minute sweep, for the
         // slowdown summary (#1881). Tier 1, so a failed entry is only logged.
-        if (flushUnconfirmed && !reality.isTest && stepLogQueue.length > 0) {
+        // Gated on the unified unconfirmed signal so a re-flush that timed out is
+        // registered too, not only the original flush (#688).
+        if (stepPersistUnconfirmed && !reality.isTest && stepLogQueue.length > 0) {
           const runStart = Date.parse(startedAt)
           executionCtx.waitUntil(
             recordUnconfirmedOutcome(
@@ -1045,7 +1072,7 @@ export async function executeWorkflow(
                 started_to: new Date(runStart + 60 * 60 * 1000).toISOString(),
                 expected: stepLogQueue.length,
               },
-              { message: `execution_steps (execution ${executionId}): ${flushUnconfirmed}` },
+              { message: `execution_steps (execution ${executionId}): ${stepPersistUnconfirmed}` },
               { ...outcomeDeps, supabase: runDb },
               { deadLetterOnFailure: false },
             ),
@@ -1053,19 +1080,39 @@ export async function executeWorkflow(
         }
         const statusAfterFlush = resolveContinuationStatus(executionStatus, {
           hasContinuationError: continuationError != null,
-          hasFlushError: flushError != null,
-          hasFlushUnconfirmed: flushUnconfirmed != null,
+          hasFlushError: stepPersistError != null,
+          hasFlushUnconfirmed: stepPersistUnconfirmed != null,
           neverAdvanced: finalNodeNamespace == null,
+          wasReconstructed: reconstructed,
         })
         let demotedMessage: string | null = null
-        if (statusAfterFlush === 'failed' && finalStatus !== 'failed' && executionStatus === 'completed' && flushError) {
+        if (statusAfterFlush === 'failed' && finalStatus !== 'failed' && executionStatus === 'completed' && stepPersistError) {
           failedErrorType = failedErrorType ?? 'permanent'
-          demotedMessage = `Step logs failed to persist: ${flushError}`
-        } else if (statusAfterFlush === 'degraded' && finalStatus === 'completed' && flushUnconfirmed) {
-          // Served, and its step records only went unconfirmed (#1881, part of
-          // #688). Not a step failure, so no failed step, no error type and no per
-          // run page: the slowdown summary reports it once the rows are read back.
-          demotedMessage = `Step records were not confirmed saved: ${flushUnconfirmed}`
+          demotedMessage = reflushRan
+            ? `Step logs could not be persisted after the execution record was reconstructed: ${stepPersistError}`
+            : `Step logs failed to persist: ${stepPersistError}`
+        } else if (statusAfterFlush === 'degraded' && finalStatus === 'completed') {
+          if (reconstructed) {
+            // The base row was missing and was reconstructed at finalize (#688).
+            // The primary write path failed, so this is degraded rather than a
+            // clean completed, but the lead was served, so it is not a hard failure
+            // and does not page per run. The step-logs clause claims a recovery
+            // only when the re-flush actually ran and succeeded; an empty queue or a
+            // create that landed late makes no such claim, and an unconfirmed flush
+            // says so.
+            const recovered = reflushRan && stepPersistError == null && stepPersistUnconfirmed == null
+            const stepsNote = recovered
+              ? ' and its step logs were recovered'
+              : stepPersistUnconfirmed != null
+                ? ', though its step records were not confirmed saved'
+                : ''
+            demotedMessage = `The execution record was reconstructed after its initial write failed; the lead was served correctly${stepsNote}.`
+          } else if (stepPersistUnconfirmed) {
+            // Served, and its step records only went unconfirmed (#1881, part of
+            // #688). Not a step failure, so no failed step, no error type and no per
+            // run page: the slowdown summary reports it once the rows are read back.
+            demotedMessage = `Step records were not confirmed saved: ${stepPersistUnconfirmed}`
+          }
         }
         if (demotedMessage !== null) {
           finalStatus = statusAfterFlush
