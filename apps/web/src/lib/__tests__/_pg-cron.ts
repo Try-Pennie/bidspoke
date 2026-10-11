@@ -48,6 +48,15 @@ const SCHEDULE_RE =
   /cron\.schedule\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*(?:\$\$([\s\S]*?)\$\$|'((?:[^']|'')*)')\s*\)/g
 const UNSCHEDULE_NAME_RE = /cron\.unschedule\(\s*'([^']+)'\s*\)/g
 const UNSCHEDULE_JOBID_RE = /cron\.unschedule\(\s*jobid\s*\)[\s\S]{0,200}?jobname\s*=\s*'([^']+)'/g
+// cron.unschedule(<var>) where <var> was SELECTed from cron.job by jobname first:
+//   SELECT jobid INTO <var> FROM cron.job WHERE jobname = 'NAME' ... cron.unschedule(<var>)
+// The \1 backreference ties the unschedule to the exact variable, and the gap is
+// bounded (measured 366 chars in 20260821000001, which drops compact-execution-payloads
+// this way) so a lookup with no unschedule after it cannot reach forward and pair
+// with a later, unrelated cron.unschedule that happens to reuse the variable name.
+// The jobname is group 2.
+const UNSCHEDULE_VAR_RE =
+  /SELECT\s+jobid\s+INTO\s+(\w+)\s+FROM\s+cron\.job\s+WHERE\s+jobname\s*=\s*'([^']+)'[\s\S]{0,600}?cron\.unschedule\(\s*\1\s*\)/gi
 /**
  * `cron.alter_job` in the one shape this repo writes it (#1884): the job found
  * by name, then an optional new schedule and an optional new command, each by
@@ -102,6 +111,10 @@ export function liveCronJobs(migrations: MigrationFile[] = readMigrations()): Ma
       for (const m of sql.matchAll(re)) {
         events.push({ at: m.index ?? 0, kind: 'unschedule', job: m[1] })
       }
+    }
+    // The looked-up-variable form keeps the jobname in group 2.
+    for (const m of sql.matchAll(UNSCHEDULE_VAR_RE)) {
+      events.push({ at: m.index ?? 0, kind: 'unschedule', job: m[2] })
     }
     for (const e of events.sort((a, b) => a.at - b.at)) {
       if (e.kind === 'schedule') jobs.set((e.job as CronJob).name, e.job as CronJob)

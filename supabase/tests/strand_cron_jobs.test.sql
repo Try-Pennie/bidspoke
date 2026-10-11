@@ -25,7 +25,8 @@ BEGIN
   SELECT * INTO j FROM cron.job WHERE jobname = 'reduce-finalize-stranded';
   IF NOT FOUND THEN RAISE EXCEPTION 'reduce-finalize-stranded is not scheduled'; END IF;
   IF j.schedule IS DISTINCT FROM '27,57 * * * *' THEN RAISE EXCEPTION 'reduce-finalize-stranded schedule = %', j.schedule; END IF;
-  IF j.command IS DISTINCT FROM 'SELECT public.reduce_finalize_stranded(1)' THEN RAISE EXCEPTION 'reduce-finalize-stranded command = %', j.command; END IF;
+  -- The command carries a SET statement_timeout prefix (#1149); the lookback is what matters here.
+  IF j.command NOT LIKE '%SELECT public.reduce_finalize_stranded(1)%' THEN RAISE EXCEPTION 'reduce-finalize-stranded command = %', j.command; END IF;
   IF j.active IS NOT TRUE THEN RAISE EXCEPTION 'reduce-finalize-stranded is not active'; END IF;
   INSERT INTO strand_cron_cases(name) VALUES ('shallow pass runs a 1-day lookback');
 END
@@ -38,7 +39,7 @@ BEGIN
   SELECT * INTO j FROM cron.job WHERE jobname = 'reduce-finalize-stranded-deep';
   IF NOT FOUND THEN RAISE EXCEPTION 'reduce-finalize-stranded-deep is not scheduled (the deep pass is missing)'; END IF;
   IF j.schedule IS DISTINCT FROM '45 7 * * *' THEN RAISE EXCEPTION 'reduce-finalize-stranded-deep schedule = %', j.schedule; END IF;
-  IF j.command IS DISTINCT FROM 'SELECT public.reduce_finalize_stranded(8)' THEN RAISE EXCEPTION 'reduce-finalize-stranded-deep command = %', j.command; END IF;
+  IF j.command NOT LIKE '%SELECT public.reduce_finalize_stranded(8)%' THEN RAISE EXCEPTION 'reduce-finalize-stranded-deep command = %', j.command; END IF;
   IF j.active IS NOT TRUE THEN RAISE EXCEPTION 'reduce-finalize-stranded-deep is not active'; END IF;
   INSERT INTO strand_cron_cases(name) VALUES ('deep pass runs an 8-day lookback daily');
 END
