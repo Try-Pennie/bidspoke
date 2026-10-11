@@ -239,9 +239,12 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
  * `hoursBehind` and refusal count are both zero, and treating those as evidence
  * would report two conditions clear on a run that never looked at either (L98).
  *
- * The killed condition is never cleared here. It is a statement about an
- * invocation that is already over rather than about the archive's current
- * health, so a later healthy run is not evidence about it.
+ * The killed condition is not cleared here, because this runs on the END-of-run
+ * `RunResult`, which is not evidence about a killed predecessor: a run's own
+ * healthy numbers say nothing about whether it took over a dead one. The killed
+ * condition is cleared at LOCK ACQUISITION instead (execution-archive.ts), where
+ * a clean take IS the evidence that no predecessor was killed this cycle, so a
+ * later kill posts as a fresh incident rather than a stale "(still)" (#1784).
  */
 export function clearedConditionsFor(result: RunResult): string[] {
   if (result.failed) return []
