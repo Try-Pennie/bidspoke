@@ -724,13 +724,13 @@ export async function runExecutionArchive(
     // holds. Added after, the alert would go on reading zero.
     result.executionsRefused += refusedAtDisposition
 
-    // Each condition under its own name. A healthy run still says nothing to
-    // notifyExportFailure, because a call with no errors DELETES its grace
-    // marker and a job alternating a failure with a clean run would then re-arm
-    // the grace every other run and never page. It reports its recovery through
-    // the other entry point instead (#1441), which clears the standing
-    // condition, so the escalating reminders stop, while keeping the record that
-    // a failure happened recently.
+    // Each condition under its own name. A healthy run reports its recovery
+    // through the recovery entry point (#1441), which clears the standing
+    // condition so the escalating reminders stop, while keeping the record that
+    // a failure happened recently. Since #1445 notifyExportFailure with no
+    // errors does the same thing (it no longer deletes the grace marker), so
+    // either path is now safe; this one stays explicit because the archive
+    // computes its failures and its recoveries from different predicates.
     for (const alert of alertsFor(result)) {
       await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
     }

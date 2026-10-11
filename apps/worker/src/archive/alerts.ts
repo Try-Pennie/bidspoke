@@ -9,11 +9,14 @@
  * would suppress a genuine ingest outage for the next eight hours through the
  * shared backstop cooldown (L53).
  *
- * A CLEAN STOP NEVER TOUCHES THE FAILURE STATE. That function DELETES both keys
- * when called with an empty errors array, so an hourly job alternating a
- * transient failure with a clean stop would re-arm the grace every other run and
- * never reach the second consecutive failure that pages. So a healthy run
- * produces no call at all rather than a call with nothing in it.
+ * A CLEAN STOP REPORTS ITS RECOVERY, IT DOES NOT ERASE THE FAILURE. A clean run
+ * clears the standing condition (stopping the reminders) but KEEPS the grace
+ * marker, stamped as interrupted, so an hourly job alternating a transient
+ * failure with a clean stop still reaches the failure that pages (#1441, #1445;
+ * before #1445 an empty errors array deleted the grace marker and that
+ * alternating pattern never paged). This runner reports its recovery through the
+ * recovery entry point rather than an empty failure call, because it computes
+ * its failures and its recoveries from different predicates.
  */
 import type { RunResult, RunStop } from './run-loop'
 import type { AlertRemedy } from '../lib/export-alerts'

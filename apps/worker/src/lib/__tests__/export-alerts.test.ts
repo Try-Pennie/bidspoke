@@ -261,10 +261,43 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     expect(opts).toEqual({ expirationTtl: EXPORT_ALERT_PENDING_TTL_SECONDS })
   })
 
-  it('clears the pending marker on a successful run, so blip-then-recovery never pages', async () => {
+  it('keeps and stamps the grace marker on a clean run, not deletes it, so an every-other-run failure stays pageable (#1445)', async () => {
+    // Deleting the marker on a success was the #1445 bug: a job that fails every
+    // other run re-armed the grace on each clean run and never reached the second
+    // failure that pages. The marker is now KEPT and stamped as interrupted, the
+    // same as notifyExportRecovery, so every clean-run caller is fixed at once.
     const kv = makeKv({ [PENDING_KEY]: '2026-07-24T11:48:00.000Z' })
     await notifyExportFailure({ from: vi.fn() } as never, 'Lead sightings purge', [], kv, 'export-job')
-    expect(kv.delete).toHaveBeenCalledWith(PENDING_KEY)
+    expect(kv.delete).not.toHaveBeenCalledWith(PENDING_KEY)
+    expect(parsePendingFailure(await kv.get(PENDING_KEY))).toEqual({
+      since: '2026-07-24T11:48:00.000Z',
+      recovered: true,
+    })
+  })
+
+  it('pages on a failure that follows a clean run, so an every-other-run failure is not silent (#1445)', async () => {
+    // fail, succeed, fail, succeed never paged before: each clean run deleted the
+    // marker the second consecutive failure depended on. Driven entirely through
+    // the public failure notifier (the clean run is notifyExportFailure with []),
+    // because that is what every export and purge job calls.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv()
+    const JOB = 'Lead sightings purge'
+
+    // fail 1: held silently by the transient grace.
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+    expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
+
+    // clean run: must not erase the record that a failure just happened.
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, [], kv, 'export-job')
+
+    // fail 2, one clean run later: the every-other-run pattern must now page.
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    // A run succeeded in between, so it is intermittent, not a standing outage.
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.failingSince).toBeUndefined()
+    expect(payload.intermittentSince).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/))
   })
 
   it('alerts immediately on a permanent error even with no pending marker', async () => {
@@ -353,19 +386,18 @@ describe('the consequence sentence travels with the classification (#1180)', () 
 /**
  * A job that reports its health separately from its failures (#1441).
  *
- * The archive deliberately never calls the failure notifier on a healthy run,
- * because that call DELETES the grace marker, and a job alternating a failure
- * with a clean run would re-arm the grace every other run and never reach the
- * second consecutive failure that pages. The cost of that was measured on
- * 2026-09-22: two unrelated timeouts 22 successful runs apart were reported as
- * one incident, `Failing since Sep 21, 12:26 PM EDT`, `the second consecutive
- * failed run`, and `standing for ~21h`. All of it untrue.
+ * A healthy run says so without erasing the history: the standing condition
+ * clears, which stops the escalating reminders, and the grace marker is kept but
+ * stamped as interrupted, which keeps the alternating pattern pageable while
+ * stopping the message claiming an outage that ended hours ago. The archive
+ * reports this through notifyExportRecovery because it computes its failures and
+ * recoveries from different predicates; since #1445 notifyExportFailure with an
+ * empty errors array does the same thing rather than deleting the marker.
  *
- * So a healthy run now says so, and says it without erasing the history: the
- * standing condition clears, which is what stops the escalating reminders, and
- * the marker is kept but stamped as interrupted, which is what keeps the
- * alternating pattern pageable while stopping the message claiming an outage
- * that ended hours ago.
+ * The cost of the old delete-on-success was measured on 2026-09-22: two
+ * unrelated timeouts 22 successful runs apart were reported as one incident,
+ * `Failing since Sep 21, 12:26 PM EDT`, `the second consecutive failed run`, and
+ * `standing for ~21h`. All of it untrue.
  */
 describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -463,7 +495,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
     expect(payload.intermittentSince).toBeUndefined()
   })
 
-  it('keeps the original first-failure time across a recovery and a later failure', async () => {
+  it('keeps the original first-failure time on the first failure after a recovery', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
     await notifyExportRecovery(kv, JOB)
@@ -472,5 +504,26 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
 
     const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
     expect(payload.intermittentSince).toBe('2026-09-21T16:26:00.000Z')
+  })
+
+  it('starts a fresh standing streak after an intermittent failure, so a continuing outage stops reading as intermittent (#1445)', async () => {
+    // The #1445 fix keeps the grace marker across a clean run. Without this, a
+    // sustained outage that begins after a recovery would keep recovered:true
+    // and every alert would say "intermittent since <an old time>" for the whole
+    // outage, never "failing since", which is a false claim during a run of
+    // consecutive failures (L11).
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv({ [PENDING_KEY]: JSON.stringify({ since: '2026-09-21T16:26:00.000Z', recovered: true }) })
+
+    await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
+
+    // Paged as intermittent for the failure that followed the recovery...
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.intermittentSince).toBe('2026-09-21T16:26:00.000Z')
+    // ...and the marker now holds a fresh standing streak (recovered:false, a new
+    // start time), so the next consecutive failure reports "failing since".
+    const stored = parsePendingFailure(await kv.get(PENDING_KEY))
+    expect(stored?.recovered).toBe(false)
+    expect(stored?.since).not.toBe('2026-09-21T16:26:00.000Z')
   })
 })
