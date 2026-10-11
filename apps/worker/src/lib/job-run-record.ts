@@ -324,6 +324,63 @@ export async function countRecentKills(
 }
 
 /**
+ * Per-week kill counts for the drift check, newest week first, or why they could not
+ * be read (#1355). `cause` tells a read failure ('error') from a full page ('floor'):
+ * a full page means more unfinished runs than the limit, which is itself extreme
+ * drift, so the caller alerts on it rather than staying silent.
+ */
+export type WeeklyKillCounts =
+  | { kind: 'counted'; weeks: number[] }
+  | { kind: 'unreadable'; cause: 'error' | 'floor'; detail: string }
+
+/**
+ * Kill counts per rolling 7-day week over the trailing window, for the kill-rate
+ * drift check (#1355). Each bucket is a full 7-day span ending `weeks * 7` to 0 days
+ * before `nowMs`, so there is no partial week to deflate the newest count.
+ *
+ * Like `countRecentKills`: a kill is a row with `finished_at` NULL, one read, and a
+ * full page is treated as unreadable (a floor is not a distribution to recalibrate on).
+ */
+export async function countWeeklyKills(
+  supabase: SupabaseClient,
+  job: string,
+  nowMs: number,
+  weeks: number,
+): Promise<WeeklyKillCounts> {
+  try {
+    const windowStart = nowMs - weeks * WEEK_MS
+    const { data, error } = await supabase
+      .from('job_runs')
+      .select('started_at')
+      .eq('job', job)
+      .is('finished_at', null)
+      .gte('started_at', new Date(windowStart).toISOString())
+      .lt('started_at', new Date(nowMs).toISOString())
+      .order('started_at', { ascending: false })
+      .limit(KILL_COUNT_READ_LIMIT)
+    if (error) throw new Error(formatErr(error))
+    const rows = (data as Array<Record<string, unknown>> | null) ?? []
+    if (rows.length >= KILL_COUNT_READ_LIMIT) {
+      const detail = `more than ${KILL_COUNT_READ_LIMIT} unfinished runs in the window, so the per-week counts are a floor`
+      console.error(`[job-runs] weekly killed ${job} runs: ${detail}`)
+      return { kind: 'unreadable', cause: 'floor', detail }
+    }
+    const buckets = new Array<number>(weeks).fill(0)
+    for (const r of rows) {
+      const ms = typeof r.started_at === 'string' ? Date.parse(r.started_at) : NaN
+      if (!Number.isFinite(ms)) continue
+      const i = Math.floor((nowMs - ms) / WEEK_MS)
+      if (i >= 0 && i < weeks) buckets[i] += 1
+    }
+    return { kind: 'counted', weeks: buckets }
+  } catch (err) {
+    const detail = formatErr(err)
+    console.error(`[job-runs] could not count weekly killed ${job} runs: ${detail}`)
+    return { kind: 'unreadable', cause: 'error', detail }
+  }
+}
+
+/**
  * Opens a run record, runs the work, and ALWAYS closes the record (#1251).
  *
  * Four archive jobs need these three steps in the same order, and the order is
