@@ -42,6 +42,7 @@ import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
+import { runKillRateDriftCheck } from './archive/kill-rate-drift'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
@@ -233,6 +234,13 @@ const scheduledJobs = {
       track(
         runDeadLetterBuildTriggerCheck(env.IDEMPOTENCY, supabase, env.APP_URL)
           .catch((e) => console.error('[deadletter-build-trigger] check failed:', e))
+      )
+      // #1355: re-measure the live archive kill distribution and warn when the
+      // kill-rate thresholds no longer sit where they were calibrated. Monthly
+      // cooldown, so running it in the daily batch is effectively a slow recheck.
+      track(
+        runKillRateDriftCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[killrate-drift] check failed:', e))
       )
       track(
         runSecretDriftCheck(supabase, env)

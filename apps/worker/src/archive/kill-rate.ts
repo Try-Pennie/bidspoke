@@ -72,6 +72,11 @@ export const KILLS_IN_DAY_THAT_SPEAK = 3
  * week that held the outage's tail. Seven sits clear of all of them, and a
  * sustained two a day, which never trips the daily rule, arrives here in four
  * days.
+ *
+ * This is a measurement with a date, so it can expire. kill-rate-drift.ts
+ * re-measures the live weekly distribution and alerts if these constants no longer
+ * sit clear of the ordinary rate, so the premise is re-checked rather than trusted
+ * forever (#1355).
  */
 export const KILLS_IN_WEEK_THAT_SPEAK = 7
 
