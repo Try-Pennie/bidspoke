@@ -113,7 +113,7 @@ export const CRON_JOBS: CronJob[] = [
     // under the hourly cadence.
     maxRunMs: 50 * MIN,
     dependents:
-      'workflow_executions and execution_steps are no longer being copied to Snowflake, so the 7-day purge would delete rows with no backup',
+      'workflow_executions and execution_steps are no longer being copied to Snowflake. An unarchived day is held back from the 7-day purge by the deletion gate until the archive catches up, so nothing is lost yet, but the retained data keeps growing until it does',
   },
   {
     id: 'execution-archive-expiry',
