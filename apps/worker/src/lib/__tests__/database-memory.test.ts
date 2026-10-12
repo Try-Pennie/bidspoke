@@ -162,6 +162,16 @@ describe('reading the feed', () => {
     expect(parseMemoryMetrics(feedText({ MemTotal: 0 }))).toEqual({ kind: 'failed', reason: 'node_memory_MemTotal_bytes was 0' })
   })
 
+  it('still reads when the unused swap-out counter is missing, reading it as unknown rather than failing', () => {
+    // The counter is only logged, not judged, so the feed dropping or renaming it must not
+    // turn every reading into a false "feed unreadable" (#1928 follow-up).
+    const text = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n').filter((l) => !l.startsWith('node_vmstat_pswpout{')).join('\n')
+    const answer = parseMemoryMetrics(text)
+    expect(answer.kind).toBe('read')
+    expect(answer.kind === 'read' && answer.reading.swapOutPages).toBe(null)
+    expect(answer.kind === 'read' && answer.reading.availableBytes).toBe(3.505897472e9)
+  })
+
   it('ignores the same figure reported by another service', () => {
     const other = SUPABASE_METRICS_MEDIUM_AFTER_RESTART.split('\n').find((l) => l.startsWith('node_memory_MemAvailable_bytes{'))!
       .replace('service_type="db"', 'service_type="postgresql"').replace(/\} \S+$/, '} 5')
@@ -208,6 +218,62 @@ describe('reading the feed', () => {
   })
 })
 
+const MB = 1024 * 1024
+
+describe('paging only near the danger level (#1928)', () => {
+  it('does not alert on benign swap that grows but stays well under the danger level, with memory free', async () => {
+    const h = harness()
+    // The overnight batch window pages cold pages out: swap climbs gently from ~250 MB to
+    // ~310 MB over the hour while free memory is healthy. Nothing to act on, so no page.
+    await h.runFor(60, (i) => h.reading(PLENTY, 0, GB - (250 + i * 6) * MB))
+    expect(h.sent).toEqual([])
+  })
+
+  it('alerts when swap in use sits near the Oct 8 shape, even with memory free and swap steady', async () => {
+    const h = harness()
+    // ~700 MB in swap, over halfway to the ~1 GB that preceded the Oct 8 stall, held steady.
+    await h.runFor(20, () => h.reading(PLENTY, 0, GB - 700 * MB))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    const p = h.sent[0].payload
+    expect(p.swapping).toBe(true)
+    expect(p.lowFree).toBe(false)
+    expect(p.swapUsedBytes).toBe(700 * MB)
+  })
+
+  it('does not alert while swap stays just under the danger level, with memory free', async () => {
+    const h = harness()
+    await h.runFor(30, () => h.reading(PLENTY, 0, GB - 550 * MB))
+    expect(h.sent).toEqual([])
+  })
+
+  it('keeps the stretch while swap oscillates around the danger line, instead of resetting on each dip', async () => {
+    const h = harness()
+    // Swap alternates 620 / 580 MB across the 600 MB line: once it crosses it latches, and a
+    // dip to 580 (still above the 500 MB clear line) must not flip the state back and restart
+    // the 15 minutes, or a database parked at the danger line is never reported.
+    await h.runFor(20, (i) => h.reading(PLENTY, 0, GB - (i % 2 === 0 ? 620_000_000 : 580_000_000)))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+  })
+
+  it('stays latched when swap eases to between the clear and danger lines after crossing', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(PLENTY, 0, GB - 700_000_000))
+    const before = h.sent.length
+    // 550 MB: below the 600 enter line but above the 500 clear line, so it stays reported.
+    await h.runFor(RECOVERY_REARM_MINUTES + 5, () => h.reading(PLENTY, 0, GB - 550_000_000))
+    expect(h.sent.slice(before)).toEqual([])
+  })
+
+  it('clears the swap stretch once swap drops below the clear line', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(PLENTY, 0, GB - 700_000_000))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    // Back to the benign overnight level, well below the 500 MB clear line: the all-clear follows.
+    await h.runFor(RECOVERY_REARM_MINUTES + 5, () => h.reading(PLENTY, 0, GB - 300_000_000))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short', 'recovery'])
+  })
+})
+
 describe('memory running thin', () => {
   it('says nothing while memory has been under the floor for 10 minutes', async () => {
     const h = harness()
@@ -248,49 +314,10 @@ describe('memory running thin', () => {
     expect(h.sent).toEqual([])
   })
 
-  it('alerts on swapping that goes on for 15 minutes even with plenty of memory free', async () => {
-    const h = harness()
-    // The first reading has no earlier counter, so the stretch starts at the second, five minutes in.
-    await h.runFor(20, (i) => h.reading(PLENTY, 1000 + i * 500, GB / 2))
-    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
-    const p = h.sent[0].payload
-    expect(p.swapping).toBe(true)
-    expect(p.lowFree).toBe(false)
-    expect(p.swapUsedBytes).toBe(GB / 2)
-  })
-
-  it('alerts when the swap in use keeps growing though the swap-out counter never moves', async () => {
-    // Measured on 2026-10-09 at 10:20 ET: 50 MB in swap on Medium with node_vmstat_pswpout
-    // still 0, so on this host memory reaches swap without that counter moving.
-    const h = harness()
-    await h.runFor(20, (i) => h.reading(PLENTY, 0, GB - (i + 1) * 20 * 1024 * 1024))
-    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
-    expect(h.sent[0].payload.swapping).toBe(true)
-  })
-
-  it('does not count swap in use that holds steady, or shrinks, as swapping', async () => {
-    const h = harness()
-    await h.runFor(60, (i) => h.reading(PLENTY, 0, GB - 50 * 1024 * 1024 + (i % 2) * 1024))
-    expect(h.sent).toEqual([])
-  })
-
-  it('does not count the first reading, which has no earlier counter to compare, as swapping', async () => {
-    const h = harness()
-    h.setFeed(h.reading(PLENTY, 5_000_000))
-    const s = await runDatabaseMemoryCheck(h.deps)
-    expect(s.state).toBe('ok')
-  })
-
-  it('reads a counter that went backwards as a restart, not as swapping and not as healthy evidence of swap', async () => {
-    const h = harness()
-    await h.runFor(10, (i) => h.reading(PLENTY, 9000 + i * 100))
-    // The counter rose twice, so the database was swapping; then it restarted and reset.
-    h.clock.now += 5 * MIN
-    h.setFeed(h.reading(PLENTY, 12))
-    const s = await runDatabaseMemoryCheck(h.deps)
-    expect(s.state).toBe('ok')
-    expect(h.logs.some((l) => l.includes('counter_reset=true'))).toBe(true)
-  })
+  // Swap-signal cases moved to the 'paging only near the danger level' block above: the
+  // old growth, counter-rise, first-reading and counter-reset cases are gone because swap is
+  // now judged by LEVEL (a single reading, no baseline, no counter), and the swap-alone
+  // alert and the just-under-threshold quiet are covered there.
 
   it('does not post again inside the reminder gap, and reminds once the six hours are up', async () => {
     const h = harness()
@@ -332,17 +359,6 @@ describe('load on the database it watches', () => {
     const after = h.slackResolves
     await h.runFor(60, () => h.reading(LOW))
     expect(h.slackResolves).toBe(after)
-  })
-})
-
-describe('a swap baseline from before a long gap in readings', () => {
-  it('is not compared against, so swap that grew across an outage is not read as swapping now', async () => {
-    const h = harness()
-    await h.runFor(10, (i) => h.reading(PLENTY, 1000 + i * 100, GB - (i + 1) * 20 * 1024 * 1024))
-    await h.runFor(60, () => ({ kind: 'failed', reason: 'timeout' }))
-    // Both the counter and the swap in use grew across the gap, then hold steady.
-    await h.runFor(10, () => h.reading(PLENTY, 900_000, GB / 2))
-    expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
   })
 })
 
@@ -465,9 +481,9 @@ describe('a state record it cannot use', () => {
     expect(h.sent.map((s) => s.kind)).toEqual(['unreadable'])
   })
 
-  it('replaces a record carrying a figure that is not a number, rather than comparing against it', async () => {
+  it('replaces a record carrying a figure that is not a number, rather than reading it', async () => {
     const h = harness()
-    await h.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify({ state: 'ok', reason: 'clear', since: '2026-10-09T12:00:00.000Z', lastSwapUsed: '5', lastSwapOut: null }))
+    await h.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify({ state: 'short', reason: 'low_free', since: '2026-10-09T12:00:00.000Z', lowestAvailableBytes: '5' }))
     h.setFeed(h.reading(PLENTY, 10, GB - 100 * 1024 * 1024))
     const s = await runDatabaseMemoryCheck(h.deps)
     expect(s.errors.join(' ')).toMatch(/state replaced/)
@@ -497,13 +513,21 @@ describe('local development', () => {
 describe('every reading is logged', () => {
   it('logs the free share, the swap in use and the counter on every run, for calibrating the floor', async () => {
     const h = harness()
-    // A quarter of the 1 GB swap in use: three quarters free.
+    // A quarter of the 1 GiB (1.07 GB) swap in use: three quarters free. 268 MB in decimal.
     h.setFeed(h.reading(PLENTY, 42, (GB * 3) / 4))
     await runDatabaseMemoryCheck(h.deps)
     const line = h.logs.find((l) => l.includes('event=database_memory'))!
     expect(line).toMatch(/free_pct=60\.0/)
-    expect(line).toMatch(/swap_used_mb=256/)
+    expect(line).toMatch(/swap_used_mb=268/)
     expect(line).toMatch(/swap_out_pages=42/)
     expect(line).toMatch(/state=ok/)
+  })
+
+  it('logs the unreadable swap-out counter as unknown, not as a measured zero', async () => {
+    const h = harness()
+    h.setFeed({ kind: 'read', reading: { totalBytes: TOTAL, availableBytes: PLENTY, swapTotalBytes: GB, swapFreeBytes: GB, swapOutPages: null } })
+    await runDatabaseMemoryCheck(h.deps)
+    const line = h.logs.find((l) => l.includes('event=database_memory'))!
+    expect(line).toMatch(/swap_out_pages=unknown/)
   })
 })

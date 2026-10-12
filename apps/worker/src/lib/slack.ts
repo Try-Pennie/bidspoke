@@ -2830,10 +2830,12 @@ export interface DatabaseMemoryShortPayload {
   lowestAvailableBytes: number
   /** Whether a reading in the stretch found less than the floor free. */
   lowFree: boolean
-  /** Whether a reading in the stretch found memory moving to disk: the swap-out counter rising or the swap in use growing. */
+  /** Whether a reading in the stretch found swap in use above the concern level. */
   swapping: boolean
   /** Swap in use at the latest reading. */
   swapUsedBytes: number
+  /** The swap level above which the check pages, as the check judged it. */
+  swapConcernBytes: number
   since: string
   repeat: string | null
   at: number
@@ -2846,10 +2848,11 @@ export interface DatabaseMemoryShortPayload {
  *
  * Two shapes, because they call for different actions. When free memory actually went
  * under the floor, that is the exhaustion that stalled on Oct 8, and the fix is a
- * resize. When only swap grew while free memory stayed healthy, it is a heavy query
- * briefly spilling, not exhaustion: the alert says so and does NOT tell someone to
- * resize when they have most of their memory free, which is what the flat "short of
- * memory, resize up" wording did on 2026-10-11 with 47 percent free.
+ * resize. When only swap is high while free memory stayed healthy, it is an EARLY
+ * WARNING that the working set is outgrowing memory: nothing is failing yet, so the
+ * alert says so and frames the remedy as investigate-then-resize-if-it-persists rather
+ * than resize now. The swap level that pages is near the Oct 8 shape (#1928 follow-up,
+ * Dan 2026-10-12), so benign overnight swapping never reaches this copy.
  */
 export async function sendDatabaseMemoryShortAlert(
   slack: { bot_token: string },
@@ -2859,17 +2862,17 @@ export async function sendDatabaseMemoryShortAlert(
   const share = Math.round((payload.lowestAvailableBytes / payload.totalBytes) * 100)
   const floor = Math.round(payload.freeFloor * 100)
   const swapHere = `memory moving to disk, with ${decimalSize(payload.swapUsedBytes)} there now`
-  // Swapping alone, with free memory never under the floor: not exhaustion.
+  // Swapping alone, with free memory never under the floor: not yet exhaustion.
   const swappingOnly = payload.swapping && !payload.lowFree
 
   const header = swappingOnly ? 'The database moved memory to disk' : 'The database is short of memory'
   const lines: string[] = []
   if (swappingOnly) {
     lines.push(
-      `Since ${etTime(Date.parse(payload.since))} readings have found ${swapHere}. ` +
-        `Free memory stayed healthy over that stretch: the least free was ${decimalSize(payload.lowestAvailableBytes)}, ` +
+      `Since ${etTime(Date.parse(payload.since))} readings have found ${swapHere}. The database should keep swap under ${decimalSize(payload.swapConcernBytes)}, and it has climbed past that line. ` +
+        `Free memory is still healthy: the least free was ${decimalSize(payload.lowestAvailableBytes)}, ` +
         `${share} percent of its ${decimalSize(payload.totalBytes)}, and no reading went under the ${floor} percent floor. ` +
-        'This is not the memory exhaustion that caused the Oct 8 stall, where free memory itself ran out.',
+        'So nothing is failing yet, but this is the shape that preceded the Oct 8 stall, where free memory itself ran out.',
     )
   } else {
     const signs: string[] = []
@@ -2885,7 +2888,7 @@ export async function sendDatabaseMemoryShortAlert(
   lines.push(`Seen at ${etTime(payload.at)}.`)
 
   const fix = swappingOnly
-    ? `*What to do:* a resize would not address this. It adds free memory, and free memory is not what ran low here: it stayed above the floor the whole time. If this recurs and the swap climbs day over day toward the Oct 8 shape, find what is moving memory to disk: the scheduled stats refreshes inside the database (#1884), or a large query. An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`
+    ? `*What to do:* this is an early warning, not the Oct 8 stall: free memory has not run out. Find what is holding memory: the scheduled stats refreshes inside the database (#1884), or a large query. If the swap keeps climbing toward the Oct 8 shape, or free memory starts dropping, move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`
     : `*How to fix:* move the database to the next compute size up in Supabase, under Project Settings, Compute and Disk. The change restarts the database for a minute or two, so pick a quiet hour. If the size was raised recently, find what is using the memory instead: the scheduled stats refreshes inside the database are the known heavy readers (#1884). An all-clear follows here once memory has stayed clear for ${RECOVERY_REARM_MINUTES} minutes.`
 
   const blocks: unknown[] = [
