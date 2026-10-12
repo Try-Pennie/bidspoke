@@ -38,6 +38,9 @@ export interface Env {
   SUPABASE_SECRET_KEY: string
   SUPABASE_PUBLISHABLE_KEY: string
   SUPABASE_JWKS_URL: string  // public var in wrangler.toml
+  // Overrides the 45s per-request fetch deadline (#1484). Unset in production;
+  // the outage drill sets it small so it need not wait the real deadline out.
+  SUPABASE_REQUEST_DEADLINE_MS?: string
 
   // Webhook auth, a JSON string: { [apiKey: string]: sourceName }
   API_KEY_MAP: string

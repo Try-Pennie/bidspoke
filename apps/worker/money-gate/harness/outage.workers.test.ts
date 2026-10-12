@@ -123,8 +123,23 @@ async function withinDeadline<T>(what: string, work: Promise<T>): Promise<T> {
   }
 }
 
-/** The database address of the placeholder environment: never reached, the lead client brings its own network. */
-const DB_ENV = { SUPABASE_URL: 'https://supabase-url.placeholder.invalid', SUPABASE_SECRET_KEY: 'money-gate-outage-drill' }
+/**
+ * The database address of the placeholder environment: never reached, the lead
+ * client brings its own network.
+ *
+ * SUPABASE_REQUEST_DEADLINE_MS overrides the client's 45s production fetch deadline
+ * (#1484), which otherwise makes every hung-shape call wait 45 real seconds (the
+ * calls with no shorter budget of their own, step logging and the Slack read, so
+ * ~9 minutes for the suite) and skews the timing-sensitive race fixtures. 2000 ms
+ * keeps it a backstop above the harness's own budgets (the lead read 1000 ms, the
+ * hung post-response cut at HUNG_BUDGET_MS * 4), mirroring how 45s sits above the
+ * 25s post-response budget in production, so the same budgets still fire first.
+ */
+const DB_ENV = {
+  SUPABASE_URL: 'https://supabase-url.placeholder.invalid',
+  SUPABASE_SECRET_KEY: 'money-gate-outage-drill',
+  SUPABASE_REQUEST_DEADLINE_MS: String(HUNG_BUDGET_MS * 8),
+}
 
 /** Each kept copy with its KV metadata, which since #1847 carries when it was last confirmed. */
 type Kept = Record<string, Record<string, { value: string; metadata: unknown }>>

@@ -210,7 +210,18 @@ export function compareOutage(up: OutageRecord, down: OutageRecord): OutageDiffe
   if ((up.error ?? null) !== (down.error ?? null)) diffs.push({ field: 'error', detail: down.error ?? `down run did not throw; up threw ${up.error}` })
   check('response', up.response, down.response)
   const sorted = <T>(xs: T[]) => [...xs].map(canonical).sort()
-  check('outbound', sorted(up.outbound), sorted(down.outbound))
+  // The run's OWN execution id is minted fresh each run from the drill's pinned RNG,
+  // so a correct outage path that draws from it shifts it even when the money flow is
+  // identical. The case this exists for: when a write aborts at its deadline rather
+  // than hanging (#1484), the outcome dead letter fires (durability.ts), draws a
+  // crypto.randomUUID, and the execution id that lands in a `?execution=<uuid>` link
+  // in an outbound body differs between the twins. ONLY that link is normalised, and
+  // ONLY its execution-id value: every OTHER uuid (partner, buyer, workflow, lead) is
+  // a reference, not a per-run mint, and a down run sending to a different one is a
+  // real money difference that must still fail.
+  const EXEC_LINK_RE = /([?&]execution=)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+  const sortedOutbound = <T>(xs: T[]) => [...xs].map((x) => canonical(x).replace(EXEC_LINK_RE, '$1<uuid>')).sort()
+  check('outbound', sortedOutbound(up.outbound), sortedOutbound(down.outbound))
   check('code_dispatch', sorted(up.code_dispatch), sorted(down.code_dispatch))
   check('routes', up.decisions.routes, down.decisions.routes)
   check('nodes_executed', up.decisions.nodes_executed, down.decisions.nodes_executed)

@@ -54,6 +54,8 @@ export const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   SUPABASE_URL: 'expose',
   SUPABASE_PUBLISHABLE_KEY: 'expose',
   SUPABASE_JWKS_URL: 'expose',
+  // The client's fetch deadline (#1484); internal plumbing, no code node needs it.
+  SUPABASE_REQUEST_DEADLINE_MS: 'block',
   PII_REDACTION_FIELDS: 'expose',
   APP_URL: 'expose',
   SELF_CHECK_URL: 'expose',
