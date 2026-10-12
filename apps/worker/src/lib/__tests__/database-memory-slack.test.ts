@@ -23,6 +23,7 @@ const base = {
   freeFloor: 0.15,
   lowestAvailableBytes: 401_000_000,
   swapUsedBytes: 0,
+  swapConcernBytes: 600 * 1000 * 1000,
   since: '2026-10-09T13:00:00.000Z',
   repeat: null,
   at: Date.parse('2026-10-09T13:15:00Z'),
@@ -44,31 +45,44 @@ describe('the memory short alert', () => {
   })
 
   it('says it was moving memory to disk only when swapping was seen, with how much is there now', async () => {
-    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 2_400_000_000, lowFree: false, swapping: true, swapUsedBytes: 536_870_912 })
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 2_400_000_000, lowFree: false, swapping: true, swapUsedBytes: 734_003_200 })
     expect(text()).toMatch(/memory moving to disk/)
-    expect(text()).toMatch(/537 MB/)
+    expect(text()).toMatch(/734 MB/)
     expect(text()).not.toMatch(/less than 15 percent/)
   })
 
-  // #1928 follow-up: swapping alone, with free memory well above the floor, is not
-  // the memory exhaustion that caused Oct 8. The alert must not say "short of memory"
-  // and must not tell someone to resize when they have most of their memory free.
-  it('does not claim memory is short, nor recommend a resize, when only swap grew and free memory stayed healthy', async () => {
-    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 1_900_000_000, lowFree: false, swapping: true, swapUsedBytes: 290_000_000 })
+  // #1928 follow-up (Dan 2026-10-12): swap high while free memory stayed healthy is an
+  // early warning, not the Oct 8 exhaustion. The alert must not say "short of memory",
+  // must name the level and frame the resize as conditional, not immediate.
+  it('frames swap-high with healthy free memory as an early warning, naming the level and a conditional resize', async () => {
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 1_900_000_000, lowFree: false, swapping: true, swapUsedBytes: 734_003_200 })
     const t = text()
     expect(t).not.toMatch(/short of memory/)
-    expect(t).not.toMatch(/next compute size up/)
-    expect(t).toContain('memory moving to disk, with 290 MB there now')
-    expect(t).toContain('Free memory stayed healthy over that stretch')
-    // Accurate to what lowFree=false means: no reading went under the floor, not "well above".
+    expect(t).toContain('memory moving to disk, with 734 MB there now')
+    expect(t).toContain('should keep swap under 600 MB, and it has climbed past that line')
+    expect(t).toContain('Free memory is still healthy')
+    // Accurate to what lowFree=false means: no reading went under the floor.
     expect(t).toContain('no reading went under the 15 percent floor')
-    expect(t).toContain('This is not the memory exhaustion that caused the Oct 8 stall')
-    // It frames the remedy on what was measured (a resize does not address swap when
-    // free memory is healthy), not on an unmeasured cause guess (L11).
-    expect(t).toMatch(/a resize would not address this/)
-    expect(t).not.toMatch(/usually a heavy query/)
+    expect(t).toMatch(/early warning/)
+    expect(t).toContain('this is the shape that preceded the Oct 8 stall')
+    // The resize is the remedy only if it keeps climbing, not an immediate instruction.
+    expect(t).toMatch(/If the swap keeps climbing.*next compute size up/)
     // It does not overclaim that EVERY reading swapped, only that readings found it.
     expect(t).not.toMatch(/every reading .* moving to disk/)
+    expect(t).not.toMatch(/undefined|NaN/)
+  })
+
+  // Hysteresis keeps swap latched between the 500 MB clear line and the 600 MB concern line,
+  // so the latest reading can be 550 MB while still reported. The copy must not then claim
+  // the current figure is past 600 MB; it reports the figure and says it HAS climbed past.
+  it('does not claim the latest swap is past the line when hysteresis holds it just below', async () => {
+    await sendDatabaseMemoryShortAlert({ bot_token: 't' }, '#ops', { ...base, lowestAvailableBytes: 1_900_000_000, lowFree: false, swapping: true, swapUsedBytes: 550_000_000 })
+    const t = text()
+    expect(t).toContain('with 550 MB there now')
+    expect(t).toContain('should keep swap under 600 MB, and it has climbed past that line')
+    // Guards against the earlier wording that put the figure and "past the N MB" in one
+    // breath, which read as a contradiction once hysteresis holds the latest figure below.
+    expect(t).not.toMatch(/there now, past the \d+ MB/)
     expect(t).not.toMatch(/undefined|NaN/)
   })
 
