@@ -31,12 +31,16 @@
 --
 -- RETENTION. Only finished rows (replayed, refused, abandoned) are purged, 30
 -- days after they finished, by a daily pg_cron job. A pending row is never
--- purged however old: it is a write somebody still owes. Each failure is
--- alerted once, as it is captured, by the dead letter that already pages a
--- lost post-answer write. NOTHING YET alerts on an old pending row, and nothing
--- yet moves one out of pending: the replay tool (#471) and the drain with its
--- backlog alert (#468) are separate work, and until they ship every row here
--- stays pending.
+-- purged however old: it is a write somebody still owes. A row here is NOT
+-- itself alerted on. The capture runs outside the post-answer dead letter's
+-- gates on purpose, because a classified Salesforce outage (which that dead
+-- letter stays quiet for, as it does for a muted signal, a suppressed step and
+-- a business rejection) is exactly when these writes fail, and even when it
+-- does count a failure it pages on a rate, not per row. So rows can arrive in
+-- silence. NOTHING YET alerts on a pending row, and nothing yet moves one out
+-- of pending: the replay tool (#471) and the drain with its backlog alert
+-- (#468) are separate work, and until they ship every row here stays pending
+-- and is found only by reading the table.
 --
 -- Expand/contract (ADR 0007): additive. A new table, a function and a cron job;
 -- nothing the deployed worker reads changes.
