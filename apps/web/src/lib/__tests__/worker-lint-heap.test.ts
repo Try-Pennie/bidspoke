@@ -24,7 +24,9 @@ describe('the worker lint heap', () => {
     const heap = /--max-old-space-size=(\d+)/.exec(lint)
     expect(heap, `apps/worker lint runs on the default heap, which the type aware lint outgrew: ${lint}`).not.toBeNull()
     expect(Number(heap?.[1])).toBeGreaterThanOrEqual(MIN_HEAP_MB)
-    // The option has to reach ESLint's own Node process, so the script must still run ESLint.
-    expect(lint).toMatch(/eslint/)
+    // The option has to reach ESLint's own Node process: given to node as it starts
+    // the ESLint entry point, or through NODE_OPTIONS ahead of eslint. A flag placed
+    // after eslint is read by ESLint as one of its own arguments and does nothing.
+    expect(lint).toMatch(/^(node --max-old-space-size=\d+ \S*eslint\S*\s|(cross-env )?NODE_OPTIONS=--max-old-space-size=\d+ eslint\s)/)
   })
 })
