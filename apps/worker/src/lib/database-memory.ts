@@ -30,6 +30,10 @@
  * The 15 percent floor was reasoned, not calibrated: it went live with one reading taken
  * minutes after the move to Medium. Every run logs its figures so the floor can be checked
  * against a full day of real readings (L172). Log line to search for: `event=database_memory`.
+ * Those logs are not reachable by query (Logpush drops console messages; the observability
+ * tool rejects cron events), so each successful run also records its figures into a bounded KV
+ * ring buffer (`database-memory-readings.ts`) that `GET /api/admin/database-memory-readings`
+ * reads back. That is the queryable home the swap thresholds are calibrated against (#2010).
  */
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
@@ -37,6 +41,7 @@ import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-back
 import { keepAlerted, markSpikeSeen, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type RecoveryKv } from './alert-recovery'
 import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
 import { sendDatabaseMemoryShortAlert, sendDatabaseMemoryUnreadableAlert, sendGroupedRecoveryAlert } from './slack'
+import { recordMemoryReading, type StoredMemoryReading } from './database-memory-readings'
 import { formatErr } from './format-error'
 
 const MIN = 60 * 1000
@@ -287,6 +292,8 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   let lowFree = false
   let swapping = false
   let line: string
+  // The figures to record for calibration (#2010), set only on a reading that worked.
+  let toRecord: StoredMemoryReading | null = null
   if (answer.kind === 'failed') {
     summary.state = 'unreadable'
     // Memory is carried as last measured; only the feed's clock moves.
@@ -328,6 +335,16 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
       ` free_pct=${(freeShare * 100).toFixed(1)} available_mb=${Math.round(reading.availableBytes / MB_DECIMAL)} total_mb=${Math.round(reading.totalBytes / MB_DECIMAL)}` +
       ` swap_used_mb=${Math.round(swapUsed / MB_DECIMAL)} swap_out_pages=${reading.swapOutPages ?? 'unknown'}` +
       ` swap_high=${swapping}`
+    // Recorded in the same figures and unit as the log line (L118), so the swap figure stored
+    // for calibration is the exact one compared against the 600 MB concern line.
+    toRecord = {
+      at: nowMs,
+      freePct: Number((freeShare * 100).toFixed(1)),
+      availableMb: Math.round(reading.availableBytes / MB_DECIMAL),
+      totalMb: Math.round(reading.totalBytes / MB_DECIMAL),
+      swapUsedMb: Math.round(swapUsed / MB_DECIMAL),
+      swapHigh: swapping,
+    }
   }
   const heldForMs = nowMs - Date.parse(state.since)
 
@@ -340,6 +357,17 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     await deps.kv.put(DATABASE_MEMORY_STATE_KEY, JSON.stringify(state))
   } catch (e) {
     summary.errors.push(`state write failed: ${formatErr(e)}`)
+  }
+
+  // Give the reading a queryable home so the swap thresholds can be calibrated against real
+  // data (#2010). KV, never the watched database, and off the critical path. A failed record
+  // is reported, not thrown, so it never breaks the alerting the run exists to do (L95).
+  if (toRecord) {
+    try {
+      await recordMemoryReading(deps.kv, toRecord, { log: deps.log })
+    } catch (e) {
+      summary.errors.push(`reading not recorded: ${formatErr(e)}`)
+    }
   }
 
   // Read only when about to post: the connections live in the database this check watches,

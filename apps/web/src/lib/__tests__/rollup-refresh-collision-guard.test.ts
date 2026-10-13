@@ -11,66 +11,113 @@ import {
 } from './_pg-cron'
 
 /**
- * The analytics rollup refreshes (#833, #849, #837).
+ * The analytics rollup refreshes (#833, #849, #837, #1884, #1150).
  *
- * workflow_stats_daily and field_presence_daily are each refreshed by one
- * delete-then-insert function driven by two pg_cron jobs: an incremental pass
- * every 5 minutes and a nightly reconciler. Because 03:45 and 03:50 are
- * themselves multiples of 5, the reconciler and the incremental pass started at
- * the same instant every night. Neither DELETE can see the other's uncommitted
- * rows, so both re-inserted the same day and whichever committed second aborted
- * on the primary key: 128 duplicate-key failures and 6 deadlocks between
- * 2026-05-18 and 2026-08-18.
+ * Each of workflow_stats_daily and field_presence_daily is kept current by three
+ * pg_cron jobs: a frequent pass, an hourly "recent" pass, and a nightly
+ * reconciler. The nightly and hourly passes are both a delete-then-insert
+ * reaggregation of a window of days (refresh_workflow_stats_daily /
+ * refresh_field_presence_daily), the correctness backstop.
  *
- * These guards protect the three properties that stop it, and one adjacent
- * defect in the same statement:
+ * The frequent pass differs by table:
+ *   workflow_stats_daily   refresh_workflow_stats_daily(0): today, delete-then-insert.
+ *   field_presence_daily   refresh_field_presence_incremental(): a watermark
+ *                          incremental that reads only executions finished since
+ *                          the last pass and ADDS them, so its cost is the new
+ *                          work, not the size of today's partition (#1150).
  *
- *   1. the functions serialize with themselves, which is the actual fix (a
- *      reschedule alone still collides whenever a run overruns its slot)
- *   2. the nightly minute is off the incremental grid, so the common case
- *      never contends at all
+ * These guards protect the properties that keep that safe:
+ *
+ *   1. every refresh function serializes with itself, which is the #833 fix (a
+ *      reschedule alone still collides whenever a run overruns its slot), and the
+ *      field-presence incremental shares the reconcile's lock so an ADD and a
+ *      delete-then-insert never interleave (#1150)
+ *   2. each table's nightly and hourly minutes are off its frequent grid, so the
+ *      common case never contends at all
  *   3. a full-refresh lookback never exceeds raw retention, or the nightly run
  *      deletes rollup history whose source partitions are already dropped and
- *      cannot put it back (#849). This rule was written in a comment in
- *      20260522000002 and a later table cloned the pre-fix value anyway, which
- *      is why it is a test now and not a comment.
- *   4. the outcome expression in the GROUP BY matches the one in the INSERT, or
- *      a NULL and an empty-string outcome form two groups that collide on one
- *      primary key (#837).
+ *      cannot put it back (#849)
+ *   4. the outcome expression in the GROUP BY matches the one in the INSERT, or a
+ *      NULL and an empty-string outcome form two groups that collide on one
+ *      primary key (#837)
+ *   5. every heavy scheduled reader starts in a minute nothing else starts in
+ *      (#1884)
+ *   6. every refresh job states its own statement_timeout, in the cron command
+ *      and never in the function body where it would not bind (#1147)
  */
 
-/** Rollup refresh functions, and the table each one keys its rows in. */
-const ROLLUP_FUNCTIONS = ['refresh_workflow_stats_daily', 'refresh_field_presence_daily'] as const
+/** The delete-then-insert reconcilers, one per rollup table. */
+const RECONCILE_FUNCTIONS = ['refresh_workflow_stats_daily', 'refresh_field_presence_daily'] as const
+/** The watermark incremental that drives the field-presence frequent pass (#1150). */
+const INCREMENTAL_FUNCTION = 'refresh_field_presence_incremental'
+/** Every refresh function whose body is a timing concern. */
+const ALL_REFRESH_FUNCTIONS = [...RECONCILE_FUNCTIONS, INCREMENTAL_FUNCTION] as const
+
+/**
+ * Each rollup table's three jobs, by name, and the function its frequent pass is
+ * expected to call. Keyed on job name rather than on the function, because the
+ * two tables no longer drive their frequent pass with the same function.
+ */
+const ROLLUP_GROUPS = [
+  {
+    label: 'workflow_stats_daily',
+    frequent: 'refresh-workflow-stats-daily',
+    recent: 'refresh-workflow-stats-daily-recent',
+    nightly: 'refresh-workflow-stats-daily-full',
+    frequentRoutine: 'refresh_workflow_stats_daily',
+  },
+  {
+    label: 'field_presence_daily',
+    frequent: 'refresh-field-presence-daily',
+    recent: 'refresh-field-presence-daily-recent',
+    nightly: 'refresh-field-presence-daily-full',
+    frequentRoutine: INCREMENTAL_FUNCTION,
+  },
+] as const
+
+/** Every rollup job, by name: three per table. */
+const ROLLUP_JOB_NAMES = ROLLUP_GROUPS.flatMap((g) => [g.frequent, g.recent, g.nightly])
 
 /**
  * The JOB whose cron argument is the authoritative raw retention window.
  *
- * Keyed on the job name, never on the procedure it calls. This guard used to
- * name `truncate_expired_execution_partitions`, and #873 repointed the job at
- * `truncate_verified_execution_partitions` so the deletion consults the archive
- * first. Nothing about the retention window changed, but the lookup found no job,
- * `commandArg(undefined) ?? 0` gave a retention of zero, and all three
- * assertions below failed claiming the raw tables retain nothing. The job name is
- * the stable identifier and survives the next rename too (L305, L15).
+ * Keyed on the job name, never on the procedure it calls (#873, L305, L15).
  */
 const RETENTION_JOB = 'purge-old-execution-partitions'
 
 const migrations = readMigrations()
 const jobs = [...liveCronJobs(migrations).values()]
 
-/** Jobs driving one of the rollup refresh functions, grouped by function. */
-function jobsFor(fn: string) {
-  return jobs.filter((j) => commandRoutine(j.command) === fn)
+/** The one live cron job with this name; a lookup that misses fails the test that asked (L100). */
+function job(name: string) {
+  const j = jobs.find((x) => x.name === name)
+  if (!j) throw new Error(`no live cron job named '${name}'`)
+  return j
+}
+
+/** The advisory-lock key a function's body takes, e.g. `883301, 2`, or null. */
+function lockKey(fn: string): string | null {
+  const body = latestRoutineBody(fn, migrations)?.body ?? ''
+  return /pg_advisory_xact_lock\s*\(\s*([^)]+)\)/.exec(body)?.[1]?.trim() ?? null
 }
 
 describe('rollup refresh: the parse itself', () => {
   // A regex that matches nothing makes every loop below vacuous and green
   // (LESSONS L100, L143), so assert the inputs exist before asserting anything
   // about them.
-  it('finds both rollup refresh functions and three live jobs for each (today, recent, nightly)', () => {
-    for (const fn of ROLLUP_FUNCTIONS) {
+  it('finds every refresh function and all six rollup jobs', () => {
+    for (const fn of ALL_REFRESH_FUNCTIONS) {
       expect(latestRoutineBody(fn, migrations), `${fn} definition`).not.toBeNull()
-      expect(jobsFor(fn).map((j) => j.name).sort(), `${fn} jobs`).toHaveLength(3)
+    }
+    for (const name of ROLLUP_JOB_NAMES) {
+      expect(jobs.find((j) => j.name === name), `${name} job`).toBeDefined()
+    }
+    expect(ROLLUP_JOB_NAMES).toHaveLength(6)
+  })
+
+  it('each frequent pass calls the function it is meant to', () => {
+    for (const g of ROLLUP_GROUPS) {
+      expect(commandRoutine(job(g.frequent).command), `${g.label} frequent routine`).toBe(g.frequentRoutine)
     }
   })
 
@@ -128,19 +175,24 @@ describe('the cron parse reads cron.alter_job (#1884)', () => {
 })
 
 describe('rollup refresh: serializes with itself', () => {
-  it.each(ROLLUP_FUNCTIONS)('%s takes a transaction-scoped advisory lock', (fn) => {
+  it.each(ALL_REFRESH_FUNCTIONS)('%s takes a transaction-scoped advisory lock', (fn) => {
     const found = latestRoutineBody(fn, migrations)
     expect(found).not.toBeNull()
     expect(found!.body, `${fn} in ${found!.migration}`).toMatch(/pg_advisory_xact_lock\s*\(/)
   })
 
-  it('the two functions lock on different keys', () => {
-    const keys = ROLLUP_FUNCTIONS.map((fn) => {
-      const body = latestRoutineBody(fn, migrations)?.body ?? ''
-      return /pg_advisory_xact_lock\s*\(\s*([^)]+)\)/.exec(body)?.[1]?.trim() ?? null
-    })
-    expect(keys.every((k) => k !== null)).toBe(true)
+  it('the two reconcilers lock on different keys', () => {
+    const keys = RECONCILE_FUNCTIONS.map((fn) => lockKey(fn))
+    expect(keys.every((k) => k !== null), `lock keys ${JSON.stringify(keys)}`).toBe(true)
     expect(new Set(keys).size, `lock keys ${JSON.stringify(keys)}`).toBe(keys.length)
+  })
+
+  it('the field-presence incremental and reconcile share one lock, so an ADD and a rebuild never interleave', () => {
+    const incremental = lockKey(INCREMENTAL_FUNCTION)
+    const reconcile = lockKey('refresh_field_presence_daily')
+    expect(incremental, 'incremental lock key').not.toBeNull()
+    expect(reconcile, 'reconcile lock key').not.toBeNull()
+    expect(incremental, `incremental ${incremental} vs reconcile ${reconcile}`).toBe(reconcile)
   })
 })
 
@@ -155,87 +207,87 @@ function fires(schedule: string): Set<number> {
 const isFrequent = (schedule: string) => fires(schedule).size > 24
 
 describe('rollup refresh: schedules cannot coincide', () => {
-  it.each(ROLLUP_FUNCTIONS)('%s hourly and nightly jobs are off the frequent grid', (fn) => {
-    const group = jobsFor(fn)
-    const frequent = group.filter((j) => isFrequent(j.schedule))
-    expect(frequent, `${fn} has no frequent job`).toHaveLength(1)
+  it.each(ROLLUP_GROUPS.map((g) => [g.label, g] as const))(
+    '%s hourly and nightly jobs are off the frequent grid',
+    (_label, g) => {
+      const frequent = job(g.frequent)
+      expect(isFrequent(frequent.schedule), `${g.frequent} (${frequent.schedule}) is not a frequent schedule`).toBe(true)
 
-    const others = group.filter((j) => !isFrequent(j.schedule))
-    expect(others, `${fn} has no hourly or nightly job`).not.toHaveLength(0)
-
-    const grid = fires(frequent[0].schedule)
-    for (const job of others) {
-      const shared = [...fires(job.schedule)].filter((m) => grid.has(m))
-      expect(shared, `${job.name} (${job.schedule}) starts on the ${frequent[0].schedule} grid`).toEqual([])
-    }
-  })
-})
-
-/**
- * Only today is recounted often (#1884).
- *
- * Each pass deletes and rewrites `CURRENT_DATE - lookback` onwards by reading
- * every workflow_executions row of those days. With a lookback of 2 every 5
- * minutes, workflow_stats_daily read about 296 MB per run (1,178 GB in two
- * weeks, 85 GB a day) and was the largest reader on a Micro database that
- * stalled for 30 s on 2026-10-08. Only today changes between passes, so the
- * frequent pass reads today alone and an hourly pass keeps the two days before
- * it current, which is what the frequent pass used to cover: a late completion
- * or a stranded execution finalised hours later still reaches its own day.
- */
-describe('rollup refresh: only today is recounted often', () => {
-  it.each(ROLLUP_FUNCTIONS)('%s frequent pass reads today only', (fn) => {
-    const frequent = jobsFor(fn).filter((j) => isFrequent(j.schedule))
-    expect(frequent).toHaveLength(1)
-    expect(commandArg(frequent[0].command), `${frequent[0].name}: ${frequent[0].command}`).toBe(0)
-  })
-
-  it.each(ROLLUP_FUNCTIONS)(
-    '%s past two days are recounted at least hourly, so a late change cannot sit stale for a day',
-    (fn) => {
-      const covering = jobsFor(fn).filter((j) => (commandArg(j.command) ?? 0) >= 2)
-      // The longest wait between two starts of any covering job, across midnight.
-      const starts = [...new Set(covering.flatMap((j) => [...fires(j.schedule)]))].sort((a, b) => a - b)
-      expect(starts.length, `${fn} has no job covering the two days before today`).toBeGreaterThan(0)
-      let longest = 0
-      for (let i = 0; i < starts.length; i++) {
-        const next = i + 1 < starts.length ? starts[i + 1] : starts[0] + 24 * 60
-        longest = Math.max(longest, next - starts[i])
+      const grid = fires(frequent.schedule)
+      for (const name of [g.recent, g.nightly]) {
+        const other = job(name)
+        expect(isFrequent(other.schedule), `${name} (${other.schedule}) is unexpectedly frequent`).toBe(false)
+        const shared = [...fires(other.schedule)].filter((m) => grid.has(m))
+        expect(shared, `${name} (${other.schedule}) starts on the ${frequent.schedule} grid`).toEqual([])
       }
-      expect(longest, `${fn}: the two days before today can go ${longest} minutes without a recount`).toBeLessThanOrEqual(60)
     },
   )
 })
 
 /**
+ * The frequent pass is light (#1884, #1150).
+ *
+ * workflow_stats recounts today alone (lookback 0), reading today's partition
+ * rather than three days; field_presence goes further and reads only the
+ * executions finished since the last pass, via the watermark incremental, rather
+ * than the whole of today's partition.
+ */
+describe('rollup refresh: the frequent pass is light', () => {
+  it('workflow_stats frequent pass reads today only', () => {
+    const frequent = job('refresh-workflow-stats-daily')
+    expect(commandArg(frequent.command), `${frequent.name}: ${frequent.command}`).toBe(0)
+  })
+
+  it('field_presence frequent pass is the watermark incremental, not a day reaggregation', () => {
+    const frequent = job('refresh-field-presence-daily')
+    expect(commandRoutine(frequent.command)).toBe(INCREMENTAL_FUNCTION)
+    // The incremental takes no lookback: it reads from the watermark, not a window.
+    expect(commandArg(frequent.command), `${frequent.name}: ${frequent.command}`).toBeNull()
+  })
+})
+
+/**
+ * The two days before today are recounted at least hourly by a reconcile pass, so
+ * a late completion or a stranded execution finalised hours later cannot sit
+ * stale for a day (#1884). The field-presence incremental is the freshness; this
+ * is the backstop, and it is the reconcile passes (lookback >= 2) that provide it.
+ */
+describe('rollup refresh: the past two days are recounted at least hourly', () => {
+  it.each(ROLLUP_GROUPS.map((g) => [g.label, g] as const))('%s has a covering pass at least hourly', (_label, g) => {
+    const covering = [g.frequent, g.recent, g.nightly]
+      .map((name) => job(name))
+      .filter((j) => (commandArg(j.command) ?? 0) >= 2)
+    const starts = [...new Set(covering.flatMap((j) => [...fires(j.schedule)]))].sort((a, b) => a - b)
+    expect(starts.length, `${g.label} has no job covering the two days before today`).toBeGreaterThan(0)
+    let longest = 0
+    for (let i = 0; i < starts.length; i++) {
+      const next = i + 1 < starts.length ? starts[i + 1] : starts[0] + 24 * 60
+      longest = Math.max(longest, next - starts[i])
+    }
+    expect(longest, `${g.label}: the two days before today can go ${longest} minutes without a recount`).toBeLessThanOrEqual(60)
+  })
+})
+
+/**
  * Heavy scheduled readers start alone (#1884).
  *
- * On 2026-10-08 three pg_cron jobs (24, 45, 47) and the worker's hourly batch
- * all started at 12:00, and at 08:15 the timeout audit started a dozen
- * percentile queries in the same minute as jobs 45 and 47, slowing lead
- * requests to 8.5 s. A collision is a property of two schedules written in two
- * places (a migration and wrangler.toml), so no single change shows it.
- *
- * Every rollup pass and the stranded execution drain (103 MB read per run,
- * measured from pg_stat_statements on 2026-10-08) must start in a minute no
- * other pg_cron job and no worker cron starts in. Every DAILY worker cron (the
- * timeout audit, the 09:00 and 13:00 batches) must start in a minute no pg_cron
- * job starts in. The worker's every-minute cron is the one exemption, because no
- * minute is free of it.
+ * Every rollup pass and the stranded execution drain must start in a minute no
+ * other pg_cron job and no worker cron starts in. Every DAILY worker cron must
+ * start in a minute no pg_cron job starts in. The worker's every-minute cron is
+ * the one exemption, because no minute is free of it.
  */
 describe('heavy scheduled readers start alone', () => {
   const EVERY_MINUTE = '* * * * *'
   const STRANDED_DRAIN = 'reduce-finalize-stranded'
   const worker = workerCrons().filter((c) => c !== EVERY_MINUTE)
 
-  const heavy = jobs.filter(
-    (j) => j.name === STRANDED_DRAIN || (ROLLUP_FUNCTIONS as readonly string[]).includes(commandRoutine(j.command) ?? ''),
-  )
+  const heavyNames = new Set<string>([STRANDED_DRAIN, ...ROLLUP_JOB_NAMES])
+  const heavy = jobs.filter((j) => heavyNames.has(j.name))
 
   it('finds the readers it judges', () => {
-    // An empty list would make every assertion below vacuous (L100).
+    // An empty or short list would make every assertion below vacuous (L100).
     expect(heavy.map((j) => j.name)).toContain(STRANDED_DRAIN)
-    expect(heavy.length).toBe(ROLLUP_FUNCTIONS.length * 3 + 1)
+    expect(heavy.length).toBe(ROLLUP_JOB_NAMES.length + 1)
     expect(worker.length).toBeGreaterThan(3)
   })
 
@@ -271,15 +323,16 @@ describe('rollup refresh: lookback never outruns retention', () => {
   const purge = jobs.find((j) => j.name === RETENTION_JOB)
   const retentionDays = commandArg(purge?.command ?? '') ?? 0
 
-  it.each(ROLLUP_FUNCTIONS)('every %s lookback is within raw retention', (fn) => {
-    const group = jobsFor(fn)
-    expect(group).not.toHaveLength(0)
-    for (const job of group) {
-      const lookback = commandArg(job.command)
-      expect(lookback, `${job.name} passes no lookback`).not.toBeNull()
+  it('every reconcile lookback is within raw retention', () => {
+    // Only the jobs that pass a lookback: the incremental reads from the watermark
+    // and passes none, so it has no window to outrun retention.
+    const reconcileJobs = ROLLUP_JOB_NAMES.map((name) => job(name)).filter((j) => commandArg(j.command) !== null)
+    expect(reconcileJobs.length, 'no reconcile jobs found to judge').toBeGreaterThan(0)
+    for (const j of reconcileJobs) {
+      const lookback = commandArg(j.command)!
       expect(
-        lookback!,
-        `${job.name} re-aggregates ${lookback} days from a table retaining ${retentionDays}`,
+        lookback,
+        `${j.name} re-aggregates ${lookback} days from a table retaining ${retentionDays}`,
       ).toBeLessThanOrEqual(retentionDays)
     }
   })
@@ -311,29 +364,10 @@ describe('rollup refresh: outcome is grouped as it is inserted', () => {
  *
  * On 2026-09-03 a refresh-field-presence-daily run was killed at 121.97s by the
  * CLUSTER default statement_timeout of 120s, inherited because pg_cron runs as
- * `postgres` and that role carries no override. Nothing in this repo chose 120s,
- * and #435 had just doubled the work the job does (17.5 to 34.0 watched keys per
- * execution, so ~3.5M to ~7.1M expanded rows per refresh).
- *
- * Two properties are guarded, and the second is the one that is easy to get
- * wrong in a way that looks right:
- *
- *   1. every job driving a rollup refresh sets statement_timeout in its own
- *      command, so the budget is stated rather than inherited from whatever the
- *      platform currently defaults to
- *   2. the budget is set in the CRON COMMAND and never inside the function.
- *      `SET LOCAL statement_timeout` inside a plpgsql function does not bind the
- *      running call: the timer is armed when the outer statement begins, so the
- *      new value applies only to the NEXT statement. Probed against this
- *      database on 2026-09-04, a function setting it to 1s and then sleeping 3s
- *      slept the full 3s. In the function body it is a line that reads as a
- *      safeguard and enforces nothing (LESSONS L188), and no test that merely
- *      greps for the setting could tell the two placements apart.
- *
- * Plus the arithmetic that actually failed: the budget has to cover the
- * advisory-lock wait AND the work, so a lock wait must not be able to consume
- * most of it. 60s of wait against a 120s ceiling is what left a p99 of 39s with
- * nowhere to go.
+ * `postgres` and that role carries no override. The budget must be set in the
+ * cron command, never inside the function body where `SET LOCAL statement_timeout`
+ * does not bind the running call (LESSONS L188), and a lock wait must not be able
+ * to consume most of it.
  */
 describe('rollup refresh: owns its timeout budget', () => {
   /** A Postgres timeout literal in milliseconds: '180s', '30s', '250ms', '5000'. */
@@ -352,13 +386,12 @@ describe('rollup refresh: owns its timeout budget', () => {
     return re.exec(sql)?.[1] ?? null
   }
 
-  const rollupJobs = ROLLUP_FUNCTIONS.flatMap((fn) => jobsFor(fn))
+  const rollupJobs = ROLLUP_JOB_NAMES.map((name) => job(name))
 
   it('finds the jobs it is about to judge', () => {
-    // Without this the three assertions below are vacuous on an empty list
-    // (L100, L143), which is exactly how a guard passes hardest when the parse
-    // has broken.
-    expect(rollupJobs.length).toBe(ROLLUP_FUNCTIONS.length * 3)
+    // Without this the assertions below are vacuous on an empty list (L100, L143).
+    expect(rollupJobs.length).toBe(ROLLUP_JOB_NAMES.length)
+    expect(rollupJobs.length).toBe(6)
   })
 
   it.each(rollupJobs.map((j) => [j.name, j.command] as const))(
@@ -370,7 +403,7 @@ describe('rollup refresh: owns its timeout budget', () => {
     },
   )
 
-  it.each(ROLLUP_FUNCTIONS)('%s does not set statement_timeout in its body', (fn) => {
+  it.each(ALL_REFRESH_FUNCTIONS)('%s does not set statement_timeout in its body', (fn) => {
     // The placement is the whole point: in the body this line is inert.
     const found = latestRoutineBody(fn, migrations)
     expect(found).not.toBeNull()
@@ -381,19 +414,22 @@ describe('rollup refresh: owns its timeout budget', () => {
     ).toBeNull()
   })
 
-  it.each(ROLLUP_FUNCTIONS)('%s leaves most of its budget for the work, not the lock wait', (fn) => {
+  it.each(ALL_REFRESH_FUNCTIONS)('%s leaves most of its budget for the work, not the lock wait', (fn) => {
     const found = latestRoutineBody(fn, migrations)
     expect(found).not.toBeNull()
     const lock = setting(found!.body, 'lock_timeout')
     expect(lock, `${fn} sets no lock_timeout`).not.toBeNull()
 
-    const budgets = jobsFor(fn).map((j) => {
+    // Every job whose command invokes this function states a budget.
+    const fnJobs = jobs.filter((j) => commandRoutine(j.command) === fn)
+    expect(fnJobs.length, `${fn} has no driving job`).toBeGreaterThan(0)
+    const budgets = fnJobs.map((j) => {
       const v = setting(j.command, 'statement_timeout')
       expect(v, `${j.name} sets no statement_timeout`).not.toBeNull()
       return timeoutMs(v!)
     })
     // A full lock wait must leave at least two thirds of the smallest budget
-    // for the DELETE and the INSERT.
+    // for the work.
     expect(
       timeoutMs(lock!),
       `${fn} lock wait ${lock} against a ${Math.min(...budgets)}ms budget`,
@@ -401,23 +437,8 @@ describe('rollup refresh: owns its timeout budget', () => {
   })
 
   /**
-   * A run that spends its ENTIRE budget must still finish inside its own slot.
-   *
-   * This is the relationship the 2026-09-03 failure was on the wrong side of.
-   * The incremental pass fired every 5 minutes while the work grew past a p99
-   * of 39s, and the 120s ceiling had to cover an advisory-lock wait of up to
-   * 60s on top of that. Once a run can outlive its slot, the next one arrives
-   * to find the lock held, waits, and spends its own budget waiting rather than
-   * working, so one slow run turns into a queue of failures rather than a
-   * single late refresh.
-   *
-   * Guarding the RELATIONSHIP rather than the literal cadence means it holds
-   * whichever side someone changes later: dropping the field-presence pass to
-   * every 15 minutes satisfies it, and so would leaving it at 5 minutes with a
-   * smaller budget, but raising a budget past its interval fails (L63, L103).
-   *
-   * The cushion is there because a run killed at its ceiling still has to roll
-   * back its DELETE and drop the advisory lock before the next attempt starts.
+   * A run that spends its ENTIRE budget must still finish inside its own slot
+   * (#1147), with a cushion to roll back and release the lock before the next run.
    */
   const CUSHION_MS = 60_000
 
@@ -433,26 +454,27 @@ describe('rollup refresh: owns its timeout budget', () => {
     return shortest
   }
 
-  it.each(
-    rollupJobs
-      .filter((j) => isFrequent(j.schedule))
-      .map((j) => [j.name, j.schedule, j.command] as const),
-  )('%s cannot outlive its own slot', (_name, schedule, command) => {
-    const intervalMs = shortestGapMinutes(schedule) * 60_000
-    const value = setting(command, 'statement_timeout')
-    expect(value, 'no statement_timeout in the cron command').not.toBeNull()
-    const budgetMs = timeoutMs(value!)
-
-    expect(
-      budgetMs + CUSHION_MS,
-      `a run may spend ${budgetMs}ms of a ${intervalMs}ms slot, leaving under ` +
-        `${CUSHION_MS}ms to roll back and release the lock before the next run`,
-    ).toBeLessThanOrEqual(intervalMs)
-  })
+  const frequentJobs = rollupJobs.filter((j) => isFrequent(j.schedule))
 
   it('finds at least one frequent rollup job to judge', () => {
-    // The filter above silently empties if the schedule format changes, and an
-    // empty it.each is green (L100).
-    expect(rollupJobs.filter((j) => isFrequent(j.schedule)).length).toBeGreaterThan(0)
+    // The filter silently empties if the schedule format changes, and an empty
+    // it.each is green (L100).
+    expect(frequentJobs.length).toBeGreaterThan(0)
   })
+
+  it.each(frequentJobs.map((j) => [j.name, j.schedule, j.command] as const))(
+    '%s cannot outlive its own slot',
+    (_name, schedule, command) => {
+      const intervalMs = shortestGapMinutes(schedule) * 60_000
+      const value = setting(command, 'statement_timeout')
+      expect(value, 'no statement_timeout in the cron command').not.toBeNull()
+      const budgetMs = timeoutMs(value!)
+
+      expect(
+        budgetMs + CUSHION_MS,
+        `a run may spend ${budgetMs}ms of a ${intervalMs}ms slot, leaving under ` +
+          `${CUSHION_MS}ms to roll back and release the lock before the next run`,
+      ).toBeLessThanOrEqual(intervalMs)
+    },
+  )
 })
