@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-vi.mock('../slack', () => ({ sendPgCronAlert: vi.fn(async () => true) }))
+vi.mock('../slack', () => ({
+  sendPgCronAlert: vi.fn(async () => true),
+  sendPgCronRecoveryAlert: vi.fn(async () => true),
+}))
 
-import { sendPgCronAlert } from '../slack'
+import { sendPgCronAlert, sendPgCronRecoveryAlert } from '../slack'
 import { runPgCronWatch, type PgCronJob } from '../pg-cron-watch'
 
 /**
@@ -32,6 +35,7 @@ function fakeKv() {
     store,
     get: vi.fn(async (k: string) => store.get(k) ?? null),
     put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
+    delete: vi.fn(async (k: string) => { store.delete(k) }),
   } as unknown as KVNamespace & { store: Map<string, string> }
 }
 
@@ -55,6 +59,8 @@ function fakeSupabase(rows: PgCronJob[] | null, opts: { rpcError?: string; orgs?
 beforeEach(() => {
   vi.mocked(sendPgCronAlert).mockClear()
   vi.mocked(sendPgCronAlert).mockResolvedValue(true)
+  vi.mocked(sendPgCronRecoveryAlert).mockClear()
+  vi.mocked(sendPgCronRecoveryAlert).mockResolvedValue(true)
 })
 
 describe('runPgCronWatch: the quiet path', () => {
@@ -99,7 +105,12 @@ describe('runPgCronWatch: a failing job', () => {
     vi.mocked(sendPgCronAlert).mockResolvedValue(false)
     const kv = fakeKv()
     await runPgCronWatch(fakeSupabase([failing]), kv, NOW)
-    expect([...kv.store.keys()]).toEqual([])
+    // The running-end marker may be written (the incident is ongoing), but the
+    // cooldown must not be armed and no recovery start may be owed for an alert
+    // nobody received (#851).
+    const keys = [...kv.store.keys()]
+    expect(keys).not.toContain(`pg-cron-watch:${failing.jobname}:alerted`)
+    expect(keys.some((k) => k.startsWith('pg-cron-watch-recovery:'))).toBe(false)
   })
 })
 
@@ -147,6 +158,50 @@ describe('runPgCronWatch: a reported failure the job has recovered from', () => 
     const results = await runPgCronWatch(fakeSupabase([recovered]), kv, NOW + HOUR)
     expect(results[0]?.status).toBe('failing')
     expect(sendPgCronAlert).toHaveBeenCalled()
+  })
+})
+
+describe('runPgCronWatch: the all-clear when a job recovers (#851)', () => {
+  // Silence after a page meant both "somebody fixed it" and "the cooldown is
+  // still holding"; the recovery line closes that question (L98).
+  const failing: PgCronJob = {
+    ...healthy('reduce-finalize-stranded'),
+    failures_in_window: 3,
+    last_failure_at: iso(NOW - 2 * HOUR),
+    last_failure_message: 'ERROR: deadlock detected',
+    last_success_at: iso(NOW - 3 * HOUR),
+  }
+
+  it('posts one recovery line once a paged job is healthy again, and clears its cooldown', async () => {
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing]), kv, NOW)
+    expect(sendPgCronAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has(`pg-cron-watch:${failing.jobname}:alerted`)).toBe(true)
+
+    const results = await runPgCronWatch(fakeSupabase([healthy(failing.jobname)]), kv, NOW + HOUR)
+    expect(results[0]?.status).toBe('healthy')
+    expect(sendPgCronRecoveryAlert).toHaveBeenCalledTimes(1)
+    // The all-clear cleared the cooldown so a fresh failure pages at once.
+    expect(kv.store.has(`pg-cron-watch:${failing.jobname}:alerted`)).toBe(false)
+  })
+
+  it('announces nothing for a job that was never paged', async () => {
+    const kv = fakeKv()
+    const results = await runPgCronWatch(fakeSupabase([healthy('a')]), kv, NOW)
+    expect(results[0]?.status).toBe('healthy')
+    expect(sendPgCronRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('announces no recovery when the failure alert was never delivered', async () => {
+    // The mirror of arming the cooldown only on delivery: an all-clear must never
+    // follow an alert nobody received (#851).
+    vi.mocked(sendPgCronAlert).mockResolvedValue(false)
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing]), kv, NOW)
+    vi.mocked(sendPgCronAlert).mockResolvedValue(true)
+    const results = await runPgCronWatch(fakeSupabase([healthy(failing.jobname)]), kv, NOW + HOUR)
+    expect(results[0]?.status).toBe('healthy')
+    expect(sendPgCronRecoveryAlert).not.toHaveBeenCalled()
   })
 })
 
@@ -253,6 +308,36 @@ describe('runPgCronWatch: one job must not silence the rest', () => {
     expect(results.length).toBe(2)
     expect(results.some((r) => r.detail.includes('slack exploded'))).toBe(true)
     expect(results.some((r) => r.status === 'failing')).toBe(true)
+  })
+
+  it('still pages when the all-clear bookkeeping cannot write (#851)', async () => {
+    // The recovery markers support the page; a KV fault in them must not stop it.
+    const store = new Map<string, string>()
+    const kv = {
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => {
+        if (k.startsWith('pg-cron-watch-')) throw new Error('kv write refused')
+        store.set(k, v)
+      },
+      delete: async (k: string) => { store.delete(k) },
+    } as unknown as KVNamespace
+    const results = await runPgCronWatch(fakeSupabase([{ ...healthy('bad'), failures_in_window: 1 }]), kv, NOW)
+    expect(sendPgCronAlert).toHaveBeenCalledTimes(1)
+    expect(results[0].status).toBe('failing')
+    expect(results[0].alerted).toBe(true)
+  })
+
+  it('still reports a healthy job healthy when the all-clear cannot be read (#851)', async () => {
+    const kv = {
+      get: async (k: string) => {
+        if (k.startsWith('pg-cron-watch-')) throw new Error('kv read refused')
+        return null
+      },
+      put: async () => {},
+      delete: async () => {},
+    } as unknown as KVNamespace
+    const results = await runPgCronWatch(fakeSupabase([healthy('fine')]), kv, NOW)
+    expect(results[0].status).toBe('healthy')
   })
 })
 
