@@ -26,8 +26,16 @@ function fakeSupabase(tables: Record<string, Row[]>, beforeUpdate?: (table: stri
     from(table: string) {
       const filters: [string, unknown][] = []
       let patch: Row | null = null
+      let window: [number, number] | null = null
       const builder = {
         select() {
+          return builder
+        },
+        order() {
+          return builder
+        },
+        range(from: number, to: number) {
+          window = [from, to]
           return builder
         },
         eq(col: string, val: unknown) {
@@ -51,7 +59,8 @@ function fakeSupabase(tables: Record<string, Row[]>, beforeUpdate?: (table: stri
             resolve({ data: hit.map((r) => ({ ...r })), error: null })
           } else {
             const rows = tables[table].filter((r) => filters.every(([c, v]) => r[c] === v))
-            resolve({ data: rows.map((r) => ({ ...r })), error: null })
+            const page = window ? rows.slice(window[0], window[1] + 1) : rows
+            resolve({ data: page.map((r) => ({ ...r })), error: null })
           }
         },
       }
@@ -100,6 +109,23 @@ describe('reencryptSecrets', () => {
       ['app_settings', 1],
       ['outcome_writeback_deadletters', 2],
     ])
+  })
+
+  // The store has no ceiling: an outage can leave thousands of failed writes in
+  // it, and a rotation that refused at PostgREST's 1,000 row cap would stall with
+  // the old key still needed (#1993 review).
+  it('re-locks every held writeback past the 1,000 row cap, paging rather than refusing', async () => {
+    const { next, tables, keys, primary } = await setup()
+    const locked = await encryptSecret('{"a":1}', primary)
+    tables.outcome_writeback_deadletters = Array.from({ length: 1001 }, (_, i) => ({
+      id: `w${String(i).padStart(4, '0')}`,
+      body_encrypted: locked,
+      error_encrypted: null,
+      last_error_encrypted: null,
+    }))
+    const result = await reencryptSecrets(fakeSupabase(tables) as never, keys, { dryRun: false })
+    expect(result.tables.find((t) => t.table === 'outcome_writeback_deadletters')?.relocked).toBe(1001)
+    expect(await decryptSecret(tables.outcome_writeback_deadletters[1000].body_encrypted as string, next)).toBe('{"a":1}')
   })
 
   it('changes nothing on a preview, and reports what it would re-lock', async () => {

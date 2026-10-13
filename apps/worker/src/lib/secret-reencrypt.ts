@@ -21,6 +21,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decryptSecret, encryptSecret, type SecretKeys } from './secret-crypto'
 import { NO_ROW_MATCHED_CODE, requireRowsAffected } from './db-retry'
+import { fetchAllPaged } from './paginate'
 
 /** PostgREST's default row cap. A read that reaches it may be missing rows. */
 const ROW_CAP = 1000
@@ -190,14 +191,19 @@ export async function reencryptSecrets(
   // replay updating the row meanwhile is never overwritten with an older value.
   const WRITEBACK_COLUMNS = ['body_encrypted', 'error_encrypted', 'last_error_encrypted'] as const
   type WritebackColumn = (typeof WRITEBACK_COLUMNS)[number]
-  const writebackRows = checkRead(
-    'outcome_writeback_deadletters',
-    (await supabase
-      .from('outcome_writeback_deadletters')
-      .select('id, body_encrypted, error_encrypted, last_error_encrypted')) as {
-      data: ({ id: string } & Record<WritebackColumn, string | null>)[] | null
-      error: { message: string } | null
-    },
+  // PAGED, unlike the two tables above: an outage can leave thousands of failed
+  // writes here, and refusing at the row cap would stall the rotation with the
+  // old key still needed. maxPages makes a read that cannot finish throw rather
+  // than re-lock a part and report the rest current.
+  const writebackRows = await fetchAllPaged<{ id: string } & Record<WritebackColumn, string | null>>(
+    (from, to) =>
+      supabase
+        .from('outcome_writeback_deadletters')
+        .select('id, body_encrypted, error_encrypted, last_error_encrypted')
+        .order('id')
+        .range(from, to),
+    'reading outcome_writeback_deadletters',
+    { maxPages: 200 },
   )
   const writebackStored: StoredValue[] = writebackRows.flatMap((r) =>
     WRITEBACK_COLUMNS.filter((col) => r[col]).map((col) => ({

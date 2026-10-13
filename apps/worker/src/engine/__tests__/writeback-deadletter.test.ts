@@ -31,13 +31,14 @@ const update = (resolved: Record<string, unknown>): ResolvedStepInput => ({
   resolved: { operation: 'update', object: 'Submission__c', method: 'PATCH', url: 'https://sf/x', record_id: 'a04Ui00000NkhG1IAJ', body: { External_Exchange_Status__c: 'Completed', Email__c: 'p@example.com' }, ...resolved },
 })
 
-function fakeSupabase() {
+function fakeSupabase(opts: { duplicate?: boolean } = {}) {
   const inserts: Record<string, unknown>[] = []
   const client = {
     from: (table: string) => ({
       insert: async (row: Record<string, unknown>) => {
         inserts.push({ table, ...row })
-        return { error: null }
+        // An earlier attempt that landed but timed out: the retry meets the unique key.
+        return { error: opts.duplicate ? { code: '23505', message: 'duplicate key value violates unique constraint' } : null }
       },
     }),
   }
@@ -108,13 +109,33 @@ describe('captureFailedWriteback', () => {
     expect(await decryptSecret(row.error_encrypted as string, KEY)).toContain('unavailable for p@example.com')
   })
 
-  it('marks a permanent failure not replayable, so the replay refuses it', async () => {
+  it('stores a permanent failure as already refused and finished, so the replay leaves it and retention reaches it', async () => {
     const db = fakeSupabase()
     await captureFailedWriteback(
       { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): INVALID_FIELD'), resolvedInput: update({}) },
       { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
     )
-    expect(db.inserts[0]).toMatchObject({ replayable: false })
+    expect(db.inserts[0]).toMatchObject({ replayable: false, status: 'refused' })
+    expect(typeof db.inserts[0].finished_at).toBe('string')
+  })
+
+  it('stores a replayable failure as pending, with no finish time', async () => {
+    const db = fakeSupabase()
+    await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: new Error('x'), resolvedInput: update({}) },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(db.inserts[0]).toMatchObject({ replayable: true, status: 'pending', finished_at: null })
+  })
+
+  it('counts a retried insert that meets its own earlier row as stored, not lost', async () => {
+    const db = fakeSupabase({ duplicate: true })
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: new Error('x'), resolvedInput: update({}) },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'stored' })
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
   })
 
   it('stores nothing for a test run, and something for the same failure on a live one', async () => {

@@ -261,16 +261,23 @@ export async function eraseSubject(
         query,
       ),
     )
-    outcomes.push(...(await erasePostgresSightings(supabase, spellings, dryRun)))
+    const pg = await erasePostgresSightings(supabase, spellings, dryRun)
+    outcomes.push(...pg.outcomes)
     outcomes.push(
       dryRun
         ? { target: 'audit_log', rowsDeleted: 0, error: null }
         : await deleteAuditRows(supabase, request.organizationId, executionIds),
     )
+    // By every run id either resolver found: a run whose archive row is gone but
+    // whose Postgres sighting remains is known only to the second.
     outcomes.push(
-      dryRun
-        ? { target: 'pg_outcome_writeback_deadletters', rowsDeleted: 0, error: null }
-        : await deleteWritebackRows(supabase, request.organizationId, executionIds),
+      await eraseWritebackRows(
+        supabase,
+        request.organizationId,
+        [...new Set([...executionIds, ...pg.executionIds])],
+        pg.resolved,
+        dryRun,
+      ),
     )
   }
 
@@ -324,24 +331,28 @@ async function erasePostgresSightings(
   supabase: SupabaseClient,
   spellings: string[],
   dryRun: boolean,
-): Promise<TargetOutcome[]> {
-  const unknown = (why: string): TargetOutcome[] => [
-    { target: 'pg_lead_sighting_bids', rowsDeleted: null, error: why },
-    { target: 'pg_lead_sightings', rowsDeleted: null, error: why },
-  ]
+): Promise<{ outcomes: TargetOutcome[]; executionIds: string[]; resolved: boolean }> {
+  const unknown = (why: string) => ({
+    outcomes: [
+      { target: 'pg_lead_sighting_bids', rowsDeleted: null, error: why },
+      { target: 'pg_lead_sightings', rowsDeleted: null, error: why },
+    ] satisfies TargetOutcome[],
+    executionIds: [],
+    resolved: false,
+  })
 
-  let sightings: Array<{ id: string; execution_started_at_utc: string }>
+  let sightings: Array<{ id: string; execution_started_at_utc: string; execution_id: string | null }>
   try {
     // PAGED, and this is not a performance note. PostgREST caps a read at 1,000
     // rows, so an unpaged select would have seen the first 1,000 sightings of a
     // subject who has more, deleted those, and reported the erasure complete.
     // A silent partial erasure is the exact failure this whole path exists to
     // prevent. Ordered by id so the pages cannot repeat or skip rows.
-    sightings = await fetchAllPaged<{ id: string; execution_started_at_utc: string }>(
+    sightings = await fetchAllPaged<{ id: string; execution_started_at_utc: string; execution_id: string | null }>(
       (from, to) =>
         supabase
           .from('lead_sightings')
-          .select('id, execution_started_at_utc')
+          .select('id, execution_started_at_utc, execution_id')
           .in('ssn', spellings)
           .order('id')
           .range(from, to) as unknown as PromiseLike<{
@@ -358,11 +369,18 @@ async function erasePostgresSightings(
   }
 
   if (sightings.length === 0) {
-    return [
-      { target: 'pg_lead_sighting_bids', rowsDeleted: 0, error: null },
-      { target: 'pg_lead_sightings', rowsDeleted: 0, error: null },
-    ]
+    return {
+      outcomes: [
+        { target: 'pg_lead_sighting_bids', rowsDeleted: 0, error: null },
+        { target: 'pg_lead_sightings', rowsDeleted: 0, error: null },
+      ],
+      executionIds: [],
+      resolved: true,
+    }
   }
+  const executionIds = [
+    ...new Set(sightings.map((r) => r.execution_id).filter((id): id is string => typeof id === 'string')),
+  ]
 
   const ids = sightings.map((r) => r.id)
   const stamps = sightings.map((r) => r.execution_started_at_utc).sort()
@@ -433,7 +451,7 @@ async function erasePostgresSightings(
     outcomes.push({ target: 'pg_lead_sightings', rowsDeleted: null, error: formatErr(err) })
   }
 
-  return outcomes
+  return { outcomes, executionIds, resolved: true }
 }
 
 async function deleteAuditRows(
@@ -474,16 +492,39 @@ async function deleteAuditRows(
  * Its body is encrypted lead fields, so a subject erased everywhere else but here
  * would still have them on record. Same shape as the audit rows: a zero match is
  * the common, legitimate answer, since most runs never fail a write.
+ *
+ * A dry run COUNTS the rows rather than reporting zero, so the preview names what
+ * the real run would remove. When the Postgres sightings could not be resolved,
+ * the rows of the runs that were found are still removed, and the outcome is
+ * unknown rather than a count, since runs only those sightings record may remain.
  */
-async function deleteWritebackRows(
+async function eraseWritebackRows(
   supabase: SupabaseClient,
   organizationId: string,
   executionIds: string[],
+  allRunsResolved: boolean,
+  dryRun: boolean,
 ): Promise<TargetOutcome> {
-  if (executionIds.length === 0) return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: 0, error: null }
+  const target = 'pg_outcome_writeback_deadletters'
   try {
     let total = 0
     for (const ids of chunk(executionIds, IDS_PER_STATEMENT)) {
+      if (dryRun) {
+        const rows = await fetchAllPaged<{ id: string }>(
+          (from, to) =>
+            supabase
+              .from('outcome_writeback_deadletters')
+              .select('id')
+              .eq('organization_id', organizationId)
+              .in('execution_id', ids)
+              .order('id')
+              .range(from, to),
+          'outcome_writeback_deadletters count',
+          { maxPages: 200 },
+        )
+        total += rows.length
+        continue
+      }
       const { rows, error } = await requireRowsAffected<{ id: string }>(
         'outcome_writeback_deadletters erasure',
         () =>
@@ -497,9 +538,18 @@ async function deleteWritebackRows(
       if (error && !isNoRowMatchedError(error)) throw new Error(formatErr(error))
       total += rows.length
     }
-    return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: total, error: null }
+    if (!allRunsResolved) {
+      return {
+        target,
+        rowsDeleted: null,
+        error:
+          `${total} ${dryRun ? 'would be' : 'were'} removed for the runs that were found, but the Postgres ` +
+          'sightings could not be resolved, so the rows of runs only they record may remain',
+      }
+    }
+    return { target, rowsDeleted: total, error: null }
   } catch (err) {
-    return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: null, error: formatErr(err) }
+    return { target, rowsDeleted: null, error: formatErr(err) }
   }
 }
 

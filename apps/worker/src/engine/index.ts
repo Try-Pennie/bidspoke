@@ -819,8 +819,10 @@ export async function executeWorkflow(
           if (continuationError instanceof StepFailureError) {
             const failedNodeType = definition.nodes.find((n) => n.namespace === continuationError.stepNamespace)?.type
             if (failedNodeType === 'salesforce') {
+              // Started inside the promise, so nothing about the key ring can throw
+              // into the finalize: every failure lands in the capture's own handling.
               executionCtx.waitUntil(
-                captureFailedWriteback(
+                Promise.resolve().then(() => captureFailedWriteback(
                   {
                     orgId: org_id,
                     workflowId,
@@ -834,7 +836,7 @@ export async function executeWorkflow(
                     isTest: reality.isTest,
                   },
                   { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
-                ).catch((e) => console.error('[durability] failed writeback capture threw:', formatErr(e))),
+                )).catch((e) => console.error('[durability] failed writeback capture threw:', formatErr(e))),
               )
             }
           }

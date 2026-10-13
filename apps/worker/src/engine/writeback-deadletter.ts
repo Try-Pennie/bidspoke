@@ -25,6 +25,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
 import { encryptSecret, type SecretKeyInput } from '../lib/secret-crypto'
 import { formatErr } from '../lib/format-error'
+import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
 
 /** The durable path's label for the store's insert. */
@@ -110,7 +111,12 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
       body_encrypted: await encryptSecret(JSON.stringify(w.body), deps.encryptionKeys),
       error_encrypted: await encryptSecret(formatErr(f.error), deps.encryptionKeys),
       error_type: f.errorType,
+      // A failure the engine classed permanent is stored already refused and
+      // finished: the replay leaves it, a person can still read it, and the 30 day
+      // retention reaches it rather than keeping its lead fields for ever.
       replayable: f.errorType !== 'permanent',
+      status: f.errorType === 'permanent' ? 'refused' : 'pending',
+      finished_at: f.errorType === 'permanent' ? new Date().toISOString() : null,
     }
     const { error } = await writeOutcome(
       WRITEBACK_STORE_LABEL,
@@ -127,7 +133,10 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
         sf_operation: w.sf_operation,
       },
     )
-    return error ? { kind: 'store_failed', error: formatErr(error) } : { kind: 'stored' }
+    // A retried insert that meets its own earlier row (an attempt that landed but
+    // timed out) is already stored, never a loss.
+    if (error && !isDuplicateError(error)) return { kind: 'store_failed', error: formatErr(error) }
+    return { kind: 'stored' }
   } catch (e) {
     // Encryption or the client threw: the write never reached the durable path,
     // so it is dead-lettered here rather than lost in silence (L13).

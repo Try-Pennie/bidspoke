@@ -20,10 +20,12 @@
 -- restores it as structure only.
 --
 -- STATUS, every value the code writes: pending (awaiting replay), replayed (the
--- replay landed), refused (Salesforce refused the replay as well), abandoned (a
--- person or the replay gave up on it). `replayable` is false for a failure the
--- engine classed permanent, so the replay refuses it rather than resending a
--- write Salesforce will refuse again.
+-- replay landed), refused (Salesforce refused the write for good: a failure the
+-- engine classed permanent is stored refused and finished at capture, and a
+-- replay Salesforce refuses ends here too), abandoned (a person or the replay
+-- gave up on it). `replayable` is false for a permanent failure, so the replay
+-- leaves it rather than resend a write Salesforce will refuse again, while a
+-- person can still read it until retention removes it.
 --
 -- RETENTION. Only finished rows (replayed, refused, abandoned) are purged, 30
 -- days after they finished, by a daily pg_cron job. A pending row is never
