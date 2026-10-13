@@ -161,11 +161,6 @@ export const WRONG_PATH_SIGNAL = 'output field path not found'
 export const WRONG_PATH_RECOVERED_PHRASE = 'resolves its path again'
 
 /**
- * The stand-down for a dead incident on a field now known to be empty by design
- * (#2018): its key appears, it simply has no value. Not "carrying values again",
- * which would claim something that did not happen (L11).
- */
-/**
  * The stand-down for a dead incident on a field now followed by the wrong path
  * alert (#2018 review): one line handing it over, rather than letting it lapse
  * with the old page as the last word.
@@ -173,6 +168,11 @@ export const WRONG_PATH_RECOVERED_PHRASE = 'resolves its path again'
 export const HANDED_TO_WRONG_PATH_PHRASE =
   'is now reported as a path not found: its key has not appeared on runs that can tell, so it is followed there'
 
+/**
+ * The stand-down for a dead incident on a field now known to be empty by design
+ * (#2018): its key appears, it simply has no value. Not "carrying values again",
+ * which would claim something that did not happen (L11).
+ */
 export const BY_DESIGN_PHRASE =
   'is empty by design: its key is there on every run, it just has no value, so it is no longer reported'
 
