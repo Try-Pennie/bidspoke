@@ -17,8 +17,8 @@
  * the condition has stood.
  *
  * Scope: the `export-alert:` family only. That is the family every scheduled
- * check and every archive alert pages through (the seven names above among
- * them), and the one the alert-lifecycle milestone is consolidating onto. Other
+ * check and every archive alert pages through (the archive alerts muted by
+ * hand among them), and the one the alert-lifecycle milestone is consolidating onto. Other
  * families key their cooldowns under their own names and are not listed here;
  * widening the scope means mapping each of those keys back to a human condition
  * name, which is a separate change.
@@ -101,7 +101,7 @@ export async function listMutedAlerts(kv: MutedAlertsKv, nowMs: number = Date.no
         const condition = await readCondition(kv, familyKey)
         return {
           familyKey,
-          jobName: familyKey.startsWith(EXPORT_ALERT_PREFIX) ? familyKey.slice(EXPORT_ALERT_PREFIX.length) : familyKey,
+          jobName: familyKey.slice(EXPORT_ALERT_PREFIX.length),
           returnsAt: expiration === null ? null : new Date(expiration * 1000).toISOString(),
           secondsRemaining: expiration === null ? null : Math.max(0, expiration - nowSeconds),
           standingSince: condition?.since ?? null,
