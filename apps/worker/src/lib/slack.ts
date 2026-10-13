@@ -1517,6 +1517,90 @@ export async function sendBigTableGrowthAlert(
   )) !== null
 }
 
+/**
+ * One statement near its role's statement_timeout, as query-timeout-watch judges it (#1043).
+ * Declared here as a minimal structural shape so slack.ts does not import the watch module
+ * (which imports this one), and StatementVerdict satisfies it by structure.
+ */
+export interface QueryTimeoutOffender {
+  role: string
+  queryid: string | number
+  calls: number
+  meanMs: number
+  maxMs: number
+  timeoutMs: number
+  meanPct: number
+  maxPct: number
+  severity: 'ok' | 'warn' | 'critical'
+  querySample?: string
+}
+
+export async function sendQueryTimeoutAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  offenders: QueryTimeoutOffender[],
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+  const anyCritical = offenders.some((o) => o.severity === 'critical')
+  // The offenders are already sorted most severe first by judgeStatements. Each line names
+  // the role whose ceiling it is judged against, the share of that ceiling, and the counts.
+  // At most six, because a Slack section's text is capped at 3000 characters and more than
+  // that would be rejected as invalid_blocks; the count line says how many were left off.
+  const SHOWN = 6
+  const list = offenders
+    .slice(0, SHOWN)
+    .map((o) => {
+      const near = o.severity === 'critical'
+        ? `its slowest run reached ${Math.round(o.maxPct * 100)}% of the ${secs(o.timeoutMs)} ceiling (${secs(o.maxMs)}), one slow run from being cancelled`
+        : `it typically runs at ${Math.round(o.meanPct * 100)}% of the ${secs(o.timeoutMs)} ceiling (mean ${secs(o.meanMs)}, slowest ${secs(o.maxMs)})`
+      // The sample is normalised SQL, so it carries `<`, `>` and `&`, which Slack reads as
+      // markup even inside a code span; escape it as every other person- or data-sourced
+      // string in this file is (L757). Cut to 120 characters BEFORE escaping, so the cut
+      // cannot land inside an entity such as `&amp;` and leave a broken fragment. The id and
+      // role are digits and a known role name.
+      const sample = o.querySample ? `\n   \`${slackText(o.querySample.replace(/`/g, "'").slice(0, 120))}\`` : ''
+      return `• \`${o.role}\` query ${o.queryid} over ${o.calls.toLocaleString()} calls: ${near}${sample}`
+    })
+    .join('\n')
+  const more = offenders.length > SHOWN ? `\n(and ${offenders.length - SHOWN} more, see the log line event=query_timeout_watch)` : ''
+  const intro = 'Postgres cancels a statement at its role\'s timeout (service_role 30s, the browser 8s) with no warning, which is how the archive cliff happened (#1040). These statements are close enough to warn now:\n'
+  // Slack rejects a section over 3000 characters as invalid_blocks. The body is kept under it
+  // by the SHOWN cap (6 lines) and the 120-character sample cap above, not by a cut here: a
+  // whole-body slice could land inside a `&amp;` entity or a code span and drop the "and more"
+  // line. Worst case here is about 6 * 300 + the intro, well under the limit.
+  const body = intro + list + more
+  const blocks = [
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: anyCritical ? 'A database query is close to being cancelled' : 'A database query is approaching its timeout',
+        emoji: false,
+      },
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: body },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          '*How to fix:* find the statement by its `queryid` in `pg_stat_statements` (the text is normalised, so look it up rather than searching for literals), then make it cheaper (an index, a narrower scan, a bounded page) or, if it is genuinely heavy, raise that path\'s budget. The slowest-run figure is cumulative since stats were last reset, so a fixed one-off spike clears only on a reset.',
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Query approaching its statement timeout: ${offenders.length} statement(s)`,
+  )) !== null
+}
+
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
