@@ -758,16 +758,6 @@ const RECOVERY_PREFIX = 'workflow-schedule'
 const INCIDENT_STATUSES: ReadonlySet<ScheduleStatus> = new Set(['stale', 'never_ran', 'failing', 'missing'])
 
 /**
- * The cooldown key settleRecovery deletes when an all-clear delivers. This watch
- * has no per-file cooldown to clear: its cooldown is keyed on the whole
- * signature, which can name several workflows and outlives the all-clear. A
- * relapse is let through instead by the start marker the all-clear deletes, which
- * the cooldown check consults before holding. This key is never written, so its
- * deletion is a deliberate no-op that keeps the shared helper's contract (#851).
- */
-const recoverySettleKey = (file: string) => `workflow-schedule:recovery-settle:${file}`
-
-/**
  * Marks that the previous hourly run held a rate-limit-only alert (#1367).
  * Ninety minutes, not longer: long enough to reach the next hourly run through
  * cron jitter, short enough that a limit two hours later with a clean hour in
@@ -891,7 +881,10 @@ export async function runWorkflowScheduleWatch(
           kv,
           RECOVERY_PREFIX,
           r.file,
-          recoverySettleKey(r.file),
+          // No per-file cooldown to clear: the signature cooldown is shared, and
+          // a relapse gets through it because this all-clear deletes the start
+          // marker the cooldown check consults.
+          null,
           async (alertedAt, endedAt) => {
             let delivered = false
             for (const orgId of orgIds) {

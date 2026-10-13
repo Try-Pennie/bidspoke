@@ -179,11 +179,13 @@ export async function settleRecovery(
   kv: RecoveryKv,
   prefix: string,
   id: string,
-  cooldownKey: string,
+  cooldownKey: string | null,
 ): Promise<void> {
   await kv.delete(recoveryKey(prefix, id))
   await kv.delete(activeKey(prefix, id))
-  await kv.delete(cooldownKey)
+  // Null for a check with no per-id cooldown to clear (the schedule watch's is
+  // keyed on a whole signature, and lets a relapse through by this marker instead).
+  if (cooldownKey !== null) await kv.delete(cooldownKey)
 }
 
 /**
@@ -207,7 +209,7 @@ export async function announceRecovery(
   kv: RecoveryKv,
   prefix: string,
   id: string,
-  cooldownKey: string,
+  cooldownKey: string | null,
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
   opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
