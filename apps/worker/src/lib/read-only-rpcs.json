@@ -12,6 +12,7 @@
     "execution_purge_retention",
     "field_presence_window",
     "pg_cron_health",
+    "query_timeout_watch",
     "step_duration_percentiles",
     "step_duration_percentiles_by_workflow",
     "step_duration_percentiles_typed",

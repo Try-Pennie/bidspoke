@@ -33,6 +33,7 @@ import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMemorySenders, DATABASE_MEMORY_JOB } from './lib/database-memory'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
+import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -662,6 +663,21 @@ const scheduledJobs = {
             }
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
+      )
+      // Warns when an API query is approaching its role's statement_timeout, before
+      // one is cancelled at it with a 57014 (#1043, #1040). pg_cron_health above
+      // watches the database's own jobs; this watches the Worker's and the browser's
+      // queries, which Postgres cancels with no signal before the cliff. Reads
+      // pg_stat_statements through the query_timeout_watch RPC and logs every
+      // statement it saw on every run, so the thresholds can be calibrated (L172).
+      ctx.waitUntil(
+        runQueryTimeoutWatchLive(supabase, env.IDEMPOTENCY)
+          .then((r) => {
+            if (r.offenders.length) {
+              console.error(`[query-timeout-watch] ${r.offenders.length} near the ceiling, alerted=${r.alerted}`)
+            }
+          })
+          .catch((e) => console.error('[query-timeout-watch] check failed:', e))
       )
       // The workflow dispatcher that drives these same workflows runs on the
       // 15 minute cron below (#1058, #1368), concurrently with this watch across

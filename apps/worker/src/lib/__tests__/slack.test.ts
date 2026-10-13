@@ -4,7 +4,8 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
+import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection } from '../slack'
+import type { QueryTimeoutOffender } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -281,6 +282,59 @@ describe('sendDurationAlert', () => {
     const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).not.toContain('node=')
+  })
+})
+
+describe('sendQueryTimeoutAlert (#1043)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const offender = (over: Partial<QueryTimeoutOffender> = {}): QueryTimeoutOffender => ({
+    role: 'service_role',
+    queryid: '-309324826790438881',
+    calls: 820,
+    meanMs: 1662,
+    maxMs: 29122,
+    timeoutMs: 30000,
+    meanPct: 1662 / 30000,
+    maxPct: 29122 / 30000,
+    severity: 'critical',
+    querySample: 'WITH pgrst_source AS (SELECT $1)',
+    ...over,
+  })
+
+  it('names the role, the share of its ceiling, and the full int64 queryid verbatim', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender()])
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('service_role')
+    expect(text).toContain('97%')
+    // The queryid must survive intact: it is an int64 beyond JS's safe range, and a
+    // corrupted value cannot be looked up in pg_stat_statements.
+    expect(text).toContain('-309324826790438881')
+  })
+
+  it('leads with "close to being cancelled" when a statement is critical, and the softer header otherwise', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender()]) // critical
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).blocks[0].text.text).toBe('A database query is close to being cancelled')
+
+    fetchMock.mockClear()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender({ severity: 'warn', maxMs: 20000, maxPct: 20000 / 30000 })])
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).blocks[0].text.text).toBe('A database query is approaching its timeout')
+  })
+
+  it('does nothing when Slack is not configured', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const delivered = await sendQueryTimeoutAlert(makeSupabase(null) as any, 'org-1', [offender()])
+    expect(delivered).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

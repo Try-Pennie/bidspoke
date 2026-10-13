@@ -2854,6 +2854,18 @@ export type Database = {
         }[]
       }
       prune_orphan_auth_users: { Args: never; Returns: number }
+      query_timeout_watch: {
+        Args: { p_min_calls?: number }
+        Returns: {
+          calls: number
+          max_ms: number
+          mean_ms: number
+          query_sample: string
+          queryid: string
+          role: string
+          timeout_ms: number
+        }[]
+      }
       record_archive_day_measurement: {
         Args: {
           p_day: string
