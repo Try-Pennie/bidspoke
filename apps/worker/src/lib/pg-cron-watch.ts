@@ -28,7 +28,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
-import { sendPgCronAlert } from './slack'
+import { sendPgCronAlert, sendPgCronRecoveryAlert } from './slack'
+import { announceRecovery, markAlerted, markSpikeSeen } from './alert-recovery'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -300,6 +301,11 @@ export function judgeJob(job: PgCronJob, nowMs: number, ctx: JudgeContext): PgCr
 const cooldownKey = (jobname: string) => `pg-cron-watch:${jobname}:alerted`
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 
+// The recovery markers get their own namespace, so they never collide with the
+// cooldown, alerted-failure or first-seen keys above (markAlerted/markSpikeSeen
+// write `${prefix}-recovery:` and `${prefix}-active:`, #253). id is the jobname.
+const RECOVERY_PREFIX = 'pg-cron-watch'
+
 // Which failure was actually DELIVERED for this job. 25h TTL: a failure leaves
 // the 24h window at most 24h after the alert about it, so the stamp only needs
 // to outlive the failure it names.
@@ -411,7 +417,39 @@ async function checkOne(
   }
 
   const verdict = judgeJob(row, nowMs, ctx)
-  if (QUIET_STATUSES.has(verdict.status)) return { ...verdict, alerted: false }
+  if (QUIET_STATUSES.has(verdict.status)) {
+    // A job that we had paged for and that is now healthy or succeeding again
+    // gets one all-clear, after which its incident markers and cooldown are
+    // cleared so the next genuine failure pages at once (#851). announceRecovery
+    // is a no-op when nothing was ever posted for this job (recoveryDue returns
+    // null), so the ordinary quiet path costs one extra KV read and nothing more.
+    // awaiting_first_run is quiet but is not a recovery: the job is still waiting
+    // on its first run, not back from a fault.
+    if (verdict.status === 'healthy' || verdict.status === 'recovered') {
+      await announceRecovery(
+        kv,
+        RECOVERY_PREFIX,
+        verdict.jobname,
+        cooldownKey(verdict.jobname),
+        async (alertedAt, endedAt) => {
+          let delivered = false
+          for (const orgId of orgIds) {
+            if (await sendPgCronRecoveryAlert(supabase, orgId, { jobname: verdict.jobname, alertedAt, endedAt }, nowMs)) {
+              delivered = true
+            }
+          }
+          return delivered
+        },
+        { now: nowMs },
+      )
+    }
+    return { ...verdict, alerted: false }
+  }
+
+  // Alerting. Stamp the incident's running end on EVERY alerting tick, before the
+  // cooldown gate, so the all-clear reports how long the job was unhealthy rather
+  // than how long ago we last paged (#851, #814).
+  await markSpikeSeen(kv, RECOVERY_PREFIX, verdict.jobname, nowMs)
 
   if (await kv.get(cooldownKey(verdict.jobname))) return { ...verdict, alerted: false }
 
@@ -421,10 +459,11 @@ async function checkOne(
   }
   // Armed only on delivery, so a Slack outage during the first bad run does not
   // buy six hours of silence about something nobody was told. The same rule for
-  // the delivered-failure stamp: remembering an undelivered failure would make
-  // its recovery mute an alert nobody ever received.
+  // the delivered-failure stamp and the recovery start marker: remembering an
+  // undelivered incident would make its all-clear mute an alert nobody received.
   if (alerted) {
     await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    await markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, nowMs)
     if (verdict.status === 'failing' && row.last_failure_at !== null) {
       await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
     }

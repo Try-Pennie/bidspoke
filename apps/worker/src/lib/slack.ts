@@ -2628,6 +2628,66 @@ export async function sendGroupedRecoveryAlert(
   return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
 }
 
+/**
+ * All-clear for a DATABASE scheduled job the pg_cron watch had paged (#851, #770).
+ *
+ * The watch paged when a job started failing, stalling or never succeeding and
+ * then said nothing when it came back, so a quiet channel meant both "somebody
+ * fixed it" and "the cooldown is still holding" (L98). This is the recovery line:
+ * one sentence, the plain job name, and how long it was unhealthy. It delegates
+ * to the shared recovery sentence so an all-clear here cannot describe an incident
+ * differently from any other check's. Returns whether it reached Slack, so the
+ * caller only stands the incident down on a real delivery.
+ */
+export async function sendPgCronRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { jobname: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      signal: 'database job',
+      subject: recovery.jobname,
+      recoveredPhrase: 'is running and succeeding again',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+    },
+    now,
+  )
+}
+
+/**
+ * All-clear for a scheduled GitHub workflow the schedule watch had paged (#851,
+ * #805). The same shape as the pg_cron one: the plain workflow label, the shared
+ * recovery sentence, one message per org. Returns whether it reached Slack.
+ */
+export async function sendWorkflowScheduleRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      signal: 'scheduled workflow',
+      subject: recovery.label,
+      recoveredPhrase: 'is running on schedule again',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+    },
+    now,
+  )
+}
+
 /** A duration in plain words. Rounded, because nobody acts on the seconds. */
 export function describeDuration(ms: number): string | null {
   if (!Number.isFinite(ms) || ms < 0) return null
