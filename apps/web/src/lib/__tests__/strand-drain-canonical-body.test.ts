@@ -43,10 +43,12 @@ import { REPO_ROOT } from './_scan-utils'
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 const CANONICAL = path.join(REPO_ROOT, 'apps/web/src/lib/__tests__/fixtures/reduce-finalize-stranded.canonical.sql')
 
-// Word-boundary the function name so reduce_finalize_stranded_executions (the
-// unrelated workflow_executions strand drain, 20260708000001) is not mistaken
-// for a restatement of this lead_sightings drain.
-const DEFINES_DRAIN = /create\s+or\s+replace\s+function\s+public\.reduce_finalize_stranded\s*\(/i
+// Recognize every spelling of the definition a migration may legitimately use: the schema
+// qualifier is optional (the name resolves to public via search_path) and the identifier may
+// be double-quoted. The trailing `(` (or closing quote then `(`) word-boundaries the name so
+// reduce_finalize_stranded_executions (the unrelated workflow_executions strand drain,
+// 20260708000001) is never mistaken for a restatement of this lead_sightings drain.
+const DEFINES_DRAIN = /create\s+or\s+replace\s+function\s+(?:public\s*\.\s*)?"?reduce_finalize_stranded"?\s*\(/i
 
 /** The highest-versioned migration that restates the drain. */
 function latestDefiningMigration(): string {
@@ -102,6 +104,27 @@ describe('firstDivergence and functionBlock behave (#1161)', () => {
       'AS $$ $$;',
       'REVOKE ALL;',
     ])
+  })
+})
+
+describe('DEFINES_DRAIN recognizes every spelling a future migration might use (#1161)', () => {
+  // The function name resolves to public via search_path, so a migration may write it
+  // unqualified or double-quoted. If the matcher missed those, that migration would be
+  // invisible to this guard and a drifted restatement in it would ship unchecked (L96, L98).
+  it.each([
+    'CREATE OR REPLACE FUNCTION public.reduce_finalize_stranded(p int)',
+    'create or replace function reduce_finalize_stranded(p int)',
+    'CREATE OR REPLACE FUNCTION public."reduce_finalize_stranded"(p int)',
+    'CREATE  OR  REPLACE  FUNCTION  "reduce_finalize_stranded" (p int)',
+  ])('matches %s', (line) => {
+    expect(DEFINES_DRAIN.test(line)).toBe(true)
+  })
+
+  it.each([
+    'CREATE OR REPLACE FUNCTION public.reduce_finalize_stranded_executions(p int)',
+    'CREATE OR REPLACE FUNCTION reduce_finalize_stranded_executions(p int)',
+  ])('does not match the unrelated sibling %s', (line) => {
+    expect(DEFINES_DRAIN.test(line)).toBe(false)
   })
 })
 
