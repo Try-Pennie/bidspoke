@@ -320,28 +320,6 @@ export async function eraseSubject(
   }
 }
 
-/**
- * The audit rows the archived-read path writes (A6, #874).
- *
- * That path does not exist yet, so this target legitimately matches nothing
- * today. It still RUNS and still reports its zero, because a target nobody ran
- * and a target that found nothing are different facts, and the enumerated set
- * has to be complete before A6 makes it non-empty rather than after.
- */
-/**
- * The POSTGRES `lead_sightings` and `lead_sighting_bids` (#823).
- *
- * Distinct from the Snowflake copies above, and reached differently. Sightings
- * are found by the indexed `ssn`. Bids are found by `sighting_id`, because bids
- * carries no ssn index and an ssn match there would cross every partition.
- *
- * Every statement carries a PARTITION-KEY predicate, derived from the rows
- * actually found rather than guessed, because a delete without one scans all
- * partitions on a table that has eight of them.
- *
- * Bids go first: they hang off the sightings, and deleting the parents first
- * would leave nothing to resolve the children by.
- */
 type PgSighting = { id: string; execution_started_at_utc: string; execution_id: string | null }
 type PgResolve = { ok: true; sightings: PgSighting[] } | { ok: false; error: string }
 
@@ -372,6 +350,20 @@ async function resolvePostgresSightings(supabase: SupabaseClient, spellings: str
   }
 }
 
+/**
+ * The POSTGRES `lead_sightings` and `lead_sighting_bids` (#823).
+ *
+ * Distinct from the Snowflake copies above, and reached differently. Sightings
+ * are found by the indexed `ssn`. Bids are found by `sighting_id`, because bids
+ * carries no ssn index and an ssn match there would cross every partition.
+ *
+ * Every statement carries a PARTITION-KEY predicate, derived from the rows
+ * actually found rather than guessed, because a delete without one scans all
+ * partitions on a table that has eight of them.
+ *
+ * Bids go first: they hang off the sightings, and deleting the parents first
+ * would leave nothing to resolve the children by.
+ */
 async function erasePostgresSightings(
   supabase: SupabaseClient,
   spellings: string[],
@@ -468,6 +460,14 @@ async function erasePostgresSightings(
   return outcomes
 }
 
+/**
+ * The audit rows the archived-read path writes (A6, #874).
+ *
+ * That path does not exist yet, so this target legitimately matches nothing
+ * today. It still RUNS and still reports its zero, because a target nobody ran
+ * and a target that found nothing are different facts, and the enumerated set
+ * has to be complete before A6 makes it non-empty rather than after.
+ */
 async function deleteAuditRows(
   supabase: SupabaseClient,
   organizationId: string,
