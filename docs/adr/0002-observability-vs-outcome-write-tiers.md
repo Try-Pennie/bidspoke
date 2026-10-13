@@ -91,7 +91,7 @@ The danger is that this is an invisible structural dependency. If the Engine flo
 ## Consequences
 
 - Every per-lead outcome write declares its tier and gets retry + dead-letter; the external-HTTP (SF) tier gets a dead-letter without faking a `withDbRetry` op; observability writes have a named home with unchanged behavior.
-- A Phase 3 CI guard (`apps/web/src/lib/__tests__/durability-seam-guard.test.ts`) scans `apps/worker/src/engine/` and fails if any file other than the seam-routed `lead-sightings.ts` writes an outcome table directly. Batch/admin writers (`lib/sightings-export.ts`, `routes/api/admin.ts`) are intentionally out of scope and documented in the guard.
+- A Phase 3 CI guard (`apps/web/src/lib/__guards__/worker/durability-seam-guard.test.ts`) scans `apps/worker/src/engine/` and fails if any file other than the two seam-routed writers writes an outcome table directly: `lead-sightings.ts`, and `writeback-deadletter.ts` for the replay store (see "Tier 3 replay store, a scoped exception" above). Batch and admin writers (`lib/sightings-export.ts`, `routes/api/admin.ts`, and the erasure and key rotation writes to the replay store in `lib/archive-erasure.ts` and `lib/secret-reencrypt.ts`) are intentionally out of scope and documented in the guard.
 - Any future log-sink/queue work must keep the tiers separable, not merge them.
 - See ADR 0003 for how tier-3 writeback failure maps to the `degraded` execution status.
 - For the end-to-end recovery pipeline (live finalize, the projection, the 30-min rich drain, the unrecoverable relabel, the export, and the drift guard), see [Lead outcome recovery](../concepts/lead-outcome-recovery.md).
