@@ -8,7 +8,7 @@
     "test": "vitest run && vitest run --config vitest.do.config.mts && pnpm --filter=web exec vitest run src/lib/__guards__/worker",
     "test:unit": "vitest run",
     "test:do": "vitest run --config vitest.do.config.mts",
-    "lint": "eslint \"src/**/*.ts\" \"money-gate/**/*.ts\"",
+    "lint": "NODE_OPTIONS=--max-old-space-size=4096 eslint \"src/**/*.ts\" \"money-gate/**/*.ts\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p tsconfig.do.json",
     "db:types": "bash scripts/gen-db-types.sh"
   },
