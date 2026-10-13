@@ -52,7 +52,7 @@
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
-import { announceRecovery, markAlerted, markSpikeSeen } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recoveryKey } from './alert-recovery'
 import { formatErr } from './format-error'
 import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from './slack'
 
@@ -758,11 +758,12 @@ const RECOVERY_PREFIX = 'workflow-schedule'
 const INCIDENT_STATUSES: ReadonlySet<ScheduleStatus> = new Set(['stale', 'never_ran', 'failing', 'missing'])
 
 /**
- * The cooldown key settleRecovery deletes when an all-clear delivers. The real
- * re-page suppression here is the signature cooldown, which stops matching the
- * moment this file is healthy (its verdict leaves the signature), so there is no
- * shared cooldown to clear per file. This key is never written, so its deletion
- * is a deliberate no-op that keeps the shared helper's contract intact (#851).
+ * The cooldown key settleRecovery deletes when an all-clear delivers. This watch
+ * has no per-file cooldown to clear: its cooldown is keyed on the whole
+ * signature, which can name several workflows and outlives the all-clear. A
+ * relapse is let through instead by the start marker the all-clear deletes, which
+ * the cooldown check consults before holding. This key is never written, so its
+ * deletion is a deliberate no-op that keeps the shared helper's contract (#851).
  */
 const recoverySettleKey = (file: string) => `workflow-schedule:recovery-settle:${file}`
 
@@ -951,6 +952,26 @@ export async function runWorkflowScheduleWatch(
     // is not evidence anybody has been told, and a duplicate message costs far
     // less than six hours of silence about a dark deploy check.
     console.error('[workflow-schedule] cooldown unreadable, alerting anyway:', formatErr(e))
+  }
+  // The signature cooldown outlives an all-clear, so on its own it would hold a
+  // relapse that comes back inside six hours, right after the channel was told
+  // the workflow recovered (#851 review). The all-clear deletes the workflow's
+  // start marker, so a fault in the signature with no marker is a NEW incident and
+  // speaks. An unreadable marker fails towards speaking, like the cooldown (L42).
+  if (held) {
+    for (const { workflow, verdict } of problems) {
+      if (!INCIDENT_STATUSES.has(verdict.status)) continue
+      let announced = false
+      try {
+        announced = (await kv.get(recoveryKey(RECOVERY_PREFIX, workflow.file))) !== null
+      } catch (e) {
+        console.error(`[workflow-schedule] incident marker for ${workflow.file} unreadable, alerting anyway:`, formatErr(e))
+      }
+      if (!announced) {
+        held = false
+        break
+      }
+    }
   }
   if (held) return results
 

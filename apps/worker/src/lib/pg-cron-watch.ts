@@ -306,6 +306,20 @@ const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 // write `${prefix}-recovery:` and `${prefix}-active:`, #253). id is the jobname.
 const RECOVERY_PREFIX = 'pg-cron-watch'
 
+/**
+ * The all-clear's bookkeeping supports the page and must never stop it: a KV
+ * fault here is logged and the check carries on to its verdict, its cooldown and
+ * its alert (L71). Losing a marker costs at most a missing or late all-clear,
+ * never a silent failure.
+ */
+async function recoveryBookkeeping(jobname: string, what: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn()
+  } catch (e) {
+    console.error(`[pg-cron-watch] recovery ${what} for ${jobname} failed:`, formatErr(e))
+  }
+}
+
 // Which failure was actually DELIVERED for this job. 25h TTL: a failure leaves
 // the 24h window at most 24h after the alert about it, so the stamp only needs
 // to outlive the failure it names.
@@ -426,7 +440,7 @@ async function checkOne(
     // awaiting_first_run is quiet but is not a recovery: the job is still waiting
     // on its first run, not back from a fault.
     if (verdict.status === 'healthy' || verdict.status === 'recovered') {
-      await announceRecovery(
+      await recoveryBookkeeping(verdict.jobname, 'all-clear', () => announceRecovery(
         kv,
         RECOVERY_PREFIX,
         verdict.jobname,
@@ -441,7 +455,7 @@ async function checkOne(
           return delivered
         },
         { now: nowMs },
-      )
+      ))
     }
     return { ...verdict, alerted: false }
   }
@@ -449,7 +463,7 @@ async function checkOne(
   // Alerting. Stamp the incident's running end on EVERY alerting tick, before the
   // cooldown gate, so the all-clear reports how long the job was unhealthy rather
   // than how long ago we last paged (#851, #814).
-  await markSpikeSeen(kv, RECOVERY_PREFIX, verdict.jobname, nowMs)
+  await recoveryBookkeeping(verdict.jobname, 'running end', () => markSpikeSeen(kv, RECOVERY_PREFIX, verdict.jobname, nowMs))
 
   if (await kv.get(cooldownKey(verdict.jobname))) return { ...verdict, alerted: false }
 
@@ -463,7 +477,7 @@ async function checkOne(
   // undelivered incident would make its all-clear mute an alert nobody received.
   if (alerted) {
     await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-    await markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, nowMs)
+    await recoveryBookkeeping(verdict.jobname, 'start marker', () => markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, nowMs))
     if (verdict.status === 'failing' && row.last_failure_at !== null) {
       await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
     }

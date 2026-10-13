@@ -309,6 +309,36 @@ describe('runPgCronWatch: one job must not silence the rest', () => {
     expect(results.some((r) => r.detail.includes('slack exploded'))).toBe(true)
     expect(results.some((r) => r.status === 'failing')).toBe(true)
   })
+
+  it('still pages when the all-clear bookkeeping cannot write (#851)', async () => {
+    // The recovery markers support the page; a KV fault in them must not stop it.
+    const store = new Map<string, string>()
+    const kv = {
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => {
+        if (k.startsWith('pg-cron-watch-')) throw new Error('kv write refused')
+        store.set(k, v)
+      },
+      delete: async (k: string) => { store.delete(k) },
+    } as unknown as KVNamespace
+    const results = await runPgCronWatch(fakeSupabase([{ ...healthy('bad'), failures_in_window: 1 }]), kv, NOW)
+    expect(sendPgCronAlert).toHaveBeenCalledTimes(1)
+    expect(results[0].status).toBe('failing')
+    expect(results[0].alerted).toBe(true)
+  })
+
+  it('still reports a healthy job healthy when the all-clear cannot be read (#851)', async () => {
+    const kv = {
+      get: async (k: string) => {
+        if (k.startsWith('pg-cron-watch-')) throw new Error('kv read refused')
+        return null
+      },
+      put: async () => {},
+      delete: async () => {},
+    } as unknown as KVNamespace
+    const results = await runPgCronWatch(fakeSupabase([healthy('fine')]), kv, NOW)
+    expect(results[0].status).toBe('healthy')
+  })
 })
 
 describe('runPgCronWatch: reads a bounded window', () => {

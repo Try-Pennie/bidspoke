@@ -268,6 +268,27 @@ describe('runWorkflowScheduleWatch: the all-clear (#851)', () => {
     expect(sendWorkflowScheduleRecoveryAlert).toHaveBeenCalledTimes(1)
   })
 
+  it('pages again at once when a workflow relapses after its all-clear, inside the old cooldown', async () => {
+    // The signature cooldown (`<file>=stale`) outlives the all-clear by hours.
+    // Held against it, a relapse would be silent right after the channel was told
+    // the workflow recovered, which is worse than never saying so.
+    const kv = fakeKv()
+    const supabase = fakeSupabase([{ organization_id: 'org-1' }])
+    const [first] = WATCHED_WORKFLOWS
+    const darkFirst = (at: number) => fetchAll(iso(at - 60_000), { perFile: { [first.file]: iso(at - DARK_FOR_EVERY_WORKFLOW_MS) } })
+
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, darkFirst(NOW))
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + HOUR, fetchAll(iso(NOW + HOUR - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).toHaveBeenCalledTimes(1)
+
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 2 * HOUR, darkFirst(NOW + 2 * HOUR))
+    expect(messages(), 'the relapse was swallowed by the cooldown of the incident already announced over').toBe(2)
+
+    // And that new page holds its own cooldown: the next dark hour is quiet.
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 3 * HOUR, darkFirst(NOW + 3 * HOUR))
+    expect(messages()).toBe(2)
+  })
+
   it('announces nothing for a workflow that was never paged', async () => {
     await runWorkflowScheduleWatch(fakeSupabase([{ organization_id: 'org-1' }]), fakeKv(), ENV, NOW, fetchAll(iso(NOW - 60_000)))
     expect(sendWorkflowScheduleRecoveryAlert).not.toHaveBeenCalled()
