@@ -455,6 +455,16 @@ The releases refuse 409 `claim_changed` when the claim moved since the page read
 |--------|------|---------|
 | GET | `/api/config-warnings` | List configuration warnings for your org's live workflows. |
 
+## Muted alerts
+
+`/api/muted-alerts`. Which alert conditions are currently suppressed, and when each one returns.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/muted-alerts` | List the export-alert conditions whose cooldown is set, soonest to return first. |
+
+Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no expiry and stays until cleared by hand), `secondsRemaining`, and the `standingSince` and `reminders` from the condition record when one is present. These mutes are global operational state, not per org. A KV read failure returns a 500 rather than an empty list, so a silence is never mistaken for a healthy, unmuted system.
+
 ## Field coverage
 
 `/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Silences set here make the detector skip those fields.
