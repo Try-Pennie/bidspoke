@@ -21,6 +21,7 @@ import {
   leadStatusQueries,
   LEAD_STATUS_JOB,
   LEAD_STATUS_BACKLOG_REMEDY,
+  LEAD_STATUS_ANSWERED_BACKLOG_REMEDY,
   LEAD_STATUS_BROKEN_REMEDY,
   LEAD_STATUS_UNCHECKED_REMEDY,
   LEAD_STATUS_PARTNERS,
@@ -244,7 +245,7 @@ describe('checkLeadStatus', () => {
 
     expect(r.alerted).toBe(true)
     expect(alerted()).toEqual(['32 Tripoint sales are marked Completed on their Submission, but their Lead still says something else. Tripoint has no answer on record for any of them.'])
-    expect(sentRemedy()).toMatchObject(LEAD_STATUS_BACKLOG_REMEDY)
+    expect(sentRemedy()).toMatchObject(LEAD_STATUS_ANSWERED_BACKLOG_REMEDY)
   })
 
   it('says so when a judged partner had nothing to compare, rather than reading it as agreement', async () => {
@@ -491,14 +492,30 @@ describe('checkLeadStatus', () => {
   })
 
   it('a backlog alone asks for each sale to be checked; a broken day asks for the Salesforce copy to be fixed', async () => {
+    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/real sale/)
     // Completed only for a sale the buyer accepted: a refused one is set back (#1837).
-    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/only for a sale the buyer accepted/)
-    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/refused/)
+    expect(LEAD_STATUS_ANSWERED_BACKLOG_REMEDY.fixHint).toMatch(/only for a sale the buyer accepted/)
+    expect(LEAD_STATUS_ANSWERED_BACKLOG_REMEDY.fixHint).toMatch(/refused/)
     expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/Salesforce/)
     expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/backfill/)
-    for (const r of [LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY]) {
+    for (const r of [LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_ANSWERED_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY]) {
       expect(`${r.title} ${r.fixHint ?? ''}`).not.toMatch(/Snowflake|exported|__c|#\d|apps\//)
     }
+  })
+
+  // The buyer-answer fix only makes sense beside lines that carry the answer:
+  // AmOne and Liberty1 lines carry none (#1837 review).
+  it('asks to book only accepted sales when every waiting line says what the buyer answered', async () => {
+    await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1046, leads: 1046, backlog: 3 } }))
+    expect(sentRemedy()).toMatchObject(LEAD_STATUS_ANSWERED_BACKLOG_REMEDY)
+  })
+
+  it('keeps the plain check-each-sale fix when any waiting line has no buyer answer', async () => {
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 600, leads: 598, backlog: 2 } }))
+    expect(sentRemedy()).toMatchObject(LEAD_STATUS_BACKLOG_REMEDY)
+    vi.mocked(notifyExportFailure).mockClear()
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 600, leads: 598, backlog: 2 }, Tripoint: { submissions: 1046, leads: 1046, backlog: 3 } }))
+    expect(sentRemedy()).toMatchObject(LEAD_STATUS_BACKLOG_REMEDY)
   })
 
   it('a broken day outranks a backlog elsewhere in the same run, so the fix names the copy', async () => {

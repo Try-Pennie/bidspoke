@@ -140,6 +140,19 @@ export const LEAD_STATUS_BACKLOG_REMEDY: TitledRemedy = {
   title: "Some sales aren't showing on their Salesforce Lead",
   context: LEAD_STATUS_CONTEXT,
   fixHint:
+    "Check whether each one is a real sale. If it is, set the Lead's External Exchange Status to Completed " +
+    "in Salesforce. If it isn't, set the Submission back.",
+}
+
+/**
+ * The backlog fix when every waiting line says what the buyer answered (#1837).
+ * Only then: an AmOne or Liberty1 line carries no answer, so this hint beside it
+ * would point at something the reader cannot see.
+ */
+export const LEAD_STATUS_ANSWERED_BACKLOG_REMEDY: TitledRemedy = {
+  title: LEAD_STATUS_BACKLOG_REMEDY.title,
+  context: LEAD_STATUS_CONTEXT,
+  fixHint:
     "Set the Lead's External Exchange Status to Completed in Salesforce only for a sale the buyer accepted. " +
     'Set the Submission back for one the buyer refused. Where no answer is on record, check the sale with the buyer first.',
 }
@@ -170,12 +183,15 @@ interface Finding {
   key: string
   /** Set on a judged partner's no sales line, which stands only if that partner could have sold that day. */
   zeroFor?: string
+  /** Set on a backlog line that says what the buyer answered for each sale (#1837). */
+  answered?: boolean
 }
 
 /** The broken title outranks the backlog one, which outranks a check that could not run. */
 function remedyFor(findings: Finding[]): TitledRemedy {
   if (findings.some((f) => f.kind === 'broken')) return LEAD_STATUS_BROKEN_REMEDY
-  if (findings.some((f) => f.kind === 'backlog')) return LEAD_STATUS_BACKLOG_REMEDY
+  const backlogs = findings.filter((f) => f.kind === 'backlog')
+  if (backlogs.length) return backlogs.every((f) => f.answered) ? LEAD_STATUS_ANSWERED_BACKLOG_REMEDY : LEAD_STATUS_BACKLOG_REMEDY
   return LEAD_STATUS_UNCHECKED_REMEDY
 }
 
@@ -440,7 +456,8 @@ async function measure(
   if ('err' in backlog) {
     findings.push({ kind: 'unchecked', text: `The check couldn't count older ${partner} sales waiting on their Lead: ${backlog.err}`, key: `backlog-uncounted:${partner}` })
   } else if (judged && backlog.own > 0 && !findings.some((f) => f.kind === 'broken')) {
-    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog, rule.buyerAnswers === true), key: backlogKey(partner, backlog) })
+    const answered = rule.buyerAnswers === true
+    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog, answered), key: backlogKey(partner, backlog), answered })
   }
 
   return { status, findings }
