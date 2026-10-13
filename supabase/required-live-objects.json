@@ -306,5 +306,13 @@
     },
     "anon": "denied",
     "note": "Read by the daily sightings buffer watchdog in the Worker as service_role (#463). Probed with every argument because PostgREST resolves a function by its argument names; as anon the call is refused before the body runs."
+  },
+  {
+    "name": "reduce_finalize_stranded",
+    "args": {
+      "p_lookback_days": 1
+    },
+    "anon": "denied",
+    "note": "Called by the Worker's POST /api/admin/run-strand-recovery as service_role (#380), and by the reduce-finalize-stranded pg_cron jobs. A WRITE: it finalises stranded lead_sightings. Security definer, so anon must be denied; probed with its argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
   }
 ]
