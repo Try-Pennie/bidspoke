@@ -387,9 +387,17 @@ admin.post('/run-export-now', async (c) => {
  * it is cancelled whole, one statement, so the answer says nothing was kept.
  */
 const STRAND_RECOVERY_MAX_LOOKBACK_DAYS = 8
+/**
+ * The function takes no organization: like the scheduled job, it recovers every
+ * organization's stranded leads. This router is otherwise org scoped, so the
+ * answer and the audit row both say so rather than reading as the caller's org.
+ */
+const STRAND_RECOVERY_SCOPE = 'every organization'
 
 admin.post('/run-strand-recovery', async (c) => {
-  const body = await c.req.json<{ lookbackDays?: unknown }>().catch(() => ({}) as { lookbackDays?: unknown })
+  // A body of JSON null parses fine and is not an object, so it is read as no body.
+  const parsed: unknown = await c.req.json().catch(() => ({}))
+  const body = parsed !== null && typeof parsed === 'object' ? (parsed as { lookbackDays?: unknown }) : {}
   const lookbackDays = body.lookbackDays === undefined ? 1 : body.lookbackDays
   if (typeof lookbackDays !== 'number' || !Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > STRAND_RECOVERY_MAX_LOOKBACK_DAYS) {
     return c.json({ error: `lookbackDays must be a whole number of days from 1 to ${STRAND_RECOVERY_MAX_LOOKBACK_DAYS}` }, 400)
@@ -419,8 +427,9 @@ admin.post('/run-strand-recovery', async (c) => {
   await writeAuditLog(supabase, orgId, 'strand_recovery', 'reduce_finalize_stranded', 'strand_recovery_run', email ?? 'unknown', {
     lookback_days: lookbackDays,
     recovered: data,
+    scope: STRAND_RECOVERY_SCOPE,
   })
-  return c.json({ ok: true, recovered: data, lookbackDays })
+  return c.json({ ok: true, recovered: data, lookbackDays, scope: STRAND_RECOVERY_SCOPE })
 })
 
 /**

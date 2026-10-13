@@ -83,7 +83,7 @@ describe('POST /admin/run-strand-recovery', () => {
     const sb = answering({ data: 3, error: null })
     const res = await post(app)
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, recovered: 3, lookbackDays: 1 })
+    expect(await res.json()).toEqual({ ok: true, recovered: 3, lookbackDays: 1, scope: 'every organization' })
     expect(sb.calls).toEqual([{ name: 'reduce_finalize_stranded', args: { p_lookback_days: 1 } }])
   })
 
@@ -91,8 +91,21 @@ describe('POST /admin/run-strand-recovery', () => {
     const sb = answering({ data: 0, error: null })
     const res = await post(app, { lookbackDays: 8 })
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, recovered: 0, lookbackDays: 8 })
+    expect(await res.json()).toEqual({ ok: true, recovered: 0, lookbackDays: 8, scope: 'every organization' })
     expect(sb.calls[0].args).toEqual({ p_lookback_days: 8 })
+  })
+
+  it('reads a body of JSON null as no body, running the default rather than failing', async () => {
+    const sb = answering({ data: 2, error: null })
+    const res = await post(app, null)
+    expect(res.status).toBe(200)
+    expect(sb.calls[0].args).toEqual({ p_lookback_days: 1 })
+  })
+
+  it('says the run covers every organization', async () => {
+    answering({ data: 2, error: null })
+    const res = await post(app)
+    expect(((await res.json()) as { scope: string }).scope).toBe('every organization')
   })
 
   it.each([0, 9, 2.5, '3', null])('refuses a lookback of %j without running anything', async (lookbackDays) => {
@@ -108,7 +121,9 @@ describe('POST /admin/run-strand-recovery', () => {
     await post(app)
     expect(writeAuditLog).toHaveBeenCalledWith(
       expect.anything(), 'org-abc', 'strand_recovery', 'reduce_finalize_stranded', 'strand_recovery_run', 'dan@pennie.com',
-      { lookback_days: 1, recovered: 4 },
+      // The function takes no organization: it recovers every org's leads, as the
+      // scheduled job does, and the record says so rather than reading as this org's.
+      { lookback_days: 1, recovered: 4, scope: 'every organization' },
     )
   })
 
