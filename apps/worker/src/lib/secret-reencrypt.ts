@@ -7,8 +7,9 @@
  * the primary can be set to the NEXT value with nothing left that only the old
  * key could read.
  *
- * Two tables hold values locked with this key: the secret environment variables
- * and app_settings.value_encrypted. The other things it locks (the env and Slack
+ * Three tables hold values locked with this key: the secret environment
+ * variables, app_settings.value_encrypted, and the failed Salesforce writes held
+ * for replay (#1993: body, error and last error of outcome_writeback_deadletters). The other things it locks (the env and Slack
  * caches in KV) are rebuilt from these tables when they cannot be read, so they
  * need no pass here.
  *
@@ -25,7 +26,7 @@ import { NO_ROW_MATCHED_CODE, requireRowsAffected } from './db-retry'
 const ROW_CAP = 1000
 
 export interface ReencryptTableResult {
-  table: 'environment_variables' | 'app_settings'
+  table: 'environment_variables' | 'app_settings' | 'outcome_writeback_deadletters'
   checked: number
   alreadyCurrent: number
   /** Rows re-locked, or on a preview, rows that would be. */
@@ -184,9 +185,46 @@ export async function reencryptSecrets(
         ),
     }))
 
+  // The failed writes held for replay (#1993). Each encrypted column is its own
+  // stored value, written only while that column still holds what was read, so a
+  // replay updating the row meanwhile is never overwritten with an older value.
+  const WRITEBACK_COLUMNS = ['body_encrypted', 'error_encrypted', 'last_error_encrypted'] as const
+  type WritebackColumn = (typeof WRITEBACK_COLUMNS)[number]
+  const writebackRows = checkRead(
+    'outcome_writeback_deadletters',
+    (await supabase
+      .from('outcome_writeback_deadletters')
+      .select('id, body_encrypted, error_encrypted, last_error_encrypted')) as {
+      data: ({ id: string } & Record<WritebackColumn, string | null>)[] | null
+      error: { message: string } | null
+    },
+  )
+  const writebackStored: StoredValue[] = writebackRows.flatMap((r) =>
+    WRITEBACK_COLUMNS.filter((col) => r[col]).map((col) => ({
+      name: `${r.id}.${col}`,
+      value: r[col] as string,
+      write: async (next: string) =>
+        rowsChanged(
+          `outcome_writeback_deadletters.${col}`,
+          await requireRowsAffected(
+            `outcome_writeback_deadletters.${col}`,
+            () =>
+              supabase
+                .from('outcome_writeback_deadletters')
+                .update({ [col]: next })
+                .eq('id', r.id)
+                .eq(col, r[col] as string)
+                .select('id'),
+            { onMiss: 'silent' },
+          ),
+        ),
+    })),
+  )
+
   const tables = [
     await relockAll('environment_variables', envStored, keys, opts.dryRun),
     await relockAll('app_settings', settingStored, keys, opts.dryRun),
+    await relockAll('outcome_writeback_deadletters', writebackStored, keys, opts.dryRun),
   ]
   const ok = tables.every((t) => t.undecryptable.length === 0 && t.changedMeanwhile.length === 0)
   return { dryRun: opts.dryRun, ok, tables }

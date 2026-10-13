@@ -70,6 +70,16 @@ async function setup() {
       { id: 'e3', key: 'EMPTY', is_secret: true, value: null },
     ],
     app_settings: [{ organization_id: 'o1', key: 'anthropic_api_key', value_encrypted: await encryptSecret('sk-ant-x', primary) }],
+    // A failed Salesforce write held for replay (#1993): its body and error are
+    // locked with the same key, and a write never retried has no last error.
+    outcome_writeback_deadletters: [
+      {
+        id: 'w1',
+        body_encrypted: await encryptSecret('{"Email__c":"p@example.com"}', primary),
+        error_encrypted: await encryptSecret('Salesforce API error (503)', primary),
+        last_error_encrypted: null,
+      },
+    ],
   }
   return { primary, next, tables, keys: secretKeys({ SECRET_ENCRYPTION_KEY: primary, SECRET_ENCRYPTION_KEY_NEXT: next }) }
 }
@@ -83,9 +93,12 @@ describe('reencryptSecrets', () => {
     expect(await decryptSecret(tables.environment_variables[0].value as string, next)).toBe('eq-pass')
     expect(await decryptSecret(tables.environment_variables[1].value as string, next)).toBe('scout')
     expect(await decryptSecret(tables.app_settings[0].value_encrypted as string, next)).toBe('sk-ant-x')
+    expect(await decryptSecret(tables.outcome_writeback_deadletters[0].body_encrypted as string, next)).toBe('{"Email__c":"p@example.com"}')
+    expect(await decryptSecret(tables.outcome_writeback_deadletters[0].error_encrypted as string, next)).toBe('Salesforce API error (503)')
     expect(result.tables.map((t) => [t.table, t.relocked])).toEqual([
       ['environment_variables', 2],
       ['app_settings', 1],
+      ['outcome_writeback_deadletters', 2],
     ])
   })
 
@@ -108,6 +121,7 @@ describe('reencryptSecrets', () => {
     expect(again.tables.map((t) => [t.relocked, t.alreadyCurrent])).toEqual([
       [0, 2],
       [0, 1],
+      [0, 2],
     ])
   })
 
