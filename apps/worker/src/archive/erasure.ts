@@ -28,6 +28,9 @@ export const ERASURE_TARGETS = [
   'pg_lead_sightings',
   'pg_lead_sighting_bids',
   'audit_log',
+  // A failed post-answer Salesforce write held for replay (#1993): its encrypted
+  // body carries the subject's lead fields, so it is erased by run id.
+  'pg_outcome_writeback_deadletters',
 ] as const
 
 export type ErasureTarget = (typeof ERASURE_TARGETS)[number]

@@ -29,7 +29,7 @@ const REQUEST = {
 
 interface Written { table: string; op: string; rows: unknown }
 
-function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = {}) {
+function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown; writebackDeleted?: number } = {}) {
   const writes: Written[] = []
   const client = {
     from(table: string) {
@@ -49,6 +49,13 @@ function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = 
           // audit-shaped rows made this fixture mean something nobody chose
           // (pgDouble is what exercises them).
           const isAudit = table === 'audit_log'
+          // The failed writeback store (#1993) is erased by run id the same way.
+          if (table === 'outcome_writeback_deadletters') {
+            return Promise.resolve({
+              data: Array.from({ length: opts.writebackDeleted ?? 0 }, (_, i) => ({ id: `w-${i}` })),
+              error: null,
+            }).then(res)
+          }
           return Promise.resolve({
             data: isAudit
               ? Array.from({ length: opts.auditDeleted ?? 0 }, (_, i) => ({ id: `a-${i}` }))
@@ -167,7 +174,7 @@ describe('rowsAffected', () => {
 
 describe('an erasure that finds the subject', () => {
   it('deletes from every target and reports each count separately', async () => {
-    const db = supabaseDouble({ auditDeleted: 2 })
+    const db = supabaseDouble({ auditDeleted: 2, writebackDeleted: 1 })
     const sf = snowflakeDouble({ deleted: { execution_archive: 3, lead_sightings: 1, lead_sighting_bids: 5 } })
 
     const result = await eraseSubject(env, db.client, REQUEST, { query: sf.query })
@@ -181,7 +188,11 @@ describe('an erasure that finds the subject', () => {
       ['pg_lead_sighting_bids', 0],
       ['pg_lead_sightings', 0],
       ['audit_log', 2],
+      // A failed Salesforce write held for replay carries the subject's lead
+      // fields, encrypted, so it is erased with the rest (#1993).
+      ['pg_outcome_writeback_deadletters', 1],
     ])
+    expect(db.writes.some((w) => w.table === 'outcome_writeback_deadletters' && w.op === 'delete')).toBe(true)
   })
 
   it('erases the sightings tables, not only the archive', async () => {

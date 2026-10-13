@@ -267,6 +267,11 @@ export async function eraseSubject(
         ? { target: 'audit_log', rowsDeleted: 0, error: null }
         : await deleteAuditRows(supabase, request.organizationId, executionIds),
     )
+    outcomes.push(
+      dryRun
+        ? { target: 'pg_outcome_writeback_deadletters', rowsDeleted: 0, error: null }
+        : await deleteWritebackRows(supabase, request.organizationId, executionIds),
+    )
   }
 
   // WRITTEN WHATEVER THE OUTCOME, and before the day's Postgres partition is
@@ -461,6 +466,40 @@ async function deleteAuditRows(
     return { target: 'audit_log', rowsDeleted: total, error: null }
   } catch (err) {
     return { target: 'audit_log', rowsDeleted: null, error: formatErr(err) }
+  }
+}
+
+/**
+ * The failed Salesforce writes held for replay (#1993), by the subject's run ids.
+ * Its body is encrypted lead fields, so a subject erased everywhere else but here
+ * would still have them on record. Same shape as the audit rows: a zero match is
+ * the common, legitimate answer, since most runs never fail a write.
+ */
+async function deleteWritebackRows(
+  supabase: SupabaseClient,
+  organizationId: string,
+  executionIds: string[],
+): Promise<TargetOutcome> {
+  if (executionIds.length === 0) return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: 0, error: null }
+  try {
+    let total = 0
+    for (const ids of chunk(executionIds, IDS_PER_STATEMENT)) {
+      const { rows, error } = await requireRowsAffected<{ id: string }>(
+        'outcome_writeback_deadletters erasure',
+        () =>
+          supabase
+            .from('outcome_writeback_deadletters')
+            .delete()
+            .eq('organization_id', organizationId)
+            .in('execution_id', ids)
+            .select('id'),
+      )
+      if (error && !isNoRowMatchedError(error)) throw new Error(formatErr(error))
+      total += rows.length
+    }
+    return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: total, error: null }
+  } catch (err) {
+    return { target: 'pg_outcome_writeback_deadletters', rowsDeleted: null, error: formatErr(err) }
   }
 }
 
