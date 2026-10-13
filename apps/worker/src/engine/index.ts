@@ -43,6 +43,7 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
+import { captureFailedWriteback } from './writeback-deadletter'
 import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
 import { redactPii, parsePiiFields } from './pii-redactor'
@@ -810,6 +811,32 @@ export async function executeWorkflow(
                 console.error(`[durability] ${label} dead-letter failed:`, e),
               ),
             )
+          }
+          // Keep a failed post-answer Salesforce write for replay (#1993), outside
+          // every alert gate above: a classified Salesforce outage, which the alert
+          // stays quiet for, is exactly when these writes fail. A test run stores
+          // nothing; anything not a Salesforce write is left alone by the capture.
+          if (continuationError instanceof StepFailureError) {
+            const failedNodeType = definition.nodes.find((n) => n.namespace === continuationError.stepNamespace)?.type
+            if (failedNodeType === 'salesforce') {
+              executionCtx.waitUntil(
+                captureFailedWriteback(
+                  {
+                    orgId: org_id,
+                    workflowId,
+                    workflowName: workflow_name,
+                    executionId,
+                    stepNamespace: continuationError.stepNamespace,
+                    nodeType: failedNodeType,
+                    errorType: continuationError.errorType,
+                    error: continuationError,
+                    resolvedInput: continuationError.resolvedInput,
+                    isTest: reality.isTest,
+                  },
+                  { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
+                ).catch((e) => console.error('[durability] failed writeback capture threw:', formatErr(e))),
+              )
+            }
           }
         } else if (finalStatus === 'failed' && executionStatus === 'completed' && finalNodeNamespace == null) {
           failedErrorType = failedErrorType ?? 'permanent'
