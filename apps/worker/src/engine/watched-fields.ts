@@ -465,6 +465,27 @@ function isGuaranteedConstant(path: string, prefixes: string[]): boolean {
   return prefixes.some((p) => path === p || path.startsWith(`${p}.`))
 }
 
+/**
+ * Whether `path` is rooted at the trigger, which the field-presence capture can
+ * never judge (#1802).
+ *
+ * The code sandbox hands a script `steps.trigger` as `{ payload }` (scopeSteps
+ * in nodes/code.ts), so a script reads `steps.trigger.payload.X` and the value
+ * is there at run time. But the finalize-time capture computes presence from the
+ * run's real step outputs (`ctx.steps`), and the trigger payload is not one of
+ * them: `ctx.steps` has no `trigger` key. So `computeFieldPresence` skips every
+ * `trigger.*` field, which then sits in the manifest as present on 0 of every
+ * run (0 of 316 on 2026-10-05) and the day-one-dead check reports it as a dead
+ * field. A read the capture structurally cannot see is not a watchable field, so
+ * it is dropped from the derived set rather than left to page for ever. The
+ * resolver still reads it on the live run; only the watcher ignores it. This is
+ * the only namespace fed to the sandbox that is absent from `ctx.steps`, so no
+ * real node output is dropped with it.
+ */
+function isTriggerRooted(path: string): boolean {
+  return path === 'trigger' || path.startsWith('trigger.')
+}
+
 // Full watched-field map with each field's source and the code nodes whose
 // scripts could not be statically read (bailed open). Structured references win
 // on dedup (higher confidence than a code-scan match). Derived in-engine from the
@@ -544,6 +565,7 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
   const fields: WatchedField[] = []
   const seen = new Set<string>()
   for (const path of [...structured].sort()) {
+    if (isTriggerRooted(path)) continue
     if (isGuaranteedConstant(path, guaranteed)) continue
     const named = readersOf(path)
     fields.push({ path, source: 'structured', readers: named, gate: gateOf(path, named) })
@@ -551,6 +573,7 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
   }
   for (const path of [...code].sort()) {
     if (seen.has(path)) continue
+    if (isTriggerRooted(path)) continue
     if (isGuaranteedConstant(path, guaranteed)) continue
     const named = readersOf(path)
     fields.push({ path, source: 'code', readers: named, gate: gateOf(path, named) })
