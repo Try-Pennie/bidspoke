@@ -29,8 +29,12 @@
 --
 -- RETENTION. Only finished rows (replayed, refused, abandoned) are purged, 30
 -- days after they finished, by a daily pg_cron job. A pending row is never
--- purged however old: it is a write somebody still owes, and the daily backlog
--- alert is what makes an old one visible.
+-- purged however old: it is a write somebody still owes. Each failure is
+-- alerted once, as it is captured, by the dead letter that already pages a
+-- lost post-answer write. NOTHING YET alerts on an old pending row, and nothing
+-- yet moves one out of pending: the replay tool (#471) and the drain with its
+-- backlog alert (#468) are separate work, and until they ship every row here
+-- stays pending.
 --
 -- Expand/contract (ADR 0007): additive. A new table, a function and a cron job;
 -- nothing the deployed worker reads changes.
