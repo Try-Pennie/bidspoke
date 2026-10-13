@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeFieldPresence, deriveWatchedFields, fieldPresenceForCapture, shouldLogCapture } from '../field-presence'
+import { computeFieldPresence, deriveWatchedFields, fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture, FIELD_PRESENCE_VERSION } from '../field-presence'
 import type { StepOutput, WorkflowDefinition } from '../../types'
 
 function step(output: unknown): StepOutput {
@@ -17,9 +17,13 @@ describe('computeFieldPresence', () => {
     expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': true })
   })
 
-  it('marks a field absent when its node ran but the value is null', () => {
+  // #2018: an empty value and a missing key were one `false`, so a field that is
+  // empty by design (Liberty1's sale markers) paged as a wrong path. Now three
+  // states: true a value, null empty (the path reached nothing), false the path
+  // names a key some object on it does not have (the wrong path signature).
+  it('records null, not false, when its node ran and the key is there but empty', () => {
     const steps = { foo: step({ final: null }) }
-    expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': false })
+    expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': null })
   })
 
   it('marks a field absent when its node ran but the field is missing', () => {
@@ -32,9 +36,63 @@ describe('computeFieldPresence', () => {
     expect(computeFieldPresence(steps, ['foo.final'])).toEqual({})
   })
 
-  it('treats a node whose whole output is null as ran-but-empty', () => {
+  it('treats a node whose whole output is null as ran-but-empty, not as a wrong path', () => {
     const steps = { foo: step(null) }
-    expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': false })
+    expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': null })
+  })
+
+  describe('where the path stops (#2018)', () => {
+    it('reads a null parent as empty: the Scout catch returns eligibilityData null', () => {
+      const steps = { foo: step({ eligibilityData: null }) }
+      expect(computeFieldPresence(steps, ['foo.eligibilityData.estimated_total_debt'])).toEqual({
+        'foo.eligibilityData.estimated_total_debt': null,
+      })
+    })
+
+    it('reads a missing list item as empty: Salesforce answered with no records', () => {
+      const steps = { query_record: step({ body: { records: [] } }) }
+      expect(computeFieldPresence(steps, ['query_record.body.records.0.Status'])).toEqual({
+        'query_record.body.records.0.Status': null,
+      })
+    })
+
+    it('reads a list item without the key as a wrong path', () => {
+      const steps = { query_record: step({ body: { records: [{ Id: 'a' }] } }) }
+      expect(computeFieldPresence(steps, ['query_record.body.records.0.Status'])).toEqual({
+        'query_record.body.records.0.Status': false,
+      })
+    })
+
+    it('reads an object missing a key part way along as a wrong path', () => {
+      const steps = { query_record: step({ body: { records: [{ Status: 'x' }] } }) }
+      expect(computeFieldPresence(steps, ['query_record.body.recrods.0.Status'])).toEqual({
+        'query_record.body.recrods.0.Status': false,
+      })
+    })
+
+    // One walk with the engine's resolver (#2018 review, L370): an array is an
+    // object to it, so `records.length` resolves and `records.foo` does not.
+    it('reads a property of a list the way the engine resolves it', () => {
+      const steps = { q: step({ records: [{ Id: 'a' }] }) }
+      expect(computeFieldPresence(steps, ['q.records.length'])).toEqual({ 'q.records.length': true })
+      expect(computeFieldPresence(steps, ['q.records.foo'])).toEqual({ 'q.records.foo': false })
+    })
+
+    it('reads a path that runs into a plain value as a wrong path', () => {
+      const steps = { foo: step({ a: 'text' }) }
+      expect(computeFieldPresence(steps, ['foo.a.b'])).toEqual({ 'foo.a.b': false })
+    })
+
+    it('reads a key holding undefined as empty, since the key is there', () => {
+      const steps = { foo: step({ final: undefined }) }
+      expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': null })
+    })
+
+    it('reads every field of a step that did not complete as empty, never as a wrong path', () => {
+      const steps = { foo: { output: { other: 1 }, status: 'failed' } as StepOutput }
+      expect(computeFieldPresence(steps, ['foo.final'])).toEqual({ 'foo.final': null })
+    })
+
   })
 
   it('treats 0, false, and empty string as present (carried a value)', () => {
@@ -160,7 +218,7 @@ describe('a field is judged only on runs where a node that reads it ran', () => 
     // The pairing that stops this passing by never recording anything: a
     // refusal whose reason went missing must still read as absent.
     const steps = { input: step({ valid: false, reason: null }), respond_bad: step({}) }
-    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': false })
+    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': null })
   })
 
   it('counts a reader that failed, because it ran', () => {
@@ -168,7 +226,7 @@ describe('a field is judged only on runs where a node that reads it ran', () => 
       input: step({ valid: false, reason: null }),
       respond_bad: { output: null, status: 'failed' } as StepOutput,
     }
-    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': false })
+    expect(computeFieldPresence(steps, ['input.reason'], readers)).toEqual({ 'input.reason': null })
   })
 
   it('counts the field when any one of several readers ran', () => {
@@ -180,18 +238,18 @@ describe('a field is judged only on runs where a node that reads it ran', () => 
   it('judges a field whose reader cannot be named on every run its producer ran', () => {
     const unknown = new Map<string, readonly string[] | null>([['x.v', null]])
     const steps = { x: step({ v: null }) }
-    expect(computeFieldPresence(steps, ['x.v'], unknown)).toEqual({ 'x.v': false })
+    expect(computeFieldPresence(steps, ['x.v'], unknown)).toEqual({ 'x.v': null })
   })
 
   it('judges a field whose gate is empty the old way, never hiding it on every run', () => {
     const empty = new Map<string, readonly string[] | null>([['x.v', []]])
     const steps = { x: step({ v: null }) }
-    expect(computeFieldPresence(steps, ['x.v'], empty)).toEqual({ 'x.v': false })
+    expect(computeFieldPresence(steps, ['x.v'], empty)).toEqual({ 'x.v': null })
   })
 
   it('judges a field with no reader map at all the old way', () => {
     const steps = { x: step({ v: null }) }
-    expect(computeFieldPresence(steps, ['x.v'])).toEqual({ 'x.v': false })
+    expect(computeFieldPresence(steps, ['x.v'])).toEqual({ 'x.v': null })
   })
 })
 
@@ -234,9 +292,10 @@ describe('the Liberty1 click shapes, end to end through capture', () => {
     }
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({
       'query_record.body.records': true,
-      // #1801: the indexed row is now watched; absent when the query returned none.
-      'query_record.body.records.0': false,
-      'query_record.body.records.0.Id': false,
+      // #1801: the indexed row is now watched. When the query returned none it is
+      // empty, not a wrong path (#2018): the list is there, it just has no row.
+      'query_record.body.records.0': null,
+      'query_record.body.records.0.Id': null,
     })
   })
 
@@ -246,5 +305,18 @@ describe('the Liberty1 click shapes, end to end through capture', () => {
       respond_bad_input: step({ reason: 'no_id' }),
     }
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({ 'resolve_input.reason': true })
+  })
+})
+
+// The version travels with the map wherever a run's row is written (#2018), so
+// the rollup can tell a map that separates empty from missing from an older one.
+describe('fieldPresenceColumns', () => {
+  it('stamps the current version beside a map', () => {
+    expect(FIELD_PRESENCE_VERSION).toBe(2)
+    expect(fieldPresenceColumns({ 'a.b': null })).toEqual({ field_presence: { 'a.b': null }, field_presence_version: 2 })
+  })
+
+  it('writes neither column when capture is off', () => {
+    expect(fieldPresenceColumns(undefined)).toEqual({})
   })
 })

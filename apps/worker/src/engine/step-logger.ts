@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { FieldPresenceMap } from './field-presence'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
 import { redactPii, parsePiiFields, redactPiiInLogMessage } from './pii-redactor'
 import {
@@ -425,7 +426,8 @@ export async function updateExecutionRecord(
     sighting_finalize?: unknown
     // #419: per-execution field-presence booleans (which watched fields carried
     // a value this run). Dark capture behind FIELD_PRESENCE_CAPTURE.
-    field_presence?: Record<string, boolean>
+    field_presence?: FieldPresenceMap
+    field_presence_version?: number
     // #744: this lead reached Salesforce without its email, because Salesforce
     // rejected the address and the node blanked it and retried. Set only when
     // true, so the column is null on the overwhelming majority of runs and the
