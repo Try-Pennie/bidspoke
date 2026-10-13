@@ -446,14 +446,6 @@ export function findDroughts(
   return hits
 }
 
-// Tier-2 hits for the dead rule, through the one classifier the alert uses, so
-// the two cannot disagree about a field (#1336, #2018).
-export function findDayOneDead(rows: PresenceRow[], thresholds?: PresenceThresholds): DeadHit[] {
-  return classifyDeadFields(rows, { thresholds })
-    .dead.filter((s) => s.verdict === 'alerting')
-    .map((s) => s.dead as DeadHit)
-}
-
 /**
  * What this run could actually establish about one field (#423).
  *

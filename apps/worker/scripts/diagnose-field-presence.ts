@@ -31,7 +31,7 @@ import {
   STABLE_MEAN_MIN,
   STABLE_STDDEV_MAX,
   dailyRate,
-  findDayOneDead,
+  classifyDeadFields,
   findDroughts,
   isStableBaseline,
   mean,
@@ -222,7 +222,7 @@ async function main(): Promise<void> {
         .slice(0, 10)
     : since
   const deadRows = rows.filter((r) => r.day >= deadSince)
-  const deadHits = findDayOneDead(deadRows)
+  const deadHits = classifyDeadFields(deadRows).dead.filter((s) => s.verdict === 'alerting').map((s) => s.dead!)
   console.log(`\n--- Tier-2 day-one-dead over ${deadSince}.. (${DEAD_WINDOW_DAYS}d) ---`)
   console.log(`  ${deadHits.length} hit(s)`)
   for (const h of deadHits) {
@@ -310,7 +310,7 @@ async function main(): Promise<void> {
 
   console.log(`\n--- Tier-2 sweep over DEAD_MAX_RATE ---`)
   for (const maxRate of [0.005, 0.002, 0.001, 0.0005, 0]) {
-    const h = findDayOneDead(deadRows, { deadMaxRate: maxRate })
+    const h = classifyDeadFields(deadRows, { thresholds: { deadMaxRate: maxRate } }).dead.filter((s) => s.verdict === 'alerting')
     console.log(
       `  deadMaxRate=${maxRate}  -> ${h.length} hit(s): ${h.map((x) => x.field_path).join(', ') || 'none'}` +
         `${maxRate === DEAD_MAX_RATE ? '   <- shipped' : ''}`,

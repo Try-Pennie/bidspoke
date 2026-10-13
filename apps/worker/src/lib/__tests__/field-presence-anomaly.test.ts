@@ -10,7 +10,7 @@ import { getSlackConnection, postMessage, sendRecoveryAlert, sendGroupedRecovery
 import type { PresenceRow, RecentPresence } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
-  findDroughts, findDayOneDead, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
+  findDroughts, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
   sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
@@ -19,6 +19,10 @@ import {
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
+
+/** The dead rule's hits, through the one classifier the alert and the API use (#2018). */
+const deadHits = (rows: PresenceRow[], thresholds?: Parameters<typeof classifyDead>[1]) =>
+  classifyDeadFields(rows, { thresholds }).dead.filter((s) => s.verdict === 'alerting').map((s) => s.dead!)
 
 describe('numeric helpers', () => {
   it('dailyRate is present/ran', () => {
@@ -136,10 +140,10 @@ describe('findDroughts', () => {
   })
 })
 
-describe('findDayOneDead', () => {
+describe('the dead rule hits', () => {
   it('flags a field with many runs and zero presence, never healthy', () => {
     const rows = deadDays('wf2', 'eligibility.final', DMR, 0)
-    const hits = findDayOneDead(rows)
+    const hits = deadHits(rows)
     expect(hits.map((h) => h.field_path)).toEqual(['eligibility.final'])
   })
 
@@ -148,17 +152,17 @@ describe('findDayOneDead', () => {
       row('wf2', 'eligibility.final', '2026-06-20', 100, 100),  // healthy day
       ...deadDays('wf2', 'eligibility.final', DMR, 0),
     ]
-    expect(findDayOneDead(rows)).toEqual([])
+    expect(deadHits(rows)).toEqual([])
   })
   it('does not mark everHealthy on a high-rate day with too few runs', () => {
     const rows = [
       row('wf2', 'eligibility.final', '2026-06-20', 5, 5),      // 100% rate but only 5 runs (< floor) -> must NOT set everHealthy
       ...deadDays('wf2', 'eligibility.final', 60000, 0),        // large dead days keep window rate <= DEAD_MAX_RATE
     ]
-    expect(findDayOneDead(rows).map((h) => h.field_path)).toEqual(['eligibility.final'])
+    expect(deadHits(rows).map((h) => h.field_path)).toEqual(['eligibility.final'])
   })
   it('does not flag day-one-dead just below the run floor', () => {
-    expect(findDayOneDead(deadDays('wf2', 'eligibility.final', DMR - 1, 0))).toEqual([])
+    expect(deadHits(deadDays('wf2', 'eligibility.final', DMR - 1, 0))).toEqual([])
   })
 })
 
@@ -226,12 +230,12 @@ describe('threshold overrides', () => {
     expect(findDroughts(rows, '2026-01-04', { stableMeanMin: 0.8 })).toHaveLength(1)
   })
 
-  it('findDayOneDead passes thresholds through to the per-field predicate', () => {
+  it('the dead rule passes thresholds through to the per-field predicate', () => {
     const rows: PresenceRow[] = [
       ...deadDays('w', 'f', DMR, 0),
     ]
-    expect(findDayOneDead(rows)).toHaveLength(1)
-    expect(findDayOneDead(rows, { deadMinRuns: DMR + 1 })).toHaveLength(0)
+    expect(deadHits(rows)).toHaveLength(1)
+    expect(deadHits(rows, { deadMinRuns: DMR + 1 })).toHaveLength(0)
   })
 })
 
@@ -1172,7 +1176,7 @@ describe('field-presence alerting', () => {
 describe('dead check requires enough days, not just enough runs', () => {
   it('does not call a field dead on a single day of history', () => {
     const rows = [row('wf1', 'f', '2026-06-28', 25000, 0)]
-    expect(findDayOneDead(rows)).toEqual([])
+    expect(deadHits(rows)).toEqual([])
     expect(classifyDead(rows)[0].verdict).toBe('insufficient')
   })
 
@@ -1182,7 +1186,7 @@ describe('dead check requires enough days, not just enough runs', () => {
       row('wf1', 'f', '2026-06-27', 9000, 0),
       row('wf1', 'f', '2026-06-28', 9000, 0),
     ]
-    expect(findDayOneDead(rows).map((h) => h.field_path)).toEqual(['f'])
+    expect(deadHits(rows).map((h) => h.field_path)).toEqual(['f'])
   })
 
   it('counts distinct days, not rows', () => {
@@ -1192,7 +1196,7 @@ describe('dead check requires enough days, not just enough runs', () => {
       row('wf1', 'f', '2026-06-27', 9000, 0),
       row('wf1', 'f', '2026-06-28', 9000, 0),
     ]
-    expect(findDayOneDead(rows)).toEqual([])
+    expect(deadHits(rows)).toEqual([])
   })
 })
 
