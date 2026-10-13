@@ -66,7 +66,7 @@ async function readRows(sinceDay: string): Promise<PresenceRow[]> {
   for (;;) {
     const { data, error } = await supabase
       .from('field_presence_daily')
-      .select('workflow_id, field_path, day, ran_count, present_count')
+      .select('workflow_id, field_path, day, ran_count, present_count, key_present_count, key_measured_count')
       .gte('day', sinceDay)
       .eq('is_test', false)
       .order('workflow_id', { ascending: true })
@@ -82,6 +82,8 @@ async function readRows(sinceDay: string): Promise<PresenceRow[]> {
         day: r.day as string,
         ran_count: Number(r.ran_count),
         present_count: Number(r.present_count),
+        key_present_count: r.key_present_count == null ? 0 : Number(r.key_present_count),
+        key_measured_count: r.key_measured_count == null ? 0 : Number(r.key_measured_count),
       })
     }
     if (rows.length < PAGE) break
@@ -221,8 +223,11 @@ async function main(): Promise<void> {
         .toISOString()
         .slice(0, 10)
     : since
-  const deadRows = rows.filter((r) => r.day >= deadSince)
-  const deadHits = classifyDeadFields(deadRows).dead.filter((s) => s.verdict === 'alerting').map((s) => s.dead!)
+  // The live dead check's own classifier and window (#2018): every row for "has it
+  // ever carried a value", the last DEAD_WINDOW_DAYS for the dead rule.
+  const verdicts = classifyDeadFields(rows, { windowStart: deadSince })
+  const deadHits = verdicts.dead.filter((s) => s.verdict === 'alerting').map((s) => s.dead!)
+  const wrongPathHits = verdicts.wrongPath.filter((s) => s.verdict === 'alerting').map((s) => s.wrongPath!)
   console.log(`\n--- Tier-2 day-one-dead over ${deadSince}.. (${DEAD_WINDOW_DAYS}d) ---`)
   console.log(`  ${deadHits.length} hit(s)`)
   for (const h of deadHits) {
@@ -230,6 +235,9 @@ async function main(): Promise<void> {
       `    ${label(h.workflow_id)}  ${h.field_path}  ${h.window_present}/${h.window_ran} present (${pct(dailyRate(h.window_ran, h.window_present))})`,
     )
   }
+  console.log(`  ${wrongPathHits.length} path(s) not found (key never on at least 3 fully measured days)`)
+  for (const h of wrongPathHits) console.log(`    ${label(h.workflow_id)}  ${h.field_path}  0 of ${h.window_ran} runs since ${h.since}`)
+  console.log(`  ${verdicts.byDesign.length} field(s) empty by design (key present, never a value), not reported`)
 
   // Fields that are ~never present but sit UNDER the run floor: the population
   // Tier-2 is currently declining to judge. This is the detection delay the
@@ -310,7 +318,7 @@ async function main(): Promise<void> {
 
   console.log(`\n--- Tier-2 sweep over DEAD_MAX_RATE ---`)
   for (const maxRate of [0.005, 0.002, 0.001, 0.0005, 0]) {
-    const h = classifyDeadFields(deadRows, { thresholds: { deadMaxRate: maxRate } }).dead.filter((s) => s.verdict === 'alerting')
+    const h = classifyDeadFields(rows, { windowStart: deadSince, thresholds: { deadMaxRate: maxRate } }).dead.filter((s) => s.verdict === 'alerting')
     console.log(
       `  deadMaxRate=${maxRate}  -> ${h.length} hit(s): ${h.map((x) => x.field_path).join(', ') || 'none'}` +
         `${maxRate === DEAD_MAX_RATE ? '   <- shipped' : ''}`,
