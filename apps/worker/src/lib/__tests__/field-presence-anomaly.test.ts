@@ -15,7 +15,7 @@ import {
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
   sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
   classifyDeadFields, EVER_CARRIED_LOOKBACK_DAYS, BY_DESIGN_PHRASE, WRONG_PATH_SIGNAL, deadWindowStart,
-  classifySilentRare, SILENT_MIN_EXPECTED,
+  classifySilentRare, SILENT_MIN_EXPECTED, HANDED_TO_WRONG_PATH_PHRASE,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -1413,6 +1413,17 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     expect(text).toContain('Output Field Path Not Found')
     expect(text).toContain('did not appear on any of *2800* runs since 2026-10-07')
     expect(WRONG_PATH_SIGNAL).toBe('output field path not found')
+  })
+
+  it('hands an open dead page over to the wrong path alert with one line, rather than letting it lapse', async () => {
+    const field = 'query_record.body.recrods.0.Id'
+    const kv = makeKv({ [`field-presence-dead-recovery:wf-1 ${field}`]: '2026-10-06T13:00:00.000Z' })
+    await runFieldPresenceDeadCheck(supabaseWith(WEEK.map((d) => dayRow(field, d, 400, 0, 0))) as never, kv, APP_URL)
+    const handover = vi.mocked(sendGroupedRecoveryAlert).mock.calls.find((c) => (c[2] as { recoveredPhrase?: string }).recoveredPhrase === HANDED_TO_WRONG_PATH_PHRASE)
+    expect(handover).toBeDefined()
+    expect(kv.store.has(`field-presence-dead-recovery:wf-1 ${field}`)).toBe(false)
+    // And the field is paged under its new name.
+    expect(JSON.stringify(vi.mocked(postMessage).mock.calls)).toContain('Output Field Path Not Found')
   })
 
   it('keeps an open incident alive through a run that could not judge it, so its all-clear is not lost (#1803)', async () => {

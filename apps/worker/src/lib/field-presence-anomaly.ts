@@ -165,6 +165,14 @@ export const WRONG_PATH_RECOVERED_PHRASE = 'resolves its path again'
  * (#2018): its key appears, it simply has no value. Not "carrying values again",
  * which would claim something that did not happen (L11).
  */
+/**
+ * The stand-down for a dead incident on a field now followed by the wrong path
+ * alert (#2018 review): one line handing it over, rather than letting it lapse
+ * with the old page as the last word.
+ */
+export const HANDED_TO_WRONG_PATH_PHRASE =
+  'is now reported as a path not found: its key has not appeared on runs that can tell, so it is followed there'
+
 export const BY_DESIGN_PHRASE =
   'is empty by design: its key is there on every run, it just has no value, so it is no longer reported'
 
@@ -720,6 +728,8 @@ function deadRuleVerdict(window: PresenceRow[], t: ResolvedThresholds, threshold
  *   byDesign   a field that has never carried a value but whose key appears:
  *              empty by design. Never pages; `healthy` here stands down an open
  *              dead incident from before the narrowing (Liberty1's markers).
+ *   handedOver a wrongPath field's open dead incident, stood down with a line
+ *              saying it is followed as a path not found from now on.
  *
  * A field is in exactly one of `dead` or (`wrongPath` and, when its key
  * appears, `byDesign`). Key evidence is read only from fully measured days
@@ -733,9 +743,9 @@ function deadRuleVerdict(window: PresenceRow[], t: ResolvedThresholds, threshold
 export function classifyDeadFields(
   rows: PresenceRow[],
   opts: { windowStart?: string; thresholds?: PresenceThresholds } = {},
-): { dead: FieldState[]; wrongPath: FieldState[]; byDesign: FieldState[] } {
+): { dead: FieldState[]; wrongPath: FieldState[]; byDesign: FieldState[]; handedOver: FieldState[] } {
   const t = resolve(opts.thresholds)
-  const out = { dead: [] as FieldState[], wrongPath: [] as FieldState[], byDesign: [] as FieldState[] }
+  const out = { dead: [] as FieldState[], wrongPath: [] as FieldState[], byDesign: [] as FieldState[], handedOver: [] as FieldState[] }
   for (const bucket of groupByField(rows).values()) {
     const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
     const window = opts.windowStart ? bucket.filter((r) => r.day >= opts.windowStart!) : bucket
@@ -755,6 +765,9 @@ export function classifyDeadFields(
     if (new Set(fullyMeasured.map((r) => r.day)).size >= t.deadMinDays && measuredRuns >= t.deadMinRuns) {
       const since = fullyMeasured.reduce((m, r) => (r.day < m ? r.day : m), fullyMeasured[0].day)
       out.wrongPath.push({ ...base, verdict: 'alerting', wrongPath: { ...base, window_ran: measuredRuns, since } })
+      // A dead incident opened on it before it could be judged by key is handed
+      // over with one line, rather than left to lapse with the old page last.
+      out.handedOver.push({ ...base, verdict: 'healthy' })
       continue
     }
     out.dead.push(deadRuleVerdict(window, t, opts.thresholds))
@@ -1473,7 +1486,7 @@ export async function runFieldPresenceDeadCheck(
   // itself still judges the last DEAD_WINDOW_DAYS of them.
   const since = new Date(Date.now() - EVER_CARRIED_LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10)
   const rows = await readDeadRows(supabase, workflowIds, since)
-  const { dead, wrongPath, byDesign } = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
+  const { dead, wrongPath, byDesign, handedOver } = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
   const silenced = await readSilences(supabase, workflowIds)
 
   const isVisible = (s: FieldState) => s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path))
@@ -1509,6 +1522,7 @@ export async function runFieldPresenceDeadCheck(
   // Same prefix as the dead rule, so an incident it opened on a field now known to
   // be empty by design is the one stood down; the states here are only ever healthy.
   const b = await alertOnStates(supabase, kv, appUrl, workflows, byDesign, silenced, { ...deadCfg, recoveredPhrase: BY_DESIGN_PHRASE })
+  const h = await alertOnStates(supabase, kv, appUrl, workflows, handedOver, silenced, { ...deadCfg, recoveredPhrase: HANDED_TO_WRONG_PATH_PHRASE })
   const w = await alertOnStates(supabase, kv, appUrl, workflows, wrongPath, silenced, {
     prefix: 'field-presence-wrong-path',
     signal: WRONG_PATH_SIGNAL,
@@ -1519,7 +1533,7 @@ export async function runFieldPresenceDeadCheck(
   console.log(
     `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} wrong_path=${visibleWrongPath.length} ` +
       `by_design=${byDesign.length} unjudged=${dead.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${d.paged + w.paged} recovered=${d.recovered + w.recovered} stood_down_by_design=${b.recovered} ` +
+      `paged=${d.paged + w.paged} recovered=${d.recovered + w.recovered} stood_down_by_design=${b.recovered} handed_over=${h.recovered} ` +
       `unwatchable=${d.unwatchable}`,
   )
 }
