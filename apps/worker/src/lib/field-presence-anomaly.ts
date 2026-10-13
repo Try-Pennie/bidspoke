@@ -10,7 +10,7 @@ import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
 import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
-import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, type RecoveryDue, type RecoveryKv } from './alert-recovery'
+import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, keepAlerted, recoveryKey, type RecoveryDue, type RecoveryKv } from './alert-recovery'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
 
@@ -153,6 +153,20 @@ export const DEAD_SIGNAL = 'output field not resolving'
  * over the line, so the default would claim more than this check measured (L11).
  */
 export const DEAD_RECOVERED_PHRASE = 'is carrying values again'
+
+/** How the wrong path tier (#2018) names itself, in the alert and its all-clear. */
+export const WRONG_PATH_SIGNAL = 'output field path not found'
+
+/** The wrong path tier's all-clear: the key appeared, so the path resolves. */
+export const WRONG_PATH_RECOVERED_PHRASE = 'resolves its path again'
+
+/**
+ * The stand-down for a dead incident on a field now known to be empty by design
+ * (#2018): its key appears, it simply has no value. Not "carrying values again",
+ * which would claim something that did not happen (L11).
+ */
+export const BY_DESIGN_PHRASE =
+  'is empty by design: its key is there on every run, it just has no value, so it is no longer reported'
 
 export function dailyRate(ran: number, present: number): number {
   return ran > 0 ? present / ran : 0
@@ -320,6 +334,14 @@ export interface PresenceRow {
   day: string
   ran_count: number
   present_count: number
+  /**
+   * Runs written in the map's version 2 meaning where the field was not a wrong
+   * path (a value, or empty), and runs written at version 2 at all (#2018).
+   * Absent or 0 means the day carries no key evidence, so it is never read as
+   * "the key did not appear".
+   */
+  key_present_count?: number
+  key_measured_count?: number
 }
 
 export interface DroughtHit {
@@ -354,6 +376,22 @@ export interface DeadHit {
   field_path: string
   window_ran: number
   window_present: number
+  /**
+   * Whether the newest day had enough runs to say the field carried nothing on
+   * it (#1803). False on a low volume workflow, where the alert must not claim a
+   * most recent day it never measured. Absent is read as true (the old shape).
+   */
+  recent_judged?: boolean
+}
+
+/** A field whose key never appeared on any fully measured run in the window (#2018). */
+export interface WrongPathHit {
+  workflow_id: string
+  field_path: string
+  /** Runs over the fully measured days, every one without the key. */
+  window_ran: number
+  /** The earliest fully measured day judged, YYYY-MM-DD. */
+  since: string
 }
 
 function groupByField(rows: PresenceRow[]): Map<string, PresenceRow[]> {
@@ -400,40 +438,12 @@ export function findDroughts(
   return hits
 }
 
-// Tier-2: per field, sum the window and check day-one-dead. A field is counted
-// as "ever healthy" only on a day with enough runs to trust its rate.
+// Tier-2 hits for the dead rule, through the one classifier the alert uses, so
+// the two cannot disagree about a field (#1336, #2018).
 export function findDayOneDead(rows: PresenceRow[], thresholds?: PresenceThresholds): DeadHit[] {
-  const t = resolve(thresholds)
-  const hits: DeadHit[] = []
-  for (const bucket of groupByField(rows).values()) {
-    // Distinct days, not rows: two rows for one day is one day of evidence.
-    if (new Set(bucket.map((r) => r.day)).size < t.deadMinDays) continue
-    let windowRan = 0
-    let windowPresent = 0
-    let everHealthy = false
-    for (const r of bucket) {
-      windowRan += r.ran_count
-      windowPresent += r.present_count
-      if (r.ran_count >= BASELINE_MIN_DAY_RUNS && dailyRate(r.ran_count, r.present_count) >= STABLE_MEAN_MIN) {
-        everHealthy = true
-      }
-    }
-    // Both call sites consult ONE predicate (#1336). The manifest this feeds and
-    // the alert classifyDead feeds have to answer the same question, or the API
-    // reports a field as dead while Slack has already stood it down.
-    if (
-      detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds) &&
-      !hasRecentResolution(bucket, thresholds)
-    ) {
-      hits.push({
-        workflow_id: bucket[0].workflow_id,
-        field_path: bucket[0].field_path,
-        window_ran: windowRan,
-        window_present: windowPresent,
-      })
-    }
-  }
-  return hits
+  return classifyDeadFields(rows, { thresholds })
+    .dead.filter((s) => s.verdict === 'alerting')
+    .map((s) => s.dead as DeadHit)
 }
 
 /**
@@ -458,6 +468,7 @@ export interface FieldState {
   /** Present only on `alerting`, carrying what the page needs to say. */
   drought?: DroughtHit
   dead?: DeadHit
+  wrongPath?: WrongPathHit
 }
 
 /**
@@ -552,44 +563,106 @@ function todayKey(bucket: PresenceRow[]): string {
   return max
 }
 
-/** Tier-2, as a verdict per field rather than only the hits. */
+/** Tier-2, as a verdict per field rather than only the hits. The dead rule only: see classifyDeadFields. */
 export function classifyDead(
   rows: PresenceRow[],
   thresholds?: PresenceThresholds,
 ): FieldState[] {
-  const t = resolve(thresholds)
-  const out: FieldState[] = []
+  return classifyDeadFields(rows, { thresholds }).dead
+}
+
+/**
+ * How far back "has this field ever carried a value" looks (#2018). Four weeks,
+ * because a rare field can go days without one: Main Flow's Scout field carried
+ * none on 2026-08-09 at normal volume and only 1 to 8 a day before 2026-09-15. A
+ * field that carried a value in that span stays on the dead rule, which is what
+ * caught the September Scout outage.
+ */
+export const EVER_CARRIED_LOOKBACK_DAYS = 28
+
+/** The old dead rule over one field's window rows, unchanged by #2018. */
+function deadRuleVerdict(window: PresenceRow[], t: ResolvedThresholds, thresholds?: PresenceThresholds): FieldState {
+  const base = { workflow_id: window[0].workflow_id, field_path: window[0].field_path }
+  let windowRan = 0
+  let windowPresent = 0
+  let everHealthy = false
+  for (const r of window) {
+    windowRan += r.ran_count
+    windowPresent += r.present_count
+    if (r.ran_count >= BASELINE_MIN_DAY_RUNS && dailyRate(r.ran_count, r.present_count) >= t.stableMeanMin) {
+      everHealthy = true
+    }
+  }
+  // Too little traffic over the window to call a field dead. This is the
+  // population the design knowingly accepts a detection delay on, and it is
+  // reported as unjudged rather than as fine.
+  if (windowRan < t.deadMinRuns || new Set(window.map((r) => r.day)).size < t.deadMinDays) {
+    return { ...base, verdict: 'insufficient' }
+  }
+  if (detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds) && !hasRecentResolution(window, thresholds)) {
+    // The message says "not at all on the most recent day", so it may only when that
+    // newest day itself had enough runs to say so (#1803).
+    const newest = window.reduce((m, r) => (r.day > m ? r.day : m), window[0].day)
+    const newestRan = window.filter((r) => r.day === newest).reduce((n, r) => n + r.ran_count, 0)
+    const recentJudged = newestRan >= t.recoveryMinDayRuns
+    return {
+      ...base,
+      verdict: 'alerting',
+      dead: { ...base, window_ran: windowRan, window_present: windowPresent, recent_judged: recentJudged },
+    }
+  }
+  return { ...base, verdict: 'healthy' }
+}
+
+/**
+ * The dead tier, narrowed by key presence (#2018). Three verdict lists, because
+ * each pages and stands down under its own name:
+ *
+ *   dead       a field that has carried a value in the lookback, or one that
+ *              cannot yet be judged by key: the old rule, unchanged. Scout.
+ *   wrongPath  a field that has never carried a value and whose key did not
+ *              appear on any fully measured run over enough days and runs.
+ *   byDesign   a field that has never carried a value but whose key appears:
+ *              empty by design. Never pages; `healthy` here stands down an open
+ *              dead incident from before the narrowing (Liberty1's markers).
+ *
+ * A field is in exactly one of `dead` or (`wrongPath` and, when its key
+ * appears, `byDesign`). Key evidence is read only from fully measured days
+ * (every run at version 2), so a day written in the old meaning, where an empty
+ * value was recorded as a missing key, can never accuse a path. A field with too
+ * few such days stays on the old rule, so nothing goes unwatched in warm up.
+ *
+ * `windowStart` bounds the old rule's window (DEAD_WINDOW_DAYS); rows before it
+ * count only toward "has it ever carried a value". Omitted, every row is window.
+ */
+export function classifyDeadFields(
+  rows: PresenceRow[],
+  opts: { windowStart?: string; thresholds?: PresenceThresholds } = {},
+): { dead: FieldState[]; wrongPath: FieldState[]; byDesign: FieldState[] } {
+  const t = resolve(opts.thresholds)
+  const out = { dead: [] as FieldState[], wrongPath: [] as FieldState[], byDesign: [] as FieldState[] }
   for (const bucket of groupByField(rows).values()) {
     const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
-    let windowRan = 0
-    let windowPresent = 0
-    let everHealthy = false
-    for (const r of bucket) {
-      windowRan += r.ran_count
-      windowPresent += r.present_count
-      if (r.ran_count >= BASELINE_MIN_DAY_RUNS && dailyRate(r.ran_count, r.present_count) >= t.stableMeanMin) {
-        everHealthy = true
-      }
-    }
-    // Too little traffic over the window to call a field dead. This is the
-    // population the design knowingly accepts a detection delay on, and it is
-    // reported as unjudged rather than as fine.
-    if (windowRan < t.deadMinRuns || new Set(bucket.map((r) => r.day)).size < t.deadMinDays) {
-      out.push({ ...base, verdict: 'insufficient' })
+    const window = opts.windowStart ? bucket.filter((r) => r.day >= opts.windowStart!) : bucket
+    if (window.length === 0) continue
+    const everCarried = bucket.some((r) => r.present_count > 0)
+    if (everCarried) {
+      out.dead.push(deadRuleVerdict(window, t, opts.thresholds))
       continue
     }
-    if (
-      detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds) &&
-      !hasRecentResolution(bucket, thresholds)
-    ) {
-      out.push({
-        ...base,
-        verdict: 'alerting',
-        dead: { ...base, window_ran: windowRan, window_present: windowPresent },
-      })
-    } else {
-      out.push({ ...base, verdict: 'healthy' })
+    if (bucket.some((r) => (r.key_present_count ?? 0) > 0)) {
+      out.byDesign.push({ ...base, verdict: 'healthy' })
+      out.wrongPath.push({ ...base, verdict: 'healthy' })
+      continue
     }
+    const fullyMeasured = window.filter((r) => r.ran_count > 0 && (r.key_measured_count ?? 0) === r.ran_count)
+    const measuredRuns = fullyMeasured.reduce((n, r) => n + r.ran_count, 0)
+    if (new Set(fullyMeasured.map((r) => r.day)).size >= t.deadMinDays && measuredRuns >= t.deadMinRuns) {
+      const since = fullyMeasured.reduce((m, r) => (r.day < m ? r.day : m), fullyMeasured[0].day)
+      out.wrongPath.push({ ...base, verdict: 'alerting', wrongPath: { ...base, window_ran: measuredRuns, since } })
+      continue
+    }
+    out.dead.push(deadRuleVerdict(window, t, opts.thresholds))
   }
   return out
 }
@@ -752,6 +825,59 @@ async function readPresenceRows(
 }
 
 /**
+ * The rollup rows the dead tier reads, with the key presence counts (#2018).
+ *
+ * Its own read, so tier 1's hourly read never selects the key columns and keeps
+ * its own failure boundary. Same paging, ordering and refusals as readPresenceRows.
+ */
+async function readDeadRows(
+  supabase: SupabaseClient,
+  workflowIds: string[],
+  sinceDate: string,
+): Promise<PresenceRow[]> {
+  const rows = await fetchAllPaged<Record<string, unknown>>(
+    (from, to) =>
+      supabase
+        .from('field_presence_daily')
+        .select('workflow_id, field_path, day, ran_count, present_count, key_present_count, key_measured_count')
+        .in('workflow_id', workflowIds)
+        .gte('day', sinceDate)
+        .eq('is_test', false)
+        .order('workflow_id', { ascending: true })
+        .order('field_path', { ascending: true })
+        .order('day', { ascending: true })
+        .range(from, to),
+    'field_presence_daily',
+  )
+  return rows.map((r) => ({
+    workflow_id: r.workflow_id as string,
+    field_path: r.field_path as string,
+    day: r.day as string,
+    ran_count: count(r.ran_count, 'ran_count', r),
+    present_count: count(r.present_count, 'present_count', r),
+    // Columns added by #2018 default to 0, so a missing value here is a row the
+    // read could not see; it carries no key evidence rather than a refusal.
+    key_present_count: r.key_present_count === undefined ? 0 : count(r.key_present_count, 'key_present_count', r),
+    key_measured_count: r.key_measured_count === undefined ? 0 : count(r.key_measured_count, 'key_measured_count', r),
+  }))
+}
+
+/**
+ * The first day of the dead rule's window, anchored on the newest day in the
+ * rollup rather than the wall clock (#2018): in production that is today, and if
+ * the rollup ever stalls the window follows the last real data instead of judging
+ * days nobody has counted yet. DEAD_WINDOW_DAYS back, as the dead read always was.
+ */
+export function deadWindowStart(rows: PresenceRow[]): string | undefined {
+  let max = ''
+  for (const r of rows) if (r.day > max) max = r.day
+  if (!max) return undefined
+  const d = new Date(`${max}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - DEAD_WINDOW_DAYS)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
  * Per-field counts over the trailing window, via the `field_presence_window` RPC
  * (#1101).
  *
@@ -911,17 +1037,22 @@ export async function sendFieldDeadAlert(
     const hit = f.state.dead as DeadHit
     return (
       `*${f.workflowName}* \`${hit.field_path}\` carried a value on ` +
-      `*${hit.window_present} of ${hit.window_ran}* runs  <${appUrl}/workflows/${f.workflowId}|open>`
+      `*${hit.window_present} of ${hit.window_ran}* runs` +
+      (hit.recent_judged === false ? ' (its most recent day had too few runs to judge)' : '') +
+      `  <${appUrl}/workflows/${f.workflowId}|open>`
     )
   })
+  const allJudged = fields.every((f) => (f.state.dead as DeadHit).recent_judged !== false)
   // Say only what the check measured (L11, #1336). The old wording claimed the
   // fields had "never carried a value" directly above lines reporting the runs
   // on which they had, because the rate ceiling is deliberately just above zero
   // rather than at it. Both halves came from here, so both are fixed here.
   const ceiling = `${DEAD_MAX_RATE * 100}%`
+  // "Not at all on the most recent day" only where every listed field had a
+  // recent day with enough runs to say so (#1803); otherwise the line says why not.
   const what =
-    `resolved on at most ${ceiling} of runs over the last ${DEAD_WINDOW_DAYS} days, ` +
-    'and not at all on the most recent day.'
+    `resolved on at most ${ceiling} of runs over the last ${DEAD_WINDOW_DAYS} days` +
+    (allJudged ? ', and not at all on the most recent day.' : '.')
   const heading =
     fields.length === 1
       ? `One field is read but has all but stopped resolving. It ${what}`
@@ -953,6 +1084,50 @@ export async function sendFieldDeadAlert(
     fields.length === 1
       ? `Output field not resolving: ${fields[0].workflowName} ${fields[0].state.field_path}`
       : `${fields.length} output fields not resolving`
+  return postMessage(slack.bot_token, channel, blocks, summary)
+}
+
+/**
+ * The Slack message for fields whose key never appeared (#2018).
+ *
+ * Says what was measured, not a verdict on the author: the key did not appear on
+ * any of N runs since a date, on runs that record a missing key apart from an
+ * empty value. That is the signature of a path that names something the step does
+ * not return, and only then is the advice to correct or remove it true.
+ */
+export async function sendFieldWrongPathAlert(
+  slack: { bot_token: string },
+  channel: string,
+  fields: GroupedField[],
+  appUrl: string,
+): Promise<string | null> {
+  const lines = fields.map((f) => {
+    const hit = f.state.wrongPath as WrongPathHit
+    return (
+      `*${f.workflowName}* \`${hit.field_path}\` did not appear on any of *${hit.window_ran}* runs ` +
+      `since ${hit.since}  <${appUrl}/workflows/${f.workflowId}|open>`
+    )
+  })
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: fields.length === 1 ? 'Output Field Path Not Found' : 'Output Field Paths Not Found', emoji: false },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length, MAX_LISTED_LINES) } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          'The step runs, but its output never has this key, so the reference names something the step does not ' +
+          'return. Correct the path or remove the reference. This stands down by itself on the first run the key appears.',
+      },
+    },
+  ]
+  const summary =
+    fields.length === 1
+      ? `Output field path not found: ${fields[0].workflowName} ${fields[0].state.field_path}`
+      : `${fields.length} output field paths not found`
   return postMessage(slack.bot_token, channel, blocks, summary)
 }
 
@@ -1032,10 +1207,17 @@ async function alertOnStates(
   let recovered = 0
 
   for (const state of states) {
-    if (state.verdict === 'insufficient') continue
+    const id = fieldKey(state.workflow_id, state.field_path)
+    if (state.verdict === 'insufficient') {
+      // Unjudged is not over (#1803): an open incident is kept alive through a run
+      // that could not tell, or two quiet days expire its marker and the all-clear
+      // is lost, leaving the page as the last word. Its start is kept as it was.
+      const open = await kv.get(recoveryKey(cfg.prefix, id))
+      if (open) await keepAlerted(kv, cfg.prefix, id, open)
+      continue
+    }
     const wf = byId.get(state.workflow_id)
     if (!wf) continue
-    const id = fieldKey(state.workflow_id, state.field_path)
     const cooldownKey = `${cfg.prefix}-cooldown:${id}`
 
     // A silenced field is one the author has said may be empty. It must not
@@ -1190,31 +1372,46 @@ export async function runFieldPresenceDeadCheck(
   const workflows = await activeWorkflows(supabase)
   if (workflows.length === 0) return
   const workflowIds = workflows.map((w) => w.id)
-  const since = new Date(Date.now() - DEAD_WINDOW_DAYS * DAY_MS).toISOString().slice(0, 10)
-  const rows = await readPresenceRows(supabase, workflowIds, since)
-  const states = classifyDead(rows)
+  // Four weeks, for "has this field ever carried a value" (#2018); the dead rule
+  // itself still judges the last DEAD_WINDOW_DAYS of them.
+  const since = new Date(Date.now() - EVER_CARRIED_LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10)
+  const rows = await readDeadRows(supabase, workflowIds, since)
+  const { dead, wrongPath, byDesign } = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
   const silenced = await readSilences(supabase, workflowIds)
 
-  const visible = states.filter(
-    (s) => s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path)),
-  )
+  const isVisible = (s: FieldState) => s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path))
+  const visible = dead.filter(isVisible)
+  const visibleWrongPath = wrongPath.filter(isVisible)
   console.log(
     JSON.stringify({
       event: 'field_presence_dead_digest',
       count: visible.length,
       fields: visible.map((s) => s.dead),
+      wrong_path: visibleWrongPath.map((s) => s.wrongPath),
     }),
   )
-  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const deadCfg = {
     prefix: 'field-presence-dead',
     signal: DEAD_SIGNAL,
     recoveredPhrase: DEAD_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
-    send: (slack, channel, fields, url) => sendFieldDeadAlert(slack, channel, fields, url),
+    send: sendFieldDeadAlert,
+  }
+  const d = await alertOnStates(supabase, kv, appUrl, workflows, dead, silenced, deadCfg)
+  // Same prefix as the dead rule, so an incident it opened on a field now known to
+  // be empty by design is the one stood down; the states here are only ever healthy.
+  const b = await alertOnStates(supabase, kv, appUrl, workflows, byDesign, silenced, { ...deadCfg, recoveredPhrase: BY_DESIGN_PHRASE })
+  const w = await alertOnStates(supabase, kv, appUrl, workflows, wrongPath, silenced, {
+    prefix: 'field-presence-wrong-path',
+    signal: WRONG_PATH_SIGNAL,
+    recoveredPhrase: WRONG_PATH_RECOVERED_PHRASE,
+    measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
+    send: sendFieldWrongPathAlert,
   })
   console.log(
-    `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} ` +
-      `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
+    `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} wrong_path=${visibleWrongPath.length} ` +
+      `by_design=${byDesign.length} unjudged=${dead.filter((s) => s.verdict === 'insufficient').length} ` +
+      `paged=${d.paged + w.paged} recovered=${d.recovered + w.recovered} stood_down_by_design=${b.recovered} ` +
+      `unwatchable=${d.unwatchable}`,
   )
 }

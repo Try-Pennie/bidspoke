@@ -14,6 +14,7 @@ import {
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
   sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
+  classifyDeadFields, EVER_CARRIED_LOOKBACK_DAYS, BY_DESIGN_PHRASE, WRONG_PATH_SIGNAL, deadWindowStart,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -1254,5 +1255,188 @@ describe("today's rollup row does not feed the drought verdict (#1147)", () => {
     // field whose window has collapsed.
     expect(verdict(rowsWithToday(100, 100), win(500, 0))).toBe('alerting')
     expect(verdict(rowsWithToday(100, 0), win(500, 500))).toBe('healthy')
+  })
+})
+
+// #2018. A field that has never carried a value used to page as "the reference
+// path is wrong" whether its key was missing or merely empty, so Liberty1's sale
+// markers (key present and null on every one of 255 runs) paged every morning.
+// The dead rule now keeps watching any field that has carried a value in the last
+// EVER_CARRIED_LOOKBACK_DAYS (Scout), stands down a never-carried field whose key
+// appears, and pages a never-carried field whose key never appears as a wrong path.
+describe('the dead tier, narrowed by key presence (#2018)', () => {
+  /** A day's row with key presence counted over every run (a fully measured day). */
+  const measured = (field: string, day: string, ran: number, present: number, keyPresent: number): PresenceRow => ({
+    ...row('wf1', field, day, ran, present),
+    key_present_count: keyPresent,
+    key_measured_count: ran,
+  })
+  const WEEK = ['2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11', '2026-10-12', '2026-10-13']
+  const WINDOW_START = '2026-10-07'
+  const verdictsFor = (rows: PresenceRow[], field: string) => {
+    const r = classifyDeadFields(rows, { windowStart: WINDOW_START })
+    const pick = (list: { field_path: string; verdict: string }[]) => list.find((s) => s.field_path === field)?.verdict
+    return { dead: pick(r.dead), wrongPath: pick(r.wrongPath), byDesign: pick(r.byDesign) }
+  }
+
+  it('looks back four weeks for whether a field has ever carried a value', () => {
+    expect(EVER_CARRIED_LOOKBACK_DAYS).toBe(28)
+  })
+
+  it('stands down a field empty by design: its key appears on every run, never with a value (Liberty1)', () => {
+    const rows = WEEK.map((d) => measured('query_record.body.records.0.External_Routing_Code__c', d, 40, 0, 40))
+    expect(verdictsFor(rows, 'query_record.body.records.0.External_Routing_Code__c')).toEqual({
+      dead: undefined, wrongPath: 'healthy', byDesign: 'healthy',
+    })
+  })
+
+  it('pages a never-carried field whose key never appears as a wrong path, not as dead', () => {
+    const rows = WEEK.map((d) => measured('query_record.body.recrods.0.Id', d, 400, 0, 0))
+    const v = verdictsFor(rows, 'query_record.body.recrods.0.Id')
+    expect(v).toEqual({ dead: undefined, wrongPath: 'alerting', byDesign: undefined })
+    const hit = classifyDeadFields(rows, { windowStart: WINDOW_START }).wrongPath[0].wrongPath
+    expect(hit).toMatchObject({ window_ran: 2800, since: '2026-10-07' })
+  })
+
+  it('keeps the old rule for a field that carried a value in the last four weeks, so Scout stays watched', () => {
+    // Carried values in September, none this week, key present on every run.
+    const rows = [
+      measured('pennie_or_eligibility.eligibility', '2026-09-20', 3000, 12, 3000),
+      ...WEEK.map((d) => measured('pennie_or_eligibility.eligibility', d, 3200, 0, 3200)),
+    ]
+    expect(verdictsFor(rows, 'pennie_or_eligibility.eligibility')).toEqual({
+      dead: 'alerting', wrongPath: undefined, byDesign: undefined,
+    })
+  })
+
+  it('judges a wrong path only over fully measured days, so a day written in the old meaning cannot accuse a path', () => {
+    // Three days, but the newest two carry runs from before the stamp: not enough measured days.
+    const rows = [
+      measured('a.b', WEEK[4], 400, 0, 0),
+      { ...row('wf1', 'a.b', WEEK[5], 400, 0), key_present_count: 0, key_measured_count: 100 },
+      { ...row('wf1', 'a.b', WEEK[6], 400, 0), key_present_count: 0, key_measured_count: 0 },
+    ]
+    const v = verdictsFor(rows, 'a.b')
+    expect(v.wrongPath).toBeUndefined()
+    // Until it can be judged by key, the old rule still watches it: nothing goes unwatched.
+    expect(v.dead).toBe('alerting')
+  })
+
+  it('falls back to the old rule, not to silence, for rows with no key counts at all', () => {
+    const r = classifyDeadFields(deadDays('wf1', 'f', 25000, 0))
+    expect(r.dead.find((x) => x.field_path === 'f')?.verdict).toBe('alerting')
+    expect(r.wrongPath).toEqual([])
+  })
+
+  // Every field lands in exactly one of the dead rule or the key rule (L129):
+  // a field in neither would be watched by nothing, in both would page twice.
+  it('puts every field in exactly one of the dead rule or the key rule', () => {
+    const rows = [
+      ...WEEK.map((d) => measured('carried', d, 400, d === WEEK[0] ? 3 : 0, 400)),
+      ...WEEK.map((d) => measured('by_design', d, 40, 0, 40)),
+      ...WEEK.map((d) => measured('wrong', d, 400, 0, 0)),
+      ...WEEK.map((d) => row('wf1', 'unmeasured', d, 400, 0)),
+      measured('thin', WEEK[6], 5, 0, 0),
+    ]
+    const r = classifyDeadFields(rows, { windowStart: WINDOW_START })
+    for (const field of ['carried', 'by_design', 'wrong', 'unmeasured', 'thin']) {
+      const inDead = r.dead.filter((s) => s.field_path === field).length
+      const inKey = r.wrongPath.filter((s) => s.field_path === field).length
+      expect(inDead + inKey, field).toBe(1)
+    }
+  })
+
+  it('reads a single measured run with the key present as empty by design, even in warm up', () => {
+    const rows = [
+      ...WEEK.slice(0, 6).map((d) => row('wf1', 'm', d, 40, 0)),
+      { ...row('wf1', 'm', WEEK[6], 40, 0), key_present_count: 1, key_measured_count: 1 },
+    ]
+    expect(verdictsFor(rows, 'm')).toEqual({ dead: undefined, wrongPath: 'healthy', byDesign: 'healthy' })
+  })
+})
+
+describe('the daily dead run, narrowed (#2018, #1803)', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C-default', volume_alerts_enabled: true }
+  const WF = { id: 'wf-1', name: 'Liberty1 Click Handler', organization_id: 'org-1', slack_channel: null }
+  const WEEK = ['2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11', '2026-10-12', '2026-10-13']
+  const dayRow = (field: string, day: string, ran: number, present: number, keyPresent: number, measured = ran) => ({
+    workflow_id: 'wf-1', field_path: field, day, ran_count: ran, present_count: present,
+    key_present_count: keyPresent, key_measured_count: measured,
+  })
+  function supabaseWith(rollup: unknown[]) {
+    return {
+      from: (table: string) => {
+        const data = table === 'workflows' ? [WF] : table === 'field_presence_daily' ? rollup : []
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(postMessage).mockResolvedValue('ts-1')
+    vi.mocked(sendGroupedRecoveryAlert).mockResolvedValue(true)
+  })
+
+  it('anchors the dead window on the newest rollup day, seven days back', () => {
+    expect(deadWindowStart(WEEK.map((d) => dayRow('f', d, 1, 0, 0)) as PresenceRow[])).toBe('2026-10-06')
+    expect(deadWindowStart([])).toBeUndefined()
+  })
+
+  it('stands down Liberty1\'s open dead page once its key is seen, saying it is empty by design, and pages nothing', async () => {
+    const field = 'query_record.body.records.0.External_Routing_Code__c'
+    const kv = makeKv({
+      [`field-presence-dead-recovery:wf-1 ${field}`]: '2026-10-06T13:00:00.000Z',
+      [`field-presence-dead-cooldown:wf-1 ${field}`]: '1',
+    })
+    await runFieldPresenceDeadCheck(supabaseWith(WEEK.map((d) => dayRow(field, d, 40, 0, 40))) as never, kv, APP_URL)
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2]).toMatchObject({ recoveredPhrase: BY_DESIGN_PHRASE, signal: DEAD_SIGNAL })
+    expect(kv.store.has(`field-presence-dead-recovery:wf-1 ${field}`)).toBe(false)
+  })
+
+  it('pages a key that never appears as a path not found, saying what was measured', async () => {
+    const field = 'query_record.body.recrods.0.Id'
+    await runFieldPresenceDeadCheck(supabaseWith(WEEK.map((d) => dayRow(field, d, 400, 0, 0))) as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).toContain('Output Field Path Not Found')
+    expect(text).toContain('did not appear on any of *2800* runs since 2026-10-07')
+    expect(WRONG_PATH_SIGNAL).toBe('output field path not found')
+  })
+
+  it('keeps an open incident alive through a run that could not judge it, so its all-clear is not lost (#1803)', async () => {
+    const field = 'scout.eligibility'
+    // Carried a value weeks ago, too few runs this week to judge: insufficient.
+    const rows = [dayRow(field, '2026-09-20', 3000, 12, 0, 0), ...WEEK.slice(5).map((d) => dayRow(field, d, 40, 0, 0, 0))]
+    const kv = makeKv({ [`field-presence-dead-recovery:wf-1 ${field}`]: '2026-10-10T13:00:00.000Z' })
+    const put = vi.spyOn(kv, 'put')
+    await runFieldPresenceDeadCheck(supabaseWith(rows) as never, kv, APP_URL)
+    expect(put).toHaveBeenCalledWith(`field-presence-dead-recovery:wf-1 ${field}`, '2026-10-10T13:00:00.000Z', expect.objectContaining({ expirationTtl: expect.any(Number) }))
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not claim a value-free most recent day it could not measure (#1803)', async () => {
+    const field = 'scout.eligibility'
+    // Dead over the week on volume from early days; the two newest days each under the 200 run floor.
+    const rows = [
+      dayRow(field, '2026-09-20', 3000, 12, 0, 0),
+      ...WEEK.slice(0, 5).map((d) => dayRow(field, d, 300, 0, 0, 0)),
+      ...WEEK.slice(5).map((d) => dayRow(field, d, 40, 0, 0, 0)),
+    ]
+    await runFieldPresenceDeadCheck(supabaseWith(rows) as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).not.toContain('not at all on the most recent day')
+    expect(text).toContain('too few runs to judge')
   })
 })
