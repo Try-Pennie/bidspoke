@@ -852,6 +852,22 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
     expect(updates[0].filters).toEqual({ id: 'exec-j', started_at: journal.started_at, status: 'running' })
   })
 
+  // #2018: the rollup reads the version to know a run's map tells an empty value
+  // from a missing key. A journal written by older code has a map in the old
+  // meaning, so the drain carries the journal's own version and never adds one.
+  it('carries the field presence map with its own version, and stamps none on a journal without one', async () => {
+    const withVersion = { ...journal, field_presence: { 'a.b': null }, field_presence_version: 2 }
+    const one = makeSupabase({ stranded: [{ id: 'exec-j', started_at: journal.started_at }], stepsByExecutionId: { 'exec-j': [] } })
+    await runReduceFinalizeStrandedExecutions(one.client as never, { readJournal: async () => withVersion })
+    expect(one.updates[0].payload).toMatchObject({ field_presence: { 'a.b': null }, field_presence_version: 2 })
+
+    const old = { ...journal, field_presence: { 'a.b': false } }
+    const two = makeSupabase({ stranded: [{ id: 'exec-j', started_at: journal.started_at }], stepsByExecutionId: { 'exec-j': [] } })
+    await runReduceFinalizeStrandedExecutions(two.client as never, { readJournal: async () => old })
+    expect(two.updates[0].payload).toMatchObject({ field_presence: { 'a.b': false } })
+    expect(two.updates[0].payload).not.toHaveProperty('field_presence_version')
+  })
+
   it('falls back to the existing evidence when there is no journal, or it cannot be read', async () => {
     const { client, updates } = makeSupabase({
       stranded: [{ id: 'exec-1', started_at: '2026-07-01T01:00:00.000Z' }, { id: 'exec-2', started_at: '2026-07-01T01:00:00.000Z' }],
