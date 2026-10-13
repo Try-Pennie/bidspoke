@@ -96,7 +96,12 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
       workflow_name: f.workflowName,
       execution_id: f.executionId,
       at: new Date().toISOString(),
-    }).catch((e) => console.error(`[writeback-deadletter] ${WRITEBACK_UNCAPTURABLE_LABEL} dead letter failed:`, formatErr(e)))
+    }).catch((e) =>
+      console.error(
+        `[writeback-deadletter] ${WRITEBACK_UNCAPTURABLE_LABEL} dead letter failed for execution ${f.executionId}, step ${f.stepNamespace}:`,
+        formatErr(e),
+      ),
+    )
     return { kind: 'uncapturable', reason: w.reason }
   }
   try {
@@ -140,8 +145,21 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
     return { kind: 'stored' }
   } catch (e) {
     // Encryption or the client threw: the write never reached the durable path,
-    // so it is dead-lettered here rather than lost in silence (L13).
-    await recordOutcomeDeadLetter(WRITEBACK_STORE_LABEL, e, deps).catch(() => {})
+    // so it is dead-lettered here rather than lost in silence (L13). When the
+    // dead letter fails too, the log line is the last trace, so it names the run.
+    await recordOutcomeDeadLetter(WRITEBACK_STORE_LABEL, e, deps, {
+      workflow_id: f.workflowId,
+      workflow_name: f.workflowName,
+      execution_id: f.executionId,
+      at: new Date().toISOString(),
+    }).catch((d) =>
+      console.error(
+        `[writeback-deadletter] ${WRITEBACK_STORE_LABEL} dead letter failed for execution ${f.executionId}, step ${f.stepNamespace}:`,
+        formatErr(d),
+        'after:',
+        formatErr(e),
+      ),
+    )
     return { kind: 'store_failed', error: formatErr(e) }
   }
 }

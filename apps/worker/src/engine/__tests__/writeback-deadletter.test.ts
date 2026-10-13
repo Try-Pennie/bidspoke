@@ -177,7 +177,24 @@ describe('captureFailedWriteback', () => {
     )
     expect(result).toMatchObject({ kind: 'store_failed' })
     expect(db.inserts).toHaveLength(0)
-    expect(recordOutcomeDeadLetter).toHaveBeenCalledWith(WRITEBACK_STORE_LABEL, expect.anything(), expect.anything())
+    expect(recordOutcomeDeadLetter).toHaveBeenCalledWith(WRITEBACK_STORE_LABEL, expect.anything(), expect.anything(), expect.objectContaining({ execution_id: run.executionId }))
+  })
+
+  it('logs the lost write when its dead letter fails too, rather than dropping it in silence', async () => {
+    vi.mocked(recordOutcomeDeadLetter).mockRejectedValueOnce(new Error('kv down'))
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const result = await captureFailedWriteback(
+        { ...run, nodeType: 'salesforce', errorType: 'transient', error: new Error('x'), resolvedInput: update({}) },
+        { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: '' },
+      )
+      expect(result).toMatchObject({ kind: 'store_failed' })
+      const line = logged.mock.calls.map((c) => c.join(' ')).find((l) => l.includes(WRITEBACK_STORE_LABEL))
+      expect(line).toMatch(/kv down/)
+      expect(line).toContain(run.executionId)
+    } finally {
+      logged.mockRestore()
+    }
   })
 
   it('names its store label for the durable path', () => {
