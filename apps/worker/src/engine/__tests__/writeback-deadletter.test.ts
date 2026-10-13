@@ -145,6 +145,20 @@ describe('captureFailedWriteback', () => {
     expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
   })
 
+  // A missing or malformed SECRET_ENCRYPTION_KEY fails at encryption, inside the
+  // capture: it is dead-lettered under the store's label, never thrown into the
+  // finalize and never silent.
+  it('dead-letters the write when the encryption key is missing, rather than throwing or storing it in the clear', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: new Error('x'), resolvedInput: update({}) },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: '' },
+    )
+    expect(result).toMatchObject({ kind: 'store_failed' })
+    expect(db.inserts).toHaveLength(0)
+    expect(recordOutcomeDeadLetter).toHaveBeenCalledWith(WRITEBACK_STORE_LABEL, expect.anything(), expect.anything())
+  })
+
   it('names its store label for the durable path', () => {
     expect(WRITEBACK_STORE_LABEL).toBe('outcome_writeback_deadletters.insert')
   })
