@@ -15,6 +15,7 @@ import {
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
   sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
   classifyDeadFields, EVER_CARRIED_LOOKBACK_DAYS, BY_DESIGN_PHRASE, WRONG_PATH_SIGNAL, deadWindowStart,
+  classifySilentRare, SILENT_MIN_EXPECTED,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -1438,5 +1439,77 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
     expect(text).not.toContain('not at all on the most recent day')
     expect(text).toContain('too few runs to judge')
+  })
+})
+
+// #1215, log only. Main Flow's Scout field, measured: 1 to 8 values a day on about
+// 3,200 runs before 2026-09-15, 7 to 21 after; the September outage ran 09-05 to
+// 09-09 with none. The check widens its window a day at a time until the field's
+// usual rate predicts SILENT_MIN_EXPECTED values, then calls zero a would-page.
+describe('the gone silent check, log only (#1215)', () => {
+  const day = (offset: number) => {
+    const d = new Date(Date.UTC(2026, 9, 13))
+    d.setUTCDate(d.getUTCDate() - offset)
+    return d.toISOString().slice(0, 10)
+  }
+  /** `values[i]` is the count for the day i days before 2026-10-13, newest first. */
+  const series = (field: string, ran: number, values: number[]) => values.map((v, i) => row('wf1', field, day(i), ran, v))
+  const verdict = (rows: PresenceRow[], field: string) => classifySilentRare(rows).find((x) => x.field_path === field)
+
+  it('expects at least ten values before it will call a window silent', () => {
+    expect(SILENT_MIN_EXPECTED).toBe(10)
+  })
+
+  it('would page Scout on its first day of none at its October rate (about 11 a day)', () => {
+    const rows = series('scout', 3300, [0, 0, ...Array(20).fill(11)])
+    expect(verdict(rows, 'scout')).toMatchObject({ verdict: 'alerting', silent: { window_days: 1 } })
+  })
+
+  it('widens the window at the September rate (about 4 a day) instead of judging one day', () => {
+    // One day of none at 4 a day expects 4, too few to judge alone; widened to the
+    // ten needed, the window holds the values of the days before, so not silent.
+    expect(verdict(series('scout', 3200, [0, ...Array(20).fill(4)]), 'scout')?.verdict).toBe('healthy')
+    // Too little history to reach ten at all: it cannot tell, and says so.
+    expect(verdict(series('scout', 3200, [0, 4, 4]), 'scout')?.verdict).toBe('insufficient')
+    // Three days of none expect 12: silent.
+    expect(verdict(series('scout', 3200, [0, 0, 0, ...Array(20).fill(4)]), 'scout')).toMatchObject({ verdict: 'alerting', silent: { window_days: 3 } })
+  })
+
+  it('calls a rare field healthy once a value shows up in the window', () => {
+    expect(verdict(series('scout', 3300, [1, 0, ...Array(20).fill(11)]), 'scout')?.verdict).toBe('healthy')
+  })
+
+  it('only logs from the daily run: it never posts, however silent the field', async () => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue({ bot_token: 'x', default_channel: 'C', volume_alerts_enabled: true } as never)
+    vi.mocked(postMessage).mockResolvedValue('ts-1')
+    const rows = series('scout', 3300, [0, 0, ...Array(20).fill(11)]).map((r) => ({ ...r, workflow_id: 'wf-1' }))
+    const supabase = {
+      from: (table: string) => {
+        const data = table === 'workflows' ? [{ id: 'wf-1', name: 'Main Flow', organization_id: 'org-1', slack_channel: null }] : table === 'field_presence_daily' ? rows : []
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+    }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+      const shadow = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('field_presence_silent_shadow'))
+      expect(shadow).toBeDefined()
+      expect(JSON.parse(shadow as string)).toMatchObject({ event: 'field_presence_silent_shadow', would_page: [{ field_path: 'scout', window_days: 1 }] })
+      expect(postMessage).not.toHaveBeenCalled()
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('leaves alone a field that never carried a value, and one the hourly check already judges', () => {
+    expect(verdict(series('never', 3300, Array(22).fill(0)), 'never')).toBeUndefined()
+    expect(verdict(series('steady', 3300, [0, ...Array(21).fill(3300)]), 'steady')).toBeUndefined()
   })
 })

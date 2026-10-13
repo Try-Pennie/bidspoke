@@ -469,6 +469,101 @@ export interface FieldState {
   drought?: DroughtHit
   dead?: DeadHit
   wrongPath?: WrongPathHit
+  silent?: SilentHit
+}
+
+/** A rare field that carried none over a window where its usual rate predicted some (#1215). */
+export interface SilentHit {
+  workflow_id: string
+  field_path: string
+  /** Days in the window, newest first, widened until the expectation was met. */
+  window_days: number
+  window_ran: number
+  /** Values the usual rate predicted for the window. */
+  expected: number
+  /** Values per run over the days before the window. */
+  usual_rate: number
+  /** The earliest day in the window, YYYY-MM-DD. */
+  since: string
+}
+
+/**
+ * Values the usual rate must predict before a window with none is called silent
+ * (#1215). At ten, a field carrying values at its usual rate shows none about
+ * 5 times in 100,000 by chance, if its values arrive independently; a field whose
+ * values cluster (a buyer paused, a weekend) does so more often, which is why the
+ * check is log only until a replay over real history has been reviewed.
+ */
+export const SILENT_MIN_EXPECTED = 10
+
+/** The widest window the check will build, in days, before it says it cannot tell. */
+export const SILENT_MAX_WINDOW_DAYS = 14
+
+/** Values the days before the window must hold for its rate to mean anything. */
+export const SILENT_MIN_BASELINE_VALUES = 5
+
+/**
+ * The gone silent check (#1215), LOG ONLY until replayed and reviewed.
+ *
+ * For a field that does carry values but too rarely for the hourly collapse check
+ * (not a stable baseline), widen a window back from the newest day, one day at a
+ * time, until the field's usual rate over the days before the window predicts at
+ * least SILENT_MIN_EXPECTED values. None in that window is a would-page; any is
+ * healthy; no window reaching the expectation is insufficient. Widening is what
+ * lets it judge Scout at both of its measured rates: about 11 a day in October
+ * (a one day window) and 1 to 8 before 2026-09-15 (three days or more).
+ *
+ * A field that never carried a value is left to the dead tier, and one with a
+ * stable baseline to the hourly check. The usual rate is taken from whatever days
+ * precede the window, so a long outage lowers it as it ages in; freezing it at the
+ * first flag is part of switching this to paging, not of the log only run.
+ */
+export function classifySilentRare(rows: PresenceRow[], thresholds?: PresenceThresholds): FieldState[] {
+  const out: FieldState[] = []
+  for (const bucket of groupByField(rows).values()) {
+    const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
+    const byDay = new Map<string, { ran: number; present: number }>()
+    for (const r of bucket) {
+      const acc = byDay.get(r.day) ?? { ran: 0, present: 0 }
+      acc.ran += r.ran_count
+      acc.present += r.present_count
+      byDay.set(r.day, acc)
+    }
+    const days = [...byDay.entries()].sort(([a], [b]) => b.localeCompare(a))
+    if (!days.some(([, d]) => d.present > 0)) continue
+    const priorRates = days
+      .slice(1)
+      .filter(([, d]) => d.ran >= BASELINE_MIN_DAY_RUNS)
+      .slice(0, 7)
+      .map(([, d]) => dailyRate(d.ran, d.present))
+    if (isStableBaseline(priorRates, thresholds)) continue
+
+    let state: FieldState = { ...base, verdict: 'insufficient' }
+    let windowRan = 0
+    let windowPresent = 0
+    for (let k = 1; k <= Math.min(SILENT_MAX_WINDOW_DAYS, days.length - 1); k++) {
+      windowRan += days[k - 1][1].ran
+      windowPresent += days[k - 1][1].present
+      const baseline = days.slice(k)
+      const baseRan = baseline.reduce((n, [, d]) => n + d.ran, 0)
+      const basePresent = baseline.reduce((n, [, d]) => n + d.present, 0)
+      if (basePresent < SILENT_MIN_BASELINE_VALUES || baseRan === 0) break
+      const usualRate = basePresent / baseRan
+      const expected = usualRate * windowRan
+      if (expected < SILENT_MIN_EXPECTED) continue
+      state =
+        windowPresent === 0
+          ? {
+              ...base,
+              verdict: 'alerting',
+              silent: { ...base, window_days: k, window_ran: windowRan, expected, usual_rate: usualRate, since: days[k - 1][0] },
+            }
+          : { ...base, verdict: 'healthy' }
+      break
+    }
+    out.push(state)
+  }
+  return out
 }
 
 /**
@@ -1388,6 +1483,17 @@ export async function runFieldPresenceDeadCheck(
       count: visible.length,
       fields: visible.map((s) => s.dead),
       wrong_path: visibleWrongPath.map((s) => s.wrongPath),
+    }),
+  )
+  // The gone silent check (#1215), LOG ONLY: it never pages until a replay over
+  // real history has been reviewed and its activation issue is done.
+  const silent = classifySilentRare(rows)
+  console.log(
+    JSON.stringify({
+      event: 'field_presence_silent_shadow',
+      judged: silent.filter((s) => s.verdict !== 'insufficient').length,
+      unjudged: silent.filter((s) => s.verdict === 'insufficient').length,
+      would_page: silent.filter(isVisible).map((s) => s.silent),
     }),
   )
   const deadCfg = {
