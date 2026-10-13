@@ -221,9 +221,28 @@ export interface ProjectedBidAttempt {
   http_status: number | null
 }
 
-// The per-attempt rows the live path would have recorded, in projection shape.
-// Reuses deriveCodeNodeBidAttempts (capture-on flows bid via code nodes), so the
-// projected set matches what recordBidAttempt writes for non-stranded runs.
+// The per-attempt rows the live path would have recorded, in projection shape,
+// for the strand drain to re-INSERT. It reconstructs ONLY code-node bids (Tripoint,
+// RML) and the click sale, the attempts no node records natively: those are derived
+// from step output here exactly as deriveCodeNodeBidAttempts does for a live run,
+// so the projected set matches what that live derivation writes.
+//
+// KNOWN LIMITATION #368: it does NOT reconstruct first-class bid nodes
+// (partner_bid, bid_group, buyer_select). Those record
+// their own attempts during the walk via makeBidLogger, so a non-stranded run
+// already has their rows and reconstructing them here would double-count. The
+// consequence is that a STRANDED run which bid via one of those nodes loses its
+// per-attempt detail: the drain can only re-insert what this array carries. It is
+// not purely hypothetical, buyer_select bids on the capture-on Engine flow (at a
+// canary share), but the exposure is bounded: winners do not strand (#377, the
+// load-bearing invariant), so what is lost is the per-partner detail of a rare
+// stranded NON-winning run, while the sighting's own winner and attempt/response
+// counts still survive (they ride computeSightingFinalize, not this array).
+// Extending this to first-class nodes needs a dedup-key decision first: the native
+// write keys attempted_at_utc on the real call time while the drain re-inserts at
+// execution_started_at_utc, so a naive projection would DUPLICATE any row that did
+// commit in a partial strand. Tracked as #368; pinned by the guard test in
+// engine/__tests__/bid-log.test.ts.
 const PROJECTION_EPOCH = new Date(0)
 export function bidAttemptsForProjection(
   steps: Record<string, StepOutput>,

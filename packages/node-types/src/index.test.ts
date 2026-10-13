@@ -86,6 +86,13 @@ describe('NODE_TRAITS', () => {
     expect(withTrait((t) => t.referencesPartners)).toEqual(['bid_group', 'buyer_click_check', 'buyer_click_send', 'partner_bid'])
   })
 
+  it('names the types that record their own bid-attempt rows during the walk (the #368 projection gap)', () => {
+    // A superset of synthesizesAttempts: partner_bid records one attempt without
+    // synthesizing children. A new native bid writer must set recordsBidAttempts,
+    // and this fails until it does, so the strand projection gap (#368) is faced.
+    expect(withTrait((t) => t.recordsBidAttempts)).toEqual(['bid_group', 'buyer_select', 'partner_bid'])
+  })
+
   it('static handles: the gate, the group and the buyer selection have fixed outgoing handles, everything else has none or derives them from config', () => {
     expect(NODE_TRAITS.filter.staticHandles).toEqual(['pass', 'exit'])
     expect(NODE_TRAITS.bid_group.staticHandles).toEqual(['winner', 'no_winner'])
