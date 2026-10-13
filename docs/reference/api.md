@@ -467,7 +467,7 @@ Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no
 
 ## Field coverage
 
-`/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Silences set here make the detector skip those fields.
+`/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Each field's health carries `drought` (a field that is normally present has collapsed), `dead` (a field that has carried values in the last four weeks has stopped, or one that cannot yet be judged by whether its key appears), `wrong_path` (its key never appears on the step's output) and `empty_by_design` (its key appears but never with a value, so it is not reported). Silences set here make the detector skip those fields.
 
 | Method | Path | Purpose |
 |--------|------|---------|

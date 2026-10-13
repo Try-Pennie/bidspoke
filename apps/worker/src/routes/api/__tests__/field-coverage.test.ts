@@ -98,12 +98,41 @@ describe('field-coverage routes (#423)', () => {
       {
         path: 'x.final',
         source: 'structured',
-        health: { latest_day: '2026-06-29', ran: 100, present: 100, rate: 1, drought: false, dead: false },
+        health: { latest_day: '2026-06-29', ran: 100, present: 100, rate: 1, drought: false, dead: false, wrong_path: false, empty_by_design: false },
       },
     ])
     expect(body.unreadable_nodes).toEqual([])
     expect(body.alias_only_nodes).toEqual([])
     expect(body.silences).toEqual([{ field_path: 'y.skip', reason: 'always empty', created_at: '2026-06-29T00:00:00Z' }])
+  })
+
+  // #2018: the manifest gives the same verdict the alert does, from the same
+  // classifier and window. A field whose key appears but never carries a value is
+  // empty by design, not dead, and a key that never appears is a wrong path.
+  it('GET reports a field empty by design apart from dead, and a missing key as a wrong path', async () => {
+    const days = ['2026-10-11', '2026-10-12', '2026-10-13']
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_daily: {
+          list: [
+            ...days.map((day) => ({ workflow_id: 'wf-1', field_path: 'x.final', day, ran_count: 100, present_count: 0, key_present_count: 100, key_measured_count: 100 })),
+            ...days.map((day) => ({ workflow_id: 'wf-1', field_path: 'x.typo', day, ran_count: 100, present_count: 0, key_present_count: 0, key_measured_count: 100 })),
+          ],
+        },
+        field_presence_silences: { list: [] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: { ...DEFINITION, nodes: [{ id: 'n1', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.final}} {{steps.x.output.typo}}' } }] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    const res = await request(app, 'GET', '/field-coverage/wf-1')
+    const body = (await res.json()) as { fields: Array<{ path: string; health: Record<string, unknown> }> }
+    const health = (path: string) => body.fields.find((f) => f.path === path)?.health
+    expect(health('x.final')).toMatchObject({ dead: false, wrong_path: false, empty_by_design: true })
+    expect(health('x.typo')).toMatchObject({ dead: false, wrong_path: true, empty_by_design: false })
   })
 
   it('GET names a node whose steps alias could not be followed (#435)', async () => {
@@ -174,7 +203,7 @@ describe('field-coverage routes (#423)', () => {
       {
         path: 'x.final',
         source: 'structured',
-        health: { latest_day: '2026-06-29', ran: 5, present: 5, rate: 1, drought: false, dead: false },
+        health: { latest_day: '2026-06-29', ran: 5, present: 5, rate: 1, drought: false, dead: false, wrong_path: false, empty_by_design: false },
       },
     ])
   })

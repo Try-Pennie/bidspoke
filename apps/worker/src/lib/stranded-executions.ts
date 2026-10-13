@@ -440,6 +440,9 @@ export async function runReduceFinalizeStrandedExecutions(
               ...(journal.sighting_finalize !== undefined ? { sighting_finalize: journal.sighting_finalize } : {}),
               ...(journal.cost_usd !== undefined ? { cost_usd: journal.cost_usd } : {}),
               ...(journal.field_presence !== undefined ? { field_presence: journal.field_presence } : {}),
+              // The journal's own version, never the current one: a journal written
+              // before the stamp holds a map in the old meaning (#2018).
+              ...(journal.field_presence_version !== undefined ? { field_presence_version: journal.field_presence_version } : {}),
               ...(journal.email_dropped ? { email_dropped: true } : {}),
             })
             .eq('id', exec.id as string)
