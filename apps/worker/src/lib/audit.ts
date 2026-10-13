@@ -32,6 +32,8 @@ export type AuditEntityType =
   // the one-time sealed handover of SSN_HASH_PEPPER, which ran once on 2026-09-28
   // and whose route is deleted. Neither row holds a value.
   | 'recovery_secret'
+  // A stranded lead recovery run by hand (#380), entity id the function's name.
+  | 'strand_recovery'
   // One archived execution read back out of Snowflake (#874). Every archived
   // read is audited, because the archive holds full fidelity PII for thirteen
   // months and a read of it is the access that has to be accountable.
@@ -50,6 +52,7 @@ export type AuditAction =
   | 'field_silence_cleared'
   | 'subject_erased'
   | 'secrets_reencrypted'
+  | 'strand_recovery_run'
   // Written once, on 2026-09-28; nothing writes it now. Kept so that row reads.
   | 'ssn_pepper_escrow_sealed'
   // A dry run of an erasure. Distinct from subject_erased because nothing was

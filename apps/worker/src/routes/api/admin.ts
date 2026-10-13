@@ -373,6 +373,66 @@ admin.post('/run-export-now', async (c) => {
 })
 
 /**
+ * Runs stranded lead recovery now (#380), rather than waiting for the
+ * `reduce-finalize-stranded` pg_cron job at :27 and :57. It calls the SAME
+ * function the cron calls, so a run is evidence about the cron's code, and is
+ * safe beside a cron run: the function only finalises rows still in flight, so a
+ * second concurrent run waits on the first's row locks and then finds nothing,
+ * and its bid inserts skip duplicates.
+ *
+ * Optional body `{ lookbackDays }`, a whole number from 1 (the 30 minute job,
+ * the default) to 8 (the daily deep job). Measured 2026-10-13 over 7 days: the
+ * 30 minute job averaged 2.3 s and peaked at 22.9 s, inside the worker's 30 s
+ * database budget, which the cron's own 120 s does not share. A run that outruns
+ * it is cancelled whole, one statement, so the answer says nothing was kept.
+ */
+const STRAND_RECOVERY_MAX_LOOKBACK_DAYS = 8
+/**
+ * The function takes no organization: like the scheduled job, it recovers every
+ * organization's stranded leads. This router is otherwise org scoped, so the
+ * answer and the audit row both say so rather than reading as the caller's org.
+ */
+const STRAND_RECOVERY_SCOPE = 'every organization'
+
+admin.post('/run-strand-recovery', async (c) => {
+  // A body of JSON null parses fine and is not an object, so it is read as no body.
+  const parsed: unknown = await c.req.json().catch(() => ({}))
+  const body = parsed !== null && typeof parsed === 'object' ? (parsed as { lookbackDays?: unknown }) : {}
+  const lookbackDays = body.lookbackDays === undefined ? 1 : body.lookbackDays
+  if (typeof lookbackDays !== 'number' || !Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > STRAND_RECOVERY_MAX_LOOKBACK_DAYS) {
+    return c.json({ error: `lookbackDays must be a whole number of days from 1 to ${STRAND_RECOVERY_MAX_LOOKBACK_DAYS}` }, 400)
+  }
+
+  const { orgId, email } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase.rpc('reduce_finalize_stranded', { p_lookback_days: lookbackDays })
+  if (error) {
+    if (error.code === '57014') {
+      return c.json(
+        {
+          ok: false,
+          error:
+            'Recovery ran past the 30 seconds the app may hold the database and was cancelled, so nothing it changed was kept. ' +
+            'The scheduled run at :27 and :57 past each hour has 2 minutes and will carry on.',
+        },
+        504,
+      )
+    }
+    return c.json({ ok: false, error: `Recovery failed: ${formatErr(error)}` }, 500)
+  }
+  if (typeof data !== 'number' || !Number.isInteger(data)) {
+    return c.json({ ok: false, error: `Recovery ran but did not say how many leads it recovered: ${JSON.stringify(data)}` }, 500)
+  }
+
+  await writeAuditLog(supabase, orgId, 'strand_recovery', 'reduce_finalize_stranded', 'strand_recovery_run', email ?? 'unknown', {
+    lookback_days: lookbackDays,
+    recovered: data,
+    scope: STRAND_RECOVERY_SCOPE,
+  })
+  return c.json({ ok: true, recovered: data, lookbackDays, scope: STRAND_RECOVERY_SCOPE })
+})
+
+/**
  * Re-archives a named hour or day, leaving the watermark alone (#976).
  *
  * The archive advances strictly forward, so an hour that was skipped or only
