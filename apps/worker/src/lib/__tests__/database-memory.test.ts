@@ -26,6 +26,7 @@ import {
 } from '../database-memory'
 import { readCondition } from '../alert-backoff'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
+import { parseStoredReadings, DATABASE_MEMORY_READINGS_KEY } from '../database-memory-readings'
 import { SUPABASE_METRICS_MEDIUM_AFTER_RESTART } from './fixtures/supabase-metrics-memory'
 
 const MIN = 60 * 1000
@@ -529,5 +530,55 @@ describe('every reading is logged', () => {
     await runDatabaseMemoryCheck(h.deps)
     const line = h.logs.find((l) => l.includes('event=database_memory'))!
     expect(line).toMatch(/swap_out_pages=unknown/)
+  })
+})
+
+describe('a queryable home for the readings (#2010)', () => {
+  const stored = (h: ReturnType<typeof harness>) => parseStoredReadings(h.kv.store.get(DATABASE_MEMORY_READINGS_KEY)?.value ?? null)
+
+  it('records each successful reading in the same figures as the log line', async () => {
+    const h = harness()
+    // A quarter of the 1 GiB (1.07 GB) swap in use: three quarters free. 268 MB in decimal.
+    h.setFeed(h.reading(PLENTY, 0, (GB * 3) / 4))
+    await runDatabaseMemoryCheck(h.deps)
+    expect(stored(h)).toEqual([
+      { at: h.clock.now, freePct: 60.0, availableMb: Math.round(PLENTY / 1_000_000), totalMb: Math.round(TOTAL / 1_000_000), swapUsedMb: 268, swapHigh: false },
+    ])
+  })
+
+  it('marks a reading over the swap concern line as swap_high', async () => {
+    const h = harness()
+    // 0.3 GiB of the 1 GiB swap free leaves 0.7 GiB (about 751 MB decimal) in use, over 600 MB.
+    h.setFeed(h.reading(PLENTY, 0, GB * 0.3))
+    await runDatabaseMemoryCheck(h.deps)
+    expect(stored(h).at(-1)!.swapHigh).toBe(true)
+  })
+
+  it('appends one entry per run, newest last', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(PLENTY))
+    const ats = stored(h).map((r) => r.at)
+    expect(ats).toEqual([...ats].sort((a, b) => a - b))
+    expect(ats.length).toBe(4)
+  })
+
+  it('records nothing from a run whose feed could not be read', async () => {
+    const h = harness()
+    await h.runFor(15, () => ({ kind: 'failed', reason: 'timeout' }))
+    expect(stored(h)).toEqual([])
+  })
+
+  it('records nothing in local development, leaving no state a production run would read', async () => {
+    const h = harness({ env: { LOCAL_DEV: 'true' } })
+    await h.runFor(15, () => h.reading(PLENTY))
+    expect(h.kv.store.has(DATABASE_MEMORY_READINGS_KEY)).toBe(false)
+  })
+
+  it('reports a failed record as an error without breaking the run', async () => {
+    const h = harness()
+    h.kv.unreadable.add(DATABASE_MEMORY_READINGS_KEY)
+    const summary = await runDatabaseMemoryCheck(h.deps)
+    expect(summary.state).toBe('ok')
+    expect(summary.errors.some((e) => e.includes('reading not recorded'))).toBe(true)
   })
 })

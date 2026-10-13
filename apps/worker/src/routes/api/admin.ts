@@ -28,6 +28,7 @@ import { checkLeadStatus } from '../../lib/lead-status-check'
 import { archiveSender } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
+import { readMemoryReadings } from '../../lib/database-memory-readings'
 import { mayRepairRun } from '../../archive/repair-priority'
 import { REQUEST_RUN_BUDGET } from '../../archive/deadline'
 import { canonicalHourStart } from '../../archive/clock'
@@ -528,6 +529,26 @@ admin.post('/re-archive', async (c) => {
 admin.get('/archive-health', async (c) => {
   const supabase = createSupabaseClient(c.env)
   return c.json(await archiveHealth(c.env, supabase))
+})
+
+/**
+ * The recorded database-memory readings (#2010), oldest first, for calibrating the 600/500 MB
+ * swap thresholds against real data. A GET that only looks (L206): it reads the worker's own
+ * KV ring buffer, never the database the memory check watches. A storage outage is a 503
+ * carrying the error, so a dashboard or query sees red rather than an empty list that reads as
+ * "nothing recorded yet" (L11).
+ */
+admin.get('/database-memory-readings', async (c) => {
+  const { readings, error } = await readMemoryReadings(c.env.IDEMPOTENCY)
+  if (error) return c.json({ ok: false, error, count: 0, oldestAt: null, newestAt: null, readings: [] }, 503)
+  const count = readings.length
+  return c.json({
+    ok: true,
+    count,
+    oldestAt: count ? readings[0].at : null,
+    newestAt: count ? readings[count - 1].at : null,
+    readings,
+  })
 })
 
 /**
