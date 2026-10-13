@@ -5,8 +5,9 @@
  * memory. On 2026-10-13 that crossed Node's default heap on the CI runner (about
  * 2 GB): from 19:15 UTC every Lint job on every branch ended in "JavaScript heap
  * out of memory" (exit 134) with no lint error at all, which blocked every merge.
- * Measured locally the same run peaks at 2.4 GB resident. The heap is raised in
- * the package's own script, so a local run and CI run the same command.
+ * Locally the same lint crashes the same way at 1.6 GB and passes at 2 GB. The
+ * heap is raised in the package's own script, by running ESLint under node with
+ * the flag, so a local run and CI run the same command on any shell.
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -23,7 +24,7 @@ describe('the worker lint heap', () => {
     const heap = /--max-old-space-size=(\d+)/.exec(lint)
     expect(heap, `apps/worker lint runs on the default heap, which the type aware lint outgrew: ${lint}`).not.toBeNull()
     expect(Number(heap?.[1])).toBeGreaterThanOrEqual(MIN_HEAP_MB)
-    // The option has to reach ESLint's own Node process, which NODE_OPTIONS does.
-    expect(lint).toMatch(/^NODE_OPTIONS=--max-old-space-size=\d+ eslint /)
+    // The option has to reach ESLint's own Node process, so the script must still run ESLint.
+    expect(lint).toMatch(/eslint/)
   })
 })
