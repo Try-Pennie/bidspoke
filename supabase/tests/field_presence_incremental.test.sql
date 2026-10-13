@@ -19,6 +19,7 @@
 --   F. A reconcile shares the incremental's one minute ceiling: a run stamped
 --      inside the last minute is left to the incremental, and the watermark stays
 --      below it.
+--   G. A recount narrower than two days leaves the watermark alone.
 --   E. A reconcile re-seeds the state table a restore leaves empty.
 --
 -- THE CLOCK. The pass takes executions with completed_at in (watermark, now() -
@@ -275,6 +276,26 @@ BEGIN
 END
 $do$;
 
+-- ── G. A recount narrower than two days leaves the watermark alone ──────────
+-- The incremental's floor reaches two days back, so a recount of today alone
+-- cannot vouch for a run that started yesterday and finished since the watermark:
+-- moving the watermark past it would hide it from both passes (#1150 review).
+UPDATE field_presence_rollup_state SET watermark = (CURRENT_DATE - 2)::timestamptz WHERE id;
+INSERT INTO public.workflow_executions (workflow_id, status, started_at, completed_at, is_test, duration_ms, field_presence)
+VALUES ('44444444-4444-4444-4444-444444441150', 'completed',
+        CURRENT_DATE::timestamptz + interval '1 minute', now() - interval '5 minutes',
+        false, 100, '{"a": true, "b": false}'::jsonb);
+SELECT refresh_field_presence_daily(0);
+
+DO $do$
+BEGIN
+  IF (SELECT watermark FROM field_presence_rollup_state WHERE id) IS DISTINCT FROM (CURRENT_DATE - 2)::timestamptz THEN
+    RAISE EXCEPTION 'a today-only recount moved the watermark to %', (SELECT watermark FROM field_presence_rollup_state WHERE id);
+  END IF;
+  INSERT INTO fp_incr_cases VALUES ('a recount narrower than two days leaves the watermark alone');
+END
+$do$;
+
 -- ── E. After a restore the state table is empty, and a reconcile re-seeds it ──
 -- The DR drill restores field_presence_rollup_state as structure only. The
 -- incremental pass refuses on an empty table, and an UPDATE-based reconcile would
@@ -344,7 +365,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM fp_incr_cases);
 BEGIN
-  IF n <> 6 THEN RAISE EXCEPTION 'expected 6 cases, % ran', n; END IF;
+  IF n <> 7 THEN RAISE EXCEPTION 'expected 7 cases, % ran', n; END IF;
   RAISE NOTICE '% cases passed', n;
 END
 $do$;

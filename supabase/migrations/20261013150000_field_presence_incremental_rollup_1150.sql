@@ -51,7 +51,7 @@
 -- THE BACKSTOP STAYS. refresh_field_presence_daily keeps its delete-then-insert
 -- reaggregation unchanged (so its lookback 0 still rewrites today exactly, which
 -- the SQL suite's rollup_today_only test drives directly); the only addition is
--- that it now advances the watermark too. The recent (every hour, lookback 2) and
+-- that a recount of two days or more now advances the watermark too. The recent (every hour, lookback 2) and
 -- nightly (lookback 7) jobs are the correctness backstop: they recompute whole
 -- days from the raw table, so any drift the incremental pass leaves behind (an
 -- execution finalised late and backdated by the strand finaliser, an execution
@@ -207,6 +207,14 @@ BEGIN
     )
     SELECT max(completed_at) FROM src
   $q$, v_from, v_to, v_ceiling) INTO v_max;
+
+  -- Only a recount of at least two days may move the watermark: the incremental's
+  -- floor reaches two days back, so a narrower recount cannot vouch for a run that
+  -- started on an earlier day and finished since the watermark, and moving past it
+  -- would hide it from both passes. Every scheduled reconcile is 2 or 7.
+  IF p_lookback_days < 2 THEN
+    RETURN;
+  END IF;
 
   -- An upsert, not an UPDATE: a restored database's state table is empty (it is
   -- structure only in the DR drill), and an UPDATE would touch no row, never seed
