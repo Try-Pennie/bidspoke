@@ -64,12 +64,12 @@ function backlogRows(partner: string, own: number, returning: number): Array<Rec
 }
 
 /** A counter and a row reader answering by partner and by which of that partner's three queries it was handed. */
-function counter(answers: Record<string, PartnerAnswers>, day: Date = DAY) {
+function counter(answers: Record<string, PartnerAnswers>, day: Date = DAY, now: Date = NOW()) {
   const asked: string[] = []
   const count: LeadStatusDeps['count'] = async (soql) => {
     asked.push(soql)
     for (const { partner } of LEAD_STATUS_PARTNERS) {
-      const q = leadStatusQueries(partner, day)
+      const q = leadStatusQueries(partner, day, now)
       const a = answers[partner] ?? HEALTHY
       const hit = soql === q.submissions ? a.submissions : soql === q.leads ? a.leads : undefined
       if (hit === undefined) continue
@@ -81,7 +81,7 @@ function counter(answers: Record<string, PartnerAnswers>, day: Date = DAY) {
   const rows: LeadStatusDeps['rows'] = async (soql) => {
     asked.push(soql)
     for (const { partner } of LEAD_STATUS_PARTNERS) {
-      if (soql !== leadStatusQueries(partner, day).backlog) continue
+      if (soql !== leadStatusQueries(partner, day, now).backlog) continue
       const b = (answers[partner] ?? HEALTHY).backlog
       if (b instanceof Error) throw b
       return typeof b === 'number' ? backlogRows(partner, b, 0) : backlogRows(partner, b.own, b.returning)
@@ -132,7 +132,8 @@ function judgedDay(now: Date): Date {
 
 /** The deps for one run: every seam set from the same answers, never left to the real reader (L284). */
 function deps(answers: Record<string, PartnerAnswers>, extra: Partial<LeadStatusDeps> = {}): LeadStatusDeps {
-  const c = counter(answers, judgedDay((extra.now ?? NOW)()))
+  const at = (extra.now ?? NOW)()
+  const c = counter(answers, judgedDay(at), at)
   return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, loadProfiles: NO_PROFILES, ...extra }
 }
 
@@ -156,7 +157,7 @@ beforeEach(() => {
 
 describe('leadStatusQueries', () => {
   it('judges the whole UTC day before, on sales whose Lead names the same partner', () => {
-    const q = leadStatusQueries('AmOne', DAY)
+    const q = leadStatusQueries('AmOne', DAY, NOW())
     for (const soql of [q.submissions, q.leads]) {
       expect(soql).toContain('CreatedDate >= 2026-09-24T00:00:00Z')
       expect(soql).toContain('CreatedDate < 2026-09-25T00:00:00Z')
@@ -171,7 +172,7 @@ describe('leadStatusQueries', () => {
   })
 
   it('counts the backlog from the day the sync broke, on the same partner', () => {
-    const q = leadStatusQueries('Tripoint', DAY)
+    const q = leadStatusQueries('Tripoint', DAY, NOW())
     expect(q.backlog).toContain('CreatedDate >= 2026-07-08T00:00:00Z')
     expect(q.backlog).toContain("Lead__r.ExternalPartnerName__c = 'Tripoint'")
     expect(q.backlog).toContain("Lead__r.External_Exchange_Status__c != 'Completed'")
@@ -242,7 +243,7 @@ describe('checkLeadStatus', () => {
     const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1035, leads: 1033, backlog: 32 } }))
 
     expect(r.alerted).toBe(true)
-    expect(alerted()).toEqual(['32 Tripoint sales are marked Completed on their Submission, but their Lead still says something else.'])
+    expect(alerted()).toEqual(['32 Tripoint sales are marked Completed on their Submission, but their Lead still says something else. Tripoint has no answer on record for any of them.'])
     expect(sentRemedy()).toMatchObject(LEAD_STATUS_BACKLOG_REMEDY)
   })
 
@@ -345,7 +346,7 @@ describe('checkLeadStatus', () => {
 
   it('counts a sale whose Lead names no Submission at all as left behind, since nothing shows the Lead moved on', async () => {
     const r = await checkLeadStatus(env, supabase, deps({}, {
-      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
         ? [{ Id: 'a04Ui00000N55kzIAB', Lead__r: { Submission_Object_ID__c: null } }, { Id: 'a04Ui00000N55mbIAB', Lead__r: null }]
         : []),
     }))
@@ -355,7 +356,7 @@ describe('checkLeadStatus', () => {
 
   it('matches a Lead naming the sale by its 15 character id', async () => {
     const r = await checkLeadStatus(env, supabase, deps({}, {
-      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
         ? [{ Id: 'a04Ui00000N55kzIAB', Lead__r: { Submission_Object_ID__c: 'a04Ui00000N55kz' } }]
         : []),
     }))
@@ -365,7 +366,7 @@ describe('checkLeadStatus', () => {
 
   it('refuses the backlog, rather than counting part of it, when a row cannot be read', async () => {
     const r = await checkLeadStatus(env, supabase, deps({}, {
-      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY).backlog ? [{ Lead__r: { Submission_Object_ID__c: 'x' } }] : []),
+      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY, NOW()).backlog ? [{ Lead__r: { Submission_Object_ID__c: 'x' } }] : []),
     }))
 
     expect(r.partners.find((p) => p.partner === 'AmOne')?.backlog).toBeNull()
@@ -374,7 +375,7 @@ describe('checkLeadStatus', () => {
 
   it('names when the waiting sales were made and what their Leads say instead, from the rows themselves', async () => {
     await checkLeadStatus(env, supabase, deps({}, {
-      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
         ? [
             { Id: 'a04Ui00000MnrZZIAZ', CreatedDate: '2026-09-21T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: 'a04Ui00000MnrZZIAZ', External_Exchange_Status__c: 'Pending' } },
             { Id: 'a04Ui00000MzB6jIAF', CreatedDate: '2026-09-25T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: 'a04Ui00000MzB6jIAF', External_Exchange_Status__c: 'Fail' } },
@@ -384,13 +385,13 @@ describe('checkLeadStatus', () => {
     }))
 
     expect(alerted()).toEqual([
-      '3 Tripoint sales from Sep 21 to Sep 28 are marked Completed on their Submission, but their Lead still says Pending or Fail.',
+      '3 Tripoint sales from Sep 21 to Sep 28 are marked Completed on their Submission, but their Lead still says Pending or Fail. Tripoint has no answer on record for any of them.',
     ])
   })
 
   it('writes one waiting sale in the singular, on its one day', async () => {
     await checkLeadStatus(env, supabase, deps({}, {
-      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY).backlog
+      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY, NOW()).backlog
         ? [{ Id: 'a04Ui00000MnrZZIAZ', CreatedDate: '2026-09-21T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: null, External_Exchange_Status__c: 'Pending' } }]
         : []),
     }))
@@ -398,9 +399,89 @@ describe('checkLeadStatus', () => {
     expect(alerted()).toEqual(['1 AmOne sale from Sep 21 is marked Completed on its Submission, but its Lead still says Pending.'])
   })
 
-  it('asks for the date and the Lead status of each waiting sale', () => {
-    const q = leadStatusQueries('Tripoint', DAY).backlog
-    expect(q).toMatch(/^SELECT Id, CreatedDate, Lead__r\.Submission_Object_ID__c, Lead__r\.External_Exchange_Status__c FROM/)
+  it('asks for the date, the Lead status and what Tripoint answered for each waiting sale', () => {
+    const q = leadStatusQueries('Tripoint', DAY, NOW()).backlog
+    expect(q).toMatch(
+      /^SELECT Id, CreatedDate, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r\.Submission_Object_ID__c, Lead__r\.External_Exchange_Status__c FROM/,
+    )
+  })
+
+  // Measured 2026-10-13 (#2019): Sub-003007872's Submission read Completed at
+  // 13:01:20 UTC and its Lead at 13:01:21, and the check that read it at 13:01:21
+  // counted it as left behind. A sale touched inside the grace waits for the next
+  // day's run instead, so it is delayed, never lost.
+  it('leaves a sale touched in the last 15 minutes to the next run, so a Lead write still in flight is not counted', () => {
+    const q = leadStatusQueries('Tripoint', DAY, new Date('2026-09-25T13:00:00Z')).backlog
+    expect(q).toContain('LastModifiedDate < 2026-09-25T12:45:00Z')
+    // The day's own counts are untouched: a few sales mid write cannot move a share of hundreds.
+    expect(leadStatusQueries('Tripoint', DAY, new Date('2026-09-25T13:00:00Z')).submissions).not.toContain('LastModifiedDate')
+  })
+
+  // #1837: on 2026-10-07 every listed sale was not one. Five were Tripoint
+  // refusals flipped to Completed (#1750) and two had no Tripoint answer at all,
+  // so "set the Lead to Completed" would have booked revenue on refused leads.
+  it('says which waiting Tripoint sales Tripoint accepted, refused, or has no answer on record for', async () => {
+    const row = (id: string, response: string | null, submit: string | null) => ({
+      Id: id, CreatedDate: '2026-10-07T15:00:00.000+0000', Tripoint_Response__c: response, Tripoint_Submit_Response__c: submit,
+      Lead__r: { Submission_Object_ID__c: id, External_Exchange_Status__c: 'Pending' },
+    })
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
+        ? [
+            row('a04Ui00000N00001IA', 'Success', '200'),
+            row('a04Ui00000N00002IA', 'Duplicate', null),
+            row('a04Ui00000N00003IA', null, '409'),
+            row('a04Ui00000N00004IA', 'Fail', null),
+            row('a04Ui00000N00005IA', null, null),
+          ]
+        : []),
+    }))
+    expect(alerted()).toEqual([
+      '5 Tripoint sales from Oct 7 are marked Completed on their Submission, but their Lead still says Pending. ' +
+        'Tripoint accepted 1, refused 3, and has no answer on record for 1.',
+    ])
+  })
+
+  it('treats a refusal as a refusal even beside an accepted code, so revenue is never booked on a refused lead', async () => {
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
+        ? [{ Id: 'a04Ui00000N00001IA', CreatedDate: '2026-10-07T15:00:00.000+0000', Tripoint_Response__c: 'Duplicate', Tripoint_Submit_Response__c: '200', Lead__r: { Submission_Object_ID__c: null, External_Exchange_Status__c: 'Pending' } }]
+        : []),
+    }))
+    expect(alerted()).toEqual([
+      '1 Tripoint sale from Oct 7 is marked Completed on its Submission, but its Lead still says Pending. Tripoint refused it.',
+    ])
+  })
+
+  it('says all of them when every waiting Tripoint sale had the same answer', async () => {
+    const accepted = (id: string) => ({ Id: id, CreatedDate: '2026-10-07T15:00:00.000+0000', Tripoint_Submit_Response__c: '208', Lead__r: { Submission_Object_ID__c: id, External_Exchange_Status__c: 'Pending' } })
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog ? [accepted('a04Ui00000N00001IA'), accepted('a04Ui00000N00002IA')] : []),
+    }))
+    expect(alerted()[0]).toMatch(/ Tripoint accepted both\.$/)
+  })
+
+  it('adds no Tripoint answer to another partner\'s waiting sales, which carry none', async () => {
+    await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY, NOW()).backlog
+        ? [{ Id: 'a04Ui00000MnrZZIAZ', CreatedDate: '2026-09-21T15:00:00.000+0000', Lead__r: { Submission_Object_ID__c: null, External_Exchange_Status__c: 'Pending' } }]
+        : []),
+    }))
+    expect(alerted()).toEqual(['1 AmOne sale from Sep 21 is marked Completed on its Submission, but its Lead still says Pending.'])
+  })
+
+  // #2019's cause is inferred from matching timestamps; nothing recorded which
+  // sale the run counted. The log now does, so the next one can be proved.
+  it('logs the ids of the waiting sales it counted', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 1046, leads: 1046, backlog: { own: 2, returning: 1 } } }))
+      const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('[lead-status] day=')) ?? ''
+      expect(line).toContain('Tripoint waiting=a04TriO000000000AA,a04TriO000000001AA')
+      expect(line).not.toContain('a04TriR')
+    } finally {
+      log.mockRestore()
+    }
   })
 
   it('says what a Lead that disagrees costs, once, beside the findings', async () => {
@@ -410,7 +491,9 @@ describe('checkLeadStatus', () => {
   })
 
   it('a backlog alone asks for each sale to be checked; a broken day asks for the Salesforce copy to be fixed', async () => {
-    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/real sale/)
+    // Completed only for a sale the buyer accepted: a refused one is set back (#1837).
+    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/only for a sale the buyer accepted/)
+    expect(LEAD_STATUS_BACKLOG_REMEDY.fixHint).toMatch(/refused/)
     expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/Salesforce/)
     expect(LEAD_STATUS_BROKEN_REMEDY.fixHint).toMatch(/backfill/)
     for (const r of [LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY]) {
@@ -440,7 +523,7 @@ describe('what each finding is about, for the alerter (#1768)', () => {
     return (call?.[6] as { keys?: string[] } | undefined)?.keys
   }
   const backlogOn = (rows: Array<[string, string]>) => ({
-    rows: async (soql: string) => (soql === leadStatusQueries('Tripoint', DAY).backlog
+    rows: async (soql: string) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
       ? rows.map(([id, created]) => ({ Id: id, CreatedDate: created, Lead__r: { Submission_Object_ID__c: id, External_Exchange_Status__c: 'Fail' } }))
       : []),
   })
