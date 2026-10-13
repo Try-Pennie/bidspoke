@@ -173,6 +173,15 @@ BEGIN
   -- runs the incremental had counted without recounting them.
   v_ceiling := clock_timestamp() - interval '1 minute';
 
+  -- A recount narrower than two days cannot move the watermark (see the end), so
+  -- it stops AT the watermark instead: a run above it is the incremental's to
+  -- add, and counting it here as well would count it twice. With no watermark row
+  -- (a restore) nothing incremental runs until a wider reconcile seeds one.
+  IF p_lookback_days < 2 THEN
+    SELECT COALESCE(watermark, v_ceiling) INTO v_ceiling FROM field_presence_rollup_state WHERE id;
+    v_ceiling := COALESCE(v_ceiling, clock_timestamp() - interval '1 minute');
+  END IF;
+
   DELETE FROM field_presence_daily
   WHERE day >= (CURRENT_DATE - p_lookback_days);
 

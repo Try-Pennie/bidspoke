@@ -19,7 +19,7 @@
 --   F. A reconcile shares the incremental's one minute ceiling: a run stamped
 --      inside the last minute is left to the incremental, and the watermark stays
 --      below it.
---   G. A recount narrower than two days leaves the watermark alone.
+--   G. A recount narrower than two days stops at the watermark and leaves it there.
 --   E. A reconcile re-seeds the state table a restore leaves empty.
 --
 -- THE CLOCK. The pass takes executions with completed_at in (watermark, now() -
@@ -276,10 +276,14 @@ BEGIN
 END
 $do$;
 
--- ── G. A recount narrower than two days leaves the watermark alone ──────────
+-- ── G. A recount narrower than two days stops at the watermark ────────────────
 -- The incremental's floor reaches two days back, so a recount of today alone
--- cannot vouch for a run that started yesterday and finished since the watermark:
--- moving the watermark past it would hide it from both passes (#1150 review).
+-- cannot vouch for a run that started yesterday and finished since the watermark,
+-- and must not move it. Nor may it count a run above the watermark, which the
+-- incremental is about to add: it stops at the watermark and leaves the rest to
+-- the incremental, so each run is counted once (#1150 review).
+DELETE FROM public.workflow_executions WHERE workflow_id = '44444444-4444-4444-4444-444444441150';
+DELETE FROM public.field_presence_daily WHERE workflow_id = '44444444-4444-4444-4444-444444441150';
 UPDATE field_presence_rollup_state SET watermark = (CURRENT_DATE - 2)::timestamptz WHERE id;
 INSERT INTO public.workflow_executions (workflow_id, status, started_at, completed_at, is_test, duration_ms, field_presence)
 VALUES ('44444444-4444-4444-4444-444444441150', 'completed',
@@ -292,7 +296,22 @@ BEGIN
   IF (SELECT watermark FROM field_presence_rollup_state WHERE id) IS DISTINCT FROM (CURRENT_DATE - 2)::timestamptz THEN
     RAISE EXCEPTION 'a today-only recount moved the watermark to %', (SELECT watermark FROM field_presence_rollup_state WHERE id);
   END IF;
-  INSERT INTO fp_incr_cases VALUES ('a recount narrower than two days leaves the watermark alone');
+  IF EXISTS (SELECT 1 FROM field_presence_daily WHERE workflow_id = '44444444-4444-4444-4444-444444441150') THEN
+    RAISE EXCEPTION 'a today-only recount counted a run above the watermark, which the incremental will add again';
+  END IF;
+END
+$do$;
+
+SELECT refresh_field_presence_incremental();
+
+DO $do$
+DECLARE
+  a_ran bigint := (SELECT ran_count FROM field_presence_daily WHERE workflow_id = '44444444-4444-4444-4444-444444441150' AND field_path = 'a' AND day = CURRENT_DATE AND NOT is_test);
+BEGIN
+  IF a_ran IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'after a narrow recount and an incremental pass, a ran is %, expected 1', a_ran;
+  END IF;
+  INSERT INTO fp_incr_cases VALUES ('a recount narrower than two days stops at the watermark');
 END
 $do$;
 
