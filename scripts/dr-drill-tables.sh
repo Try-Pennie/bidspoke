@@ -47,6 +47,11 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   execution_archive_progress execution_archive_erasures execution_archive_refusals
   # Monitor and job run history
   job_runs purge_run_log field_presence_daily
+  # The field presence rollup watermark (#1150): one timestamp. After a restore
+  # the table is empty, the 15 minute incremental pass refuses loudly, and the
+  # next reconcile (the hourly recent job, within the hour) upserts the row and
+  # seeds it, so its data need not be restored.
+  field_presence_rollup_state
 )
 
 # Reads live table names on stdin, one per line, and prints each one that is in
