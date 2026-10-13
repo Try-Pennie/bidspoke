@@ -30,6 +30,7 @@
     "rename_partner_step_namespace",
     "upsert_buyer_select_parity_day",
     "sign_off_buyer_select_parity_day",
-    "record_held_click"
+    "record_held_click",
+    "reduce_finalize_stranded"
   ]
 }
