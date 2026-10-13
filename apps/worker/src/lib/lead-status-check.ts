@@ -608,8 +608,7 @@ function describeAnswers(partner: string, b: BacklogSplit): string {
     refused ? `refused ${fmt(refused)}` : null,
     none ? `has no answer on record for ${fmt(none)}` : null,
   ].filter((p): p is string => p !== null)
-  const listed = parts.length === 2 ? parts.join(' and ') : `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`
-  return `${partner} ${listed}.`
+  return `${partner} ${new Intl.ListFormat('en', { type: 'conjunction' }).format(parts)}.`
 }
 
 /** A backlog's key: its partner and the days of the first and last waiting sale, the same days its line names. */
