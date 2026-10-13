@@ -38,11 +38,15 @@
 --   * incremental vs reconcile: the two share one advisory lock
 --     (pg_advisory_xact_lock(883301, 2)), so a full reconcile's DELETE+INSERT and
 --     an incremental ADD never interleave. And every reconcile counts and takes
---     its watermark in ONE statement (one snapshot), setting the watermark to the
---     largest completed_at it counted (never lower than before), so the
---     incremental pass that follows cannot re-add anything the reconcile already
---     absorbed, even if the worker clock that stamped completed_at ran ahead of
---     the database clock, and an execution finishing mid-reconcile is not lost.
+--     its watermark in ONE statement (one snapshot), under the SAME one minute
+--     ceiling, setting the watermark to the largest completed_at it counted
+--     (never lower than before), so the incremental pass that follows cannot
+--     re-add anything the reconcile already absorbed, even if the worker clock
+--     that stamped completed_at ran ahead of the database clock.
+--   * what neither pass can see: a run whose row commits more than a minute after
+--     the completed_at it was stamped with, behind a newer run already counted.
+--     The watermark does not recover it; the next hourly reconcile, which
+--     recounts whole days, does.
 --
 -- THE BACKSTOP STAYS. refresh_field_presence_daily keeps its delete-then-insert
 -- reaggregation unchanged (so its lookback 0 still rewrites today exactly, which
@@ -138,8 +142,14 @@ ON CONFLICT (id) DO NOTHING;
 -- they read the SAME snapshot. As two statements, an execution that finished
 -- between them was missed by the count yet sat below the new watermark, so the
 -- incremental skipped it too, and it was lost until the next reconcile (#1150
--- review). In one snapshot such an execution is invisible to both, keeps a
--- completed_at above the watermark, and the next incremental pass picks it up.
+-- review). In one snapshot such an execution is invisible to both.
+--
+-- The count also stops at the incremental's ceiling, now less one minute. Without
+-- it the watermark could jump to a run stamped a second ago, past an older-stamped
+-- run whose row had not committed when the snapshot was taken, and the incremental
+-- would then skip that one too. With it, the reconcile and the incremental leave
+-- exactly the same residual (a commit more than a minute behind its stamp), and
+-- the next hourly reconcile recounts it.
 --
 -- The watermark becomes the largest completed_at actually counted, never now()
 -- and never lower than it was. Every counted row therefore sits at or below the
@@ -153,14 +163,23 @@ DECLARE
   v_from TIMESTAMPTZ := (CURRENT_DATE - p_lookback_days)::timestamptz;
   v_to   TIMESTAMPTZ := (CURRENT_DATE + 1)::timestamptz;
   v_max  TIMESTAMPTZ;
+  v_ceiling TIMESTAMPTZ;
 BEGIN
   SET LOCAL lock_timeout = '30s';
   PERFORM pg_advisory_xact_lock(883301, 2);
 
+  -- The incremental's ceiling, read from the clock AFTER the lock: now() is when
+  -- this transaction began, possibly before an incremental that held the lock
+  -- moved the watermark further, and a ceiling below that watermark would delete
+  -- runs the incremental had counted without recounting them.
+  v_ceiling := clock_timestamp() - interval '1 minute';
+
   DELETE FROM field_presence_daily
   WHERE day >= (CURRENT_DATE - p_lookback_days);
 
-  -- Literal bounds, so the planner prunes to the days read (#1720).
+  -- Literal bounds, so the planner prunes to the days read (#1720). A run with
+  -- field_presence but no completed_at (none on prod, 2026-10-13) is counted here
+  -- as it always was; the incremental never counts it, so nothing is doubled.
   EXECUTE format($q$
     WITH src AS (
       SELECT we.workflow_id, we.started_at, we.is_test, we.completed_at, we.field_presence
@@ -168,6 +187,7 @@ BEGIN
       WHERE we.started_at >= %L
         AND we.started_at <  %L
         AND we.field_presence IS NOT NULL
+        AND (we.completed_at IS NULL OR we.completed_at <= %L)
     ), ins AS (
       INSERT INTO field_presence_daily (
         workflow_id, field_path, day, is_test, ran_count, present_count
@@ -187,14 +207,15 @@ BEGIN
       RETURNING 1
     )
     SELECT max(completed_at) FROM src
-  $q$, v_from, v_to) INTO v_max;
+  $q$, v_from, v_to, v_ceiling) INTO v_max;
 
   -- An upsert, not an UPDATE: a restored database's state table is empty (it is
   -- structure only in the DR drill), and an UPDATE would touch no row, never seed
   -- it, and leave the incremental refusing on every pass. The reconcile seeds it.
-  -- With nothing counted the watermark is left where it was (or seeded at now()).
+  -- With nothing counted the watermark is left where it was (or seeded at the
+  -- ceiling, so the incremental still takes the last minute).
   INSERT INTO field_presence_rollup_state (id, watermark, updated_at)
-  VALUES (true, COALESCE(v_max, now()), now())
+  VALUES (true, COALESCE(v_max, v_ceiling), now())
   ON CONFLICT (id) DO UPDATE
     SET watermark  = CASE
                        WHEN v_max IS NULL THEN field_presence_rollup_state.watermark

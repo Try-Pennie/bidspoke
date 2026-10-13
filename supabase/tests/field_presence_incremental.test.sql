@@ -16,6 +16,10 @@
 --   C. Running the pass again with nothing new adds nothing.
 --   D. A full reconcile advances the watermark past everything it counted, so the
 --      incremental pass that follows it cannot double-count the reconciled rows.
+--   F. A reconcile shares the incremental's one minute ceiling: a run stamped
+--      inside the last minute is left to the incremental, and the watermark stays
+--      below it.
+--   E. A reconcile re-seeds the state table a restore leaves empty.
 --
 -- THE CLOCK. The pass takes executions with completed_at in (watermark, now() -
 -- 1 minute]. The test anchors every execution's completed_at a comfortable
@@ -239,6 +243,38 @@ BEGIN
 END
 $do$;
 
+-- ── F. A reconcile leaves a run inside the last minute to the incremental ────
+-- The reconcile shares the incremental's one minute ceiling. Without it the
+-- watermark could jump to a run stamped just now, past an older-stamped run whose
+-- row commits a moment after the reconcile's snapshot, and both passes would skip
+-- that one until the next hourly recount (#1150 review). Here the newest run is
+-- stamped 30 seconds AHEAD of the database clock, as a worker clock running fast
+-- would stamp it: the reconcile must not count it, and must leave the watermark
+-- below it so the incremental counts it once its ceiling passes.
+INSERT INTO public.workflow_executions (workflow_id, status, started_at, completed_at, is_test, duration_ms, field_presence)
+VALUES ('44444444-4444-4444-4444-444444441150', 'completed',
+        CURRENT_DATE::timestamptz + interval '1 minute',
+        clock_timestamp() + interval '30 seconds',
+        false, 100, '{"a": true, "b": false}'::jsonb);
+
+SELECT refresh_field_presence_daily(2);
+
+DO $do$
+DECLARE
+  a_ran bigint := (SELECT ran_count FROM field_presence_daily WHERE workflow_id = '44444444-4444-4444-4444-444444441150' AND field_path = 'a' AND day = CURRENT_DATE AND NOT is_test);
+  wm timestamptz := (SELECT watermark FROM field_presence_rollup_state WHERE id);
+  newest timestamptz := (SELECT max(completed_at) FROM public.workflow_executions WHERE workflow_id = '44444444-4444-4444-4444-444444441150');
+BEGIN
+  IF a_ran IS DISTINCT FROM 4 THEN
+    RAISE EXCEPTION 'reconcile counted a run inside the last minute: a ran is %, expected 4', a_ran;
+  END IF;
+  IF wm >= newest THEN
+    RAISE EXCEPTION 'reconcile moved the watermark to % , at or past a run it did not count (%)', wm, newest;
+  END IF;
+  INSERT INTO fp_incr_cases VALUES ('a reconcile leaves a run inside the last minute to the incremental');
+END
+$do$;
+
 -- ── E. After a restore the state table is empty, and a reconcile re-seeds it ──
 -- The DR drill restores field_presence_rollup_state as structure only. The
 -- incremental pass refuses on an empty table, and an UPDATE-based reconcile would
@@ -289,7 +325,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM fp_incr_cases);
 BEGIN
-  IF n <> 5 THEN RAISE EXCEPTION 'expected 5 cases, % ran', n; END IF;
+  IF n <> 6 THEN RAISE EXCEPTION 'expected 6 cases, % ran', n; END IF;
   RAISE NOTICE '% cases passed', n;
 END
 $do$;
