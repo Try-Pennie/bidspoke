@@ -30,13 +30,13 @@ DELETE FROM fp_incr_cases;
 CREATE TEMP TABLE IF NOT EXISTS fp_incr_made_partitions (name text PRIMARY KEY);
 DELETE FROM fp_incr_made_partitions;
 
--- A partition for each of the two days, unless one already covers it.
+-- A partition for each of the three days, unless one already covers it.
 DO $do$
 DECLARE
   d date;
   v_name text;
 BEGIN
-  FOREACH d IN ARRAY ARRAY[CURRENT_DATE - 1, CURRENT_DATE] LOOP
+  FOREACH d IN ARRAY ARRAY[CURRENT_DATE - 2, CURRENT_DATE - 1, CURRENT_DATE] LOOP
     v_name := 'workflow_executions_' || to_char(d, 'YYYY_MM_DD');
     BEGIN
       EXECUTE format('CREATE TABLE %I PARTITION OF public.workflow_executions FOR VALUES FROM (%L) TO (%L)', v_name, d, d + 1);
@@ -55,7 +55,7 @@ $do$;
 
 -- ── A. Incremental from a low watermark equals a full rebuild ────────────────
 -- Two completed yesterday, three completed today, plus one that started at 23:59
--- yesterday and finished at 00:05 today (it belongs to yesterday, by start day).
+-- two days ago and finished at 00:05 yesterday (it belongs to its start day).
 -- Every one saw field a, none saw b. All finished minutes ago, inside the pass's
 -- ceiling.
 DELETE FROM public.workflow_executions WHERE workflow_id = '44444444-4444-4444-4444-444444441150';
@@ -75,11 +75,14 @@ SELECT '44444444-4444-4444-4444-444444441150', 'completed',
        false, 100, '{"a": true, "b": false}'::jsonb
 FROM generate_series(1, 3) g;
 
--- Cross midnight: started yesterday, finished today. Buckets to yesterday.
+-- Cross midnight: started at 23:59 two days ago, finished at 00:05 yesterday.
+-- Buckets to its start day. It crosses the PREVIOUS midnight, not the last one,
+-- because a run finishing at 00:05 today is outside the pass's now() - 1 minute
+-- ceiling whenever the suite runs between 00:00 and 00:06 UTC.
 INSERT INTO public.workflow_executions (workflow_id, status, started_at, completed_at, is_test, duration_ms, field_presence)
 VALUES ('44444444-4444-4444-4444-444444441150', 'completed',
-        (CURRENT_DATE - 1)::timestamptz + interval '23 hours 59 minutes',
-        CURRENT_DATE::timestamptz + interval '5 minutes',
+        (CURRENT_DATE - 2)::timestamptz + interval '23 hours 59 minutes',
+        (CURRENT_DATE - 1)::timestamptz + interval '5 minutes',
         false, 100, '{"a": true, "b": false}'::jsonb);
 
 -- Watermark before every execution above, so the incremental pass sees them all.
@@ -107,15 +110,17 @@ DECLARE
       (SELECT * FROM fp_full_snap EXCEPT SELECT * FROM fp_incr_snap)
     ) d
   );
+  d2_a bigint := (SELECT ran_count FROM fp_incr_snap WHERE field_path = 'a' AND day = CURRENT_DATE - 2 AND NOT is_test);
   y_a bigint := (SELECT ran_count FROM fp_incr_snap WHERE field_path = 'a' AND day = CURRENT_DATE - 1 AND NOT is_test);
   t_a bigint := (SELECT ran_count FROM fp_incr_snap WHERE field_path = 'a' AND day = CURRENT_DATE AND NOT is_test);
 BEGIN
   IF diff <> 0 THEN
     RAISE EXCEPTION 'incremental and full rebuild differ in % row(s)', diff;
   END IF;
-  -- The cross-midnight run lands in yesterday (3), not today (3 stays 3).
-  IF y_a IS DISTINCT FROM 3 OR t_a IS DISTINCT FROM 3 THEN
-    RAISE EXCEPTION 'expected yesterday a=3 and today a=3, got % and %', y_a, t_a;
+  -- The cross-midnight run lands in its start day (1), not the day it finished
+  -- (yesterday stays 2).
+  IF d2_a IS DISTINCT FROM 1 OR y_a IS DISTINCT FROM 2 OR t_a IS DISTINCT FROM 3 THEN
+    RAISE EXCEPTION 'expected two days ago a=1, yesterday a=2 and today a=3, got %, % and %', d2_a, y_a, t_a;
   END IF;
   INSERT INTO fp_incr_cases VALUES ('incremental equals a full rebuild and buckets by start day');
 END

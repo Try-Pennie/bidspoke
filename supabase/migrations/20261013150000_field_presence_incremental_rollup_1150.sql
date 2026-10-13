@@ -72,10 +72,31 @@
 -- The incremental pass scans by completed_at, which is not the partition key
 -- (started_at is), so without this index each pass would seq scan every retained
 -- partition. The partial clause matches the pass's own predicate and keeps the
--- index to the rows that carry a presence map. Created on the partitioned parent,
--- so it propagates to existing partitions now and to future ones, which are made
--- with CREATE TABLE ... PARTITION OF (20260522000002), automatically. Precedent:
--- 20260511000001 adds an index to this parent the same way.
+-- index to the rows that carry a presence map. Future partitions, made with
+-- CREATE TABLE ... PARTITION OF (20260522000002), inherit it automatically.
+--
+-- PROD NOTE: a plain CREATE INDEX on the parent recurses and holds a lock on every
+-- partition until the whole build commits, which would stall execution logging on
+-- the live day. Partitions are DAILY, so on prod the index was built before this
+-- migration ran, the way 20260824000001 did it:
+--
+--   -- 1. Per partition, each its own statement: every empty and sealed day
+--   --    first, the live day last. Name: <partition>_fp_completed_at_idx.
+--   CREATE INDEX workflow_executions_2026_10_06_fp_completed_at_idx
+--     ON workflow_executions_2026_10_06 (completed_at) WHERE field_presence IS NOT NULL;
+--   ...one per partition, empty future ones included, because the parent index
+--   --    cannot become valid until every partition has a match...
+--
+--   -- 2. Parent index, metadata only (instant; INVALID until all attach)
+--   CREATE INDEX workflow_executions_fp_completed_at_idx
+--     ON ONLY workflow_executions (completed_at) WHERE field_presence IS NOT NULL;
+--
+--   -- 3. Attach each (the parent flips to VALID when the last one lands)
+--   ALTER INDEX workflow_executions_fp_completed_at_idx
+--     ATTACH PARTITION workflow_executions_2026_10_06_fp_completed_at_idx;
+--
+-- The statement below is therefore a NO-OP on prod (the named parent index already
+-- exists). On fresh and CI databases it builds normally against small partitions.
 CREATE INDEX IF NOT EXISTS workflow_executions_fp_completed_at_idx
   ON public.workflow_executions (completed_at)
   WHERE field_presence IS NOT NULL;
