@@ -44,9 +44,12 @@ describe('scheduled readers lock only the partitions they read', () => {
     // A parse that finds nothing makes the loop below vacuous and green (L100).
     expect(routines).toContain('refresh_field_presence_daily')
     expect(routines).toContain('refresh_workflow_stats_daily')
+    expect(routines).toContain('refresh_field_presence_incremental')
   })
 
-  for (const routine of ['refresh_field_presence_daily', 'refresh_workflow_stats_daily']) {
+  // The incremental pass (#1150) scans workflow_executions every 15 minutes, so it
+  // too must bound started_at with a literal or it locks every partition.
+  for (const routine of ['refresh_field_presence_daily', 'refresh_workflow_stats_daily', 'refresh_field_presence_incremental']) {
     it(`${routine} bounds its scan of the execution partitions with literals`, () => {
       const found = latestRoutineBody(routine, migrations)
       expect(found, `${routine} is not defined in any migration`).not.toBeNull()
