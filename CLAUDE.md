@@ -202,7 +202,7 @@ Two secrets cannot be re-derived if lost, and are escrowed in the 1Password item
 The engine decrypts every secret environment variable with this key on every execution (`lib/env-loader.ts`), so it is never swapped in one step: a secret that no longer decrypts is skipped, and a node reading it through `{{env.X}}` gets nothing. Rotate it in four steps with no window where anything fails to decrypt (#384):
 
 1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
-2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables and `app_settings.value_encrypted`). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
+2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
 3. Set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, then delete `SECRET_ENCRYPTION_KEY_NEXT`.
 4. Run the route once more as a preview: every row should count as already current under the primary alone.
 

@@ -43,6 +43,7 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
+import { captureFailedWriteback } from './writeback-deadletter'
 import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
 import { redactPii, parsePiiFields } from './pii-redactor'
@@ -95,13 +96,18 @@ function extractResolvedInput(err: unknown): ResolvedStepInput | null {
   return tagged?.resolvedInput ?? null
 }
 
-// Carries step context through the throw so the alert can report which step failed
+// Carries step context through the throw so the alert can report which step failed.
+// `resolvedInput` is the request the failed step sent, as its executor attached it
+// (#1992): a post-answer Salesforce write that fails is replayed from it (#1993,
+// #471), and nothing else the run keeps can rebuild the exact patch. Same field
+// name as the executors' own errors, so `extractResolvedInput` reads either.
 class StepFailureError extends Error {
   constructor(
     message: string,
     public readonly stepNamespace: string,
     public readonly errorType: ErrorType,
-    public readonly suppressAlert: boolean = false
+    public readonly suppressAlert: boolean = false,
+    public readonly resolvedInput: ResolvedStepInput | null = null,
   ) {
     super(message)
   }
@@ -805,6 +811,34 @@ export async function executeWorkflow(
                 console.error(`[durability] ${label} dead-letter failed:`, e),
               ),
             )
+          }
+          // Keep a failed post-answer Salesforce write for replay (#1993), outside
+          // every alert gate above: a classified Salesforce outage, which the alert
+          // stays quiet for, is exactly when these writes fail. A test run stores
+          // nothing; anything not a Salesforce write is left alone by the capture.
+          if (continuationError instanceof StepFailureError) {
+            const failedNodeType = definition.nodes.find((n) => n.namespace === continuationError.stepNamespace)?.type
+            if (failedNodeType === 'salesforce') {
+              // Started inside the promise, so nothing about the key ring can throw
+              // into the finalize: every failure lands in the capture's own handling.
+              executionCtx.waitUntil(
+                Promise.resolve().then(() => captureFailedWriteback(
+                  {
+                    orgId: org_id,
+                    workflowId,
+                    workflowName: workflow_name,
+                    executionId,
+                    stepNamespace: continuationError.stepNamespace,
+                    nodeType: failedNodeType,
+                    errorType: continuationError.errorType,
+                    error: continuationError,
+                    resolvedInput: continuationError.resolvedInput,
+                    isTest: reality.isTest,
+                  },
+                  { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
+                )).catch((e) => console.error('[durability] failed writeback capture threw:', formatErr(e))),
+              )
+            }
           }
         } else if (finalStatus === 'failed' && executionStatus === 'completed' && finalNodeNamespace == null) {
           failedErrorType = failedErrorType ?? 'permanent'
@@ -2276,7 +2310,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
-        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
+        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput)
       }
     }
 

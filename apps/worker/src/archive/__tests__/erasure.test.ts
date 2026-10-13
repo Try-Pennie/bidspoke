@@ -173,6 +173,8 @@ describe('the enumerated set', () => {
       'pg_lead_sightings',
       'pg_lead_sighting_bids',
       'audit_log',
+      // Failed Salesforce writes held for replay (#1993): encrypted lead fields.
+      'pg_outcome_writeback_deadletters',
     ])
   })
 })

@@ -36,7 +36,7 @@ import {
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
-import { NO_ROW_MATCHED_CODE } from '../db-retry'
+import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from '../db-retry'
 import type { AlertClaims } from '../alert-claim'
 import type { JobRunEnding } from '../job-run-record'
 
@@ -52,7 +52,7 @@ type Mode = 'up' | 'down' | 'hang'
  * column, or asked with the wrong value, finds nothing.
  */
 function makeDb() {
-  const tables: Record<string, Row[]> = { workflow_executions: [], lead_sightings: [], lead_sighting_bids: [] }
+  const tables: Record<string, Row[]> = { workflow_executions: [], lead_sightings: [], lead_sighting_bids: [], outcome_writeback_deadletters: [] }
   const state = { mode: 'up' as Mode, reads: 0, permanentFor: null as string | null }
   const queries: Array<{ table: string; eq: Record<string, unknown>; gte: Record<string, unknown>; lt: Record<string, unknown> }> = []
   function from(table: string) {
@@ -228,6 +228,39 @@ describe('a record read back present', () => {
     const winner = by('lead_sighting_bids')[1]
     expect(winner.gte).toEqual({ attempted_at_utc: WINNER.kind === 'bid_winner' ? WINNER.attempted_from : '' })
     expect(winner.lt).toEqual({ attempted_at_utc: WINNER.kind === 'bid_winner' ? WINNER.attempted_to : '' })
+  })
+})
+
+// A failed Salesforce write held for replay (#1993) is found by its whole write
+// key, so a row for another record of the same run is not this one.
+const WRITEBACK: ReadBack = { kind: 'writeback_deadletter_present', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' }
+
+describe('a failed Salesforce write held for replay', () => {
+  it('reads as landed when its replay row is there', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.outcome_writeback_deadletters.push({ id: 'w-1', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' })
+    await seed(kv, 'outcome_writeback_deadletters.insert', WRITEBACK)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.landed).toBe(1)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+  })
+
+  it('reads as lost, naming the replay row, when only other writes of the run are held', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    // Another record from the same step, and the same record from another step.
+    db.tables.outcome_writeback_deadletters.push(
+      { id: 'w-2', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-2', sf_operation: 'update' },
+      { id: 'w-3', execution_id: 'ex-1', step_namespace: 'patch_again', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' },
+    )
+    await seed(kv, 'outcome_writeback_deadletters.insert', WRITEBACK)
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
+    expect(s.lost).toBe(1)
+    const [, payload] = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0]
+    expect(payload.label).toBe('outcome_writeback_deadletters.insert')
+    expect(payload.error_code).toBe(READ_BACK_MISSING_CODE)
+    expect(payload.error_message).toContain('replay row for the failed Salesforce write')
   })
 })
 

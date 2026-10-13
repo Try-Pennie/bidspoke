@@ -5,14 +5,19 @@
  * opportunities table) MUST route through the durability seam (writeOutcome /
  * runOutcome) so a loss after retries dead-letters instead of vanishing into a
  * log line. This scans the worker ENGINE code and fails if any file other than
- * the seam-routed lead-sightings.ts writes an outcome table directly, i.e.
- * `from(<table>)` chained with `.insert/.update/.upsert/.delete`.
+ * the two seam-routed writers writes an outcome table directly, i.e.
+ * `from(<table>)` chained with `.insert/.update/.upsert/.delete`. The two are
+ * lead-sightings.ts and writeback-deadletter.ts, whose insert into
+ * outcome_writeback_deadletters goes through writeOutcome (#1993; ADR 0002,
+ * "Tier 3 replay store, a scoped exception").
  *
- * Scope is engine/ ONLY, by design. The known non-engine direct writers —
- * apps/worker/src/lib/sightings-export.ts (nightly batch sweep) and
- * apps/worker/src/routes/api/admin.ts (one-time backfill) — are batch/admin, not
- * per-lead, and are intentionally OUT of scope (documented here so a reviewer
- * sees they were considered, not missed).
+ * Scope is engine/ ONLY, by design. The known non-engine direct writers are
+ * batch or admin work, not per-lead, and are intentionally OUT of scope:
+ * apps/worker/src/lib/sightings-export.ts (nightly batch sweep),
+ * apps/worker/src/routes/api/admin.ts (one-time backfill), and the erasure
+ * (lib/archive-erasure.ts) and key rotation (lib/secret-reencrypt.ts) writes to
+ * outcome_writeback_deadletters. They are listed here so a reviewer sees they
+ * were considered, not missed.
  *
  * It scans the `from(<table>)…write` SITE, not imports of a write function, so it
  * does NOT false-positive on nodes/partner-bid.ts, which imports and calls
@@ -30,13 +35,16 @@ import { WORKER_SRC, listTsFiles, consumeParens } from '../../__tests__/_scan-ut
 const ENGINE_DIR = path.join(WORKER_SRC, 'engine')
 
 // Tier-2 must-not-lose tables. `opportunities` is listed now so the guard already
-// covers it when the 4.5a win-tracking table is built.
-const OUTCOME_TABLES = ['lead_sightings', 'lead_sighting_bids', 'opportunities']
+// covers it when the 4.5a win-tracking table is built. `outcome_writeback_deadletters`
+// holds the only copy of a failed Salesforce write (#1993), so it is written through
+// the seam too.
+const OUTCOME_TABLES = ['lead_sightings', 'lead_sighting_bids', 'opportunities', 'outcome_writeback_deadletters']
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 
 // Engine files allowed to write outcome tables directly: the seam-routed
-// functions in lead-sightings.ts (they ARE the seam's tier-2 callers).
-const SEAM_ALLOWLIST = new Set(['lead-sightings.ts'])
+// functions in lead-sightings.ts and writeback-deadletter.ts (they ARE the seam's
+// tier-2 callers: each write sits inside writeOutcome).
+const SEAM_ALLOWLIST = new Set(['lead-sightings.ts', 'writeback-deadletter.ts'])
 
 
 // Walk the .method(...) chain starting at `from` (index just past .from(...)).

@@ -26,6 +26,12 @@ vi.mock('../achieve-log', () => ({
   insertAchieveEvaluations: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
+// Passed through to the real handler, so every case here still writes its window
+// count; wrapped only so a case can read the error the dead letter was handed.
+vi.mock('../durability', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../durability')>()
+  return { ...real, recordOutcomeDeadLetter: vi.fn(real.recordOutcomeDeadLetter) }
+})
 // The dead letter's durable record is the KV window count, written before the
 // Slack connection is read. The read itself retries on real timers, so it is
 // answered here rather than waited on, and the alert is captured, not sent.
@@ -42,7 +48,7 @@ import { executeNode } from '../nodes/index'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert } from '../../lib/slack'
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
-import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD } from '../durability'
+import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD, recordOutcomeDeadLetter } from '../durability'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
@@ -482,6 +488,59 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     // recorded (the window counter above and the 'degraded' row) but does NOT
     // page: the label needs several in the window to alert (#1942).
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+  })
+
+  // #1992: the post-answer Salesforce write that failed is what the replay store
+  // (#1993) and the replay tool (#471) must resend, and a patch cannot be rebuilt
+  // from anything else the run keeps. The executor attaches the resolved request
+  // to its error; the failure the dead letter receives must still carry it.
+  it('hands the dead letter the failed write\'s resolved request, so it can be replayed', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: withContinuation,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    const request = { method: 'PATCH', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body: { External_Exchange_Status__c: 'Completed' } }
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      throw Object.assign(new Error('Salesforce update failed: 400 INVALID_FIELD_FOR_INSERT_UPDATE'), { resolvedInput: request })
+    })
+    await run(() => 'up')
+    const call = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === 'sf_writeback')
+    expect(call, 'the failed post-answer write was not dead-lettered').toBeDefined()
+    expect((call![1] as { resolvedInput?: unknown }).resolvedInput).toEqual(request)
+  })
+
+  // #1993: a failed post-answer Salesforce write is kept, encrypted, for replay,
+  // whatever the alert does with it: a Salesforce outage, which the alert gates
+  // stay quiet for, is exactly when these writes fail.
+  it('keeps a failed post-answer Salesforce write for replay, even when the failure reads as a Salesforce outage', async () => {
+    const withSalesforce = {
+      ...withContinuation,
+      nodes: [
+        withContinuation.nodes[0],
+        { id: 'p', namespace: 'patch_submission', type: 'salesforce', config: { retries: 0 } },
+      ],
+    } as unknown as WorkflowDefinition
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: withSalesforce,
+      workflow_version_id: 'v1',
+      workflow_name: 'Main Flow',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    const request = { template: {}, resolved: { operation: 'update', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body: { External_Exchange_Status__c: 'Completed' } } }
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      throw Object.assign(new Error('Salesforce API error (503): Service Unavailable'), { resolvedInput: request })
+    })
+    const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
+    const { db } = await run(() => 'up', { SECRET_ENCRYPTION_KEY: key })
+    expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
   })
 
   // #1882: the reason and the alert pointed at the Salesforce update, which had
