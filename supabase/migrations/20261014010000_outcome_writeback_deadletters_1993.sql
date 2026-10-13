@@ -6,9 +6,11 @@
 -- projection is a code node's output, and step logs are not a replay source). The
 -- failed step now carries its resolved request (#1992); this is where it is kept.
 --
--- ONE ROW PER FAILED WRITE, keyed (execution_id, sf_object, sf_record_id,
--- sf_operation), so a second failed write in one run to a different record is
--- kept rather than dropped, and the same write recorded twice is refused.
+-- ONE ROW PER FAILED WRITE, keyed (execution_id, step_namespace, sf_object,
+-- sf_record_id, sf_operation), so a second failed write in one run is kept
+-- rather than dropped, even to the same record from another step, and the same
+-- write recorded twice is refused. A run stops at its first post-answer failure
+-- today, so it holds one row at most; the key does not lean on that.
 --
 -- PERSONAL DATA. The body is the patch, which can carry lead fields, and a
 -- Salesforce 4xx echoes field values back in its error text, so both are stored
@@ -63,7 +65,7 @@ CREATE TABLE IF NOT EXISTS public.outcome_writeback_deadletters (
   CONSTRAINT outcome_writeback_deadletters_status_check CHECK (status IN ('pending', 'replayed', 'refused', 'abandoned')),
   CONSTRAINT outcome_writeback_deadletters_operation_check CHECK (sf_operation IN ('update', 'upsert', 'create')),
   CONSTRAINT outcome_writeback_deadletters_finished_check CHECK ((status = 'pending') = (finished_at IS NULL)),
-  CONSTRAINT outcome_writeback_deadletters_write_key UNIQUE (execution_id, sf_object, sf_record_id, sf_operation)
+  CONSTRAINT outcome_writeback_deadletters_write_key UNIQUE (execution_id, step_namespace, sf_object, sf_record_id, sf_operation)
 );
 
 COMMENT ON TABLE public.outcome_writeback_deadletters IS

@@ -58,7 +58,7 @@ export type ReadBack =
   /** A bid row INSERT, by its conflict key. */
   | { kind: 'bid_present'; execution_id: string; partner_slug: string; attempted_at_utc: string }
   /** A failed Salesforce write's replay row (#1993), by its unique key. */
-  | { kind: 'writeback_deadletter_present'; execution_id: string; sf_object: string; sf_record_id: string; sf_operation: string }
+  | { kind: 'writeback_deadletter_present'; execution_id: string; step_namespace: string; sf_object: string; sf_record_id: string; sf_operation: string }
   /** The winner mark: the partner's bid row in this run carries is_winner. */
   | { kind: 'bid_winner'; execution_id: string; partner_slug: string; attempted_from: string; attempted_to: string }
   /**
@@ -199,6 +199,7 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
           .from('outcome_writeback_deadletters')
           .select('id')
           .eq('execution_id', check.execution_id)
+          .eq('step_namespace', check.step_namespace)
           .eq('sf_object', check.sf_object)
           .eq('sf_record_id', check.sf_record_id)
           .eq('sf_operation', check.sf_operation)

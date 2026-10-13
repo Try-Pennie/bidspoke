@@ -225,7 +225,7 @@ function describeReadBack(entry: UnconfirmedWrite): string {
     case 'steps_present':
       return `step rows of execution ${r.execution_id}`
     case 'writeback_deadletter_present':
-      return `replay row for ${r.sf_object} ${r.sf_record_id}, execution ${r.execution_id}`
+      return `replay row for ${r.sf_object} ${r.sf_record_id} from step ${r.step_namespace}, execution ${r.execution_id}`
   }
 }
 

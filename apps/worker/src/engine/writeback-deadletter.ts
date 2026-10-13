@@ -128,6 +128,7 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
       {
         kind: 'writeback_deadletter_present',
         execution_id: f.executionId,
+        step_namespace: f.stepNamespace,
         sf_object: w.sf_object,
         sf_record_id: w.sf_record_id,
         sf_operation: w.sf_operation,

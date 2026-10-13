@@ -5,8 +5,9 @@
 -- the encrypted columns hold placeholder text, which is all the table can see.
 --
 -- WHAT IT PROVES.
---   A. A second failed write in one run to a different record is kept, and the
---      same write recorded twice is refused, by the unique key.
+--   A. A second failed write in one run is kept, whether to a different record
+--      or to the same record from a different step, and the same write recorded
+--      twice is refused, by the unique key.
 --   B. Only the status values the code writes are accepted.
 --   C. The browser roles can neither read nor write the table.
 --   D. The retention purge removes only finished rows older than 30 days, and
@@ -34,7 +35,8 @@ BEGIN
     (organization_id, workflow_id, execution_id, step_namespace, sf_object, sf_record_id, sf_operation, body_encrypted, error_encrypted, replayable)
   VALUES
     ('11111111-1111-1111-1111-111111111993', '44444444-4444-4444-4444-444444441993', '01920000-0000-7000-8000-000000001993', 'patch_a', 'Submission__c', 'a04A', 'update', 'enc', 'enc', true),
-    ('11111111-1111-1111-1111-111111111993', '44444444-4444-4444-4444-444444441993', '01920000-0000-7000-8000-000000001993', 'patch_b', 'Applicant__c', 'a05B', 'update', 'enc', 'enc', true);
+    ('11111111-1111-1111-1111-111111111993', '44444444-4444-4444-4444-444444441993', '01920000-0000-7000-8000-000000001993', 'patch_b', 'Applicant__c', 'a05B', 'update', 'enc', 'enc', true),
+    ('11111111-1111-1111-1111-111111111993', '44444444-4444-4444-4444-444444441993', '01920000-0000-7000-8000-000000001993', 'patch_c', 'Submission__c', 'a04A', 'update', 'enc', 'enc', true);
   BEGIN
     INSERT INTO public.outcome_writeback_deadletters
       (organization_id, workflow_id, execution_id, step_namespace, sf_object, sf_record_id, sf_operation, body_encrypted, error_encrypted, replayable)
@@ -42,10 +44,10 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN refused := true;
   END;
   IF NOT refused THEN RAISE EXCEPTION 'the same write recorded twice in one run was accepted'; END IF;
-  IF (SELECT count(*) FROM public.outcome_writeback_deadletters WHERE execution_id = '01920000-0000-7000-8000-000000001993') <> 2 THEN
-    RAISE EXCEPTION 'two failed writes to different records in one run were not both kept';
+  IF (SELECT count(*) FROM public.outcome_writeback_deadletters WHERE execution_id = '01920000-0000-7000-8000-000000001993') <> 3 THEN
+    RAISE EXCEPTION 'three distinct failed writes in one run were not all kept';
   END IF;
-  INSERT INTO ow_cases VALUES ('the unique key keeps two writes and refuses a repeat');
+  INSERT INTO ow_cases VALUES ('the unique key keeps distinct writes and refuses a repeat');
 END
 $do$;
 

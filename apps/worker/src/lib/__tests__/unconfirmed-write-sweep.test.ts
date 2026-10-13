@@ -233,23 +233,27 @@ describe('a record read back present', () => {
 
 // A failed Salesforce write held for replay (#1993) is found by its whole write
 // key, so a row for another record of the same run is not this one.
-const WRITEBACK: ReadBack = { kind: 'writeback_deadletter_present', execution_id: 'ex-1', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' }
+const WRITEBACK: ReadBack = { kind: 'writeback_deadletter_present', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' }
 
 describe('a failed Salesforce write held for replay', () => {
   it('reads as landed when its replay row is there', async () => {
     const kv = makeKv()
     const db = makeDb()
-    db.tables.outcome_writeback_deadletters.push({ id: 'w-1', execution_id: 'ex-1', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' })
+    db.tables.outcome_writeback_deadletters.push({ id: 'w-1', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' })
     await seed(kv, 'outcome_writeback_deadletters.insert', WRITEBACK)
     const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     expect(s.landed).toBe(1)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
   })
 
-  it('reads as lost, naming the replay row, when only another record of the run is held', async () => {
+  it('reads as lost, naming the replay row, when only other writes of the run are held', async () => {
     const kv = makeKv()
     const db = makeDb()
-    db.tables.outcome_writeback_deadletters.push({ id: 'w-2', execution_id: 'ex-1', sf_object: 'Submission__c', sf_record_id: 'a04-2', sf_operation: 'update' })
+    // Another record from the same step, and the same record from another step.
+    db.tables.outcome_writeback_deadletters.push(
+      { id: 'w-2', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04-2', sf_operation: 'update' },
+      { id: 'w-3', execution_id: 'ex-1', step_namespace: 'patch_again', sf_object: 'Submission__c', sf_record_id: 'a04-1', sf_operation: 'update' },
+    )
     await seed(kv, 'outcome_writeback_deadletters.insert', WRITEBACK)
     const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     expect(s.lost).toBe(1)
