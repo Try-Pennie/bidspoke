@@ -62,35 +62,63 @@ function isStoredReading(v: unknown): v is StoredMemoryReading {
 }
 
 /**
- * The stored readings from a raw KV value, never a throw: nothing stored, malformed JSON, or a
- * value an older or corrupt writer left all read as an empty list, and any entry not shaped
- * like a reading is dropped rather than carried forward (L50).
+ * A raw KV value classified, never a throw. `unreadable` is a present value that is not a JSON
+ * array (corrupt, or an older writer's non-array). `droppedCount` is array elements that were
+ * not shaped like a reading and so were discarded (a future field change would make this the
+ * whole array). The two are kept apart from a genuinely empty buffer so a reader does not show
+ * "nothing recorded yet" over corruption and a writer can log the loss (L10, L11, L50).
  */
-export function parseStoredReadings(raw: string | null): StoredMemoryReading[] {
-  if (raw === null) return []
+export interface ParsedReadings {
+  readings: StoredMemoryReading[]
+  unreadable: boolean
+  droppedCount: number
+}
+
+export function parseReadings(raw: string | null): ParsedReadings {
+  if (raw === null) return { readings: [], unreadable: false, droppedCount: 0 }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return []
+    return { readings: [], unreadable: true, droppedCount: 0 }
   }
-  if (!Array.isArray(parsed)) return []
-  return parsed.filter(isStoredReading)
+  if (!Array.isArray(parsed)) return { readings: [], unreadable: true, droppedCount: 0 }
+  const readings = parsed.filter(isStoredReading)
+  return { readings, unreadable: false, droppedCount: parsed.length - readings.length }
+}
+
+/** The valid readings only, for callers that do not need the corruption signal. */
+export function parseStoredReadings(raw: string | null): StoredMemoryReading[] {
+  return parseReadings(raw).readings
 }
 
 /**
  * Append a reading, drop everything older than the window relative to it, and cap the count at
  * the newest. One GET then one PUT. A GET that THREW (a storage outage) propagates and writes
  * nothing, so a failed read never overwrites the existing history with a lone fresh entry.
+ *
+ * A read that SUCCEEDED but returned a value that cannot be used (not a JSON array, or an
+ * array whose entries no longer match the reading shape) loses that history, which rebuilds
+ * over the window. It must not happen SILENTLY (L11): both shapes are logged so a recurring
+ * corruption or a shape change is visible rather than looking like a buffer that simply
+ * started fresh. A buffer that keeps some well-shaped entries and drops others is also logged,
+ * but it is not a wipe: the good entries are carried forward.
  */
 export async function recordMemoryReading(
   kv: ReadingsKv,
   entry: StoredMemoryReading,
-  opts: { windowMs?: number; max?: number } = {},
+  opts: { windowMs?: number; max?: number; log?: (line: string) => void } = {},
 ): Promise<void> {
   const windowMs = opts.windowMs ?? READINGS_WINDOW_MS
   const max = opts.max ?? READINGS_MAX
-  const existing = parseStoredReadings(await kv.get(DATABASE_MEMORY_READINGS_KEY))
+  const log = opts.log ?? ((line: string) => console.warn(line))
+  const parsed = parseReadings(await kv.get(DATABASE_MEMORY_READINGS_KEY))
+  if (parsed.unreadable) {
+    log('[database-memory-readings] stored buffer was not a JSON array; replacing it with a fresh entry (diagnostic history lost)')
+  } else if (parsed.droppedCount > 0) {
+    log(`[database-memory-readings] dropped ${parsed.droppedCount} stored reading(s) that no longer match the reading shape`)
+  }
+  const existing = parsed.readings
   const cutoff = entry.at - windowMs
   const kept = existing.filter((r) => r.at > cutoff)
   kept.push(entry)
@@ -99,14 +127,25 @@ export async function recordMemoryReading(
 }
 
 /**
- * The reader for the admin route. A storage outage is its own reported state, never an empty
- * list that reads as "nothing recorded yet" (L11).
+ * The reader for the admin route. A storage outage is its own reported state, and so is a
+ * buffer that read back but could not be parsed into readings: neither is shown as an empty
+ * list that reads as "nothing recorded yet" (L10, L11). A buffer that yielded some readings but
+ * dropped others returns the good ones (not an error): that is partial, not nothing.
  */
-export async function readMemoryReadings(kv: ReadingsKv): Promise<{ readings: StoredMemoryReading[]; error: string | null }> {
+export async function readMemoryReadings(
+  kv: ReadingsKv,
+): Promise<{ readings: StoredMemoryReading[]; error: string | null; droppedCount: number }> {
+  let raw: string | null
   try {
-    const raw = await kv.get(DATABASE_MEMORY_READINGS_KEY)
-    return { readings: parseStoredReadings(raw), error: null }
+    raw = await kv.get(DATABASE_MEMORY_READINGS_KEY)
   } catch (e) {
-    return { readings: [], error: formatErr(e) }
+    return { readings: [], error: formatErr(e), droppedCount: 0 }
   }
+  const parsed = parseReadings(raw)
+  if (parsed.unreadable || (parsed.readings.length === 0 && parsed.droppedCount > 0)) {
+    return { readings: [], error: 'the stored readings buffer is corrupt or in an unrecognised shape, so no readings could be read from it', droppedCount: parsed.droppedCount }
+  }
+  // Partial loss (some entries dropped for an unrecognised shape) is not an error, but the
+  // count is returned so the admin route can show that part of the history is missing (L11).
+  return { readings: parsed.readings, error: null, droppedCount: parsed.droppedCount }
 }

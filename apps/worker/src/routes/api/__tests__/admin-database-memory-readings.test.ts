@@ -82,6 +82,24 @@ describe('GET /api/admin/database-memory-readings', () => {
     expect(body.error).toContain('KV read failed')
   })
 
+  it('answers 503 when the stored buffer is corrupt, not a healthy empty list (L10)', async () => {
+    const res = await request('GET', envWith(kv({ value: 'not a json array' })))
+
+    expect(res.status).toBe(503)
+    const body = await res.json() as { ok: boolean; error: string }
+    expect(body.ok).toBe(false)
+    expect(body.error).toContain('corrupt')
+  })
+
+  it('answers 200 but reports dropped>0 when only some stored entries are an unrecognised shape', async () => {
+    const res = await request('GET', envWith(kv({ value: JSON.stringify([reading(1000), { old: 'shape' }]) })))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { ok: boolean; count: number; dropped: number }
+    expect(body.ok).toBe(true)
+    expect(body.count).toBe(1)
+    expect(body.dropped).toBe(1)
+  })
+
   it('is not reachable as a POST, so it cannot be confused with a route that runs something', async () => {
     const res = await request('POST', envWith(kv()))
     expect(res.status).toBe(404)

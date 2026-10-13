@@ -68,6 +68,25 @@ describe('parsing the stored ring buffer', () => {
 })
 
 describe('recording a reading', () => {
+  it('logs, rather than silently wiping, when the stored buffer is present but not a JSON array (L11)', async () => {
+    const kv = fakeKv()
+    kv.store.set(DATABASE_MEMORY_READINGS_KEY, '{"corrupt":true}') // valid JSON, not an array
+    const lines: string[] = []
+    await recordMemoryReading(kv, reading(T0), { log: (l) => lines.push(l) })
+    // The unusable buffer could not be appended to, so it is replaced, but the loss is announced.
+    expect(lines.some((l) => l.includes('not a JSON array'))).toBe(true)
+    expect(parseStoredReadings(kv.store.get(DATABASE_MEMORY_READINGS_KEY)!)).toEqual([reading(T0)])
+  })
+
+  it('does NOT log a discard when the buffer is a valid array (good entries are kept, not lost)', async () => {
+    const kv = fakeKv()
+    kv.store.set(DATABASE_MEMORY_READINGS_KEY, JSON.stringify([reading(T0)]))
+    const lines: string[] = []
+    await recordMemoryReading(kv, reading(T0 + MIN), { log: (l) => lines.push(l) })
+    expect(lines).toEqual([])
+    expect(parseStoredReadings(kv.store.get(DATABASE_MEMORY_READINGS_KEY)!)).toEqual([reading(T0), reading(T0 + MIN)])
+  })
+
   it('appends to an empty buffer', async () => {
     const kv = fakeKv()
     await recordMemoryReading(kv, reading(T0))
@@ -144,5 +163,29 @@ describe('reading the buffer back', () => {
     const { readings, error } = await readMemoryReadings(kv)
     expect(readings).toEqual([])
     expect(error).toContain('KV read failed')
+  })
+
+  it('reports a corrupt (non-array) buffer as an error, not a cheerful empty list (L10)', async () => {
+    const kv = fakeKv()
+    kv.store.set(DATABASE_MEMORY_READINGS_KEY, 'not json at all')
+    const { readings, error } = await readMemoryReadings(kv)
+    expect(readings).toEqual([])
+    expect(error).toContain('corrupt')
+  })
+
+  it('reports an array whose entries are all an unrecognised shape as an error, not empty', async () => {
+    const kv = fakeKv()
+    kv.store.set(DATABASE_MEMORY_READINGS_KEY, JSON.stringify([{ old: 'shape' }, 7]))
+    const { readings, error } = await readMemoryReadings(kv)
+    expect(readings).toEqual([])
+    expect(error).toContain('corrupt')
+  })
+
+  it('returns the good readings (no error) when only SOME entries are an unrecognised shape', async () => {
+    const kv = fakeKv()
+    kv.store.set(DATABASE_MEMORY_READINGS_KEY, JSON.stringify([reading(T0), { old: 'shape' }]))
+    const { readings, error } = await readMemoryReadings(kv)
+    expect(error).toBeNull()
+    expect(readings).toEqual([reading(T0)])
   })
 })

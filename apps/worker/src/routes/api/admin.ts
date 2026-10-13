@@ -539,12 +539,15 @@ admin.get('/archive-health', async (c) => {
  * "nothing recorded yet" (L11).
  */
 admin.get('/database-memory-readings', async (c) => {
-  const { readings, error } = await readMemoryReadings(c.env.IDEMPOTENCY)
-  if (error) return c.json({ ok: false, error, count: 0, oldestAt: null, newestAt: null, readings: [] }, 503)
+  const { readings, error, droppedCount } = await readMemoryReadings(c.env.IDEMPOTENCY)
+  if (error) return c.json({ ok: false, error, count: 0, dropped: droppedCount, oldestAt: null, newestAt: null, readings: [] }, 503)
   const count = readings.length
   return c.json({
     ok: true,
     count,
+    // Entries that were in the buffer but no longer match the reading shape, so the caller can
+    // see that part of the history is missing rather than reading `count` as the whole truth.
+    dropped: droppedCount,
     oldestAt: count ? readings[0].at : null,
     newestAt: count ? readings[count - 1].at : null,
     readings,

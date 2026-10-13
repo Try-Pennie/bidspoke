@@ -364,7 +364,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   // is reported, not thrown, so it never breaks the alerting the run exists to do (L95).
   if (toRecord) {
     try {
-      await recordMemoryReading(deps.kv, toRecord)
+      await recordMemoryReading(deps.kv, toRecord, { log: deps.log })
     } catch (e) {
       summary.errors.push(`reading not recorded: ${formatErr(e)}`)
     }
