@@ -1231,6 +1231,8 @@ export type Database = {
           day: string
           field_path: string
           is_test: boolean
+          key_measured_count: number
+          key_present_count: number
           present_count: number
           ran_count: number
           workflow_id: string
@@ -1239,6 +1241,8 @@ export type Database = {
           day: string
           field_path: string
           is_test: boolean
+          key_measured_count?: number
+          key_present_count?: number
           present_count?: number
           ran_count?: number
           workflow_id: string
@@ -1247,6 +1251,8 @@ export type Database = {
           day?: string
           field_path?: string
           is_test?: boolean
+          key_measured_count?: number
+          key_present_count?: number
           present_count?: number
           ran_count?: number
           workflow_id?: string
@@ -2426,6 +2432,7 @@ export type Database = {
           error_message: string | null
           failed_step_type: string | null
           field_presence: Json | null
+          field_presence_version: number | null
           final_node_id: string | null
           final_node_namespace: string | null
           id: string
@@ -2457,6 +2464,7 @@ export type Database = {
           error_message?: string | null
           failed_step_type?: string | null
           field_presence?: Json | null
+          field_presence_version?: number | null
           final_node_id?: string | null
           final_node_namespace?: string | null
           id?: string
@@ -2488,6 +2496,7 @@ export type Database = {
           error_message?: string | null
           failed_step_type?: string | null
           field_presence?: Json | null
+          field_presence_version?: number | null
           final_node_id?: string | null
           final_node_namespace?: string | null
           id?: string
