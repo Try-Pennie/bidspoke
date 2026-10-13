@@ -30,13 +30,16 @@ import { WORKER_SRC, listTsFiles, consumeParens } from '../../__tests__/_scan-ut
 const ENGINE_DIR = path.join(WORKER_SRC, 'engine')
 
 // Tier-2 must-not-lose tables. `opportunities` is listed now so the guard already
-// covers it when the 4.5a win-tracking table is built.
-const OUTCOME_TABLES = ['lead_sightings', 'lead_sighting_bids', 'opportunities']
+// covers it when the 4.5a win-tracking table is built. `outcome_writeback_deadletters`
+// holds the only copy of a failed Salesforce write (#1993), so it is written through
+// the seam too.
+const OUTCOME_TABLES = ['lead_sightings', 'lead_sighting_bids', 'opportunities', 'outcome_writeback_deadletters']
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 
 // Engine files allowed to write outcome tables directly: the seam-routed
-// functions in lead-sightings.ts (they ARE the seam's tier-2 callers).
-const SEAM_ALLOWLIST = new Set(['lead-sightings.ts'])
+// functions in lead-sightings.ts and writeback-deadletter.ts (they ARE the seam's
+// tier-2 callers: each write sits inside writeOutcome).
+const SEAM_ALLOWLIST = new Set(['lead-sightings.ts', 'writeback-deadletter.ts'])
 
 
 // Walk the .method(...) chain starting at `from` (index just past .from(...)).
