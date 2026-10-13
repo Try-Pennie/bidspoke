@@ -70,11 +70,6 @@ for (const day of days.filter((d) => d >= start)) {
   })
 }
 
-if (byDay.length === 0) {
-  console.error('no day was replayed, so there is nothing to report')
-  process.exit(1)
-}
-
 const fieldsPaged = new Map<string, string[]>()
 for (const d of byDay) for (const p of d.pages) fieldsPaged.set(p.field, [...(fieldsPaged.get(p.field) ?? []), d.day])
 
