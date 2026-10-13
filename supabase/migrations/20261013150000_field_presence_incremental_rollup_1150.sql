@@ -124,12 +124,11 @@ CREATE TABLE IF NOT EXISTS field_presence_rollup_state (
 ALTER TABLE field_presence_rollup_state ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE field_presence_rollup_state FROM anon, authenticated;
 
--- Seed the row so both functions can UPDATE a row that is guaranteed to exist.
--- The reconcile seed below overwrites this value; now() is a safe placeholder
--- because the frequent incremental pass only runs after this migration applies.
-INSERT INTO field_presence_rollup_state (id, watermark)
-VALUES (true, now())
-ON CONFLICT (id) DO NOTHING;
+-- No placeholder row. The reconcile upserts the row, and this migration runs one
+-- as its seed (section 5), so the first watermark is the reconcile's own: the
+-- largest completed_at it counted, or its one minute ceiling when it counted
+-- nothing. A placeholder at now() would sit above that ceiling, GREATEST would
+-- keep it, and the runs of the minute before it would be skipped by both passes.
 
 -- ------------------------------------------------------------------
 -- 3. The reconcile: delete-then-insert, now also advancing the watermark

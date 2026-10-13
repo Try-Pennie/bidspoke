@@ -302,6 +302,25 @@ BEGIN
   END IF;
   -- And the incremental pass now runs instead of refusing.
   PERFORM refresh_field_presence_incremental();
+END
+$do$;
+
+-- With nothing to count, the seed is the reconcile's ceiling (now less a minute),
+-- never the present: a seed at now() would sit above every run of the last minute,
+-- which the reconcile leaves to the incremental, and the incremental would skip
+-- them. This is also the first watermark the migration's own seed writes on a
+-- fresh database.
+DELETE FROM public.workflow_executions WHERE workflow_id = '44444444-4444-4444-4444-444444441150';
+DELETE FROM field_presence_rollup_state;
+SELECT refresh_field_presence_daily(2);
+
+DO $do$
+DECLARE
+  wm timestamptz := (SELECT watermark FROM field_presence_rollup_state WHERE id);
+BEGIN
+  IF wm IS NULL OR wm > clock_timestamp() - interval '1 minute' THEN
+    RAISE EXCEPTION 'a reconcile with nothing to count seeded the watermark at %, inside the last minute', wm;
+  END IF;
   INSERT INTO fp_incr_cases VALUES ('a reconcile re-seeds an empty state table after a restore');
 END
 $do$;
