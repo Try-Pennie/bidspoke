@@ -4,12 +4,15 @@
 -- builds by replaying every migration from empty, never production. No real
 -- identity appears in it.
 --
--- WHAT IT PROVES. The frequent pass of each rollup now calls the refresh with a
--- lookback of 0, and an hourly pass calls it with 2. That is only safe if a
--- lookback of 0 rewrites TODAY and leaves every earlier day exactly as it was:
--- if it deleted a past day without rewriting it, the dashboard and the volume
--- check would read a hole until the next hourly pass. And the hourly pass must
--- still fold a late change into its own past day.
+-- WHAT IT PROVES. The workflow_stats frequent pass calls the refresh with a
+-- lookback of 0 and an hourly pass calls it with 2. (The field presence frequent
+-- pass moved to a watermark incremental in #1150, proved in
+-- field_presence_incremental.test.sql; refresh_field_presence_daily keeps the
+-- delete-then-insert behaviour this file drives directly, as the reconcile.) A
+-- lookback of 0 is only safe if it rewrites TODAY and leaves every earlier day
+-- exactly as it was: if it deleted a past day without rewriting it, the dashboard
+-- and the volume check would read a hole until the next hourly pass. And the
+-- hourly pass must still fold a late change into its own past day.
 --
 -- THE CLOCK. Both refresh functions take today from CURRENT_DATE and cannot be
 -- given another, so the rows are placed relative to it (yesterday and today at
@@ -136,7 +139,7 @@ BEGIN
       ('refresh-workflow-stats-daily',        '1-59/5 * * * *',  'refresh_workflow_stats_daily(0)'),
       ('refresh-workflow-stats-daily-recent', '8 * * * *',       'refresh_workflow_stats_daily(2)'),
       ('refresh-workflow-stats-daily-full',   '47 3 * * *',      'refresh_workflow_stats_daily(7)'),
-      ('refresh-field-presence-daily',        '4-59/15 * * * *', 'refresh_field_presence_daily(0)'),
+      ('refresh-field-presence-daily',        '4-59/15 * * * *', 'refresh_field_presence_incremental()'),
       ('refresh-field-presence-daily-recent', '42 * * * *',      'refresh_field_presence_daily(2)'),
       ('refresh-field-presence-daily-full',   '52 3 * * *',      'refresh_field_presence_daily(7)')
     ) AS v(jobname, schedule, call)

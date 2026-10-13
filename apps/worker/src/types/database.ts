@@ -1253,6 +1253,24 @@ export type Database = {
         }
         Relationships: []
       }
+      field_presence_rollup_state: {
+        Row: {
+          id: boolean
+          updated_at: string
+          watermark: string
+        }
+        Insert: {
+          id?: boolean
+          updated_at?: string
+          watermark: string
+        }
+        Update: {
+          id?: boolean
+          updated_at?: string
+          watermark?: string
+        }
+        Relationships: []
+      }
       field_presence_silences: {
         Row: {
           created_at: string
@@ -2909,6 +2927,7 @@ export type Database = {
         Args: { p_lookback_days?: number }
         Returns: undefined
       }
+      refresh_field_presence_incremental: { Args: never; Returns: undefined }
       refresh_workflow_stats_daily: {
         Args: { p_lookback_days?: number }
         Returns: undefined

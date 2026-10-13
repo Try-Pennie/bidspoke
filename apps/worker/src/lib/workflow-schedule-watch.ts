@@ -52,8 +52,9 @@
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
+import { announceRecovery, markAlerted, markSpikeSeen, recoveryKey } from './alert-recovery'
 import { formatErr } from './format-error'
-import { sendWorkflowScheduleAlert } from './slack'
+import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from './slack'
 
 const H = 60 * 60 * 1000
 
@@ -739,6 +740,24 @@ const cooldownKey = (signature: string) => `workflow-schedule:alert:${signature}
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 
 /**
+ * Recovery bookkeeping (#851). The markers are keyed per FILE, not per signature:
+ * a workflow recovers on its own, whatever else is wrong at the same time. The
+ * prefix gives markAlerted/markSpikeSeen their own namespace
+ * (`workflow-schedule-recovery:` / `-active:`), distinct from the signature
+ * cooldown above.
+ */
+const RECOVERY_PREFIX = 'workflow-schedule'
+
+/**
+ * The per-workflow states that are a real, nameable fault a workflow can recover
+ * FROM. Blindness (`unreadable`) is deliberately excluded: the check cannot tell
+ * a cleared fault from one it never saw, so an all-clear there would claim more
+ * than it measured (L11), and its persistence is already covered by the config
+ * alert's own "still" reminders and the rate-limit hold.
+ */
+const INCIDENT_STATUSES: ReadonlySet<ScheduleStatus> = new Set(['stale', 'never_ran', 'failing', 'missing'])
+
+/**
  * Marks that the previous hourly run held a rate-limit-only alert (#1367).
  * Ninety minutes, not longer: long enough to reach the next hourly run through
  * cron jitter, short enough that a limit two hours later with a clean hour in
@@ -847,6 +866,44 @@ export async function runWorkflowScheduleWatch(
     if (verdict.status !== 'healthy') problems.push({ workflow, verdict })
   }
 
+  // Recovery and running-end bookkeeping (#851). Run before any early return, so
+  // an all-healthy pass still stands a prior incident down. Each file is its own
+  // boundary: a KV wobble here must not abort the watch (L71). A workflow now
+  // healthy that we had paged for gets one all-clear (announceRecovery is a no-op
+  // otherwise); a standing fault has its running end refreshed so the eventual
+  // all-clear can report how long it lasted.
+  for (const r of results) {
+    try {
+      if (r.status === 'healthy') {
+        const wf = WATCHED_WORKFLOWS.find((w) => w.file === r.file)
+        if (!wf) continue
+        await announceRecovery(
+          kv,
+          RECOVERY_PREFIX,
+          r.file,
+          // No per-file cooldown to clear: the signature cooldown is shared, and
+          // a relapse gets through it because this all-clear deletes the start
+          // marker the cooldown check consults.
+          null,
+          async (alertedAt, endedAt) => {
+            let delivered = false
+            for (const orgId of orgIds) {
+              if (await sendWorkflowScheduleRecoveryAlert(supabase, orgId, { label: wf.label, alertedAt, endedAt }, nowMs)) {
+                delivered = true
+              }
+            }
+            return delivered
+          },
+          { now: nowMs },
+        )
+      } else if (INCIDENT_STATUSES.has(r.status)) {
+        await markSpikeSeen(kv, RECOVERY_PREFIX, r.file, nowMs)
+      }
+    } catch (e) {
+      console.error(`[workflow-schedule] recovery bookkeeping for ${r.file} failed:`, formatErr(e))
+    }
+  }
+
   if (configFailure === null && problems.length === 0) return results
 
   // A run blind ONLY because GitHub's request limit is used up holds its alert for
@@ -889,6 +946,26 @@ export async function runWorkflowScheduleWatch(
     // less than six hours of silence about a dark deploy check.
     console.error('[workflow-schedule] cooldown unreadable, alerting anyway:', formatErr(e))
   }
+  // The signature cooldown outlives an all-clear, so on its own it would hold a
+  // relapse that comes back inside six hours, right after the channel was told
+  // the workflow recovered (#851 review). The all-clear deletes the workflow's
+  // start marker, so a fault in the signature with no marker is a NEW incident and
+  // speaks. An unreadable marker fails towards speaking, like the cooldown (L42).
+  if (held) {
+    for (const { workflow, verdict } of problems) {
+      if (!INCIDENT_STATUSES.has(verdict.status)) continue
+      let announced = false
+      try {
+        announced = (await kv.get(recoveryKey(RECOVERY_PREFIX, workflow.file))) !== null
+      } catch (e) {
+        console.error(`[workflow-schedule] incident marker for ${workflow.file} unreadable, alerting anyway:`, formatErr(e))
+      }
+      if (!announced) {
+        held = false
+        break
+      }
+    }
+  }
   if (held) return results
 
   const payload = {
@@ -921,6 +998,19 @@ export async function runWorkflowScheduleWatch(
     }
     for (const r of results) {
       if (r.status !== 'healthy') r.alerted = true
+    }
+    // Record each per-workflow fault's first-alert time now that the message has
+    // delivered, so the eventual all-clear can report how long it lasted and
+    // nothing is owed for an alert nobody received (#851). Only the per-workflow
+    // incident states, never the shared blindness, for the same reason the
+    // running end above skips it.
+    for (const { workflow, verdict } of problems) {
+      if (!INCIDENT_STATUSES.has(verdict.status)) continue
+      try {
+        await markAlerted(kv, RECOVERY_PREFIX, workflow.file, nowMs)
+      } catch (e) {
+        console.error(`[workflow-schedule] recovery start marker for ${workflow.file} failed:`, formatErr(e))
+      }
     }
   }
   return results

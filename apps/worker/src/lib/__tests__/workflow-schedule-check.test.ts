@@ -3,9 +3,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 vi.mock('../slack', () => ({
   sendWorkflowScheduleAlert: vi.fn(async () => true),
+  sendWorkflowScheduleRecoveryAlert: vi.fn(async () => true),
 }))
 
-import { sendWorkflowScheduleAlert } from '../slack'
+import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
 import { runWorkflowScheduleWatch, WATCHED_WORKFLOWS } from '../workflow-schedule-watch'
 
 /**
@@ -43,6 +44,9 @@ function fakeKv(initial: Record<string, string> = {}) {
     get: vi.fn(async (k: string) => store.get(k) ?? null),
     put: vi.fn(async (k: string, v: string) => {
       store.set(k, v)
+    }),
+    delete: vi.fn(async (k: string) => {
+      store.delete(k)
     }),
   } as unknown as KVNamespace & { store: Map<string, string> }
 }
@@ -93,6 +97,8 @@ const messages = () => vi.mocked(sendWorkflowScheduleAlert).mock.calls.length
 beforeEach(() => {
   vi.mocked(sendWorkflowScheduleAlert).mockClear()
   vi.mocked(sendWorkflowScheduleAlert).mockResolvedValue(true)
+  vi.mocked(sendWorkflowScheduleRecoveryAlert).mockClear()
+  vi.mocked(sendWorkflowScheduleRecoveryAlert).mockResolvedValue(true)
 })
 
 describe('runWorkflowScheduleWatch: the quiet path', () => {
@@ -226,7 +232,87 @@ describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
       NOW,
       fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)),
     )
-    expect([...kv.store.keys()]).toEqual([])
+    // Neither the cooldown nor the all-clear's start marker: an all-clear owed for
+    // an alert nobody received would mute nothing and announce a recovery from an
+    // incident nobody was told about (#851). The running-end markers
+    // (`workflow-schedule-active:`) are written on every dark tick by design, so
+    // the all-clear can later say how long the fault lasted; alone they owe nothing.
+    const keys = [...kv.store.keys()]
+    expect(keys.filter((k) => !k.startsWith('workflow-schedule-active:'))).toEqual([])
+    expect(keys.length, 'the running end of each dark workflow was not recorded').toBeGreaterThan(0)
+  })
+})
+
+describe('runWorkflowScheduleWatch: the all-clear (#851)', () => {
+  const HOUR = 3_600_000
+
+  it('posts one recovery line naming the workflow once a paged one runs again, then nothing more', async () => {
+    const kv = fakeKv()
+    const supabase = fakeSupabase([{ organization_id: 'org-1' }])
+    const [first] = WATCHED_WORKFLOWS
+    const fresh = iso(NOW - 60_000)
+
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, fetchAll(fresh, { perFile: { [first.file]: iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS) } }))
+    expect(messages()).toBe(1)
+
+    // An hour on it has run again: past the 30 minute re-arm window, so it is over.
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + HOUR, fetchAll(iso(NOW + HOUR - 60_000)))
+    const calls = vi.mocked(sendWorkflowScheduleRecoveryAlert).mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toBe('org-1')
+    // How long it was down is measured to the last dark tick, not to this message.
+    expect(calls[0][2]).toEqual({ label: first.label, alertedAt: iso(NOW), endedAt: iso(NOW) })
+
+    // Settled: the next healthy run owes nothing.
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 2 * HOUR, fetchAll(iso(NOW + 2 * HOUR - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('pages again at once when a workflow relapses after its all-clear, inside the old cooldown', async () => {
+    // The signature cooldown (`<file>=stale`) outlives the all-clear by hours.
+    // Held against it, a relapse would be silent right after the channel was told
+    // the workflow recovered, which is worse than never saying so.
+    const kv = fakeKv()
+    const supabase = fakeSupabase([{ organization_id: 'org-1' }])
+    const [first] = WATCHED_WORKFLOWS
+    const darkFirst = (at: number) => fetchAll(iso(at - 60_000), { perFile: { [first.file]: iso(at - DARK_FOR_EVERY_WORKFLOW_MS) } })
+
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, darkFirst(NOW))
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + HOUR, fetchAll(iso(NOW + HOUR - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).toHaveBeenCalledTimes(1)
+
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 2 * HOUR, darkFirst(NOW + 2 * HOUR))
+    expect(messages(), 'the relapse was swallowed by the cooldown of the incident already announced over').toBe(2)
+
+    // And that new page holds its own cooldown: the next dark hour is quiet.
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 3 * HOUR, darkFirst(NOW + 3 * HOUR))
+    expect(messages()).toBe(2)
+  })
+
+  it('announces nothing for a workflow that was never paged', async () => {
+    await runWorkflowScheduleWatch(fakeSupabase([{ organization_id: 'org-1' }]), fakeKv(), ENV, NOW, fetchAll(iso(NOW - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('announces no recovery when the dark alert was never delivered', async () => {
+    vi.mocked(sendWorkflowScheduleAlert).mockResolvedValue(false)
+    const kv = fakeKv()
+    const supabase = fakeSupabase([{ organization_id: 'org-1' }])
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)))
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + HOUR, fetchAll(iso(NOW + HOUR - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('keeps the incident open and retries the all-clear when it fails to deliver', async () => {
+    const kv = fakeKv()
+    const supabase = fakeSupabase([{ organization_id: 'org-1' }])
+    const [first] = WATCHED_WORKFLOWS
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW, fetchAll(iso(NOW - 60_000), { perFile: { [first.file]: iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS) } }))
+
+    vi.mocked(sendWorkflowScheduleRecoveryAlert).mockResolvedValueOnce(false)
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + HOUR, fetchAll(iso(NOW + HOUR - 60_000)))
+    await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 2 * HOUR, fetchAll(iso(NOW + 2 * HOUR - 60_000)))
+    expect(sendWorkflowScheduleRecoveryAlert).toHaveBeenCalledTimes(2)
   })
 })
 
