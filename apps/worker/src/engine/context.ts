@@ -175,6 +175,36 @@ export function resolveStepField(steps: Record<string, StepOutput>, segments: st
   return getPath(step.output, pathParts)
 }
 
+/**
+ * What a step reference reached, for field presence (#2018): `true` a value,
+ * `null` empty, `false` the path names a key some object along it does not have.
+ *
+ * The same walk as `resolveStepField` (one wrapper rule, one step lookup), but it
+ * also says WHERE the walk stopped, because an empty value and a missing key were
+ * one `false` and a field empty by design paged as a wrong path. Only an object
+ * lacking the next key, or a plain value the path tries to walk into, is the
+ * wrong path signature. A null or missing parent, a list without the item, a key
+ * holding nothing and a step that did not complete all read as empty: the path
+ * may be right and the producer simply had nothing this run.
+ */
+export function stepFieldPresence(steps: Record<string, StepOutput>, segments: string[]): boolean | null {
+  const ns = segments[0]
+  const step = ns ? steps[ns] : undefined
+  if (!step || step.status !== 'completed') return null
+  let cur: unknown = step.output
+  for (const key of stripOutputWrapper(segments).slice(1)) {
+    if (cur === null || cur === undefined) return null
+    if (Array.isArray(cur)) {
+      cur = cur[Number(key)]
+      continue
+    }
+    if (typeof cur !== 'object') return false
+    if (!Object.prototype.hasOwnProperty.call(cur, key)) return false
+    cur = (cur as Record<string, unknown>)[key]
+  }
+  return cur === null || cur === undefined ? null : true
+}
+
 /** A plain path reference: env.X, trigger.*, execution.*, steps.* — with
  * optional bracket segments (`map[trigger.payload.key]`, `arr[0]`, `obj['k']`)
  * whose keys resolve before the lookup. */

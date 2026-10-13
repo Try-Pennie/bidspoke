@@ -46,6 +46,13 @@ describe('the answer journal', () => {
     expect(await readAnswerJournal(store, 'ex-1')).toEqual(journal)
   })
 
+  it('round trips a field presence map with its version (#2018)', async () => {
+    const store = kv()
+    const versioned: AnswerJournal = { ...journal, field_presence: { 'a.b': null, 'a.c': true }, field_presence_version: 2 }
+    await putAnswerJournal(store, versioned)
+    expect(await readAnswerJournal(store, 'ex-1')).toEqual(versioned)
+  })
+
   it('reads as no journal when there is none', async () => {
     expect(await readAnswerJournal(kv(), 'ex-1')).toBeNull()
   })
@@ -74,6 +81,8 @@ describe('the answer journal', () => {
       { failed_step_type: 1 },
       { cost_usd: 'free' },
       { field_presence: 'all' },
+      { field_presence_version: '2' },
+      { field_presence_version: 2.5 },
     ]) {
       store.store.set(`${ANSWER_JOURNAL_PREFIX}ex-1`, JSON.stringify({ ...journal, ...bad }))
       expect(await readAnswerJournal(store, 'ex-1'), JSON.stringify(bad)).toBeNull()
