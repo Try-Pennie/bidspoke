@@ -651,6 +651,19 @@ describe('reads the scanner cannot follow are watched or reported (#1801)', () =
     expect([...set]).toEqual(['q.body.records'])
   })
 
+  it('reports a bracket read through a $-prefixed local alias as a gap (not missed by a word boundary)', () => {
+    // A local may start with `$` (ALIAS_RE allows it). A `\b` word boundary does
+    // not anchor before `$`, so `$records[0]` was not seen and the field was
+    // wrongly attributed to the whole list; the identifier boundary catches it.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const $records = steps.q.output.body.records;\nreturn $records[0].Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
   it('reports a bracket read after a list fallback as a gap', () => {
     // `?? []` then `rows[0].Id`: the fallback is a literal so the chain still
     // names the list, but the bracket read through the local cannot be followed.

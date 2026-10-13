@@ -81,6 +81,16 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * The left boundary of a JS identifier, for matching a local as a whole token.
+ * `\b` cannot be used: an alias may start with `$` or `_` (ALIAS_RE allows
+ * `[A-Za-z_$]` first), and `\b` is a word boundary, so `\b$row` does not anchor
+ * before a `$`-led name and the local is then missed (a `$row[0]` bracket read
+ * goes unseen, and the field is wrongly attributed to the whole collection). A
+ * negative lookbehind for any identifier character anchors every name alike.
+ */
+const ID_LEFT = '(?<![A-Za-z0-9_$])'
+
+/**
  * Where the declaration STATEMENT ends, which is not where the chain match ends.
  *
  * The chain stops at a bracket, so `const hitCode = steps.a.b?.[0]?.hitCode?.code`
@@ -212,7 +222,7 @@ function aliasIsStable(script: string, local: string): boolean {
   if (declarations.length !== 1) return false
   // Any `local =` that is not the declaration is a reassignment. `==`, `===`
   // and `=>` are excluded so a comparison is not read as one.
-  const assignments = script.match(new RegExp(`\\b${name}\\s*=(?![=>])`, 'g')) ?? []
+  const assignments = script.match(new RegExp(`${ID_LEFT}${name}\\s*=(?![=>])`, 'g')) ?? []
   return assignments.length === 1
 }
 
@@ -239,7 +249,7 @@ function aliasIsStable(script: string, local: string): boolean {
  */
 function aliasFieldReads(script: string, declaration: AliasDeclaration): string[] {
   const { local, start, end } = declaration
-  const re = new RegExp(`\\b${escapeRegExp(local)}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
+  const re = new RegExp(`${ID_LEFT}${escapeRegExp(local)}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
   const out: string[] = []
   for (const m of script.matchAll(re)) {
     const at = m.index ?? 0
@@ -264,7 +274,7 @@ function aliasFieldReads(script: string, declaration: AliasDeclaration): string[
  */
 function aliasHasBracketRead(script: string, declaration: AliasDeclaration): boolean {
   const { local, start, end } = declaration
-  const re = new RegExp(`\\b${escapeRegExp(local)}\\s*(?:\\?\\.\\s*)?\\[`, 'g')
+  const re = new RegExp(`${ID_LEFT}${escapeRegExp(local)}\\s*(?:\\?\\.\\s*)?\\[`, 'g')
   for (const m of script.matchAll(re)) {
     const at = m.index ?? 0
     if (at >= start && at < end) continue
