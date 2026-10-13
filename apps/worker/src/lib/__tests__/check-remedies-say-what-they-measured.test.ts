@@ -50,7 +50,7 @@ import {
   TRIPOINT_PRICING_UNREADABLE_REMEDY,
 } from '../tripoint-pricing-check'
 import { TRIPOINT_DUPLICATE_CODES_REMEDY } from '../tripoint-duplicate-codes-check'
-import { LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY } from '../lead-status-check'
+import { LEAD_STATUS_BACKLOG_REMEDY, LEAD_STATUS_ANSWERED_BACKLOG_REMEDY, LEAD_STATUS_BROKEN_REMEDY, LEAD_STATUS_UNCHECKED_REMEDY } from '../lead-status-check'
 import { EXPORT_SCHEMA_REMEDY, EXPORT_SCHEMA_UNREADABLE_REMEDY } from '../export-schema-check'
 import {
   BUYER_SALE_DRAIN_BACKLOG_REMEDY,
@@ -116,6 +116,7 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['salesforce revenue formulas disagree', REVENUE_FORMULAS_DISAGREE_REMEDY],
   ['partner rates mismatch', PARTNER_RATES_MISMATCH_REMEDY],
   ['lead status backlog', LEAD_STATUS_BACKLOG_REMEDY],
+  ['lead status backlog with buyer answers', LEAD_STATUS_ANSWERED_BACKLOG_REMEDY],
   ['lead status broken', LEAD_STATUS_BROKEN_REMEDY],
   ['lead status unchecked', LEAD_STATUS_UNCHECKED_REMEDY],
   ['archive gate at risk', ARCHIVE_GATE_AT_RISK_REMEDY],
