@@ -28,6 +28,7 @@
  * back from the bidding database. The ops Worker binds no KV and runs no engine.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { FieldPresenceMap } from './field-presence'
 import { formatErr } from '../lib/format-error'
 import { isPermanentDbError, toDbError } from '../lib/db-retry'
 
@@ -305,7 +306,9 @@ export interface AnswerJournal {
    */
   sighting_finalize?: unknown
   cost_usd?: number
-  field_presence?: Record<string, boolean>
+  field_presence?: FieldPresenceMap
+  /** The map's meaning (#2018); absent on a journal written before the stamp, which the drain then leaves unstamped. */
+  field_presence_version?: number
   email_dropped?: boolean
   written_at: string
 }
@@ -338,6 +341,7 @@ export async function readAnswerJournal(
     if (![v.outcome, v.final_node_namespace, v.final_node_id, v.error_message, v.failed_step_type].every(textOrNull)) return null
     if (v.cost_usd !== undefined && (typeof v.cost_usd !== 'number' || !Number.isFinite(v.cost_usd))) return null
     if (v.field_presence !== undefined && (typeof v.field_presence !== 'object' || v.field_presence === null || Array.isArray(v.field_presence))) return null
+    if (v.field_presence_version !== undefined && !Number.isInteger(v.field_presence_version)) return null
     if (v.email_dropped !== undefined && typeof v.email_dropped !== 'boolean') return null
     return v as AnswerJournal
   } catch {

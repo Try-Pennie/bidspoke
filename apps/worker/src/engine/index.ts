@@ -26,7 +26,7 @@ import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDetermi
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
-import { fieldPresenceForCapture, shouldLogCapture } from './field-presence'
+import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
 import { detectDroppedEmail } from './dropped-fields'
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
@@ -949,7 +949,7 @@ export async function executeWorkflow(
             failed_step_type: resolveFailedStepType(definition.nodes, failedStep) ?? null,
             ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
             cost_usd: cost,
-            ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+            ...fieldPresenceColumns(fieldPresence),
             ...(emailDropped ? { email_dropped: true } : {}),
             written_at: new Date().toISOString(),
           }
@@ -985,7 +985,7 @@ export async function executeWorkflow(
           failed_step_type: resolveFailedStepType(definition.nodes, failedStep),
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
-          ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+          ...fieldPresenceColumns(fieldPresence),
           ...(emailDropped ? { email_dropped: true } : {}),
         }, {
           // #584: hand finalize the create fields so a missing base row (a

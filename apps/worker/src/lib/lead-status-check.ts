@@ -92,6 +92,22 @@ export const MIN_SUBMISSIONS_TO_JUDGE = 20
  */
 export const BACKLOG_MAX_ROWS = 50_000
 
+/**
+ * A sale touched this recently is left to the next run (#2019). The Lead write
+ * follows the Submission write: on 2026-10-13 Sub-003007872's Submission read
+ * Completed at 13:01:20 UTC, its Lead at 13:01:21, and the check reading it at
+ * 13:01:21 counted it as left behind. That one second is the only gap on record:
+ * a Lead keeps no field history, and its last modified time is a person's later
+ * edit on 1,492 of 1,500 recent Tripoint sales (measured 2026-10-13), so the gap
+ * cannot be read off the Lead. Fifteen minutes is far wider than one second on
+ * purpose: a sale held back is counted by the next day's run, so too wide only
+ * delays a line, while too narrow sends a phantom (L648).
+ */
+export const BACKLOG_GRACE_MS = 15 * 60_000
+
+/** The most waiting sale ids one partner's log line names, so a large backlog cannot flood the log. */
+export const LOGGED_IDS_MAX = 20
+
 /** The day the Submission to Lead copy stopped, where the backlog count starts. */
 export const SYNC_BROKE_ON = '2026-07-08'
 
@@ -101,8 +117,10 @@ export const SYNC_BROKE_ON = '2026-07-08'
  * is the healthy share, measured 2026-06-30 to 07-06 for the partners sold to
  * before the break, quoted in the alert as what normally happens.
  */
-export const LEAD_STATUS_PARTNERS: ReadonlyArray<{ partner: string; judged: boolean; before: string }> = [
-  { partner: 'Tripoint', judged: true, before: '100%' },
+export const LEAD_STATUS_PARTNERS: ReadonlyArray<{ partner: string; judged: boolean; before: string; buyerAnswers?: boolean }> = [
+  // Tripoint's answer to each sale is on the Submission (#1837), so its waiting
+  // sales are told apart by it. No other partner's is.
+  { partner: 'Tripoint', judged: true, before: '100%', buyerAnswers: true },
   { partner: 'AmOne', judged: true, before: '97%' },
   { partner: 'Engine', judged: false, before: '22%' },
   // Went live 2026-09-30, after the break, so its healthy share is the one
@@ -124,6 +142,19 @@ export const LEAD_STATUS_BACKLOG_REMEDY: TitledRemedy = {
   fixHint:
     "Check whether each one is a real sale. If it is, set the Lead's External Exchange Status to Completed " +
     "in Salesforce. If it isn't, set the Submission back.",
+}
+
+/**
+ * The backlog fix when every waiting line says what the buyer answered (#1837).
+ * Only then: an AmOne or Liberty1 line carries no answer, so this hint beside it
+ * would point at something the reader cannot see.
+ */
+export const LEAD_STATUS_ANSWERED_BACKLOG_REMEDY: TitledRemedy = {
+  title: LEAD_STATUS_BACKLOG_REMEDY.title,
+  context: LEAD_STATUS_CONTEXT,
+  fixHint:
+    "Set the Lead's External Exchange Status to Completed in Salesforce only for a sale the buyer accepted. " +
+    'Set the Submission back for one the buyer refused. Where no answer is on record, check the sale with the buyer first.',
 }
 
 export const LEAD_STATUS_BROKEN_REMEDY: TitledRemedy = {
@@ -152,12 +183,15 @@ interface Finding {
   key: string
   /** Set on a judged partner's no sales line, which stands only if that partner could have sold that day. */
   zeroFor?: string
+  /** Set on a backlog line that says what the buyer answered for each sale (#1837). */
+  answered?: boolean
 }
 
 /** The broken title outranks the backlog one, which outranks a check that could not run. */
 function remedyFor(findings: Finding[]): TitledRemedy {
   if (findings.some((f) => f.kind === 'broken')) return LEAD_STATUS_BROKEN_REMEDY
-  if (findings.some((f) => f.kind === 'backlog')) return LEAD_STATUS_BACKLOG_REMEDY
+  const backlogs = findings.filter((f) => f.kind === 'backlog')
+  if (backlogs.length) return backlogs.every((f) => f.answered) ? LEAD_STATUS_ANSWERED_BACKLOG_REMEDY : LEAD_STATUS_BACKLOG_REMEDY
   return LEAD_STATUS_UNCHECKED_REMEDY
 }
 
@@ -168,8 +202,12 @@ function shortDay(isoOrDay: string): string | null {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(d)
 }
 
-/** The two COUNT() queries and the backlog row query for one partner and the UTC day starting at `dayStart`. */
-export function leadStatusQueries(partner: string, dayStart: Date): { submissions: string; leads: string; backlog: string } {
+/**
+ * The two COUNT() queries and the backlog row query for one partner and the UTC
+ * day starting at `dayStart`. The backlog leaves out a sale touched within
+ * BACKLOG_GRACE_MS of `now`, whose Lead write may still be on its way (#2019).
+ */
+export function leadStatusQueries(partner: string, dayStart: Date, now: Date): { submissions: string; leads: string; backlog: string } {
   const sale =
     `External_Partner_Name__c = '${partner}' AND External_Exchange_Status__c = 'Completed' ` +
     `AND Lead__r.ExternalPartnerName__c = '${partner}'`
@@ -180,8 +218,10 @@ export function leadStatusQueries(partner: string, dayStart: Date): { submission
     submissions: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND ${day}`,
     leads: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND Lead__r.External_Exchange_Status__c = 'Completed' AND ${day}`,
     backlog:
-      `SELECT Id, CreatedDate, Lead__r.Submission_Object_ID__c, Lead__r.External_Exchange_Status__c FROM Submission__c WHERE ${sale} ` +
-      `AND Lead__r.External_Exchange_Status__c != 'Completed' AND CreatedDate >= ${SYNC_BROKE_ON}T00:00:00Z`,
+      `SELECT Id, CreatedDate, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r.Submission_Object_ID__c, ` +
+      `Lead__r.External_Exchange_Status__c FROM Submission__c WHERE ${sale} ` +
+      `AND Lead__r.External_Exchange_Status__c != 'Completed' AND CreatedDate >= ${SYNC_BROKE_ON}T00:00:00Z ` +
+      `AND LastModifiedDate < ${isoSecond(new Date(now.getTime() - BACKLOG_GRACE_MS))}`,
   }
 }
 
@@ -212,6 +252,8 @@ export interface PartnerLeadStatus {
   backlog: number | null
   /** The same, where the Lead has moved on to a later Submission, so no backfill can change it; null when unread. */
   backlog_returning: number | null
+  /** The first LOGGED_IDS_MAX of the waiting sales' ids, logged so a counted sale can be looked up afterwards (#2019). */
+  waiting_ids: string[]
   /** True when it had no Completed sales and its buyer profile was closed every minute of the day, so the zero was not reported. */
   closed_all_day: boolean
 }
@@ -247,7 +289,7 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   let partners: PartnerLeadStatus[] = []
   let found: Finding[]
   try {
-    const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, rows, p, dayStart, day)))
+    const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, rows, p, dayStart, day, now)))
     partners = measured.map((m) => m.status)
     const judged = await judgeZeroDays(measured.flatMap((m) => m.findings), partners, loadProfiles, dayStart, now)
     found = [...judged, ...(await uncoveredPartners(listPartners, dayStart, day))]
@@ -273,7 +315,11 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   console.log(
     `[lead-status] day=${day} ` +
       partners
-        .map((p) => `${p.partner}=${unread(p.leads_completed)}/${unread(p.submissions_completed)} backlog=${unread(p.backlog)} returning=${unread(p.backlog_returning)}`)
+        .map(
+          (p) =>
+            `${p.partner}=${unread(p.leads_completed)}/${unread(p.submissions_completed)} backlog=${unread(p.backlog)} returning=${unread(p.backlog_returning)}` +
+            (p.waiting_ids.length ? ` ${p.partner} waiting=${p.waiting_ids.join(',')}` : ''),
+        )
         .join(' ') +
       ` findings=${findings.length}${notReported}`,
   )
@@ -291,6 +337,28 @@ export interface BacklogSplit {
   ownLast?: string
   /** What the left behind sales' Leads say instead, in first seen order. */
   ownLeadStatuses: string[]
+  /** The left behind sales' ids, the first LOGGED_IDS_MAX of them. */
+  ownIds: string[]
+  /** The left behind sales by what the buyer answered on the Submission (#1837). */
+  ownAnswers: { accepted: number; refused: number; none: number }
+}
+
+/**
+ * What Tripoint answered for a sale, from its Submission (#1837). Measured on the
+ * 30,978 Completed Tripoint sales of the 30 days to 2026-10-13: the submit
+ * response is 200 or 208, or absent; the response is Success, Duplicate, Fail, or
+ * absent. A refusal on either field wins over an accepted code on the other, so
+ * revenue is never booked on a refused lead. Neither field set is NOT "never
+ * submitted": 1,195 such sales were real, most with a Completed Lead, sold by a
+ * route that does not record Tripoint's answer. So it is "no answer on record".
+ */
+export function buyerAnswer(row: Record<string, unknown>): 'accepted' | 'refused' | 'none' {
+  const response = typeof row.Tripoint_Response__c === 'string' ? row.Tripoint_Response__c.trim() : ''
+  const submit = typeof row.Tripoint_Submit_Response__c === 'string' ? row.Tripoint_Submit_Response__c.trim() : ''
+  const submitAccepted = submit === '200' || submit === '208'
+  if (response === 'Duplicate' || response === 'Fail' || (submit !== '' && !submitAccepted)) return 'refused'
+  if (submitAccepted || response === 'Success') return 'accepted'
+  return 'none'
 }
 
 /**
@@ -306,6 +374,8 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
   let ownFirst: string | undefined
   let ownLast: string | undefined
   const statuses: string[] = []
+  const ids: string[] = []
+  const answers = { accepted: 0, refused: 0, none: 0 }
   for (const r of records) {
     if (typeof r.Id !== 'string' || !SALESFORCE_ID.test(r.Id)) {
       throw new Error(`Salesforce returned a backlog row with no readable Id: ${JSON.stringify(r).slice(0, 200)}`)
@@ -314,6 +384,8 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
     const current = lead !== null && typeof lead === 'object' ? (lead as Record<string, unknown>).Submission_Object_ID__c : null
     if (typeof current !== 'string' || current === '' || current.slice(0, 15) === r.Id.slice(0, 15)) {
       own++
+      if (ids.length < LOGGED_IDS_MAX) ids.push(r.Id)
+      answers[buyerAnswer(r)]++
       const created = r.CreatedDate
       if (typeof created === 'string' && !Number.isNaN(Date.parse(created.replace(/([+-]\d{2})(\d{2})$/, '$1:$2')))) {
         if (ownFirst === undefined || created < ownFirst) ownFirst = created
@@ -323,7 +395,7 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
       if (typeof said === 'string' && said !== '' && !statuses.includes(said)) statuses.push(said)
     } else returning++
   }
-  return { own, returning, ownFirst, ownLast, ownLeadStatuses: statuses }
+  return { own, returning, ownFirst, ownLast, ownLeadStatuses: statuses, ownIds: ids, ownAnswers: answers }
 }
 
 async function tryBacklog(
@@ -340,12 +412,13 @@ async function tryBacklog(
 async function measure(
   count: (soql: string) => Promise<number>,
   rows: (soql: string) => Promise<Array<Record<string, unknown>>>,
-  rule: { partner: string; judged: boolean; before: string },
+  rule: { partner: string; judged: boolean; before: string; buyerAnswers?: boolean },
   dayStart: Date,
   day: string,
+  now: Date,
 ): Promise<{ status: PartnerLeadStatus; findings: Finding[] }> {
   const { partner, judged, before } = rule
-  const q = leadStatusQueries(partner, dayStart)
+  const q = leadStatusQueries(partner, dayStart, now)
   const [subs, leads, backlog] = await Promise.all([tryCount(count, q.submissions), tryCount(count, q.leads), tryBacklog(rows, q.backlog)])
   const findings: Finding[] = []
   const on = shortDay(day) ?? day
@@ -357,6 +430,7 @@ async function measure(
     leads_completed: 'n' in leads ? leads.n : null,
     backlog: 'err' in backlog ? null : backlog.own,
     backlog_returning: 'err' in backlog ? null : backlog.returning,
+    waiting_ids: 'err' in backlog ? [] : backlog.ownIds,
     closed_all_day: false,
   }
 
@@ -382,7 +456,8 @@ async function measure(
   if ('err' in backlog) {
     findings.push({ kind: 'unchecked', text: `The check couldn't count older ${partner} sales waiting on their Lead: ${backlog.err}`, key: `backlog-uncounted:${partner}` })
   } else if (judged && backlog.own > 0 && !findings.some((f) => f.kind === 'broken')) {
-    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog), key: backlogKey(partner, backlog) })
+    const answered = rule.buyerAnswers === true
+    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog, answered), key: backlogKey(partner, backlog), answered })
   }
 
   return { status, findings }
@@ -509,15 +584,31 @@ export function salesforceOrgBuyerProfiles(env: Env, supabase: SupabaseClient): 
  * Submission, but their Lead still says Pending or Fail." Returning customers
  * are left out: no backfill changes them, so the number is nothing to act on.
  */
-function describeBacklog(partner: string, b: BacklogSplit): string {
+function describeBacklog(partner: string, b: BacklogSplit, withAnswers: boolean): string {
   const one = b.own === 1
   const first = b.ownFirst ? shortDay(b.ownFirst) : null
   const last = b.ownLast ? shortDay(b.ownLast) : null
   const when = first && last ? (first === last ? ` from ${first}` : ` from ${first} to ${last}`) : ''
   const says = b.ownLeadStatuses.length ? b.ownLeadStatuses.join(' or ') : 'something else'
-  return one
+  const line = one
     ? `1 ${partner} sale${when} is marked Completed on its Submission, but its Lead still says ${says}.`
     : `${fmt(b.own)} ${partner} sales${when} are marked Completed on their Submission, but their Lead still says ${says}.`
+  return withAnswers ? `${line} ${describeAnswers(partner, b)}` : line
+}
+
+/** Which waiting sales the buyer accepted, refused, or has no answer on record for (#1837). */
+function describeAnswers(partner: string, b: BacklogSplit): string {
+  const { accepted, refused, none } = b.ownAnswers
+  const all = b.own === 1 ? 'it' : b.own === 2 ? 'both' : `all ${fmt(b.own)}`
+  if (accepted === b.own) return `${partner} accepted ${all}.`
+  if (refused === b.own) return `${partner} refused ${all}.`
+  if (none === b.own) return `${partner} has no answer on record for ${b.own === 1 ? 'it' : 'any of them'}.`
+  const parts = [
+    accepted ? `accepted ${fmt(accepted)}` : null,
+    refused ? `refused ${fmt(refused)}` : null,
+    none ? `has no answer on record for ${fmt(none)}` : null,
+  ].filter((p): p is string => p !== null)
+  return `${partner} ${new Intl.ListFormat('en', { type: 'conjunction' }).format(parts)}.`
 }
 
 /** A backlog's key: its partner and the days of the first and last waiting sale, the same days its line names. */

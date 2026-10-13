@@ -41,6 +41,8 @@ export const ARCHIVED_EXECUTION_COLUMNS: readonly ArchivedColumn[] = [
   // personal data on that basis, which is a claim worth re-checking if its
   // writer ever starts recording what a field contained.
   { name: 'field_presence', carriesPersonalData: false },
+  // A small integer naming which meaning field_presence was written in (#2018).
+  { name: 'field_presence_version', carriesPersonalData: false },
   { name: 'final_node_id', carriesPersonalData: false },
   { name: 'final_node_namespace', carriesPersonalData: false },
   { name: 'id', carriesPersonalData: false },
