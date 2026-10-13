@@ -7,7 +7,8 @@
  * bid_cents stays null (attempt-only recording).
  */
 import { describe, it, expect } from 'vitest'
-import type { NodeDefinition, StepOutput } from '../../types'
+import type { NodeDefinition, NodeType, StepOutput } from '../../types'
+import { NODE_TRAITS } from '../../types'
 import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, type BidSummary } from '../bid-log'
 
 const meta = {
@@ -480,5 +481,51 @@ describe('deriveCodeNodeBidAttempts: the Tripoint answer (#1540)', () => {
   it('counts an unknown answer as attempted but not responded, and never as a winner', () => {
     expect(summaryOf(tp({ tripoint_answer: 'unknown', unknown_reason: 'timeout' }))).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: null })
     expect(summaryOf(tp({ tripoint_answer: 'declined', resultCode: 1003 }))).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+})
+
+// ── #368: first-class bid nodes are NOT reconstructed by the projection ────────
+//
+// The strand projection (bidAttemptsForProjection) rebuilds only code-node and
+// click-sale bid attempts. partner_bid, bid_group and buyer_select record their
+// OWN attempts during the walk through makeBidLogger (recordBidAttempt), so the
+// projection deliberately omits them (deriving them here would double-count a
+// non-stranded run). The consequence is the known limitation #368: a STRANDED run
+// that bid via one of these nodes loses its per-attempt rows, because the drain
+// re-inserts only what the projection carries.
+//
+// The native bid writers are exactly the types carrying the recordsBidAttempts
+// trait in NODE_TRAITS (partner_bid, bid_group, buyer_select). This suite reads
+// that trait (it typechecks under the Worker tsconfig, which has no node:fs).
+// What ENFORCES that the trait names every actual writer is a web guard,
+// bid-projection-covers-native-writers.test.ts, which reads the executor source
+// for the makeBidLogger call and fails if a caller is missing the trait (L96); a
+// new writer that forgets the trait is caught there, not here.
+function nativeBidWriterTypes(): NodeType[] {
+  return (Object.keys(NODE_TRAITS) as NodeType[]).filter((t) => NODE_TRAITS[t].recordsBidAttempts).sort()
+}
+
+describe('bidAttemptsForProjection omits first-class bid nodes (#368)', () => {
+  const firstClassBidTypes = nativeBidWriterTypes()
+
+  it('the node types that write bid rows during the walk are exactly partner_bid, bid_group and buyer_select', () => {
+    // Read from the recordsBidAttempts trait, so a NEW native bid writer changes
+    // this and has to be reckoned with the #368 projection gap.
+    expect(firstClassBidTypes).toEqual(['bid_group', 'buyer_select', 'partner_bid'])
+  })
+
+  it('none of them is a code node, so the reconstructed and omitted paths stay disjoint', () => {
+    for (const type of firstClassBidTypes) expect(type).not.toBe('code')
+  })
+
+  it.each(firstClassBidTypes)('projects no row for a completed %s step, even with a bid-shaped output', (type) => {
+    // Gated on node TYPE, not output shape: a Tripoint-shaped output under a
+    // first-class bid node is still invisible, because only its makeBidLogger
+    // write records it, and that write is what a strand loses (#368).
+    const nodes: NodeDefinition[] = [{ id: 'n1', namespace: 'bid_node', type, config: {} }]
+    const s: Record<string, StepOutput> = {
+      bid_node: { output: { resultCode: 1000, qualified: true, createLead: { id: 'L-1' } }, status: 'completed' },
+    }
+    expect(bidAttemptsForProjection(s, nodes)).toEqual([])
   })
 })

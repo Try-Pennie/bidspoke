@@ -73,6 +73,17 @@ export interface NodeTraits {
   walkGraphOnly: boolean
   /** Writes one child step row per attempted partner, linked by parallel_group_id. */
   synthesizesAttempts: boolean
+  /**
+   * Records its own bid-attempt row(s) during the walk through makeBidLogger
+   * (recordBidAttempt), so the strand projection (bidAttemptsForProjection)
+   * deliberately omits it to avoid double counting a non-stranded run. This is
+   * the #368 gap: a STRANDED run that bid through one of these loses its
+   * per-attempt rows. A new node that writes bid rows natively MUST set this, so
+   * the projection gap is reckoned with rather than joined silently (L96).
+   * A superset of synthesizesAttempts: partner_bid records one attempt without
+   * synthesizing children.
+   */
+  recordsBidAttempts: boolean
   /** Its config names partner ids, so a partner change has to find it. */
   referencesPartners: boolean
   /** Outgoing handle ids fixed by the type, or null when there are none or they come from config. */
@@ -108,6 +119,7 @@ const inMemory = (over: Partial<NodeTraits> & Pick<NodeTraits, 'lane' | 'shadowR
   dispatchOrDb: false,
   walkGraphOnly: false,
   synthesizesAttempts: false,
+  recordsBidAttempts: false,
   referencesPartners: false,
   staticHandles: null,
   executorFile: null,
@@ -131,7 +143,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   exit: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING }),
   parallel: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, walkGraphOnly: true, executorFile: 'parallel' }),
   parallel_end: inMemory({ lane: 'shared', shadowRun: SENDS_NOTHING, walkGraphOnly: true }),
-  partner_bid: inMemory({ lane: 'money', shadowRun: STUBBED, network: true, referencesPartners: true, executorFile: 'partner-bid' }),
+  partner_bid: inMemory({ lane: 'money', shadowRun: STUBBED, network: true, referencesPartners: true, recordsBidAttempts: true, executorFile: 'partner-bid' }),
   bid_group: inMemory({
     lane: 'money',
     // Each attempt runs through partner_bid, which the run stubs.
@@ -139,6 +151,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
+    recordsBidAttempts: true,
     referencesPartners: true,
     staticHandles: ['winner', 'no_winner'],
     executorFile: 'bid-group',
@@ -169,6 +182,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     network: true,
     walkGraphOnly: true,
     synthesizesAttempts: true,
+    recordsBidAttempts: true,
     staticHandles: ['sold', 'no_sale', 'not_applicable', 'deferred'],
     executorFile: 'buyer-select',
     testRunException: { kind: 'report_only', reason: 'A test run must not sell a lead, spend a buyer cap or write a sale.' },
