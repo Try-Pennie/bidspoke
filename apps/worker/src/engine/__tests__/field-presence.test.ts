@@ -219,6 +219,8 @@ describe('the Liberty1 click shapes, end to end through capture', () => {
     }
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({
       'query_record.body.records': true,
+      // #1801: the indexed row is now watched as a whole value too.
+      'query_record.body.records.0': true,
       'query_record.body.records.0.Id': true,
     })
   })
@@ -232,6 +234,8 @@ describe('the Liberty1 click shapes, end to end through capture', () => {
     }
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({
       'query_record.body.records': true,
+      // #1801: the indexed row is now watched; absent when the query returned none.
+      'query_record.body.records.0': false,
       'query_record.body.records.0.Id': false,
     })
   })

@@ -63,6 +63,33 @@ const ALIAS_RE = new RegExp(
   'g',
 )
 
+// A destructuring binding that opens with `[` or `{` directly after the keyword.
+// The pattern body itself is balanced by hand below, so defaults and nesting
+// (which hold their own brackets) do not end the match early.
+const DESTRUCTURE_OPEN_RE = /\b(?:const|let|var)\s*[[{]/g
+// A `steps` chain immediately after the destructuring `=`, with the capture of
+// the reference syntax shared so a destructure and a plain read agree on what a
+// reference is (#433).
+const DESTRUCTURE_RHS_RE = new RegExp(`^\\s*=\\s*(?:${STEP_CHAIN_SOURCE})`)
+
+// Escape a captured local name before embedding it in a RegExp. The ALIAS_RE
+// capture permits `$`, which is a regex anchor, so an unescaped `a$b` would match
+// nothing and a bracket or field read through it would go silently undetected,
+// which is the dangerous direction for this detector.
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * The left boundary of a JS identifier, for matching a local as a whole token.
+ * `\b` cannot be used: an alias may start with `$` or `_` (ALIAS_RE allows
+ * `[A-Za-z_$]` first), and `\b` is a word boundary, so `\b$row` does not anchor
+ * before a `$`-led name and the local is then missed (a `$row[0]` bracket read
+ * goes unseen, and the field is wrongly attributed to the whole collection). A
+ * negative lookbehind for any identifier character anchors every name alike.
+ */
+const ID_LEFT = '(?<![A-Za-z0-9_$])'
+
 /**
  * Where the declaration STATEMENT ends, which is not where the chain match ends.
  *
@@ -89,6 +116,13 @@ interface AliasDeclaration {
   local: string
   /** The path the local stands for, or null when it cannot be named statically. */
   base: string | null
+  /**
+   * True when the tail took at least one segment past the chain, so the base is
+   * a DEEPER path than the chain the first pass already watched. The local then
+   * holds a value nothing else names, so it is watched even when used whole (the
+   * Equifax hit code read bare, #1801).
+   */
+  tookTail: boolean
   /** Where the declaration itself sits, so its own text is not read as a use. */
   start: number
   end: number
@@ -101,10 +135,18 @@ interface AliasDeclaration {
 const LITERAL_INDEX_RE = /^\s*(?:\?\.\s*)?\[\s*(?:(\d+)|(['"])([A-Za-z_$][\w$]*)\2)\s*\]/
 const ANY_INDEX_RE = /^\s*(?:\?\.\s*)?\[/
 const MEMBER_RE = /^\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)/
-// What may follow the accessors while the local still holds the accessed value:
-// the end of the statement, a comma declaration, or a fallback (`?? null`,
-// `|| {}`), which yields that value whenever there is one to watch.
-const SAME_VALUE_END_RE = /^[ \t]*(?:$|[;,\r\n]|\?\?|\|\|)/
+// What may follow the accessors while the local still holds exactly the accessed
+// value: the end of the statement, or a comma declaration.
+const STATEMENT_END_RE = /^[ \t]*(?:$|[;,\r\n])/
+// A `??` or `||` fallback keeps the local holding the accessed value ONLY when
+// the fallback is a LITERAL (`?? null`, `|| {}`, `|| []`, `?? ''`, `|| 0`). A
+// fallback to another reference (`|| steps.r.output.body`) means the local can
+// hold either source, so the chain names only the FIRST of them. Treating that
+// as the same value would attribute every read through the local to one source
+// alone, so a non-literal fallback leaves the base unnamed and the reads are
+// reported as a gap instead (#1801).
+const LITERAL_FALLBACK_RE =
+  /^[ \t]*(?:\?\?|\|\|)\s*(?:null\b|undefined\b|true\b|false\b|NaN\b|[-+]?\d|'|"|`|\{|\[)/
 
 /**
  * What the initialiser does after the chain match, which stops at a bracket.
@@ -140,7 +182,10 @@ function aliasTail(script: string, chainEnd: number): { segments: string[] | nul
       at += member[0].length
       continue
     }
-    return { segments: SAME_VALUE_END_RE.test(rest) ? segments : null, end: at }
+    if (STATEMENT_END_RE.test(rest) || LITERAL_FALLBACK_RE.test(rest)) {
+      return { segments, end: at }
+    }
+    return { segments: null, end: at }
   }
 }
 
@@ -153,6 +198,7 @@ function aliasDeclarations(script: string): AliasDeclaration[] {
     return {
       local: m[1],
       base: tail.segments === null ? null : [chain, ...tail.segments].join('.'),
+      tookTail: tail.segments !== null && tail.segments.length > 0,
       start: m.index ?? 0,
       // A wrapped initialiser can carry its index onto the next line, past the
       // end of the line the chain started on, so cover whatever the tail took.
@@ -171,11 +217,12 @@ function aliasDeclarations(script: string): AliasDeclaration[] {
  * than not watching it: a field that cannot resolve pages as permanently dead.
  */
 function aliasIsStable(script: string, local: string): boolean {
-  const declarations = script.match(new RegExp(`\\b(?:const|let|var)\\s+${local}\\s*=`, 'g')) ?? []
+  const name = escapeRegExp(local)
+  const declarations = script.match(new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=`, 'g')) ?? []
   if (declarations.length !== 1) return false
   // Any `local =` that is not the declaration is a reassignment. `==`, `===`
   // and `=>` are excluded so a comparison is not read as one.
-  const assignments = script.match(new RegExp(`\\b${local}\\s*=(?![=>])`, 'g')) ?? []
+  const assignments = script.match(new RegExp(`${ID_LEFT}${name}\\s*=(?![=>])`, 'g')) ?? []
   return assignments.length === 1
 }
 
@@ -202,7 +249,7 @@ function aliasIsStable(script: string, local: string): boolean {
  */
 function aliasFieldReads(script: string, declaration: AliasDeclaration): string[] {
   const { local, start, end } = declaration
-  const re = new RegExp(`\\b${local}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
+  const re = new RegExp(`${ID_LEFT}${escapeRegExp(local)}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
   const out: string[] = []
   for (const m of script.matchAll(re)) {
     const at = m.index ?? 0
@@ -212,6 +259,54 @@ function aliasFieldReads(script: string, declaration: AliasDeclaration): string[
     out.push(m[1])
   }
   return out
+}
+
+/**
+ * Whether `local` is read through a BRACKET anywhere outside its declaration.
+ *
+ * `records[0].Id`, `rows?.[i]`, `const row = records[0]` all index into the
+ * aliased value, and the element the index selects is not a path this can name
+ * (a run time index, or a literal element that may or may not exist). The read
+ * is therefore reported as a gap rather than attributed to the whole collection
+ * (#1799 showed a key on an ARRAY pages as never resolving). The declaration's
+ * own span is skipped so the chain's own trailing index (`steps.a.list[0]`) is
+ * not read as a bracket use of the local (#1801).
+ */
+function aliasHasBracketRead(script: string, declaration: AliasDeclaration): boolean {
+  const { local, start, end } = declaration
+  const re = new RegExp(`${ID_LEFT}${escapeRegExp(local)}\\s*(?:\\?\\.\\s*)?\\[`, 'g')
+  for (const m of script.matchAll(re)) {
+    const at = m.index ?? 0
+    if (at >= start && at < end) continue
+    return true
+  }
+  return false
+}
+
+/**
+ * Whether the script destructures a `steps` chain (`const [row] = steps.a.b`,
+ * `const { id } = steps.a.b`).
+ *
+ * The pattern body is matched by balancing brackets rather than by a single
+ * character class, so a default or a nested pattern that holds its own brackets
+ * (`const { a = {} } = steps.x`, `const [[row]] = steps.x`) does not end the
+ * match at the first inner bracket and is still reported.
+ */
+function hasDestructuredStepsChain(script: string): boolean {
+  for (const open of script.matchAll(DESTRUCTURE_OPEN_RE)) {
+    let depth = 0
+    let i = (open.index ?? 0) + open[0].length - 1
+    for (; i < script.length; i++) {
+      const c = script[i]
+      if (c === '[' || c === '{') depth++
+      else if (c === ']' || c === '}') {
+        depth--
+        if (depth === 0) break
+      }
+    }
+    if (DESTRUCTURE_RHS_RE.test(script.slice(i + 1))) return true
+  }
+  return false
 }
 
 export interface CodeRefResult {
@@ -254,13 +349,24 @@ export function collectCodeRefs(rawScript: string, into: Set<string>): CodeRefRe
       continue
     }
     const reads = aliasFieldReads(script, declaration)
+    // A bracket read through the local selects an element this cannot name, so it
+    // is reported rather than followed, whatever the base resolved to (#1801).
+    if (aliasHasBracketRead(script, declaration)) aliasGap = true
     // A local that names no path is only a gap when something reads through it.
     if (declaration.base === null) {
       if (reads.length > 0) aliasGap = true
       continue
     }
+    // The local holds a value reached through an index (`steps.a.b[0].c`), which
+    // nothing else watches, and it may be used whole rather than through a
+    // `.field` (the Equifax hit code read bare), so watch the base path itself
+    // whenever the tail took a segment (#1801).
+    if (declaration.tookTail) into.add(declaration.base)
     for (const field of reads) into.add(`${declaration.base}.${field}`)
   }
+  // Destructuring a `steps` chain binds names this scanner does not follow, so
+  // report the node rather than read it as covered (#1801).
+  if (hasDestructuredStepsChain(script)) aliasGap = true
   return { readable: true, aliasGap }
 }
 
