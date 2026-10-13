@@ -224,6 +224,8 @@ function describeReadBack(entry: UnconfirmedWrite): string {
       return `bid by ${r.partner_slug}, execution ${r.execution_id}`
     case 'steps_present':
       return `step rows of execution ${r.execution_id}`
+    case 'writeback_deadletter_present':
+      return `replay row for ${r.sf_object} ${r.sf_record_id}, execution ${r.execution_id}`
   }
 }
 

@@ -57,6 +57,8 @@ export type ReadBack =
   | { kind: 'sighting_finalized'; sighting_id: string; execution_started_at_utc: string }
   /** A bid row INSERT, by its conflict key. */
   | { kind: 'bid_present'; execution_id: string; partner_slug: string; attempted_at_utc: string }
+  /** A failed Salesforce write's replay row (#1993), by its unique key. */
+  | { kind: 'writeback_deadletter_present'; execution_id: string; sf_object: string; sf_record_id: string; sf_operation: string }
   /** The winner mark: the partner's bid row in this run carries is_winner. */
   | { kind: 'bid_winner'; execution_id: string; partner_slug: string; attempted_from: string; attempted_to: string }
   /**
@@ -192,6 +194,16 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
           .eq('attempted_at_utc', check.attempted_at_utc)
           .limit(1)
         break
+      case 'writeback_deadletter_present':
+        res = await supabase
+          .from('outcome_writeback_deadletters')
+          .select('id')
+          .eq('execution_id', check.execution_id)
+          .eq('sf_object', check.sf_object)
+          .eq('sf_record_id', check.sf_record_id)
+          .eq('sf_operation', check.sf_operation)
+          .limit(1)
+        break
       case 'steps_present':
         res = await supabase
           .from('execution_steps')
@@ -240,6 +252,8 @@ export async function readBack(supabase: SupabaseClient, check: ReadBack): Promi
       return { verdict: 'landed' }
     case 'bid_present':
       return row ? { verdict: 'landed' } : { verdict: 'missing', row_absent: true, detail: 'the bid row is not there' }
+    case 'writeback_deadletter_present':
+      return row ? { verdict: 'landed' } : { verdict: 'missing', row_absent: true, detail: 'the replay row for the failed Salesforce write is not there' }
     case 'bid_winner':
       return row ? { verdict: 'landed' } : { verdict: 'missing', row_absent: false, detail: "no bid row for this partner in this run is marked the winner" }
   }
