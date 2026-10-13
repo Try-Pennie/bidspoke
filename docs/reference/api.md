@@ -461,7 +461,7 @@ The releases refuse 409 `claim_changed` when the claim moved since the page read
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/muted-alerts` | List the export-alert conditions whose cooldown is set, soonest to return first. |
+| GET | `/api/muted-alerts` | List the export-alert conditions whose cooldown is set: mutes with no expiry first, then the rest soonest to return first. |
 
 Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no expiry and stays until cleared by hand), `secondsRemaining`, and the `standingSince` and `reminders` from the condition record when one is present. These mutes are global operational state, not per org. A KV read failure returns a 500 rather than an empty list, so a silence is never mistaken for a healthy, unmuted system.
 
