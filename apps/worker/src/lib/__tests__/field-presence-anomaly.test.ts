@@ -1310,7 +1310,7 @@ describe('the dead tier, narrowed by key presence (#2018)', () => {
       ...WEEK.map((d) => measured('pennie_or_eligibility.eligibility', d, 3200, 0, 3200)),
     ]
     expect(verdictsFor(rows, 'pennie_or_eligibility.eligibility')).toEqual({
-      dead: 'alerting', wrongPath: undefined, byDesign: undefined,
+      dead: 'alerting', wrongPath: 'healthy', byDesign: undefined,
     })
   })
 
@@ -1322,7 +1322,7 @@ describe('the dead tier, narrowed by key presence (#2018)', () => {
       { ...row('wf1', 'a.b', WEEK[6], 400, 0), key_present_count: 0, key_measured_count: 0 },
     ]
     const v = verdictsFor(rows, 'a.b')
-    expect(v.wrongPath).toBeUndefined()
+    expect(v.wrongPath).toBe('insufficient')
     // Until it can be judged by key, the old rule still watches it: nothing goes unwatched.
     expect(v.dead).toBe('alerting')
   })
@@ -1330,12 +1330,12 @@ describe('the dead tier, narrowed by key presence (#2018)', () => {
   it('falls back to the old rule, not to silence, for rows with no key counts at all', () => {
     const r = classifyDeadFields(deadDays('wf1', 'f', 25000, 0))
     expect(r.dead.find((x) => x.field_path === 'f')?.verdict).toBe('alerting')
-    expect(r.wrongPath).toEqual([])
+    expect(r.wrongPath.map((x) => x.verdict)).toEqual(['insufficient'])
   })
 
-  // Every field lands in exactly one of the dead rule or the key rule (L129):
-  // a field in neither would be watched by nothing, in both would page twice.
-  it('puts every field in exactly one of the dead rule or the key rule', () => {
+  // Every field has a verdict and can page under at most one name (L129): a field
+  // with none would be watched by nothing, one alerting under both would page twice.
+  it('gives every field a verdict, and lets it page under at most one name', () => {
     const rows = [
       ...WEEK.map((d) => measured('carried', d, 400, d === WEEK[0] ? 3 : 0, 400)),
       ...WEEK.map((d) => measured('by_design', d, 40, 0, 40)),
@@ -1345,10 +1345,19 @@ describe('the dead tier, narrowed by key presence (#2018)', () => {
     ]
     const r = classifyDeadFields(rows, { windowStart: WINDOW_START })
     for (const field of ['carried', 'by_design', 'wrong', 'unmeasured', 'thin']) {
-      const inDead = r.dead.filter((s) => s.field_path === field).length
-      const inKey = r.wrongPath.filter((s) => s.field_path === field).length
-      expect(inDead + inKey, field).toBe(1)
+      const all = [...r.dead, ...r.wrongPath].filter((s) => s.field_path === field)
+      expect(all.length, field).toBeGreaterThan(0)
+      expect(all.filter((s) => s.verdict === 'alerting').length, field).toBeLessThanOrEqual(1)
     }
+  })
+
+  // An open wrong path incident on a field that then carries a value, or drops
+  // back to warm up, is stood down or kept alive, never left without a verdict.
+  it('stands a wrong path down once the field carries a value, and keeps it open in warm up', () => {
+    const carried = classifyDeadFields(WEEK.map((d, i) => measured('w', d, 400, i === 6 ? 2 : 0, i === 6 ? 2 : 0)), { windowStart: WINDOW_START })
+    expect(carried.wrongPath.find((s) => s.field_path === 'w')?.verdict).toBe('healthy')
+    const warm = classifyDeadFields(WEEK.map((d) => row('wf1', 'u', d, 400, 0)), { windowStart: WINDOW_START })
+    expect(warm.wrongPath.find((s) => s.field_path === 'u')?.verdict).toBe('insufficient')
   })
 
   it('reads a single measured run with the key present as empty by design, even in warm up', () => {

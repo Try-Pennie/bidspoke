@@ -242,8 +242,12 @@ async function main(): Promise<void> {
   // Fields that are ~never present but sit UNDER the run floor: the population
   // Tier-2 is currently declining to judge. This is the detection delay the
   // design accepted, measured rather than assumed.
+  // Only fields the live classifier leaves on the dead rule unjudged: one it calls
+  // empty by design or a wrong path is judged, just not by this rule (#2018).
+  const unjudgedDead = new Set(verdicts.dead.filter((s) => s.verdict === 'insufficient').map((s) => `${s.workflow_id}|${s.field_path}`))
   const belowFloor: { key: string; ran: number; present: number }[] = []
   for (const [key, bucket] of byField) {
+    if (!unjudgedDead.has(key)) continue
     const inWindow = bucket.filter((r) => r.day >= deadSince)
     const ran = inWindow.reduce((s, r) => s + r.ran_count, 0)
     const present = inWindow.reduce((s, r) => s + r.present_count, 0)

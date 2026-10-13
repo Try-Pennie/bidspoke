@@ -745,6 +745,8 @@ export function classifyDeadFields(
     const everCarried = bucket.some((r) => r.present_count > 0)
     if (everCarried) {
       out.dead.push(deadRuleVerdict(window, t, opts.thresholds))
+      // A value means the key appeared, so an open wrong path incident is over.
+      out.wrongPath.push({ ...base, verdict: 'healthy' })
       continue
     }
     if (bucket.some((r) => (r.key_present_count ?? 0) > 0)) {
@@ -763,6 +765,9 @@ export function classifyDeadFields(
       continue
     }
     out.dead.push(deadRuleVerdict(window, t, opts.thresholds))
+    // Not judgeable by key right now: an open wrong path incident is kept alive,
+    // neither paged again nor stood down.
+    out.wrongPath.push({ ...base, verdict: 'insufficient' })
   }
   return out
 }
