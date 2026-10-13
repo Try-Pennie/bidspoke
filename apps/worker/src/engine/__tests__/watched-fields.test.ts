@@ -418,8 +418,14 @@ describe('an alias does not invent a field from its own declaration (#1118)', ()
     // The bracket is load-bearing: it ENDS the literal chain at `consumers`, so
     // what follows is only reachable through the alias. Without it the whole
     // path is one literal chain and there is no phantom to reproduce.
+    // #1801: the local holds the hit code reached through an index and is used
+    // bare, so the indexed base path is now watched (it was silently unwatched
+    // before), while no `.code.code` phantom is invented from the declaration.
     const d = codeNode('const hitCode = steps.eq.output.report?.consumers?.[0]?.hitCode?.code;\nreturn hitCode;\n')
-    expect(deriveWatchedFields(d)).toEqual(['eq.report.consumers'])
+    expect(deriveWatchedFields(d)).toEqual([
+      'eq.report.consumers',
+      'eq.report.consumers.0.hitCode.code',
+    ])
   })
 
   it('still resolves reads that genuinely go through the alias', () => {
@@ -532,6 +538,8 @@ describe('an alias taken through a list index watches the element, not the list 
     )
     expect(deriveWatchedFields(d)).toEqual([
       'query_record.body.records',
+      // #1801: the indexed base, watched because the row is used bare (`!row`).
+      'query_record.body.records.0',
       'query_record.body.records.0.External_Exchange_Status__c',
       'query_record.body.records.0.Id',
       'query_record.body.records.0.Lead__c',
@@ -540,12 +548,12 @@ describe('an alias taken through a list index watches the element, not the list 
 
   it('follows a plain bracket index and the path after it', () => {
     const d = codeNode('const first = steps.q.output.list[0].inner;\nreturn first.value;\n')
-    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0.inner.value'])
+    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0.inner', 'q.list.0.inner.value'])
   })
 
   it('follows a quoted key the same way as a numeric one', () => {
     const d = codeNode("const m = steps.q.output.map['ny'];\nreturn m.rate;\n")
-    expect(deriveWatchedFields(d)).toEqual(['q.map', 'q.map.ny.rate'])
+    expect(deriveWatchedFields(d)).toEqual(['q.map', 'q.map.ny', 'q.map.ny.rate'])
   })
 
   it('reports a dynamic index as a gap rather than guessing which element', () => {
@@ -582,12 +590,12 @@ describe('an alias taken through a list index watches the element, not the list 
 
   it('follows an index carried onto the next line without reading the tail as a use', () => {
     const d = codeNode('const hit = steps.a.output.b\n  ?.[0]?.hit?.code\nreturn hit.x;\n')
-    expect(deriveWatchedFields(d)).toEqual(['a.b', 'a.b.0.hit.code.x'])
+    expect(deriveWatchedFields(d)).toEqual(['a.b', 'a.b.0.hit.code', 'a.b.0.hit.code.x'])
   })
 
   it('treats a comma declaration as the end of the initialiser', () => {
     const d = codeNode('const row = steps.q.output.list[0], other = 1;\nreturn row.id;\n')
-    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0.id'])
+    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0', 'q.list.0.id'])
   })
 
   it('reports a quoted key that is not a plain name as a gap, since a dotted path cannot hold it', () => {
@@ -597,6 +605,170 @@ describe('an alias taken through a list index watches the element, not the list 
       expect(aliasGap).toBe(true)
       expect([...set]).toEqual(['q.map'])
     }
+  })
+})
+
+/**
+ * #1801. After #1799 followed `const row = steps.q.output.records?.[0]` then
+ * `row.Id`, several neighbouring shapes were still silently unwatched AND not
+ * reported as a gap, so the coverage manifest read the node as fully covered.
+ * An unwatched read reported as covered is the dangerous direction, so each
+ * shape this scanner cannot follow is now either watched or reported.
+ */
+describe('reads the scanner cannot follow are watched or reported (#1801)', () => {
+  const codeNode = (script: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def({ nodes: [{ id: 'n1', namespace: 'c', type: 'code', config: { script } } as any] })
+
+  it('watches an indexed alias used as a whole value, not only through a field', () => {
+    // Main Flow calculate_pull_result_no_debt: the Equifax hit code is read into
+    // a local through an index and then used bare (`hitCode === 'A'`), so before
+    // #1801 the hit code was never watched on any run.
+    const d = codeNode(
+      'const hitCode = steps.equifax_credit_report?.output?.data?.consumers?.equifaxUSConsumerCreditReport?.[0]?.hitCode?.code;\n' +
+        "result.creditFreeze = hitCode === 'A';\n",
+    )
+    expect(deriveWatchedFields(d)).toEqual([
+      'equifax_credit_report.data.consumers.equifaxUSConsumerCreditReport',
+      'equifax_credit_report.data.consumers.equifaxUSConsumerCreditReport.0.hitCode.code',
+    ])
+  })
+
+  it('watches the indexed base through a literal fallback', () => {
+    const d = codeNode('const row = steps.q.output.list?.[0] ?? null;\nreturn row.id;\n')
+    expect(deriveWatchedFields(d)).toEqual(['q.list', 'q.list.0', 'q.list.0.id'])
+  })
+
+  it('reports a bracket read through a local alias as a gap', () => {
+    // `records[0].Id`: the element the index selects is not a path this can
+    // name, so the read is reported rather than attributed to the whole list.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const records = steps.q.output.body.records;\nreturn records[0].Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
+  it('reports a bracket read after a list fallback as a gap', () => {
+    // `?? []` then `rows[0].Id`: the fallback is a literal so the chain still
+    // names the list, but the bracket read through the local cannot be followed.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const rows = steps.q.output.body.records ?? [];\nreturn rows[0].Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
+  it('reports an optional-chained bracket read through a local as a gap', () => {
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const rows = steps.q.output.body.records;\nreturn rows?.[0]?.Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
+  it('reports array destructuring of a steps chain as a gap', () => {
+    // `const [row] = steps...records`: ALIAS resolution never saw this shape, so
+    // the bound element was invisible. It is reported rather than read as covered.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const [row] = steps.q.output.body.records;\nreturn row.Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
+  it('reports object destructuring of a steps chain as a gap', () => {
+    // The same blind spot as array destructuring: `const { id } = steps...` makes
+    // no alias either, so the bound fields were invisible. Reported, not covered.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const { reason, code } = steps.input.output.body;\nreturn reason;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['input.body'])
+  })
+
+  it('does not report an object literal assigned to a local as a destructure', () => {
+    // The pairing: `const x = { a: steps... }` is an object LITERAL, not a
+    // destructure, so it is scanned as a plain reference, not reported.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs('const payload = { score: steps.q.output.score };\n', set)
+    expect(aliasGap).toBe(false)
+    expect([...set]).toEqual(['q.score'])
+  })
+
+  it('reports a nested or defaulted destructure of a steps chain', () => {
+    // The pattern body holds its own brackets, so a single char-class match would
+    // stop early and read the node as covered. Each of these is still reported.
+    for (const script of [
+      'const { a: { b } } = steps.x.output.data;\n',
+      'const { a = {} } = steps.x.output.data;\n',
+      'const [[row]] = steps.x.output.list;\n',
+    ]) {
+      const set = new Set<string>()
+      const { aliasGap } = collectCodeRefs(script, set)
+      expect(aliasGap).toBe(true)
+    }
+  })
+
+  it('detects a bracket read through a local whose name contains a dollar sign', () => {
+    // `$` is a regex anchor, so an unescaped local name matched nothing and the
+    // bracket read went silently undetected.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const row$0 = steps.q.output.body.records;\nreturn row$0[0].Id;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set]).toEqual(['q.body.records'])
+  })
+
+  it('resolves a field read through a local whose name contains a dollar sign', () => {
+    // The pairing: escaping the name must not stop a legitimate `.field` read
+    // through a `$`-containing local from resolving.
+    const set = new Set<string>()
+    collectCodeRefs('const v$ = steps.scout.$return_value;\nreturn v$.final;\n', set)
+    expect([...set].sort()).toEqual(['scout', 'scout.final'])
+  })
+
+  it('does not attribute a read to the first source when the fallback is another reference', () => {
+    // `|| steps.r.output.body` attributes `body.reason` to the first source only,
+    // so the local names no single path and the read is reported as a gap. Both
+    // sources are still watched as whole-value chains by the first pass.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs(
+      'const body = steps.q.output.body || steps.r.output.body;\nreturn body.reason;\n',
+      set,
+    )
+    expect(aliasGap).toBe(true)
+    expect([...set].sort()).toEqual(['q.body', 'r.body'])
+  })
+
+  it('still treats a literal fallback as the same value and does not report a gap', () => {
+    // The pairing that stops the fix reporting every fallback: a literal keeps
+    // the chain naming one path, so the reads resolve and there is no gap.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs('const r = steps.q.output.body ?? null;\nreturn r.reason;\n', set)
+    expect(aliasGap).toBe(false)
+    expect([...set].sort()).toEqual(['q.body', 'q.body.reason'])
+  })
+
+  it('leaves object destructuring of an unrelated local untouched', () => {
+    // The pairing that stops the destructuring detector firing on anything that
+    // is not an array destructure of a steps chain.
+    const set = new Set<string>()
+    const { aliasGap } = collectCodeRefs('const { a } = other;\nconst v = steps.q.output.body;\n', set)
+    expect(aliasGap).toBe(false)
+    expect([...set]).toEqual(['q.body'])
   })
 })
 
