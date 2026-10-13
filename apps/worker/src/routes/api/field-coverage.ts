@@ -10,7 +10,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { loadWorkflowDefinition } from '../../engine/definition-loader'
 import { deriveWatchedFieldMap } from '../../engine/watched-fields'
-import { findDroughts, findDayOneDead, type PresenceRow } from '../../lib/field-presence-anomaly'
+import { findDroughts, classifyDeadFields, deadWindowStart, EVER_CARRIED_LOOKBACK_DAYS, type PresenceRow } from '../../lib/field-presence-anomaly'
 import { fetchAllPaged } from '../../lib/paginate'
 
 type Variables = AuthVariables
@@ -31,7 +31,9 @@ async function ownedWorkflow(
   return !!data
 }
 
-const COVERAGE_WINDOW_DAYS = 10
+// The dead alert's own lookback (#2018), so the manifest and the alert read the
+// same rows through the same classifier and cannot disagree about a field.
+const COVERAGE_WINDOW_DAYS = EVER_CARRIED_LOOKBACK_DAYS
 
 fieldCoverage.get('/:workflowId', async (c) => {
   const workflowId = c.req.param('workflowId')
@@ -57,7 +59,7 @@ fieldCoverage.get('/:workflowId', async (c) => {
       (from, to) =>
         supabase
           .from('field_presence_daily')
-          .select('workflow_id, field_path, day, ran_count, present_count')
+          .select('workflow_id, field_path, day, ran_count, present_count, key_present_count, key_measured_count')
           .eq('workflow_id', workflowId)
           .gte('day', since)
           .eq('is_test', false)
@@ -75,10 +77,18 @@ fieldCoverage.get('/:workflowId', async (c) => {
     day: r.day as string,
     ran_count: Number(r.ran_count),
     present_count: Number(r.present_count),
+    // Default 0, so a row without them carries no key evidence rather than a NaN.
+    key_present_count: r.key_present_count == null ? 0 : Number(r.key_present_count),
+    key_measured_count: r.key_measured_count == null ? 0 : Number(r.key_measured_count),
   }))
 
   const droughtFields = new Set(findDroughts(rows, today).map((h) => h.field_path))
-  const deadFields = new Set(findDayOneDead(rows).map((h) => h.field_path))
+  const verdicts = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
+  const alerting = (list: { field_path: string; verdict: string }[]) =>
+    new Set(list.filter((s) => s.verdict === 'alerting').map((s) => s.field_path))
+  const deadFields = alerting(verdicts.dead)
+  const wrongPathFields = alerting(verdicts.wrongPath)
+  const byDesignFields = new Set(verdicts.byDesign.map((s) => s.field_path))
   const latestByField = new Map<string, PresenceRow>()
   for (const r of rows) {
     const prev = latestByField.get(r.field_path)
@@ -100,6 +110,8 @@ fieldCoverage.get('/:workflowId', async (c) => {
           rate: latest.ran_count > 0 ? latest.present_count / latest.ran_count : 0,
           drought: droughtFields.has(f.path),
           dead: deadFields.has(f.path),
+          wrong_path: wrongPathFields.has(f.path),
+          empty_by_design: byDesignFields.has(f.path),
         }
       : null
     return { path: f.path, source: f.source, health }
