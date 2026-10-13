@@ -1726,6 +1726,77 @@ export type Database = {
         }
         Relationships: []
       }
+      outcome_writeback_deadletters: {
+        Row: {
+          attempts: number
+          body_encrypted: string
+          created_at: string
+          error_encrypted: string
+          error_type: string | null
+          execution_id: string
+          finished_at: string | null
+          id: string
+          last_error_encrypted: string | null
+          organization_id: string
+          replayable: boolean
+          sf_object: string
+          sf_operation: string
+          sf_record_id: string
+          status: string
+          step_namespace: string
+          updated_at: string
+          workflow_id: string
+        }
+        Insert: {
+          attempts?: number
+          body_encrypted: string
+          created_at?: string
+          error_encrypted: string
+          error_type?: string | null
+          execution_id: string
+          finished_at?: string | null
+          id?: string
+          last_error_encrypted?: string | null
+          organization_id: string
+          replayable: boolean
+          sf_object: string
+          sf_operation: string
+          sf_record_id: string
+          status?: string
+          step_namespace: string
+          updated_at?: string
+          workflow_id: string
+        }
+        Update: {
+          attempts?: number
+          body_encrypted?: string
+          created_at?: string
+          error_encrypted?: string
+          error_type?: string | null
+          execution_id?: string
+          finished_at?: string | null
+          id?: string
+          last_error_encrypted?: string | null
+          organization_id?: string
+          replayable?: boolean
+          sf_object?: string
+          sf_operation?: string
+          sf_record_id?: string
+          status?: string
+          step_namespace?: string
+          updated_at?: string
+          workflow_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "outcome_writeback_deadletters_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       partner_bid_configs: {
         Row: {
           created_at: string
@@ -2872,6 +2943,7 @@ export type Database = {
         }[]
       }
       prune_orphan_auth_users: { Args: never; Returns: number }
+      purge_outcome_writeback_deadletters: { Args: never; Returns: number }
       query_timeout_watch: {
         Args: { p_min_calls?: number }
         Returns: {
