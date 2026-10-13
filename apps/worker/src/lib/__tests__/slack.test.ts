@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection } from '../slack'
+import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
 import type { QueryTimeoutOffender } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
@@ -1670,6 +1670,47 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     const text = JSON.stringify(body.blocks)
     expect(text).not.toContain('/env')
+  })
+})
+
+describe('the scheduled job all-clears (#851)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const connected = () => {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'maybeSingle') return () => Promise.resolve({ data: { config: { bot_token: 'xoxb-t', default_channel: '#alerts' } }, error: null })
+        return () => chain
+      },
+    })
+    return { from: () => chain } as never
+  }
+  const sent = () => JSON.parse(fetchMock.mock.calls[0][1].body)
+  const ALERTED = '2026-08-15T01:32:00.000Z'
+  const ENDED = '2026-08-15T03:04:00.000Z'
+  const NOW = Date.parse('2026-08-15T03:34:00.000Z')
+
+  it('names the database job by its plain name and how long it was unhealthy', async () => {
+    expect(await sendPgCronRecoveryAlert(connected(), 'org-1', { jobname: 'refresh-field-presence-daily', alertedAt: ALERTED, endedAt: ENDED }, NOW)).toBe(true)
+    const body = sent()
+    expect(body.channel).toBe('#alerts')
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('refresh-field-presence-daily')
+    expect(text).toContain('is running and succeeding again')
+    expect(text).toContain('lasted 1 hour 32 minutes')
+  })
+
+  it('names the scheduled workflow by its label', async () => {
+    expect(await sendWorkflowScheduleRecoveryAlert(connected(), 'org-1', { label: 'Nightly backup', alertedAt: ALERTED, endedAt: ENDED }, NOW)).toBe(true)
+    const text = JSON.stringify(sent().blocks)
+    expect(text).toContain('Nightly backup')
+    expect(text).toContain('is running on schedule again')
   })
 })
 

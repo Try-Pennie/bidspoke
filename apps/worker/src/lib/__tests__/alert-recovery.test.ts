@@ -152,6 +152,16 @@ describe('announceRecovery', () => {
     expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z', null)
   })
 
+  it('deletes no cooldown when the check has none to clear (#851)', async () => {
+    // A check whose cooldown is not per id (the schedule watch's is keyed on a
+    // whole signature) passes null rather than inventing a key to "delete".
+    const kv = fakeKv({ 'workflow-schedule-recovery:a.yml': '2026-08-14T10:00:00.000Z' })
+    const del = vi.spyOn(kv, 'delete')
+    expect(await announceRecovery(kv, 'workflow-schedule', 'a.yml', null, vi.fn().mockResolvedValue(true))).toBe(true)
+    expect(kv.store.has('workflow-schedule-recovery:a.yml')).toBe(false)
+    expect(del.mock.calls.map((c) => c[0])).toEqual(['workflow-schedule-recovery:a.yml', 'workflow-schedule-active:a.yml'])
+  })
+
   it('clears the cooldown too, so the next genuine spike pages immediately', async () => {
     const kv = fakeKv({
       'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z',
