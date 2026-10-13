@@ -44,9 +44,14 @@ const dayMinus = (day: string, n: number) => {
   return d.toISOString().slice(0, 10)
 }
 
-// Start once two weeks of history exist, so the first days are not judged on
-// almost nothing.
-const start = dayMinus(days[days.length - 1], days.length - 15)
+// Start on the fifteenth day with data, so the first days are not judged on
+// almost nothing. Refused, never a clean looking empty replay (L98).
+const MIN_HISTORY_DAYS = 15
+if (days.length < MIN_HISTORY_DAYS) {
+  console.error(`need at least ${MIN_HISTORY_DAYS} days of rows to replay, got ${days.length}`)
+  process.exit(1)
+}
+const start = days[MIN_HISTORY_DAYS - 1]
 const byDay: { day: string; judged: number; pages: { field: string; window_days: number; expected: number }[] }[] = []
 for (const day of days.filter((d) => d >= start)) {
   const from = dayMinus(day, lookback - 1)
@@ -63,6 +68,11 @@ for (const day of days.filter((d) => d >= start)) {
         expected: Math.round((s.silent?.expected ?? 0) * 10) / 10,
       })),
   })
+}
+
+if (byDay.length === 0) {
+  console.error('no day was replayed, so there is nothing to report')
+  process.exit(1)
 }
 
 const fieldsPaged = new Map<string, string[]>()

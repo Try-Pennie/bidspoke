@@ -190,19 +190,13 @@ export function resolveStepField(steps: Record<string, StepOutput>, segments: st
 export function stepFieldPresence(steps: Record<string, StepOutput>, segments: string[]): boolean | null {
   const ns = segments[0]
   const step = ns ? steps[ns] : undefined
+  // Deliberately empty for a step that did not complete, where the resolver still
+  // reads its output: a failed step's output is whatever it managed, so a missing
+  // key there says nothing about the path (tested in field-presence.test.ts).
   if (!step || step.status !== 'completed') return null
-  let cur: unknown = step.output
-  for (const key of stripOutputWrapper(segments).slice(1)) {
-    if (cur === null || cur === undefined) return null
-    if (Array.isArray(cur)) {
-      cur = cur[Number(key)]
-      continue
-    }
-    if (typeof cur !== 'object') return false
-    if (!Object.prototype.hasOwnProperty.call(cur, key)) return false
-    cur = (cur as Record<string, unknown>)[key]
-  }
-  return cur === null || cur === undefined ? null : true
+  const { value, missingKey } = walkPath(step.output, stripOutputWrapper(segments).slice(1))
+  if (missingKey) return false
+  return value === null || value === undefined ? null : true
 }
 
 /** A plain path reference: env.X, trigger.*, execution.*, steps.* — with
@@ -389,10 +383,30 @@ export function recordStepOutput(
 }
 
 function getPath(obj: unknown, parts: string[]): unknown {
-  return parts.reduce<unknown>((cur, key) => {
-    if (cur !== null && typeof cur === 'object') {
-      return (cur as Record<string, unknown>)[key]
+  return walkPath(obj, parts).value
+}
+
+/**
+ * The one path walk (#2018): the value a path reaches, and whether it stopped
+ * because the path names a key something along it does not have.
+ *
+ * `getPath` (and so every reference the engine resolves) and field presence both
+ * read through this, so they cannot disagree about what a path reaches (L370).
+ * An array is an object here, as it always was, so `records.length` resolves.
+ * Stopping at a null or missing value, or at a missing list ITEM, is empty; an
+ * object or list lacking a named key, or a plain value walked into, is a wrong
+ * path.
+ */
+function walkPath(obj: unknown, parts: string[]): { value: unknown; missingKey: boolean } {
+  let cur = obj
+  for (const key of parts) {
+    if (cur === null || cur === undefined) return { value: undefined, missingKey: false }
+    if (typeof cur !== 'object') return { value: undefined, missingKey: true }
+    if (!(key in (cur as object))) {
+      // A list without the item is empty, not wrong: the list is there, it is just short.
+      return { value: undefined, missingKey: !(Array.isArray(cur) && /^\d+$/.test(key)) }
     }
-    return undefined
-  }, obj)
+    cur = (cur as Record<string, unknown>)[key]
+  }
+  return { value: cur, missingKey: false }
 }

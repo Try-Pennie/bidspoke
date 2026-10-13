@@ -1426,6 +1426,21 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     expect(postMessage).not.toHaveBeenCalled()
   })
 
+  it('lets a silenced field\'s open incident lapse rather than keeping it alive', async () => {
+    const field = 'scout.eligibility'
+    const rows = [dayRow(field, '2026-09-20', 3000, 12, 0, 0), ...WEEK.slice(5).map((d) => dayRow(field, d, 40, 0, 0, 0))]
+    const kv = makeKv({ [`field-presence-dead-recovery:wf-1 ${field}`]: '2026-10-10T13:00:00.000Z' })
+    const put = vi.spyOn(kv, 'put')
+    const supabase = supabaseWith(rows) as unknown as { from: (t: string) => unknown }
+    const from = supabase.from
+    supabase.from = (t: string) =>
+      t === 'field_presence_silences'
+        ? new Proxy({}, { get: (_t, prop) => (prop === 'then' ? (res: (v: unknown) => unknown) => Promise.resolve({ data: [{ workflow_id: 'wf-1', field_path: field }], error: null }).then(res) : () => supabase.from(t)) })
+        : from(t)
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    expect(put).not.toHaveBeenCalled()
+  })
+
   it('does not claim a value-free most recent day it could not measure (#1803)', async () => {
     const field = 'scout.eligibility'
     // Dead over the week on volume from early days; the two newest days each under the 200 run floor.

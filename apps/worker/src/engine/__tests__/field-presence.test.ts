@@ -70,6 +70,14 @@ describe('computeFieldPresence', () => {
       })
     })
 
+    // One walk with the engine's resolver (#2018 review, L370): an array is an
+    // object to it, so `records.length` resolves and `records.foo` does not.
+    it('reads a property of a list the way the engine resolves it', () => {
+      const steps = { q: step({ records: [{ Id: 'a' }] }) }
+      expect(computeFieldPresence(steps, ['q.records.length'])).toEqual({ 'q.records.length': true })
+      expect(computeFieldPresence(steps, ['q.records.foo'])).toEqual({ 'q.records.foo': false })
+    })
+
     it('reads a path that runs into a plain value as a wrong path', () => {
       const steps = { foo: step({ a: 'text' }) }
       expect(computeFieldPresence(steps, ['foo.a.b'])).toEqual({ 'foo.a.b': false })

@@ -1303,17 +1303,6 @@ async function alertOnStates(
 
   for (const state of states) {
     const id = fieldKey(state.workflow_id, state.field_path)
-    if (state.verdict === 'insufficient') {
-      // Unjudged is not over (#1803): an open incident is kept alive through a run
-      // that could not tell, or two quiet days expire its marker and the all-clear
-      // is lost, leaving the page as the last word. Its start is kept as it was.
-      const open = await kv.get(recoveryKey(cfg.prefix, id))
-      if (open) await keepAlerted(kv, cfg.prefix, id, open)
-      continue
-    }
-    const wf = byId.get(state.workflow_id)
-    if (!wf) continue
-    const cooldownKey = `${cfg.prefix}-cooldown:${id}`
 
     // A silenced field is one the author has said may be empty. It must not
     // page, and it must not announce a recovery either: there is no incident.
@@ -1326,6 +1315,19 @@ async function alertOnStates(
     // nothing" would silence the whole workflow.
     const stillWatched = watched.get(state.workflow_id)
     if (stillWatched && !stillWatched.has(state.field_path)) continue
+
+    if (state.verdict === 'insufficient') {
+      // Unjudged is not over (#1803): an open incident is kept alive through a run
+      // that could not tell, or two quiet days expire its marker and the all-clear
+      // is lost, leaving the page as the last word. Its start is kept as it was.
+      // After the filters above, so a silenced or unread field's incident lapses.
+      const open = await kv.get(recoveryKey(cfg.prefix, id))
+      if (open) await keepAlerted(kv, cfg.prefix, id, open)
+      continue
+    }
+    const wf = byId.get(state.workflow_id)
+    if (!wf) continue
+    const cooldownKey = `${cfg.prefix}-cooldown:${id}`
 
     if (state.verdict === 'healthy') {
       // Decided per field, announced per channel below (#1267): the page is one
