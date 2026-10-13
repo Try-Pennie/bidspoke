@@ -1852,7 +1852,7 @@ export async function walkGraph(
       lastOutput = groupOutput
 
       if (groupStatus === 'failed') {
-        throw new StepFailureError(groupErrorMessage!, node.namespace, groupErrorType)
+        throw new StepFailureError(groupErrorMessage!, node.namespace, groupErrorType, undefined, groupResolvedInput)
       }
 
       // no_winner_behavior: 'exit' short-circuits the workflow with the group's output.
@@ -1945,7 +1945,7 @@ export async function walkGraph(
       const selectDurationMs = Date.now() - selectStartMs
       if (selectFailure) {
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: selectDurationMs, error_message: selectFailure.message, error_type: selectErrorType })
-        throw new StepFailureError(selectFailure.message, node.namespace, selectErrorType)
+        throw new StepFailureError(selectFailure.message, node.namespace, selectErrorType, undefined, selectResolvedInput)
       }
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: selectDurationMs })
 
@@ -1991,7 +1991,7 @@ export async function walkGraph(
       const clickDurationMs = Date.now() - clickStartMs
       if (clickFailure) {
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: clickDurationMs, error_message: clickFailure.message, error_type: clickErrorType })
-        throw new StepFailureError(clickFailure.message, node.namespace, clickErrorType)
+        throw new StepFailureError(clickFailure.message, node.namespace, clickErrorType, undefined, clickInput)
       }
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: clickDurationMs })
 
@@ -2036,7 +2036,7 @@ export async function walkGraph(
       const checkDurationMs = Date.now() - checkStartMs
       if (checkFailure) {
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: checkDurationMs, error_message: checkFailure.message, error_type: checkErrorType })
-        throw new StepFailureError(checkFailure.message, node.namespace, checkErrorType)
+        throw new StepFailureError(checkFailure.message, node.namespace, checkErrorType, undefined, checkInput)
       }
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: checkDurationMs })
 
@@ -2121,7 +2121,7 @@ export async function walkGraph(
 
           if (r.status === 'failed') {
             terminated = true
-            throw new StepFailureError(r.error ?? 'Code node failed', chainNode.namespace, chainErrorType ?? 'transient')
+            throw new StepFailureError(r.error ?? 'Code node failed', chainNode.namespace, chainErrorType ?? 'transient', undefined, chainResolvedInput)
           }
         }
 
