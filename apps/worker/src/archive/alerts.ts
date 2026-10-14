@@ -113,7 +113,7 @@ export function ingestRemedyFor(stop: RunStop, detail = ''): TitledRemedy {
   if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
   if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
   // Chosen from the setting the run reported missing, never assumed (#835).
-  if (stop === 'misconfigured') return detail.includes('SSN_HASH_PEPPER') ? ARCHIVE_PEPPER_MISSING_REMEDY : ARCHIVE_MISCONFIGURED_REMEDY
+  if (stop === 'misconfigured') return detail === PEPPER_MISSING_DETAIL ? ARCHIVE_PEPPER_MISSING_REMEDY : ARCHIVE_MISCONFIGURED_REMEDY
   // Everything else stopped for a budget reason rather than a fault, so the
   // generic wording is the honest one: it says to read the stop reason.
   return ARCHIVE_INGEST_REMEDY
@@ -127,6 +127,13 @@ export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
     'If it is a recovery secret, restore it from the 1Password item "Bidspoke recovery keys", never a new value. ' +
     'The next hourly run picks it up and the skipped hours are backed up on later runs.',
 }
+
+/**
+ * The detail the archive run reports when the pepper is unset. One constant,
+ * used by the run and compared exactly here, so the remedy is chosen from a
+ * value both sides share rather than from wording (L35, #835).
+ */
+export const PEPPER_MISSING_DETAIL = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
 
 // SSN_HASH_PEPPER cannot be re-derived: a NEW value leaves every record already
 // archived unfindable by SSN for an erasure request (#835). So when the run

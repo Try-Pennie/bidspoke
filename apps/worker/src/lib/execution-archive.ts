@@ -18,6 +18,7 @@ import {
   clearedConditionsFor,
   ARCHIVE_JOB_NAMES,
   ARCHIVE_KILLED_REMEDY,
+  PEPPER_MISSING_DETAIL,
 } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
@@ -370,7 +371,7 @@ export async function runExecutionArchive(
   // the hour stays unarchived until the secret is set (#927).
   const pepper = env.SSN_HASH_PEPPER
   if (typeof pepper !== 'string' || pepper.length === 0) {
-    const detail = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
+    const detail = PEPPER_MISSING_DETAIL
     for (const alert of alertsFor({ ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail })) {
       // The refusal wording, not the run-stopped wording, and its own job name
       // (#1259): alertsFor maps the misconfigured stop to execution-archive-

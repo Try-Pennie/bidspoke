@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS, PEPPER_MISSING_DETAIL } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -54,7 +54,7 @@ describe('alertsFor', () => {
   // record already archived unfindable by SSN for an erasure request. The fix
   // is to restore the escrowed value, never to make one.
   it('tells the reader to restore the escrowed pepper, never to set a new one', () => {
-    const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: 'SSN_HASH_PEPPER is not set' }))
+    const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: PEPPER_MISSING_DETAIL }))
     expect(alert.remedy.fixHint).toMatch(/Bidspoke recovery keys/)
     expect(alert.remedy.fixHint).toMatch(/never a new value/i)
     expect(alert.remedy.fixHint).not.toMatch(/<NAME>/)
