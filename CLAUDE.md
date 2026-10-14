@@ -75,6 +75,12 @@
   must be acknowledged in `apps/worker/money-gate/expected-changes.json` in the same pull
   request, or both the pull request and the deploy fail. How to read it and refresh its fixtures is
   in `apps/worker/money-gate/README.md`.
+- Every alert that arms an all-clear marker names its signal from `INCIDENT_SIGNALS`
+  (`lib/incident-signals.ts`, #2099). Its transitions go to the KV outbox
+  (`lib/incident-outbox.ts`), never to Postgres on the alert path, because several of those
+  alerts fire while Postgres is the thing failing. A new delivery site calls `recordPaged`
+  after its marker is armed. The drain (`lib/incident-drain.ts`, five minute cron) writes
+  `alert_incidents` and closes as lapsed an incident whose marker went with no end.
 
 ## Code Standards
 - Prefer TypeScript over JavaScript for all new code
