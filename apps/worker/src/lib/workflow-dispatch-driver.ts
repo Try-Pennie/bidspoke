@@ -160,7 +160,7 @@ export async function dispatchWorkflow(
     return {
       ok: false,
       reason:
-        `GitHub refused the dispatch of ${file} with ${response.status}. The credential in GITHUB_ACTIONS_TOKEN ` +
+        `GitHub refused the dispatch of ${file} with ${response.status}. The credential in ${access.tokenVar} ` +
         'needs Actions: read and write on this repository; read alone can list runs but cannot start one',
     }
   }

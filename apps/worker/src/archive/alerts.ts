@@ -71,14 +71,17 @@ export const LAG_ALERT_HOURS = 6
  * wording there would be a second place the mapping has to stay in step (L70).
  * None of these is an export, so none may borrow the export alerter's sentences.
  */
+//
+// Kept as the fallback for a failed run whose stop is not one of the failure
+// stops (#2084). The run loop sets `failed` only beside a failure stop today, but
+// RunResult's type does not tie the two together, so without this a run marked
+// failed with a budget stop would page with no fix line at all.
 export const ARCHIVE_INGEST_REMEDY: TitledRemedy = {
   title: 'The hourly backup stopped before it finished',
   context:
-    'Nothing is lost: the hours it did not reach are backed up on a later run. They are at risk only if they ' +
-    'come up for deletion first, which has its own alert.',
-  fixHint:
-    'Read the stop reason above. Nothing to do unless this repeats. If a whole day could be deleted before ' +
-    'it is backed up, back it up with POST /api/admin/re-archive and its day as YYYY-MM-DD.',
+    'Nothing is lost: the hours it did not reach are backed up on a later run, and the nightly cleanup ' +
+    'keeps any day held back from deletion until it is fully backed up.',
+  fixHint: 'Read the stop reason above. If the same hours stay behind, re-run them with POST /api/admin/re-archive.',
 }
 
 /**

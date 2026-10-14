@@ -16,7 +16,7 @@ import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-exec
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { listSteps } from '../engine/running-step'
-import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
+import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import type { ErrorType } from '../types'
@@ -1179,7 +1179,8 @@ async function sendLostWritebackAlert(
 /**
  * A Salesforce write after the answer failed and its request could not be kept
  * for a replay (#1993, #835): the step was not an update, or named no object,
- * record or body. Nothing retried it and nothing will, so this never says
+ * record or body, or the replay store could not save it (#2084). Nothing will
+ * resend it, so this never says
  * "failed after all retries", and it is a Salesforce outcome, not a billing
  * record. The failure itself is reported by the lost update alert; this says
  * only that the replay tool cannot resend it.
@@ -1284,7 +1285,11 @@ export async function sendOutcomeDeadLetterAlert(
   if (payload.label === CONTINUATION_UNFINISHED_LABEL) return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
   // Never retried and never a billing record: the capture found nothing a replay
   // could resend, so it says that, in its own words (#835).
-  if (payload.label === WRITEBACK_UNCAPTURABLE_LABEL) return sendUncapturableWritebackAlert(connection, payload, appUrl)
+  // A held write the replay store could not save is the same fact as one it
+  // could not capture: the replay tool has nothing to resend (#2084).
+  if (payload.label === WRITEBACK_UNCAPTURABLE_LABEL || payload.label === WRITEBACK_STORE_LABEL) {
+    return sendUncapturableWritebackAlert(connection, payload, appUrl)
+  }
   const errText = truncateErrorForAlert(payload.error_message)
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it

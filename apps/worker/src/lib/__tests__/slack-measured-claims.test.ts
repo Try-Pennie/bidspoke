@@ -13,7 +13,7 @@ import {
   sendDatabaseUnreachableAlert,
   DRAIN_STALL_SCHEDULES,
 } from '../slack'
-import { WRITEBACK_UNCAPTURABLE_LABEL } from '../../engine/writeback-deadletter'
+import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL } from '../../engine/writeback-deadletter'
 import type { SlackConnection } from '../slack-connection'
 
 /**
@@ -200,6 +200,33 @@ describe('uncapturable writeback: its own wording', () => {
     expect(text).toContain('a create operation cannot be replayed, only an update')
     expect(text).toContain('https://app.test/workflows/wf-2?execution=ex-2')
     expect(text).toMatch(/Fix:/)
+    expectHouseStyle(text)
+  })
+})
+
+// #2084: a held write the replay store could not save (encryption or the client
+// threw before the retry ladder) went to the generic branch, which said "failed
+// after all retries" and "feed billing". It is the same fact as an uncapturable
+// write: the replay tool has nothing to resend.
+describe('replay store failure: the uncapturable wording, not the generic one', () => {
+  it('does not say it was retried or that it feeds billing', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_STORE_LABEL,
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'encrypting the held request failed: key ring empty',
+        run: { workflow_id: 'wf-3', workflow_name: 'Main Flow', execution_id: 'ex-3', at: '2026-10-14T15:00:00Z' },
+      },
+      'https://app.test',
+    )
+    const text = lastText()
+    expect(text).not.toContain('failed after all retries')
+    expect(text).not.toMatch(/billing/)
+    expect(text).toContain('Salesforce update cannot be replayed')
+    expect(text).toContain('key ring empty')
+    expect(text).toContain('https://app.test/workflows/wf-3?execution=ex-3')
     expectHouseStyle(text)
   })
 })

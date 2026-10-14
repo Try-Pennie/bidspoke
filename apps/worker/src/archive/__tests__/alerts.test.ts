@@ -259,6 +259,10 @@ describe('ingestRemedyFor', () => {
 
     expect(remedy.fixHint).toMatch(/Read the stop reason/)
     expect(remedy.fixHint).not.toMatch(/Check Snowflake availability/)
+    // #2084: the cleanup holds back a day that is not fully backed up (#2088),
+    // so the hours a run did not reach are never deleted unbacked.
+    expect(`${remedy.context} ${remedy.fixHint}`).not.toMatch(/could be deleted before|at risk only if/)
+    expect(remedy.context).toMatch(/held back from deletion/)
   })
 })
 
