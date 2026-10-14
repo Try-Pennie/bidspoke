@@ -90,6 +90,14 @@ export const REQUIRED_PARTNER_SECRETS = [
   // required-env-vars guard (#394) reads `is_secret=false` rows only and cannot see
   // this one. Tracked in #1263.
   'ACHIEVE_PARTNER_KEY',
+  // Signs the customer links the Engine Bidding and Lead Economy code nodes build
+  // (#2089). Unset, every offer link goes out without its token, and trypennie.com
+  // refuses any record created after its cutoff, while every run still succeeds:
+  // the only other sign is `link_token: missing_secret` on the step output. Must
+  // equal the value Salesforce and trypennie.com hold. The same two copies caveat
+  // as ACHIEVE_PARTNER_KEY above applies: the code node reads the Environment
+  // Variables page's row, and this guard sees the binding that page pushes.
+  'LINK_TOKEN_SECRET',
 ] as const
 
 /** Secrets the ops Worker cannot run without (#1705, #1709). */

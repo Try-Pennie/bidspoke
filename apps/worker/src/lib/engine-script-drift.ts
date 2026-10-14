@@ -3,7 +3,8 @@
  *
  * apps/worker/src/engine/scripts/<folder>/*.js are byte for byte what is pasted
  * into a workflow's code nodes: engine-bidding/ for the Engine Bidding Workflow,
- * liberty1-click/ for the Liberty1 click workflow (#1545). KEPT_CANVAS_WORKFLOWS
+ * liberty1-click/ for the Liberty1 click workflow (#1545), lead-economy/ for
+ * Lead Economy (#2089). KEPT_CANVAS_WORKFLOWS
  * names each folder with the workflow it runs on. The canvas is the
  * source of truth: every save mirrors the definition to the backup repo
  * (GITHUB_REPO). A canvas edit that is not mirrored back into the repo leaves
@@ -43,6 +44,7 @@ import RESOLVE_CLICK_INPUT from '../engine/scripts/liberty1-click/resolve_click_
 import BUILD_LIBERTY1_REQUEST from '../engine/scripts/liberty1-click/build_liberty1_request.js'
 import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_click_patch.js'
 import PICK_CLICK_RECORD from '../engine/scripts/liberty1-click/pick_click_record.js'
+import LEAD_ECONOMY_RETURN_RESPONSE from '../engine/scripts/lead-economy/return_response.js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { fetchGitHubFileText } from './github'
@@ -124,6 +126,11 @@ export interface KeptWorkflow {
  * became 1002 to 1005 and 1020); both were pasted as version 103 on 2026-09-30,
  * so neither carries a baseline again. #1653 edited known_no_gate, pasted as
  * version 106 on 2026-10-02, so none of the four carries one.
+ *
+ * #2089 edited build_response_body here first (the signed link token on the offer
+ * link), so it carries the hash of the canvas script it was derived from, read from
+ * the mirror on 2026-10-14, until Dan pastes it. Clear both fields in the change
+ * after the hourly check reads it as agree.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -137,8 +144,9 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    // The canvas script before #2089, read from the mirror on 2026-10-14.
+    canvasBaselineSha256: 'c0a5dd456988bcf9f10382f8a89c4419f098a9e94ad304f4bd2effdc4d6ef6b6',
+    baselineReadOn: '2026-10-14',
   },
   {
     namespace: 'patch_prospect_body',
@@ -187,6 +195,27 @@ export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
 ]
 
 /**
+ * Lead Economy (#2089), which builds the same trypennie.com offer links as the
+ * Engine Bidding Workflow in its return_response code node. Only that script is
+ * kept: it was copied from the mirror on 2026-10-14 and the signed link token
+ * added here, so it carries the hash of the canvas script it was derived from
+ * until Dan pastes it. No settings are committed for this workflow, so none are
+ * judged.
+ */
+export const LEAD_ECONOMY_WORKFLOW_ID = '89b1a6af-7e0f-43de-bc66-1e888184551f'
+
+export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
+  {
+    namespace: 'return_response',
+    file: 'return_response.js',
+    script: LEAD_ECONOMY_RETURN_RESPONSE,
+    // The canvas script before #2089, read from the mirror on 2026-10-14.
+    canvasBaselineSha256: 'ba4e5217857f78f7a8fdee671095d1f019e1ab298c7ccaa0438fc175092e00d6',
+    baselineReadOn: '2026-10-14',
+  },
+]
+
+/**
  * The committed settings of the Engine Bidding Workflow (#1662). No full
  * definition of it is committed: the #1544 wiring holds the nodes it added
  * (route_known_no and buyer_click_check are judged), buyer-select.json holds
@@ -209,6 +238,7 @@ export const LIBERTY1_CLICK_CONFIG_SOURCES: readonly CommittedSource[] = [
 export const KEPT_CANVAS_WORKFLOWS: readonly KeptWorkflow[] = [
   { name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: KEPT_ENGINE_SCRIPTS, configSources: ENGINE_CONFIG_SOURCES },
   { name: 'Liberty1 click workflow', workflowId: LIBERTY1_CLICK_WORKFLOW_ID, folder: 'liberty1-click', scripts: KEPT_LIBERTY1_CLICK_SCRIPTS, configSources: LIBERTY1_CLICK_CONFIG_SOURCES },
+  { name: 'Lead Economy', workflowId: LEAD_ECONOMY_WORKFLOW_ID, folder: 'lead-economy', scripts: KEPT_LEAD_ECONOMY_SCRIPTS, configSources: [] },
 ]
 
 type VerdictBase = { workflow: string; namespace: string; file: string }
