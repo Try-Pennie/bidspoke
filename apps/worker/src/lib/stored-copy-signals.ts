@@ -50,7 +50,7 @@ import { ALERT_CLAIM_TTL_SECONDS, readLastGoodSlackConnections } from './volume-
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { etTime, sendRecoveryAlert, sendTitledAlert } from './slack'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recoveryDue, settleRecovery, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import type { AlertClaims } from './alert-claim'
 import type { SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
@@ -138,6 +138,8 @@ export interface StoredCopyCheckResult {
   suppressed: boolean
   stale: number
   sweepFailingSince: string | null
+  /** Incident record writes that failed this run (#2099); the alerts themselves went ahead. */
+  recordErrors: string[]
 }
 
 export async function runStoredCopyChecks(deps: StoredCopyCheckDeps): Promise<StoredCopyCheckResult> {
@@ -152,9 +154,10 @@ export async function runStoredCopyChecks(deps: StoredCopyCheckDeps): Promise<St
   }
 
   let serving: ServingOutcome = 'unmeasured'
+  const recordErrors: string[] = []
   if (reading) {
     try {
-      serving = await reportServing(deps, reading, nowMs)
+      serving = await reportServing(deps, reading, nowMs, recordErrors)
     } catch (e) {
       console.error(`[stored-copy-checks] the serving alert failed: ${formatErr(e)}`)
       serving = 'post_failed'
@@ -190,6 +193,7 @@ export async function runStoredCopyChecks(deps: StoredCopyCheckDeps): Promise<St
     suppressed,
     stale: staleCount,
     sweepFailingSince: failingSince === null ? null : new Date(failingSince).toISOString(),
+    recordErrors,
   }
 }
 
@@ -282,8 +286,15 @@ export async function servingAlertTargets(kv: CheckKv, secretKeys: SecretKeyInpu
   return [...connections.values()].filter((c) => c.volume_alerts_enabled)
 }
 
-async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, nowMs: number): Promise<ServingOutcome> {
+async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, nowMs: number, recordErrors: string[]): Promise<ServingOutcome> {
   const { kv } = deps
+  // Leads served from copies is everyone's problem, so the incident is the platform's,
+  // recorded to the KV outbox because the database is what is failing (#2099).
+  const incident: IncidentContext = {
+    scope: { kind: 'platform' },
+    subjectLabel: 'Stored copy use',
+    onRecordError: (message) => recordErrors.push(message),
+  }
   const post = deps.post ?? ((slack: SlackTarget, message: TitledMessage) => sendTitledAlert(slack, null, message))
 
   if (reading.activeMinutes < STORED_COPY_SERVING_ALERT_MINUTES) {
@@ -312,7 +323,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
       if (ok) delivered = true
     }
     if (!delivered) return reading.activeMinutes > 0 ? 'below_threshold' : 'quiet'
-    await settleRecovery(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, backoffCooldownKey(STORED_COPY_SERVING_KEY))
+    await settleRecovery(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, backoffCooldownKey(STORED_COPY_SERVING_KEY), { ...incident, reason: 'all_clear' }, nowMs)
     await clearCondition(kv, STORED_COPY_SERVING_KEY)
     return 'recovered'
   }
@@ -320,7 +331,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
   // The condition stands: record its running end on every tick, whether or not it posts.
   await markSpikeSeen(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, nowMs)
   const standing = await readCondition(kv, STORED_COPY_SERVING_KEY)
-  if (standing) await keepAlerted(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, standing.since)
+  if (standing) await keepAlerted(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, standing.since, incident, nowMs)
 
   const message = servingMessage(reading)
   // Serving and refusing are the two problems; every count and age is a detail,
@@ -360,7 +371,8 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
     return 'post_failed'
   }
   const next = await recordAlert(kv, STORED_COPY_SERVING_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  await keepAlerted(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, next.since)
+  await keepAlerted(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, next.since, incident, nowMs)
+  await recordPaged(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, incident, nowMs)
   return 'posted'
 }
 

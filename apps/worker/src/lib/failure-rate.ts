@@ -20,7 +20,7 @@
 // import it from here.
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal, WorkflowDefinition } from '../types'
@@ -203,6 +203,13 @@ export async function runFailureRateCheck(
       // incident is never declared over while a repeat page for it is still
       // muted (#814).
       const cooldownMinutes = signal.cooldown_minutes ?? DEFAULT_COOLDOWN_MINUTES
+      // The incident record's view of this signal (#2099): the workflow's own
+      // organization, named by workflow and match, with this signal's window.
+      const incident: IncidentContext = {
+        scope: { kind: 'org', organizationId: wf.organization_id as string },
+        subjectLabel: `${wf.name as string}: "${signal.match}"`,
+        windowMinutes: signal.window_minutes,
+      }
 
       if (!detectFailureSpike(count, signal.count)) {
         await announceRecovery(
@@ -210,6 +217,7 @@ export async function runFailureRateCheck(
           'failure-rate',
           recoveryId,
           cooldownKey,
+          incident,
           async (alertedAt, endedAt) => {
             const slack = await getSlackConnection(supabase, wf.organization_id as string)
             if (!slack) return false
@@ -280,7 +288,8 @@ export async function runFailureRateCheck(
       if (sent) {
         const ttl = cooldownMinutes * 60
         await kv.put(cooldownKey, '1', { expirationTtl: ttl })
-        await markAlerted(kv, 'failure-rate', recoveryId)
+        await markAlerted(kv, 'failure-rate', recoveryId, incident)
+        await recordPaged(kv, 'failure-rate', recoveryId, incident, now)
       }
     }
   }
