@@ -745,6 +745,12 @@ function daysLeftFor(day: string, now: Date): number {
   return RETENTION_DAYS - ageDays
 }
 
+/** A pass's readings of its candidate days, without the days beneath it measured again (#2085). */
+function candidateResults(summary: GateRunSummary): GateDayResult[] {
+  const remeasured = new Set(summary.daysRemeasured)
+  return summary.results.filter((r) => !remeasured.has(r.archiveDay))
+}
+
 /**
  * Runs one gate pass, recording that it ran (#1137).
  *
@@ -760,12 +766,6 @@ function daysLeftFor(day: string, now: Date): number {
  * reads as partial rather than as a smaller clean one, and it has its own
  * outcome for the same reason (L11).
  */
-/** A pass's readings of its candidate days, without the days beneath it measured again (#2085). */
-function candidateResults(summary: GateRunSummary): GateDayResult[] {
-  const remeasured = new Set(summary.daysRemeasured)
-  return summary.results.filter((r) => !remeasured.has(r.archiveDay))
-}
-
 export async function runArchiveGate(
   env: Env,
   supabase: SupabaseClient,
@@ -793,6 +793,9 @@ export async function runArchiveGate(
         daysRefused: candidateResults(summary).filter((r) => r.error === null && r.refusals.length > 0).length,
         daysBeneathTheGate: summary.daysBeneathTheGate,
         daysRemeasured: summary.daysRemeasured.length,
+        // A failed re-measure makes the pass partial, so it is counted here too,
+        // or a partial outcome would show no day that failed (#2085).
+        daysRemeasuredErrored: summary.results.filter((r) => summary.daysRemeasured.includes(r.archiveDay) && r.error !== null).length,
         cost: summary.cost,
       },
     }),

@@ -1290,6 +1290,19 @@ describe('days beneath the gate are measured again (#2085)', () => {
     expect(summary.detail).toMatch(/1 held day beneath the gate measured again/)
   })
 
+  // Lessons review: a failed re-measure makes the pass partial, so the run
+  // record names it, or a partial outcome would show no day that failed.
+  it('records a failed re-measure apart from the candidate counts', async () => {
+    const [stranded] = beneathDays(1)
+    const { jobRuns } = await run({ recordErrorFor: stranded, daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    const close = jobRuns.find((r) => r.op === 'close')!
+    expect(close.row.outcome).toBe('partial')
+    const written = close.row.summary as Record<string, unknown>
+    expect(written.daysErrored).toBe(0)
+    expect(written.daysRemeasured).toBe(1)
+    expect(written.daysRemeasuredErrored).toBe(1)
+  })
+
   it('says in the not cleaned up fix that each pass re-measures these days', async () => {
     const [stranded] = beneathDays(1)
     await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
