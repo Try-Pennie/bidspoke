@@ -255,11 +255,30 @@ export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
 /** The status a standing incident was first paged with, and when (#2057). */
 export const alertedStatusKey = (id: string) => `cron-heartbeat:${id}:alerted-status`
 
-function parseAlertedStatus(raw: string | null): { status: HeartbeatStatus; at: string } | null {
+interface AlertedStatus {
+  status: HeartbeatStatus
+  /** When it was paged. */
+  at: string
+  /** The start stamp the page was about, so a follow-up can tell that run from a later one. */
+  startedAt: string | null
+  /** A completion after this is what shows the job finished again. */
+  since: string | null
+  /** Orgs that already have the follow-up, so a retry reaches only the rest. */
+  deliveredTo: string[]
+}
+
+function parseAlertedStatus(raw: string | null): AlertedStatus | null {
   if (!raw) return null
   try {
-    const v = JSON.parse(raw) as { status?: unknown; at?: unknown }
-    return typeof v.status === 'string' && typeof v.at === 'string' ? { status: v.status as HeartbeatStatus, at: v.at } : null
+    const v = JSON.parse(raw) as Partial<Record<keyof AlertedStatus, unknown>>
+    if (typeof v.status !== 'string' || typeof v.at !== 'string') return null
+    return {
+      status: v.status as HeartbeatStatus,
+      at: v.at,
+      startedAt: typeof v.startedAt === 'string' ? v.startedAt : null,
+      since: typeof v.since === 'string' ? v.since : null,
+      deliveredTo: Array.isArray(v.deliveredTo) ? v.deliveredTo.filter((x): x is string => typeof x === 'string') : [],
+    }
   } catch {
     return null
   }
@@ -436,17 +455,29 @@ async function checkJob(
       // was left holding an accusation. Stood down only once it is delivered.
       const reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
       if (reported?.status === 'vanished') {
-        let delivered = orgIds.length === 0
-        for (const orgId of orgIds) {
+        // Only a completion shows the job finished: for a slower job the next
+        // run's start alone also reads healthy, and says nothing about a finish.
+        const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
+        const sinceMs = reported.since ? Date.parse(reported.since) : NaN
+        if (!Number.isFinite(completedMs) || !Number.isFinite(sinceMs) || completedMs < sinceMs) {
+          return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+        }
+        // The reported run finished only if no later run has started since.
+        const sameRun = reported.startedAt !== null && lastRan === reported.startedAt && !job.completionDroughtMs
+        const pending = orgIds.filter((o) => !reported.deliveredTo.includes(o))
+        for (const orgId of pending) {
           const sent = await sendCronHeartbeatRecoveryAlert(
             supabase,
             orgId,
-            { label: job.label, status: 'vanished', alertedAt: reported.at, endedAt: lastCompleted },
+            { label: job.label, status: 'vanished', alertedAt: reported.at, endedAt: lastCompleted, sameRun },
             nowMs,
           )
-          if (sent) delivered = true
+          if (sent) reported.deliveredTo.push(orgId)
         }
-        if (!delivered) return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+        if (orgIds.some((o) => !reported.deliveredTo.includes(o))) {
+          await kv.put(alertedStatusKey(job.id), JSON.stringify(reported))
+          return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+        }
       }
       await clearCondition(kv, key)
       await kv.delete(alertedStatusKey(job.id))
@@ -490,7 +521,11 @@ async function checkJob(
   if (alerted) {
     await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
     // Which status was paged, and when, so the healthy side knows a follow-up is owed (#2057).
-    if (reminderOf === null) await kv.put(alertedStatusKey(job.id), JSON.stringify({ status, at: new Date(nowMs).toISOString() }))
+    if (reminderOf === null) {
+      const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
+      const record: AlertedStatus = { status, at: new Date(nowMs).toISOString(), startedAt: lastRan, since, deliveredTo: [] }
+      await kv.put(alertedStatusKey(job.id), JSON.stringify(record))
+    }
   }
   return { jobId: job.id, status, alerted, ageMs: verdict.ageMs }
 }

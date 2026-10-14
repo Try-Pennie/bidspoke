@@ -349,3 +349,56 @@ describe('runHeartbeatChecks: a never finished page is closed when the job finis
     expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('the never finished follow-up says only what a completion shows (#2057 review)', () => {
+  const archive = () => cronJob('execution-archive')
+
+  async function paged(kv: ReturnType<typeof fakeKv>, orgs = [{ organization_id: 'org-1' }]) {
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalled()
+  }
+
+  it('waits for a completion: a later start alone is not a finish', async () => {
+    const started = NOW - archive().maxRunMs - 5 * 60_000
+    const kv = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive().id)]: iso(started), [completedWatchKey(archive().id)]: iso(NOW - 24 * H) })
+    await paged(kv)
+    // The next run starts; nothing has finished. Healthy by the allowance, but no follow-up.
+    kv.store.set(heartbeatKey(archive().id), iso(NOW + 60_000))
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW + 2 * 60_000)
+    expect(sendCronHeartbeatRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('says the reported run finished late only when it was that run, and a later run otherwise', async () => {
+    const started = NOW - archive().maxRunMs - 5 * 60_000
+    const same = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive().id)]: iso(started), [completedWatchKey(archive().id)]: iso(NOW - 24 * H) })
+    await paged(same)
+    same.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), same, NOW + 60_000)
+    expect(vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls[0][2]).toMatchObject({ sameRun: true })
+
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockClear()
+    vi.mocked(sendCronHeartbeatAlert).mockClear()
+    const later = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive().id)]: iso(started), [completedWatchKey(archive().id)]: iso(NOW - 24 * H) })
+    await paged(later)
+    later.store.set(heartbeatKey(archive().id), iso(NOW + 60_000))
+    later.store.set(completedKey(archive().id), iso(NOW + 90_000))
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), later, NOW + 2 * 60_000)
+    expect(vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls[0][2]).toMatchObject({ sameRun: false })
+  })
+
+  it('retries the follow-up only to the org that did not get it', async () => {
+    const started = NOW - archive().maxRunMs - 5 * 60_000
+    const orgs = [{ organization_id: 'org-1' }, { organization_id: 'org-2' }]
+    const kv = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive().id)]: iso(started), [completedWatchKey(archive().id)]: iso(NOW - 24 * H) })
+    await paged(kv, orgs)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementation(async (_s, orgId) => orgId === 'org-1')
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000)
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementation(async () => true)
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 2 * 60_000)
+    const sentTo = vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls.map((c) => c[1])
+    expect(sentTo).toEqual(['org-1', 'org-2', 'org-2'])
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 3 * 60_000)
+    expect(vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls).toHaveLength(3)
+  })
+})
