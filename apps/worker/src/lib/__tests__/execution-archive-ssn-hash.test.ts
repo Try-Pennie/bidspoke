@@ -32,6 +32,7 @@ vi.mock('../export-alerts', () => ({
 }))
 
 import { runExecutionArchive, type ArchiveRow } from '../execution-archive'
+import { notifyExportFailure } from '../export-alerts'
 import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'
 import { hashSsn } from '../../engine/persons-crypto'
 import { makeArchiveDouble, makeKV, NOW, EXECUTION_ID } from './_archive-double'
@@ -116,5 +117,14 @@ describe('the archive writes a usable person resolver (#927)', () => {
     expect(sent).toEqual([])
     expect(summary.failed).toBe(true)
     expect(summary.detail).toMatch(/pepper/i)
+  })
+
+  // #835: the alert the run sends must carry the pepper remedy, restore the
+  // escrowed value and never make a new one, not the general wording.
+  it('alerts with the restore the escrowed pepper remedy', async () => {
+    vi.mocked(notifyExportFailure).mockClear()
+    await run({ triggerPayload: { personalInformation: { ssn: SSN } }, pepper: undefined })
+    const remedy = vi.mocked(notifyExportFailure).mock.calls[0]?.[4] as { fixHint?: string } | undefined
+    expect(remedy?.fixHint).toMatch(/Restore SSN_HASH_PEPPER from the 1Password item "Bidspoke recovery keys"/)
   })
 })

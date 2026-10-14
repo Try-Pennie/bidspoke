@@ -18,7 +18,6 @@ import {
   clearedConditionsFor,
   ARCHIVE_JOB_NAMES,
   ARCHIVE_KILLED_REMEDY,
-  ARCHIVE_MISCONFIGURED_REMEDY,
 } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
@@ -376,9 +375,10 @@ export async function runExecutionArchive(
       // The refusal wording, not the run-stopped wording, and its own job name
       // (#1259): alertsFor maps the misconfigured stop to execution-archive-
       // misconfigured, so this condition no longer shares a cooldown with a run
-      // that stopped partway. A missing secret is fixed by setting it rather than
-      // by reading a stop reason.
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, ARCHIVE_MISCONFIGURED_REMEDY)
+      // that stopped partway. The remedy is the one alertsFor chose from the
+      // setting reported missing: for the pepper, restore the escrowed value,
+      // never a new one (#835).
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
     }
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
   }
