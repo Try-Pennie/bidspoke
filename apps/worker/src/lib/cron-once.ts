@@ -21,7 +21,9 @@
  * Every failure to ask fails OPEN, logged as `FAILED OPEN`: a job run twice is
  * recoverable and a job skipped is not. Every skip is logged as `skipped
  * duplicate` with the holder and the object's running count of duplicates for
- * that tick, so the doubling stays measurable in Workers Logs.
+ * that tick, so the doubling stays measurable in Workers Logs. Both are also
+ * handed to `onGuardEvent`, which counts them so the hourly check in
+ * cron-guard-watch.ts can page (#1904).
  */
 import type { TickClaimResult } from '../durable-objects/alert-claim'
 import { CLAIM_DEADLINE_MS, raceDeadline } from './alert-claim'
@@ -43,6 +45,12 @@ export interface CronTickOptions {
   deadlineMs?: number
   /** The deadline's timer seam. */
   delay?: (ms: number) => Promise<void>
+  /**
+   * Told of each fail-open and each skipped duplicate, so they can be counted
+   * and someone paged (#1904). It must not block: the caller hands any write to
+   * waitUntil. A throw is logged and never stops the jobs.
+   */
+  onGuardEvent?: (kind: 'failed_open' | 'skipped_duplicate') => void
 }
 
 const MINUTE_MS = 60_000
@@ -65,8 +73,16 @@ async function decide(
   options: CronTickOptions,
 ): Promise<Decision> {
   const label = `cron="${event.cron}" scheduled=${iso(event.scheduledTime)}`
+  const report = (kind: 'failed_open' | 'skipped_duplicate') => {
+    try {
+      options.onGuardEvent?.(kind)
+    } catch (e) {
+      console.error(`[cron-once] could not record ${kind} ${label}: ${formatErr(e)}`)
+    }
+  }
   const failOpen = (why: string): Decision => {
     console.error(`[cron-once] FAILED OPEN ${label}: ${why}, running without the claim`)
+    report('failed_open')
     return { run: true, holder: null }
   }
   if (!ns) return failOpen('no ALERT_CLAIM binding')
@@ -96,6 +112,7 @@ async function decide(
       `[cron-once] skipped duplicate ${label} holder=${verdict.holder} holder_scheduled=${iso(verdict.holder_scheduled_time)}` +
         ` holder_status=${verdict.holder_status} holder_age_ms=${verdict.holder_age_ms} duplicates=${verdict.duplicates}`,
     )
+    report('skipped_duplicate')
     return { run: false }
   }
   if (verdict.reason === 'retry') {
