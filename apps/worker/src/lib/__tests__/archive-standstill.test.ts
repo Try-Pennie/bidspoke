@@ -270,3 +270,74 @@ describe('the standstill alert names the cause it measured', () => {
     expect(adviceGiven()[0]).toMatch(/execution_archive_progress/)
   })
 })
+
+/**
+ * #835: the check measures the heartbeat and the watermark, nothing else. It
+ * used to say the runs were "completing", "honestly successful" and the lock
+ * "free" above a cause line that could say they failed or the lock was held.
+ */
+describe('the standstill alert claims only what it measured', () => {
+  const consequenceSent = (): string =>
+    (
+      vi
+        .mocked(notifyExportFailure)
+        .mock.calls.find((c) => c[1] === ARCHIVE_STANDSTILL_JOB && (c[2] as string[]).length > 0)?.[4] as {
+        consequence: string
+      }
+    ).consequence
+
+  it('does not call failing runs successful when the cause says they failed', async () => {
+    const kv = kvDouble({ [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000) })
+    const supabase = supabaseDouble(
+      { data: { watermark_hour: '2026-08-21T20:00:00.000Z', updated_at: ago(12 * HOUR) }, error: null },
+      [
+        { outcome: 'send-failed', started_at: ago(HOUR), finished_at: ago(HOUR - 60000) },
+        { outcome: 'send-failed', started_at: ago(2 * HOUR), finished_at: ago(2 * HOUR - 60000) },
+      ],
+    )
+
+    await checkArchiveStandstill(supabase, kv, NOW)
+
+    const said = `${consequenceSent()} ${raised().join(' ')}`
+    expect(said).toMatch(/failed/)
+    expect(said).not.toMatch(/honestly successful|runs are completing|running and completing/)
+  })
+
+  it('does not claim the lock is free or the runs complete when it never wrote progress', async () => {
+    const kv = kvDouble({
+      [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000),
+      'execution-archive:no-progress-since': ago(10 * HOUR),
+    })
+    const supabase = supabaseDouble({ data: null, error: null }, [
+      { outcome: 'skipped-locked', started_at: ago(HOUR), finished_at: ago(HOUR) },
+    ])
+
+    await checkArchiveStandstill(supabase, kv, NOW)
+
+    const said = `${consequenceSent()} ${raised().join(' ')}`
+    expect(said).not.toMatch(/lock is free|the runs complete/)
+  })
+
+  it('does not say the archive is not moving when its progress could not be read', async () => {
+    const kv = kvDouble({ [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000) })
+    const supabase = supabaseDouble({ data: null, error: { message: 'connection reset' } })
+
+    await checkArchiveStandstill(supabase, kv, NOW)
+
+    expect(consequenceSent()).not.toMatch(/not actually moving|running and completing/)
+    expect(consequenceSent()).toMatch(/could not be judged/)
+  })
+})
+
+describe('an unreadable progress row keeps its own fix (lessons review, #835)', () => {
+  it('does not swap in advice about the runs when the progress could not be read', async () => {
+    const kv = kvDouble({ [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000) })
+    const supabase = supabaseDouble({ data: null, error: { message: 'connection reset' } }, [
+      { outcome: 'send-failed', started_at: ago(HOUR), finished_at: ago(HOUR - 60000) },
+    ])
+
+    await checkArchiveStandstill(supabase, kv, NOW)
+
+    expect(adviceGiven()[0]).toMatch(/execution_archive_progress/)
+  })
+})

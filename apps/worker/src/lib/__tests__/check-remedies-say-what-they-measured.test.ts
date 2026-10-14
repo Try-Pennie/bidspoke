@@ -25,6 +25,7 @@ import {
   ARCHIVE_REFUSAL_REMEDY,
   ARCHIVE_LAG_REMEDY,
   ARCHIVE_KILLED_REMEDY,
+  ARCHIVE_RECORD_FAILED_REMEDY,
 } from '../../archive/alerts'
 import { ARCHIVE_BACKLOG_REMEDY } from '../archive-backlog-run'
 import {
@@ -34,16 +35,21 @@ import {
   ARCHIVE_GATE_UNREADABLE_REMEDY,
 } from '../archive-gate'
 import { ARCHIVE_IDENTITY_REMEDY } from '../archive-identity-check'
-import { ARCHIVE_INDEX_REMEDY } from '../archive-index-check'
+import { ARCHIVE_INDEX_REMEDY, ARCHIVE_INDEX_UNREADABLE_REMEDY } from '../archive-index-check'
 import { ARCHIVE_SETTINGS_REMEDY } from '../archive-settings-check'
-import { ARCHIVE_STANDSTILL_REMEDY } from '../archive-standstill'
+import { ARCHIVE_STANDSTILL_REMEDY, ARCHIVE_STANDSTILL_UNREADABLE_REMEDY } from '../archive-standstill'
 import { ARCHIVE_READ_REMEDY } from '../archive-read-health'
-import { ARCHIVE_HEADROOM_REMEDY } from '../archive-headroom-check'
-import { ARCHIVE_EXPIRY_REMEDY } from '../archive-expiry'
-import { LOGPUSH_CHECK_REMEDY } from '../logpush-check'
-import { RETENTION_CHECK_REMEDY } from '../retention-check'
+import { ARCHIVE_HEADROOM_REMEDY, ARCHIVE_HEADROOM_EXHAUSTED_REMEDY } from '../archive-headroom-check'
+import { ARCHIVE_EXPIRY_REMEDY, ARCHIVE_EXPIRY_UNLISTED_REMEDY } from '../archive-expiry'
+import { LOGPUSH_CHECK_REMEDY, LOGPUSH_UNREADABLE_REMEDY } from '../logpush-check'
+import { RETENTION_CHECK_REMEDY, RETENTION_CHECK_UNREADABLE_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
-import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
+import {
+  MATRIX_AUDIT_REMEDY,
+  MATRIX_AUDIT_SNAPSHOT_READ_REMEDY,
+  MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY,
+  MATRIX_AUDIT_BASELINE_WRITE_REMEDY,
+} from '../matrix-audit-health'
 import {
   PARTNER_RATES_MISMATCH_REMEDY,
   REVENUE_FORMULAS_DISAGREE_REMEDY,
@@ -71,16 +77,25 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
   ['archive gate unreadable', ARCHIVE_GATE_UNREADABLE_REMEDY],
   ['archive read index', ARCHIVE_INDEX_REMEDY],
+  ['archive read index unreadable', ARCHIVE_INDEX_UNREADABLE_REMEDY],
   ['archive identities', ARCHIVE_IDENTITY_REMEDY],
   ['archive settings', ARCHIVE_SETTINGS_REMEDY],
   ['archive standstill', ARCHIVE_STANDSTILL_REMEDY],
+  ['archive standstill unreadable', ARCHIVE_STANDSTILL_UNREADABLE_REMEDY],
   ['archived reads failing', ARCHIVE_READ_REMEDY],
   ['archive headroom', ARCHIVE_HEADROOM_REMEDY],
+  ['archive headroom exhausted', ARCHIVE_HEADROOM_EXHAUSTED_REMEDY],
   ['archive 13 month expiry', ARCHIVE_EXPIRY_REMEDY],
+  ['archive 13 month expiry unlisted', ARCHIVE_EXPIRY_UNLISTED_REMEDY],
   ['logpush destinations', LOGPUSH_CHECK_REMEDY],
+  ['logpush unreadable', LOGPUSH_UNREADABLE_REMEDY],
   ['execution retention', RETENTION_CHECK_REMEDY],
+  ['execution retention unreadable', RETENTION_CHECK_UNREADABLE_REMEDY],
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
+  ['salesforce matrix audit snapshot read', MATRIX_AUDIT_SNAPSHOT_READ_REMEDY],
+  ['salesforce matrix audit snapshot write', MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY],
+  ['salesforce matrix audit baseline write', MATRIX_AUDIT_BASELINE_WRITE_REMEDY],
   ['tripoint duplicate codes', TRIPOINT_DUPLICATE_CODES_REMEDY],
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
   ['export schema unreadable', EXPORT_SCHEMA_UNREADABLE_REMEDY],
@@ -119,6 +134,7 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['archive refusal', ARCHIVE_REFUSAL_REMEDY],
   ['archive lag', ARCHIVE_LAG_REMEDY],
   ['archive killed', ARCHIVE_KILLED_REMEDY],
+  ['archive record failed', ARCHIVE_RECORD_FAILED_REMEDY],
   ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
   ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
   ['salesforce revenue formulas disagree', REVENUE_FORMULAS_DISAGREE_REMEDY],

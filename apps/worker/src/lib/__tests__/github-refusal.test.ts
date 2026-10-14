@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { describeGithubRefusal, readGithubRefusal } from '../github-refusal'
+import { describeGithubRefusal, readGithubRefusal, GITHUB_RATE_LIMIT_FIX } from '../github-refusal'
+
+// #835: the fix named only GITHUB_ACTIONS_TOKEN, while the checks fall back to
+// GITHUB_TOKEN when it is unset, and called the allowance hourly, which a
+// secondary limit is not.
+describe('the rate limit fix line', () => {
+  it('names both tokens the checks can be using, and no hourly allowance', () => {
+    expect(GITHUB_RATE_LIMIT_FIX).toContain('GITHUB_ACTIONS_TOKEN')
+    expect(GITHUB_RATE_LIMIT_FIX).toMatch(/GITHUB_TOKEN`? when/)
+    expect(GITHUB_RATE_LIMIT_FIX).not.toMatch(/hourly/)
+  })
+})
 
 /**
  * Telling GitHub's refusals apart (#1365).
@@ -95,6 +106,15 @@ describe('describeGithubRefusal: what the reader is told', () => {
     const text = describeGithubRefusal(await readGithubRefusal(json(PRIMARY_LIMIT, 403), NOW))
     expect(text).toContain('clears on its own')
     expect(text).not.toContain('resets at')
+  })
+
+  // #835: a secondary limit is about how fast requests arrive, not an allowance
+  // that ran out, so "used up" was false for it.
+  it('does not call a secondary limit an allowance used up', async () => {
+    const text = describeGithubRefusal(await readGithubRefusal(json(SECONDARY_LIMIT, 403, { 'retry-after': '60' }), NOW))
+    expect(text).not.toContain('used up')
+    expect(text).toContain('secondary')
+    expect(text).toContain('clears on its own')
   })
 
   it('quotes the message GitHub sent for a permission refusal', async () => {

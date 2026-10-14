@@ -95,7 +95,7 @@ export interface ArchiveReadDeps {
  */
 type ArchiveQueryResult =
   | { ok: true; response: SnowflakeStatementResponse }
-  | { ok: false; detail: string }
+  | { ok: false; detail: string; timedOut?: true }
 
 /**
  * THE ONE PLACE AN ARCHIVE QUERY IS MADE, and therefore the one place that
@@ -146,13 +146,22 @@ async function runArchiveQuery(
           // Seconds, not milliseconds: this sentence is rendered to an operator
           // on the execution page, not to a log reader.
           detail: `the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`,
+          // Classified here, where the deadline won, so the alert never has to
+          // recognise a timeout from this sentence (#835, L35).
+          timedOut: true,
         }
       : { ok: true, response: raced.response }
   } catch (err) {
     result = { ok: false, detail: formatErr(err) }
   }
 
-  await report(result.ok ? { kind: 'ok' } : { kind: 'unavailable', detail: result.detail })
+  await report(
+    result.ok
+      ? { kind: 'ok' }
+      : result.timedOut === true
+        ? { kind: 'unavailable', detail: result.detail, timedOut: true }
+        : { kind: 'unavailable', detail: result.detail },
+  )
   return result
 }
 

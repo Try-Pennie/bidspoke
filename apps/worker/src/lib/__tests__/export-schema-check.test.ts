@@ -29,7 +29,7 @@ import {
 } from '../export-schema-check'
 import { SIGHTING_COLS, BID_COLS, type ColType } from '../sightings-export'
 import { ACHIEVE_COLS } from '../achieve-export'
-import { notifyExportFailure } from '../export-alerts'
+import { notifyExportFailure, type AlertRemedy } from '../export-alerts'
 import type { SnowflakeStatementResponse } from '../snowflake'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -285,12 +285,67 @@ describe('the alert wording matches what was found', () => {
 
   it('drift is headlined as a disagreement', async () => {
     await run(answer(edit(allHealthy(), 'lead_sightings', 'execution_finished_at_et', { nullable: false })))
-    expect(remedyPassed()).toBe(EXPORT_SCHEMA_REMEDY)
+    expect(remedyPassed()).toEqual(EXPORT_SCHEMA_REMEDY)
   })
 
   it('a check that could not read Snowflake does not claim to have found a disagreement', async () => {
     await run(new Error('HTTP 503'))
-    expect(remedyPassed()).toBe(EXPORT_SCHEMA_UNREADABLE_REMEDY)
+    expect(remedyPassed()).toEqual(EXPORT_SCHEMA_UNREADABLE_REMEDY)
+  })
+
+  // #835: the drift wording claimed no export had failed yet (never measured),
+  // that the next one would fail every run (a NOT NULL refusal sets the row
+  // aside instead), and called the exports nightly (sightings run every two hours).
+  it('drift claims only what the comparison measured', () => {
+    const said = `${EXPORT_SCHEMA_REMEDY.consequence} ${EXPORT_SCHEMA_REMEDY.fixHint}`
+    expect(said).not.toMatch(/no export has failed/i)
+    expect(said).not.toMatch(/keep failing every run/i)
+    expect(said).not.toMatch(/nightly/i)
+  })
+})
+
+// #835: "check Snowflake was reachable and the credentials" was the fix for every
+// unreadable case, including the ones where Snowflake answered perfectly well.
+describe('an unreadable schema gets the fix for its own cause (#835)', () => {
+  function fixPassed(): string {
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === EXPORT_SCHEMA_JOB)
+    return (call?.[4] as AlertRemedy).fixHint
+  }
+
+  it('a refusal points at the credentials and Snowflake', async () => {
+    await run(new Error('HTTP 503 upstream connect error'))
+    expect(fixPassed()).toMatch(/credentials/)
+  })
+
+  it('an answer in an unreadable shape points at this check, not at Snowflake', async () => {
+    await run({ data: [['LEAD_SIGHTINGS', 'ID', 'TEXT', 'NO', null]] })
+    expect(fixPassed()).toContain('export-schema-check.ts')
+    expect(fixPassed()).not.toMatch(/credentials|reachable/)
+  })
+
+  it('no columns for any table points at the schema name and what the role can see', async () => {
+    await run(answer([]))
+    expect(fixPassed()).toContain('SNOWFLAKE_SCHEMA')
+    expect(fixPassed()).not.toMatch(/credentials|reachable/)
+  })
+
+  it('one table with no columns points at creating it or granting the role access', async () => {
+    await run(answer(allHealthy().filter((c) => c.table !== 'LEAD_SIGHTING_BIDS')))
+    expect(fixPassed()).toMatch(/grant/)
+    expect(fixPassed()).not.toMatch(/credentials|reachable/)
+  })
+
+  it('no schema configured says to set it', async () => {
+    await checkExportSchema({} as unknown as Env, supabase, { query: async () => answer(allHealthy()) })
+    expect(fixPassed()).toMatch(/wrangler secret put SNOWFLAKE_SCHEMA/)
+  })
+
+  it('drift beside an unreadable table carries both fixes', async () => {
+    const cols = edit(allHealthy(), 'lead_sightings', 'execution_finished_at_et', { nullable: false })
+      .filter((c) => c.table !== 'LEAD_SIGHTING_BIDS')
+    await run(answer(cols))
+    expect(fixPassed()).toContain('ALTER')
+    expect(fixPassed()).toMatch(/grant/)
   })
 })
 

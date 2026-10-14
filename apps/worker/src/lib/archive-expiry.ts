@@ -56,6 +56,23 @@ export const ARCHIVE_EXPIRY_REMEDY: AlertRemedy = {
   itemNoun: { one: 'failure', many: 'failures' },
 }
 
+/**
+ * The run failed before it knew which days are past the cutoff (#835). The
+ * remedy above says archived executions ARE being kept too long, which only a
+ * run that listed a day and then failed to delete it has seen.
+ */
+export const ARCHIVE_EXPIRY_UNLISTED_REMEDY: AlertRemedy = {
+  consequence:
+    'The 13 month retention on the execution archive could not be checked, because the run failed before ' +
+    'it listed which archived days are past the cutoff. Whether any day is being kept too long is unknown:',
+  fixHint:
+    'The line below names what failed. The job lists and deletes as bidspoke_archive_eraser, so check that ' +
+    'role and its key first: wrangler secret put ARCHIVE_ERASER_PRIVATE_KEY --name bidspoke-worker. The next ' +
+    'run lists the days again.',
+  headlineVerb: 'could not check the retention',
+  itemNoun: { one: 'failure', many: 'failures' },
+}
+
 export const ARCHIVE_EXPIRY_JOB = 'execution-archive-expiry'
 
 const QUALIFIED_TABLE = `${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`
@@ -124,6 +141,11 @@ export interface ExpiryResult {
   uncounted: string[]
   /** On a dry run, the days it WOULD have deleted. Empty on a real run. */
   wouldExpire?: string[]
+  /**
+   * True when the run failed before it listed the expired days, so nothing is
+   * known about what is past the cutoff (#835). Chooses the alert's wording.
+   */
+  unlisted?: boolean
   failed: boolean
   detail: string
 }
@@ -152,7 +174,7 @@ export async function expireArchivedDays(
     ARCHIVE_EXPIRY_JOB,
     result.failed ? [result.detail] : [],
     env.IDEMPOTENCY,
-    ARCHIVE_EXPIRY_REMEDY,
+    result.unlisted === true ? ARCHIVE_EXPIRY_UNLISTED_REMEDY : ARCHIVE_EXPIRY_REMEDY,
   )
   return result
 }
@@ -172,7 +194,7 @@ async function runExpiry(env: Env, deps: ExpiryDeps): Promise<ExpiryResult> {
     // Refused rather than defaulted. A cutoff this cannot compute would, on any
     // fallback, name a date nobody chose, and the action behind it is permanent.
     const detail = 'the retention cutoff could not be computed, so nothing was deleted'
-    return { cutoff: null, daysExpired: [], rowsDeleted: 0, uncounted: [], failed: true, detail }
+    return { cutoff: null, daysExpired: [], rowsDeleted: 0, uncounted: [], unlisted: true, failed: true, detail }
   }
 
   let days: string[]
@@ -192,7 +214,7 @@ async function runExpiry(env: Env, deps: ExpiryDeps): Promise<ExpiryResult> {
       .sort()
   } catch (err) {
     const detail = `the expired days could not be listed, so nothing was deleted: ${formatErr(err)}`
-    return { cutoff, daysExpired: [], rowsDeleted: 0, uncounted: [], failed: true, detail }
+    return { cutoff, daysExpired: [], rowsDeleted: 0, uncounted: [], unlisted: true, failed: true, detail }
   }
 
   if (days.length === 0) {

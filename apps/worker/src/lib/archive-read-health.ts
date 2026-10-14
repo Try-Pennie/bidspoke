@@ -34,6 +34,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { ARCHIVE_WAREHOUSE, unsetSecretNamed } from './archive-snowflake'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -71,7 +72,7 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
   consequence:
     'Archived executions cannot be read. Nothing has been deleted and nothing is missing: what is ' +
     'broken is the path that serves executions older than the seven days Postgres keeps, so anybody ' +
-    'investigating a dispute on an older lead is being told to try again and it will not help:',
+    'investigating a dispute on an older lead is being told to try again:',
   fixHint:
     'Check Snowflake first: whether the warehouse the archive reads from can resume, and whether ' +
     'bidspoke_archive_reader still holds SELECT on the archive table. If both are fine, the named ' +
@@ -82,10 +83,38 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
   itemNoun: { one: 'failed read', many: 'failed reads' },
 }
 
+/**
+ * The fix line led by what the failure names (#835). It used to lead with
+ * "check Snowflake first" for every failure, including an unset secret, where
+ * Snowflake was never asked, and a timeout, where the warehouse is the place to
+ * look and a retry once it answers is served.
+ */
+export function archiveReadRemedyFor(detail: string, timedOut = false): AlertRemedy {
+  const unset = unsetSecretNamed(detail)
+  if (unset !== null) {
+    return {
+      ...ARCHIVE_READ_REMEDY,
+      fixHint:
+        `Set ${unset} with wrangler secret put ${unset} --name bidspoke-worker, piping the value in. ` +
+        'Archived reads fail before reaching Snowflake until it is set.',
+    }
+  }
+  if (timedOut) {
+    return {
+      ...ARCHIVE_READ_REMEDY,
+      fixHint:
+        `The reads are timing out. Check in Snowflake that the ${ARCHIVE_WAREHOUSE} warehouse can resume and ` +
+        'is not queued; a read retried once it answers is served.',
+    }
+  }
+  return ARCHIVE_READ_REMEDY
+}
+
 const streakKey = `archive-read-failures:${ARCHIVE_READ_ALERT_JOB}`
 const cooldownKey = `archive-read-alert-cooldown:${ARCHIVE_READ_ALERT_JOB}`
 
-export type ArchiveReadOutcome = { kind: 'ok' } | { kind: 'unavailable'; detail: string }
+/** `timedOut` is set by the reader when its deadline won, never inferred from `detail` (#835). */
+export type ArchiveReadOutcome = { kind: 'ok' } | { kind: 'unavailable'; detail: string; timedOut?: true }
 
 export interface ArchiveReadHealthDeps {
   notify?: typeof notifyExportFailure
@@ -116,7 +145,7 @@ export async function recordArchiveReadOutcome(
   // there is no recovering from: a binding that is missing is exactly when a
   // signal is most likely to be needed and least likely to be looked for (L42).
   if (!kv) {
-    await post(notify, supabase, outcome.detail, 1)
+    await post(notify, supabase, outcome.detail, 1, outcome.timedOut === true)
     return true
   }
 
@@ -132,7 +161,7 @@ export async function recordArchiveReadOutcome(
 
   if (await kv.get(cooldownKey)) return false
 
-  await post(notify, supabase, outcome.detail, streak)
+  await post(notify, supabase, outcome.detail, streak, outcome.timedOut === true)
   await kv.put(cooldownKey, '1', { expirationTtl: ARCHIVE_READ_COOLDOWN_TTL_SECONDS })
   return true
 }
@@ -178,12 +207,13 @@ async function post(
   supabase: SupabaseClient,
   detail: string,
   streak: number,
+  timedOut: boolean,
 ): Promise<void> {
   await notify(
     supabase,
     ARCHIVE_READ_ALERT_JOB,
     [`${streak} archived reads in a row could not be served. The last one said: ${detail}`],
     undefined,
-    ARCHIVE_READ_REMEDY,
+    archiveReadRemedyFor(detail, timedOut),
   )
 }

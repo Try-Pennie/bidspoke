@@ -25,6 +25,8 @@ vi.mock('../export-alerts', () => ({
 
 import {
   checkArchiveSettings,
+  settingsRemedyFor,
+  ARCHIVE_SETTINGS_REMEDY,
   ARCHIVE_SETTINGS_JOB,
   DECLARED_SNOWFLAKE_ACCOUNT,
   EXPECTED_EXTRA_COLUMNS,
@@ -418,5 +420,60 @@ describe('the settings check bounds its time in Snowflake', () => {
     // A deadline that never fires must not change the ordinary result.
     const result = await run()
     expect(result.differences).toEqual([])
+  })
+})
+
+/**
+ * #835: the remedy said "what we say about undoing an accidental deletion is
+ * wrong" and "alter the table" for every finding, including a read that failed
+ * and a check reading the wrong account, where neither is true.
+ */
+describe('the settings remedy is chosen from what differed', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_SETTINGS_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+    }
+
+  it('names the undo window only when the table window itself changed', async () => {
+    await run({ table: retention(ARCHIVE_UNDO_WINDOW_DAYS - 1) })
+    expect(remedySent().consequence).toMatch(/undoing an accidental deletion/)
+    expect(remedySent().fixHint).toMatch(/alter the table/)
+  })
+
+  it('gives an unreadable setting its own fix, not alter the table', async () => {
+    await run({ table: new Error('SQL compilation error: 002003') })
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/undoing an accidental deletion is wrong/)
+    expect(remedy.fixHint).not.toMatch(/alter the table/)
+    expect(remedy.fixHint).toMatch(/ARCHIVE_READER_PRIVATE_KEY|bidspoke_archive_reader/)
+  })
+
+  it('gives a wrong account its own fix, pointing SNOWFLAKE_ACCOUNT back', async () => {
+    await run({ account: { data: [['XX99999']] } as SnowflakeStatementResponse })
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/undoing an accidental deletion is wrong/)
+    expect(remedy.fixHint).toMatch(new RegExp(`SNOWFLAKE_ACCOUNT.*${DECLARED_SNOWFLAKE_ACCOUNT}`))
+  })
+
+  it('tells a missing column to be added, not the window to be decided', async () => {
+    await run({ columns: columnsResponse(ALL_COLUMNS.slice(1)) })
+    const remedy = remedySent()
+    expect(remedy.fixHint).toMatch(/add/i)
+    expect(remedy.consequence).not.toMatch(/undoing an accidental deletion is wrong/)
+  })
+})
+
+// Lessons review (#835): a clean run carries the declared remedy, never one
+// built from an empty list ("nothing is missing:" with only a re-run as the fix).
+describe('a clean settings run uses the declared remedy', () => {
+  it('returns the base remedy for no differences', () => {
+    expect(settingsRemedyFor([])).toBe(ARCHIVE_SETTINGS_REMEDY)
+  })
+
+  it('passes the base remedy on a clean run', async () => {
+    await run()
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_SETTINGS_JOB)
+    expect(call?.[4]).toBe(ARCHIVE_SETTINGS_REMEDY)
   })
 })
