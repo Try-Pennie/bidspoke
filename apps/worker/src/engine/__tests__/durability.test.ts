@@ -113,7 +113,7 @@ describe('recordOutcomeDeadLetter', () => {
     const at = Date.parse('2026-10-11T13:00:00.000Z')
     const kv = fakeKv()
     await recordOutcomeDeadLetter('lead_sightings.insert', new Error('db down'), { ...deps(kv), now: () => at })
-    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(at)}`)!)).toEqual({ total: 1, unrecoverable: 1 })
+    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(at)}`)!)).toEqual({ total: 1, unrecoverable: 1, labels: { 'lead_sightings.insert': 1 } })
   })
 
   // #355: the build-now tally runs before the alert inside the dead-letter reserve,

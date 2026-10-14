@@ -23,6 +23,7 @@ export type GithubRefusal = {
 }
 
 const RATE_LIMIT_MESSAGE = /rate limit/i
+const SECONDARY_LIMIT_MESSAGE = /secondary rate limit/i
 
 async function readMessage(response: Response): Promise<string | null> {
   try {
@@ -77,12 +78,23 @@ const easternTime = (iso: string) =>
 export function describeGithubRefusal(refusal: GithubRefusal): string {
   if (refusal.kind === 'rate_limited') {
     const when = refusal.resetsAtIso === null ? '' : `, and resets at ${easternTime(refusal.resetsAtIso)}`
+    // A secondary limit is about how fast requests arrive, not an allowance that
+    // ran out, so it is not "used up" (#835). GitHub names it in its message.
+    if (refusal.message !== null && SECONDARY_LIMIT_MESSAGE.test(refusal.message)) {
+      const until = refusal.resetsAtIso === null ? '' : ` until ${easternTime(refusal.resetsAtIso)}`
+      return `GitHub is holding back requests from the account that owns the credential under its secondary rate limit, which is about how fast requests arrive (${refusal.status})${until}. This clears on its own`
+    }
     return `GitHub's API rate limit for the account that owns the credential is used up (${refusal.status})${when}. This clears on its own`
   }
   const said = refusal.message === null ? '' : `: "${refusal.message}"`
   return `GitHub returned ${refusal.status}${said}`
 }
 
-/** The repair for a rate limit, named once for every alert that can carry one. */
+/**
+ * The repair for a rate limit, named once for every alert that can carry one.
+ * It names both tokens because the checks fall back to GITHUB_TOKEN when
+ * GITHUB_ACTIONS_TOKEN is unset, and it says "allowance" rather than "hourly
+ * allowance" because a secondary limit is not hourly (#835).
+ */
 export const GITHUB_RATE_LIMIT_FIX =
-  'A rate limit needs no change and clears on its own. GitHub counts requests per account, so anything else using the account that owns `GITHUB_ACTIONS_TOKEN` (the gh CLI, scripts, other tools) spends the same hourly allowance, and the next check reads again once it resets. If this keeps happening, give the worker a token owned by an account nothing else uses.'
+  "A rate limit needs no change and clears on its own. GitHub counts requests per account, so anything else using the account that owns the worker's GitHub token (`GITHUB_ACTIONS_TOKEN`, or `GITHUB_TOKEN` when that is unset), such as the gh CLI, scripts or other tools, spends the same allowance, and the next check reads again once it resets. If this keeps happening, give the worker a token owned by an account nothing else uses."

@@ -19,7 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { runMatrixAudit, type AuditResult } from './sf-matrix-audit'
+import { MatrixAuditStepError, runMatrixAudit, type AuditResult, type MatrixAuditStep } from './sf-matrix-audit'
 import type { Env } from '../index'
 
 export const MATRIX_AUDIT_JOB = 'sf-matrix-audit'
@@ -40,6 +40,56 @@ export const MATRIX_AUDIT_REMEDY: AlertRemedy = {
     'was left as it was. The alert clears itself on the next successful hourly run.',
 }
 
+/**
+ * The audit could not read its saved copy of the matrix from our own database
+ * (#835). Before this it was told to check Salesforce.
+ */
+export const MATRIX_AUDIT_SNAPSHOT_READ_REMEDY: AlertRemedy = {
+  consequence:
+    'The hourly audit of the Salesforce bid matrix could not read its saved copy of the matrix from our ' +
+    'Supabase database, so nothing was compared and an edit to the matrix would go unreported until it ' +
+    'succeeds again. Bidding itself is unaffected. It retries every hour on its own:',
+  fixHint:
+    'This is our database, not Salesforce: read the error above for why the sf_bid_matrix_audit table could ' +
+    'not be read. The alert clears itself on the next successful hourly run.',
+}
+
+/**
+ * The audit compared the matrix and could not save what it saw (#835). Any edit
+ * it found was already reported by then, since it reports before it saves, so
+ * "an edit would go unreported" was false here.
+ */
+export const MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY: AlertRemedy = {
+  consequence:
+    'The hourly audit of the Salesforce bid matrix compared the matrix but could not save what it saw to our ' +
+    'Supabase database. Any edit it found was reported before the save; the next run compares against the ' +
+    'older copy, so it may report the same edit again. Bidding itself is unaffected:',
+  fixHint:
+    'This is our database, not Salesforce: read the error above for why the sf_bid_matrix_audit write failed. ' +
+    'The alert clears itself on the next successful hourly run.',
+}
+
+/**
+ * The audit had nothing trustworthy to compare against (an empty saved copy, or
+ * a changed partner list), and saving the rebuilt copy failed. That save runs
+ * before anything is reported, so nothing was compared or reported.
+ */
+export const MATRIX_AUDIT_BASELINE_WRITE_REMEDY: AlertRemedy = {
+  consequence:
+    'The hourly audit of the Salesforce bid matrix had no trustworthy saved copy to compare against, so it ' +
+    'rebuilt the copy, and saving it to our Supabase database failed. Nothing was compared, so an edit to the ' +
+    'matrix would go unreported until a rebuild succeeds. Bidding itself is unaffected. It retries every hour on its own:',
+  fixHint:
+    'This is our database, not Salesforce: read the error above for why the sf_bid_matrix_audit write failed. ' +
+    'The alert clears itself on the next successful hourly run.',
+}
+
+const STEP_WORDING: Readonly<Record<MatrixAuditStep, { says: string; remedy: AlertRemedy }>> = {
+  snapshot_read: { says: 'could not read its saved copy of the matrix from Supabase', remedy: MATRIX_AUDIT_SNAPSHOT_READ_REMEDY },
+  baseline_write: { says: 'could not save its rebuilt copy of the matrix to Supabase', remedy: MATRIX_AUDIT_BASELINE_WRITE_REMEDY },
+  snapshot_write: { says: 'could not save its copy of the matrix to Supabase', remedy: MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY },
+}
+
 export interface WatchedAuditResult {
   ok: boolean
   result: AuditResult | null
@@ -57,9 +107,14 @@ export interface WatchedAuditDeps {
  * AN EMPTY LIST IS STILL SENT: `notifyExportFailure` reads no errors as the
  * recovery signal and clears its alert state with it.
  */
-async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
+async function alertQuietly(
+  supabase: SupabaseClient,
+  env: Env,
+  messages: string[],
+  remedy: AlertRemedy = MATRIX_AUDIT_REMEDY,
+): Promise<void> {
   try {
-    await notifyExportFailure(supabase, MATRIX_AUDIT_JOB, messages, env.IDEMPOTENCY, MATRIX_AUDIT_REMEDY)
+    await notifyExportFailure(supabase, MATRIX_AUDIT_JOB, messages, env.IDEMPOTENCY, remedy)
   } catch (err) {
     console.error('[sf-matrix-audit] could not send its alert:', formatErr(err))
   }
@@ -75,16 +130,24 @@ export async function runMatrixAuditWatched(
   try {
     result = await run(env, supabase)
   } catch (err) {
-    const detail = `the bid matrix audit failed: ${formatErr(err)}`
+    const step = err instanceof MatrixAuditStepError ? STEP_WORDING[err.step] : null
+    const detail = step
+      ? `the bid matrix audit ${step.says}: ${formatErr(err)}`
+      : `the bid matrix audit failed: ${formatErr(err)}`
     console.error(`[sf-matrix-audit] ${detail}`)
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], step?.remedy)
     return { ok: false, result: null, error: detail }
   }
 
   if (result.rows_fetched === 0) {
+    // Measured from the saved copy rather than a number written once (#835).
+    const held = result.snapshot_rows ?? 0
     const detail =
       'the bid matrix audit fetched no BidRangeRow__c rows from Salesforce, so nothing was compared and the ' +
-      'snapshot was not advanced; the matrix has held about 1,390 rows, so an empty answer is a failed read, not an empty matrix'
+      'snapshot was not advanced; ' +
+      (held > 0
+        ? `the saved copy from the last good read holds ${held} rows, so an empty answer is a failed read, not an empty matrix`
+        : 'the saved copy is empty too, so whether the matrix itself is empty is unknown')
     console.error(`[sf-matrix-audit] ${detail}`)
     await alertQuietly(supabase, env, [detail])
     return { ok: false, result, error: detail }

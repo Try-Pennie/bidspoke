@@ -44,7 +44,12 @@ import { ARCHIVE_EXPIRY_REMEDY, ARCHIVE_EXPIRY_UNLISTED_REMEDY } from '../archiv
 import { LOGPUSH_CHECK_REMEDY, LOGPUSH_UNREADABLE_REMEDY } from '../logpush-check'
 import { RETENTION_CHECK_REMEDY, RETENTION_CHECK_UNREADABLE_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
-import { MATRIX_AUDIT_REMEDY } from '../matrix-audit-health'
+import {
+  MATRIX_AUDIT_REMEDY,
+  MATRIX_AUDIT_SNAPSHOT_READ_REMEDY,
+  MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY,
+  MATRIX_AUDIT_BASELINE_WRITE_REMEDY,
+} from '../matrix-audit-health'
 import {
   PARTNER_RATES_MISMATCH_REMEDY,
   REVENUE_FORMULAS_DISAGREE_REMEDY,
@@ -88,6 +93,9 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['execution retention unreadable', RETENTION_CHECK_UNREADABLE_REMEDY],
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
+  ['salesforce matrix audit snapshot read', MATRIX_AUDIT_SNAPSHOT_READ_REMEDY],
+  ['salesforce matrix audit snapshot write', MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY],
+  ['salesforce matrix audit baseline write', MATRIX_AUDIT_BASELINE_WRITE_REMEDY],
   ['tripoint duplicate codes', TRIPOINT_DUPLICATE_CODES_REMEDY],
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
   ['export schema unreadable', EXPORT_SCHEMA_UNREADABLE_REMEDY],

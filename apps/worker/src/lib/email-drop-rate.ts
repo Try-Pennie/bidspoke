@@ -211,7 +211,8 @@ async function checkOrg(
       '',
       'Those leads were still created, deliberately: the address is dropped and the record saved without it, so a reachable phone number is not lost. The point of this alert is the rate, not the individual lead.',
       '',
-      `A sudden rise usually means the source changed something about how it captures or encodes the address. Worth asking them.`,
+      // A fixed rate, not a change against a baseline, so not "a sudden rise" (#835).
+      `That is at or above the ${(RATE_THRESHOLD * 100).toFixed(0)}% this alert allows, which usually means the source captures or encodes the address in a way Salesforce rejects. Worth asking them.`,
     ].join('\n')
 
     const blocks = [

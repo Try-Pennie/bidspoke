@@ -176,11 +176,13 @@ const scheduledJobs = {
             await notifyEnrollmentViewSkipped(supabase, s.enrollment_view_skipped, env.IDEMPOTENCY)
               .catch((e) => console.error('[achieve-export] enrollment view shortfall alert failed:', e))
             return notifyExportFailure(supabase, 'Achieve export', s.errors, env.IDEMPOTENCY, 'export-job')
-          })
-          .catch((e) => {
+          }, (e) => {
+            // Only the export's own crash: a second argument to then, so a throw
+            // from the alerter above is not reported as the export failing (#835).
             console.error('[achieve-export] failed:', e)
             return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           })
+          .catch((e) => console.error('[achieve-export] alert failed:', e))
       )
     } else if (event.cron === '17 8 * * *') {
       // Timeout audit, on its own off-peak schedule (#251). Its grouped
@@ -517,11 +519,12 @@ const scheduledJobs = {
             await notifySetAsideRows(supabase, s.set_aside, env.IDEMPOTENCY)
               .catch((e) => console.error('[sightings-export] set aside alert failed:', e))
             return notifyExportFailure(supabase, 'Lead sightings export', s.errors, env.IDEMPOTENCY, 'export-job')
-          })
-          .catch((e) => {
+          }, (e) => {
+            // Only the export's own crash, never the alerter's (#835).
             console.error('[sightings-export] failed:', e)
             return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
-          }),
+          })
+          .catch((e) => console.error('[sightings-export] alert failed:', e)),
         'sightings-export',
       ))
     } else if (event.cron === '23 * * * *') {

@@ -34,6 +34,8 @@ import { partnerConstantsLastGoodKey } from '../partner-constants-loader'
 import { buyerProfilesLastGoodKey } from '../buyer-profile-loader'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { SweepResult } from '../stored-copy-sweep'
+// @ts-expect-error Vite resolves ?raw to the file's text; no ambient declaration here.
+import DEFINITION_LOADER_SOURCE from '../../engine/definition-loader.ts?raw'
 
 const KEY = btoa('1'.repeat(32))
 const ORG = 'org-1'
@@ -207,6 +209,10 @@ describe('while leads are being served from stored copies', () => {
     expect(post.errors).toContain('The environment variables were served from a stored copy at least 30 times; the oldest was last confirmed 2 minutes ago.')
     expect(post.context).toMatch(/30 minutes after it was last confirmed/)
     expect(post.fixHint).toMatch(/status\.supabase\.com/)
+    // #835: a copy is served on ANY failed read, not only a slow one, so the
+    // lead sentence may not claim the database was merely slow.
+    expect(post.errors[0]).toMatch(/failed or timed out/)
+    expect(post.errors[0]).not.toMatch(/did not answer in time/)
   })
 
   // A copy that was there but could not be read or used is not "no copy" (L11).
@@ -421,6 +427,41 @@ describe('a stored copy that has gone stale', () => {
     expect(stale.errors).toEqual(['The stored copy of the custom endpoint for engine/bid was last confirmed 42 minutes ago, past the 30 minute limit.'])
     expect(stale.keys).toEqual([endpointLastGoodKey('engine', '/bid')])
     expect(stale.remedy).toMatchObject({ title: 'Stored copies have gone stale' })
+  })
+
+  // #835: the fix said to search the logs for "prewarm" and "stored-copy-sweep",
+  // but the prewarm swallows its loaders' errors and each loader logs under its
+  // own tag, so for most copies that search found nothing.
+  it('names the log tag of the job that confirms each stale copy', async () => {
+    const h = harness()
+    await h.copies.put(endpointLastGoodKey('engine', '/bid'), '{}', confirmedAt(T0 - 42 * MINUTE))
+    await runStoredCopyChecks(h.deps())
+    const sweepOnly = (h.notified.find((n) => n.job === STORED_COPY_STALE_JOB)!.remedy as { fixHint: string }).fixHint
+    expect(sweepOnly).toContain('[stored-copy-sweep]')
+    expect(sweepOnly).not.toContain('[env-loader]')
+  })
+
+  // The definition loader logs JSON events rather than a bracketed tag, so the fix
+  // names the event prefix every one of those lines carries, verbatim.
+  it('names the exact string the definition loader logs a workflow copy failure under', async () => {
+    const h = harness()
+    await liveWorkflowCopy(h.copies, T0 - STORED_COPY_MAX_AGE_MS - MINUTE)
+    await runStoredCopyChecks(h.deps())
+    const fix = (h.notified.find((n) => n.job === STORED_COPY_STALE_JOB)!.remedy as { fixHint: string }).fixHint
+    const named = fix.match(/`(workflow_definition_copy[^`]*)`/)?.[1]
+    expect(named).toBeDefined()
+    expect(DEFINITION_LOADER_SOURCE).toContain(`logEvent('${named}`)
+  })
+
+  it('points an environment copy at the loader that logs its failures', async () => {
+    const h = harness()
+    const old = T0 - STORED_COPY_MAX_AGE_MS - MINUTE
+    await liveWorkflowCopy(h.copies, T0)
+    await h.copies.put(envVarsLastGoodKey(ORG), 'blob', confirmedAt(old))
+    await runStoredCopyChecks(h.deps())
+    const fix = (h.notified.find((n) => n.job === STORED_COPY_STALE_JOB)!.remedy as { fixHint: string }).fixHint
+    expect(fix).toContain('[env-loader]')
+    expect(fix).not.toContain('[stored-copy-sweep]')
   })
 
   it('clears its alert when every copy is fresh', async () => {

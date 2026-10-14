@@ -1159,6 +1159,9 @@ describe('field-presence alerting', () => {
     // is being defended is the distinction, not the old words.
     expect(text).toContain('all but stopped resolving')
     expect(text).not.toContain('Something downstream reads this')
+    // #835: it also fires for a field that is empty by design and read only on
+    // a rare branch, which is neither an outage nor a wrong path, so it says so.
+    expect(text).toMatch(/rare branch/)
   })
 
   it('keeps the two tiers on separate incident markers', async () => {

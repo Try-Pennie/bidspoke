@@ -26,8 +26,54 @@ export type ExportErrorClass =
   | 'export_behind'
   | 'unknown'
 
+/**
+ * For an error that names no step and matches no rule. It used to send the
+ * reader to Snowflake, but most errors nobody has classified come from Supabase
+ * or Salesforce (#835), so it claims no system at all.
+ */
 export const GENERIC_FIX_HINT =
-  'Check Snowflake availability and the export credentials. If it stays down, watch Supabase disk: the un-purged rows accumulate until a run succeeds.'
+  'Read the error above: it names the system that refused. If the next run fails the same way, fix that system before anything else.'
+
+/**
+ * What each step of the two export jobs touches, keyed by the prefix the job
+ * writes in front of each error (`trades backfill: ...` in achieve-export.ts,
+ * `sightings export: ...` in sightings-export.ts). An error no rule recognises
+ * still came from a known step, and the step is enough to say which systems it
+ * could have been (#835).
+ */
+type StepSystems = 'supabase' | 'supabase_and_snowflake' | 'salesforce'
+
+const STEP_SYSTEMS: Readonly<Record<string, StepSystems>> = {
+  'trades backfill': 'supabase',
+  'sandbox purge': 'supabase',
+  'enrollment view backfill': 'salesforce',
+  'evaluations export': 'supabase_and_snowflake',
+  'sightings export': 'supabase_and_snowflake',
+  'bids export': 'supabase_and_snowflake',
+}
+
+function stepSystemsOf(message: string): StepSystems | null {
+  const colon = message.indexOf(': ')
+  if (colon < 0) return null
+  return STEP_SYSTEMS[message.slice(0, colon)] ?? null
+}
+
+/** The line for an unrecognised error from a step that is named. */
+const UNKNOWN_IN_STEP: Readonly<Record<Exclude<StepSystems, 'salesforce'>, string>> = {
+  supabase:
+    'This step reads and writes only our Supabase database, so the error came from Supabase. The rows it did not reach wait for the next run. If that run fails the same way, look the error up in the Supabase logs.',
+  supabase_and_snowflake:
+    'This step reads rows from our Supabase database and writes them to Snowflake, and the error above names which of the two refused. Rows not marked as exported are sent again on the next run.',
+}
+
+/**
+ * The enrollment view backfill is the one step whose leads are NOT retried: the
+ * export that follows it in the same run sends every unfilled lead without the
+ * view, and the backfill only reads leads not yet exported (achieve-export.ts),
+ * so a transient line promising "the next run" would be false here (#835).
+ */
+const ENROLLMENT_VIEW_FIX =
+  "The enrollment view is read from each lead's Salesforce Submission just before the Achieve export, and a lead exported without it is never filled in later. Read the error above: a Salesforce query failure names the status Salesforce returned, and anything else came from our database. Fix it before the next 09:00 UTC run, or that day's leads go without it too."
 
 const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
   missing_credential:
@@ -45,7 +91,9 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
   snowflake_schema:
     'Snowflake schema drift: a column the export writes is missing, renamed, or rejecting its value. Compare the Supabase and Snowflake column lists (see issue #428).',
   supabase_permission:
-    'Supabase denied the export role. Check the RLS policy and the table grants for the service role.',
+    // Not the RLS policy: the Worker connects as service_role, which bypasses RLS,
+    // so a 42501 here is a missing table or schema grant (#835).
+    'Supabase denied the export role. Check the table and schema grants for the service role.',
   platform_limit:
     "The Worker hit Cloudflare's per invocation subrequest ceiling while draining a backlog. There is no action to take: the run stopped cleanly and the next run continues from where it left off.",
   export_behind:
@@ -138,20 +186,51 @@ const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
 ])
 
 export function isTransientExportError(message: string): boolean {
+  // The enrollment view's leads are exported without it in the same run and never
+  // filled in later, so a retry fixes nothing for them and holding the first
+  // failure a run would cost that day's leads silently (#2086).
+  if (stepSystemsOf(message) === 'salesforce') return false
   return TRANSIENT_CLASSES.has(classifyExportError(message))
 }
 
 /**
  * Build the alert's "How to fix" body: one line per distinct error class, in the
  * order the classes are defined above. An unrecognised error always contributes
- * the generic line, so a cause we cannot explain is never silently dropped.
+ * a line, so a cause we cannot explain is never silently dropped: the line for
+ * its step when the error names one, the generic line when it does not.
+ *
+ * An error from the enrollment view backfill gets that step's own line, and
+ * keeps its class line only when the class line promises no retry, because its
+ * leads are never retried (#835).
  */
 export function buildFixHint(errors: string[]): string {
   if (errors.length === 0) return GENERIC_FIX_HINT
 
-  const seen = new Set(errors.map(classifyExportError))
-  const lines = RULES.filter((r) => seen.has(r.cls)).map((r) => FIX_HINTS[r.cls])
-  if (seen.has('unknown')) lines.push(GENERIC_FIX_HINT)
+  const classes = new Set<ExportErrorClass>()
+  const unknownSteps = new Set<Exclude<StepSystems, 'salesforce'>>()
+  let enrollmentView = false
+  let unknownNoStep = false
+  for (const message of errors) {
+    const cls = classifyExportError(message)
+    const step = stepSystemsOf(message)
+    if (step === 'salesforce') {
+      enrollmentView = true
+      if (cls !== 'unknown' && !TRANSIENT_CLASSES.has(cls)) classes.add(cls)
+    } else if (cls !== 'unknown') {
+      classes.add(cls)
+    } else if (step !== null) {
+      unknownSteps.add(step)
+    } else {
+      unknownNoStep = true
+    }
+  }
+
+  const lines = RULES.filter((r) => classes.has(r.cls)).map((r) => FIX_HINTS[r.cls])
+  if (enrollmentView) lines.push(ENROLLMENT_VIEW_FIX)
+  for (const step of ['supabase', 'supabase_and_snowflake'] as const) {
+    if (unknownSteps.has(step)) lines.push(UNKNOWN_IN_STEP[step])
+  }
+  if (unknownNoStep) lines.push(GENERIC_FIX_HINT)
 
   return lines.length > 0 ? lines.join('\n') : GENERIC_FIX_HINT
 }

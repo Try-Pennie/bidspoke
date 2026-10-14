@@ -743,7 +743,8 @@ describe('sendExportFailureAlert (#412)', () => {
       jobName: 'x', errors: ['boom'],
     })
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(JSON.stringify(body.blocks)).toContain('Check Snowflake availability')
+    // The generic line no longer names Snowflake (#835): it names no system at all.
+    expect(JSON.stringify(body.blocks)).toContain('Read the error above')
   })
 
   it('does nothing when there are no errors', async () => {

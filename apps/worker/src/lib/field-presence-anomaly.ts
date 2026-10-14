@@ -1184,8 +1184,10 @@ export async function sendFieldDeadAlert(
           'The step still runs, but this field has all but stopped resolving. If it used to carry ' +
           'values, most often an upstream is down or now answers in a different shape, so check the ' +
           'step\'s recent output first. If it never has, the reference path may be wrong: correct it ' +
-          'or remove the reference. Either way this stands down by itself on the first day the field ' +
-          'resolves again.',
+          'or remove the reference. A field that is empty by design and read only on a rare branch ' +
+          // The third cause (#835): the check cannot tell a design null from a fault.
+          'also looks like this, and then nothing needs fixing. Either way this stands down by ' +
+          'itself on the first day the field resolves again.',
       },
     },
   ]

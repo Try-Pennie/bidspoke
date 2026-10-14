@@ -354,19 +354,28 @@ const VENDOR_HEALTH_SIGNALS = [
  * no cause at all rather than guessing, because the wrong steer is worse than
  * none.
  */
-export function describeHowToCheck(causeLabel: string, shapes: ErrorShape[]): string {
+export function describeHowToCheck(
+  causeLabel: string,
+  shapes: ErrorShape[],
+  context: { causeKey?: string; workflowNames?: readonly string[] } = {},
+): string {
   const dominant = shapes[0]
   if (!dominant) {
     return `Review the affected runs to see what they failed on. Not enough detail was captured to narrow this down here.`
   }
   const lower = dominant.sample.toLowerCase()
-  if (OUR_CALL_PATTERN_SIGNALS.some((sig) => lower.includes(sig))) {
+  // Our own code FIRST (#835): an Apex governor exception such as
+  // "System.LimitException: Apex CPU time limit exceeded" also contains "limit
+  // exceeded", and read as a call pattern problem it sent the reader to our
+  // call volume for a fault in our own Apex.
+  const ownCode = OUR_OWN_CODE_SIGNALS.some((sig) => lower.includes(sig))
+  if (!ownCode && OUR_CALL_PATTERN_SIGNALS.some((sig) => lower.includes(sig))) {
     return (
       `The dominant error is a limit or governor rejection, which is about our own call pattern and volume ` +
       `rather than ${causeLabel} being down. Check concurrent in-flight calls and recent volume first.`
     )
   }
-  if (OUR_OWN_CODE_SIGNALS.some((sig) => lower.includes(sig))) {
+  if (ownCode) {
     return (
       `The dominant error was raised by our own code or configuration running inside ${causeLabel}, ` +
       `not by ${causeLabel} being unwell, so checking their health will not explain it. Look at what ` +
@@ -375,6 +384,21 @@ export function describeHowToCheck(causeLabel: string, shapes: ErrorShape[]): st
     )
   }
   if (VENDOR_HEALTH_SIGNALS.some((sig) => lower.includes(sig))) {
+    // Neither of these is a vendor with a status page (#835): the timeout cause
+    // names no service, and a partner API is whichever partner the workflow calls.
+    const names = context.workflowNames && context.workflowNames.length > 0 ? context.workflowNames.join(', ') : null
+    if (context.causeKey === 'timeout') {
+      return (
+        `These errors do not name the slow service. Open an affected run${names ? ` of ${names}` : ''} and read ` +
+        `which step timed out: that step's service is the one to check.`
+      )
+    }
+    if (context.causeKey === 'partner_api') {
+      return (
+        `The dominant error is the partner's own server fault. Ask the partner behind ` +
+        `${names ?? 'the affected workflow'} about their API's health, then review the affected runs.`
+      )
+    }
     return `Confirm ${causeLabel} health (status page / direct call), then review the affected runs.`
   }
   return `Review the affected runs, starting with the dominant error above.`
@@ -893,7 +917,7 @@ export async function runUpstreamOutageCheck(
           workflow_names: group.workflowNames,
           error_shapes: group.shapes,
           other_shape_count: group.otherShapeCount,
-          how_to_check: describeHowToCheck(group.cause.label, group.shapes),
+          how_to_check: describeHowToCheck(group.cause.label, group.shapes, { causeKey: group.cause.key, workflowNames: group.workflowNames }),
           timestamp: new Date(now).toISOString(),
         },
         appUrl,
