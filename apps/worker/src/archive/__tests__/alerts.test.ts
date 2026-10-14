@@ -49,6 +49,17 @@ describe('alertsFor', () => {
     expect(ARCHIVE_JOB_NAMES.misconfigured).not.toBe(ARCHIVE_JOB_NAMES.ingest)
   })
 
+  // #835: the only secret this exit names is SSN_HASH_PEPPER, which cannot be
+  // re-derived. "Set the named secret" invited a NEW value, which leaves every
+  // record already archived unfindable by SSN for an erasure request. The fix
+  // is to restore the escrowed value, never to make one.
+  it('tells the reader to restore the escrowed pepper, never to set a new one', () => {
+    const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: 'SSN_HASH_PEPPER is not set' }))
+    expect(alert.remedy.fixHint).toMatch(/Bidspoke recovery keys/)
+    expect(alert.remedy.fixHint).toMatch(/never a new value/i)
+    expect(alert.remedy.fixHint).not.toMatch(/<NAME>/)
+  })
+
   // Separate names so a per-execution refusal cannot suppress a genuine ingest
   // outage for the next eight hours through the shared backstop cooldown.
   it('gives refusals their own name, distinct from ingest', () => {

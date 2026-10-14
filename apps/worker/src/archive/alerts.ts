@@ -120,9 +120,15 @@ export function ingestRemedyFor(stop: RunStop): TitledRemedy {
 export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
   title: 'The hourly backup cannot run: a setting is missing',
   context: 'No hour is being backed up while this stands. It is not writing incomplete records, which is the safe choice.',
+  // The only secret this exit checks is SSN_HASH_PEPPER (execution-archive.ts),
+  // which cannot be re-derived: a NEW value leaves every record already archived
+  // unfindable by SSN for an erasure request (#835). So the fix restores the
+  // escrowed value and says never to make one.
   fixHint:
-    'Set the named secret with wrangler secret put <NAME> --name bidspoke-worker. The next hourly run picks it ' +
-    'up and the skipped hours are backed up on later runs.',
+    'Restore SSN_HASH_PEPPER from the 1Password item "Bidspoke recovery keys" with wrangler secret put ' +
+    'SSN_HASH_PEPPER --name bidspoke-worker, piping the value in. Never a new value: a new one leaves every ' +
+    'record already backed up unfindable by SSN. The next hourly run picks it up and the skipped hours are ' +
+    'backed up on later runs.',
 }
 
 export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
