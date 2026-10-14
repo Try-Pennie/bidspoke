@@ -106,7 +106,7 @@ describe('IncidentsSection', () => {
     expect(items).toEqual([
       '2:34 PM to 4:06 PMFailure rateEngine Bidding: "ACRO_GATEWAY"1 hour 32 minutes2 Slack pages',
       '9:12 PM to 9:41 PMVolume cliffMain Flow29 minutes1 Slack page',
-      '3:00 PM, end not recordedOutput field stoppedMain Flow scout.final1 Slack page',
+      '3:00 PMOutput field stoppedMain Flow scout.finalEnd not recorded1 Slack page',
     ])
   })
 

@@ -27,12 +27,22 @@ export function signalText(i: Pick<Incident, 'signal' | 'signal_label' | 'signal
   return i.signal_known ? i.signal_label : `${i.signal_label} (${i.signal})`
 }
 
-/** "2:34 PM to 4:06 PM" under the start's day heading; an end on a later day carries its day. */
+/**
+ * "2:34 PM to 4:06 PM" under the start's day heading; an end on a later day carries its day.
+ * With no recorded end it is the start alone, and the duration column says why, so the time
+ * column stays one line at laptop width.
+ */
 export function incidentTimeRange(i: Incident): string {
   const start = formatEtClock(i.started_at)
-  if (i.state === 'end_not_recorded' || !i.ended_at) return `${start}, end not recorded`
+  if (i.state === 'end_not_recorded' || !i.ended_at) return start
   const end = etDayKey(i.ended_at) === etDayKey(i.started_at) ? formatEtClock(i.ended_at) : formatEtDayTime(i.ended_at)
   return `${start} to ${end}`
+}
+
+/** The duration column: the measured span, or that the end was not recorded (there is no span to give). */
+export function incidentDurationText(i: Incident): string {
+  if (i.state === 'end_not_recorded' || !i.ended_at) return 'End not recorded'
+  return i.duration ?? ''
 }
 
 export interface IncidentDay {

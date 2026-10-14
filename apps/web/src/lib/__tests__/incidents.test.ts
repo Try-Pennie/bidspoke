@@ -8,6 +8,7 @@ import {
   INCIDENT_RECORDING_BEGAN,
   emptyIncidentsText,
   groupIncidentsByDay,
+  incidentDurationText,
   incidentTimeRange,
   ongoingIncidentSentence,
   signalText,
@@ -74,8 +75,18 @@ describe('incidentTimeRange', () => {
     expect(incidentTimeRange(closed({ started_at: '2026-10-14T03:40:00.000Z', ended_at: '2026-10-14T04:20:00.000Z' }))).toBe('11:40 PM to Oct 14, 12:20 AM')
   })
 
-  it('says when the end was not recorded', () => {
-    expect(incidentTimeRange(closed({ state: 'end_not_recorded', ended_at: null, duration: null, started_at: '2026-10-11T19:00:00.000Z' }))).toBe('3:00 PM, end not recorded')
+  it('gives only the start when the end was not recorded, so the time column stays one line', () => {
+    expect(incidentTimeRange(closed({ state: 'end_not_recorded', ended_at: null, duration: null, started_at: '2026-10-11T19:00:00.000Z' }))).toBe('3:00 PM')
+  })
+})
+
+describe('incidentDurationText', () => {
+  it('is the measured duration of an ended incident', () => {
+    expect(incidentDurationText(closed({}))).toBe('1 hour 32 minutes')
+  })
+
+  it('says the end was not recorded where the duration would be, since there is none', () => {
+    expect(incidentDurationText(closed({ state: 'end_not_recorded', ended_at: null, duration: null }))).toBe('End not recorded')
   })
 })
 

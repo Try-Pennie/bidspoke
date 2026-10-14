@@ -74,7 +74,7 @@ body { margin: 0; padding: 32px; background: #F4F1EC; font-family: -apple-system
 <h1>Incidents card: the settled design (#2101)</h1>
 <p>Settled with Dan in four rendered design rounds on 2026-10-14, one question a round. Built in <code>apps/web/src/components/dashboard/IncidentsSection.tsx</code> (the card), <code>apps/web/src/components/dashboard/OngoingIncidents.tsx</code> (the line), <code>apps/web/src/lib/incidents.ts</code> (their words) and the worker routes <code>GET /api/incidents</code> and <code>GET /api/incidents/ongoing</code>.</p>
 <h2>Decision 1: grouped by day (round 1)</h2>
-<p>Incidents sit under a day heading (Today, Yesterday, then the weekday and date), so a bad day with several stands out and each time needs only the hour; the first heading says the times are ET. Each row is the time range ("2:34 PM to 4:06 PM", or "3:00 PM, end not recorded"), the signal, the subject, the duration from the span rule the Slack all-clear uses, and the Slack pages. A six column table and a two line list were rendered and set aside.</p>
+<p>Incidents sit under a day heading (Today, Yesterday, then the weekday and date), so a bad day with several stands out and each time needs only the hour; the first heading says the times are ET. Each row is the time range ("2:34 PM to 4:06 PM"), the signal, the subject, the duration from the span rule the Slack all-clear uses, and the Slack pages. An incident whose end was not recorded shows its start alone and "End not recorded" in the duration column, which it would otherwise leave empty: drawn as "3:00 PM, end not recorded" in the time column, it wrapped onto two lines at laptop width, so Dan asked for it fixed after seeing the built page (2026-10-14). A six column table and a two line list were rendered and set aside.</p>
 <h2>Decision 2: at the bottom of the dashboard (round 2)</h2>
 <p>After By workflow and Recent failures, so the page reads summary first and history last. At the top, and under the success rate, were rendered and set aside; what is urgent now moved to its own line instead (decision 4).</p>
 <h2>Decision 3: the card follows the page's 7, 14, 30 day switch</h2>
@@ -134,7 +134,7 @@ function dayRow(i, mode) {
   if (i.state === 'ongoing') {
     range = mode === 'heading' ? 'Since ' + i.startTime + ' today' : i.startTime
     dur = mode === 'heading' ? '1 hour 20 minutes so far' : 'Ongoing'
-  } else if (i.state === 'end_not_recorded') { range = i.startTime + ', end not recorded'; dur = '' }
+  } else if (i.state === 'end_not_recorded') { range = i.startTime; dur = 'End not recorded' }
   else { range = i.startTime + ' to ' + i.endTime; dur = i.duration }
   row.append(el('span', 'range', range))
   row.append(el('span', 'sig', i.signal))
