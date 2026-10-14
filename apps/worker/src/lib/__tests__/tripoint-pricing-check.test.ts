@@ -137,7 +137,7 @@ describe('checkTripointPricing', () => {
       readFormulaChange: async () => ({ at: '2026-10-01T00:30:00.000+0000', by: 'Daniel Wright' }),
     }))
 
-    expect(sentRemedy()?.context).toBe('The Salesforce formula was last changed Sep 30 by Daniel Wright.')
+    expect(sentRemedy()?.context).toBe('The Salesforce Lead formula was last changed Sep 30 by Daniel Wright.')
   })
 
   it('still alerts the mismatch when who changed the formula cannot be read, saying only what it knows', async () => {
@@ -146,7 +146,7 @@ describe('checkTripointPricing', () => {
     await checkTripointPricing(env, db.client, seams({
       readFormulaChange: async () => ({ at: '2026-09-30T17:32:20.000+0000', by: null }),
     }))
-    expect(sentRemedy()?.context).toBe('The Salesforce formula was last changed Sep 30.')
+    expect(sentRemedy()?.context).toBe('The Salesforce Lead formula was last changed Sep 30.')
 
     vi.mocked(notifyExportFailure).mockClear()
     await checkTripointPricing(env, db.client, seams({
@@ -332,7 +332,18 @@ describe('checkTripointPricing', () => {
 
       expect(r.differences.map((d) => d.code)).toEqual(['high-multiplier-disagrees', 'formula-unreadable', 'formulas-disagree'])
       expect(alerted()).toContain("The check couldn't read the Salesforce Submission formula: Salesforce answered 403 INSUFFICIENT_ACCESS")
-      expect(sentRemedy()?.title).toBe("Tripoint rate check couldn't run")
+      // A real mismatch was measured, so the title says so rather than that the check never ran (#835).
+      expect(sentRemedy()?.title).toBe("Partner rates don't match, and part of the check couldn't run")
+      expect(sentRemedy()?.fixHint).toMatch(/Decide which rate is right/)
+    })
+
+    it('a Bidspoke mismatch beside an unreadable formula keeps the mismatch title and fix (#835)', async () => {
+      const db = supabaseDouble({ data: { bid_resolver_config: BIDSPOKE_TODAY } })
+      const f = formulas({ Lead: LEAD_WITH_0012, Submission: new Error('403'), Prospect: new Error('403') })
+      const r = await checkTripointPricing(env, db.client, seams({ readFormula: f.readFormula }))
+      expect(r.differences.map((d) => d.code)).toContain('high-multiplier-disagrees')
+      expect(sentRemedy()?.title).toBe("Tripoint rates don't match Salesforce, and part of the check couldn't run")
+      expect(sentRemedy()?.fixHint).toMatch(/Partners > Tripoint/)
     })
 
     it('reports a Lead formula it cannot parse once, never again as the Main Flow comparison failing', async () => {

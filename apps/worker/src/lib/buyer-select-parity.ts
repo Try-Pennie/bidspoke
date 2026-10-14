@@ -683,8 +683,8 @@ export function productionRefreshDeps(supabase: SupabaseClient, env: Env): Refre
 export const BUYER_SELECT_PARITY_REMEDY: AlertRemedy = {
   consequence:
     'A parity day could not be summarised or written, so the buyer_select_parity_days record the Stage A exit criteria are read ' +
-    'from is behind for that day. Selling is unaffected; this is the comparison record, not the sale. The lines below name the ' +
-    'workflow, the day and what failed:',
+    'from is behind for the days or workflows named. Selling is unaffected; this is the comparison record, not the sale. Each line ' +
+    'says what failed:',
   fixHint:
     'A read error (statement timeout, an unreadable table) clears itself on the next hour if the database is healthy; a day that ' +
     'keeps failing can be re-run by hand with POST /api/admin/buyer-select/parity/refresh {"workflow_id", "day"}. A workflow ' +
