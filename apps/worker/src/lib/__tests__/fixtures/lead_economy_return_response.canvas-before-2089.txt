@@ -1,0 +1,94 @@
+const pt = steps.prospect_trades.output.body;
+const engineBid = pt.engineBid;
+
+const rejectBody = {
+  lead_id: payload.leadId1,
+  status: "rejected",
+  reason: "unqualified_lead",
+};
+
+if (engineBid === 0) {
+  return { response: { status: 200, body: rejectBody }, continueExecution: true, isRejected: true };
+}
+
+let tripointResult = null;
+if (pt.sellOff) {
+  const proxyPayload = {
+    ...payload,
+    unsecuredDebt: pt.tradeCalculations.engineDebt,
+    maxUnsecuredDebt: pt.tradeCalculations.enrollableDebt,
+    workflowId: 'am-one-bidding',
+    pennieLeadId: steps.create_prospect.output.body.id,
+    executionId: execution.trace_id,
+    leadType: 'prospect',
+  };
+
+  const res = await fetch('https://tripoint-proxy.trypennie.dev/leads/create', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.TRIPOINT_PROXY_SECRET}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(proxyPayload),
+  });
+  const rawText = await res.text();
+  let body = {};
+  try { body = rawText ? JSON.parse(rawText) : {}; } catch {}
+  const createLead = body?.data?.createLead ?? null;
+  const resultCode = Number(createLead?.resultCode);
+  const qualified =
+    body.ok === true &&
+    (resultCode === 1000 || resultCode === 1001 || (resultCode >= 1013 && resultCode <= 1017));
+
+  console.log(`createLead resultCode=${resultCode} qualified=${qualified}`);
+  tripointResult = { qualified, createLead, resultCode };
+
+  if (!tripointResult.qualified) {
+    return { response: { status: 200, body: rejectBody }, continueExecution: true, isRejected: true, tripointResult };
+  }
+}
+
+const constants = steps.constants.output;
+
+let redirectUrl;
+if (pt.sellOff)              redirectUrl = constants.tripointClickUrl;
+else if (pt.expLandingPage)  redirectUrl = constants.pennieExpLandingPage;
+else if (pt.altLandingPage)  redirectUrl = constants.pennieAlternateClickUrl;
+else                         redirectUrl = constants.pennieClickUrl;
+
+const fmt = new Intl.NumberFormat('en-US');
+const firstName = payload.personalInformation.firstName;
+const formattedName = firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase();
+const annualIncome = fmt.format(payload.financialInformation.annualIncome);
+const maxLoanPmt = fmt.format(pt.maxLoanPmt);
+const maxLoanAmt = fmt.format(pt.maxLoanAmt);
+
+const dynamicOfferContent = {
+  offer_title: `${formattedName}, you may qualify for up to $${maxLoanAmt} starting at $${maxLoanPmt}/mo.`,
+  offer_details: "<ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
+};
+
+let offer;
+if (pt.sellOff) {
+  offer = { offer_title: constants.sellOffOfferTitle, offer_details: constants.sellOffOfferDetails };
+} else if (pt.testOfferLanguage) {
+  offer = dynamicOfferContent;
+} else {
+  offer = { offer_title: constants.mainOfferTitle, offer_details: constants.mainOfferDetails };
+}
+
+const responseBody = {
+  requestId: execution.trace_id,
+  offers: [{
+    name: constants.offerName,
+    display_name: constants.offerName,
+    rate: engineBid,
+    click_url: `${redirectUrl}/${steps.create_prospect.output.body.id}`,
+    product_type: constants.productType,
+    logo_src: constants.logoSrc,
+    ...offer,
+  }],
+};
+
+const respondedAt = new Date().toISOString();
+return { response: { status: 200, body: responseBody }, continueExecution: true, isRejected: false, tripointResult, respondedAt };

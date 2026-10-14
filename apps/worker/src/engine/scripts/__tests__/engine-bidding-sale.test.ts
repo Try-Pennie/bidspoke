@@ -70,9 +70,14 @@ const withoutNewFields = (tp: Json): Json => {
   return rest
 }
 
-/** The recorded responses predate `reject_patch` (#1471) and `sale` (#1416), so byte equality is on the fields they hold; the new fields have their own tests below. */
-const legacyResponse = (r: Arm['response'] & { reject_patch?: unknown; sale?: unknown }): Arm['response'] => {
-  const { reject_patch: _patch, sale: _sale, ...rest } = r
+/**
+ * The recorded responses predate `reject_patch` (#1471), `sale` (#1416) and `link_token` (#2089), so byte
+ * equality is on the fields they hold; the new fields have their own tests (below, and link-token.test.ts).
+ * The fixture's landing pages are not trypennie.com, so the link is left unsigned and the body still equals
+ * the recording byte for byte.
+ */
+const legacyResponse = (r: Arm['response'] & { reject_patch?: unknown; sale?: unknown; link_token?: unknown }): Arm['response'] => {
+  const { reject_patch: _patch, sale: _sale, link_token: _token, ...rest } = r
   return rest
 }
 

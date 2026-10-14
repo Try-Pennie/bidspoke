@@ -205,13 +205,14 @@ PARTNER_PROBE_ALERTS = "on"
 
 # The kept Engine canvas scripts as text (#1472). apps/worker/src/engine/scripts/
 # engine-bidding/*.js are byte for byte what is pasted into the Engine Bidding
-# Workflow's code nodes (and liberty1-click/*.js are the Liberty1 click
-# workflow's, #1545): script bodies, not modules. The hourly drift check
+# Workflow's code nodes (liberty1-click/*.js are the Liberty1 click
+# workflow's, #1545, and lead-economy/*.js Lead Economy's, #2089): script
+# bodies, not modules. The hourly drift check
 # imports them to compare against the canvas mirror, so they are bundled as
 # strings. The same import is served by the vitest plugin in vitest.config.ts.
 [[rules]]
 type = "Text"
-globs = ["**/engine-bidding/*.js", "**/liberty1-click/*.js"]
+globs = ["**/engine-bidding/*.js", "**/liberty1-click/*.js", "**/lead-economy/*.js"]
 fallthrough = true
 
 [triggers]

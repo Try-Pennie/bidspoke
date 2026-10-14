@@ -56,6 +56,19 @@ import, so `../__tests__/tripoint-duplicate-codes.test.ts` holds both literals t
 list on every code from 990 to 1100. Both were pasted in one save, Engine Bidding
 version 103 (2026-09-30 14:43 UTC), and their drift baselines cleared after.
 
+**#2089 (the signed link token)** changed `build_response_body` only: the offer link,
+whichever page or buyer it lands on, gets `?t=<token>` (or `&t=`) when its host is
+`trypennie.com` or `www.trypennie.com`, signed with `LINK_TOKEN_SECRET` exactly as
+Salesforce and trypennie.com sign it. A partner's domain never gets the token. The step
+output carries `link_token` (`signed`, `missing_secret`, `not_our_host`, `no_record_id`
+or `sign_failed`), and nothing fails the bid. The helper block between the
+`BEGIN`/`END link token (#2089)` markers is identical in Lead Economy's
+`../lead-economy/return_response.js`, and `../__tests__/link-token.test.ts` holds the two
+to one text and pins the token to the issue's worked example. It is pasted on its own:
+no other script reads the new field. The drift check reads it as awaiting paste (its
+baseline is the version it was derived from, read on 2026-10-14) until the paste lands;
+clear the baseline in the change after.
+
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
 `build_response_body`; and both read an older `tripoint_ping` (with or without
@@ -69,9 +82,9 @@ The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
 a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
-on the canvas since version 101, and none of the kept Engine scripts carries a
-baseline now (version 103 holds all four), so any difference from the canvas is
-a drift.
+on the canvas since version 101. Of the kept Engine scripts only
+`build_response_body` carries a baseline, until its #2089 paste lands (see above);
+for the other three any difference from the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce

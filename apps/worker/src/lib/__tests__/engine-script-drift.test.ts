@@ -55,6 +55,15 @@ import liberty1File from '../../../../../docs/workflows/liberty1-click/definitio
 import BUILD_REQUEST_V14_RAW from './fixtures/build_liberty1_request.canvas-v14.txt?raw'
 /** The build_request script on the Liberty1 Click Handler canvas at version 14, before #1671 took its routes out. */
 const CANVAS_BUILD_REQUEST_V14 = (BUILD_REQUEST_V14_RAW as string).replace(/[\r\n]+$/, '')
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_RESPONSE_BODY_BEFORE_2089_RAW from './fixtures/build_response_body.canvas-before-2089.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW from './fixtures/lead_economy_return_response.canvas-before-2089.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import LEAD_ECONOMY_RETURN_RESPONSE_RAW from '../../engine/scripts/lead-economy/return_response.js?raw'
+/** The canvas scripts the #2089 edits were derived from, read from the mirror on 2026-10-14. */
+const BEFORE_2089_BUILD_RESPONSE_BODY = (BUILD_RESPONSE_BODY_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
+const BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE = (LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
 const LIBERTY1_ON_DISK: Record<string, string> = {
   'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
   'pick_click_record.js': PICK_CLICK_RECORD_RAW as string,
@@ -91,12 +100,40 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance: Engine Bidding version 106 (2026-10-02) holds all four, #1653 included, so any difference is a drift or a missing node', () => {
+  it('carry no canvas baseline and no new node allowance, except build_response_body awaiting its #2089 paste: Engine Bidding version 106 (2026-10-02) holds the other three, so any difference there is a drift or a missing node', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) {
+      expect(kept.newNodeSince, kept.file).toBeUndefined()
+      if (kept.namespace === 'build_response_body') continue
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
-      expect(kept.newNodeSince, kept.file).toBeUndefined()
     }
+  })
+
+  it('build_response_body (#2089) is an awaited paste while the canvas holds exactly the script it was derived from, and a drift once the canvas holds anything else', async () => {
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
+    expect(kept.baselineReadOn).toBe('2026-10-14')
+    const before = BEFORE_2089_BUILD_RESPONSE_BODY
+    expect(await sha256Hex(before)).toBe(kept.canvasBaselineSha256)
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
+    const [awaiting] = await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow')
+    expect(awaiting.state).toBe('awaiting_paste')
+    const [agree] = await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow')
+    expect(agree.state).toBe('agree')
+    const [drift] = await judgeKeptScripts([kept], definition(before + '\n// edited'), 'Engine Bidding Workflow')
+    expect(drift.state).toBe('drift')
+  })
+
+  it('build_response_body differs from the canvas script it was derived from only by the #2089 link token', () => {
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script
+    const end = '// END link token (#2089)\n'
+    const block = kept.slice(kept.indexOf('// BEGIN link token (#2089)'), kept.indexOf(end) + end.length)
+    const wiring = "\nconst prospectId = steps.create_prospect.output.body.id;\n// A click sale's landing page already carries the prospect id (#1544).\nconst offerLink = await withLinkToken(clickSale ? redirectUrl : redirectUrl + `/${prospectId}`, prospectId);\n\n"
+    const undone = kept
+      .replace(block + wiring, '')
+      .replace('        click_url:    offerLink.url,', "        // A click sale's landing page already carries the prospect id (#1544).\n        click_url:    clickSale ? redirectUrl : redirectUrl + `/${steps.create_prospect.output.body.id}`,")
+      .replace('  link_token: offerLink.link_token,\n', '')
+      .replace(/[\r\n]+$/, '')
+    expect(undone).toBe(BEFORE_2089_BUILD_RESPONSE_BODY)
   })
 
   it('pages a canvas edit to known_no_gate as drift, now that it carries no baseline', async () => {
@@ -351,6 +388,39 @@ describe('endingOf', () => {
   it('lists every script and its state in the summary, so job_runs shows which paste landed', () => {
     const ending = endingOf({ verdicts: [agree, awaiting], configVerdicts: [], findings: [] })
     expect(ending.summary).toMatchObject({ scripts: { 'W/a': 'agree', 'W/b': 'awaiting_paste' } })
+  })
+})
+
+describe('Lead Economy (#2089)', () => {
+  const leadEconomy = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'lead-economy')
+
+  it('is watched on its live workflow with return_response, the file on disk, awaiting its paste against the canvas script it was derived from', async () => {
+    expect(leadEconomy?.workflowId).toBe('89b1a6af-7e0f-43de-bc66-1e888184551f')
+    expect(leadEconomy?.configSources).toEqual([])
+    expect(leadEconomy?.scripts.map((k) => k.namespace)).toEqual(['return_response'])
+    const kept = leadEconomy!.scripts[0]
+    expect(kept.script).toBe(LEAD_ECONOMY_RETURN_RESPONSE_RAW as string)
+    expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
+    expect(kept.newNodeSince).toBeUndefined()
+    expect(kept.baselineReadOn).toBe('2026-10-14')
+    expect(await sha256Hex(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE)).toBe(kept.canvasBaselineSha256)
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'return_response', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE), 'Lead Economy'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(kept.script), 'Lead Economy'))[0].state).toBe('agree')
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE + '\n// edited'), 'Lead Economy'))[0].state).toBe('drift')
+  })
+
+  it('differs from the canvas script it was derived from only by the #2089 link token', () => {
+    // Everything else in the kept file is the live script byte for byte, so the paste
+    // changes nothing but the offer link.
+    const kept = leadEconomy!.scripts[0].script
+    const block = kept.slice(kept.indexOf('// BEGIN link token (#2089)'), kept.indexOf('// END link token (#2089)\n') + '// END link token (#2089)\n'.length)
+    const undone = kept
+      .replace(block + '\nconst prospectId = steps.create_prospect.output.body.id;\nconst offerLink = await withLinkToken(`${redirectUrl}/${prospectId}`, prospectId);\n\n', '')
+      .replace('    click_url: offerLink.url,', '    click_url: `${redirectUrl}/${steps.create_prospect.output.body.id}`,')
+      .replace(', respondedAt, link_token: offerLink.link_token };', ', respondedAt };')
+      .replace(/[\r\n]+$/, '')
+    expect(undone).toBe(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE)
   })
 })
 
