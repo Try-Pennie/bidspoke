@@ -18,7 +18,7 @@
  * claim only decides who posts.
  *
  * The same object also answers "does this delivery of a cron tick run?" (#1899)
- * under `/tick-claim`, `/tick-done` and `/tick-release`; see TickClaimResult below.
+ * under `/tick-claim`, `/tick-renew`, `/tick-done` and `/tick-release`; see TickClaimResult below.
  */
 
 interface ClaimStorage {
@@ -45,23 +45,36 @@ export interface ClaimResult {
  *     hourly run was canceled after 98.6 s and re-run at 14:01:41; the kills
  *     measured since 2026-08 came 43 to 156 s into a run, the retry 1.4 s to
  *     3 min after the kill.
+ *   - 2026-10-14 05:23 UTC (#2064): Cloudflare cancelled both running scheduled
+ *     runs 1.7 to 1.9 s in and re-delivered each 0.3 to 0.4 s AFTER it ended,
+ *     with the same scheduled time. Every field Cloudflare sends is identical
+ *     between the two; only requestId and traceId differ, and neither says retry.
  *
- * So the rule, for one (cron expression, scheduled minute):
+ * So the only signal that separates a retry from a doubled delivery is whether
+ * the holder is still alive. It renews a lease every TICK_LEASE_RENEW_MS while
+ * its jobs run (cron-once.ts); a run that was killed stops renewing.
+ *
+ * The rule, for one (cron expression, scheduled minute):
  *   - nobody holds it: the caller runs, and holds it as `running`.
  *   - it is `done`: every later delivery is a duplicate. Cloudflare does not
  *     retry a run that finished.
  *   - it is `running` and the caller carries a DIFFERENT scheduled time: a
  *     duplicate. A retry always carries its own run's scheduled time.
- *   - it is `running`, the caller carries the SAME scheduled time and the holder
- *     started less than TICK_RETRY_AFTER_MS ago: a duplicate (2026-10-05).
- *   - otherwise it is a retry of a run that did not finish, and it takes over.
+ *   - it is `running`, the caller carries the SAME scheduled time, and the
+ *     holder's lease was renewed less than TICK_LEASE_STALE_MS ago: answered as
+ *     a duplicate on this ask. The answer says how old the lease is, and cron-once waits until a
+ *     dead holder's lease would have gone stale and asks again, because a lease
+ *     is still fresh just after a kill (the 2026-10-14 retry came 0.4 s after).
+ *   - otherwise the holder has stopped renewing: a retry, and it takes over.
  *
- * Liveness cannot be read any better than that: a heartbeat lease would still
- * be fresh 1.4 s after a kill, so it would refuse exactly the retry measured
- * today. A wrong guess past the floor runs a job twice, which is the direction
- * to err in, and is logged as a takeover so it is counted.
+ * The 35 s age floor this replaces dropped the 2026-10-14 retry: a cancel at
+ * 1.7 s fell inside it. A holder that cannot reach this object to renew looks
+ * dead, and its tick then runs twice, which is the direction to err in.
  */
-export const TICK_RETRY_AFTER_MS = 35_000
+export const TICK_LEASE_STALE_MS = 3 * 3_000
+
+/** How often a running holder renews its lease: a third of TICK_LEASE_STALE_MS, so a dead run is three missed renewals. */
+export const TICK_LEASE_RENEW_MS = TICK_LEASE_STALE_MS / 3
 
 /**
  * How long a tick's record is kept before its alarm deletes it: well past the
@@ -74,6 +87,8 @@ interface TickStorage {
   holder: string
   scheduled_time: number
   started_at: number
+  /** When the holder last renewed its lease; absent on a record from before #2064, which reads started_at. */
+  renewed_at?: number
   status: 'running' | 'done'
   duplicates: number
 }
@@ -88,6 +103,8 @@ export type TickClaimResult =
       holder_scheduled_time: number
       holder_status: 'running' | 'done'
       holder_age_ms: number
+      /** Since the holder last renewed; cron-once waits on this before a same-time delivery gives up. */
+      holder_lease_age_ms: number
       duplicates: number
     }
 
@@ -108,6 +125,7 @@ export class AlertClaimObject implements DurableObject {
       case '/tick-claim': return this.handleTickClaim(request)
       case '/tick-done': return this.handleTickDone(request)
       case '/tick-release': return this.handleTickRelease(request)
+      case '/tick-renew': return this.handleTickRenew(request)
       default:
         return new Response('Not found', { status: 404 })
     }
@@ -137,27 +155,32 @@ export class AlertClaimObject implements DurableObject {
 
   /**
    * Body: { now, scheduled_time, holder }. Answers whether this delivery of a
-   * cron tick runs; the rule is in the comment on TICK_RETRY_AFTER_MS.
+   * cron tick runs; the rule is in the comment on TICK_LEASE_STALE_MS.
    */
   private async handleTickClaim(request: Request): Promise<Response> {
-    const body = await request.json<{ now?: unknown; scheduled_time?: unknown; holder?: unknown }>()
+    const body = await request.json<{ now?: unknown; scheduled_time?: unknown; holder?: unknown; after_wait?: unknown }>()
     if (!isFiniteNumber(body.now) || !isFiniteNumber(body.scheduled_time) || typeof body.holder !== 'string' || body.holder === '') {
       return json({ error: 'now, scheduled_time and holder are required' }, 400)
     }
     const { now, scheduled_time: scheduledTime, holder } = body
     const held = await this.state.storage.get<TickStorage>('tick')
     if (!held) {
-      await this.state.storage.put<TickStorage>('tick', { holder, scheduled_time: scheduledTime, started_at: now, status: 'running', duplicates: 0 })
+      await this.state.storage.put<TickStorage>('tick', { holder, scheduled_time: scheduledTime, started_at: now, renewed_at: now, status: 'running', duplicates: 0 })
       await this.state.storage.setAlarm(now + TICK_CLAIM_KEEP_MS)
       return json<TickClaimResult>({ run: true, reason: 'first' })
     }
     const age = now - held.started_at
-    const isRetry = held.status === 'running' && held.scheduled_time === scheduledTime && age >= TICK_RETRY_AFTER_MS
+    const leaseAge = now - (held.renewed_at ?? held.started_at)
+    const isRetry = held.status === 'running' && held.scheduled_time === scheduledTime && leaseAge >= TICK_LEASE_STALE_MS
+    // The second ask of a same-time wait (#2064) is the same delivery asking again:
+    // its first ask already counted a duplicate, which a takeover takes back.
+    const afterWait = body.after_wait === true
     if (isRetry) {
-      await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now })
+      const duplicates = afterWait ? Math.max(0, held.duplicates - 1) : held.duplicates
+      await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, duplicates })
       return json<TickClaimResult>({ run: true, reason: 'retry', holder: held.holder, holder_age_ms: age })
     }
-    const duplicates = held.duplicates + 1
+    const duplicates = afterWait ? held.duplicates : held.duplicates + 1
     await this.state.storage.put<TickStorage>('tick', { ...held, duplicates })
     return json<TickClaimResult>({
       run: false,
@@ -166,6 +189,7 @@ export class AlertClaimObject implements DurableObject {
       holder_scheduled_time: held.scheduled_time,
       holder_status: held.status,
       holder_age_ms: age,
+      holder_lease_age_ms: leaseAge,
       duplicates,
     })
   }
@@ -196,6 +220,22 @@ export class AlertClaimObject implements DurableObject {
     if (!held || held.holder !== body.holder) return json({ released: false })
     await this.state.storage.delete('tick')
     return json({ released: true })
+  }
+
+  /**
+   * Body: { now, holder }. Renews the running holder's lease (#2064), so a
+   * same-time delivery can tell a live run from one that was killed. Only the
+   * holder may renew, and only while it is running.
+   */
+  private async handleTickRenew(request: Request): Promise<Response> {
+    const body = await request.json<{ now?: unknown; holder?: unknown }>()
+    if (!isFiniteNumber(body.now) || typeof body.holder !== 'string' || body.holder === '') {
+      return json({ error: 'now and holder are required' }, 400)
+    }
+    const held = await this.state.storage.get<TickStorage>('tick')
+    if (!held || held.holder !== body.holder || held.status !== 'running') return json({ renewed: false })
+    await this.state.storage.put<TickStorage>('tick', { ...held, renewed_at: body.now })
+    return json({ renewed: true })
   }
 
   async alarm(): Promise<void> {
