@@ -17,7 +17,13 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { runMatrixAuditWatched, MATRIX_AUDIT_JOB } from '../matrix-audit-health'
+import {
+  runMatrixAuditWatched,
+  MATRIX_AUDIT_JOB,
+  MATRIX_AUDIT_SNAPSHOT_READ_REMEDY,
+  MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY,
+} from '../matrix-audit-health'
+import { MatrixAuditStepError } from '../sf-matrix-audit'
 import { notifyExportFailure } from '../export-alerts'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -71,6 +77,46 @@ describe('runMatrixAuditWatched', () => {
 
     expect(r.ok).toBe(false)
     expect(alerted().join(' ')).toMatch(/zero.*BidRangeRow__c|no BidRangeRow__c rows/i)
+  })
+
+  // #835: the row count was a hard coded "about 1,390", wrong by the time it was
+  // read (1,545 on 2026-10-07). It now prints what the saved copy holds.
+  it('names the size of the saved copy, not a fixed number', async () => {
+    await runMatrixAuditWatched(env, supabase, { run: async () => ({ ...healthy, rows_fetched: 0, snapshot_rows: 1545 }) })
+    expect(alerted().join(' ')).toContain('1545')
+    expect(alerted().join(' ')).not.toContain('1,390')
+  })
+
+  it('does not call an empty answer a failed read when the saved copy is empty too', async () => {
+    await runMatrixAuditWatched(env, supabase, { run: async () => ({ ...healthy, rows_fetched: 0, snapshot_rows: 0 }) })
+    expect(alerted().join(' ')).not.toMatch(/is a failed read/)
+    expect(alerted().join(' ')).toMatch(/unknown/)
+  })
+
+  // #835: a thrown error from our own database was reported as a Salesforce
+  // failure that would leave an edit unreported, even when the edit had been
+  // reported and only saving the copy afterwards failed.
+  it('a failed snapshot read is reported as our database, not Salesforce', async () => {
+    await runMatrixAuditWatched(env, supabase, {
+      run: async () => {
+        throw new MatrixAuditStepError('snapshot_read', new Error('sf_bid_matrix_audit read failed: timeout'))
+      },
+    })
+    const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4]
+    expect(remedy).toBe(MATRIX_AUDIT_SNAPSHOT_READ_REMEDY)
+    expect(alerted().join(' ')).toMatch(/Supabase/)
+  })
+
+  it('a failed snapshot write does not claim an edit went unreported', async () => {
+    await runMatrixAuditWatched(env, supabase, {
+      run: async () => {
+        throw new MatrixAuditStepError('snapshot_write', new Error('sf_bid_matrix_audit upsert failed: boom'))
+      },
+    })
+    const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4]
+    expect(remedy).toBe(MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY)
+    expect(MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY.consequence).not.toMatch(/go unreported/)
+    expect(alerted().join(' ')).toMatch(/Supabase/)
   })
 
   it('never throws, even when the alerter itself fails', async () => {
