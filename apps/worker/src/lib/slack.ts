@@ -1605,7 +1605,7 @@ export async function sendQueryTimeoutAlert(
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
-  job: { label: string; triggerCron: string; dependents: string },
+  job: { label: string; triggerCron: string; dependents: string; completionDroughtMs?: number },
   status: 'stale' | 'never_ran' | 'vanished' | 'unstamped',
   ageMs: number | null,
   standing: StandingCondition | null = null,
@@ -1673,17 +1673,25 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
+          // A minute job is judged on a drought of finished runs (#2057), so its
+          // age is how long nothing has finished, not when one run started.
+          text: job.completionDroughtMs
+            ? `No run has finished in ~${minutes} minutes, while new runs keep starting. Until a run completes: ${job.dependents}.`
+            : `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
         },
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here.`,
+          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, one the platform simply cancelled was inside every limit and needs no change to anything here, and if its outcome is ok the run finished after this check looked, so nothing needs changing at all.`,
         },
       },
-      lastLine('Seen because the run stamped its start and no completion inside its allowance; why it stopped is not visible from here.'),
+      lastLine(
+        job.completionDroughtMs
+          ? 'Seen because no run has stamped a completion for that long; why they stop is not visible from here.'
+          : 'Seen because the run stamped its start and no completion inside its allowance; why it stopped is not visible from here.',
+      ),
     ])
     return (await postMessage(
       connection.bot_token,
@@ -2636,6 +2644,38 @@ export async function sendGroupedRecoveryAlert(
   ]
   const fallback = `Recovered: ${payload.items.map((i) => i.subject).join(', ')}`
   return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
+}
+
+/**
+ * The all-clear for a scheduled job the heartbeat check paged as "started and
+ * never finished" once a run of it has finished (#2057). On 2026-10-14 the run
+ * had only finished late, and the page was left standing as an accusation. One
+ * line, through the shared recovery sentence. Returns whether it reached Slack,
+ * so the caller stands the incident down only on a real delivery.
+ */
+export async function sendCronHeartbeatRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { label: string; status: 'vanished'; alertedAt: string; endedAt: string | null; sameRun: boolean },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      signal: 'scheduled job',
+      subject: recovery.label,
+      // Only what the completion shows: the reported run itself, late, or a later one.
+      recoveredPhrase: recovery.sameRun
+        ? 'finished the run reported as never finished, late'
+        : 'has finished a run since, so it is running again',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+    },
+    now,
+  )
 }
 
 /**

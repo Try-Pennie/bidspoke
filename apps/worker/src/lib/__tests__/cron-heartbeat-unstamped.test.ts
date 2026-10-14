@@ -6,7 +6,7 @@ vi.mock('../slack', () => ({
 }))
 
 import { sendCronHeartbeatAlert } from '../slack'
-import { runHeartbeatChecks, heartbeatKey, firstSeenKey, CRON_JOBS, cronJob } from '../cron-heartbeat'
+import { runHeartbeatChecks, heartbeatKey, completedKey, firstSeenKey, CRON_JOBS, cronJob } from '../cron-heartbeat'
 import { readCondition, BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 
 /**
@@ -75,8 +75,13 @@ function fakeSupabase(runs: Record<string, string | null>, opts: { runsError?: b
 
 /** Every other job fresh, so only the job under test can be judged. */
 function allFreshExcept(id: string, nowMs: number): Record<string, string> {
+  // Healthy means started AND finished: a minute job is judged on finished runs
+  // (#2057), so one that only ever starts is, correctly, a job that never finishes.
   return Object.fromEntries(
-    CRON_JOBS.filter((j) => j.id !== id).map((j) => [heartbeatKey(j.id), iso(nowMs - 1)]),
+    CRON_JOBS.filter((j) => j.id !== id).flatMap((j) => [
+      [heartbeatKey(j.id), iso(nowMs - 1)],
+      [completedKey(j.id), iso(nowMs - 1)],
+    ]),
   )
 }
 
