@@ -14,13 +14,15 @@
 --      start and end it carried; an end applied twice changes nothing; an end
 --      arriving after the row lapsed replaces the lapse with the real end.
 --   D. A start moved earlier within one incident moves the row's start, with
---      least(), rather than opening a second incident.
+--      least(), rather than opening a second incident, and a page or an end
+--      still carrying the old start finds the moved row.
 --   E. Scope: an org row must carry its organization, a platform row none.
 --   F. Lapse: a marker absent on two drains at least four minutes apart closes
 --      the row as lapsed with no end time; one present in between resets it.
 --   G. The browser roles reach neither the table nor any function.
---   H. Retention removes rows ended (or lapsed, by their start) over 90 days
---      ago, never an open one, and is scheduled in pg_cron.
+--   H. Retention removes rows the record closed over 90 days ago (a long
+--      incident that lapsed recently is kept), never an open one, and is
+--      scheduled in pg_cron.
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom.
@@ -159,7 +161,21 @@ BEGIN
   -- A later "previous" never moves it later: least() keeps the earlier start.
   PERFORM public.record_alert_incident_opened('partner-reachability', 'ai-test-move', 'host', 'platform', NULL, '2026-10-14T09:45:00Z', '2026-10-14T09:30:00Z', NULL);
   IF (SELECT min(started_at) FROM public.alert_incidents WHERE subject = 'ai-test-move') <> '2026-10-14T09:30:00Z' THEN RAISE EXCEPTION 'a start moved later'; END IF;
-  INSERT INTO ai_cases VALUES ('a start moved earlier moves the row, never later');
+  -- Events written before the move, drained after it, still carry the old start.
+  IF public.record_alert_incident_paged('partner-reachability', 'ai-test-move', 'host', 'platform', NULL, '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', 'event-move', NULL) IS DISTINCT FROM first THEN
+    RAISE EXCEPTION 'a page carrying the old start did not find the moved row';
+  END IF;
+  IF public.record_alert_incident_opened('partner-reachability', 'ai-test-move', 'host', 'platform', NULL, '2026-10-14T10:00:00Z', NULL, NULL) IS DISTINCT FROM first THEN
+    RAISE EXCEPTION 'an opening carrying the old start did not find the moved row';
+  END IF;
+  IF public.record_alert_incident_ended('partner-reachability', 'ai-test-move', 'host', 'platform', NULL, '2026-10-14T10:00:00Z', '2026-10-14T11:00:00Z', 'all_clear', NULL, NULL) IS DISTINCT FROM first THEN
+    RAISE EXCEPTION 'an end carrying the old start did not find the moved row';
+  END IF;
+  IF (SELECT count(*) FROM public.alert_incidents WHERE subject = 'ai-test-move') <> 1 THEN RAISE EXCEPTION 'late events under the old start made a second row'; END IF;
+  IF (SELECT pages_sent FROM public.alert_incidents WHERE id = first) <> 1 OR (SELECT ended_reason FROM public.alert_incidents WHERE id = first) <> 'all_clear' THEN
+    RAISE EXCEPTION 'late events under the old start were not applied to the moved row';
+  END IF;
+  INSERT INTO ai_cases VALUES ('a start moved earlier moves the row, never later, and late events still find it');
 END
 $do$;
 
@@ -212,6 +228,7 @@ BEGIN
   IF verdict <> 'lapsed' THEN RAISE EXCEPTION 'two consecutive absent markers gave %, expected lapsed', verdict; END IF;
   SELECT * INTO r FROM public.alert_incidents WHERE id = id1;
   IF r.ended_reason <> 'lapsed' OR r.ended_at IS NOT NULL THEN RAISE EXCEPTION 'a lapse invented an end: %', row_to_json(r); END IF;
+  IF r.closed_at IS NULL THEN RAISE EXCEPTION 'a lapse did not record when the row closed, so retention could not judge it'; END IF;
   IF public.record_alert_incident_marker_check(id1, false, '2026-10-14T12:20:00Z') <> 'closed' THEN RAISE EXCEPTION 'a closed row was judged again'; END IF;
   -- The real end, drained late, replaces the lapse.
   PERFORM public.record_alert_incident_ended('workflow-schedule', 'ai-test-lapse', 'Deploy Drift', 'platform', NULL, '2026-10-12T10:00:00Z', '2026-10-13T09:00:00Z', 'all_clear', NULL, NULL);
@@ -245,7 +262,8 @@ BEGIN
       'public.record_alert_incident_paged(text, text, text, text, uuid, timestamptz, timestamptz, text, integer)',
       'public.record_alert_incident_ended(text, text, text, text, uuid, timestamptz, timestamptz, text, text, integer)',
       'public.record_alert_incident_marker_check(uuid, boolean, timestamptz)',
-      'public.purge_alert_incidents()'
+      'public.purge_alert_incidents()',
+      'public.alert_incident_moved_from(text, text, timestamptz)'
     ] LOOP
       IF has_function_privilege(r, f, 'EXECUTE') THEN RAISE EXCEPTION '% can run %', r, f; END IF;
     END LOOP;
@@ -266,17 +284,18 @@ DECLARE
   removed int;
 BEGIN
   DELETE FROM public.alert_incidents WHERE subject LIKE 'ai-test-%';
-  INSERT INTO public.alert_incidents (signal, subject, scope, started_at, last_seen_at, ended_at, ended_reason) VALUES
-    ('pg-cron-watch', 'ai-test-old-ended', 'platform', now() - interval '100 days', now() - interval '91 days', now() - interval '91 days', 'all_clear'),
-    ('pg-cron-watch', 'ai-test-recent-ended', 'platform', now() - interval '100 days', now() - interval '89 days', now() - interval '89 days', 'all_clear'),
-    ('pg-cron-watch', 'ai-test-old-lapsed', 'platform', now() - interval '91 days', now() - interval '91 days', NULL, 'lapsed'),
-    ('pg-cron-watch', 'ai-test-recent-lapsed', 'platform', now() - interval '89 days', now() - interval '89 days', NULL, 'lapsed'),
-    ('pg-cron-watch', 'ai-test-old-open', 'platform', now() - interval '200 days', now() - interval '200 days', NULL, NULL);
+  INSERT INTO public.alert_incidents (signal, subject, scope, started_at, last_seen_at, ended_at, ended_reason, closed_at) VALUES
+    ('pg-cron-watch', 'ai-test-old-ended', 'platform', now() - interval '100 days', now() - interval '91 days', now() - interval '91 days', 'all_clear', now() - interval '91 days'),
+    ('pg-cron-watch', 'ai-test-recent-ended', 'platform', now() - interval '100 days', now() - interval '89 days', now() - interval '89 days', 'all_clear', now() - interval '89 days'),
+    ('pg-cron-watch', 'ai-test-old-lapsed', 'platform', now() - interval '93 days', now() - interval '93 days', NULL, 'lapsed', now() - interval '91 days'),
+    -- Open for 120 days, lapsed yesterday: kept, since retention counts from when it closed.
+    ('pg-cron-watch', 'ai-test-long-lapsed', 'platform', now() - interval '120 days', now() - interval '3 days', NULL, 'lapsed', now() - interval '1 day'),
+    ('pg-cron-watch', 'ai-test-old-open', 'platform', now() - interval '200 days', now() - interval '200 days', NULL, NULL, NULL);
   removed := public.purge_alert_incidents();
   IF removed <> 2 THEN RAISE EXCEPTION 'purge removed % rows, expected 2', removed; END IF;
   IF EXISTS (SELECT 1 FROM public.alert_incidents WHERE subject IN ('ai-test-old-ended', 'ai-test-old-lapsed')) THEN RAISE EXCEPTION 'a row past 90 days survived'; END IF;
-  IF (SELECT count(*) FROM public.alert_incidents WHERE subject IN ('ai-test-recent-ended', 'ai-test-recent-lapsed', 'ai-test-old-open')) <> 3 THEN
-    RAISE EXCEPTION 'the purge removed a recent or an open row';
+  IF (SELECT count(*) FROM public.alert_incidents WHERE subject IN ('ai-test-recent-ended', 'ai-test-long-lapsed', 'ai-test-old-open')) <> 3 THEN
+    RAISE EXCEPTION 'the purge removed a recent, a recently lapsed or an open row';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'purge-alert-incidents' AND command LIKE '%purge_alert_incidents()%') THEN
     RAISE EXCEPTION 'the retention purge is not scheduled';

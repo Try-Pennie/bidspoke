@@ -212,6 +212,7 @@ export type Database = {
       }
       alert_incidents: {
         Row: {
+          closed_at: string | null
           created_at: string
           ended_at: string | null
           ended_reason: string | null
@@ -222,6 +223,7 @@ export type Database = {
           organization_id: string | null
           paged_event_ids: string[]
           pages_sent: number
+          previous_starts: string[]
           scope: string
           signal: string
           started_at: string
@@ -232,6 +234,7 @@ export type Database = {
           window_minutes: number | null
         }
         Insert: {
+          closed_at?: string | null
           created_at?: string
           ended_at?: string | null
           ended_reason?: string | null
@@ -242,6 +245,7 @@ export type Database = {
           organization_id?: string | null
           paged_event_ids?: string[]
           pages_sent?: number
+          previous_starts?: string[]
           scope: string
           signal: string
           started_at: string
@@ -252,6 +256,7 @@ export type Database = {
           window_minutes?: number | null
         }
         Update: {
+          closed_at?: string | null
           created_at?: string
           ended_at?: string | null
           ended_reason?: string | null
@@ -262,6 +267,7 @@ export type Database = {
           organization_id?: string | null
           paged_event_ids?: string[]
           pages_sent?: number
+          previous_starts?: string[]
           scope?: string
           signal?: string
           started_at?: string
@@ -2859,6 +2865,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      alert_incident_moved_from: {
+        Args: { p_signal: string; p_started_at: string; p_subject: string }
+        Returns: string
+      }
       archive_day_measurements: {
         Args: { p_day: string }
         Returns: {

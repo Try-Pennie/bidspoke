@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   INCIDENT_DRAIN_ALERT_KEY,
   INCIDENT_OUTBOX_REFUSED_PREFIX,
+  MAX_EVENTS_PER_RUN,
   OUTBOX_WAIT_ALERT_MS,
   runIncidentDrain,
   type IncidentDrainDeps,
@@ -198,6 +199,18 @@ describe('moving events into the record', () => {
     expect(s.failed).toBe(0)
   })
 
+  it('writes at most a bounded number of events per run, oldest first, and leaves the rest waiting for the next', async () => {
+    const h = harness()
+    for (let i = 0; i < MAX_EVENTS_PER_RUN + 5; i++) {
+      await writeIncidentEvent(h.kv, { type: 'opened', signal: 'volume-cliff', subject: `wf-${i}`, startedAt: new Date(T0).toISOString() }, ORG, T0 + i)
+    }
+    const s = await runIncidentDrain(h.deps())
+    expect(h.db.calls.filter((c) => c.fn === 'record_alert_incident_opened')).toHaveLength(MAX_EVENTS_PER_RUN)
+    expect(h.db.calls[0].args.p_subject).toBe('wf-0')
+    expect(outboxKeys(h.kv)).toHaveLength(5)
+    expect(s).toMatchObject({ applied: MAX_EVENTS_PER_RUN, deferred: 5, waiting: 5 })
+  })
+
   it('reports a list KV refused as a failed run, and judges no open incident on it', async () => {
     const h = harness(fakeDb({ open: [{ id: 'i1', signal: 'volume-cliff', subject: 'wf-1', started_at: '2026-10-14T10:00:00+00:00' }] }))
     h.kv.failList = true
@@ -304,6 +317,26 @@ describe('the drain\'s own alert', () => {
     await runIncidentDrain(h.deps())
     expect(h.posted.map((p) => p.title)).toEqual(['Incident record behind', 'Incident record caught up'])
     expect(await readCondition(h.kv, INCIDENT_DRAIN_ALERT_KEY)).toBeNull()
+  })
+
+  it('does not say the record caught up on a run that itself failed, or while events still wait', async () => {
+    let down = true
+    const h = harness(fakeDb({ answer: () => (down ? { data: null, error: { message: 'upstream connect error' } } : { data: '99999999-9999-4999-8999-999999999999', error: null }) }))
+    await seedIncident(h.kv, h.clock)
+    await runIncidentDrain(h.deps())
+    h.clock.now += 5 * MIN
+    await runIncidentDrain(h.deps())
+    expect(h.posted).toHaveLength(1)
+    // Fifteen minutes later the failure stamp has gone, so this failed run is alone:
+    // not two in a row, and not over an hour, yet it is no recovery either.
+    h.clock.now += 15 * MIN
+    await runIncidentDrain(h.deps())
+    expect(h.posted.map((p) => p.title)).toEqual(['Incident record behind'])
+    expect(await readCondition(h.kv, INCIDENT_DRAIN_ALERT_KEY)).not.toBeNull()
+    down = false
+    h.clock.now += 5 * MIN
+    await runIncidentDrain(h.deps())
+    expect(h.posted.map((p) => p.title)).toEqual(['Incident record behind', 'Incident record caught up'])
   })
 
   it('says nothing at all on a healthy run', async () => {

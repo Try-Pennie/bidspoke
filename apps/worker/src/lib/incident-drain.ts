@@ -49,6 +49,14 @@ const LAST_FAILED_KEY = 'incident-drain:last-failed'
 /** Long enough to span one five minute gap and a late tick, short enough that a failure an hour ago is not "the last run". */
 const LAST_FAILED_TTL_SECONDS = 12 * 60
 const CONDITION_TTL_SECONDS = 2 * 24 * 60 * 60
+/**
+ * The most events one run writes. Each costs two KV operations and a database
+ * call, and this run shares its invocation's subrequest budget with the partner
+ * probe and the memory check on the same cron, so after an outage the backlog is
+ * worked off over several runs, oldest first, rather than the run being cut off
+ * before its lapse check and its alert. Normal volume is a few events a day.
+ */
+export const MAX_EVENTS_PER_RUN = 100
 /** Open incidents are a handful at a time (#2098: about 27 a month); the cap is far above that and under PostgREST's 1000. */
 const OPEN_READ_LIMIT = 500
 
@@ -83,7 +91,9 @@ export interface IncidentDrainSummary {
   applied: number
   refused: number
   failed: number
-  /** Events still in the outbox after this run, because their write failed. */
+  /** Events left for the next run because this one reached MAX_EVENTS_PER_RUN. */
+  deferred: number
+  /** Events still in the outbox after this run: failed writes and deferred ones. */
   waiting: number
   oldestWaitingMs: number | null
   suspect: number
@@ -135,7 +145,7 @@ async function listOutbox(kv: DrainKv): Promise<string[]> {
 export async function runIncidentDrain(deps: IncidentDrainDeps): Promise<IncidentDrainSummary> {
   const log = deps.log ?? ((line: string) => console.log(line))
   const nowMs = deps.now()
-  const s: IncidentDrainSummary = { listed: 0, applied: 0, refused: 0, failed: 0, waiting: 0, oldestWaitingMs: null, suspect: 0, lapsed: 0, alerted: false, allClear: false, errors: [] }
+  const s: IncidentDrainSummary = { listed: 0, applied: 0, refused: 0, failed: 0, deferred: 0, waiting: 0, oldestWaitingMs: null, suspect: 0, lapsed: 0, alerted: false, allClear: false, errors: [] }
   const refusedReasons: string[] = []
   const waitingSince: number[] = []
 
@@ -164,8 +174,14 @@ export async function runIncidentDrain(deps: IncidentDrainDeps): Promise<Inciden
     s.errors.push(`the incident outbox could not be listed: ${formatErr(e)}`)
   }
   s.listed = keys.length
+  // Oldest first; the rest wait for the next run and count toward the backlog alert.
+  for (const key of keys.slice(MAX_EVENTS_PER_RUN)) {
+    s.deferred += 1
+    const t = outboxKeyTime(key)
+    if (t !== null) waitingSince.push(t)
+  }
 
-  for (const key of keys) {
+  for (const key of keys.slice(0, MAX_EVENTS_PER_RUN)) {
     let raw: string | null
     try {
       raw = await deps.kv.get(key)
@@ -330,7 +346,9 @@ async function alertOnDrain(deps: IncidentDrainDeps, nowMs: number, s: IncidentD
       })
       return
     }
-    // Healthy. If the alert stood, say the record caught up, then stand it down.
+    // Caught up only on a run that failed nothing and left nothing waiting: a lone
+    // failed run is not yet an alert, but it is no recovery either.
+    if (failedRun || s.waiting > 0) return
     if ((await readCondition(deps.kv, INCIDENT_DRAIN_ALERT_KEY)) !== null) {
       const delivered = await deliverAll(await deps.resolveSlack(), (slack) => deps.send(slack, {
         title: 'Incident record caught up',
