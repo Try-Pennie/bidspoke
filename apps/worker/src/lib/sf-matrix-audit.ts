@@ -85,7 +85,12 @@ export interface AuditResult {
 }
 
 /** The audit's steps that touch our own database rather than Salesforce. */
-export type MatrixAuditStep = 'snapshot_read' | 'snapshot_write'
+/**
+ * `baseline_write` is the save that rebuilds an untrustworthy copy, which runs
+ * BEFORE anything is reported; `snapshot_write` is the save after a comparison,
+ * which runs after its alert. Their alerts say different things (review of #2082).
+ */
+export type MatrixAuditStep = 'snapshot_read' | 'baseline_write' | 'snapshot_write'
 
 /**
  * A failure in one of the audit's own database steps, named so its alert can
@@ -138,7 +143,7 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   if (decision.baseline) {
     // Nothing trustworthy to compare against, so record what is there now and
     // say so once, rather than reporting every row as an edit made this hour.
-    await inStep('snapshot_write', () => writeSnapshot(supabase, existing, sfRows, flags, startedAt))
+    await inStep('baseline_write', () => writeSnapshot(supabase, existing, sfRows, flags, startedAt))
     await notifyBaseline(supabase, decision, sfRows.length, matrixUrl)
     return { rows_fetched: sfRows.length, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: true, alerted: false }
   }

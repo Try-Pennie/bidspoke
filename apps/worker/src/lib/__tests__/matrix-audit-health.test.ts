@@ -22,6 +22,7 @@ import {
   MATRIX_AUDIT_JOB,
   MATRIX_AUDIT_SNAPSHOT_READ_REMEDY,
   MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY,
+  MATRIX_AUDIT_BASELINE_WRITE_REMEDY,
 } from '../matrix-audit-health'
 import { MatrixAuditStepError } from '../sf-matrix-audit'
 import { notifyExportFailure } from '../export-alerts'
@@ -104,6 +105,19 @@ describe('runMatrixAuditWatched', () => {
     })
     const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4]
     expect(remedy).toBe(MATRIX_AUDIT_SNAPSHOT_READ_REMEDY)
+    expect(alerted().join(' ')).toMatch(/Supabase/)
+  })
+
+  it('a failed rebuild save does not claim anything was reported', async () => {
+    await runMatrixAuditWatched(env, supabase, {
+      run: async () => {
+        throw new MatrixAuditStepError('baseline_write', new Error('sf_bid_matrix_audit upsert failed: boom'))
+      },
+    })
+    const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4] as { consequence: string }
+    expect(remedy).toBe(MATRIX_AUDIT_BASELINE_WRITE_REMEDY)
+    expect(remedy.consequence).not.toMatch(/reported before the save/)
+    expect(remedy.consequence).toMatch(/nothing was compared/i)
     expect(alerted().join(' ')).toMatch(/Supabase/)
   })
 

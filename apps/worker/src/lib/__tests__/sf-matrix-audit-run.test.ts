@@ -82,8 +82,11 @@ describe('runMatrixAudit names the snapshot step that failed (#835)', () => {
     await expect(runMatrixAudit({} as Env, failingSupabase('select'))).rejects.toMatchObject({ step: 'snapshot_read' })
   })
 
-  it('a snapshot write failure is the snapshot_write step', async () => {
+  // The save that REBUILDS an untrustworthy copy runs before anything is reported,
+  // unlike the save after a comparison, which runs after its alert. They are two
+  // steps so the alert can say which (merge review of #2082).
+  it('a failed save while rebuilding an empty copy is the baseline_write step', async () => {
     salesforce([{ Id: 'a1', RowId__c: 1, RangeLow__c: 600, RangeHigh__c: 650, BidAmount__c: 10 }])
-    await expect(runMatrixAudit({} as Env, failingSupabase('upsert'))).rejects.toMatchObject({ step: 'snapshot_write' })
+    await expect(runMatrixAudit({} as Env, failingSupabase('upsert'))).rejects.toMatchObject({ step: 'baseline_write' })
   })
 })

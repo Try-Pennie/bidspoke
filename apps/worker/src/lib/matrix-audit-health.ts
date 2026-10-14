@@ -69,8 +69,24 @@ export const MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY: AlertRemedy = {
     'The alert clears itself on the next successful hourly run.',
 }
 
+/**
+ * The audit had nothing trustworthy to compare against (an empty saved copy, or
+ * a changed partner list), and saving the rebuilt copy failed. That save runs
+ * before anything is reported, so nothing was compared or reported.
+ */
+export const MATRIX_AUDIT_BASELINE_WRITE_REMEDY: AlertRemedy = {
+  consequence:
+    'The hourly audit of the Salesforce bid matrix had no trustworthy saved copy to compare against, so it ' +
+    'rebuilt the copy, and saving it to our Supabase database failed. Nothing was compared, so an edit to the ' +
+    'matrix would go unreported until a rebuild succeeds. Bidding itself is unaffected. It retries every hour on its own:',
+  fixHint:
+    'This is our database, not Salesforce: read the error above for why the sf_bid_matrix_audit write failed. ' +
+    'The alert clears itself on the next successful hourly run.',
+}
+
 const STEP_WORDING: Readonly<Record<MatrixAuditStep, { says: string; remedy: AlertRemedy }>> = {
   snapshot_read: { says: 'could not read its saved copy of the matrix from Supabase', remedy: MATRIX_AUDIT_SNAPSHOT_READ_REMEDY },
+  baseline_write: { says: 'could not save its rebuilt copy of the matrix to Supabase', remedy: MATRIX_AUDIT_BASELINE_WRITE_REMEDY },
   snapshot_write: { says: 'could not save its copy of the matrix to Supabase', remedy: MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY },
 }
 
