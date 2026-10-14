@@ -403,8 +403,9 @@ const scheduledJobs = {
         })().catch((e) => console.error('[logpush-check] failed:', e))
       )
       // Which code nodes print a whole object into the log stream (#1230)? The
-      // platform captures console output before any redaction of ours runs, and
-      // that stream is exportable off-platform, so a print is an egress. Scans
+      // platform captures console output before any redaction of ours runs, so a
+      // printed value sits unredacted in Workers Logs (no Logpush job has carried
+      // Logs since 2026-09-09, logpush-expectation.ts; #2084). Scans
       // the live definitions rather than the repo, because definitions live in
       // the database and are edited on the canvas. Its own failure boundary (L71).
       track(

@@ -15,3 +15,6 @@ export const CONTINUATION_UNFINISHED_LABEL = 'continuation_unfinished'
 // replay (#1993): never retried, and not a billing record, so the alert copy
 // routes on it to its own wording (#835). Set in engine/writeback-deadletter.ts.
 export const WRITEBACK_UNCAPTURABLE_LABEL = 'outcome_writeback_deadletters.uncapturable'
+
+/** The durable path's label for the writeback replay store's insert (#2084: moved here so the alert copy can route on it). */
+export const WRITEBACK_STORE_LABEL = 'outcome_writeback_deadletters.insert'

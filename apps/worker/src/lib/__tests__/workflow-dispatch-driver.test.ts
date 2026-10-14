@@ -103,6 +103,15 @@ describe('dispatchWorkflow: what it actually asks GitHub to do', () => {
     expect(result.ok === false && result.reason).toContain('GITHUB_ACTIONS_TOKEN')
   })
 
+  // #2084: the driver runs on the GITHUB_TOKEN fallback when the dedicated
+  // token is unset, so the refusal names the secret actually in use.
+  it('names the token actually in use when it is the fallback', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('no', { status: 403 }))
+    const result = await dispatchWorkflow({ ...access, tokenVar: 'GITHUB_TOKEN' }, 'deploy-drift.yml', fetchMock)
+    expect(result.ok === false && result.reason).toContain('The credential in GITHUB_TOKEN ')
+    expect(result.ok === false && result.reason).not.toContain('GITHUB_ACTIONS_TOKEN')
+  })
+
   it('reports a used up request allowance as a rate limit, not a missing permission (#1365)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1234567.' }), {

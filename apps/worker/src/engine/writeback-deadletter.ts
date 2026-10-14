@@ -27,10 +27,10 @@ import { encryptSecret, type SecretKeyInput } from '../lib/secret-crypto'
 import { formatErr } from '../lib/format-error'
 import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
-import { WRITEBACK_UNCAPTURABLE_LABEL } from './dead-letter-labels'
+import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL } from './dead-letter-labels'
 
-/** The durable path's label for the store's insert. */
-export const WRITEBACK_STORE_LABEL = 'outcome_writeback_deadletters.insert'
+/** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
+export { WRITEBACK_STORE_LABEL }
 
 /**
  * A Salesforce step's failure the store could not hold, counted and alerted on.
