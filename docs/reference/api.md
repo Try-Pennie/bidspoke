@@ -471,9 +471,10 @@ Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/incidents` | One page of incidents: ongoing ones first, then the newest start. Query `limit` (default 50, at most 100) and `offset` (default 0). |
+| GET | `/api/incidents/ongoing` | Every incident still open, newest start first. |
+| GET | `/api/incidents` | One page of the incidents that have closed and started or ended in the window, newest start first. Query `days` (7, 14 or 30, default 7), `limit` (default 50, at most 100) and `offset` (default 0). |
 
-The response is `{ incidents, has_more, next_offset }`; pass `next_offset` as `offset` to read the next page. Each incident carries `signal` and its reader label `signal_label` (`Unrecognised signal`, with `signal_known: false`, for a signal no current check names), `subject_name` (never a raw id; a deleted workflow is marked `(deleted)`), `scope` (`org` or `platform`), `started_at`, `ended_at`, `state` (`ongoing`, `ended`, or `end_not_recorded` when the incident closed without an end being recorded), `duration` (worded by the same rule as the Slack all-clear, or null when there is no recorded end) and `pages_sent`. Closed incidents are listed for 90 days of start; an ongoing one is listed however old. A failed read returns a 500 with a message, never an empty list.
+Both carry `signal` and its reader label `signal_label` (`Unrecognised signal`, with `signal_known: false`, for a signal no current check names), `subject_name` (never a raw id; a deleted workflow is marked `(deleted)`), `scope` (`org` or `platform`), `started_at` and `pages_sent`. An ongoing incident adds `so_far` (how long it has run, as "1 hour 20 minutes so far"); the list carries `has_more` when more are open than it returns. A closed incident adds `ended_at`, `state` (`ended`, or `end_not_recorded` when it closed without an end being recorded) and `duration` (worded by the same rule as the Slack all-clear, or null when no end was recorded). The closed list is `{ incidents, has_more, next_offset }`; pass `next_offset` as `offset` to read the next page. A failed read returns a 500 with a message, never an empty list.
 
 ## Field coverage
 

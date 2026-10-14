@@ -10,6 +10,8 @@ import type { StatsResponse, ConfigWarningsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { DegradedBanner } from '@/components/dashboard/DegradedBanner'
+import { OngoingIncidents } from '@/components/dashboard/OngoingIncidents'
+import { IncidentsSection } from '@/components/dashboard/IncidentsSection'
 import { formatDatetime } from '@/lib/dates'
 import { OUTCOME_LABELS } from '@/lib/execution-status'
 import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle, TrendingDown } from 'lucide-react'
@@ -225,11 +227,16 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  // Bumped on every background refresh, so the incident line and card refresh
+  // with the rest of the page (#2101).
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [ongoingCount, setOngoingCount] = useState<number | null>(null)
 
   useEffect(() => {
     function load(showSkeleton = false) {
       if (document.hidden) return
       if (showSkeleton) setLoading(true)
+      else setRefreshKey((k) => k + 1)
       setError(null)
       api.stats.get(window)
         .then((d) => { setData(d); setLastUpdated(new Date()) })
@@ -300,6 +307,9 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        {/* #2101: each open incident as one line, above the success rate. */}
+        <OngoingIncidents refreshKey={refreshKey} onCount={setOngoingCount} />
 
         {/* #356: degraded-writeback warning — surfaces a writeback outage that a
             near-green success rate would otherwise mask. */}
@@ -565,6 +575,9 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* #2101: incidents that closed in this window, at the bottom: summary first, history last. */}
+        <IncidentsSection days={window} refreshKey={refreshKey} hasOngoing={(ongoingCount ?? 0) > 0} />
 
         {configWarnings && configWarnings.workflows.length > 0 && (
           <div className="mt-6 rounded-xl border border-red-200 bg-white">

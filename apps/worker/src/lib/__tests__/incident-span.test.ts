@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeDuration, incidentDurationText, measureIncidentSpan } from '../incident-span'
+import { describeDuration, incidentDurationText, incidentSoFarText, measureIncidentSpan } from '../incident-span'
 
 /**
  * The one span rule (#2101): how long an incident lasted, as the Slack all-clear
@@ -39,6 +39,26 @@ describe('measureIncidentSpan', () => {
   })
 })
 
+/**
+ * A real db-unreachable row recorded before #2115 gave every incident record one
+ * clock reading per pass: its end, the last sighting, was read 36 seconds before
+ * its start. New rows cannot do this, but that row stays for 90 days, so an end
+ * before the start is read as a zero length span, never a negative one.
+ */
+describe('an end recorded before the start', () => {
+  const STARTED = '2026-10-14T21:48:37.000Z'
+  const ENDED = '2026-10-14T21:48:01.000Z'
+
+  it('is a zero length span ending at the start', () => {
+    expect(measureIncidentSpan(STARTED, ENDED, null, NOW)).toEqual({ kind: 'measured', ms: 0, clearedAt: Date.parse(STARTED) })
+    expect(incidentDurationText(measureIncidentSpan(STARTED, ENDED, null, NOW))).toBe('under a minute')
+  })
+
+  it('reads as inside the window for a signal with one', () => {
+    expect(incidentDurationText(measureIncidentSpan(STARTED, ENDED, 4, NOW))).toBe('Within one 4 minute window')
+  })
+})
+
 describe('incidentDurationText', () => {
   it('words a measured span the way the all-clear does', () => {
     expect(incidentDurationText(measureIncidentSpan(START, at(92), null, NOW))).toBe('1 hour 32 minutes')
@@ -50,9 +70,23 @@ describe('incidentDurationText', () => {
     expect(incidentDurationText(measureIncidentSpan(START, at(30), 7 * 1440, NOW))).toBe('Within one 7 day window')
   })
 
-  it('has no text for an unreadable start or an end before the start', () => {
+  it('has no text for an unreadable start', () => {
     expect(incidentDurationText(measureIncidentSpan('nope', at(1), null, NOW))).toBeNull()
-    expect(incidentDurationText(measureIncidentSpan(START, at(-5), null, NOW))).toBeNull()
+  })
+})
+
+describe('incidentSoFarText', () => {
+  it('words how long an open incident has run, measured to now', () => {
+    expect(incidentSoFarText(measureIncidentSpan(START, null, null, Date.parse(at(80))))).toBe('1 hour 20 minutes so far')
+  })
+
+  it('names the window while an open incident is still inside its first one', () => {
+    expect(incidentSoFarText(measureIncidentSpan(START, null, 5, Date.parse(at(2))))).toBe('within its first 5 minute window')
+  })
+
+  it('has no text for an unreadable start, and reads a start after now as just begun', () => {
+    expect(incidentSoFarText(measureIncidentSpan('nope', null, null, NOW))).toBeNull()
+    expect(incidentSoFarText(measureIncidentSpan(at(700), null, null, NOW))).toBe('under a minute so far')
   })
 })
 

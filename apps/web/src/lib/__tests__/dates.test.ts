@@ -4,7 +4,7 @@
  * converts UTC to ET rather than echoing the ISO clock time.
  */
 import { describe, it, expect } from 'vitest'
-import { formatEtDayTime, formatLogTime } from '../dates'
+import { etDayHeading, etDayKey, formatEtClock, formatEtDayTime, formatLogTime } from '../dates'
 
 describe('formatLogTime (#113)', () => {
   it('converts a UTC instant to ET, not the raw UTC clock time', () => {
@@ -33,5 +33,32 @@ describe('formatEtDayTime (#2101)', () => {
     // After midnight UTC is still the previous ET day.
     expect(formatEtDayTime('2026-10-15T02:05:00.000Z')).toBe('Oct 14, 10:05 PM')
     expect(formatEtDayTime('2026-12-01T15:00:00.000Z')).toBe('Dec 1, 10:00 AM')
+  })
+})
+
+describe('the incident card day headings (#2101)', () => {
+  // 6:12 PM ET on Wednesday 14 October 2026.
+  const NOW = Date.parse('2026-10-14T22:12:00.000Z')
+
+  it('keys a moment by its ET calendar day', () => {
+    expect(etDayKey('2026-10-15T02:05:00.000Z')).toBe('2026-10-14')
+    expect(etDayKey('2026-10-15T04:05:00.000Z')).toBe('2026-10-15')
+  })
+
+  it('heads today and yesterday by name and older days by weekday and date', () => {
+    expect(etDayHeading('2026-10-14T13:00:00.000Z', NOW)).toBe('Today')
+    expect(etDayHeading('2026-10-14T03:30:00.000Z', NOW)).toBe('Yesterday')
+    expect(etDayHeading('2026-10-14T04:30:00.000Z', NOW)).toBe('Today')
+    expect(etDayHeading('2026-10-12T15:00:00.000Z', NOW)).toBe('Mon, Oct 12')
+  })
+
+  it('counts yesterday across a clock change by calendar day, not by 24 hours', () => {
+    // 1 November 2026 is the day EDT ends: it has 25 hours in ET.
+    const afterChange = Date.parse('2026-11-02T04:30:00.000Z') // 11:30 PM EST, Nov 1
+    expect(etDayHeading('2026-10-31T23:00:00.000Z', afterChange)).toBe('Yesterday')
+  })
+
+  it('gives the clock time alone for a row under its day heading', () => {
+    expect(formatEtClock('2026-10-14T18:34:00.000Z')).toBe('2:34 PM')
   })
 })

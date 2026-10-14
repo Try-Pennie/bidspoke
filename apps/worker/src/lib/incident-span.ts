@@ -14,6 +14,11 @@
  *  - A check that judges a TRAILING WINDOW sees the condition once per tick, so a
  *    span shorter than one window is not a measurement: a one tick incident has a
  *    span of zero (#1101). Such a span reports the window instead (L11).
+ *  - An end before the start is a ZERO length span ending at the start, never a
+ *    negative one. A real db-unreachable row recorded before #2115 (one clock
+ *    reading per pass) has its last sighting 36 seconds before its start; new
+ *    rows cannot, but that one is kept 90 days. A now before the start (one
+ *    isolate's clock behind another's) is read the same way.
  *  - An unreadable start says nothing rather than something wrong (L11, L50).
  */
 
@@ -31,8 +36,8 @@ export function measureIncidentSpan(
   const started = Date.parse(startedAt)
   if (!Number.isFinite(started)) return { kind: 'unknown' }
   const ended = endedAt ? Date.parse(endedAt) : NaN
-  const clearedAt = Number.isFinite(ended) ? ended : null
-  const spanMs = (clearedAt ?? now) - started
+  const clearedAt = Number.isFinite(ended) ? Math.max(ended, started) : null
+  const spanMs = Math.max(0, (clearedAt ?? now) - started)
   const windowMs = (windowMinutes ?? 0) * 60 * 1000
   if (windowMs > 0 && spanMs < windowMs) return { kind: 'within_window', windowMs }
   return { kind: 'measured', ms: spanMs, clearedAt }
@@ -64,4 +69,15 @@ export function incidentDurationText(span: IncidentSpan): string | null {
   if (span.kind === 'unknown') return null
   if (span.kind === 'within_window') return `Within one ${windowAdjective(span.windowMs)} window`
   return describeDuration(span.ms)
+}
+
+/**
+ * How long an OPEN incident has run, measured to now, as a phrase that ends a
+ * sentence ("1 hour 20 minutes so far"), or null for an unreadable start.
+ */
+export function incidentSoFarText(span: IncidentSpan): string | null {
+  if (span.kind === 'unknown') return null
+  if (span.kind === 'within_window') return `within its first ${windowAdjective(span.windowMs)} window`
+  const d = describeDuration(span.ms)
+  return d ? `${d} so far` : null
 }

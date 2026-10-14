@@ -1,6 +1,12 @@
 /**
- * The incident record as a reader sees it (#2101, under #818): one page of
- * alert_incidents for the dashboard, every reader facing field resolved here.
+ * The incident record as a reader sees it (#2101, under #818), in the two
+ * shapes the dashboard shows it (settled with Dan on 2026-10-14):
+ *
+ *  - ONGOING: every incident still open, each one line under the page header.
+ *  - CLOSED: the Incidents card at the bottom of the page, one page at a time,
+ *    holding only incidents that have closed, inside the page's own 7, 14 or 30
+ *    day window. An incident is in the window when it started in it or ended in
+ *    it. An open incident is never in the card, so each fact is stated once.
  *
  * SCOPE. alert_incidents is service role only with no RLS policy (L124), so this
  * read is the only thing between one organization and another's incidents. It
@@ -8,16 +14,12 @@
  * and then refuses, as an error, any row that is neither: a scope lost on the
  * way to the database must not reach a browser either.
  *
- * ORDER. Ongoing incidents first, then the newest start, then the id, so the
- * order is total and a page boundary never splits a tie differently on two
- * reads. PostgREST cannot sort on `ended_reason IS NULL`, so the ongoing rows
- * and the closed rows are two reads, and an offset walks their concatenation.
- * Closed rows are kept for 90 days of start; an ongoing one is shown however
- * old it is.
+ * ORDER. The newest start first, then the id, so the order is total and a page
+ * boundary never splits a tie differently on two reads.
  *
  * FIELDS. The signal's label from the registry (an unknown signal is named as
  * unrecognised, never given an invented label); the subject by name, never a
- * raw id; the end and the duration from the span rule the Slack all-clear uses
+ * raw id; the duration from the span rule the Slack all-clear uses
  * (incident-span.ts). None of the bookkeeping (event ids, moved starts, the
  * lapse check's stamp) leaves this module.
  *
@@ -25,22 +27,23 @@
  * incidents", which is the one thing this record must never claim falsely.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { INCIDENT_SIGNALS, incidentSignalLabel, isIncidentSignal, incidentSignal } from './incident-signals'
-import { incidentDurationText, measureIncidentSpan } from './incident-span'
+import { INCIDENT_SIGNALS, incidentSignal, incidentSignalLabel, isIncidentSignal } from './incident-signals'
+import { incidentDurationText, incidentSoFarText, measureIncidentSpan } from './incident-span'
 
 export const INCIDENTS_DEFAULT_LIMIT = 50
 export const INCIDENTS_MAX_LIMIT = 100
-/** How far back closed incidents are listed, by start. The table keeps rows 90 days after they close. */
-export const INCIDENTS_LOOKBACK_DAYS = 90
+/** The windows the dashboard's day switch offers; the card follows it. */
+export const INCIDENT_WINDOW_DAYS = [7, 14, 30] as const
+export type IncidentWindowDays = (typeof INCIDENT_WINDOW_DAYS)[number]
+/** Open incidents are a handful at a time (#2098: about 27 a month); a list longer than this says so. */
+export const ONGOING_LIMIT = 100
 
 export const UNNAMED_SUBJECT = 'Unnamed subject'
 export const MISSING_WORKFLOW_SUBJECT = 'A workflow no longer on record'
 export const ORGANIZATION_SUBJECT = 'This organization'
 
-export type IncidentState = 'ongoing' | 'ended' | 'end_not_recorded'
-
-/** One incident as the dashboard shows it. */
-export interface IncidentView {
+/** What every incident carries, open or closed. */
+interface IncidentBase {
   id: string
   signal: string
   signal_label: string
@@ -48,10 +51,19 @@ export interface IncidentView {
   subject_name: string
   scope: 'org' | 'platform'
   started_at: string
-  ended_at: string | null
-  state: IncidentState
-  duration: string | null
   pages_sent: number
+}
+
+/** One closed incident, as the Incidents card shows it. */
+export interface IncidentView extends IncidentBase {
+  ended_at: string | null
+  state: 'ended' | 'end_not_recorded'
+  duration: string | null
+}
+
+/** One open incident, as the line under the page header shows it. */
+export interface OngoingIncidentView extends IncidentBase {
+  so_far: string | null
 }
 
 export interface IncidentsPage {
@@ -59,6 +71,12 @@ export interface IncidentsPage {
   has_more: boolean
   /** The offset that reads the next page, or null when there is none. */
   next_offset: number | null
+}
+
+export interface OngoingIncidents {
+  incidents: OngoingIncidentView[]
+  /** More are open than ONGOING_LIMIT. */
+  has_more: boolean
 }
 
 /** Thrown for a read that failed or returned a row outside the caller's scope. */
@@ -92,11 +110,49 @@ const CONTAINS_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 const WORKFLOW_SIGNALS: ReadonlySet<string> = new Set(INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal))
 
+/** Whether a query value names one of the windows the card follows. */
+export function isIncidentWindowDays(n: number): n is IncidentWindowDays {
+  return (INCIDENT_WINDOW_DAYS as readonly number[]).includes(n)
+}
+
+/** The PostgREST filter for the caller's organization's rows and the platform's. */
+function scopeFilter(orgId: string): string {
+  // The organization id is interpolated into a filter, so it must be exactly a
+  // uuid: anything else could widen it.
+  if (!UUID.test(orgId)) throw new IncidentReadError('the caller has no organization to scope incidents to')
+  return `organization_id.eq.${orgId},scope.eq.platform`
+}
+
+/** Refuse, as an error, any row outside the caller's scope. */
+function assertScoped(rows: readonly StoredIncident[], orgId: string): void {
+  for (const row of rows) {
+    if (row.organization_id !== orgId && row.scope !== 'platform') {
+      throw new IncidentReadError(`refused incident ${row.id}: it belongs to another organization`)
+    }
+  }
+}
+
 /** The workflow id a workflow keyed subject starts with, and what follows it. */
 function workflowKey(row: StoredIncident): { id: string; rest: string } | null {
   if (!WORKFLOW_SIGNALS.has(row.signal)) return null
   const m = LEADING_UUID.exec(row.subject)
   return m ? { id: m[1].toLowerCase(), rest: m[2] } : null
+}
+
+/** The names of the workflows these rows key on, read inside the caller's organization. */
+async function workflowNames(supabase: SupabaseClient, orgId: string, rows: readonly StoredIncident[]): Promise<Map<string, WorkflowName>> {
+  const ids = [...new Set(rows.map(workflowKey).filter((k): k is { id: string; rest: string } => k !== null).map((k) => k.id))]
+  const names = new Map<string, WorkflowName>()
+  if (ids.length === 0) return names
+  const wf = await supabase
+    .from('workflows')
+    .select('id, name, deleted_at')
+    .eq('organization_id', orgId)
+    .in('id', ids)
+    .limit(ids.length)
+  if (wf.error || !wf.data) throw failed('Workflow names', wf.error)
+  for (const w of wf.data as unknown as WorkflowName[]) names.set(w.id.toLowerCase(), w)
+  return names
 }
 
 function subjectName(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName>): string {
@@ -113,10 +169,8 @@ function subjectName(row: StoredIncident, workflows: ReadonlyMap<string, Workflo
   return CONTAINS_UUID.test(row.subject) || row.subject.trim() === '' ? UNNAMED_SUBJECT : row.subject
 }
 
-function toView(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName>, now: number): IncidentView {
+function baseView(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName>): IncidentBase {
   const { label, known } = incidentSignalLabel(row.signal)
-  const state: IncidentState = row.ended_reason === null ? 'ongoing' : row.ended_at ? 'ended' : 'end_not_recorded'
-  const duration = state === 'ended' ? incidentDurationText(measureIncidentSpan(row.started_at, row.ended_at, row.window_minutes, now)) : null
   return {
     id: row.id,
     signal: row.signal,
@@ -125,9 +179,6 @@ function toView(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName
     subject_name: subjectName(row, workflows),
     scope: row.scope,
     started_at: row.started_at,
-    ended_at: state === 'ended' ? row.ended_at : null,
-    state,
-    duration,
     pages_sent: Number(row.pages_sent),
   }
 }
@@ -136,73 +187,71 @@ function failed(what: string, error: { message?: string } | null | undefined): I
   return new IncidentReadError(`${what} could not be read: ${error?.message ?? 'no rows came back'}`)
 }
 
-/** One page of the caller's incident record. Throws IncidentReadError on any failed read. */
-export async function readIncidents(
-  supabase: SupabaseClient,
-  orgId: string,
-  opts: { limit: number; offset: number; now: number },
-): Promise<IncidentsPage> {
-  // The organization id is interpolated into a PostgREST filter, so it must be
-  // exactly a uuid: anything else could widen the filter.
-  if (!UUID.test(orgId)) throw new IncidentReadError('the caller has no organization to scope incidents to')
-  const { limit, offset, now } = opts
-  const scope = `organization_id.eq.${orgId},scope.eq.platform`
-  const since = new Date(now - INCIDENTS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString()
-
-  const open = await supabase
+/** Every open incident in the caller's scope, newest start first. Throws IncidentReadError on any failed read. */
+export async function readOngoingIncidents(supabase: SupabaseClient, orgId: string, opts: { now: number }): Promise<OngoingIncidents> {
+  const scope = scopeFilter(orgId)
+  const res = await supabase
     .from('alert_incidents')
-    .select(COLUMNS, { count: 'exact' })
+    .select(COLUMNS)
     .or(scope)
     .is('ended_reason', null)
     .order('started_at', { ascending: false })
     .order('id', { ascending: false })
-    .range(offset, offset + limit)
-  if (open.error || !open.data || typeof open.count !== 'number') throw failed('Ongoing incidents', open.error)
-  const openRows = open.data as unknown as StoredIncident[]
-
-  let rows = openRows.slice(0, limit)
-  let hasMore = openRows.length > limit
-  if (!hasMore) {
-    // The rest of the page comes from the closed rows, plus one to learn whether
-    // more exist. Their offset is how far this page starts past the ongoing ones.
-    const room = limit - rows.length
-    const closedOffset = Math.max(0, offset - open.count)
-    const closed = await supabase
-      .from('alert_incidents')
-      .select(COLUMNS)
-      .or(scope)
-      .not('ended_reason', 'is', null)
-      .gte('started_at', since)
-      .order('started_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(closedOffset, closedOffset + room)
-    if (closed.error || !closed.data) throw failed('Closed incidents', closed.error)
-    const closedRows = closed.data as unknown as StoredIncident[]
-    rows = rows.concat(closedRows.slice(0, room))
-    hasMore = closedRows.length > room
-  }
-
-  for (const row of rows) {
-    if (row.organization_id !== orgId && row.scope !== 'platform') {
-      throw new IncidentReadError(`refused incident ${row.id}: it belongs to another organization`)
-    }
-  }
-
-  const workflowIds = [...new Set(rows.map(workflowKey).filter((k): k is { id: string; rest: string } => k !== null).map((k) => k.id))]
-  const workflows = new Map<string, WorkflowName>()
-  if (workflowIds.length > 0) {
-    const wf = await supabase
-      .from('workflows')
-      .select('id, name, deleted_at')
-      .eq('organization_id', orgId)
-      .in('id', workflowIds)
-      .limit(workflowIds.length)
-    if (wf.error || !wf.data) throw failed('Workflow names', wf.error)
-    for (const w of wf.data as unknown as WorkflowName[]) workflows.set(w.id.toLowerCase(), w)
-  }
-
+    .range(0, ONGOING_LIMIT)
+  if (res.error || !res.data) throw failed('Ongoing incidents', res.error)
+  const all = res.data as unknown as StoredIncident[]
+  const rows = all.slice(0, ONGOING_LIMIT)
+  assertScoped(rows, orgId)
+  const workflows = await workflowNames(supabase, orgId, rows)
   return {
-    incidents: rows.map((r) => toView(r, workflows, now)),
+    incidents: rows.map((row) => ({
+      ...baseView(row, workflows),
+      so_far: incidentSoFarText(measureIncidentSpan(row.started_at, null, row.window_minutes, opts.now)),
+    })),
+    has_more: all.length > ONGOING_LIMIT,
+  }
+}
+
+/**
+ * One page of the closed incidents that started or ended in the last `days`
+ * days, newest start first. Throws IncidentReadError on any failed read.
+ */
+export async function readClosedIncidents(
+  supabase: SupabaseClient,
+  orgId: string,
+  opts: { days: IncidentWindowDays; limit: number; offset: number; now: number },
+): Promise<IncidentsPage> {
+  const { days, limit, offset, now } = opts
+  const scope = scopeFilter(orgId)
+  const since = new Date(now - days * 24 * 60 * 60 * 1000).toISOString()
+  // One logic tree, so the scope and the window are each one OR and the two are
+  // ANDed: started in the window or ended in it, for the caller's organization
+  // or the platform.
+  const inWindow = `or(started_at.gte.${since},ended_at.gte.${since})`
+  const res = await supabase
+    .from('alert_incidents')
+    .select(COLUMNS)
+    .or(`and(or(${scope}),${inWindow})`)
+    .not('ended_reason', 'is', null)
+    .order('started_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(offset, offset + limit)
+  if (res.error || !res.data) throw failed('Closed incidents', res.error)
+  const all = res.data as unknown as StoredIncident[]
+  const rows = all.slice(0, limit)
+  assertScoped(rows, orgId)
+  const workflows = await workflowNames(supabase, orgId, rows)
+  const hasMore = all.length > limit
+  return {
+    incidents: rows.map((row) => {
+      const ended = row.ended_at !== null
+      return {
+        ...baseView(row, workflows),
+        ended_at: row.ended_at,
+        state: ended ? 'ended' : 'end_not_recorded',
+        duration: ended ? incidentDurationText(measureIncidentSpan(row.started_at, row.ended_at, row.window_minutes, now)) : null,
+      }
+    }),
     has_more: hasMore,
     next_offset: hasMore ? offset + rows.length : null,
   }
