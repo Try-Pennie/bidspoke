@@ -320,6 +320,20 @@ describe('the fix line names the system the failing step touches (#835)', () => 
     }
   })
 
+  // #2086: the grace holds a first transient failure because the next run retries
+  // it. The enrollment view's leads are never retried, so holding the error a run
+  // costs that day's leads their view with nobody told.
+  it.each([
+    ['enrollment view backfill: canceling statement due to statement timeout (57014)'],
+    ['enrollment view backfill: error code: 522'],
+  ])('does not hold an enrollment view error as a passing blip: %s', (msg) => {
+    expect(isTransientExportError(msg)).toBe(false)
+  })
+
+  it('still holds the same class from a step that does retry', () => {
+    expect(isTransientExportError('evaluations export: error code: 522')).toBe(true)
+  })
+
   it('keeps the transient line for the same class in a step that does retry', () => {
     // Negative control: the phase rule must not swallow the class rule elsewhere.
     expect(buildFixHint(['evaluations export: canceling statement due to statement timeout (57014)'])).toMatch(/retry on the next run/)

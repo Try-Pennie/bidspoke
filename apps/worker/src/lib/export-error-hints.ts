@@ -186,6 +186,10 @@ const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
 ])
 
 export function isTransientExportError(message: string): boolean {
+  // The enrollment view's leads are exported without it in the same run and never
+  // filled in later, so a retry fixes nothing for them and holding the first
+  // failure a run would cost that day's leads silently (#2086).
+  if (stepSystemsOf(message) === 'salesforce') return false
   return TRANSIENT_CLASSES.has(classifyExportError(message))
 }
 

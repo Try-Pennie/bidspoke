@@ -34,6 +34,8 @@ import { partnerConstantsLastGoodKey } from '../partner-constants-loader'
 import { buyerProfilesLastGoodKey } from '../buyer-profile-loader'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { SweepResult } from '../stored-copy-sweep'
+// @ts-expect-error Vite resolves ?raw to the file's text; no ambient declaration here.
+import DEFINITION_LOADER_SOURCE from '../../engine/definition-loader.ts?raw'
 
 const KEY = btoa('1'.repeat(32))
 const ORG = 'org-1'
@@ -437,6 +439,18 @@ describe('a stored copy that has gone stale', () => {
     const sweepOnly = (h.notified.find((n) => n.job === STORED_COPY_STALE_JOB)!.remedy as { fixHint: string }).fixHint
     expect(sweepOnly).toContain('[stored-copy-sweep]')
     expect(sweepOnly).not.toContain('[env-loader]')
+  })
+
+  // The definition loader logs JSON events rather than a bracketed tag, so the fix
+  // names the event prefix every one of those lines carries, verbatim.
+  it('names the exact string the definition loader logs a workflow copy failure under', async () => {
+    const h = harness()
+    await liveWorkflowCopy(h.copies, T0 - STORED_COPY_MAX_AGE_MS - MINUTE)
+    await runStoredCopyChecks(h.deps())
+    const fix = (h.notified.find((n) => n.job === STORED_COPY_STALE_JOB)!.remedy as { fixHint: string }).fixHint
+    const named = fix.match(/`(workflow_definition_copy[^`]*)`/)?.[1]
+    expect(named).toBeDefined()
+    expect(DEFINITION_LOADER_SOURCE).toContain(`logEvent('${named}`)
   })
 
   it('points an environment copy at the loader that logs its failures', async () => {

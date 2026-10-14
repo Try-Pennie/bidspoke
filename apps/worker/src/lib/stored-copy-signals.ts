@@ -482,10 +482,13 @@ export async function findStaleCopies(copies: KVNamespace, nowMs: number): Promi
  * swallows its loaders' errors and each loader logs under its own tag, so that
  * search found nothing for most copies. `prewarm` marks the copies the per
  * minute prewarm confirms, whose own failure to list the live workflows logs
- * under [prewarm].
+ * under [prewarm]. Each tag is the exact text to search for: the definition
+ * loader writes JSON events rather than a bracketed tag, and every one of its
+ * copy events begins `workflow_definition_copy_` (logEvent in
+ * engine/definition-loader.ts).
  */
 const CONFIRMED_BY: Readonly<Record<StoredCopyKind, { tag: string; prewarm: boolean }>> = {
-  workflow_definition: { tag: 'workflow_definition_copy', prewarm: true },
+  workflow_definition: { tag: 'workflow_definition_copy_', prewarm: true },
   custom_endpoint: { tag: '[stored-copy-sweep]', prewarm: false },
   partner_config: { tag: '[stored-copy-sweep]', prewarm: false },
   bid_matrix: { tag: '[stored-copy-sweep]', prewarm: false },
@@ -499,7 +502,7 @@ export function staleCopyFix(kinds: readonly StoredCopyKind[]): string {
   const present = KIND_ORDER.filter((k) => kinds.includes(k))
   const tags = [...new Set(present.map((k) => CONFIRMED_BY[k].tag))]
   if (present.some((k) => CONFIRMED_BY[k].prewarm)) tags.push('[prewarm]')
-  return `search the worker logs for ${tags.join(', ')}, where the jobs that confirm these copies say why they could not. This clears on the first run that confirms them.`
+  return `search the worker logs for ${tags.map((t) => `\`${t}\``).join(', ')}, where the jobs that confirm these copies say why they could not. This clears on the first run that confirms them.`
 }
 
 export function describeStaleCopy(s: StaleCopy): string {
