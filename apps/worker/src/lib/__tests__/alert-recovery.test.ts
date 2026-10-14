@@ -10,6 +10,12 @@ import {
   recoveryDue,
   settleRecovery,
 } from '../alert-recovery'
+import type { IncidentContext } from '../incident-outbox'
+
+// The incident record's context (#2099), the same for every call here: these tests are
+// about the markers, and incident-outbox.test.ts covers what is recorded.
+const ORG: IncidentContext = { scope: { kind: 'org', organizationId: '11111111-1111-4111-8111-111111111111' }, subjectLabel: 'Main Flow' }
+const PLATFORM: IncidentContext = { scope: { kind: 'platform' }, subjectLabel: 'host' }
 
 /**
  * Issue #253. The three rate-aggregated alerts page when a rate STARTS spiking
@@ -44,13 +50,13 @@ describe('recoveryKey', () => {
 describe('markAlerted', () => {
   it('records that we owe an all-clear', async () => {
     const kv = fakeKv()
-    await markAlerted(kv, 'volume-cliff', 'wf-1')
+    await markAlerted(kv, 'volume-cliff', 'wf-1', ORG)
     expect(kv.store.get('volume-cliff-recovery:wf-1')).toBeTruthy()
   })
 
   it('stores the time the alert fired, so the all-clear can say how long it lasted', async () => {
     const kv = fakeKv()
-    await markAlerted(kv, 'volume-cliff', 'wf-1', 1_700_000_000_000)
+    await markAlerted(kv, 'volume-cliff', 'wf-1', ORG, 1_700_000_000_000)
     expect(kv.store.get('volume-cliff-recovery:wf-1')).toBe(new Date(1_700_000_000_000).toISOString())
   })
 
@@ -58,7 +64,7 @@ describe('markAlerted', () => {
     // A long outage re-alerts after each cooldown lapse. Overwriting would reset
     // the clock and report a minutes-long blip after hours of downtime.
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
-    await markAlerted(kv, 'volume-cliff', 'wf-1', Date.parse('2026-08-14T13:00:00.000Z'))
+    await markAlerted(kv, 'volume-cliff', 'wf-1', ORG, Date.parse('2026-08-14T13:00:00.000Z'))
     expect(kv.store.get('volume-cliff-recovery:wf-1')).toBe('2026-08-14T10:00:00.000Z')
   })
 
@@ -111,7 +117,7 @@ describe('markAlerted', () => {
     // the cadence expired at almost exactly the moment the next run read it.
     const clock = { now: Date.parse('2026-10-01T13:00:00.000Z') }
     const kv = expiringKv(clock)
-    await markAlerted(kv, PREFIX, ID, clock.now)
+    await markAlerted(kv, PREFIX, ID, ORG, clock.now)
     // The next daily run, a little over one interval later, must still see it.
     clock.now += DAY_MS + 60_000
     expect(await kv.get(recoveryKey(PREFIX, ID))).not.toBeNull()
@@ -121,13 +127,13 @@ describe('markAlerted', () => {
     const clock = { now: Date.parse('2026-10-01T13:00:00.000Z') }
     const kv = expiringKv(clock)
     const firstStart = new Date(clock.now).toISOString()
-    await markAlerted(kv, PREFIX, ID, clock.now)
+    await markAlerted(kv, PREFIX, ID, ORG, clock.now)
     // Still failing a day later, and the day after: each page refreshes the TTL
     // while keeping the first-alert time.
     clock.now += DAY_MS + 60_000
-    await markAlerted(kv, PREFIX, ID, clock.now)
+    await markAlerted(kv, PREFIX, ID, ORG, clock.now)
     clock.now += DAY_MS + 60_000
-    await markAlerted(kv, PREFIX, ID, clock.now)
+    await markAlerted(kv, PREFIX, ID, ORG, clock.now)
     // The recovery run another interval on still finds the marker, with the
     // original start, not a reset one.
     clock.now += DAY_MS + 60_000
@@ -141,14 +147,14 @@ describe('announceRecovery', () => {
   it('says nothing when we never alerted', async () => {
     const kv = fakeKv()
     const send = vi.fn().mockResolvedValue(true)
-    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(false)
+    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)).toBe(false)
     expect(send).not.toHaveBeenCalled()
   })
 
   it('sends the all-clear when a previously alerted signal is healthy again', async () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
-    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(true)
+    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)).toBe(true)
     expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z', null)
   })
 
@@ -157,7 +163,7 @@ describe('announceRecovery', () => {
     // whole signature) passes null rather than inventing a key to "delete".
     const kv = fakeKv({ 'workflow-schedule-recovery:a.yml': '2026-08-14T10:00:00.000Z' })
     const del = vi.spyOn(kv, 'delete')
-    expect(await announceRecovery(kv, 'workflow-schedule', 'a.yml', null, vi.fn().mockResolvedValue(true))).toBe(true)
+    expect(await announceRecovery(kv, 'workflow-schedule', 'a.yml', null, PLATFORM, vi.fn().mockResolvedValue(true))).toBe(true)
     expect(kv.store.has('workflow-schedule-recovery:a.yml')).toBe(false)
     expect(del.mock.calls.map((c) => c[0])).toEqual(['workflow-schedule-recovery:a.yml', 'workflow-schedule-active:a.yml'])
   })
@@ -167,7 +173,7 @@ describe('announceRecovery', () => {
       'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z',
       'volume-cliff-cooldown:wf-1': '1',
     })
-    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', vi.fn().mockResolvedValue(true))
+    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, vi.fn().mockResolvedValue(true))
     expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(false)
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(false)
   })
@@ -175,8 +181,8 @@ describe('announceRecovery', () => {
   it('announces only once, because the marker is gone on the next healthy check', async () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
-    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)
-    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)
+    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)
+    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)
     expect(send).toHaveBeenCalledTimes(1)
   })
 
@@ -186,7 +192,7 @@ describe('announceRecovery', () => {
     // silently and leave the last word being the page.
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(false)
-    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(false)
+    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)).toBe(false)
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
   })
 
@@ -195,14 +201,14 @@ describe('announceRecovery', () => {
       'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z',
       'volume-cliff-cooldown:wf-1': '1',
     })
-    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', vi.fn().mockResolvedValue(false))
+    await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, vi.fn().mockResolvedValue(false))
     expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(true)
   })
 
   it('survives a send that throws, without losing the marker', async () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockRejectedValue(new Error('slack exploded'))
-    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(false)
+    expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)).toBe(false)
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
   })
 
@@ -213,7 +219,7 @@ describe('announceRecovery', () => {
   it('HOLDS the all-clear when there is no evidence of recovery', async () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
-    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send, {
       hasEvidence: () => false,
     })
     expect(held).toBe(false)
@@ -226,7 +232,7 @@ describe('announceRecovery', () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
     expect(
-      await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+      await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send, {
         hasEvidence: () => true,
       }),
     ).toBe(true)
@@ -237,7 +243,7 @@ describe('announceRecovery', () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const send = vi.fn().mockResolvedValue(true)
-    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send, {
+    const held = await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send, {
       hasEvidence: () => {
         throw new Error('count query failed')
       },
@@ -294,7 +300,7 @@ describe('announceRecovery re-arm window (#814)', () => {
       'failure-rate-cooldown:wf-1:ACRO': '1',
     })
   const call = (kv: ReturnType<typeof fakeKv>, send: (a: string, e: string | null) => Promise<boolean>, now: string) =>
-    announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', send, {
+    announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', ORG, send, {
       now: Date.parse(now),
     })
 
@@ -381,7 +387,7 @@ describe('announceRecovery re-arm window (#814)', () => {
     const kv = seeded()
     const send = vi.fn().mockResolvedValue(true)
     const at = (now: string, rearmMinutes: number) =>
-      announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', send, {
+      announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', ORG, send, {
         now: Date.parse(now),
         rearmMinutes,
       })
@@ -436,8 +442,9 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
 
   it('settleRecovery clears the marker, the running end and the cooldown', async () => {
     const kv = seeded()
-    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f')
-    expect(kv.store.size).toBe(0)
+    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f', { ...ORG, reason: 'all_clear' })
+    // Only the incident record's ended event is left (#2099), for the drain to take.
+    expect([...kv.store.keys()].map((k) => k.split(':')[0])).toEqual(['incident-outbox'])
   })
 })
 
@@ -449,16 +456,17 @@ describe('keepAlerted (#1274)', () => {
   it('writes the given start time with the recovery TTL, and again on the next call', async () => {
     const kv = fakeKv()
     const put = vi.spyOn(kv, 'put')
-    await keepAlerted(kv, 'x', 'host', '2026-09-05T06:00:00.000Z')
-    await keepAlerted(kv, 'x', 'host', '2026-09-05T06:00:00.000Z')
-    expect(kv.store.get(recoveryKey('x', 'host'))).toBe('2026-09-05T06:00:00.000Z')
-    expect(put).toHaveBeenCalledTimes(2)
-    expect(put).toHaveBeenLastCalledWith(recoveryKey('x', 'host'), '2026-09-05T06:00:00.000Z', { expirationTtl: RECOVERY_TTL_SECONDS })
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM)
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM)
+    expect(kv.store.get(recoveryKey('partner-reachability', 'host'))).toBe('2026-09-05T06:00:00.000Z')
+    // The marker is written on both calls; the first also records the incident opening.
+    expect(put.mock.calls.filter(([k]) => k === recoveryKey('partner-reachability', 'host'))).toHaveLength(2)
+    expect(put).toHaveBeenLastCalledWith(recoveryKey('partner-reachability', 'host'), '2026-09-05T06:00:00.000Z', { expirationTtl: RECOVERY_TTL_SECONDS })
   })
 
   it('does not move an existing earlier start forward', async () => {
-    const kv = fakeKv({ [recoveryKey('x', 'host')]: '2026-09-05T06:00:00.000Z' })
-    await keepAlerted(kv, 'x', 'host', '2026-09-06T06:00:00.000Z')
-    expect(kv.store.get(recoveryKey('x', 'host'))).toBe('2026-09-05T06:00:00.000Z')
+    const kv = fakeKv({ [recoveryKey('partner-reachability', 'host')]: '2026-09-05T06:00:00.000Z' })
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-06T06:00:00.000Z', PLATFORM)
+    expect(kv.store.get(recoveryKey('partner-reachability', 'host'))).toBe('2026-09-05T06:00:00.000Z')
   })
 })

@@ -29,7 +29,7 @@ import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { sendPgCronAlert, sendPgCronRecoveryAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext } from './alert-recovery'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -310,6 +310,9 @@ const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 // write `${prefix}-recovery:` and `${prefix}-active:`, #253). id is the jobname.
 const RECOVERY_PREFIX = 'pg-cron-watch'
 
+/** A database job is every organization's, so its incident is the platform's (#2099). */
+const pgCronIncident = (jobname: string): IncidentContext => ({ scope: { kind: 'platform' }, subjectLabel: jobname })
+
 /**
  * The all-clear's bookkeeping supports the page and must never stop it: a KV
  * fault here is logged and the check carries on to its verdict, its cooldown and
@@ -449,6 +452,7 @@ async function checkOne(
         RECOVERY_PREFIX,
         verdict.jobname,
         cooldownKey(verdict.jobname),
+        pgCronIncident(verdict.jobname),
         async (alertedAt, endedAt) => {
           let delivered = false
           for (const orgId of orgIds) {
@@ -481,7 +485,8 @@ async function checkOne(
   // undelivered incident would make its all-clear mute an alert nobody received.
   if (alerted) {
     await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-    await recoveryBookkeeping(verdict.jobname, 'start marker', () => markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, nowMs))
+    await recoveryBookkeeping(verdict.jobname, 'start marker', () => markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, pgCronIncident(verdict.jobname), nowMs))
+    await recoveryBookkeeping(verdict.jobname, 'page record', () => recordPaged(kv, RECOVERY_PREFIX, verdict.jobname, pgCronIncident(verdict.jobname), nowMs))
     if (verdict.status === 'failing' && row.last_failure_at !== null) {
       await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
     }

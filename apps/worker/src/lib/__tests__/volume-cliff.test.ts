@@ -4,6 +4,7 @@
  * (cooldown, opt-out) once we wire E2E. Pure logic is tested here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 
 vi.mock('../slack', () => ({
   postMessage: vi.fn().mockResolvedValue('ts-1'),
@@ -360,7 +361,7 @@ describe('runVolumeCliffCheck logs a failed read (#439)', () => {
 // "cannot read the database" alert from that copy when its own reads fail, and
 // the self-check probes the database beside the worker.
 describe('runVolumeCliffCheck during a database outage (#1297)', () => {
-  const ORG = 'org-1'
+  const ORG = '33333333-3333-4333-8333-333333333333'
   const WF = 'wf-1'
   const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
 
@@ -527,6 +528,21 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ signal: 'database unreachable' })
     expect(kv.store.has(recoveryKey(DB_UNREACHABLE_PREFIX, ORG))).toBe(false)
+  })
+
+  it('records the outage to the KV outbox while every database read fails, and its end once it reads again (#2099)', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(transitions(kv.store)).toEqual([`opened ${ORG}`, `paged ${ORG}`])
+    // Back-date the incident past the re-arm window, then let the database answer.
+    const back = new Date(Date.now() - 45 * 60000).toISOString()
+    kv.store.set(recoveryKey(DB_UNREACHABLE_PREFIX, ORG), back)
+    kv.store.set(`${DB_UNREACHABLE_PREFIX}-active:${ORG}`, back)
+    for (const k of [...kv.store.keys()]) if (k.startsWith('incident-outbox:')) kv.store.delete(k)
+    await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(transitions(kv.store)).toEqual([`ended ${ORG} all_clear`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ signal: 'db-unreachable', scope: 'org', organizationId: ORG, startedAt: back, endedAt: back })
   })
 
   it('resets the reminder schedule when the database reads again (#1337)', async () => {

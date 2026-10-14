@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 
 vi.mock('../slack', () => ({
   getSlackConnection: vi.fn(),
@@ -1384,7 +1385,8 @@ describe('the dead tier, narrowed by key presence (#2018)', () => {
 
 describe('the daily dead run, narrowed (#2018, #1803)', () => {
   const CONN = { bot_token: 'xoxb-t', default_channel: 'C-default', volume_alerts_enabled: true }
-  const WF = { id: 'wf-1', name: 'Liberty1 Click Handler', organization_id: 'org-1', slack_channel: null }
+  const ORG_ID = '22222222-2222-4222-8222-222222222222'
+  const WF = { id: 'wf-1', name: 'Liberty1 Click Handler', organization_id: ORG_ID, slack_channel: null }
   const WEEK = ['2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11', '2026-10-12', '2026-10-13']
   const dayRow = (field: string, day: string, ran: number, present: number, keyPresent: number, measured = ran) => ({
     workflow_id: 'wf-1', field_path: field, day, ran_count: ran, present_count: present,
@@ -1450,6 +1452,33 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     expect(kv.store.has(`field-presence-dead-recovery:wf-1 ${field}`)).toBe(false)
     // And the field is paged under its new name.
     expect(JSON.stringify(vi.mocked(postMessage).mock.calls)).toContain('Output Field Path Not Found')
+  })
+
+  it('records why each incident ended: stood down by design, or handed over to the wrong path signal (#2099)', async () => {
+    const byDesign = 'query_record.body.records.0.External_Routing_Code__c'
+    const kv1 = makeKv({ [`field-presence-dead-recovery:wf-1 ${byDesign}`]: '2026-10-06T13:00:00.000Z' })
+    await runFieldPresenceDeadCheck(supabaseWith(WEEK.map((d) => dayRow(byDesign, d, 40, 0, 40))) as never, kv1, APP_URL)
+    expect(transitions(kv1.store)).toEqual([`ended wf-1 ${byDesign} stood_down_by_design`])
+    expect(outboxEvents(kv1.store)[0]).toMatchObject({
+      signal: 'field-presence-dead', scope: 'org', organizationId: ORG_ID, subjectLabel: `Liberty1 Click Handler ${byDesign}`, startedAt: '2026-10-06T13:00:00.000Z',
+    })
+
+    const wrong = 'query_record.body.recrods.0.Id'
+    const kv2 = makeKv({ [`field-presence-dead-recovery:wf-1 ${wrong}`]: '2026-10-06T13:00:00.000Z' })
+    await runFieldPresenceDeadCheck(supabaseWith(WEEK.map((d) => dayRow(wrong, d, 400, 0, 0))) as never, kv2, APP_URL)
+    const events = outboxEvents(kv2.store)
+    const ended = events.find((e) => e.type === 'ended')
+    expect(ended).toMatchObject({ signal: 'field-presence-dead', reason: 'handed_over', successor: 'field-presence-wrong-path' })
+    // The successor opens its own incident, and its page is counted there.
+    expect(events.filter((e) => e.signal === 'field-presence-wrong-path').map((e) => e.type)).toEqual(['opened', 'paged'])
+  })
+
+  it('keeps an unjudged incident alive without recording it as a new one (#2099, #1803)', async () => {
+    const field = 'scout.eligibility'
+    const rows = [dayRow(field, '2026-09-20', 3000, 12, 0, 0), ...WEEK.slice(5).map((d) => dayRow(field, d, 40, 0, 0, 0))]
+    const kv = makeKv({ [`field-presence-dead-recovery:wf-1 ${field}`]: '2026-10-10T13:00:00.000Z' })
+    await runFieldPresenceDeadCheck(supabaseWith(rows) as never, kv, APP_URL)
+    expect(transitions(kv.store)).toEqual([])
   })
 
   it('keeps an open incident alive through a run that could not judge it, so its all-clear is not lost (#1803)', async () => {

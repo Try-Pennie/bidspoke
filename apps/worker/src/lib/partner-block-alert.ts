@@ -26,7 +26,7 @@
 import type { PartnerBlockSighting } from '../types'
 import type { AlertClaims } from './alert-claim'
 import { inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, fingerprintAlert, nextFingerprint, recurrenceOf, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendPartnerBlockAlert, type PartnerBlockAlertPayload } from './slack'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { formatErr } from './format-error'
@@ -63,6 +63,13 @@ export interface PartnerBlockDeps {
   /** Test run or local dev: write the event line, touch nothing else. */
   silent: boolean
   appUrl: string
+  /**
+   * The probe in observe mode: its sender only logs what it would have posted, so a
+   * "post" reaches nobody and is not recorded as a page (#2099).
+   */
+  observing?: boolean
+  /** Told about an incident record write that failed, for the caller's own summary (#2099). */
+  onRecordError?: (message: string) => void
 }
 
 export interface PartnerBlockRunContext {
@@ -74,6 +81,17 @@ export interface PartnerBlockRunContext {
 }
 
 export const partnerBlockKey = (host: string) => `${PARTNER_BLOCK_KEY_PREFIX}:${host}`
+
+/**
+ * A partner host's incident is the platform's (#2099): its key is shared by every
+ * organization whose leads reach it, and the probe reports as the literal org
+ * 'probe', so the reporting organization must never be read as the owner.
+ */
+export const partnerHostIncident = (host: string, onRecordError?: (message: string) => void): IncidentContext => ({
+  scope: { kind: 'platform' },
+  subjectLabel: host,
+  ...(onRecordError ? { onRecordError } : {}),
+})
 
 type SlackTarget = { bot_token: string; default_channel: string }
 
@@ -133,7 +151,7 @@ export async function reportPartnerBlock(
   await markSpikeSeen(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, nowMs)
   const standingNow = await readCondition(deps.kv, key)
   if (standingNow) {
-    await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, standingNow.since)
+    await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, standingNow.since, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
     await touchCondition(deps.kv, key, standingNow, PARTNER_BLOCK_CONDITION_TTL_SECONDS)
   }
 
@@ -211,6 +229,7 @@ export async function reportPartnerBlock(
     conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
     fingerprint: nextFingerprint(standing, print),
   })
-  await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since)
+  await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
+  if (!deps.observing) await recordPaged(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
   return 'posted'
 }

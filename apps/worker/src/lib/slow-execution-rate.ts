@@ -24,7 +24,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
@@ -204,6 +204,7 @@ export async function runSlowExecutionCheck(
     if (!threshold) continue
 
     const cooldownKey = `slow-spike-cooldown:${wfId}`
+    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id as string }, subjectLabel: wf.name as string }
 
     const durations = perWorkflow.get(wfId) ?? []
     const spike = detectSlowSpike(durations, threshold)
@@ -221,6 +222,7 @@ export async function runSlowExecutionCheck(
         'slow-spike',
         wfId,
         cooldownKey,
+        incident,
         async (alertedAt, endedAt) => {
           const slack = await getSlackConnection(supabase, wf.organization_id as string)
           if (!slack) return false
@@ -271,7 +273,8 @@ export async function runSlowExecutionCheck(
     // ok:false) would otherwise suppress retries while the spike kept going.
     if (sent) {
       await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, 'slow-spike', wfId)
+      await markAlerted(kv, 'slow-spike', wfId, incident)
+      await recordPaged(kv, 'slow-spike', wfId, incident, now)
     }
   }
 }

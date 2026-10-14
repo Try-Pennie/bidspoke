@@ -28,6 +28,7 @@ import { readCondition } from '../alert-backoff'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import { parseStoredReadings, DATABASE_MEMORY_READINGS_KEY } from '../database-memory-readings'
 import { SUPABASE_METRICS_MEDIUM_AFTER_RESTART } from './fixtures/supabase-metrics-memory'
+import { outboxEvents, transitions } from './_incident-events'
 
 const MIN = 60 * 1000
 const GB = 1024 ** 3
@@ -387,6 +388,43 @@ describe('the all-clear', () => {
     const h = harness()
     await h.runFor(60, () => h.reading(PLENTY))
     expect(h.sent).toEqual([])
+  })
+})
+
+describe('the incident record (#2099)', () => {
+  it('records the opening, each delivered page and the all-clear, as platform incidents in KV', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(LOW))
+    await h.runFor(RECOVERY_REARM_MINUTES + 5, () => h.reading(PLENTY))
+    expect(transitions(h.kv.store)).toEqual(['opened memory', 'paged memory', 'ended memory all_clear'])
+    for (const e of outboxEvents(h.kv.store)) {
+      expect(e).toMatchObject({ signal: 'supabase-memory', scope: 'platform', organizationId: null, subjectLabel: 'The database' })
+    }
+  })
+
+  it('records no page for a post Slack refused', async () => {
+    const h = harness({ slackRefuses: true })
+    await h.runFor(15, () => h.reading(LOW))
+    expect(transitions(h.kv.store).filter((t) => t.startsWith('paged'))).toEqual([])
+  })
+
+  it('counts a reminder as a second page of the same incident, not a new one', async () => {
+    const h = harness()
+    await h.runFor(15, () => h.reading(LOW))
+    await h.runFor(7 * 60, () => h.reading(LOW))
+    const kinds = transitions(h.kv.store)
+    expect(kinds.filter((t) => t === 'opened memory')).toHaveLength(1)
+    expect(kinds.filter((t) => t === 'paged memory').length).toBe(h.sent.filter((s) => s.kind === 'short').length)
+    expect(h.sent.filter((s) => s.kind === 'short').length).toBeGreaterThan(1)
+  })
+
+  it('puts a recording KV refused in the run\'s errors and still posts', async () => {
+    const h = harness()
+    const put = h.kv.put
+    h.kv.put = async (k, v, o) => { if (k.startsWith('incident-outbox:')) throw new Error('KV refused the write'); return put(k, v, o) }
+    const summaries = await h.runFor(15, () => h.reading(LOW))
+    expect(h.sent.map((s) => s.kind)).toEqual(['short'])
+    expect(summaries.flatMap((s) => s.errors).some((e) => e.includes('incident record') && e.includes('KV refused'))).toBe(true)
   })
 })
 

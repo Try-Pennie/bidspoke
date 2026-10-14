@@ -21,7 +21,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, RECOVERY_TTL_SECONDS, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
@@ -107,6 +107,13 @@ const VOLUME_CONDITION_TTL_SECONDS = RECOVERY_TTL_SECONDS
 const dbUnreachableBackoffKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}:${orgId}`
 const volumeCliffBackoffKey = (wfId: string) => `volume-cliff:${wfId}`
 
+/**
+ * The incident record's view of a database outage (#2099): one per organization,
+ * since each is told in its own channel. Recorded to the KV outbox, never the
+ * database, which is the thing that is down.
+ */
+const dbUnreachableIncident = (orgId: string): IncidentContext => ({ scope: { kind: 'org', organizationId: orgId }, subjectLabel: 'Bidspoke' })
+
 async function rememberSlackConnections(
   kv: KvLike,
   secretEncryptionKey: SecretKeyInput,
@@ -176,7 +183,8 @@ async function reportDatabaseUnreachable(
     const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl, repeat })
     if (ts) {
       await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
-      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId)
+      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId))
+      await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId), nowMs)
     } else if (claims) {
       await claims.release(claimKey)
     }
@@ -374,7 +382,7 @@ export async function runVolumeCliffCheck(
   // is the tick that can say it is over (the same re-arm rules as the cliff).
   for (const [orgId, conn] of connections) {
     const backoff = dbUnreachableBackoffKey(orgId)
-    const recovered = await announceRecovery(kv, DB_UNREACHABLE_PREFIX, orgId, backoffCooldownKey(backoff), async (alertedAt, endedAt) => {
+    const recovered = await announceRecovery(kv, DB_UNREACHABLE_PREFIX, orgId, backoffCooldownKey(backoff), dbUnreachableIncident(orgId), async (alertedAt, endedAt) => {
       if (!conn.volume_alerts_enabled) return false
       return sendRecoveryAlert(conn, conn.default_channel, {
         signal: 'database unreachable', subject: 'Bidspoke', alertedAt, endedAt, url: `${appUrl}/dashboard`,
@@ -413,6 +421,7 @@ export async function runVolumeCliffCheck(
     if (!bucket) continue
 
     const backoff = volumeCliffBackoffKey(wfId)
+    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id as string }, subjectLabel: wf.name as string }
 
     const cliff = detectCliff(bucket)
     if (!cliff) {
@@ -426,6 +435,7 @@ export async function runVolumeCliffCheck(
         'volume-cliff',
         wfId,
         backoffCooldownKey(backoff),
+        incident,
         async (alertedAt, endedAt) => {
           const slack = await getSlackConnection(supabase, wf.organization_id as string)
           if (!slack || !slack.volume_alerts_enabled) return false
@@ -498,7 +508,8 @@ export async function runVolumeCliffCheck(
       await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
       // Separate marker, longer TTL: a cliff lasting past the cooldown would
       // otherwise leave nothing to say it had ever been broken (#253).
-      await markAlerted(kv, 'volume-cliff', wfId)
+      await markAlerted(kv, 'volume-cliff', wfId, incident)
+      await recordPaged(kv, 'volume-cliff', wfId, incident, nowMs)
     } else if (claims) {
       // Slack refused: free the claim so the next tick can retry, the same way
       // the cooldown is only written on delivery.
