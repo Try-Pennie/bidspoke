@@ -1,5 +1,5 @@
 {
-  "_note": "Invented Submission__c rows as the Liberty1 click query returns them for a Submission with NO Prospect (2026-09-29): Brian's SUBMISSION_FIELDS, the Lead__r relationship, the two offer fields and a null Prospect__r. No value belongs to a real person: SSNs start 000, phones are 555-01xx, IPs are 203.0.113.0/24, emails are example.com. Field names and value types checked against the org on 2026-09-29 (Annual_Income_Before_Taxes_SO__c is text, Loan_Amount_SO__c a number).",
+  "_note": "Invented Submission__c rows as the Liberty1 click query returns them for a Submission with NO Prospect (2026-09-29): Brian's SUBMISSION_FIELDS, the Lead__r relationship, the two offer fields and a null Prospect__r. No value belongs to a real person: SSNs start 000, phones are 555-01xx, IPs are 203.0.113.0/24, emails are example.com. Field names and value types checked against the org on 2026-09-29 (Annual_Income_Before_Taxes_SO__c is text, Loan_Amount_SO__c a number). EngineDebt__c (#2110) checked against the org on 2026-10-14; one row has none, as 21 percent of Submissions with no Prospect do.",
   "records": {
     "di4_lead_mobile": {
       "attributes": { "type": "Submission__c" },
@@ -34,6 +34,7 @@
       "User_IP__c": "203.0.113.20",
       "External_Routing_Code__c": null,
       "External_Exchange_Status__c": null,
+      "EngineDebt__c": 41250,
       "Lead__r": {
         "attributes": { "type": "Lead" },
         "FirstName": "Casey",
@@ -77,6 +78,7 @@
       "User_IP__c": null,
       "External_Routing_Code__c": null,
       "External_Exchange_Status__c": null,
+      "EngineDebt__c": null,
       "Lead__r": null,
       "Prospect__r": null
     }
