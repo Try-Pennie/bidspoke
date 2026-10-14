@@ -51,6 +51,15 @@ describe('standstillCause', () => {
     expect(cause.advice).toMatch(/Snowflake/)
   })
 
+  it('explains a record-failed outcome as our own database, not Snowflake (lessons review, #835)', async () => {
+    const cause = standstillCause([run({ outcome: 'record-failed' }), run({ outcome: 'record-failed' })])
+
+    expect(cause.kind).toBe('runs-failing')
+    if (cause.kind !== 'runs-failing') return
+    expect(cause.advice).toMatch(/record-failed/)
+    expect(cause.advice).toMatch(/execution_archive_ids/)
+  })
+
   it('says the platform is killing the runs when none of them record an ending', async () => {
     const cause = standstillCause([
       run({ finishedAt: null, outcome: null }),

@@ -155,3 +155,26 @@ describe('checkArchiveHeadroom', () => {
     expect(ARCHIVE_HEADROOM_FLOOR).toBe(1.25)
   })
 })
+
+/**
+ * #835: "Nothing is broken and nothing is missing yet" was said at every ratio
+ * under the floor, including below 1.0, where by this measurement the busiest
+ * hour already does not fit and the archive cannot advance at peak.
+ */
+describe('the headroom alert says which side of 1.0 it is on', () => {
+  const consequenceAt = async (ratio: number): Promise<string> => {
+    const notify = vi.fn(async (_s: unknown, _j: string, _e: string[], _kv: unknown, _r: unknown) => undefined)
+    await checkArchiveHeadroom(env, supabase, { readRuns: async () => runsAtRatio(ratio), notify: notify as never })
+    return (notify.mock.calls[0][4] as { consequence: string }).consequence
+  }
+
+  it('says nothing is broken yet while the busiest hour still fits', async () => {
+    expect(await consequenceAt(1.1)).toMatch(/Nothing is broken/)
+  })
+
+  it('does not say nothing is broken once the busiest hour no longer fits', async () => {
+    const said = await consequenceAt(0.8)
+    expect(said).not.toMatch(/Nothing is broken/)
+    expect(said).toMatch(/no longer fits/)
+  })
+})

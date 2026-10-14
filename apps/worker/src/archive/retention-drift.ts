@@ -99,7 +99,8 @@ export function retentionDifferences(
         code: 'retention-disagrees',
         message:
           `${jobname} destroys execution partitions after ${job.retentionDays} days, but the code declares ` +
-          `${declaredDays}, so the deletion gate is reporting the wrong deadline`,
+          `${declaredDays}, so the deletion gate measures days on a different window from the one this job ` +
+          'deletes on',
       })
     }
   }

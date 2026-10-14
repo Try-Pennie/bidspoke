@@ -253,3 +253,75 @@ describe('a streak counter that cannot be read', () => {
     expect(Number.isFinite(Number(stored))).toBe(true)
   })
 })
+
+/**
+ * #835: the fix line led with "check Snowflake first" and the consequence said
+ * retrying "will not help", even when the failure named an unset secret, where
+ * Snowflake was never asked, and on a timeout, where a retry may well work.
+ */
+describe('the archived reads fix line leads with what the failure names', () => {
+  const remedyFor = async (detail: string, timedOut?: true) => {
+    let remedy: { consequence: string; fixHint: string } | undefined
+    const notify = async (_s: SupabaseClient, _j: string, _e: string[], _kv: unknown, r: unknown) => {
+      remedy = r as { consequence: string; fixHint: string }
+    }
+    const outcome = timedOut ? { kind: 'unavailable' as const, detail, timedOut } : fail(detail)
+    await recordArchiveReadOutcome(supabase, undefined, outcome, { notify })
+    return remedy as { consequence: string; fixHint: string }
+  }
+
+  it('names the unset secret first, not Snowflake', async () => {
+    const remedy = await remedyFor(
+      'ARCHIVE_READER_PRIVATE_KEY is not set, so the archive cannot authenticate to Snowflake',
+    )
+    expect(remedy.fixHint).toMatch(/^Set ARCHIVE_READER_PRIVATE_KEY with wrangler secret put ARCHIVE_READER_PRIVATE_KEY/)
+    expect(remedy.fixHint).not.toMatch(/Check Snowflake first/)
+  })
+
+  it('points a timeout at the warehouse resuming, and does not say a retry will not help', async () => {
+    const remedy = await remedyFor('the archive did not answer within 20 seconds', true)
+    expect(remedy.fixHint).toMatch(/warehouse/)
+    expect(remedy.fixHint).not.toMatch(/wrangler secret put/)
+    expect(remedy.consequence).not.toMatch(/it will not help/)
+  })
+})
+
+// Lessons review (#835): the timeout is classified where the deadline fires,
+// never recognised later from the wording of its message (L35).
+describe('a read that ran out of time is reported as a timeout by the reader', () => {
+  it('marks the outcome timed out when the deadline wins the race', async () => {
+    const recorded: unknown[] = []
+    await readArchivedExecution(
+      {
+        ARCHIVE_READER_USER: 'reader',
+        ARCHIVE_READER_PRIVATE_KEY: 'key',
+        SNOWFLAKE_ACCOUNT: 'acct',
+      } as unknown as Env,
+      supabase,
+      { executionId: '01a05cd7-2a00-7000-8000-000000000001', orgId: 'o', readBy: 'r' },
+      {
+        execute: () => new Promise(() => {}),
+        sleep: async () => undefined,
+        writeAudit: async () => {},
+        recordOutcome: async (_s, _kv, outcome) => {
+          recorded.push(outcome)
+          return false
+        },
+      },
+    )
+    expect(recorded).toEqual([expect.objectContaining({ kind: 'unavailable', timedOut: true })])
+  })
+
+  it('does not take the timeout fix from wording alone', async () => {
+    const remedy = await (async () => {
+      let r: { fixHint: string } | undefined
+      await recordArchiveReadOutcome(supabase, undefined, fail('the archive did not answer within 20 seconds'), {
+        notify: async (_s, _j, _e, _kv, x) => {
+          r = x as { fixHint: string }
+        },
+      })
+      return r as { fixHint: string }
+    })()
+    expect(remedy.fixHint).not.toMatch(/timing out/)
+  })
+})

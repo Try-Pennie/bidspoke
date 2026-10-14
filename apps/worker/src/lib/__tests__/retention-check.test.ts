@@ -17,7 +17,7 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { checkExecutionRetention, RETENTION_CHECK_JOB } from '../retention-check'
+import { checkExecutionRetention, RETENTION_CHECK_JOB, RETENTION_CHECK_REMEDY, retentionRemedyFor } from '../retention-check'
 import { notifyExportFailure } from '../export-alerts'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
 import type { Env } from '../../index'
@@ -180,5 +180,105 @@ describe('checkExecutionRetention', () => {
 
     expect(result.alerted).toBe(true)
     expect(result.differences.map((d) => d.code)).toEqual(['unreadable'])
+  })
+})
+
+/**
+ * #835: "the window ... and the window this repo declares disagree. Nothing
+ * failed" was sent when the check itself failed or could not read the jobs,
+ * where nothing about the windows is known. And the gate no longer quotes a
+ * deadline, so "quoting a deadline that is not the real one" is gone too.
+ */
+describe('the retention alert says unknown when it could not read the jobs', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === RETENTION_CHECK_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+      headlineVerb?: string
+    }
+
+  it('does not say the windows disagree when the read failed', async () => {
+    await checkExecutionRetention(env, supabaseDouble({ error: { message: 'permission denied' } }).client)
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/disagree\. Nothing failed/)
+    expect(remedy.consequence).toMatch(/unknown/)
+    expect(remedy.headlineVerb ?? '').not.toMatch(/disagrees/)
+  })
+
+  it('does not say the windows disagree when the check itself threw', async () => {
+    const client = {
+      rpc: () => {
+        throw new Error('client exploded')
+      },
+    } as unknown as SupabaseClient
+    await checkExecutionRetention(env, client)
+    expect(remedySent().consequence).toMatch(/unknown/)
+  })
+
+  it('keeps the disagreement wording for a real difference, without a deadline the gate no longer quotes', async () => {
+    await checkExecutionRetention(env, supabaseDouble({ data: [row(TRUNCATE, { retention_days: 9 }), row(REAP)] }).client)
+    const remedy = remedySent()
+    expect(remedy.consequence).toMatch(/disagree/)
+    expect(`${remedy.consequence} ${alerted().join(' ')}`).not.toMatch(/deadline/)
+  })
+})
+
+/**
+ * Lessons review on #2088: the drift remedy also carries job-missing,
+ * job-inactive and retention-unreadable, where "disagree. Nothing failed and
+ * nothing is missing" is false. Each kind now gets wording true for it, and
+ * the "the check needs attention rather than the schedule" fix survives for a
+ * window that could not be read.
+ */
+describe('each purge job difference gets wording true for it', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === RETENTION_CHECK_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+      headlineVerb?: string
+    }
+  const runWith = (rows: Array<Record<string, unknown>>) =>
+    checkExecutionRetention(env, supabaseDouble({ data: rows }).client)
+
+  it('says disagree, and nothing failed, only when the windows really disagree', async () => {
+    await runWith([row(TRUNCATE, { retention_days: 9 }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).toMatch(/disagree/)
+    expect(remedy.headlineVerb).toMatch(/disagrees/)
+    expect(remedy.fixHint).toMatch(/Decide which side is right/)
+  })
+
+  it('does not say nothing is missing when a job is missing', async () => {
+    await runWith([row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/nothing is missing|Nothing failed/i)
+    expect(remedy.headlineVerb).not.toMatch(/disagrees/)
+    expect(remedy.fixHint).toMatch(/Recreate the missing job/)
+  })
+
+  it('says a disabled job is not enforcing retention, and how to turn it back on', async () => {
+    await runWith([row(TRUNCATE, { active: false }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/Nothing failed/)
+    expect(remedy.consequence).toMatch(/not being enforced/)
+    expect(remedy.fixHint).toMatch(/Re-enable/)
+  })
+
+  it('keeps the fix that a window it could not parse needs the check, not the schedule', async () => {
+    await runWith([row(TRUNCATE, { retention_days: null, command: 'CALL something_else()' }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/disagree\./)
+    expect(remedy.consequence).toMatch(/unknown/)
+    expect(remedy.fixHint).toMatch(/the check itself needs attention rather than the schedule/)
+    expect(remedy.fixHint).not.toMatch(/Decide which side is right/)
+    // Nothing about the jobs differing was measured, so it may not open by
+    // saying they are not as declared (lessons review, #835).
+    expect(remedy.consequence).not.toMatch(/are not as this repo declares/)
+  })
+})
+
+describe('a clean run clears with the full remedy, never an empty one (lessons review, #835)', () => {
+  it('returns the declared remedy when there is no difference', () => {
+    expect(retentionRemedyFor([])).toBe(RETENTION_CHECK_REMEDY)
   })
 })
