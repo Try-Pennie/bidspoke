@@ -40,7 +40,7 @@ export function incidentTimeRange(i: Incident): string {
 }
 
 /** The duration column: the measured span, or that the end was not recorded (there is no span to give). */
-export function incidentDurationText(i: Incident): string {
+export function durationColumnText(i: Incident): string {
   if (i.state === 'end_not_recorded' || !i.ended_at) return 'End not recorded'
   return i.duration ?? ''
 }

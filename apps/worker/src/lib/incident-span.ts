@@ -62,8 +62,10 @@ function windowAdjective(windowMs: number): string {
 }
 
 /**
- * The span as one short phrase for a table cell, or null when there is nothing
- * true to say (an unreadable start, or an end recorded before the start).
+ * The span as one short phrase for a table cell, or null when the start cannot
+ * be read. An end recorded before the start is a zero length span by the time it
+ * gets here (measureIncidentSpan clamps it), so it reads as under a minute, or
+ * the window wording where the signal has a window.
  */
 export function incidentDurationText(span: IncidentSpan): string | null {
   if (span.kind === 'unknown') return null

@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import type { Incident, IncidentsResponse } from '@/lib/api'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Button, Outcome } from '@/components/ui/form'
-import { emptyIncidentsText, groupIncidentsByDay, incidentDurationText, incidentTimeRange, signalText, slackPagesText } from '@/lib/incidents'
+import { emptyIncidentsText, groupIncidentsByDay, durationColumnText, incidentTimeRange, signalText, slackPagesText } from '@/lib/incidents'
 
 type Days = 7 | 14 | 30
 
@@ -25,7 +25,7 @@ function IncidentRow({ incident }: { incident: Incident }) {
       <span className="tabular-nums text-gray-600">{incidentTimeRange(incident)}</span>
       <span className="font-medium text-graphite">{signalText(incident)}</span>
       <span className="min-w-0 text-gray-600">{incident.subject_name}</span>
-      <span className="text-gray-600">{incidentDurationText(incident)}</span>
+      <span className="text-gray-600">{durationColumnText(incident)}</span>
       <span className="text-right text-xs text-gray-600">{slackPagesText(incident.pages_sent)}</span>
     </li>
   )
