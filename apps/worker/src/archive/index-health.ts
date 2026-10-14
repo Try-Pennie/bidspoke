@@ -33,17 +33,19 @@ export interface IndexFinding {
  * partitions are the same cause caught one step earlier, before the parent flag
  * flips, and naming the count is what says how far it has gone (L11).
  */
-export function indexFindings(reading: IndexHealthReading | null): IndexFinding[] {
+export function indexFindings(reading: IndexHealthReading | null, unreadableBecause?: string): IndexFinding[] {
   if (reading === null) {
     // Unreadable is its own finding, never silence. A check that could not look
     // has established nothing, and reporting nothing is what makes an unverified
-    // guarantee look verified (L98).
+    // guarantee look verified (L98). The reason travels in the finding, because
+    // a reason only logged left the alert saying nothing about why (#835).
     return [
       {
         code: 'unreadable',
         message:
-          'whether the index the archive reads by still exists could not be established, so the archive ' +
-          'may be one peak hour away from timing out with nothing having said so',
+          'whether the index the archive reads by still exists could not be established' +
+          (unreadableBecause === undefined ? '' : ` (${unreadableBecause})`) +
+          ', so the archive may be one peak hour away from timing out with nothing having said so',
       },
     ]
   }

@@ -17,7 +17,7 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { checkArchiveIdentities, ARCHIVE_IDENTITY_JOB, deleteProbeStatement } from '../archive-identity-check'
+import { checkArchiveIdentities, ARCHIVE_IDENTITY_JOB, ARCHIVE_IDENTITY_REMEDY, deleteProbeStatement, identityRemedyFor } from '../archive-identity-check'
 import { ARCHIVE_ROLES, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE, type ArchiveIdentity } from '../archive-snowflake'
 import { notifyExportFailure } from '../export-alerts'
 import { SnowflakeStatementError, type SnowflakeStatementResponse } from '../snowflake'
@@ -325,5 +325,48 @@ describe('an identity whose credential is not set', () => {
     const readerFindings = (await result).findings.filter((f) => f.identity === 'reader')
 
     expect(readerFindings).toHaveLength(2)
+  })
+})
+
+/**
+ * #835: "the named secret is the fix" was printed for every identity that could
+ * not be verified, including a Snowflake 5xx or a timeout, where setting a
+ * secret changes nothing. The secret fix now appears only for a line saying a
+ * secret is not set, and the grant fix only for a grant finding.
+ */
+describe('the identity fix line is chosen from the findings', () => {
+  const fixSent = () =>
+    (
+      vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_IDENTITY_JOB && (c[2] as string[]).length > 0)?.[4] as {
+        fixHint: string
+      }
+    ).fixHint
+
+  it('names the unset secret when a line says it is not set', async () => {
+    const unset = new Error('ARCHIVE_READER_PRIVATE_KEY is not set, so the archive cannot authenticate to Snowflake')
+    await run({ reader: { onEvery: unset } }).result
+    expect(fixSent()).toMatch(/wrangler secret put ARCHIVE_READER_PRIVATE_KEY --name bidspoke-worker/)
+    expect(fixSent()).not.toMatch(/Revoke DELETE/)
+  })
+
+  it('does not offer a secret as the fix for a Snowflake outage', async () => {
+    const outage = new SnowflakeStatementError('Snowflake 503: service unavailable', 503, null)
+    await run({ reader: { onEvery: outage } }).result
+    expect(fixSent()).not.toMatch(/wrangler secret put/)
+    expect(fixSent()).not.toMatch(/the named secret/)
+  })
+
+  it('gives the grant fix for a grant finding', async () => {
+    await run({ reader: { privileges: ['SELECT', 'DELETE'], onDelete: 'allow' } }).result
+    expect(fixSent()).toMatch(/Revoke DELETE/)
+    expect(fixSent()).not.toMatch(/wrangler secret put/)
+  })
+})
+
+// Lessons review (#835): the chooser itself returns the declared remedy for no
+// findings, rather than relying on its one caller to guard it.
+describe('the identity chooser with no findings', () => {
+  it('returns the base remedy', () => {
+    expect(identityRemedyFor([])).toBe(ARCHIVE_IDENTITY_REMEDY)
   })
 })

@@ -135,3 +135,30 @@ describe('checkArchiveIndex', () => {
     expect(JSON.stringify(result.findings)).not.toContain('object Object')
   })
 })
+
+/**
+ * #835: an unreadable reading used to arrive under "that index is no longer
+ * intact on every partition" with the error only logged, and the fix told the
+ * reader to reattach "the partitions listed" when no partition is ever listed.
+ */
+describe('the index alert says what it measured', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_INDEX_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+      headlineVerb?: string
+    }
+
+  it('puts the read error in the finding, and does not call the index broken', async () => {
+    await checkArchiveIndex(supabaseDouble({ error: { message: 'permission denied for function' } }), kv)
+    expect(raised()[0]).toMatch(/permission denied for function/)
+    expect(remedySent().consequence).not.toMatch(/no longer intact/)
+    expect(remedySent().headlineVerb ?? '').not.toMatch(/not intact/)
+  })
+
+  it('names the unindexed partitions by count, not as a list it never gives', async () => {
+    await checkArchiveIndex(supabaseDouble({ data: [{ ...HEALTHY[0], attached: 50 }] }), kv)
+    expect(remedySent().fixHint).not.toMatch(/partitions listed/)
+    expect(remedySent().consequence).toMatch(/no longer intact/)
+  })
+})

@@ -256,3 +256,37 @@ describe('a delete whose row count cannot be read', () => {
     expect(r.detail).not.toMatch(/floor/)
   })
 })
+
+/**
+ * #835: "archived executions are being KEPT past the point they should have been
+ * deleted" is measured only when a listed day failed to delete. A run that could
+ * not list the days, or compute the cutoff, knows nothing about what is past it.
+ */
+describe('the expiry alert says kept only when a day past the cutoff was seen', () => {
+  const remedySent = async (s: ReturnType<typeof sf>, now: () => Date = () => NOW) => {
+    const notify = vi.fn(async (_s: unknown, _j: string, _e: string[], _kv: unknown, _r: unknown) => undefined)
+    await expireArchivedDays(env, supabase, { query: s.query, now, notify: notify as never })
+    return notify.mock.calls[0][4] as { consequence: string; fixHint: string }
+  }
+
+  it('says the days are kept when a listed day failed to delete', async () => {
+    const remedy = await remedySent(sf({ days: ['2025-08-01'], deleteFails: '2025-08-01' }))
+    expect(remedy.consequence).toMatch(/KEPT past the point/)
+  })
+
+  it('says it is unknown when the days could not be listed', async () => {
+    const s = sf()
+    s.query.mockImplementationOnce(async () => {
+      throw new Error('warehouse suspended')
+    })
+    const remedy = await remedySent(s)
+    expect(remedy.consequence).not.toMatch(/KEPT past the point/)
+    expect(remedy.consequence).toMatch(/unknown/)
+  })
+
+  it('says it is unknown when the cutoff could not be computed', async () => {
+    const remedy = await remedySent(sf({ days: ['2025-08-01'] }), () => new Date('not a date'))
+    expect(remedy.consequence).not.toMatch(/KEPT past the point/)
+    expect(remedy.consequence).toMatch(/unknown/)
+  })
+})

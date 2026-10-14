@@ -99,6 +99,15 @@ function requireSecret(env: Env, name: keyof Env): string {
   return value
 }
 
+/**
+ * The secret a failure says is unset, read back from the wording above, or
+ * null. Beside the message it parses, so the alerts that name the secret
+ * (identities, archived reads) cannot drift from it separately (#835).
+ */
+export function unsetSecretNamed(text: string): string | null {
+  return /\b([A-Z][A-Z0-9_]+) is not set\b/.exec(text)?.[1] ?? null
+}
+
 export function archiveConfig(env: Env, identity: ArchiveIdentity): SnowflakeConfig {
   const names = ARCHIVE_SECRET_NAMES[identity]
   return {

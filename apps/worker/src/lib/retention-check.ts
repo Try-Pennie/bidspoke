@@ -31,20 +31,96 @@ import type { Env } from '../index'
  * The live purge jobs' retention window disagrees with the one this repo
  * declares. Both jobs had been edited by hand in the database, where no check in
  * the repository can see them.
+ *
+ * This wording is true only when every difference is a window that disagrees.
+ * A missing job, a disabled one or a window that could not be read gets its own
+ * sentences from `retentionRemedyFor` (lessons review, #835).
  */
 export const RETENTION_CHECK_REMEDY: AlertRemedy = {
   consequence:
     'The window the database purge jobs actually destroy execution data on, and the window this repo ' +
     'declares, disagree. Nothing failed and nothing is missing. What is wrong is that the deletion gate ' +
-    'is quoting a deadline that is not the real one, or, where a job is disabled, that retention is not ' +
-    'being enforced at all:',
+    'measures days on one window while the purge deletes on another:',
   fixHint:
     'Decide which side is right, then either re-align the scheduled purge jobs in Postgres with the ' +
-    'declared value, or change the declared value in this repo and its guard test. A disabled job has to ' +
-    'be re-enabled. If a line says the jobs could not be read, the check itself needs attention rather ' +
-    'than the schedule.',
+    'declared value, or change the declared value in this repo and its guard test.',
   headlineVerb: 'found the purge window disagrees',
   itemNoun: { one: 'difference', many: 'differences' },
+}
+
+/** Differences that are a real disagreement between two windows that were both read. */
+const DISAGREEMENTS = new Set(['retention-disagrees', 'jobs-disagree'])
+
+/**
+ * The wording for THIS run's differences, one sentence per kind present.
+ *
+ * The drift path carries five kinds, and one remedy said "disagree. Nothing
+ * failed and nothing is missing" over a job that was missing, a job that was
+ * disabled and a window nothing could read (lessons review, #835).
+ */
+export function retentionRemedyFor(codes: readonly string[]): AlertRemedy {
+  // No difference is the clear path, which carries the declared remedy rather
+  // than one built from nothing.
+  if (codes.length === 0 || codes.every((c) => DISAGREEMENTS.has(c))) return RETENTION_CHECK_REMEDY
+  const has = (code: string) => codes.includes(code)
+  const consequences: string[] = []
+  const fixes: string[] = []
+  if (codes.some((c) => DISAGREEMENTS.has(c))) {
+    consequences.push(
+      'The deletion gate measures days on one window while a purge job deletes on another.',
+    )
+    fixes.push(
+      'Decide which side is right, then either re-align the scheduled purge jobs in Postgres with the ' +
+        'declared value, or change the declared value in this repo and its guard test.',
+    )
+  }
+  if (has('job-missing') || has('job-inactive')) {
+    consequences.push(
+      'A purge job that is missing or disabled is not doing its part, so execution retention is not being ' +
+        'enforced as declared.',
+    )
+  }
+  if (has('job-missing')) {
+    fixes.push(
+      'Recreate the missing job from the migration that schedules it, or, if it was renamed on purpose, ' +
+        'update the job names in execution_purge_retention and this check.',
+    )
+  }
+  if (has('job-inactive')) fixes.push('Re-enable the disabled job in pg_cron (cron.alter_job with active set to true).')
+  if (has('retention-unreadable')) {
+    consequences.push("Where a job's window could not be read from its command, whether it matches is unknown.")
+    fixes.push(
+      "If a line says a job's window could not be read, the check itself needs attention rather than the " +
+        'schedule: the command no longer has the shape execution_purge_retention reads, so read it in ' +
+        'cron.job and either restore the call or teach the function the new shape.',
+    )
+  }
+  return {
+    // Opens with "not as declared" only when a difference was measured; a
+    // window that could not be read says only that it is unknown (#835).
+    consequence:
+      (codes.some((c) => c !== 'retention-unreadable') ? 'The execution purge jobs are not as this repo declares. ' : '') +
+      consequences.join(' ').replace(/\.$/, ':'),
+    fixHint: fixes.join(' '),
+    headlineVerb: 'found a problem with the purge jobs',
+    itemNoun: { one: 'difference', many: 'differences' },
+  }
+}
+
+/**
+ * The jobs could not be read, or the check itself failed, so whether the
+ * windows match is unknown (#835). It used to arrive under "disagree. Nothing
+ * failed", which nothing had measured.
+ */
+export const RETENTION_CHECK_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    'The execution purge jobs could not be read, so whether their window matches the one this repo ' +
+    'declares is unknown, and a drift would go unreported until this check reads them again:',
+  fixHint:
+    'The line below names what failed: the execution_purge_retention function in our database, or this ' +
+    'check itself. Fix that; the check runs again on its next daily pass.',
+  headlineVerb: 'could not read the purge window',
+  itemNoun: { one: 'failure', many: 'failures' },
 }
 
 export const RETENTION_CHECK_JOB = 'execution-retention-drift'
@@ -102,7 +178,7 @@ export async function checkExecutionRetention(
   } catch (err) {
     const detail = `the execution retention check itself failed: ${formatErr(err)}`
     console.error(`[retention-check] ${detail}`)
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], RETENTION_CHECK_UNREADABLE_REMEDY)
     return { observed: [], differences: [{ code: 'failed', message: detail }], alerted: true }
   }
 }
@@ -117,9 +193,14 @@ export async function checkExecutionRetention(
  * RECOVERY signal and uses it to clear its alert state, so short-circuiting a
  * clean run here would leave a resolved drift looking unresolved to the next one.
  */
-async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
+async function alertQuietly(
+  supabase: SupabaseClient,
+  env: Env,
+  messages: string[],
+  remedy: AlertRemedy = RETENTION_CHECK_REMEDY,
+): Promise<void> {
   try {
-    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY, RETENTION_CHECK_REMEDY)
+    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY, remedy)
   } catch (err) {
     console.error('[retention-check] could not send its alert:', formatErr(err))
   }
@@ -137,7 +218,7 @@ async function runCheck(env: Env, supabase: SupabaseClient): Promise<RetentionCh
         ? `the execution purge jobs could not be read: ${formatErr(error)}`
         : 'the execution purge jobs could not be read: the function answered with no payload at all'
     const differences = [{ code: 'unreadable', message: detail }]
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], RETENTION_CHECK_UNREADABLE_REMEDY)
     console.error(`[retention-check] ${detail}`)
     return { observed: [], differences, alerted: true }
   }
@@ -149,6 +230,7 @@ async function runCheck(env: Env, supabase: SupabaseClient): Promise<RetentionCh
     supabase,
     env,
     differences.map((d) => d.message),
+    retentionRemedyFor(differences.map((d) => d.code)),
   )
 
   // Logged on every run including a clean one, so a working check is visible from
