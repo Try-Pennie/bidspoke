@@ -28,6 +28,7 @@ const KEPT: Record<string, string> = {
   'src/lib/lead-read-budget.ts:leads': 'keyed by each lead\'s own client object, which no other run holds',
   'src/engine/response-contracts.ts:undeclaredReported': 'only stops a log line repeating',
   'src/engine/nodes/code.ts:bundlesWithoutCapture': 'only stops a log line repeating',
+  'src/lib/secret-crypto.ts:imported': 'an imported key decrypts exactly as one imported again; only saves the import (#2090)',
 }
 
 function filesUnder(dir: string): string[] {

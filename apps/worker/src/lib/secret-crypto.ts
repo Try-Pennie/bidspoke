@@ -32,9 +32,24 @@ function ring(keys: SecretKeyInput): SecretKeys {
   return typeof keys === 'string' ? { encryptWith: keys, decryptWith: [keys] } : keys
 }
 
-async function importKey(keyB64: string): Promise<CryptoKey> {
+/**
+ * Each key imported once per isolate (#2090). The engine decrypts every secret
+ * on every run and the re-lock route re-encrypts thousands of rows, and each
+ * call used to import the same key again. Held as the promise, so concurrent
+ * first calls share one import; a failed import is dropped, so the next call
+ * tries again rather than failing for the life of the isolate. A rotation adds
+ * an entry, so the map holds at most the few keys this Worker has been given.
+ */
+const imported = new Map<string, Promise<CryptoKey>>()
+
+function importKey(keyB64: string): Promise<CryptoKey> {
+  const held = imported.get(keyB64)
+  if (held) return held
   const keyBytes = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0))
-  return crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt', 'decrypt'])
+  const pending = crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt', 'decrypt'])
+  imported.set(keyB64, pending)
+  pending.catch(() => imported.delete(keyB64))
+  return pending
 }
 
 export async function encryptSecret(plaintext: string, keys: SecretKeyInput): Promise<string> {

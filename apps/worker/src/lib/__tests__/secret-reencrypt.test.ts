@@ -115,16 +115,19 @@ describe('reencryptSecrets', () => {
   // it, and a rotation that refused at PostgREST's 1,000 row cap would stall with
   // the old key still needed (#1993 review).
   it('re-locks every held writeback past the 1,000 row cap, paging rather than refusing', async () => {
+    // Only the row on the SECOND page holds a value, so reaching it proves the
+    // read went past the cap, at the cost of one encryption rather than 1,001
+    // (#2090: 1,001 real encryptions timed out under full suite load).
     const { next, tables, keys, primary } = await setup()
     const locked = await encryptSecret('{"a":1}', primary)
     tables.outcome_writeback_deadletters = Array.from({ length: 1001 }, (_, i) => ({
       id: `w${String(i).padStart(4, '0')}`,
-      body_encrypted: locked,
+      body_encrypted: i === 1000 ? locked : null,
       error_encrypted: null,
       last_error_encrypted: null,
     }))
     const result = await reencryptSecrets(fakeSupabase(tables) as never, keys, { dryRun: false })
-    expect(result.tables.find((t) => t.table === 'outcome_writeback_deadletters')?.relocked).toBe(1001)
+    expect(result.tables.find((t) => t.table === 'outcome_writeback_deadletters')?.relocked).toBe(1)
     expect(await decryptSecret(tables.outcome_writeback_deadletters[1000].body_encrypted as string, next)).toBe('{"a":1}')
   })
 
