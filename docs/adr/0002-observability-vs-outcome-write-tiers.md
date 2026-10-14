@@ -41,7 +41,7 @@ The tier-2 in-process `withDbRetry` ladder does **not** survive Worker isolate e
 Build the durable outcome store when EITHER holds:
 
 1. **Any unrecoverable row loss.** A single `lead_sightings.insert` or `lead_sighting_bids.insert` dead-letter. These are the must-not-lose ROW inserts named in "the one limit": no persisted column lets a drain rebuild them, so one is a permanent loss of a billing / win-tracking row, which is exactly the risk this deferral accepted. The finalize losses are excluded, because the strand drains reconstruct them.
-2. **Sustained volume.** Total dead-letters at or above `BUILD_NOW_DAILY_VOLUME` per day for `BUILD_NOW_VOLUME_DAYS` consecutive completed UTC days. At that outage frequency a lost row is a matter of time rather than luck, even if half 1 has not fired yet.
+2. **Sustained volume.** Dead-letters of our own database writes at or above `BUILD_NOW_DAILY_VOLUME` per day for `BUILD_NOW_VOLUME_DAYS` consecutive completed UTC days. At that outage frequency a lost row is a matter of time rather than luck, even if half 1 has not fired yet. A failed Salesforce update (`sf_writeback`, and one the replay store could not capture) does not count (Dan, 2026-10-14, #2087): it has its own alerts and the replay tool, and this bar decides whether our database writes need a durable store, so counting it could raise the bar for a cause the store would not fix. Saving into the replay store itself is a database write and still counts.
 
 The counter and the bar's constants live in `lib/deadletter-volume.ts`; change the bar there, not only here, so the sentence and the check cannot drift.
 

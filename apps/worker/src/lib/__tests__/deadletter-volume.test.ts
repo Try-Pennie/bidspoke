@@ -140,8 +140,9 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
 
   // #835: the fix line told the reader to move finalizeSighting out of waitUntil
   // "or the 09:00 export", whatever had been counted. The tally counts every
-  // confirmed loss (the finalize kinds the drains rebuild, the Salesforce
-  // writeback), and the sightings export runs every two hours. The alert now
+  // confirmed database loss (the finalize kinds the drains rebuild included;
+  // failed Salesforce updates are not counted since #2087), and the sightings
+  // export runs every two hours. The alert now
   // says which kinds were counted, and the fix starts from them.
   // Review of #2082: the fix line pointed at "the kinds counted above" even when
   // no kinds line was printed, on a standing reminder whose tallies had aged out
@@ -161,12 +162,12 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
   it('names the kinds of dead letter that were counted, and no stale schedule', async () => {
     const kv = fakeKv()
     await recordDeadLetterVolume(kv, 'lead_sightings.insert', NOW)
-    await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
-    await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
+    await recordDeadLetterVolume(kv, 'lead_sightings.finalize', NOW)
+    await recordDeadLetterVolume(kv, 'lead_sightings.finalize', NOW)
     expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW)).toBe(true)
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])
     expect(text).toContain('lead_sightings.insert 1')
-    expect(text).toContain('sf_writeback 2')
+    expect(text).toContain('lead_sightings.finalize 2')
     expect(text).not.toContain('09:00')
     expect(text).not.toContain('finalizeSighting out of waitUntil')
   })
@@ -230,5 +231,29 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     expect(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)).toBeUndefined()
     await recordDeadLetterVolume(kv, 'lead_sightings.finalize', NOW)
     expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)!)).toEqual({ total: 1, unrecoverable: 0, labels: { 'lead_sightings.finalize': 1 } })
+  })
+
+  // #2087 (Dan, 2026-10-14): a failed Salesforce update has its own alerts and
+  // the replay tool, and this alarm's fix is about our own database, so it does
+  // not count toward the volume bar. A failure to save into our replay store is
+  // a database write and still counts.
+  // A day tally written before #2087 still holds Salesforce updates for up to
+  // 6 days; it is corrected where it is read, so it cannot trip the bar.
+  it('discounts Salesforce updates already in a stored day tally', async () => {
+    const days = [1, 2, 3, 4, 5, 6].map((n) => utcDay(NOW - n * 86_400_000))
+    const kv = fakeKv(Object.fromEntries(days.map((d) => [
+      `outcome-deadletter-daily:${d}`,
+      JSON.stringify({ total: 100, unrecoverable: 0, labels: { sf_writeback: 100 } }),
+    ])))
+    expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW)).toBe(false)
+  })
+
+  it('does not count a failed Salesforce update toward the volume bar', async () => {
+    const kv = fakeKv()
+    await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
+    await recordDeadLetterVolume(kv, 'outcome_writeback_deadletters.uncapturable', NOW)
+    expect(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)).toBeUndefined()
+    await recordDeadLetterVolume(kv, 'outcome_writeback_deadletters.insert', NOW)
+    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)!)).toEqual({ total: 1, unrecoverable: 0, labels: { 'outcome_writeback_deadletters.insert': 1 } })
   })
 })
