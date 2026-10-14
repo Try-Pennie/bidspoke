@@ -275,10 +275,14 @@ describe('pg_cron alert: remedies the check has not already ruled out', () => {
     expect(text).not.toMatch(/still present and active/)
     expect(text).toContain('job_run_details')
     expect(text).toMatch(/end_time/)
-    // A stall can follow a failure that was reported and recovered, so the claim
-    // is bounded to the time since the last success, which judgeJob guarantees.
-    expect(text).not.toMatch(/no run has failed,/)
-    expect(text).toContain('no run has failed since its last success')
+    // No claim about failures at all. The health read counts failures over a
+    // fixed window, so an older one is out of view, and judgeJob also reaches
+    // stalled after a failure inside the window that was reported and recovered.
+    // What stalled measured is that the job is scheduled, enabled, and has not
+    // succeeded for longer than its schedule allows, so that is all it says.
+    expect(text).not.toMatch(/no run has failed/)
+    expect(text).toContain('has not succeeded for longer than its schedule allows')
+    expect(text).toMatch(/a failed row names its error/)
   })
 
   it('an unreadable last success time has its own wording, not the schedule remedy', async () => {

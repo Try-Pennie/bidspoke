@@ -1909,12 +1909,13 @@ export async function sendPgCronAlert(
   }
   const fixes: Record<AlertingStatus, string> = {
     failing: `*How to fix:* read the error above. \`cron.job_run_details\` holds the full message and the run history for this job.`,
-    // The job is in cron.job and enabled (or it would not be judged, or would be
-    // reported as disabled), and no run has failed since its last success (a
-    // newer failure is reported as failing; an older one may already have been
-    // reported and recovered), so what is left is a run that never finished or a
-    // scheduler that is not starting it (#835).
-    stalled: `*How to fix:* the job is scheduled and enabled and no run has failed since its last success, so either a run is stuck or pg_cron is not starting it. Read its latest rows in \`cron.job_run_details\`: a row with no end_time is a stuck run, which cancelling its pid frees for the next slot, and no row since the last success means the scheduler is not launching it.`,
+    // Only what stalled measured (#835): the job is in cron.job and enabled (or it
+    // would not be judged, or would be reported as disabled), and its last success
+    // is older than its schedule allows. Nothing about failures: the health read
+    // sees them only inside a fixed window, and stalled is also reached after a
+    // failure in that window that was reported and recovered. Its run history is
+    // where the reader tells a stuck run, a failure and an idle scheduler apart.
+    stalled: `*How to fix:* the job is scheduled and enabled but has not succeeded for longer than its schedule allows. Read its latest rows in \`cron.job_run_details\`: a row with no end_time is a stuck run, which cancelling its pid frees for the next slot; a failed row names its error; and no row since the last success means pg_cron is not launching it.`,
     never_succeeded: `*How to fix:* the job is scheduled and has not completed successfully in the window. Read its most recent run in \`cron.job_run_details\`.`,
     unknown_identity: `*How to fix:* \`pg_cron_health\` is not returning this job's \`jobid\`, so a job that was just rescheduled cannot be told apart from one that has never run. Apply the outstanding database migrations, since the worker is running ahead of them.`,
     unknown_schedule: `*How to fix:* the staleness half of this check is not running for this job. Either simplify the schedule or teach \`expectedGapMs\` to read this shape.`,
