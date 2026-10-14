@@ -851,7 +851,9 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     // The hand CALL refuses a day this old as stale, so it is not the fix.
     expect(alert.fix).not.toMatch(/CALL truncate_verified_execution_partitions/)
     expect(alert.fix).not.toMatch(/blocking/)
-    expect(alert.fix).toMatch(/measured again/)
+    // No action reaches a day this old today, so the line says so plainly
+    // rather than inventing one (#835, lessons review).
+    expect(alert.fix).toMatch(/until the deletion gate can measure days beneath it/)
   })
 
   it('says the cleanup record could not be read rather than guessing a cause', async () => {
@@ -897,6 +899,9 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     expect(alerted().join(' ')).toMatch(
       new RegExp(`${spoken(stranded)} is older than the days the gate measures, and whether it is backed up`),
     )
+    // The fix says "fix the read named above", so the line has to name it (#835).
+    expect(alerted().join(' ')).toMatch(/postgres said no/)
+    expect(raised()[0].fix).toMatch(/fix the read named above/)
     expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)).toEqual([])
   })
 

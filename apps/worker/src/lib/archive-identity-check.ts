@@ -27,6 +27,7 @@ import {
   ARCHIVE_SCHEMA,
   ARCHIVE_TABLE,
   ARCHIVE_ROLES,
+  unsetSecretNamed,
   type ArchiveIdentity,
 } from './archive-snowflake'
 import {
@@ -54,9 +55,6 @@ export const ARCHIVE_IDENTITY_REMEDY: AlertRemedy = {
   itemNoun: { one: 'finding', many: 'findings' },
 }
 
-/** A secret the line says is unset, as `archiveConfig` words it. */
-const UNSET_SECRET = /\b([A-Z][A-Z0-9_]+) is not set\b/
-
 /**
  * The fix line for THIS run's findings (#835).
  *
@@ -74,11 +72,11 @@ export function identityRemedyFor(findings: readonly IdentityFinding[]): AlertRe
     )
   }
   const unreadable = findings.filter((f) => f.code === 'unreadable')
-  const unset = [...new Set(unreadable.map((f) => UNSET_SECRET.exec(f.message)?.[1]).filter((n): n is string => !!n))]
+  const unset = [...new Set(unreadable.map((f) => unsetSecretNamed(f.message)).filter((n): n is string => n !== null))]
   for (const name of unset) {
     fixes.push(`Set ${name} with wrangler secret put ${name} --name bidspoke-worker, piping the value in.`)
   }
-  if (unreadable.some((f) => !UNSET_SECRET.test(f.message))) {
+  if (unreadable.some((f) => unsetSecretNamed(f.message) === null)) {
     fixes.push(
       'Where an identity could not be verified for another reason, the line carries the error Snowflake ' +
         'gave: an outage or a timeout is checked again on the next daily run, and anything else needs that ' +

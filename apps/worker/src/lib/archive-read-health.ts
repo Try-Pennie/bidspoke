@@ -34,7 +34,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { ARCHIVE_WAREHOUSE } from './archive-snowflake'
+import { ARCHIVE_WAREHOUSE, unsetSecretNamed } from './archive-snowflake'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -83,9 +83,6 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
   itemNoun: { one: 'failed read', many: 'failed reads' },
 }
 
-/** A secret the failure says is unset, as `archiveConfig` words it. */
-const UNSET_SECRET = /\b([A-Z][A-Z0-9_]+) is not set\b/
-
 /**
  * The fix line led by what the failure names (#835). It used to lead with
  * "check Snowflake first" for every failure, including an unset secret, where
@@ -93,8 +90,8 @@ const UNSET_SECRET = /\b([A-Z][A-Z0-9_]+) is not set\b/
  * look and a retry once it answers is served.
  */
 export function archiveReadRemedyFor(detail: string): AlertRemedy {
-  const unset = UNSET_SECRET.exec(detail)?.[1]
-  if (unset !== undefined) {
+  const unset = unsetSecretNamed(detail)
+  if (unset !== null) {
     return {
       ...ARCHIVE_READ_REMEDY,
       fixHint:

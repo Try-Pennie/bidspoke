@@ -67,9 +67,9 @@ export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
 export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
   title: 'Old run history has not been cleaned up',
   fixHint:
-    'The cleanup takes only a day measured in the last 36 hours, and nothing measures a day this old ' +
-    'again, so it will keep refusing it. Ask for the day to be measured again so the next cleanup can ' +
-    'take it.',
+    'Nothing scheduled and no admin route measures a day this old, and the cleanup takes only a day ' +
+    'measured in the last 36 hours, so it stays until the deletion gate can measure days beneath it. It ' +
+    'is fully backed up, so this costs disk space, not data.',
 }
 
 /** What the nightly cleanup last recorded about a day, from `purge_run_log`. */
@@ -164,7 +164,7 @@ export function heldLine({ day, kind, detail }: HeldDay): string {
     case 'beneath-unknown':
       return (
         `${spoken} is older than the days the gate measures, and whether it is backed up in Snowflake could ` +
-        'not be read.'
+        `not be read${detail === null ? '' : `: ${detail}`}.`
       )
   }
 }
@@ -965,15 +965,18 @@ async function gatePass(
   const notCleanedUp: string[] = []
   if (beneath.length > 0) {
     let status: Map<string, BeneathStatus> | null = null
+    // Carried into the line, so the fix's "the read named above" names one (#835).
+    let statusError: string | null = null
     try {
       used.postgres += 1
       status = await (deps.beneathStatus ?? ((d: string[]) => readBeneathStatus(supabase, d)))(beneath)
     } catch (err) {
-      console.error(`[archive-gate] could not read whether the days beneath the gate are backed up: ${formatErr(err)}`)
+      statusError = formatErr(err)
+      console.error(`[archive-gate] could not read whether the days beneath the gate are backed up: ${statusError}`)
     }
     for (const day of beneath) {
       const known = status?.get(day)
-      if (known === undefined) atRisk.push({ day, kind: 'beneath-unknown', detail: null })
+      if (known === undefined) atRisk.push({ day, kind: 'beneath-unknown', detail: statusError })
       else if (!known.backedUp) atRisk.push({ day, kind: 'beneath-short', detail: null })
       // Backed up, so nothing is lost, and silent for the first nights: a lock
       // lost to a busy minute is taken the next night (Dan, 2026-10-02).
