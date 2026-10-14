@@ -36,7 +36,7 @@ const DAY_SECONDS = 24 * 60 * 60
 const WINDOW_MS = DAY_SECONDS * 1000
 /** Twice the window, so every event in the window is still there to count. */
 const RECORD_TTL_SECONDS = 2 * DAY_SECONDS
-/** 10 pages of 1000 keys; past that the count is a floor and says so. */
+/** 10 pages of 1000 keys, the newest; past that the count is a floor and says so. */
 const MAX_LIST_PAGES = 10
 
 const eventPrefix = (kind: CronGuardKind) => `cron-guard:event:${kind}:`
@@ -54,9 +54,20 @@ export interface CronGuardKv extends RecordKv, ListKv {
   get(key: string): Promise<string | null>
 }
 
+/**
+ * Keys carry the time counted DOWN from this ceiling, so KV, which lists in
+ * ascending name order, lists the newest first. Named by plain time they listed
+ * oldest first, and a count that reached its page limit had spent it on the 24
+ * to 48 hour old keys the window then discarded. Fixed width, so the names sort
+ * as the numbers do (the ceiling is in the year 2286).
+ */
+const TIME_CEILING_MS = 9_999_999_999_999
+const TIME_WIDTH = 13
+
 /** One key per event, named by its time so the count needs no reads. */
 export async function recordCronGuardEvent(kv: RecordKv, kind: CronGuardKind, nowMs: number): Promise<void> {
-  await kv.put(`${eventPrefix(kind)}${new Date(nowMs).toISOString()}:${crypto.randomUUID()}`, '1', { expirationTtl: RECORD_TTL_SECONDS })
+  const countdown = String(TIME_CEILING_MS - Math.floor(nowMs)).padStart(TIME_WIDTH, '0')
+  await kv.put(`${eventPrefix(kind)}${countdown}:${crypto.randomUUID()}`, '1', { expirationTtl: RECORD_TTL_SECONDS })
 }
 
 /** Events of one kind in the 24 hours to `nowMs`. A failed list THROWS (L98). */
@@ -74,8 +85,14 @@ export async function countCronGuardEvents(
   for (let page = 0; page < maxPages; page++) {
     const res = await kv.list({ prefix, cursor })
     for (const { name } of res.keys) {
-      const at = Date.parse(name.slice(prefix.length, prefix.length + 24))
-      if (Number.isFinite(at) && at > since && at <= nowMs) count++
+      const countdown = Number(name.slice(prefix.length, prefix.length + TIME_WIDTH))
+      // A name that does not parse is not ours to count, and is skipped rather
+      // than read as a time (L50).
+      if (!Number.isFinite(countdown)) continue
+      const at = TIME_CEILING_MS - countdown
+      // Newest first, so the first key older than the window ends the count.
+      if (at <= since) return { count, capped: false }
+      if (at <= nowMs) count++
     }
     if (res.list_complete || !res.cursor) return { count, capped: false }
     cursor = res.cursor

@@ -84,6 +84,23 @@ describe('countCronGuardEvents', () => {
     expect(r).toEqual({ count: 4, capped: true })
   })
 
+  // Lessons review, 2026-10-14: keys named by ISO time list oldest first, so a
+  // capped count read the 24 to 48 hour old keys the window then discarded.
+  it('reads the newest first, so a capped count is a floor of the window and never spent on expired keys', async () => {
+    const kv = memoryKv(2)
+    await record(kv, 'skipped_duplicate', [25, 30, 40, 47].map((h) => NOW - h * H))
+    await record(kv, 'skipped_duplicate', [1, 2, 3, 4, 5].map((m) => NOW - m * 60_000))
+    expect(await countCronGuardEvents(kv, 'skipped_duplicate', NOW, { maxPages: 2 })).toEqual({ count: 4, capped: true })
+  })
+
+  it('stops listing at the first key older than the window', async () => {
+    const kv = memoryKv(2)
+    await record(kv, 'skipped_duplicate', [25, 30, 40, 47].map((h) => NOW - h * H))
+    await record(kv, 'skipped_duplicate', [1, 2].map((m) => NOW - m * 60_000))
+    expect(await countCronGuardEvents(kv, 'skipped_duplicate', NOW)).toEqual({ count: 2, capped: false })
+    expect(kv.list).toHaveBeenCalledTimes(2)
+  })
+
   it('throws when the list fails, rather than answering zero', async () => {
     const kv = memoryKv()
     kv.list.mockRejectedValueOnce(new Error('KV list 503'))
