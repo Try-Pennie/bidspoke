@@ -1024,7 +1024,7 @@ export default {
   // the whole invocation when another delivery of the same tick holds it (#1899):
   // Cloudflare has delivered every tick twice since 2026-10-08 13:38 UTC. A retry
   // of a killed run still runs, and a claim that cannot be asked fails open.
-  // The rule is in lib/cron-once.ts and on TICK_RETRY_AFTER_MS.
+  // The rule is in lib/cron-once.ts and on TICK_LEASE_STALE_MS.
   //
   // The run is RETURNED as well as handed to waitUntil: if the jobs cannot even
   // start (a throw building the database client), the invocation fails as it

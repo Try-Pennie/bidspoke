@@ -5,7 +5,7 @@
  * pass the KV cooldown together cannot both post. Tested directly on the DO.
  */
 import { describe, it, expect } from 'vitest'
-import { AlertClaimObject, TICK_RETRY_AFTER_MS, TICK_CLAIM_KEEP_MS } from '../alert-claim'
+import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS, TICK_CLAIM_KEEP_MS } from '../alert-claim'
 import type { ClaimResult, TickClaimResult } from '../alert-claim'
 
 function makeDOState() {
@@ -80,6 +80,8 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     (await obj.fetch(req('/tick-claim', body))).json<TickClaimResult>()
   const done = async (obj: AlertClaimObject, holder: string) =>
     (await obj.fetch(req('/tick-done', { now: NOW, holder }))).json<{ marked: boolean }>()
+  const renew = async (obj: AlertClaimObject, holder: string, now: number) =>
+    (await obj.fetch(req('/tick-renew', { now, holder }))).json<{ renewed: boolean }>()
 
   it('grants the first delivery and refuses a second one with a different scheduled second, naming the holder', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
@@ -89,28 +91,64 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     expect(second).toMatchObject({ run: false, reason: 'duplicate', holder: 'a', holder_status: 'running', holder_age_ms: 36_000, duplicates: 1 })
   })
 
-  it('refuses a delivery with the same scheduled time that arrives while the holder is young (2026-10-05, 25.7 s apart)', async () => {
+  it('refuses a delivery with the same scheduled time while the holder keeps renewing (2026-10-05, 25.7 s apart)', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    for (let t = TICK_LEASE_RENEW_MS; t <= 24_000; t += TICK_LEASE_RENEW_MS) await renew(obj, 'a', NOW + t)
     const twin = await tick(obj, { now: NOW + 25_700, scheduled_time: NOW, holder: 'b' })
-    expect(twin).toMatchObject({ run: false, reason: 'duplicate', holder: 'a' })
+    expect(twin).toMatchObject({ run: false, reason: 'duplicate', holder: 'a', holder_lease_age_ms: 25_700 - 24_000 })
   })
 
-  it('hands the claim to a delivery with the same scheduled time once the holder is older than the retry floor, and only the retry can finish it', async () => {
+  // #2064: Cloudflare cancelled a run 1.7 s in and re-delivered it 0.4 s later
+  // with the same scheduled time; the 35 s floor dropped the retry. A run that
+  // has stopped renewing its lease is dead, whatever its age.
+  it('hands the claim to a same-time delivery once the holder has stopped renewing, however young the run', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
-    const retry = await tick(obj, { now: NOW + TICK_RETRY_AFTER_MS, scheduled_time: NOW, holder: 'b' })
+    const early = await tick(obj, { now: NOW + 2_100, scheduled_time: NOW, holder: 'b' })
+    expect(early).toMatchObject({ run: false, reason: 'duplicate', holder_lease_age_ms: 2_100 })
+    const retry = await tick(obj, { now: NOW + TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'b' })
+    expect(retry).toMatchObject({ run: true, reason: 'retry', holder: 'a' })
+  })
+
+  // Lessons review: the first ask of a same-time wait counted a duplicate, so a
+  // genuine retry that then took over was still recorded as one.
+  it('does not count the asks of a same-time wait as duplicates', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    const first = await tick(obj, { now: NOW + 2_100, scheduled_time: NOW, holder: 'b' })
+    expect(first).toMatchObject({ run: false, duplicates: 1 })
+    const retry = await obj.fetch(req('/tick-claim', { now: NOW + TICK_LEASE_STALE_MS + 250, scheduled_time: NOW, holder: 'b', after_wait: true }))
+    expect(await retry.json()).toMatchObject({ run: true, reason: 'retry' })
+    const later = await tick(obj, { now: NOW + 40_000, scheduled_time: NOW + 36_000, holder: 'c' })
+    expect(later).toMatchObject({ run: false, duplicates: 1 })
+  })
+
+  it('takes a renewal only from the run that holds the tick', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    expect(await renew(obj, 'intruder', NOW + 5_000)).toEqual({ renewed: false })
+    const retry = await tick(obj, { now: NOW + TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'b' })
+    expect(retry).toMatchObject({ run: true, reason: 'retry' })
+    expect(await renew(obj, 'a', NOW + TICK_LEASE_STALE_MS + 1)).toEqual({ renewed: false })
+    expect(await renew(obj, 'b', NOW + TICK_LEASE_STALE_MS + 1)).toEqual({ renewed: true })
+  })
+
+  it('hands the claim to a delivery with the same scheduled time once the holder lease has gone stale, and only the retry can finish it', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    const retry = await tick(obj, { now: NOW + TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'b' })
     expect(retry).toMatchObject({ run: true, reason: 'retry', holder: 'a' })
     expect(await done(obj, 'a')).toEqual({ marked: false })
     expect(await done(obj, 'b')).toEqual({ marked: true })
-    const late = await tick(obj, { now: NOW + 2 * TICK_RETRY_AFTER_MS, scheduled_time: NOW, holder: 'c' })
+    const late = await tick(obj, { now: NOW + 2 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'c' })
     expect(late).toMatchObject({ run: false, holder: 'b', holder_status: 'done' })
   })
 
   it('never hands an old running claim to a delivery with a DIFFERENT scheduled time: only the dead run itself is retried', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
-    const twin = await tick(obj, { now: NOW + 10 * TICK_RETRY_AFTER_MS, scheduled_time: NOW + 36_000, holder: 'b' })
+    const twin = await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW + 36_000, holder: 'b' })
     expect(twin).toMatchObject({ run: false, reason: 'duplicate' })
   })
 
@@ -118,7 +156,7 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
     await done(obj, 'a')
-    const same = await tick(obj, { now: NOW + 10 * TICK_RETRY_AFTER_MS, scheduled_time: NOW, holder: 'b' })
+    const same = await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'b' })
     expect(same).toMatchObject({ run: false, holder_status: 'done', duplicates: 1 })
   })
 
