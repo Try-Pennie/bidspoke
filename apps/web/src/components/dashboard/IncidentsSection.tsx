@@ -55,6 +55,9 @@ export function IncidentsSection({
   const [first, setFirst] = useState<FirstPage>({ kind: 'loading' })
   const [more, setMore] = useState<More>({ kind: 'idle' })
   const alive = useRef(true)
+  // Each first page read starts a new generation; an answer from an older one (a
+  // window switched, or a refresh overlapping it) is dropped, never shown.
+  const generation = useRef(0)
   // The current state, for a refresh to decide whether replacing the list would
   // throw away pages somebody asked for.
   const firstRef = useRef(first)
@@ -66,11 +69,13 @@ export function IncidentsSection({
   }, [])
 
   const loadFirst = useCallback((quiet: boolean) => {
+    const mine = ++generation.current
+    const current = () => alive.current && generation.current === mine
     if (!quiet) setFirst({ kind: 'loading' })
     setMore({ kind: 'idle' })
     load(days, 0).then(
-      (res) => { if (alive.current) setFirst({ kind: 'loaded', incidents: res.incidents, nextOffset: res.has_more ? res.next_offset : null, pages: 1 }) },
-      (e) => { if (alive.current) setFirst({ kind: 'failed', message: messageOf(e) }) },
+      (res) => { if (current()) setFirst({ kind: 'loaded', incidents: res.incidents, nextOffset: res.has_more ? res.next_offset : null, pages: 1 }) },
+      (e) => { if (current()) setFirst({ kind: 'failed', message: messageOf(e) }) },
     )
   }, [load, days])
 
@@ -89,16 +94,18 @@ export function IncidentsSection({
   function loadMore() {
     if (first.kind !== 'loaded' || first.nextOffset === null) return
     const offset = first.nextOffset
+    const mine = generation.current
+    const current = () => alive.current && generation.current === mine
     setMore({ kind: 'loading' })
     load(days, offset).then(
       (res) => {
-        if (!alive.current) return
+        if (!current()) return
         setFirst((prev) => prev.kind === 'loaded'
           ? { kind: 'loaded', incidents: [...prev.incidents, ...res.incidents], nextOffset: res.has_more ? res.next_offset : null, pages: prev.pages + 1 }
           : prev)
         setMore({ kind: 'idle' })
       },
-      (e) => { if (alive.current) setMore({ kind: 'failed', message: `More incidents could not be loaded: ${messageOf(e)}` }) },
+      (e) => { if (current()) setMore({ kind: 'failed', message: `More incidents could not be loaded: ${messageOf(e)}` }) },
     )
   }
 

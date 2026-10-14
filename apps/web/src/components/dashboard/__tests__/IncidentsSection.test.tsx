@@ -157,6 +157,38 @@ describe('IncidentsSection', () => {
     expect(load).toHaveBeenLastCalledWith(30, 0)
   })
 
+  it('keeps the newest window when an older window answers last', async () => {
+    const week = deferred<IncidentsResponse>()
+    const month = deferred<IncidentsResponse>()
+    const load = vi.fn((days: number) => (days === 7 ? week.promise : month.promise))
+    const { rerender } = render(<IncidentsSection days={7} load={load} now={clock(NOW)} />)
+    rerender(<IncidentsSection days={30} load={load} now={clock(NOW)} />)
+    month.resolve(page([incident({ id: 'm', subject_name: 'Thirty day flow' })]))
+    expect(await screen.findByText('Thirty day flow')).toBeInTheDocument()
+    week.resolve(page([incident({ id: 'w', subject_name: 'Seven day flow' })]))
+    await week.promise
+    await Promise.resolve()
+    expect(screen.queryByText('Seven day flow')).not.toBeInTheDocument()
+    expect(screen.getByText('Thirty day flow')).toBeInTheDocument()
+  })
+
+  it('drops a further page that answers after the window changed', async () => {
+    const more = deferred<IncidentsResponse>()
+    const load = vi.fn()
+      .mockResolvedValueOnce(page([incident({ id: 'a' })], 1))
+      .mockReturnValueOnce(more.promise)
+      .mockResolvedValueOnce(page([incident({ id: 'm', subject_name: 'Thirty day flow' })]))
+    const { rerender } = render(<IncidentsSection days={7} load={load} now={clock(NOW)} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Show more' }))
+    rerender(<IncidentsSection days={30} load={load} now={clock(NOW)} />)
+    expect(await screen.findByText('Thirty day flow')).toBeInTheDocument()
+    more.resolve(page([incident({ id: 'late', subject_name: 'Late seven day page' })]))
+    await more.promise
+    await Promise.resolve()
+    expect(screen.queryByText('Late seven day page')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+  })
+
   it('refreshes in place when the page refreshes, and shows a failed refresh as an error', async () => {
     const load = vi.fn()
       .mockResolvedValueOnce(page([incident({ id: 'a' })]))

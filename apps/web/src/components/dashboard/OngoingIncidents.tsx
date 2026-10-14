@@ -43,15 +43,21 @@ export function OngoingIncidents({
     return () => { alive.current = false }
   }, [])
 
+  // Only the latest read may answer: an older one arriving last would bring back
+  // an incident that has since ended.
+  const latest = useRef(0)
+
   const read = useCallback(() => {
+    const mine = ++latest.current
+    const current = () => alive.current && latest.current === mine
     load().then(
       (res) => {
-        if (!alive.current) return
+        if (!current()) return
         setState({ kind: 'loaded', incidents: res.incidents, hasMore: res.has_more })
         onCountRef.current?.(res.incidents.length)
       },
       (e) => {
-        if (!alive.current) return
+        if (!current()) return
         setState({ kind: 'failed', message: messageOf(e) })
         onCountRef.current?.(null)
       },

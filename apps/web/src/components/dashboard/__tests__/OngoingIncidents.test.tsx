@@ -88,6 +88,22 @@ describe('OngoingIncidents', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('keeps the newest answer when an older read answers last', async () => {
+    let settleFirst!: (v: OngoingIncidentsResponse) => void
+    const load = vi.fn()
+      .mockReturnValueOnce(new Promise<OngoingIncidentsResponse>((res) => { settleFirst = res }))
+      .mockResolvedValueOnce(list([]))
+    const { rerender, container } = render(<OngoingIncidents load={load} now={clock} refreshKey={0} />)
+    rerender(<OngoingIncidents load={load} now={clock} refreshKey={1} />)
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2))
+    await Promise.resolve()
+    settleFirst(list([ongoing({ subject_name: 'Stale host' })]))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(screen.queryByText(/Stale host/)).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
+  })
+
   it('refreshes when the page refreshes, so an incident that ended leaves the line', async () => {
     const load = vi.fn().mockResolvedValueOnce(list([ongoing({})])).mockResolvedValueOnce(list([]))
     const { rerender, container } = render(<OngoingIncidents load={load} now={clock} refreshKey={0} />)
