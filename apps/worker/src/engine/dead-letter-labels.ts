@@ -10,3 +10,8 @@
 // A run's post-response walk was still running at its cut-off (#1860): unknown,
 // not a confirmed loss. Raised to its own dead-letter threshold in durability.ts.
 export const CONTINUATION_UNFINISHED_LABEL = 'continuation_unfinished'
+
+// A failed post-answer Salesforce write whose request could not be kept for a
+// replay (#1993): never retried, and not a billing record, so the alert copy
+// routes on it to its own wording (#835). Set in engine/writeback-deadletter.ts.
+export const WRITEBACK_UNCAPTURABLE_LABEL = 'outcome_writeback_deadletters.uncapturable'

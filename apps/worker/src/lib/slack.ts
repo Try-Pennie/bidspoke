@@ -15,7 +15,7 @@ import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-exec
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { listSteps } from '../engine/running-step'
-import { CONTINUATION_UNFINISHED_LABEL } from '../engine/dead-letter-labels'
+import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import type { ErrorType } from '../types'
@@ -524,13 +524,17 @@ export async function sendUpstreamOutageAlert(
     : ''
   const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
 
+  // The lead says only what was counted: leads whose errors matched one cause's
+  // signature (#835). It used to say "<cause> appears degraded", which no check
+  // measured, and which is false for two causes the how to check line below names:
+  // a missing credential, and our own Apex failing inside Salesforce.
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Upstream Service Degraded', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: 'Many Leads Failing for One Cause', emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `<!here> *${payload.cause_label} appears degraded.* *${payload.failure_count} leads* failed sharing this cause in the last ${payload.window_minutes} minutes. Per-lead pages for this cause are suppressed; this is the aggregated alert.`,
+        text: `<!here> *${payload.failure_count} leads* failed in the last ${payload.window_minutes} minutes with errors matching *${payload.cause_label}*. The page for each lead is held back while this lasts, so this is the one alert for them.`,
       },
     },
     ...(workflowsLine ? [{ type: 'section', text: { type: 'mrkdwn', text: workflowsLine } }] : []),
@@ -556,7 +560,7 @@ export async function sendUpstreamOutageAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Upstream degraded: ${payload.cause_label}, ${payload.failure_count} leads affected in ${payload.window_minutes}m`
+    `${payload.failure_count} leads failing for one cause: ${payload.cause_label}, in ${payload.window_minutes}m`
   )
 }
 
@@ -884,7 +888,8 @@ export async function sendTimeoutConfigAlert(
 
 /**
  * Alert that one or more secret env vars the database expects are missing from
- * Cloudflare — so any workflow referencing them resolves to nothing (#199).
+ * Cloudflare, which leaves them without the fallback a node uses when the saved
+ * value cannot be decrypted (#199, #835).
  * Posted by the daily secret-drift cron; the caller has already fetched the
  * connection and checked config_alerts_enabled. Returns true when delivered.
  */
@@ -907,7 +912,11 @@ export async function sendSecretDriftAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${missing.length} secret${missing.length === 1 ? '' : 's'} the app expects ${missing.length === 1 ? 'is' : 'are'} missing from Cloudflare.* Any workflow referencing ${missing.length === 1 ? 'it' : 'them'} resolves to nothing. Re-sync from the saved copy on the Environment Variables page.`,
+        // Workflows read the saved, decrypted value, which wins over the Cloudflare
+        // copy (buildSandboxEnv), so a missing copy changes nothing until the saved
+        // value also cannot be decrypted (#835). It used to say every workflow
+        // referencing the secret resolved to nothing.
+        text: `*${missing.length} secret${missing.length === 1 ? '' : 's'} saved in Bidspoke ${missing.length === 1 ? 'has' : 'have'} no copy in Cloudflare.* Workflows still read the saved value. The Cloudflare copy is the fallback that code, Webhook and Salesforce nodes use when the saved value cannot be decrypted, so until it is restored there is no fallback. Fix: re-sync from the saved copy on the Environment Variables page.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') + more } },
@@ -996,7 +1005,7 @@ function bidInsertConditionalRecovery(label: string, errorCode: string | null | 
  * (the single source of truth), so this copy can never drift from what the retry
  * logic actually treats as transient vs permanent.
  */
-function outcomeDeadLetterGuidance(label: string, errorCode: string | null | undefined): string {
+function outcomeDeadLetterGuidance(label: string, errorCode: string | null | undefined, hasRun: boolean): string {
   const err = errorCode ? { code: errorCode, message: '' } : null
 
   // #585: an execution_finalize loss that is NOT a missing row left the
@@ -1025,11 +1034,14 @@ function outcomeDeadLetterGuidance(label: string, errorCode: string | null | und
   // finalize was lost as well (the usual database-slowdown case), but not when
   // the sighting already finalized and only this bid write was lost.
   if (bidInsertConditionalRecovery(label, errorCode)) {
-    return `*How to fix:* If the lead sighting is also still at outcome_state='in_flight' (the usual case in a database slowdown), the strand drain re-inserts this bid row automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes when it finalizes the sighting, so no action is needed. If the sighting already finalized, only this bid row is missing and is not auto-recovered: re-derive it from the execution log below.`
+    return `*How to fix:* If the lead sighting is also still at outcome_state='in_flight' (the usual case in a database slowdown), the strand drain re-inserts this bid row automatically within ${SIGHTING_STRAND_DRAIN_CADENCE_MINUTES} minutes when it finalizes the sighting, so no action is needed. If the sighting already finalized, only this bid row is missing and is not auto-recovered: rebuild it by hand from ${hasRun ? 'the run linked below' : 'its run\'s execution log, found from the dashboard below'}.`
   }
 
-  const base =
-    '*How to fix:* This write is not auto-recovered. The lost record must be re-derived manually from the execution log below.'
+  // The alert links the run when it has one; otherwise there is no log below to
+  // point at (#835), so the reader is sent to the run by name.
+  const base = hasRun
+    ? '*How to fix:* This write is not auto-recovered. Rebuild the lost record by hand from the run linked below.'
+    : '*How to fix:* This write is not auto-recovered. Rebuild the lost record by hand from its run\'s execution log, found from the dashboard below.'
   if (errorCode === READ_BACK_MISSING_CODE) {
     // #1880: found by reading the record back, not by an error the write returned.
     return `${base} The write timed out while the database was slow, and reading it back a few minutes later found it never landed. The error above names the record.`
@@ -1047,10 +1059,48 @@ function outcomeDeadLetterGuidance(label: string, errorCode: string | null | und
   if (isPermanentDbError(err)) {
     return `${base} The error above is permanent, so retrying cannot fix it (the write is malformed or the schema drifted). Fix the cause rather than waiting it out.`
   }
-  if (errorCode) {
-    return `${base} The write exhausted its full retry ladder, so Supabase was likely degraded for longer than the retry window. Check Supabase health.`
+  // Only a code known to mean an overloaded or unreachable database earns the
+  // database line (#835). Anything else outside the permanent list (a missing
+  // grant, a missing function) used to read "Supabase was likely degraded", and
+  // waiting does not fix those.
+  if (isKnownTransientDbCode(errorCode)) {
+    return `${base} The error above means the database was overloaded or unreachable for longer than the retries waited. Check the database's health and memory use in the Supabase dashboard for this project.`
   }
   return `${base} Inspect the error above to find the cause.`
+}
+
+/**
+ * Postgres and PostgREST codes that mean the database was overloaded, busy or
+ * briefly unreachable, so a write failing with one would have landed later (#835).
+ *
+ * Used for alert wording only, never for retry decisions, which db-retry owns:
+ * there every code outside its permanent list is retried, which is the safe
+ * choice for a write and the wrong one for telling a reader what happened. A
+ * code not listed here is not called transient in copy, so an unfamiliar one
+ * sends the reader to the error rather than to the database's health.
+ */
+const TRANSIENT_DB_CODES = new Set([
+  '57014', // query_canceled: the statement timeout
+  '57P01', // admin_shutdown
+  '57P02', // crash_shutdown
+  '57P03', // cannot_connect_now
+  '40001', // serialization_failure
+  '40P01', // deadlock_detected
+  '55P03', // lock_not_available: the lock timeout
+  '53000', // insufficient_resources
+  '53100', // disk_full
+  '53200', // out_of_memory
+  '53300', // too_many_connections
+  'PGRST000', // PostgREST could not connect to the database
+  'PGRST001', // PostgREST connection error
+  'PGRST002', // PostgREST could not load its schema cache
+  'PGRST003', // PostgREST timed out waiting for a pool connection
+])
+
+function isKnownTransientDbCode(code: string | null | undefined): boolean {
+  if (!code) return false
+  // Class 08 is connection exceptions, every member of which is transient.
+  return TRANSIENT_DB_CODES.has(code) || /^08[0-9A-Z]{3}$/.test(code)
 }
 
 /**
@@ -1125,6 +1175,44 @@ async function sendLostWritebackAlert(
 }
 
 /**
+ * A Salesforce write after the answer failed and its request could not be kept
+ * for a replay (#1993, #835): the step was not an update, or named no object,
+ * record or body. Nothing retried it and nothing will, so this never says
+ * "failed after all retries", and it is a Salesforce outcome, not a billing
+ * record. The failure itself is reported by the lost update alert; this says
+ * only that the replay tool cannot resend it.
+ */
+async function sendUncapturableWritebackAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const run = payload.run
+  const n = payload.window_loss_count
+  const title = 'Salesforce update cannot be replayed'
+  const who = run
+    ? `${slackText(run.workflow_name)} answered a lead at ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))} ET, and a Salesforce step after the answer failed`
+    : 'A Salesforce step after a lead was answered failed'
+  const why = upstreamSaid(payload.error_message)
+  const summary =
+    `${who}. Its request could not be kept for a replay: ${/[.!?]$/.test(why) ? why : `${why}.`} ` +
+    `This happened about ${n} ${n === 1 ? 'time' : 'times'} ${deadLetterPeriod(n, payload.window_minutes)}.`
+  const fix = run
+    ? 'Fix: open the run below and enter the outcome in Salesforce by hand. The replay tool cannot resend it.'
+    : 'Fix: find the run on the dashboard and enter the outcome in Salesforce by hand. The replay tool cannot resend it.'
+  const link = run
+    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+    : `<${appUrl}/dashboard|Open dashboard →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+}
+
+/**
  * Work after the answer still running when finalize stopped waiting for it
  * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
  * for a check rather than a repair. It names the step the run was still on
@@ -1192,6 +1280,9 @@ export async function sendOutcomeDeadLetterAlert(
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
   // Always its own wording: an unfinished walk is never a lost record (#1860).
   if (payload.label === CONTINUATION_UNFINISHED_LABEL) return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
+  // Never retried and never a billing record: the capture found nothing a replay
+  // could resend, so it says that, in its own words (#835).
+  if (payload.label === WRITEBACK_UNCAPTURABLE_LABEL) return sendUncapturableWritebackAlert(connection, payload, appUrl)
   const errText = truncateErrorForAlert(payload.error_message)
   // #585: an execution_finalize loss that isn't a missing row self-heals via the
   // stranded-execution drain. Reframe the whole alert (header + summary) so it
@@ -1230,9 +1321,19 @@ export async function sendOutcomeDeadLetterAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.label, payload.error_code) },
+      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.label, payload.error_code, payload.run !== undefined) },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
+    // The run behind the latest loss when the caller has one (#835), which is
+    // where the record has to be rebuilt from; the dashboard otherwise.
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: payload.run
+          ? `<${appUrl}/workflows/${payload.run.workflow_id}?execution=${payload.run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+          : `<${appUrl}/dashboard|Open dashboard →>`,
+      },
+    },
   ]
 
   return (await postMessage(
@@ -1388,8 +1489,11 @@ export async function sendUnconfirmedWritesAlert(
     `${n === 1 ? '1 record' : `${n} records`} written after leads were answered (${kinds}) timed out from ${since} ET. ` +
     `Bidspoke has tried to read them back for ${payload.minutes} minutes and the database still does not answer, so it cannot tell whether they were saved. ` +
     'This does not mean they were lost.'
+  // Our own project's database, not Supabase's status page: the 2026-10-08 stall
+  // was this database running out of memory (#835). And no alert title is named,
+  // because a lost finalize record is reported as Delayed, not Lost.
   const fix =
-    '*Fix:* Check the database on the Supabase status page. Nothing needs redoing by hand yet: Bidspoke keeps reading these records back every minute and sends an Outcome Record Lost alert for any it finds missing.'
+    "*Fix:* Check the database's health and memory use in the Supabase dashboard for this project. Nothing needs redoing by hand yet: Bidspoke keeps reading these records back every minute and alerts on any it finds missing."
   const shown = payload.runs.slice(0, 10)
   const more = payload.runs.length > shown.length ? `\nand ${payload.runs.length - shown.length} more` : ''
   const runs = shown.map((r) => `<${appUrl}/workflows/${r.workflow_id}?execution=${r.execution_id}|${slackLinkLabel(r.workflow_name)} run>`).join('\n') + more
@@ -1444,31 +1548,80 @@ export async function sendBackupFailureAlert(
 }
 
 /**
- * Alert that the daily lead-sighting strand drain has stalled: in_flight
- * sightings older than the drain's cutoff are piling up, which means they will
- * be exported to Snowflake mislabeled (the #343 regression). #350
+ * The pg_cron schedules of the three jobs that finalize stranded lead sightings,
+ * as the drain stall alert quotes them (#835). The alert used to name "08:00 +
+ * 08:30 UTC daily drains", a schedule that had changed twice since. A web guard
+ * (drain-stall-schedules-match-cron) ties each of these to the schedule the
+ * migrations leave the job on, so the copy cannot go stale again silently.
+ */
+export const DRAIN_STALL_SCHEDULES = {
+  // The shallow 1 day pass, recoverable strands only.
+  'reduce-finalize-stranded': '27,57 * * * *',
+  // The daily deep 8 day pass, the same function.
+  'reduce-finalize-stranded-deep': '45 7 * * *',
+  // Finalizes EVERY sighting older than 26 hours, recoverable or not.
+  'finalize-unrecoverable-stranded': '30 8 * * *',
+} as const
+
+/** "every hour at :27 and :57" for a minute list, or the daily time in words. */
+function drainScheduleWords(cron: string, now: Date): string {
+  const [minute, hour] = cron.trim().split(/\s+/)
+  if (hour === '*' && /^\d+(,\d+)+$/.test(minute)) {
+    const mins = minute.split(',').map((m) => `:${m.padStart(2, '0')}`)
+    return `every hour at ${mins.slice(0, -1).join(', ')} and ${mins[mins.length - 1]}`
+  }
+  return scheduleInWords(cron, now) ?? `\`${cron}\``
+}
+
+/**
+ * Alert that stranded lead sightings are not being finalized: in_flight
+ * sightings older than 30 hours are piling up (#350).
+ *
+ * What the check measured is the count. What follows from it by construction:
+ * finalize-unrecoverable-stranded finalizes every in_flight sighting older than
+ * 26 hours, so a row past 30 hours means that pass did not run or did not
+ * finish, and the export takes only finalized sightings, so the rows are held
+ * back from Snowflake rather than exported wrong (#835). Causes are not listed:
+ * none is measured here, and the failed run's own message names it.
  */
 export async function sendDrainStallAlert(
   supabase: SupabaseClient,
   orgId: string,
   strandedCount: number,
+  now: Date = new Date(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
+  const jobs = Object.keys(DRAIN_STALL_SCHEDULES) as (keyof typeof DRAIN_STALL_SCHEDULES)[]
+  const when = (job: keyof typeof DRAIN_STALL_SCHEDULES) => drainScheduleWords(DRAIN_STALL_SCHEDULES[job], now)
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Lead-sighting strand drain has stalled', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: 'Lead sightings are not being finalized', emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${strandedCount.toLocaleString()}* lead_sightings rows are stuck at \`outcome_state='in_flight'\` and older than 30 hours. The daily drains (08:00 + 08:30 UTC) should have finalized these. While they stay stuck, the 09:00 UTC Snowflake export records them with a null winner/bid/enrichment instead of their real outcome. This is the data-loss mode #343 fixed, so the drain has likely stopped running.`,
+        text:
+          `*${strandedCount.toLocaleString()}* lead sightings are still at \`outcome_state='in_flight'\` more than 30 hours after their run. ` +
+          '`finalize-unrecoverable-stranded` finalizes every sighting older than 26 hours, so its last daily pass did not happen or did not finish. ' +
+          'The Snowflake export takes only finalized sightings, so these leads are missing from reporting until they are finalized.',
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* In the Supabase SQL editor, check the jobs ran: `SELECT j.jobname, d.status, d.return_message, d.start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid) WHERE j.jobname IN (\'reduce-finalize-stranded\',\'finalize-unrecoverable-stranded\') ORDER BY d.start_time DESC LIMIT 6;`. If they errored or did not run, re-run by hand: `SELECT public.reduce_finalize_stranded(8); SELECT public.finalize_unrecoverable_stranded(26);`. Common causes: lock contention with the 03:30 UTC partition purge, a permission change on the SECURITY DEFINER functions, or schema drift on lead_sightings.',
+        text:
+          '*How to fix:* in the Supabase SQL editor, read the latest run of each strand job: ' +
+          `\`SELECT DISTINCT ON (j.jobname) j.jobname, d.status, d.return_message, d.start_time FROM cron.job j LEFT JOIN cron.job_run_details d USING (jobid) WHERE j.jobname IN (${jobs.map((j) => `'${j}'`).join(',')}) ORDER BY j.jobname, d.start_time DESC;\`. ` +
+          'A failed run\'s return_message names the cause, and a job missing from the result is no longer scheduled. ' +
+          'Then finalize the backlog by hand: `SELECT public.reduce_finalize_stranded(8); SELECT public.finalize_unrecoverable_stranded(26);`.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `_Schedules: \`reduce-finalize-stranded\` ${when('reduce-finalize-stranded')}, \`reduce-finalize-stranded-deep\` ${when('reduce-finalize-stranded-deep')}, \`finalize-unrecoverable-stranded\` ${when('finalize-unrecoverable-stranded')}._`,
       },
     },
   ]
@@ -1476,7 +1629,7 @@ export async function sendDrainStallAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Strand drain stalled: ${strandedCount.toLocaleString()} in_flight lead_sightings over 30h old`,
+    `Lead sightings not finalized: ${strandedCount.toLocaleString()} in_flight over 30h old`,
   )) !== null
 }
 
@@ -1638,29 +1791,33 @@ export async function sendCronHeartbeatAlert(
     const blocks = withRepeat([
       {
         type: 'header',
-        text: { type: 'plain_text', text: `${job.label} is${again} running without a heartbeat`, emoji: false },
+        text: { type: 'plain_text', text: `${job.label} is${again} missing its heartbeat`, emoji: false },
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${job.label} is working: its runs are finishing. Nothing is broken for: ${job.dependents}. What is missing is the warning if that stops, because the check that would notice cannot see this job.`,
+          // Says what was read and no more (#835): a finished row in job_runs is
+          // not proof the schedule fires, since a run started by hand records one
+          // too, and the heartbeat stamp is wired for every registered job by a
+          // guard (cron-jobs-all-stamped), so a missing call is not the cause.
+          text: `${job.label} has no current heartbeat stamp, but \`job_runs\` records it finishing a run within its usual interval. Until the stamp is written again, nothing warns if this job stops, and then: ${job.dependents}.`,
         },
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* the job is registered in \`CRON_JOBS\` (apps/worker/src/lib/cron-heartbeat.ts) but nothing calls \`writeHeartbeat\` for it in the scheduled handler. Add the stamp where the job dispatches, next to the other watched jobs in apps/worker/src/index.ts.`,
+          text: `*How to fix:* search the worker logs for \`[cron-heartbeat]\` around this job's scheduled times, where a failed stamp write is logged. If none failed, the finished runs may have been started by hand (the admin re-archive route records one), so check this job's scheduled trigger is still firing.`,
         },
       },
-      lastLine('Seen because the job has no heartbeat stamp while `job_runs` shows it finishing runs.'),
+      lastLine('Seen because the heartbeat stamp is missing or late while `job_runs` shows a finished run.'),
     ])
     return (await postMessage(
       connection.bot_token,
       connection.default_channel,
       blocks,
-      `${job.label} is running without a heartbeat`,
+      `${job.label} is missing its heartbeat`,
     )) !== null
   }
   // A run that started and never finished is a different failure from a
@@ -1757,14 +1914,19 @@ export async function sendPgCronAlert(
     never_succeeded: `Database job ${verdict.jobname} has never succeeded`,
     unknown_identity: `Cannot tell which database job ${verdict.jobname} is`,
     unknown_schedule: `Cannot tell whether database job ${verdict.jobname} is healthy`,
+    unreadable_success: `Cannot tell when database job ${verdict.jobname} last succeeded`,
     inactive: `Database job ${verdict.jobname} is disabled`,
   }
   const fixes: Record<AlertingStatus, string> = {
     failing: `*How to fix:* read the error above. \`cron.job_run_details\` holds the full message and the run history for this job.`,
-    stalled: `*How to fix:* check the job is still present and active in \`cron.job\`. A job removed or disabled by a migration produces no failed runs, so its silence is the only signal there is.`,
+    // The job is in cron.job and enabled (or it would not be judged, or would be
+    // reported as disabled), and no run finished failing, so what is left is a
+    // run that never finished or a scheduler that is not starting it (#835).
+    stalled: `*How to fix:* the job is scheduled and enabled and no run has failed, so either a run is stuck or pg_cron is not starting it. Read its latest rows in \`cron.job_run_details\`: a row with no end_time is a stuck run, which cancelling its pid frees for the next slot, and no row since the last success means the scheduler is not launching it.`,
     never_succeeded: `*How to fix:* the job is scheduled and has not completed successfully in the window. Read its most recent run in \`cron.job_run_details\`.`,
     unknown_identity: `*How to fix:* \`pg_cron_health\` is not returning this job's \`jobid\`, so a job that was just rescheduled cannot be told apart from one that has never run. Apply the outstanding database migrations, since the worker is running ahead of them.`,
     unknown_schedule: `*How to fix:* the staleness half of this check is not running for this job. Either simplify the schedule or teach \`expectedGapMs\` to read this shape.`,
+    unreadable_success: `*How to fix:* \`pg_cron_health\` returned a last success time the watcher cannot parse as a date. Compare what that function returns for this job with what \`judgeJob\` in pg-cron-watch.ts reads, and fix whichever side changed shape.`,
     inactive: `*How to fix:* re-enable it, or remove it, so a job nobody meant to keep is not left looking scheduled.`,
   }
 
@@ -2028,6 +2190,27 @@ export async function sendWorkflowScheduleAlert(
  * applied (#407). Aggregated per org; uses the config-alerts toggle. Returns true
  * when delivered. A manual "Sync now" intentionally does not call this.
  */
+/**
+ * What to do about one failed matrix sync, read from the error the sync threw
+ * (bid-matrix-sync.ts, salesforce-creds.ts, bid-range-flags.ts, paginate.ts).
+ * An error none of these recognise is sent to its own text, never to a guess.
+ */
+function matrixSyncRemedy(error: string): string {
+  if (/^Salesforce credentials missing/.test(error)) {
+    return 'Set the Salesforce credentials the error names on the Environment Variables page.'
+  }
+  if (/^Salesforce |^the describe of /.test(error)) {
+    return 'Salesforce refused or failed the call: read its answer in the error above, and check Salesforce is reachable if it is a 5xx or a timeout.'
+  }
+  if (/^bid_matrix_rows |^existing-row query |^partner_bid_config not found/.test(error)) {
+    return "Our database read or write failed, not Salesforce: check the database's health in the Supabase dashboard, and the next hourly sync retries."
+  }
+  if (/sync_source is|has no sf_object configured/.test(error)) {
+    return "The partner's matrix settings are incomplete: set its Salesforce object and source on the partner page."
+  }
+  return 'Read the error above to find which step failed.'
+}
+
 export async function sendMatrixSyncFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
@@ -2061,11 +2244,20 @@ export async function sendMatrixSyncFailureAlert(
       },
     })
   }
+  // One remedy per kind of failure actually present, chosen from each error's own
+  // wording (#835). It used to send every failure to Salesforce availability,
+  // including a database write that failed and a credential nobody had set.
+  const remedies = [...new Set([
+    ...issue.failed.map((f) => matrixSyncRemedy(f.error)),
+    ...(issue.preserved.length > 0
+      ? ['For a preserved matrix, check that the partner flag filter (`Is{Partner}__c`) still matches rows in Salesforce, or confirm the ranges were cleared on purpose.']
+      : []),
+  ])]
   blocks.push({
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: '*How to fix:* check Salesforce availability and that the partner flag filter (`Is{Partner}__c`) still matches rows. Bidding keeps running on the last good matrix meanwhile.',
+      text: `*How to fix:* ${remedies.join(' ')} Bidding keeps running on the last good matrix meanwhile.`,
     },
   })
 
@@ -2112,6 +2304,41 @@ export async function sendTitledAlert(
 
 const easternInstant = (iso: string) =>
   new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(iso))
+
+/**
+ * What one export error means for the rows, read from the phase its line names
+ * (`<phase>: <error>`, as sightings-export.ts and achieve-export.ts write them).
+ *
+ * The sentence used to be chosen by job name alone, so every error from an
+ * export job read "the rows were not exported", including a sandbox purge (those
+ * rows are never exported), an enrollment view backfill (the export is not held
+ * up by it), and an exported_at stamp that matched nothing after the MERGE had
+ * already landed the rows in Snowflake (#835).
+ */
+function exportErrorConsequence(jobName: string, error: string): string {
+  const phase = /^([^:]+):/.exec(error)?.[1]?.trim().toLowerCase() ?? ''
+  if (phase === 'sandbox purge') {
+    return 'Sandbox rows are never exported, so nothing is missing from Snowflake; they stay in Supabase until a purge succeeds.'
+  }
+  if (phase === 'enrollment view backfill') {
+    return 'This does not hold up the export: the rows still export, but without the Salesforce enrollment view filled in.'
+  }
+  if (phase === 'trades backfill') {
+    return 'Rows still missing their trades were held back from this export, and wait for a run whose trades backfill succeeds.'
+  }
+  if (/\.exported_at \(/.test(error) && /matched zero rows/.test(error)) {
+    return 'These rows are already in Snowflake but were not marked as exported, so each run sends them again and they are not purged until the mark lands.'
+  }
+  if (phase.endsWith('purge') || (phase === '' && jobName.toLowerCase().includes('purge'))) {
+    return 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists.'
+  }
+  return 'The affected rows were not exported and retry on the next run, so Snowflake is missing them until a run succeeds.'
+}
+
+/** Each distinct consequence once, in the order the errors first raise it. */
+function exportConsequence(jobName: string, errors: string[]): string {
+  return [...new Set(errors.map((e) => exportErrorConsequence(jobName, e)))].join(' ')
+}
 
 /**
  * Alert that a Snowflake export reported errors (#412). The export jobs
@@ -2173,12 +2400,7 @@ export async function sendExportFailureAlert(
   // the killed-run takeover is neither a purge nor an export, and choosing by
   // job name told the reader rows were not exported for a job that exports
   // nothing.
-  const isPurge = payload.jobName.toLowerCase().includes('purge')
-  const consequence =
-    payload.consequence ??
-    (isPurge
-      ? 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists:'
-      : 'The affected rows were not exported and will retry on the next run, but analytics in Snowflake are missing them until it succeeds:')
+  const consequence = payload.consequence ?? exportConsequence(payload.jobName, payload.errors)
   // A check that ran correctly and found something has not failed, and what it
   // found is not an error (2026-09-10). Both default to the failure wording, so
   // every existing caller is unchanged and only one that KNOWS better differs.
@@ -2319,7 +2541,7 @@ export async function sendRequiredSecretsAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*How to fix:* set each from its source in a real terminal (a non-interactive shell uploads a blank value), then redeploy:\n\`\`\`\n${fixCmds}\n\`\`\`\nSources for each secret are in docs/disaster-recovery.md (Secret inventory).`,
+        text: `*How to fix:* set each from its source in a real terminal (a non-interactive shell uploads a blank value). Each takes effect as it is set:\n\`\`\`\n${fixCmds}\n\`\`\`\nSources for each secret are in docs/disaster-recovery.md (Secret inventory).`,
       },
     },
   ]
@@ -2551,6 +2773,17 @@ function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
  * as the last word.
  */
 /**
+ * Whether a read error names a database object that is missing or not permitted
+ * (#835): a function or table PostgREST cannot find, an undefined function,
+ * table or column, or a missing grant. Each answers the same way until a
+ * migration or a grant changes it, so it never recovers by waiting. Read from the
+ * rendered error text, because that is what the caller hands over.
+ */
+function missingDatabaseObject(error: string): boolean {
+  return /\b(PGRST202|PGRST205|42883|42P01|42703|42501)\b|permission denied for/.test(error)
+}
+
+/**
  * Bidspoke cannot read its own database (#1297). Posted by the minute cliff
  * check from the last-good Slack connection in KV, because the token's home is
  * the database that cannot be read. Returns the message ts, or null when Slack
@@ -2568,8 +2801,11 @@ export async function sendDatabaseUnreachableAlert(
       text: {
         type: 'mrkdwn',
         text:
+          // No claim about leads (#835): since the stored copies (#1845) a live run
+          // can still be served from them, so "leads are refused with 503" is no
+          // longer what happens. What this check knows is that it cannot count.
           `<!here> The minute volume check could not read *${payload.what}* from Supabase: \`${truncateErrorForAlert(payload.error)}\`. ` +
-          'While this lasts, leads that reach the worker are being refused with 503 and nothing that counts executions can see the drop. ' +
+          'While this lasts it cannot count executions, so it cannot see a drop in volume. ' +
           'The volume cliff alerts will only fire once the database is readable again, and they will then report the outage as a caller stopping, which it is not.',
       },
     },
@@ -2577,7 +2813,10 @@ export async function sendDatabaseUnreachableAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* check <https://status.supabase.com|status.supabase.com> and the project\'s database health in the Supabase dashboard. Nothing on the worker needs restarting; it recovers on its own when the database answers. An all-clear follows here once this check can read again.',
+        text: missingDatabaseObject(payload.error)
+          // A missing function, table or grant answers the same way every minute.
+          ? '*How to fix:* the database answered, but what this check reads is missing or not permitted, and that does not clear up on its own. Apply the outstanding database migrations, or restore the grant the error names. An all-clear follows here once this check can read again.'
+          : '*How to fix:* check <https://status.supabase.com|status.supabase.com> and the database\'s health and memory use in the Supabase dashboard for this project. Nothing on the worker needs restarting; it recovers on its own when the database answers. An all-clear follows here once this check can read again.',
       },
     },
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
