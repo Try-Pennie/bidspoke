@@ -34,6 +34,7 @@ import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMem
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
+import { tickTimer, type TickTimer } from './lib/tick-timing'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -137,7 +138,7 @@ app.route('/api', api)
 // Reached only through `scheduled` below, once the tick has been claimed (#1899).
 const scheduledJobs = {
   /** Starts every job the cron names and returns their work, to be awaited. */
-  start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<unknown>[] {
+  start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext, timer?: TickTimer): Promise<unknown>[] {
     const supabase = createSupabaseClient(env)
     // Every job's work is tracked, so once it has all settled the stored copies
     // any of them served or refused (#1848) are counted, in one write.
@@ -149,6 +150,10 @@ const scheduledJobs = {
         platformCtx.waitUntil(p)
       },
     }
+    // A minute job is named and timed, so a tick that ran slow says which job
+    // held it up (#2058). The name is required, so a new minute job cannot be
+    // added untimed.
+    const minuteJob = (name: string, p: Promise<unknown>) => ctx.waitUntil(timer ? timer.track(name, p) : p)
     // Stamps a watched job "completed" once its work has SETTLED, whichever way
     // it settled (#985). The work's own handler owns logging and alerting; this
     // only records that the run reached its end. It is deliberately not chained
@@ -845,7 +850,7 @@ const scheduledJobs = {
         ),
       )
     } else if (event.cron === '* * * * *') {
-      ctx.waitUntil(
+      minuteJob('prewarm',
         prewarmKvCaches(supabase, env)
           .catch((e) => console.error('[prewarm] failed:', e))
       )
@@ -853,7 +858,7 @@ const scheduledJobs = {
       // (#1846), so the copy never serves an old version for longer than this.
       // Then the stored copy alerts (#1848), after the sweep so they judge what it
       // just did, and whatever the sweep did: one that threw counts as failing.
-      ctx.waitUntil(
+      minuteJob('stored-copy-sweep',
         sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE))
           .then((r): SweepResult => {
             if (r.repaired.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} repaired=${r.repaired.length} ${r.repaired.join(' ')}`)
@@ -885,7 +890,7 @@ const scheduledJobs = {
       // inline mirror did not copy to buyer_sales, through the same write. Both
       // heartbeat stamps on every exit path (L514); it pages through the shared
       // export alerter so the same KV keys mute it as every other job.
-      ctx.waitUntil(
+      minuteJob('buyer-sale-drain',
         completeAfter(
           writeHeartbeat(env.IDEMPOTENCY, BUYER_SALE_DRAIN_JOB)
             .catch((e) => console.error(`[${BUYER_SALE_DRAIN_JOB}] heartbeat write failed:`, e))
@@ -906,7 +911,7 @@ const scheduledJobs = {
       // Reads back the post-response writes that only timed out (#1880): drops
       // the ones that landed, reports the ones that did not as lost, and says
       // so when the database will not answer for 15 minutes.
-      ctx.waitUntil(
+      minuteJob('unconfirmed-write-sweep',
         completeAfter(
           writeHeartbeat(env.IDEMPOTENCY, UNCONFIRMED_WRITE_SWEEP_JOB)
             .catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] heartbeat write failed:`, e))
@@ -920,15 +925,15 @@ const scheduledJobs = {
           UNCONFIRMED_WRITE_SWEEP_JOB,
         ),
       )
-      ctx.waitUntil(
+      minuteJob('volume-cliff',
         runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, secretKeys(env), makeAlertClaims(env.ALERT_CLAIM))
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
-      ctx.waitUntil(
+      minuteJob('slow-execution-check',
         runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[slow-spike] check failed:', e))
       )
-      ctx.waitUntil(
+      minuteJob('stranded-executions',
         // A stranded run is restored from its answer journal when it has one (#1883).
         runReduceFinalizeStrandedExecutions(supabase, { readJournal: (id) => readAnswerJournal(env.IDEMPOTENCY, id) })
           .then(async (r) => {
@@ -941,15 +946,15 @@ const scheduledJobs = {
           })
           .catch((e) => console.error('[stranded-executions] check failed:', e))
       )
-      ctx.waitUntil(
+      minuteJob('failure-rate-check',
         runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[failure-spike] check failed:', e))
       )
-      ctx.waitUntil(
+      minuteJob('upstream-outage-check',
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
       )
-      ctx.waitUntil(
+      minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY)
           .then((rs) => {
             for (const r of rs) {
@@ -980,8 +985,11 @@ export default {
   // is not reported twice.
   scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<void> {
     const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
-      const work = scheduledJobs.start(event, env, platformCtx)
+      const timer = tickTimer()
+      const work = scheduledJobs.start(event, env, platformCtx, timer)
       await Promise.allSettled(work)
+      const slow = timer.report(event.cron)
+      if (slow) console.warn(slow)
       // A cron that started nothing (a retired one) leaves nothing to count.
       // The count is bookkeeping, never a reason to run the jobs again.
       if (work.length > 0) {
