@@ -150,6 +150,17 @@ export const CRON_JOBS: CronJob[] = [
       'a partner firewall block appearing or lifting is no longer noticed between leads, and no all-clear is posted for a standing block (#1274)',
   },
   {
+    id: 'incident-drain',
+    label: 'Incident record drain',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, like the other jobs on this cron.
+    staleMs: 15 * MIN,
+    // A KV list, a handful of events and open incidents, one database call each.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'alert incidents stop reaching the incident record: they wait in the KV outbox, and an incident whose end was lost is never closed as lapsed (#2100)',
+  },
+  {
     id: 'database-memory',
     label: 'Database memory check',
     triggerCron: '*/5 * * * *',

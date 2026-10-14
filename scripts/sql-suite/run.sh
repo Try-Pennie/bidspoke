@@ -40,6 +40,13 @@ if [ "${#tests[@]}" -eq 0 ]; then
   exit 2
 fi
 
+# The container's own address on the Docker network, handed to every test as the
+# psql variable self_host. A test that needs a second, concurrent session (#2100:
+# two racing opens of one incident) connects back to it through dblink, which a
+# non superuser may do only over a connection that really used a password, and
+# the loopback is trust, so it must come in through this address instead.
+SELF_HOST="$(docker exec "$CONTAINER" hostname -i 2>/dev/null | awk '{print $1}')"
+
 status=0
 for t in "${tests[@]}"; do
   name="$(basename "$t")"
@@ -50,7 +57,7 @@ for t in "${tests[@]}"; do
     echo "SKIP  $name (hand run, see its header)"
     continue
   fi
-  if out="$(docker exec -i "$CONTAINER" psql -U postgres -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 -q -f - < "$t" 2>&1)"; then
+  if out="$(docker exec -i "$CONTAINER" psql -U postgres -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 -v "self_host=$SELF_HOST" -q -f - < "$t" 2>&1)"; then
     summary="$(printf '%s\n' "$out" | grep -E 'cases passed' | tail -1 | sed -E 's/^psql:<stdin>:[0-9]+: NOTICE:  //; s/^NOTICE:  //')"
     echo "PASS  $name${summary:+: $summary}"
   else

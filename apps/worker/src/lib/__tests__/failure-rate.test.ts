@@ -460,7 +460,7 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
   const orgWf = { ...wf, organization_id: ORG_ID }
 
   it('records the opening and the page with this signal\'s own window, once, and nothing while the cooldown holds', async () => {
-    vi.mocked(sendFailureSpikeAlert).mockResolvedValue(true)
+    vi.mocked(sendFailureSpikeAlert).mockResolvedValue('ts-1')
     const kv = makeKv()
     const sb = makeSupabase({
       service_connections: [{ organization_id: ORG_ID }],
@@ -476,7 +476,7 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
   })
 
   it('records nothing for an alert Slack refused', async () => {
-    vi.mocked(sendFailureSpikeAlert).mockResolvedValue(false)
+    vi.mocked(sendFailureSpikeAlert).mockResolvedValue(null as never)
     const kv = makeKv()
     const sb = makeSupabase({
       service_connections: [{ organization_id: ORG_ID }],

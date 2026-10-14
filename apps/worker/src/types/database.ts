@@ -210,6 +210,77 @@ export type Database = {
           },
         ]
       }
+      alert_incidents: {
+        Row: {
+          created_at: string
+          ended_at: string | null
+          ended_reason: string | null
+          failed_runs: number | null
+          id: string
+          last_seen_at: string
+          marker_missing_at: string | null
+          organization_id: string | null
+          paged_event_ids: string[]
+          pages_sent: number
+          scope: string
+          signal: string
+          started_at: string
+          subject: string
+          subject_label: string | null
+          successor_signal: string | null
+          updated_at: string
+          window_minutes: number | null
+        }
+        Insert: {
+          created_at?: string
+          ended_at?: string | null
+          ended_reason?: string | null
+          failed_runs?: number | null
+          id?: string
+          last_seen_at: string
+          marker_missing_at?: string | null
+          organization_id?: string | null
+          paged_event_ids?: string[]
+          pages_sent?: number
+          scope: string
+          signal: string
+          started_at: string
+          subject: string
+          subject_label?: string | null
+          successor_signal?: string | null
+          updated_at?: string
+          window_minutes?: number | null
+        }
+        Update: {
+          created_at?: string
+          ended_at?: string | null
+          ended_reason?: string | null
+          failed_runs?: number | null
+          id?: string
+          last_seen_at?: string
+          marker_missing_at?: string | null
+          organization_id?: string | null
+          paged_event_ids?: string[]
+          pages_sent?: number
+          scope?: string
+          signal?: string
+          started_at?: string
+          subject?: string
+          subject_label?: string | null
+          successor_signal?: string | null
+          updated_at?: string
+          window_minutes?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "alert_incidents_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       api_sources: {
         Row: {
           api_key: string
@@ -2952,6 +3023,7 @@ export type Database = {
         }[]
       }
       prune_orphan_auth_users: { Args: never; Returns: number }
+      purge_alert_incidents: { Args: never; Returns: number }
       purge_outcome_writeback_deadletters: { Args: never; Returns: number }
       query_timeout_watch: {
         Args: { p_min_calls?: number }
@@ -2964,6 +3036,52 @@ export type Database = {
           role: string
           timeout_ms: number
         }[]
+      }
+      record_alert_incident_ended: {
+        Args: {
+          p_ended_at: string
+          p_organization_id: string
+          p_reason: string
+          p_scope: string
+          p_signal: string
+          p_started_at: string
+          p_subject: string
+          p_subject_label: string
+          p_successor: string
+          p_window_minutes: number
+        }
+        Returns: string
+      }
+      record_alert_incident_marker_check: {
+        Args: { p_id: string; p_marker_present: boolean; p_now: string }
+        Returns: string
+      }
+      record_alert_incident_opened: {
+        Args: {
+          p_organization_id: string
+          p_previous_started_at: string
+          p_scope: string
+          p_signal: string
+          p_started_at: string
+          p_subject: string
+          p_subject_label: string
+          p_window_minutes: number
+        }
+        Returns: string
+      }
+      record_alert_incident_paged: {
+        Args: {
+          p_event_id: string
+          p_organization_id: string
+          p_paged_at: string
+          p_scope: string
+          p_signal: string
+          p_started_at: string
+          p_subject: string
+          p_subject_label: string
+          p_window_minutes: number
+        }
+        Returns: string
       }
       record_archive_day_measurement: {
         Args: {

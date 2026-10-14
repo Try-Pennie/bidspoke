@@ -31,6 +31,10 @@
     "upsert_buyer_select_parity_day",
     "sign_off_buyer_select_parity_day",
     "record_held_click",
-    "reduce_finalize_stranded"
+    "reduce_finalize_stranded",
+    "record_alert_incident_opened",
+    "record_alert_incident_paged",
+    "record_alert_incident_ended",
+    "record_alert_incident_marker_check"
   ]
 }

@@ -14,7 +14,7 @@ import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-s
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
-import { getSlackConnection } from './lib/slack'
+import { getSlackConnection, sendTitledAlert } from './lib/slack'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runCronTickOnce } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -30,6 +30,7 @@ import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
+import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
 import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMemorySenders, DATABASE_MEMORY_JOB } from './lib/database-memory'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
@@ -786,6 +787,39 @@ const scheduledJobs = {
             })
             .catch((e) => console.error('[database-memory] check failed:', e)),
           DATABASE_MEMORY_JOB,
+        ),
+      )
+      // The incident record drain (#2100): moves the incident outbox's events from
+      // KV into alert_incidents and closes as lapsed an open incident whose marker
+      // went with no end. On this cron, never the minute tick, so it cannot slow
+      // the minute's alert checks; its own heartbeat, both stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, INCIDENT_DRAIN_JOB)
+            .catch((e) => console.error('[incident-drain] heartbeat write failed:', e))
+            .then(() => runIncidentDrain({
+              kv: env.IDEMPOTENCY,
+              supabase,
+              now: Date.now,
+              claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+              resolveSlack: () => resolveSlackForEveryOrg({
+                supabase,
+                getConnection: getSlackConnection,
+                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                log: (line) => console.error(line),
+                logPrefix: '[incident-drain]',
+              }),
+              send: (slack, message) => sendTitledAlert(slack, null, message),
+              log: (line) => console.log(line),
+            }))
+            .then((s) => {
+              if (s.listed > 0 || s.lapsed > 0 || s.suspect > 0 || s.alerted || s.allClear) {
+                console.log(`[incident-drain] listed=${s.listed} applied=${s.applied} refused=${s.refused} failed=${s.failed} waiting=${s.waiting} oldest_waiting_ms=${s.oldestWaitingMs ?? '-'} suspect=${s.suspect} lapsed=${s.lapsed} alerted=${s.alerted} all_clear=${s.allClear}`)
+              }
+              if (s.errors.length) console.error(`[incident-drain] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error('[incident-drain] drain failed:', e)),
+          INCIDENT_DRAIN_JOB,
         ),
       )
     } else if (event.cron === '*/15 * * * *') {

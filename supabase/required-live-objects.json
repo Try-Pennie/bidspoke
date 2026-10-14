@@ -314,5 +314,63 @@
     },
     "anon": "denied",
     "note": "Called by the Worker's POST /api/admin/run-strand-recovery as service_role (#380), and by the reduce-finalize-stranded pg_cron jobs. A WRITE: it finalises stranded lead_sightings. Security definer, so anon must be denied; probed with its argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
+  },
+  {
+    "name": "record_alert_incident_opened",
+    "args": {
+      "p_signal": "probe",
+      "p_subject": "probe",
+      "p_subject_label": null,
+      "p_scope": "platform",
+      "p_organization_id": null,
+      "p_started_at": "2026-01-01T00:00:00Z",
+      "p_previous_started_at": null,
+      "p_window_minutes": null
+    },
+    "anon": "denied",
+    "note": "The incident drain (apps/worker/src/lib/incident-drain.ts, #2100) writes an incident opening to alert_incidents through this as service_role, every five minutes. A WRITE, revoked from anon and authenticated, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
+  },
+  {
+    "name": "record_alert_incident_paged",
+    "args": {
+      "p_signal": "probe",
+      "p_subject": "probe",
+      "p_subject_label": null,
+      "p_scope": "platform",
+      "p_organization_id": null,
+      "p_started_at": "2026-01-01T00:00:00Z",
+      "p_paged_at": "2026-01-01T00:00:00Z",
+      "p_event_id": "probe",
+      "p_window_minutes": null
+    },
+    "anon": "denied",
+    "note": "The incident drain (apps/worker/src/lib/incident-drain.ts, #2100) writes a delivered page to alert_incidents through this as service_role, every five minutes. A WRITE, revoked from anon and authenticated, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
+  },
+  {
+    "name": "record_alert_incident_ended",
+    "args": {
+      "p_signal": "probe",
+      "p_subject": "probe",
+      "p_subject_label": null,
+      "p_scope": "platform",
+      "p_organization_id": null,
+      "p_started_at": "2026-01-01T00:00:00Z",
+      "p_ended_at": null,
+      "p_reason": "all_clear",
+      "p_successor": null,
+      "p_window_minutes": null
+    },
+    "anon": "denied",
+    "note": "The incident drain (apps/worker/src/lib/incident-drain.ts, #2100) writes an incident ending to alert_incidents through this as service_role, every five minutes. A WRITE, revoked from anon and authenticated, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
+  },
+  {
+    "name": "record_alert_incident_marker_check",
+    "args": {
+      "p_id": "00000000-0000-0000-0000-000000000000",
+      "p_marker_present": true,
+      "p_now": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "The incident drain (apps/worker/src/lib/incident-drain.ts, #2100) writes its check of an open incident's KV marker, closing it as lapsed after two absent drains, to alert_incidents through this as service_role, every five minutes. A WRITE, revoked from anon and authenticated, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
   }
 ]
