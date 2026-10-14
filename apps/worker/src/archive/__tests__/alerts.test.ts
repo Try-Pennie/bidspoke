@@ -206,27 +206,27 @@ describe('the falling behind finding reads in words', () => {
  */
 describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
-    const remedy = ingestRemedyFor('read-failed')
+    const remedy = ingestRemedyFor('read-failed', '')
 
     expect(remedy.title).toMatch(/could not read/)
     expect(remedy.fixHint).toMatch(/in our database, not Snowflake/)
   })
 
   it('points a send failure at Snowflake, which is the case it belongs to', () => {
-    const remedy = ingestRemedyFor('send-failed')
+    const remedy = ingestRemedyFor('send-failed', '')
 
     expect(remedy.fixHint).toMatch(/Check Snowflake availability/)
   })
 
   it('points a misconfiguration at the secret that is unset', () => {
-    expect(ingestRemedyFor('misconfigured').fixHint).toMatch(/wrangler secret put/)
+    expect(ingestRemedyFor('misconfigured', '').fixHint).toMatch(/wrangler secret put/)
   })
 
   it('gives every fault its own distinct advice', () => {
     // The defect was that these were all the same sentence. A test that only
     // checked each one said something would have passed throughout.
     const hints = (['read-failed', 'send-failed', 'misconfigured'] as const).map(
-      (stop) => ingestRemedyFor(stop).fixHint,
+      (stop) => ingestRemedyFor(stop, '').fixHint,
     )
     expect(new Set(hints).size).toBe(3)
   })
@@ -249,15 +249,15 @@ describe('ingestRemedyFor', () => {
     const readAlert = alertsFor(failed('read-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
     const sendAlert = alertsFor(failed('send-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
 
-    expect(readAlert?.remedy.fixHint).toBe(ingestRemedyFor('read-failed').fixHint)
-    expect(sendAlert?.remedy.fixHint).toBe(ingestRemedyFor('send-failed').fixHint)
+    expect(readAlert?.remedy.fixHint).toBe(ingestRemedyFor('read-failed', '').fixHint)
+    expect(sendAlert?.remedy.fixHint).toBe(ingestRemedyFor('send-failed', '').fixHint)
     expect(readAlert?.remedy.fixHint).not.toBe(sendAlert?.remedy.fixHint)
   })
 
   it('keeps the generic wording for a run that stopped on a budget rather than a fault', () => {
     // wall-time is not a failure of anything, so naming a system to go and
     // check would be inventing a cause (L11).
-    const remedy = ingestRemedyFor('wall-time')
+    const remedy = ingestRemedyFor('wall-time', '')
 
     expect(remedy.fixHint).toMatch(/Read the stop reason/)
     expect(remedy.fixHint).not.toMatch(/Check Snowflake availability/)

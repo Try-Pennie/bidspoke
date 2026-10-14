@@ -109,7 +109,7 @@ export const ARCHIVE_SEND_FAILED_REMEDY: TitledRemedy = {
  * The remedy for a failed run, chosen from the stop reason the run already
  * classified (#1042), so a wrong cause never costs a diagnosis (L11, L111).
  */
-export function ingestRemedyFor(stop: RunStop, detail = ''): TitledRemedy {
+export function ingestRemedyFor(stop: RunStop, detail: string): TitledRemedy {
   if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
   if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
   // Chosen from the setting the run reported missing, never assumed (#835).
