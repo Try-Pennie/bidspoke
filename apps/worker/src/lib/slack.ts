@@ -1,6 +1,7 @@
 // Slack alert sender — Block Kit messages for workflow failures and circuit breaker events
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
+import { scheduleInWords } from './schedule-words'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
@@ -1624,6 +1625,11 @@ export async function sendCronHeartbeatAlert(
   const again = repeat ? ' still' : ''
   const withRepeat = (blocks: object[]): object[] =>
     repeat ? [...blocks, { type: 'section', text: { type: 'mrkdwn', text: repeat } }] : blocks
+  // What happened and what to do lead; the schedule string and how the check
+  // saw it come last, in one line (#1300, Dan, 2026-09-10: "They're not easy to read").
+  const words = scheduleInWords(job.triggerCron, new Date(nowMs))
+  const schedule = words ? `${words} (\`${job.triggerCron}\`)` : `\`${job.triggerCron}\``
+  const lastLine = (how: string) => ({ type: 'section', text: { type: 'mrkdwn', text: `_${how} Schedule: ${schedule}._` } })
   // A job that is demonstrably finishing runs while its heartbeat stamp is
   // missing is not dark, and telling anyone to go and check its cron triggers
   // sends them to confirm the one thing that is not wrong (#1332).
@@ -1637,7 +1643,7 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `The ${job.label} cron (\`${job.triggerCron}\`) has no heartbeat stamp, but \`job_runs\` shows it finishing runs, so the job itself is working and this watch is blind to it. Nothing is currently broken for: ${job.dependents}. What IS broken is the ability to notice when that changes.`,
+          text: `${job.label} is working: its runs are finishing. Nothing is broken for: ${job.dependents}. What is missing is the warning if that stops, because the check that would notice cannot see this job.`,
         },
       },
       {
@@ -1647,6 +1653,7 @@ export async function sendCronHeartbeatAlert(
           text: `*How to fix:* the job is registered in \`CRON_JOBS\` (apps/worker/src/lib/cron-heartbeat.ts) but nothing calls \`writeHeartbeat\` for it in the scheduled handler. Add the stamp where the job dispatches, next to the other watched jobs in apps/worker/src/index.ts.`,
         },
       },
+      lastLine('Seen because the job has no heartbeat stamp while `job_runs` shows it finishing runs.'),
     ])
     return (await postMessage(
       connection.bot_token,
@@ -1665,16 +1672,17 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `The ${job.label} cron (\`${job.triggerCron}\`) started a run ~${minutes} minutes ago and has not completed it. That is all this check can see: the run stamped its start and never stamped a completion inside its allowance, so whether the platform killed it, and for which reason, is not visible from here. Until a run completes: ${job.dependents}.`,
+          text: `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
         },
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used. That outcome is what says which remedy applies, and only it can: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here. The next scheduled run tries again on its own, and this one may have completed part of its work before it stopped.`,
+          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here.`,
         },
       },
+      lastLine('Seen because the run stamped its start and no completion inside its allowance; why it stopped is not visible from here.'),
     ])
     return (await postMessage(
       connection.bot_token,
@@ -1693,16 +1701,17 @@ export async function sendCronHeartbeatAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `The ${job.label} cron (\`${job.triggerCron}\`) ${when}. While it is down: ${job.dependents}.`,
+        text: `${job.label} ${when}. While it is down: ${job.dependents}.`,
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*How to fix:* confirm the worker deployed with its cron triggers (wrangler.toml \`[triggers]\` must include \`${job.triggerCron}\`) and that the scheduled handler is not throwing before dispatch. Check the Cloudflare dashboard: Workers and Pages > bidspoke-worker > Settings > Triggers, and the worker logs for the \`${job.triggerCron}\` run.`,
+        text: `*How to fix:* confirm the worker deployed with its scheduled triggers (wrangler.toml \`[triggers]\` must list this job's schedule, below) and that the scheduled handler is not throwing before it starts the job. The worker's triggers and its logs for this job's runs are in the Cloudflare dashboard.`,
       },
     },
+    lastLine('Seen because the job has not stamped a run inside its expected cadence.'),
   ])
   return (await postMessage(
     connection.bot_token,

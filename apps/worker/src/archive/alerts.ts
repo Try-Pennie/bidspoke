@@ -19,7 +19,7 @@
  * its failures and its recoveries from different predicates.
  */
 import type { RunResult, RunStop } from './run-loop'
-import type { AlertRemedy } from '../lib/export-alerts'
+import type { TitledRemedy } from '../lib/export-alerts'
 
 export const ARCHIVE_JOB_NAMES = {
   ingest: 'execution-archive-ingest',
@@ -58,66 +58,57 @@ export const ARCHIVE_JOB_NAMES = {
 export const LAG_ALERT_HOURS = 6
 
 /**
- * The wording each condition carries (2026-09-10).
+ * The wording each condition carries.
+ *
+ * Titled (#1300, Dan, 2026-09-10: "They're not easy to read"): a plain title in
+ * place of the job name, then the findings, one line saying what is at risk, and
+ * a fix line only where there is something to do. Mechanism is left out; the
+ * stop reason the run classified is in the findings for whoever wants it.
  *
  * Held BESIDE the condition that raises it rather than chosen at the call site,
  * because one call site forwards three different job names and picking the
  * wording there would be a second place the mapping has to stay in step (L70).
- * None of these is an export: nothing here is sent to Snowflake by the run being
- * described, so none of them may borrow the export alerter's default sentences.
+ * None of these is an export, so none may borrow the export alerter's sentences.
  */
-export const ARCHIVE_INGEST_REMEDY: AlertRemedy = {
-  consequence:
-    'The archive run stopped before it finished. The hours it did not reach have no backup yet and are ' +
-    'archived when the loop returns to them, which is a problem only if their Postgres partition is ' +
-    'purged first. The stop reason is below:',
+export const ARCHIVE_INGEST_REMEDY: TitledRemedy = {
+  title: 'The hourly backup stopped before it finished',
+  context:
+    'Nothing is lost: the hours it did not reach are backed up on a later run. They are at risk only if they ' +
+    'come up for deletion first, which has its own alert.',
   fixHint:
-    'Read the stop reason and the [execution-archive] worker logs for that run. If a whole day is at ' +
-    'risk of being purged before it is archived, re-archive it with POST /api/admin/re-archive and a ' +
-    'day of YYYY-MM-DD.',
+    'Read the stop reason above. Nothing to do unless this repeats. If a whole day could be deleted before ' +
+    'it is backed up, back it up with POST /api/admin/re-archive and its day as YYYY-MM-DD.',
 }
 
 /**
- * Where a read failure actually points (#1042).
- *
- * Its own remedy, because on 2026-08-24 the cause was a Postgres statement
- * timeout on our own unindexed count and the one fixed remedy named Snowflake,
- * the export credentials and Supabase disk. Three wrong places, none of which a
- * reader would have found anything wrong in.
+ * Where a read failure actually points (#1042): Postgres, not Snowflake. On
+ * 2026-08-24 the cause was a statement timeout on our own unindexed count.
  */
-export const ARCHIVE_READ_FAILED_REMEDY: AlertRemedy = {
-  consequence:
-    'The archive could not READ the executions it was going to archive, so it stopped before sending ' +
-    'anything. This is Postgres, not Snowflake. The hours it did not reach have no backup until the ' +
-    'loop returns to them:',
+export const ARCHIVE_READ_FAILED_REMEDY: TitledRemedy = {
+  title: 'The hourly backup could not read the run history',
+  context:
+    'It stopped before sending anything. Nothing is lost; the hours it did not reach are backed up on a later run.',
   fixHint:
-    'The failure below names the query. A statement timeout on a count usually means a partition without ' +
-    'the index the archive reads by. Snowflake and the archive credentials are not implicated by this ' +
-    'stop reason.',
+    'The failure above names the query, which is in our database, not Snowflake. A timeout on a count usually ' +
+    'means a day without the index the backup reads by.',
 }
 
 /** Where a send failure points, which is the one case Snowflake belongs in. */
-export const ARCHIVE_SEND_FAILED_REMEDY: AlertRemedy = {
-  consequence:
-    'The archive read its executions and could not SEND them to Snowflake, so the run stopped with those ' +
-    'hours unarchived. They are archived when the loop returns to them, which is a problem only if their ' +
-    'Postgres partition is purged first:',
+export const ARCHIVE_SEND_FAILED_REMEDY: TitledRemedy = {
+  title: 'The hourly backup could not reach Snowflake',
+  context:
+    'Those hours are not backed up yet and are tried again on the next run. While it stands, their history is ' +
+    'kept rather than deleted on schedule, so the database grows until a run succeeds.',
   fixHint:
-    'Check Snowflake availability and the archive writer credentials. If the sends are timing out, ' +
-    'docs/snowflake-slow-write.md finds where the time went, read only. While it stands, the deletion gate ' +
-    'cannot verify these days, so their Postgres partitions are spared rather than purged and the ' +
-    'retained data grows until a run succeeds.',
+    'Check Snowflake availability and the backup writer credentials. If the sends are timing out, ' +
+    'docs/snowflake-slow-write.md finds where the time went, read only.',
 }
 
 /**
  * The remedy for a failed run, chosen from the stop reason the run already
- * classified (#1042).
- *
- * A remedy identical for every failure carries no information, and a wrong one
- * is worse than none because it costs a diagnosis (L11, L111). The stop reason
- * is already decided in `run-loop.ts`, so this reads it rather than guessing.
+ * classified (#1042), so a wrong cause never costs a diagnosis (L11, L111).
  */
-export function ingestRemedyFor(stop: RunStop): AlertRemedy {
+export function ingestRemedyFor(stop: RunStop): TitledRemedy {
   if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
   if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
   if (stop === 'misconfigured') return ARCHIVE_MISCONFIGURED_REMEDY
@@ -126,58 +117,61 @@ export function ingestRemedyFor(stop: RunStop): AlertRemedy {
   return ARCHIVE_INGEST_REMEDY
 }
 
-export const ARCHIVE_MISCONFIGURED_REMEDY: AlertRemedy = {
-  consequence:
-    'The archive refused to run at all because a secret it needs is not set. It is not writing incomplete ' +
-    'rows, which is the safe choice, but no hour is being archived while this stands:',
+export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
+  title: 'The hourly backup cannot run: a setting is missing',
+  context: 'No hour is being backed up while this stands. It is not writing incomplete records, which is the safe choice.',
   fixHint:
-    'Set the named secret with wrangler secret put <NAME> --name bidspoke-worker. The next hourly run ' +
-    'picks it up on its own and the skipped hours are archived when the loop reaches them.',
-  headlineVerb: 'cannot run',
-  itemNoun: { one: 'reason', many: 'reasons' },
+    'Set the named secret with wrangler secret put <NAME> --name bidspoke-worker. The next hourly run picks it ' +
+    'up and the skipped hours are backed up on later runs.',
 }
 
-export const ARCHIVE_REFUSAL_REMEDY: AlertRemedy = {
-  consequence:
-    'The archive read these executions and refused to write them, so they have no copy anywhere while ' +
-    'their Postgres partition is still deleted on the retention schedule. Refusing everything means a ' +
-    'systemic cause rather than one bad row:',
+export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
+  title: 'The hourly backup refused some runs',
+  context:
+    'Refused runs have no backup anywhere, and their history is still deleted on the usual schedule. Refusing ' +
+    'every run points at one shared cause rather than one bad record.',
   fixHint:
-    'Read the reasons in the execution_archive_refusals table for this run, resolve the cause, then ' +
-    're-archive the affected hours with POST /api/admin/re-archive.',
-  headlineVerb: 'refused executions',
-  itemNoun: { one: 'refusal', many: 'refusals' },
+    'Read the reasons in the execution_archive_refusals table for this run, fix the cause, then back the ' +
+    'affected hours up again with POST /api/admin/re-archive.',
 }
 
-export const ARCHIVE_LAG_REMEDY: AlertRemedy = {
-  consequence:
-    'Every run is reporting success and the archive is still falling behind its own cadence. Nothing is ' +
-    'lost yet. While it trails, the deletion gate cannot clear those days:',
+export const ARCHIVE_LAG_REMEDY: TitledRemedy = {
+  title: 'The hourly backup is falling behind',
+  context:
+    'Every run reports success, but the backup is not keeping up. Nothing is lost yet; until it catches up, ' +
+    'those days are kept rather than deleted.',
   fixHint:
-    'This is throughput, not a failure. Compare the per run hour cap, the subrequest budget and the wall ' +
-    'time budget against the subrequests and stop reason in the [execution-archive] logs, and catch up a ' +
-    'day at a time with POST /api/admin/re-archive if the gap is not closing.',
-  headlineVerb: 'is behind',
-  itemNoun: { one: 'reading', many: 'readings' },
+    'This is throughput, not a failure. If the gap is not closing, catch up a day at a time with POST ' +
+    '/api/admin/re-archive, then compare the per run hour cap and time budget with the [execution-archive] logs.',
 }
 
-export const ARCHIVE_KILLED_REMEDY: AlertRemedy = {
-  consequence:
-    'This run found a lock its predecessor never released and took it over, so the previous invocation ' +
-    'was killed part way through. This run is proceeding normally. The work the killed one did not ' +
-    'finish is simply unarchived and is picked up when the loop returns to it:',
+export const ARCHIVE_KILLED_REMEDY: TitledRemedy = {
+  title: 'The hourly backup cleaned up after a stopped run',
+  context:
+    'The previous run stopped part way through (that is the "started and never finished" alert before this ' +
+    'one). This run is going ahead normally. Nothing is lost: the hours the stopped run did not reach are ' +
+    'backed up on a later run.',
   fixHint:
-    'One occurrence needs nothing. If this repeats, read the cron trigger events and invocation metrics ' +
-    'for bidspoke-worker in the Cloudflare dashboard to see what is killing the run.',
-  headlineVerb: 'took over a killed run',
-  itemNoun: { one: 'takeover', many: 'takeovers' },
+    'Nothing to do unless this repeats. If it does, read the stopped runs\' outcomes for bidspoke-worker in ' +
+    'the Cloudflare dashboard to see what is stopping them.',
+}
+
+/** Each stop reason as a reader says it (#1300); every value of RunStop is named, so a new one fails to compile. */
+const STOP_IN_WORDS: Record<RunStop, string> = {
+  'caught-up': 'it had caught up',
+  'wall-time': 'it used up its time for this run',
+  subrequests: 'it used up its outside calls for this run',
+  'max-hours': 'it reached the most hours one run may back up',
+  'read-failed': 'it could not read the run history',
+  'send-failed': 'it could not send to Snowflake',
+  misconfigured: 'a setting it needs is missing',
 }
 
 export interface ArchiveAlert {
   jobName: string
   errors: string[]
   /** Carried with the condition, so the call site cannot pair them wrongly. */
-  remedy: AlertRemedy
+  remedy: TitledRemedy
 }
 
 export function alertsFor(result: RunResult): ArchiveAlert[] {
@@ -188,7 +182,7 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     // so it never shares a status field with a run that stopped partway.
     alerts.push({
       jobName: result.stop === 'misconfigured' ? ARCHIVE_JOB_NAMES.misconfigured : ARCHIVE_JOB_NAMES.ingest,
-      errors: [`archive run stopped on ${result.stop}: ${result.detail}`],
+      errors: [`Stopped because ${STOP_IN_WORDS[result.stop]}: ${result.detail}`],
       remedy: ingestRemedyFor(result.stop),
     })
   }

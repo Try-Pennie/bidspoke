@@ -122,6 +122,23 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).toContain('may have completed part of its work')
   })
 
+  // #1300 (Dan, 2026-09-10: "They're not easy to read"). What happened and what
+  // to do come first; the schedule string and how the check saw it come last.
+  for (const status of ['vanished', 'stale', 'never_ran', 'unstamped'] as const) {
+    it(`a ${status} alert leads with what happened and keeps the schedule string to its last line`, async () => {
+      await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, status, 90 * 60_000)
+      const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+      expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
+      expect(sections.at(-1)).toContain(job.triggerCron)
+      expect(sections[0]).not.toMatch(/^The .* cron/)
+    })
+  }
+
+  it('says when the next run retries in words, not as a schedule string', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000)
+    expect(textOf(lastPost())).toContain('every hour at :23')
+  })
+
   it('says a stale job is dark and points at the trigger configuration, not at termination reasons', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000)
 

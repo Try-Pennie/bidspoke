@@ -126,12 +126,26 @@ describe('alertsFor', () => {
  * Postgres statement timeout on our own unindexed count, and the advice named
  * Snowflake, the export credentials and Supabase disk. Three wrong places.
  */
+// #1300: a finding is read by someone who does not know the stop codes.
+describe('the failed run finding reads in words', () => {
+  const failedOn = (stop: string): RunResult =>
+    ({ failed: true, stop, detail: 'statement timeout', executionsArchived: 0, executionsRefused: 0, hoursArchived: 0, hoursEmpty: 0, hoursBehind: 0 }) as unknown as RunResult
+
+  for (const stop of ['read-failed', 'send-failed', 'wall-time', 'subrequests', 'max-hours'] as const) {
+    it(`names a ${stop} stop in words, keeping the detail`, () => {
+      const line = alertsFor(failedOn(stop))[0].errors[0]
+      expect(line).not.toContain(stop)
+      expect(line).toContain('statement timeout')
+    })
+  }
+})
+
 describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
     const remedy = ingestRemedyFor('read-failed')
 
-    expect(remedy.consequence).toMatch(/This is Postgres, not Snowflake/)
-    expect(remedy.fixHint).toMatch(/not implicated/)
+    expect(remedy.title).toMatch(/could not read/)
+    expect(remedy.fixHint).toMatch(/in our database, not Snowflake/)
   })
 
   it('points a send failure at Snowflake, which is the case it belongs to', () => {
