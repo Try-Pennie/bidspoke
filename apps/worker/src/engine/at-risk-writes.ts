@@ -82,7 +82,10 @@ export const atRiskKey = (executionId: string, stepNamespace: string): string =>
  */
 export function outcomeOfFailedWrite(err: unknown): WriteOutcome {
   if (!err || typeof err !== 'object') return 'unknown'
-  const e = err as { permanent?: unknown; status?: unknown }
+  const e = err as { permanent?: unknown; status?: unknown; mayHaveLanded?: unknown }
+  // A refusal whose own resend (the email recovery) got no clean answer may have
+  // landed after all.
+  if (e.mayHaveLanded === true) return 'unknown'
   return e.permanent === true && typeof e.status === 'number' && e.status >= 400 && e.status < 500 && e.status !== 429
     ? 'refused'
     : 'unknown'

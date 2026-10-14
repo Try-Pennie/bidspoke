@@ -207,6 +207,22 @@ describe('Salesforce node malformed-email recovery (#723)', () => {
     ])
   })
 
+  // #2022: the blanked resend may have landed when Salesforce answered it 5xx, so
+  // the original 400 the node still throws must not read as a clean refusal.
+  it('marks the error as possibly landed when the blanked resend got a transient answer', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockTokenResponse())
+      .mockResolvedValueOnce(mockResponse(400, INVALID_EMAIL_400))
+      .mockResolvedValueOnce(mockResponse(503, 'unavailable'))
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-7', body: { Email__c: ACCENTED_EMAIL, Phone__c: GOOD_PHONE } }),
+      makeCtx(),
+      makeEnv(),
+    ).then(() => null, (e: Error & { status?: number; mayHaveLanded?: boolean }) => e)
+    expect(err?.status).toBe(400)
+    expect(err?.mayHaveLanded).toBe(true)
+  })
+
   it('rejects with an explicit no-contact reason, and does not retry, when no phone survives', async () => {
     fetchMock
       .mockResolvedValueOnce(mockTokenResponse())

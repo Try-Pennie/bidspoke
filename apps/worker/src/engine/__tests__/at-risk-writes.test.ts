@@ -173,6 +173,8 @@ describe('outcomeOfFailedWrite', () => {
     expect(outcomeOfFailedWrite(new Error('Step timed out after 30000ms'))).toBe('unknown')
     expect(outcomeOfFailedWrite(Object.assign(new Error('x'), { permanent: true }))).toBe('unknown')
     expect(outcomeOfFailedWrite('aborted')).toBe('unknown')
+    // A refusal whose own resend got no clean answer may have landed after all.
+    expect(outcomeOfFailedWrite(Object.assign(new Error('x'), { permanent: true, status: 400, mayHaveLanded: true }))).toBe('unknown')
   })
 })
 

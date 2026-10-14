@@ -341,7 +341,7 @@ export async function executeSalesforceNode(
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
     // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
     // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
-    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; status?: number; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; status?: number; mayHaveLanded?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
     err.resolvedInput = resolvedInput
     // The answer's status, typed, so a caller judges the failure without reading the message (#2022).
     err.status = res.status
@@ -386,6 +386,9 @@ export async function executeSalesforceNode(
       warnLogs,
       resolvedInput,
       noteBody: noteUpdate,
+      // The original error still throws, but the resend may have landed, so it
+      // must not read as a clean refusal to the at-risk watch.
+      onRetryMayHaveLanded: () => { err.mayHaveLanded = true },
     })
     if (recovered) return recovered
 
@@ -560,6 +563,8 @@ async function recoverFromRejectedField(args: {
   resolvedInput: ResolvedStepInput
   /** Reports the body the retry will send instead (#2022). */
   noteBody: (body: unknown) => void
+  /** Called when the retry got a transient answer, so it may have landed (#2022). */
+  onRetryMayHaveLanded: () => void
 }): Promise<StepExecutionResult | null> {
   const { parsedBody, operation, body, callOpts, warnLogs, resolvedInput } = args
 
@@ -621,6 +626,7 @@ async function recoverFromRejectedField(args: {
     // The retry failed too. Say nothing new: the caller throws the ORIGINAL
     // error, so diagnostics never get worse than before this recovery existed.
     console.log(`[salesforce] event=salesforce_field_blanked_retry_failed status=${retry.res.status} trace=${callOpts.traceId}`)
+    if (salesforceFailureIsTransient(retry.res.status, retry.responseText)) args.onRetryMayHaveLanded()
     return null
   }
 
