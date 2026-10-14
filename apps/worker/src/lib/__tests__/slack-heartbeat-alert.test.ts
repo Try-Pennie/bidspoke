@@ -90,6 +90,26 @@ describe('sendCronHeartbeatAlert', () => {
   // memory or CPU and the platform had recorded `canceled` after 16.8s with 69ms
   // of CPU, so a reader following the remedy went looking for two statuses that
   // were not there (L11, L440).
+  // #2057: the measured outcome on 2026-10-14 was ok, a run that finished after
+  // the check looked. The fix text named only limit and cancel, so a reader
+  // following it found neither.
+  // A minute job is judged on a drought of finished runs (#2057), so its age is
+  // how long nothing has finished, not how long ago one run started.
+  it('says how long nothing has finished for a minute job, not when a run started', async () => {
+    const minuteJob = { ...job, triggerCron: '* * * * *', completionDroughtMs: 10 * 60_000 }
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', minuteJob, 'vanished', 11 * 60_000)
+    const text = textOf(lastPost())
+    expect(text).toContain('No run has finished in ~11 minutes')
+    expect(text).not.toContain('A run started')
+    expect(text).toContain('no run has stamped a completion for that long')
+    expect(text).not.toContain('inside its allowance')
+  })
+
+  it('tells the reader what an ok outcome means: the run finished late', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+    expect(textOf(lastPost())).toMatch(/outcome is ok.*finished after this check looked/i)
+  })
+
   it('names no likely cause, and no resource outcome, for a vanished run', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
