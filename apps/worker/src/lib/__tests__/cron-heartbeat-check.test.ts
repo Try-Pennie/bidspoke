@@ -3,9 +3,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 vi.mock('../slack', () => ({
   sendCronHeartbeatAlert: vi.fn(async () => true),
+  sendCronHeartbeatRecoveryAlert: vi.fn(async () => true),
 }))
 
-import { sendCronHeartbeatAlert } from '../slack'
+import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
 import {
   runHeartbeatChecks,
   writeHeartbeat,
@@ -61,6 +62,7 @@ function allFresh(nowMs: number): Record<string, string> {
 
 beforeEach(() => {
   vi.mocked(sendCronHeartbeatAlert).mockClear()
+  vi.mocked(sendCronHeartbeatRecoveryAlert).mockClear()
 })
 
 describe('CRON_JOBS registry', () => {
@@ -255,5 +257,95 @@ describe('runHeartbeatChecks: runs that predate the completed stamp (#1207)', ()
     await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
 
     expect(kv.store.get(completedWatchKey(archive.id))).toBe(iso(NOW - 3 * H))
+  })
+})
+
+// #2057. Every minute job shares one invocation, which took up to 320 s in the
+// week to 2026-10-14, and each run's start overwrites the last. So one minute
+// job's late finish cannot be told from a kill at the next tick, and a real kill
+// is masked by the next start. Minute jobs are judged on a drought of finished
+// runs instead.
+describe('runHeartbeatChecks: minute jobs are judged on finished runs, not one late run (#2057)', () => {
+  const sweep = () => cronJob('unconfirmed-write-sweep')
+
+  it('does not call the 2026-10-14 late run killed: started 60 s ago, finished one a minute before', async () => {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(sweep().id)]: iso(NOW - 60_000),
+      [completedKey(sweep().id)]: iso(NOW - 2 * 60_000),
+      [completedWatchKey(sweep().id)]: iso(NOW - 24 * H),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+    expect(results.find((x) => x.jobId === sweep().id)!.status).toBe('healthy')
+    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
+  })
+
+  it('pages vanished when no run has finished for 10 minutes while new runs keep starting', async () => {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(sweep().id)]: iso(NOW - 30_000),
+      [completedKey(sweep().id)]: iso(NOW - 11 * 60_000),
+      [completedWatchKey(sweep().id)]: iso(NOW - 24 * H),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+    const r = results.find((x) => x.jobId === sweep().id)!
+    expect(r.status).toBe('vanished')
+    // The age is how long nothing has finished, not how old the latest start is.
+    expect(r.ageMs).toBe(11 * 60_000)
+  })
+
+  it('does not judge a drought before it has watched for completions that long', async () => {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(sweep().id)]: iso(NOW - 30_000),
+      [completedWatchKey(sweep().id)]: iso(NOW - 5 * 60_000),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+    expect(results.find((x) => x.jobId === sweep().id)!.status).toBe('healthy')
+  })
+})
+
+describe('runHeartbeatChecks: a never finished page is closed when the job finishes (#2057)', () => {
+  it('posts one follow-up naming the job when a run it reported finishes, then stands down', async () => {
+    const archive = cronJob('execution-archive')
+    const started = NOW - archive.maxRunMs - 5 * 60_000
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(archive.id)]: iso(started),
+      [completedWatchKey(archive.id)]: iso(NOW - 24 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+
+    // The run finishes late; the next check sees a completion after the start.
+    kv.store.set(completedKey(archive.id), iso(started + archive.maxRunMs + 8 * 60_000))
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW + 60_000)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledWith(
+      expect.anything(),
+      'org-1',
+      expect.objectContaining({ label: archive.label, status: 'vanished' }),
+      expect.any(Number),
+    )
+
+    // Stood down: a third healthy check says nothing more.
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW + 2 * 60_000)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the incident open when the follow-up could not be delivered, and tries again', async () => {
+    const archive = cronJob('execution-archive')
+    const started = NOW - archive.maxRunMs - 5 * 60_000
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(archive.id)]: iso(started),
+      [completedWatchKey(archive.id)]: iso(NOW - 24 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+    kv.store.set(completedKey(archive.id), iso(started + archive.maxRunMs + 8 * 60_000))
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockResolvedValueOnce(false)
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW + 60_000)
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW + 2 * 60_000)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(2)
   })
 })

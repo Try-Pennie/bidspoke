@@ -40,7 +40,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
-import { sendCronHeartbeatAlert } from './slack'
+import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 
 const MIN = 60 * 1000
@@ -61,6 +61,15 @@ export interface CronJob {
    * and below staleMs, or stale would always be reported first.
    */
   maxRunMs: number
+  /**
+   * For a job that runs every minute: judge it vanished on a DROUGHT of finished
+   * runs, this long with none while new runs keep starting, instead of on one
+   * run past maxRunMs (#2057). Every minute job shares one invocation that has
+   * taken up to 320 s, and each start overwrites the last, so at the next tick a
+   * late finish and a kill look the same and a real kill is masked by the next
+   * start. A job killed every time still shows as no completion for this long.
+   */
+  completionDroughtMs?: number
   /** What stops working while this job is dark (for the alert body). */
   dependents: string
 }
@@ -162,6 +171,7 @@ export const CRON_JOBS: CronJob[] = [
     // One ledger read per buyer plus one rpc per pending entry; a healthy tick
     // is under a second and a backlog of hundreds is still well inside this.
     maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
     dependents:
       'ledger entries the inline mirror failed to copy never reach buyer_sales, so the partner page, the unresolved list and the sales checks read an incomplete copy while selling continues (#1413)',
   },
@@ -179,6 +189,7 @@ export const CRON_JOBS: CronJob[] = [
     // one dead letter (a claim bounded at 2 s, two KV calls, a Slack post) past
     // it, then the could-not-confirm and summary posts: well inside 50 s.
     maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
     dependents:
       'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',
   },
@@ -241,6 +252,18 @@ export const completedKey = (id: string) => `cron-heartbeat:${id}:completed`
 /** When the check first looked for this job's completed stamp and found none. */
 export const completedWatchKey = (id: string) => `cron-heartbeat:${id}:completed-watch`
 export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
+/** The status a standing incident was first paged with, and when (#2057). */
+export const alertedStatusKey = (id: string) => `cron-heartbeat:${id}:alerted-status`
+
+function parseAlertedStatus(raw: string | null): { status: HeartbeatStatus; at: string } | null {
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as { status?: unknown; at?: unknown }
+    return typeof v.status === 'string' && typeof v.at === 'string' ? { status: v.status as HeartbeatStatus, at: v.at } : null
+  } catch {
+    return null
+  }
+}
 /**
  * The key the backoff records this job's standing condition under. The condition
  * and cooldown keys hang off it, so one job's reminder schedule is one subtree.
@@ -276,11 +299,23 @@ export function evaluateHeartbeat(
   lastCompleted: string | null = null,
   maxRunMs: number | null = null,
   watchingSince: string | null = null,
+  completionDroughtMs: number | null = null,
 ): HeartbeatVerdict {
   if (lastRan) {
     const startedMs = Date.parse(lastRan)
     const ageMs = nowMs - startedMs
     if (ageMs > staleMs) return { status: 'stale', ageMs }
+    if (completionDroughtMs !== null) {
+      // A minute job (#2057): vanished only when nothing has finished for the
+      // whole drought, measured from the last completion, or from when the check
+      // began watching if there has never been one.
+      const watchingMs = watchingSince ? Date.parse(watchingSince) : NaN
+      if (!Number.isFinite(watchingMs) || nowMs - watchingMs <= completionDroughtMs) return { status: 'healthy', ageMs }
+      const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
+      const quietSince = Number.isFinite(completedMs) ? completedMs : watchingMs
+      const quietMs = nowMs - quietSince
+      return quietMs > completionDroughtMs ? { status: 'vanished', ageMs: quietMs } : { status: 'healthy', ageMs }
+    }
     if (maxRunMs !== null && ageMs > maxRunMs) {
       const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
       const finished = Number.isFinite(completedMs) && completedMs >= startedMs
@@ -380,7 +415,9 @@ async function checkJob(
     watchingSince = new Date(nowMs).toISOString()
     await kv.put(completedWatchKey(job.id), watchingSince)
   }
-  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs, watchingSince)
+  const verdict = evaluateHeartbeat(
+    lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs, watchingSince, job.completionDroughtMs ?? null,
+  )
   const key = backoffKey(job.id)
 
   if (verdict.status === 'pending') {
@@ -393,7 +430,27 @@ async function checkJob(
     // when there is something to clear: this runs every minute for every job,
     // and an unconditional delete would be two KV WRITES a minute per job for
     // the healthy case, which is almost all of them almost all of the time.
-    if (await readCondition(kv, key)) await clearCondition(kv, key)
+    if (await readCondition(kv, key)) {
+      // A "never finished" page whose job has now finished gets one follow-up
+      // (#2057): on 2026-10-14 the run had only finished late, and the channel
+      // was left holding an accusation. Stood down only once it is delivered.
+      const reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      if (reported?.status === 'vanished') {
+        let delivered = orgIds.length === 0
+        for (const orgId of orgIds) {
+          const sent = await sendCronHeartbeatRecoveryAlert(
+            supabase,
+            orgId,
+            { label: job.label, status: 'vanished', alertedAt: reported.at, endedAt: lastCompleted },
+            nowMs,
+          )
+          if (sent) delivered = true
+        }
+        if (!delivered) return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+      }
+      await clearCondition(kv, key)
+      await kv.delete(alertedStatusKey(job.id))
+    }
     return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
   }
 
@@ -430,7 +487,11 @@ async function checkJob(
   }
   // Only arm the next interval once something actually delivered, so a Slack
   // outage does not silence the condition for a day.
-  if (alerted) await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+  if (alerted) {
+    await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    // Which status was paged, and when, so the healthy side knows a follow-up is owed (#2057).
+    if (reminderOf === null) await kv.put(alertedStatusKey(job.id), JSON.stringify({ status, at: new Date(nowMs).toISOString() }))
+  }
   return { jobId: job.id, status, alerted, ageMs: verdict.ageMs }
 }
 

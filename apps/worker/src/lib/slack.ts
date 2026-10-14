@@ -1680,7 +1680,7 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here.`,
+          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, one the platform simply cancelled was inside every limit and needs no change to anything here, and if its outcome is ok the run finished after this check looked, so nothing needs changing at all.`,
         },
       },
       lastLine('Seen because the run stamped its start and no completion inside its allowance; why it stopped is not visible from here.'),
@@ -2636,6 +2636,35 @@ export async function sendGroupedRecoveryAlert(
   ]
   const fallback = `Recovered: ${payload.items.map((i) => i.subject).join(', ')}`
   return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
+}
+
+/**
+ * The follow-up for a scheduled job the heartbeat check paged as "started and
+ * never finished" once a run of it has finished (#2057). On 2026-10-14 the run
+ * had only finished late, and the page was left standing as an accusation. One
+ * line, through the shared recovery sentence. Returns whether it reached Slack,
+ * so the caller stands the incident down only on a real delivery.
+ */
+export async function sendCronHeartbeatRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { label: string; status: 'vanished'; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      signal: 'scheduled job',
+      subject: recovery.label,
+      recoveredPhrase: 'has finished a run, so the run reported as never finished most likely finished late',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+    },
+    now,
+  )
 }
 
 /**
