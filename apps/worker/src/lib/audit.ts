@@ -34,6 +34,8 @@ export type AuditEntityType =
   | 'recovery_secret'
   // A stranded lead recovery run by hand (#380), entity id the function's name.
   | 'strand_recovery'
+  // A failed post-answer Salesforce write held for replay (#471), entity id its row.
+  | 'held_salesforce_write'
   // One archived execution read back out of Snowflake (#874). Every archived
   // read is audited, because the archive holds full fidelity PII for thirteen
   // months and a read of it is the access that has to be accountable.
@@ -53,6 +55,11 @@ export type AuditAction =
   | 'subject_erased'
   | 'secrets_reencrypted'
   | 'strand_recovery_run'
+  // #471. A preview decrypts the held write and reads Salesforce, so it is
+  // audited too, under its own action so it never reads as a send.
+  | 'held_write_replay_previewed'
+  | 'held_write_replayed'
+  | 'held_write_abandoned'
   // Written once, on 2026-09-28; nothing writes it now. Kept so that row reads.
   | 'ssn_pepper_escrow_sealed'
   // A dry run of an erasure. Distinct from subject_erased because nothing was

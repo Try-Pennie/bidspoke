@@ -380,6 +380,24 @@ describe('executeSalesforceNode', () => {
     expect(fetchMock.mock.calls[2][0]).toBe(`${INSTANCE}/services/data/v60.0/query/01g-4000`)
   })
 
+  // A failed follow-up page is judged by the one transient rule the main call and
+  // the replay tool share (#471): a server error may be retried, a rejection not.
+  it('query: classes a failed follow-up page by the shared transient rule', async () => {
+    for (const [status, permanent] of [[503, undefined], [400, true]] as const) {
+      const env = makeEnv()
+      vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+      fetchMock
+        .mockResolvedValueOnce(mockResponse(200, JSON.stringify({
+          totalSize: 2, done: false, nextRecordsUrl: '/services/data/v60.0/query/01g-2000', records: [{ Id: 'SF-1' }],
+        })))
+        .mockResolvedValueOnce(mockResponse(status, '[{"errorCode":"X"}]'))
+      const err = await executeSalesforceNode(makeNode({ operation: 'query', soql: 'SELECT Id FROM Prospect__c' }), makeCtx(), env)
+        .then(() => null, (e: Error & { permanent?: boolean }) => e)
+      expect(err?.message, String(status)).toMatch(/while paging a query/)
+      expect(err?.permanent, String(status)).toBe(permanent)
+    }
+  })
+
   it('query: does not fetch again when the first page is already done', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
