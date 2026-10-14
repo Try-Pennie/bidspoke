@@ -46,9 +46,13 @@ fi
 # non superuser may do only over a connection that really used a password, and
 # the loopback is trust, so it must come in through this address instead.
 SELF_HOST="$(docker exec "$CONTAINER" hostname -i 2>/dev/null | awk '{print $1}')"
-if [ -z "$SELF_HOST" ]; then
-  echo "SQL SUITE DID NOT RUN: could not read the address of container $CONTAINER (docker exec hostname -i returned nothing), which alert_incidents.test.sql needs to open a second session." >&2
-  exit 2
+# Only a test that needs it is affected when it cannot be read: the variable is
+# left undefined, and such a test refuses by name rather than every test failing.
+SELF_HOST_ARG=()
+if [ -n "$SELF_HOST" ]; then
+  SELF_HOST_ARG=(-v "self_host=$SELF_HOST")
+else
+  echo "WARN  could not read the address of container $CONTAINER; a test needing a second session will refuse" >&2
 fi
 
 status=0
@@ -61,7 +65,7 @@ for t in "${tests[@]}"; do
     echo "SKIP  $name (hand run, see its header)"
     continue
   fi
-  if out="$(docker exec -i "$CONTAINER" psql -U postgres -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 -v "self_host=$SELF_HOST" -q -f - < "$t" 2>&1)"; then
+  if out="$(docker exec -i "$CONTAINER" psql -U postgres -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 ${SELF_HOST_ARG[@]+"${SELF_HOST_ARG[@]}"} -q -f - < "$t" 2>&1)"; then
     summary="$(printf '%s\n' "$out" | grep -E 'cases passed' | tail -1 | sed -E 's/^psql:<stdin>:[0-9]+: NOTICE:  //; s/^NOTICE:  //')"
     echo "PASS  $name${summary:+: $summary}"
   else

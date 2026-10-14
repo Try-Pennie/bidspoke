@@ -52,6 +52,9 @@ BEGIN
 END
 $do$;
 
+-- Created here only when absent, and dropped at the end only if this file created
+-- it, so a database that already had dblink keeps it.
+SELECT NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') AS ai_created_dblink \gset
 CREATE EXTENSION IF NOT EXISTS dblink;
 
 -- run.sh hands over the container's own address (self_host): dblink lets a non
@@ -90,7 +93,9 @@ BEGIN
 END
 $do$;
 
+\if :ai_created_dblink
 DROP EXTENSION IF EXISTS dblink;
+\endif
 
 -- ── B. Pages ─────────────────────────────────────────────────────────────────
 DO $do$
@@ -174,6 +179,19 @@ BEGIN
   IF (SELECT count(*) FROM public.alert_incidents WHERE subject = 'ai-test-move') <> 1 THEN RAISE EXCEPTION 'late events under the old start made a second row'; END IF;
   IF (SELECT pages_sent FROM public.alert_incidents WHERE id = first) <> 1 OR (SELECT ended_reason FROM public.alert_incidents WHERE id = first) <> 'all_clear' THEN
     RAISE EXCEPTION 'late events under the old start were not applied to the moved row';
+  END IF;
+  -- A move whose new start already has a row (an event carrying it landed first)
+  -- folds the old row into it: one incident, its pages counted once.
+  PERFORM public.record_alert_incident_paged('partner-reachability', 'ai-test-merge', 'host', 'platform', NULL, '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', 'm-1', NULL);
+  PERFORM public.record_alert_incident_paged('partner-reachability', 'ai-test-merge', 'host', 'platform', NULL, '2026-10-14T09:00:00Z', '2026-10-14T10:10:00Z', 'm-2', NULL);
+  PERFORM public.record_alert_incident_opened('partner-reachability', 'ai-test-merge', 'host', 'platform', NULL, '2026-10-14T09:00:00Z', '2026-10-14T10:00:00Z', NULL);
+  IF (SELECT count(*) FROM public.alert_incidents WHERE subject = 'ai-test-merge') <> 1 THEN RAISE EXCEPTION 'a move onto an existing start left two rows for one incident'; END IF;
+  IF (SELECT pages_sent FROM public.alert_incidents WHERE subject = 'ai-test-merge') <> 2 OR (SELECT started_at FROM public.alert_incidents WHERE subject = 'ai-test-merge') <> '2026-10-14T09:00:00Z' THEN
+    RAISE EXCEPTION 'a merged incident lost a page or its start';
+  END IF;
+  IF public.record_alert_incident_paged('partner-reachability', 'ai-test-merge', 'host', 'platform', NULL, '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', 'm-1', NULL) IS NULL
+     OR (SELECT pages_sent FROM public.alert_incidents WHERE subject = 'ai-test-merge') <> 2 THEN
+    RAISE EXCEPTION 'a page already counted under the old start was counted again after the merge';
   END IF;
   INSERT INTO ai_cases VALUES ('a start moved earlier moves the row, never later, and late events still find it');
 END

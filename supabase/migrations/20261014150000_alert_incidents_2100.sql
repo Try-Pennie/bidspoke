@@ -148,18 +148,50 @@ SET search_path TO 'public', 'pg_temp'
 AS $fn$
 DECLARE
   v_id uuid;
+  v_old alert_incidents%ROWTYPE;
 BEGIN
   -- A start moved earlier within one incident (keepAlerted given an earlier first
   -- sighting) moves the row, with least(), rather than opening a second incident.
-  -- Skipped when a row already holds the new start, which then simply stands.
-  IF p_previous_started_at IS NOT NULL THEN
+  -- A "move" to a later start never moves anything (least() keeps the earlier):
+  -- it belongs to the row at the previous start.
+  IF p_previous_started_at IS NOT NULL AND p_started_at >= p_previous_started_at THEN
+    SELECT id INTO v_id FROM alert_incidents WHERE signal = p_signal AND subject = p_subject AND started_at = p_previous_started_at;
+    IF v_id IS NOT NULL THEN
+      RETURN v_id;
+    END IF;
+  END IF;
+  IF p_previous_started_at IS NOT NULL AND p_started_at < p_previous_started_at THEN
+    -- When a row already holds the new start (an event carrying it was drained
+    -- first), the two rows are one incident: fold the old row into it, counting
+    -- each page once, keeping an end either one recorded, and remembering the
+    -- old start, then remove the old row.
+    SELECT * INTO v_old FROM alert_incidents
+    WHERE signal = p_signal AND subject = p_subject AND started_at = p_previous_started_at
+    FOR UPDATE;
+    IF FOUND AND EXISTS (SELECT 1 FROM alert_incidents WHERE signal = p_signal AND subject = p_subject AND started_at = p_started_at) THEN
+      UPDATE alert_incidents t
+      SET paged_event_ids = (SELECT coalesce(array_agg(DISTINCT e), '{}') FROM unnest(t.paged_event_ids || v_old.paged_event_ids) AS e),
+          pages_sent = t.pages_sent + v_old.pages_sent
+                       - (SELECT count(*) FROM unnest(v_old.paged_event_ids) AS e WHERE e = ANY (t.paged_event_ids))::integer,
+          previous_starts = t.previous_starts || v_old.started_at || v_old.previous_starts,
+          last_seen_at = greatest(t.last_seen_at, v_old.last_seen_at),
+          ended_at = CASE WHEN t.ended_reason IS NULL OR t.ended_reason = 'lapsed' THEN coalesce(v_old.ended_at, t.ended_at) ELSE t.ended_at END,
+          successor_signal = CASE WHEN t.ended_reason IS NULL OR t.ended_reason = 'lapsed' THEN coalesce(v_old.successor_signal, t.successor_signal) ELSE t.successor_signal END,
+          closed_at = CASE WHEN t.ended_reason IS NULL OR t.ended_reason = 'lapsed' THEN coalesce(v_old.closed_at, t.closed_at) ELSE t.closed_at END,
+          ended_reason = CASE WHEN t.ended_reason IS NULL OR t.ended_reason = 'lapsed' THEN coalesce(v_old.ended_reason, t.ended_reason) ELSE t.ended_reason END,
+          subject_label = coalesce(p_subject_label, t.subject_label),
+          updated_at = now()
+      WHERE t.signal = p_signal AND t.subject = p_subject AND t.started_at = p_started_at
+      RETURNING t.id INTO v_id;
+      DELETE FROM alert_incidents WHERE id = v_old.id;
+      RETURN v_id;
+    END IF;
     UPDATE alert_incidents
     SET started_at = least(started_at, p_started_at),
         previous_starts = CASE WHEN p_started_at < started_at THEN previous_starts || started_at ELSE previous_starts END,
         subject_label = coalesce(p_subject_label, subject_label),
         updated_at = now()
     WHERE signal = p_signal AND subject = p_subject AND started_at = p_previous_started_at
-      AND NOT EXISTS (SELECT 1 FROM alert_incidents WHERE signal = p_signal AND subject = p_subject AND started_at = p_started_at)
     RETURNING id INTO v_id;
     IF v_id IS NOT NULL THEN
       RETURN v_id;
