@@ -93,7 +93,7 @@ const profileUrlFor = (state: unknown) => pickClickRoute(clickDeliveryFromDocume
 function fakeSoql(soql: string): Rec[] {
   const direct = soql.match(/FROM Prospect__c WHERE Id = '([A-Za-z0-9]+)'$/)
   if (direct) return org.prospect && org.prospect.Id === direct[1] ? [org.prospect] : []
-  const sub = soql.match(/^SELECT .*Prospect__r\.ExternalExchangeStatus__c FROM Submission__c WHERE Id = '([A-Za-z0-9]+)'$/)
+  const sub = soql.match(/^SELECT .*Prospect__r\.ExternalExchangeStatus__c\b.* FROM Submission__c WHERE Id = '([A-Za-z0-9]+)'$/)
   if (sub) {
     if (sub[1] !== SUBMISSION_ID || !org.submission) return []
     // Salesforce answers Prospect__r only when the linked prospect is readable.
@@ -268,7 +268,8 @@ describe('the offer check', () => {
 describe('a Liberty1 offer that is still open', () => {
   it("posts Brian's body to his route through the profile, keyed by the prospect, for the Liberty1 partner the canvas picked", async () => {
     await click({ Prospect__c: PROSPECT_ID })
-    const body = buildPayload(RECORD)
+    // His body plus the prospect's Engine Debt, which his flow never sent (#2110).
+    const body = { ...buildPayload(RECORD), debtAmount: RECORD.EngineDebt__c }
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(PROSPECT_ID)
     expect(clickInputs[0].state).toBe(body.state)
@@ -355,7 +356,8 @@ describe('a Submission with no Prospect (trusted, Dan 2026-09-29)', () => {
 
   it("is sent with no offer check: Brian's submission body to his route, keyed on the submission", async () => {
     await click({ Submission__c: SUBMISSION_ID })
-    const body = buildPayload(submissionAsProspect({ ...SUBMISSION_ROW, Lead__c: LEAD_ID, Prospect__c: null }))
+    // His body plus the Submission's own Engine Debt, which his flow never sent (#2110).
+    const body = { ...buildPayload(submissionAsProspect({ ...SUBMISSION_ROW, Lead__c: LEAD_ID, Prospect__c: null })), debtAmount: SUBMISSION_ROW.EngineDebt__c }
     expect(clickInputs).toHaveLength(1)
     expect(clickInputs[0].prospect_id).toBe(SUBMISSION_ID)
     expect(profileUrlFor(clickInputs[0].state)).toBe(CANVAS_ROUTES[pickRoute(body.state)])

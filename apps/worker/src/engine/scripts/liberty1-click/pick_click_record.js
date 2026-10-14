@@ -22,7 +22,7 @@
 const OFFER_CODE = "4";
 
 // Map a Submission onto the Prospect field names so buildPayload() handles both
-// (Brian's submissionAsProspect, verbatim).
+// (Brian's submissionAsProspect, verbatim but for EngineDebt__c, ours, #2110).
 function submissionAsProspect(s) {
   const lead = s.Lead__r || {};
   return {
@@ -51,6 +51,7 @@ function submissionAsProspect(s) {
     FCRAConsentFlag__c: s.ConsentFCRA__c,
     TCPAConsentFlag__c: s.Consent__c,
     User_IP__c: s.User_IP__c,
+    EngineDebt__c: s.EngineDebt__c,
   };
 }
 

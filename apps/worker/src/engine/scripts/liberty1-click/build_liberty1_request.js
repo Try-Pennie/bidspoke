@@ -1,5 +1,5 @@
 // The Liberty1 request for one click (#1545): Brian's buildPayload, unchanged
-// but for consentsToTcpa (see below), over the record pick_record chose (a
+// but for consentsToTcpa and debtAmount (see below), over the record pick_record chose (a
 // prospect, or a submission mapped onto prospect field names). Pure:
 // buyer_click_send posts it, this only builds it.
 //
@@ -56,6 +56,10 @@ function buildPayload(p) {
     // own TCPA disclosure, so the press is the consent (Dan, 2026-09-29).
     consentsToTcpa: true,
     ipAddress: clean(p.User_IP__c),
+    // Not in his flow: Liberty1 asked for the debt amount to route the client to
+    // the right agents (#2110). Engine Debt, the figure the buyer profile's debt
+    // minimum judged (Dan, 2026-10-14); null when the record has none, never 0.
+    debtAmount: num(p.EngineDebt__c),
   };
 }
 

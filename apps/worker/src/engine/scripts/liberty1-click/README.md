@@ -8,7 +8,7 @@ A file here is exactly what is pasted into the node's script box, byte for byte,
 | --- | --- | --- |
 | `resolve_click_input.js` | `resolve_input` | Queries the prospect from `Prospect__c`, else the submission from `Submission__c` with its Lead and its prospect's fields through `Prospect__r`. Refuses anything that is not a 15 or 18 character id, because the id goes into SOQL. |
 | `pick_click_record.js` | `pick_record` | Which record the click sends and whether it may: a prospect judged on its Liberty1 offer, or a submission with no prospect trusted and mapped with Brian's `submissionAsProspect` (2026-09-29). Names the claim key and the records to write. |
-| `build_liberty1_request.js` | `build_request` | Brian's `buildPayload` over the picked record, `consentsToTcpa` always true, returning the body and the lead's state. Where it goes is not here (#1671): `click_send` picks the route from Liberty1's buyer profile Click delivery by that state. Pure: `click_send` posts it. |
+| `build_liberty1_request.js` | `build_request` | Brian's `buildPayload` over the picked record, `consentsToTcpa` always true, plus `debtAmount` from `EngineDebt__c` (#2110), returning the body and the lead's state. Where it goes is not here (#1671): `click_send` picks the route from Liberty1's buyer profile Click delivery by that state. Pure: `click_send` posts it. |
 | `liberty1_click_patch.js` | `click_patch` | Brian's Prospect, Submission and Lead update bodies. Completed only on `sent`, Fail only on `refused`, nothing on any other route. |
 
 ## Tests
