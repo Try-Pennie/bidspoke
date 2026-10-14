@@ -52,7 +52,7 @@
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
-import { announceRecovery, markAlerted, markSpikeSeen, recoveryKey } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, type IncidentContext } from './alert-recovery'
 import { formatErr } from './format-error'
 import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from './slack'
 
@@ -748,6 +748,9 @@ const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
  */
 const RECOVERY_PREFIX = 'workflow-schedule'
 
+/** A scheduled workflow serves every organization, so its incident is the platform's (#2099). */
+const scheduleIncident = (label: string): IncidentContext => ({ scope: { kind: 'platform' }, subjectLabel: label })
+
 /**
  * The per-workflow states that are a real, nameable fault a workflow can recover
  * FROM. Blindness (`unreadable`) is deliberately excluded: the check cannot tell
@@ -885,6 +888,7 @@ export async function runWorkflowScheduleWatch(
           // a relapse gets through it because this all-clear deletes the start
           // marker the cooldown check consults.
           null,
+          scheduleIncident(wf.label),
           async (alertedAt, endedAt) => {
             let delivered = false
             for (const orgId of orgIds) {
@@ -1007,7 +1011,8 @@ export async function runWorkflowScheduleWatch(
     for (const { workflow, verdict } of problems) {
       if (!INCIDENT_STATUSES.has(verdict.status)) continue
       try {
-        await markAlerted(kv, RECOVERY_PREFIX, workflow.file, nowMs)
+        await markAlerted(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs)
+        await recordPaged(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs)
       } catch (e) {
         console.error(`[workflow-schedule] recovery start marker for ${workflow.file} failed:`, formatErr(e))
       }

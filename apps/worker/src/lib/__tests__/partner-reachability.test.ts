@@ -13,6 +13,7 @@
  * test waits, reaches a network, or depends on the wall clock (L524, L2, L130).
  */
 import { describe, it, expect } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 import {
   classifyProbe,
   probeTargets,
@@ -424,6 +425,49 @@ describe('a host that does not answer', () => {
     await ticksFor(RECOVERY_REARM_MINUTES * MIN + 10 * MIN, healthy())
     await tick(healthy())
     expect(sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
+  })
+})
+
+describe('the incident record (#2099)', () => {
+  const HOST = 'oauth.prd.ffngcp.com'
+  const mine = (store: Parameters<typeof transitions>[0]) => transitions(store).filter((t) => t.includes(HOST))
+
+  it('records a block as one platform incident: opened, the page that went out, and the all-clear', async () => {
+    const { tick, ticksFor, kv } = makeDeps()
+    const p = { ...healthy(), [HOST]: { kind: 'block' } as Answer }
+    await tick(p)
+    await tick(p)
+    await tick(p)
+    await ticksFor(RECOVERY_REARM_MINUTES * MIN + 10 * MIN, healthy())
+    expect(mine(kv.store)).toEqual([`opened ${HOST}`, `paged ${HOST}`, `ended ${HOST} all_clear`])
+    for (const e of outboxEvents(kv.store).filter((e) => e.subject === HOST)) {
+      // The probe reports as the literal org 'probe'; the record must never read it as an owner.
+      expect(e).toMatchObject({ signal: 'partner-reachability', scope: 'platform', organizationId: null, subjectLabel: HOST })
+    }
+  })
+
+  it('records a host not answering from the moment it is armed, with one page per post', async () => {
+    const { ticksFor, kv, sent } = makeDeps()
+    const p = { ...healthy(), [HOST]: { kind: 'throw', error: 'connect ECONNRESET' } as Answer }
+    await ticksFor(UNREACHABLE_ALERT_AFTER_MS + 60 * MIN, p)
+    expect(sent.filter((s) => s.kind === 'unreachable')).toHaveLength(1)
+    expect(mine(kv.store)).toEqual([`opened ${HOST}`, `paged ${HOST}`])
+  })
+
+  it('in observe mode records the incident but no page, since nothing was posted', async () => {
+    const { tick, ticksFor, kv } = makeDeps({ env: { ACHIEVE_PARTNER_KEY: 'pk', APP_URL: 'https://app.test' } })
+    await tick({ ...healthy(), [HOST]: { kind: 'block' } })
+    await ticksFor(RECOVERY_REARM_MINUTES * MIN + 10 * MIN, healthy())
+    expect(mine(kv.store)).toEqual([`opened ${HOST}`, `ended ${HOST} all_clear`])
+  })
+
+  it('puts a recording KV refused in the run\'s errors, and the alert still goes out', async () => {
+    const { tick, kv, sent } = makeDeps()
+    const put = kv.put
+    kv.put = async (k, v, o) => { if (k.startsWith('incident-outbox:')) throw new Error('KV refused the write'); return put(k, v, o) }
+    const summary = await tick({ ...healthy(), [HOST]: { kind: 'block' } })
+    expect(sent.filter((s) => s.kind === 'block')).toHaveLength(1)
+    expect(summary.errors.some((e) => e.includes('incident record') && e.includes('KV refused'))).toBe(true)
   })
 })
 

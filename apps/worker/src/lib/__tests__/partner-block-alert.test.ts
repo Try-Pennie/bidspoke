@@ -10,6 +10,7 @@
  * the block stands. The KV fake honours expiry against an injected clock, so nothing sleeps.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 import { reportPartnerBlock, PARTNER_BLOCK_CONDITION_TTL_SECONDS, POST_RETRY_HOLD_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN, type PartnerBlockDeps, type PartnerBlockRunContext } from '../partner-block-alert'
 import { recoveryKey, activeKey } from '../alert-recovery'
 import { ALERT_CLAIM_TTL_SECONDS } from '../volume-cliff'
@@ -259,5 +260,39 @@ describe('reportPartnerBlock: arming the all-clear for either observer (#1274)',
     expect(outcome).toBe('posted')
     expect(sent[0].payload.workflowId).toBeUndefined()
     expect(logs.some((l) => l.includes('workflow=- trace=-') && l.includes(`seen_in=${PROBE_SEEN_IN}`))).toBe(true)
+  })
+})
+
+describe('the incident record (#2099)', () => {
+  it('records one opening and one page however many leads see the block, never one per sighting', async () => {
+    const { deps, kv, clock, sent } = makeDeps()
+    for (let i = 0; i < 200; i++) {
+      await reportPartnerBlock(deps, run, sighting)
+      clock.now += 15_000
+    }
+    expect(sent).toHaveLength(1)
+    expect(transitions(kv.store)).toEqual(['opened oauth.prd.ffngcp.com', 'paged oauth.prd.ffngcp.com'])
+  })
+
+  it('records the host as the platform\'s, whatever organization the lead belonged to', async () => {
+    const { deps, kv } = makeDeps()
+    await reportPartnerBlock(deps, { ...run, orgId: '11111111-1111-4111-8111-111111111111' }, sighting)
+    await reportPartnerBlock(deps, { orgId: PROBE_SEEN_IN }, sighting)
+    for (const e of outboxEvents(kv.store)) expect(e).toMatchObject({ scope: 'platform', organizationId: null })
+  })
+
+  it('records no page when the post failed, and nothing at all for a silent run', async () => {
+    const failed = makeDeps({ send: async () => null })
+    await reportPartnerBlock(failed.deps, run, sighting)
+    expect(transitions(failed.kv.store)).toEqual([])
+    const silent = makeDeps({ silent: true })
+    await reportPartnerBlock(silent.deps, run, sighting)
+    expect(transitions(silent.kv.store)).toEqual([])
+  })
+
+  it('records the incident but no page when the probe only observes', async () => {
+    const { deps, kv } = makeDeps({ observing: true })
+    await reportPartnerBlock(deps, run, sighting)
+    expect(transitions(kv.store)).toEqual(['opened oauth.prd.ffngcp.com'])
   })
 })

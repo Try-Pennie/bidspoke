@@ -895,6 +895,7 @@ const scheduledJobs = {
             if (c.serving !== 'quiet' || c.stale > 0 || c.sweepFailingSince !== null) {
               console.log(`[stored-copy-checks] serving=${c.serving} active_minutes=${c.activeMinutes ?? 'unmeasured'} stale=${c.stale} sweep_failing_since=${c.sweepFailingSince ?? '-'}${c.suppressed ? ' suppressed=true' : ''}`)
             }
+            if (c.recordErrors.length) console.error(`[stored-copy-checks] incident record errors=${c.recordErrors.join(' | ')}`)
           })
           .catch((e) => console.error('[stored-copy-checks] failed:', e))
       )

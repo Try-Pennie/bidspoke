@@ -38,7 +38,7 @@
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
 import { sendDatabaseMemoryShortAlert, sendDatabaseMemoryUnreadableAlert, sendGroupedRecoveryAlert } from './slack'
 import { recordMemoryReading, type StoredMemoryReading } from './database-memory-readings'
@@ -386,9 +386,22 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
   const claim = async (key: string): Promise<boolean> => (deps.claims ? deps.claims.claim(key, ALERT_CLAIM_TTL_SECONDS) : true)
   const release = async (key: string): Promise<void> => { if (deps.claims) await deps.claims.release(key) }
 
-  /** Keep the all-clear marker alive only for an incident that was actually posted (L12). */
+  // The database is every organization's, so its incidents are the platform's, and
+  // they are recorded to the KV outbox because the database is what is struggling
+  // (#2099). A recording that fails is reported in this run's errors, never thrown.
+  const incident = (id: string): IncidentContext => ({
+    scope: { kind: 'platform' },
+    subjectLabel: id === FEED_ID ? 'The metrics feed' : 'The database',
+    onRecordError: (message) => summary.errors.push(`incident record: ${message}`),
+  })
+
+  /**
+   * Keep the all-clear marker alive only for an incident that was actually posted (L12),
+   * and record the page once the marker it belongs to stands.
+   */
   const keepIfAlerted = async (id: string, posted: boolean, since: string) => {
-    if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since)
+    if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since, incident(id), nowMs)
+    if (posted) await recordPaged(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs)
   }
 
   const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string) => {
@@ -406,7 +419,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
       summary.errors.push(`the ${signal} all-clear was not delivered`)
       return
     }
-    await settleRecovery(deps.kv, RECOVERY_PREFIX, id, backoffCooldownKey(key))
+    await settleRecovery(deps.kv, RECOVERY_PREFIX, id, backoffCooldownKey(key), { ...incident(id), reason: 'all_clear' }, nowMs)
     await clearCondition(deps.kv, key)
     summary.allClears.push(id)
   }

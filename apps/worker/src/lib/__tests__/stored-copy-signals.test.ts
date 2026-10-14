@@ -9,6 +9,7 @@
  * is injected; nothing sleeps.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   STORED_COPY_SERVING_ALERT_MINUTES,
@@ -349,6 +350,42 @@ describe('while leads are being served from stored copies', () => {
     const r = await runStoredCopyChecks(h.deps())
     expect(r.serving).toBe('unmeasured')
     expect(h.notified.map((n) => n.job).sort()).toEqual([STORED_COPY_STALE_JOB, STORED_COPY_SWEEP_JOB])
+  })
+})
+
+describe('the incident record of leads served from copies (#2099)', () => {
+  it('records the opening, the page and the all-clear in KV, with the database refusing everything', async () => {
+    const h = harness()
+    await rememberSlack(h.kv)
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
+    expect((await runStoredCopyChecks(h.deps())).serving).toBe('posted')
+    h.clock.now += (STORED_COPY_SERVING_WINDOW_MINUTES + 1 + RECOVERY_REARM_MINUTES) * MINUTE
+    expect((await runStoredCopyChecks(h.deps())).serving).toBe('recovered')
+    expect(transitions(h.kv.store)).toEqual(['opened all', 'paged all', 'ended all all_clear'])
+    for (const e of outboxEvents(h.kv.store)) {
+      expect(e).toMatchObject({ signal: 'stored-copy-serving', scope: 'platform', organizationId: null, subjectLabel: 'Stored copy use' })
+    }
+    // The database was asked nothing about the record: it is what is down.
+    expect(h.db.asked.some((q) => q.includes('alert_incidents'))).toBe(false)
+  })
+
+  it('records no page for a post Slack refused', async () => {
+    const h = harness({ postOk: false })
+    await rememberSlack(h.kv)
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
+    await runStoredCopyChecks(h.deps())
+    expect(transitions(h.kv.store).filter((t) => t.startsWith('paged'))).toEqual([])
+  })
+
+  it('returns a recording KV refused, and still posts', async () => {
+    const h = harness()
+    await rememberSlack(h.kv)
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
+    const put = h.kv.put.bind(h.kv)
+    h.kv.put = async (k, v, o) => { if (k.startsWith('incident-outbox:')) throw new Error('KV refused the write'); return put(k, v, o) }
+    const result = await runStoredCopyChecks(h.deps())
+    expect(result.serving).toBe('posted')
+    expect(result.recordErrors.some((e) => e.includes('KV refused'))).toBe(true)
   })
 })
 

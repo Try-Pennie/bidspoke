@@ -36,9 +36,9 @@ import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { clearCondition, backoffCooldownKey, type BackoffKv } from './alert-backoff'
 import { deliverAll, postStanding as postStandingAlert, type SlackTarget, type StandingAlert } from './standing-alert'
-import { keepAlerted, markSpikeSeen, recoveryDue, settleRecovery, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { detectBlockPage, cloudflareErrorCode, type BlockPage } from './html-error-summary'
-import { reportPartnerBlock, partnerBlockKey, PARTNER_BLOCK_CONDITION_TTL_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN } from './partner-block-alert'
+import { reportPartnerBlock, partnerBlockKey, partnerHostIncident, PARTNER_BLOCK_CONDITION_TTL_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN } from './partner-block-alert'
 import { ACHIEVE_HOSTS, achieveIdentityHeaders } from '../engine/nodes/achieve-identity'
 import { BLOCK_CAPTURE_BODY_HEAD_BYTES } from './code-node-deployer'
 import { sendPartnerBlockAlert, sendPartnerUnreachableAlert, sendProbeControlAlert, sendProbeBrokenAlert, sendGroupedRecoveryAlert } from './slack'
@@ -294,6 +294,15 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
 
   const dueForAllClear: Array<{ host: string; alertedAt: string; endedAt: string | null }> = []
 
+  // The incident record (#2099): platform scoped, a failed recording reported in this
+  // run's errors. A page is recorded only when the sender really posts: observe mode
+  // logs what it would have said, and that reached nobody.
+  const onRecordError = (message: string) => { summary.errors.push(`incident record: ${message}`) }
+  const incident = (host: string): IncidentContext => partnerHostIncident(host, onRecordError)
+  const paged = async (host: string, posted: boolean) => {
+    if (posted && mode === 'alert') await recordPaged(deps.kv, RECOVERY_PREFIX, host, incident(host), nowMs)
+  }
+
   for (const { target, reading } of readings) {
     const host = target.host
     const prior = await readState(deps.kv, host)
@@ -344,7 +353,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
               items: [{ subject: host, alertedAt: due.alertedAt, endedAt: due.endedAt }],
             }, nowMs))
             if (delivered) {
-              await settleRecovery(deps.kv, RECOVERY_PREFIX, host, backoffCooldownKey(PROBE_CONTROL_KEY))
+              await settleRecovery(deps.kv, RECOVERY_PREFIX, host, backoffCooldownKey(PROBE_CONTROL_KEY), { ...incident(host), reason: 'all_clear' }, nowMs)
               await clearCondition(deps.kv, PROBE_CONTROL_KEY)
               summary.allClears.push(host)
             } else await release(RECOVERY_CLAIM_KEY)
@@ -354,21 +363,23 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
         // The probe itself cannot fetch: one line about the probe, under the control key.
         await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
         if (heldForMs >= PROBE_BROKEN_AFTER_MS) {
-          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, { problem: 'probe-broken', details: [reading.reason] }, (s, repeat) =>
+          const posted = await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, { problem: 'probe-broken', details: [reading.reason] }, (s, repeat) =>
             senders.probeBroken(s, s.default_channel, { reason: reading.reason, since: state.since, repeat, at: nowMs }))
-            .then((posted) => { if (posted) summary.alerts.push(`probe-broken:${host}`) })
-          await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
+          if (posted) summary.alerts.push(`probe-broken:${host}`)
+          await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
+          await paged(host, posted)
         }
       } else {
         await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
         if (heldForMs >= CONTROL_ALERT_AFTER_MS) {
           const control = { problem: 'control-failing' as const, details: [String(state.controlPassedAt !== undefined), String(reading.status), reading.bodyHead] }
-          await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, control, (s, repeat) =>
+          const posted = await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, control, (s, repeat) =>
             senders.control(s, s.default_channel, {
               host, everPassed: state.controlPassedAt !== undefined, status: reading.status, bodyHead: reading.bodyHead, since: state.since, repeat, at: nowMs,
             }))
-            .then((posted) => { if (posted) summary.alerts.push(`control:${host}`) })
-          await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
+          if (posted) summary.alerts.push(`control:${host}`)
+          await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
+          await paged(host, posted)
         }
       }
     } else if (reading.state === 'blocked') {
@@ -377,19 +388,21 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       const block = reading.block!
       const full = { host, status: block.status, vendor: block.vendor, bodyRayId: block.bodyRayId, edgeRayId: block.edgeRayId, markers: block.markers, seenIn: PROBE_SEEN_IN, ...(target.siblings.length ? { siblingHosts: target.siblings } : {}) }
       const outcome = await reportPartnerBlock(
-        { kv: deps.kv, claims: deps.claims, resolveSlack: () => Promise.resolve(targetsSlack), send: senders.block, now: deps.now, log: deps.log, silent: false, appUrl: deps.env.APP_URL ?? '' },
+        { kv: deps.kv, claims: deps.claims, resolveSlack: () => Promise.resolve(targetsSlack), send: senders.block, now: deps.now, log: deps.log, silent: false, appUrl: deps.env.APP_URL ?? '', observing: mode !== 'alert', onRecordError },
         { orgId: PROBE_SEEN_IN },
         full,
       )
-      await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
+      // The reporter records its own page, at its own delivery site.
+      await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
       if (outcome === 'posted') summary.alerts.push(`block:${host}`)
     } else if (reading.state === 'unreachable') {
       await markSpikeSeen(deps.kv, RECOVERY_PREFIX, host, nowMs)
       if (heldForMs >= UNREACHABLE_ALERT_AFTER_MS) {
-        await postStanding(deps, unreachableKey(host), claim, release, targetsSlack, nowMs, { problem: 'unreachable', details: [reading.reason] }, (s, repeat) =>
+        const posted = await postStanding(deps, unreachableKey(host), claim, release, targetsSlack, nowMs, { problem: 'unreachable', details: [reading.reason] }, (s, repeat) =>
           senders.unreachable(s, s.default_channel, { host, reason: reading.reason, since: state.since, repeat, at: nowMs }))
-          .then((posted) => { if (posted) summary.alerts.push(`unreachable:${host}`) })
-        await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since)
+        if (posted) summary.alerts.push(`unreachable:${host}`)
+        await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
+        await paged(host, posted)
       }
     } else {
       const due = await recoveryDue(deps.kv, RECOVERY_PREFIX, host, { now: nowMs })
@@ -415,7 +428,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       }, nowMs))
       if (delivered) {
         for (const d of dueForAllClear) {
-          await settleRecovery(deps.kv, RECOVERY_PREFIX, d.host, backoffCooldownKey(partnerBlockKey(d.host)))
+          await settleRecovery(deps.kv, RECOVERY_PREFIX, d.host, backoffCooldownKey(partnerBlockKey(d.host)), { ...incident(d.host), reason: 'all_clear' }, nowMs)
           await clearCondition(deps.kv, partnerBlockKey(d.host))
           await clearCondition(deps.kv, unreachableKey(d.host))
           summary.allClears.push(d.host)

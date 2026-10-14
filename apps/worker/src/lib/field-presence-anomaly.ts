@@ -10,7 +10,8 @@ import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
 import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
-import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, keepAlerted, recoveryKey, type RecoveryDue, type RecoveryKv } from './alert-recovery'
+import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
+import type { IncidentEndReason, IncidentSignal } from './incident-signals'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
 
@@ -1249,7 +1250,7 @@ function fieldKey(workflowId: string, fieldPath: string): string {
 
 interface TierConfig {
   /** KV/recovery prefix, so the two tiers never share an incident marker (L53). */
-  prefix: string
+  prefix: IncidentSignal
   signal: string
   /**
    * The window this tier judges, in minutes, so its all-clear reports what was
@@ -1265,6 +1266,12 @@ interface TierConfig {
    * omits it keeps the default.
    */
   recoveredPhrase?: string
+  /**
+   * Why this pass's all-clear ends an incident, for the incident record (#2099).
+   * all_clear unless the field was stood down because it is empty by design, or
+   * handed over to the wrong path signal, which then names it.
+   */
+  endReason?: { reason: Exclude<IncidentEndReason, 'lapsed'>; successor?: IncidentSignal }
   /** Sends ONE message covering every field in a channel's group (#1120). */
   send: (
     slack: { bot_token: string },
@@ -1295,6 +1302,11 @@ interface Pageable {
 
 /** What `getSlackConnection` yields, kept local so the group map can be typed. */
 type SlackConnection = { bot_token: string; default_channel: string; volume_alerts_enabled: boolean }
+
+/** A field's incident belongs to its workflow's organization, named the way its all-clear names it (#2099). */
+function fieldIncident(item: Pageable): IncidentContext {
+  return { scope: { kind: 'org', organizationId: item.wf.organization_id }, subjectLabel: `${item.wf.name} ${item.state.field_path}` }
+}
 
 async function alertOnStates(
   supabase: SupabaseClient,
@@ -1337,8 +1349,7 @@ async function alertOnStates(
       // that could not tell, or two quiet days expire its marker and the all-clear
       // is lost, leaving the page as the last word. Its start is kept as it was.
       // After the filters above, so a silenced or unread field's incident lapses.
-      const open = await kv.get(recoveryKey(cfg.prefix, id))
-      if (open) await keepAlerted(kv, cfg.prefix, id, open)
+      await refreshAlerted(kv, cfg.prefix, id)
       continue
     }
     const wf = byId.get(state.workflow_id)
@@ -1398,7 +1409,8 @@ async function alertOnStates(
     if (!sent) continue
     for (const item of group.items) {
       await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, cfg.prefix, item.id)
+      await markAlerted(kv, cfg.prefix, item.id, fieldIncident(item))
+      await recordPaged(kv, cfg.prefix, item.id, fieldIncident(item))
       paged++
     }
   }
@@ -1423,7 +1435,7 @@ async function alertOnStates(
     })
     if (!sent) continue
     for (const item of group.items) {
-      await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey)
+      await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey, { ...fieldIncident(item), ...(cfg.endReason ?? { reason: 'all_clear' }) })
       recovered++
     }
   }
@@ -1514,7 +1526,7 @@ export async function runFieldPresenceDeadCheck(
       would_page: silent.filter(isVisible).map((s) => s.silent),
     }),
   )
-  const deadCfg = {
+  const deadCfg: TierConfig = {
     prefix: 'field-presence-dead',
     signal: DEAD_SIGNAL,
     recoveredPhrase: DEAD_RECOVERED_PHRASE,
@@ -1524,8 +1536,12 @@ export async function runFieldPresenceDeadCheck(
   const d = await alertOnStates(supabase, kv, appUrl, workflows, dead, silenced, deadCfg)
   // Same prefix as the dead rule, so an incident it opened on a field now known to
   // be empty by design is the one stood down; the states here are only ever healthy.
-  const b = await alertOnStates(supabase, kv, appUrl, workflows, byDesign, silenced, { ...deadCfg, recoveredPhrase: BY_DESIGN_PHRASE })
-  const h = await alertOnStates(supabase, kv, appUrl, workflows, handedOver, silenced, { ...deadCfg, recoveredPhrase: HANDED_TO_WRONG_PATH_PHRASE })
+  const b = await alertOnStates(supabase, kv, appUrl, workflows, byDesign, silenced, {
+    ...deadCfg, recoveredPhrase: BY_DESIGN_PHRASE, endReason: { reason: 'stood_down_by_design' },
+  })
+  const h = await alertOnStates(supabase, kv, appUrl, workflows, handedOver, silenced, {
+    ...deadCfg, recoveredPhrase: HANDED_TO_WRONG_PATH_PHRASE, endReason: { reason: 'handed_over', successor: 'field-presence-wrong-path' },
+  })
   const w = await alertOnStates(supabase, kv, appUrl, workflows, wrongPath, silenced, {
     prefix: 'field-presence-wrong-path',
     signal: WRONG_PATH_SIGNAL,

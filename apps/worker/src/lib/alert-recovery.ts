@@ -14,7 +14,21 @@
  * because the cooldown is 30 minutes: anything longer expires it, and the
  * recovery would then arrive with nothing to say it had ever been broken. So the
  * marker gets its own key and a TTL long enough to outlive a real outage.
+ *
+ * THE INCIDENT RECORD (#2099). The marker's transitions are also the incident's:
+ * it appears (opened), a page about it reaches Slack (paged, recorded by the
+ * caller at each delivery site with recordPaged), and it is settled (ended). Each
+ * is written to the KV outbox (incident-outbox.ts) on the transition only, never
+ * per sighting, and never in the way of a page or an all-clear: a recorder fault
+ * is reported and the alert carries on. Every function here takes the signal as
+ * `IncidentSignal`, so a check arming a prefix the registry does not name fails
+ * to compile.
  */
+import type { IncidentSignal } from './incident-signals'
+import { reportRecordError, writeIncidentEvent, type IncidentContext, type IncidentEnd } from './incident-outbox'
+import { formatErr } from './format-error'
+
+export type { IncidentContext, IncidentEnd } from './incident-outbox'
 
 /** KV surface these checks share. Canonical here so the three copies converge. */
 export interface RecoveryKv {
@@ -50,7 +64,7 @@ export const RECOVERY_TTL_SECONDS = 48 * 60 * 60
 export const RECOVERY_REARM_MINUTES = 30
 
 /** Key holding the time we first paged for `id`. */
-export function recoveryKey(prefix: string, id: string): string {
+export function recoveryKey(prefix: IncidentSignal, id: string): string {
   return `${prefix}-recovery:${id}`
 }
 
@@ -61,7 +75,7 @@ export function recoveryKey(prefix: string, id: string): string {
  * of the incident and must never move, this one pins its running END and moves
  * on every failing tick (LESSONS L53).
  */
-export function activeKey(prefix: string, id: string): string {
+export function activeKey(prefix: IncidentSignal, id: string): string {
   return `${prefix}-active:${id}`
 }
 
@@ -76,9 +90,11 @@ export function activeKey(prefix: string, id: string): string {
  */
 export async function keepAlerted(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
   alertedAtIso: string,
+  incident: IncidentContext,
+  now: number = Date.now(),
 ): Promise<void> {
   const key = recoveryKey(prefix, id)
   const existing = await kv.get(key)
@@ -86,6 +102,54 @@ export async function keepAlerted(
   const givenMs = Date.parse(alertedAtIso)
   const keep = Number.isFinite(existingMs) && (!Number.isFinite(givenMs) || existingMs <= givenMs) ? existing! : alertedAtIso
   await kv.put(key, keep, { expirationTtl: RECOVERY_TTL_SECONDS })
+  // The transitions only: the marker appearing, or its start moving earlier (a
+  // caller holding an earlier first sighting). A sighting that changes nothing,
+  // which is nearly all of them, records nothing.
+  if (existing === null) {
+    await writeIncidentEvent(kv, { type: 'opened', signal: prefix, subject: id, startedAt: keep }, incident, now)
+  } else if (keep !== existing) {
+    await writeIncidentEvent(kv, { type: 'opened', signal: prefix, subject: id, startedAt: keep, previousStartedAt: existing }, incident, now)
+  }
+}
+
+/**
+ * Keep an OPEN incident's marker alive without moving its start, and never open
+ * one (#1803). For a run that could not judge the condition: unjudged is not
+ * over, but it is not a sighting either, so it can neither start an incident nor
+ * say whose it is.
+ */
+export async function refreshAlerted(kv: RecoveryKv, prefix: IncidentSignal, id: string): Promise<void> {
+  const key = recoveryKey(prefix, id)
+  const existing = await kv.get(key)
+  if (existing !== null) await kv.put(key, existing, { expirationTtl: RECOVERY_TTL_SECONDS })
+}
+
+/**
+ * Record that a page about the open incident reached Slack (#2099). Called by
+ * the check at each DELIVERY site, after its marker is armed, so the record
+ * counts pages where they were sent rather than inferring them from the marker
+ * (three signals arm with keepAlerted on sightings and page separately). Never
+ * throws.
+ */
+export async function recordPaged(
+  kv: RecoveryKv,
+  prefix: IncidentSignal,
+  id: string,
+  incident: IncidentContext,
+  now: number = Date.now(),
+): Promise<void> {
+  let startedAt: string | null
+  try {
+    startedAt = await kv.get(recoveryKey(prefix, id))
+  } catch (e) {
+    reportRecordError(incident, `paged ${prefix} ${id} not recorded: the marker could not be read: ${formatErr(e)}`)
+    return
+  }
+  if (startedAt === null) {
+    reportRecordError(incident, `paged ${prefix} ${id} not recorded: no open incident to page about`)
+    return
+  }
+  await writeIncidentEvent(kv, { type: 'paged', signal: prefix, subject: id, startedAt }, incident, now)
 }
 
 /**
@@ -100,13 +164,17 @@ export async function keepAlerted(
  */
 export async function markAlerted(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
+  incident: IncidentContext,
   now: number = Date.now(),
 ): Promise<void> {
   const key = recoveryKey(prefix, id)
   const existing = await kv.get(key)
-  await kv.put(key, existing ?? new Date(now).toISOString(), { expirationTtl: RECOVERY_TTL_SECONDS })
+  const startedAt = existing ?? new Date(now).toISOString()
+  await kv.put(key, startedAt, { expirationTtl: RECOVERY_TTL_SECONDS })
+  // Opened only on the transition; a repeat page continues the same incident.
+  if (existing === null) await writeIncidentEvent(kv, { type: 'opened', signal: prefix, subject: id, startedAt }, incident, now)
 }
 
 /**
@@ -119,7 +187,7 @@ export async function markAlerted(
  */
 export async function markSpikeSeen(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
   now: number = Date.now(),
 ): Promise<void> {
@@ -146,7 +214,7 @@ export interface RecoveryDue {
  */
 export async function recoveryDue(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
   opts: { now?: number; rearmMinutes?: number } = {},
 ): Promise<RecoveryDue | null> {
@@ -174,13 +242,40 @@ export async function recoveryDue(
  * Close the incident for `id` once its all-clear has DELIVERED: the marker, the
  * running end and the cooldown all go, so the next genuine spike pages at once.
  * The other half of `announceRecovery` (#1267). Never call it on a failed send.
+ *
+ * `end` says why it ended (#2099). The ended event goes to the outbox BEFORE the
+ * markers are deleted, carrying the start and the last sighting, because the
+ * markers are the only other copy of either: deleting first would leave nothing
+ * to record. A recorder fault does not stop the settle, since the all-clear has
+ * already gone out; the record's open row then closes as lapsed.
  */
 export async function settleRecovery(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
   cooldownKey: string | null,
+  end: IncidentEnd,
+  now: number = Date.now(),
 ): Promise<void> {
+  try {
+    const startedAt = await kv.get(recoveryKey(prefix, id))
+    if (startedAt !== null) {
+      const active = await kv.get(activeKey(prefix, id))
+      const lastSeen = active ? Date.parse(active) : NaN
+      await writeIncidentEvent(kv, {
+        type: 'ended',
+        signal: prefix,
+        subject: id,
+        startedAt,
+        // The last sighting, or null when none was recorded: never a guess (L11).
+        endedAt: Number.isFinite(lastSeen) ? new Date(lastSeen).toISOString() : null,
+        reason: end.reason,
+        ...(end.successor ? { successor: end.successor } : {}),
+      }, end, now)
+    }
+  } catch (e) {
+    reportRecordError(end, `ended ${prefix} ${id} not recorded: the markers could not be read: ${formatErr(e)}`)
+  }
   await kv.delete(recoveryKey(prefix, id))
   await kv.delete(activeKey(prefix, id))
   // Null for a check with no per-id cooldown to clear (the schedule watch's is
@@ -207,9 +302,10 @@ export async function settleRecovery(
  */
 export async function announceRecovery(
   kv: RecoveryKv,
-  prefix: string,
+  prefix: IncidentSignal,
   id: string,
   cooldownKey: string | null,
+  incident: IncidentContext,
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
   opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
@@ -246,6 +342,6 @@ export async function announceRecovery(
   }
   if (!delivered) return false
 
-  await settleRecovery(kv, prefix, id, cooldownKey)
+  await settleRecovery(kv, prefix, id, cooldownKey, { ...incident, reason: 'all_clear' }, opts.now)
   return true
 }
