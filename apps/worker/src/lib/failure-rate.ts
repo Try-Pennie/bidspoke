@@ -288,7 +288,7 @@ export async function runFailureRateCheck(
       if (sent) {
         const ttl = cooldownMinutes * 60
         await kv.put(cooldownKey, '1', { expirationTtl: ttl })
-        await markAlerted(kv, 'failure-rate', recoveryId, incident)
+        await markAlerted(kv, 'failure-rate', recoveryId, incident, now)
         await recordPaged(kv, 'failure-rate', recoveryId, incident, now)
       }
     }

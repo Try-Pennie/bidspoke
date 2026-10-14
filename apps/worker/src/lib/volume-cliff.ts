@@ -166,7 +166,10 @@ async function reportDatabaseUnreachable(
   }
   for (const [orgId, conn] of connections) {
     if (!conn.volume_alerts_enabled) continue
-    await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId)
+    // One clock reading per org, so every record this pass writes about the
+    // incident carries the same time and they sort in the order they happened.
+    const nowMs = Date.now()
+    await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId, nowMs)
     const backoff = dbUnreachableBackoffKey(orgId)
     if (await inCooldown(kv, backoff)) continue
     const claimKey = `${DB_UNREACHABLE_PREFIX}:${orgId}`
@@ -177,13 +180,12 @@ async function reportDatabaseUnreachable(
     // The reminder interval grows while the outage stands (#1337); unchanged is
     // false since the error text can move, so a reminder says "same problem,
     // latest details shown" and never falsely claims nothing changed.
-    const nowMs = Date.now()
     const standing = await readCondition(kv, backoff)
     const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
     const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl, repeat })
     if (ts) {
       await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
-      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId))
+      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId), nowMs)
       await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId), nowMs)
     } else if (claims) {
       await claims.release(claimKey)
@@ -459,8 +461,10 @@ export async function runVolumeCliffCheck(
 
     // Stamp the incident's running end on EVERY cliff tick, before the cooldown
     // gate, so the all-clear reports how long the cliff lasted rather than how
-    // long ago we last spoke about it (#814).
-    await markSpikeSeen(kv, 'volume-cliff', wfId)
+    // long ago we last spoke about it (#814). One clock reading per workflow,
+    // so every record about the incident carries the same time.
+    const nowMs = Date.now()
+    await markSpikeSeen(kv, 'volume-cliff', wfId, nowMs)
 
     if (await inCooldown(kv, backoff)) {
       console.log(`[volume-cliff] suppressed by cooldown workflow_id=${wfId}`)
@@ -486,7 +490,6 @@ export async function runVolumeCliffCheck(
     // The reminder interval grows while the cliff stands (#1337); unchanged is
     // false because the recent count moves each tick, so a reminder says "same
     // problem, latest details shown" rather than claiming nothing changed.
-    const nowMs = Date.now()
     const standing = await readCondition(kv, backoff)
     const repeat = describeRepeat(standing, nowMs, false, VOLUME_CLIFF_STEPS) ?? undefined
 
@@ -508,7 +511,7 @@ export async function runVolumeCliffCheck(
       await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
       // Separate marker, longer TTL: a cliff lasting past the cooldown would
       // otherwise leave nothing to say it had ever been broken (#253).
-      await markAlerted(kv, 'volume-cliff', wfId, incident)
+      await markAlerted(kv, 'volume-cliff', wfId, incident, nowMs)
       await recordPaged(kv, 'volume-cliff', wfId, incident, nowMs)
     } else if (claims) {
       // Slack refused: free the claim so the next tick can retry, the same way

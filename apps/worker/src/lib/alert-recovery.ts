@@ -94,7 +94,7 @@ export async function keepAlerted(
   id: string,
   alertedAtIso: string,
   incident: IncidentContext,
-  now: number = Date.now(),
+  now: number,
 ): Promise<void> {
   const key = recoveryKey(prefix, id)
   const existing = await kv.get(key)
@@ -136,7 +136,7 @@ export async function recordPaged(
   prefix: IncidentSignal,
   id: string,
   incident: IncidentContext,
-  now: number = Date.now(),
+  now: number,
 ): Promise<void> {
   let startedAt: string | null
   try {
@@ -167,7 +167,7 @@ export async function markAlerted(
   prefix: IncidentSignal,
   id: string,
   incident: IncidentContext,
-  now: number = Date.now(),
+  now: number,
 ): Promise<void> {
   const key = recoveryKey(prefix, id)
   const existing = await kv.get(key)
@@ -189,7 +189,7 @@ export async function markSpikeSeen(
   kv: RecoveryKv,
   prefix: IncidentSignal,
   id: string,
-  now: number = Date.now(),
+  now: number,
 ): Promise<void> {
   await kv.put(activeKey(prefix, id), new Date(now).toISOString(), {
     expirationTtl: RECOVERY_TTL_SECONDS,

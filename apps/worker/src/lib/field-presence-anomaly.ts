@@ -1318,6 +1318,9 @@ async function alertOnStates(
   cfg: TierConfig,
 ): Promise<{ paged: number; recovered: number; unwatchable: number }> {
   const byId = new Map(workflows.map((w) => [w.id, w]))
+  // One clock reading for the pass, so every record about an incident carries
+  // the same time and they sort in the order they happened.
+  const nowMs = Date.now()
   const watched = watchedNow(workflows)
   // Counted, not only logged per workflow (L77). Falling back to "do not filter"
   // is the safe direction, but it is also indistinguishable from a healthy run,
@@ -1367,7 +1370,7 @@ async function alertOnStates(
     // Stamp the incident's running end on EVERY alerting tick, before the
     // cooldown gate, so the all-clear reports how long the field was empty
     // rather than how long ago we last mentioned it.
-    await markSpikeSeen(kv, cfg.prefix, id)
+    await markSpikeSeen(kv, cfg.prefix, id, nowMs)
     if (await kv.get(cooldownKey)) continue
 
     pageable.push({ wf, state, id, cooldownKey })
@@ -1409,8 +1412,8 @@ async function alertOnStates(
     if (!sent) continue
     for (const item of group.items) {
       await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, cfg.prefix, item.id, fieldIncident(item))
-      await recordPaged(kv, cfg.prefix, item.id, fieldIncident(item))
+      await markAlerted(kv, cfg.prefix, item.id, fieldIncident(item), nowMs)
+      await recordPaged(kv, cfg.prefix, item.id, fieldIncident(item), nowMs)
       paged++
     }
   }
