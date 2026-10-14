@@ -41,7 +41,8 @@ export const ARCHIVE_JOB_NAMES = {
    * run that stopped partway, and `notifyExportFailure` keys its grace marker
    * and backstop cooldown on the job name, so sharing `ingest` let whichever
    * fired first silence the other for eight hours (L53). The remedy also differs:
-   * a missing secret is fixed by setting it, not by reading a stop reason.
+   * it names the missing setting rather than a stop reason, and for a recovery
+   * secret it says to restore the escrowed value, never to make a new one (#835).
    */
   misconfigured: 'execution-archive-misconfigured',
 } as const
@@ -126,11 +127,12 @@ export const ARCHIVE_RECORD_FAILED_REMEDY: TitledRemedy = {
  * The remedy for a failed run, chosen from the stop reason the run already
  * classified (#1042), so a wrong cause never costs a diagnosis (L11, L111).
  */
-export function ingestRemedyFor(stop: RunStop): TitledRemedy {
+export function ingestRemedyFor(stop: RunStop, detail: string): TitledRemedy {
   if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
   if (stop === 'record-failed') return ARCHIVE_RECORD_FAILED_REMEDY
   if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
-  if (stop === 'misconfigured') return ARCHIVE_MISCONFIGURED_REMEDY
+  // Chosen from the setting the run reported missing, never assumed (#835).
+  if (stop === 'misconfigured') return detail === PEPPER_MISSING_DETAIL ? ARCHIVE_PEPPER_MISSING_REMEDY : ARCHIVE_MISCONFIGURED_REMEDY
   // Everything else stopped for a budget reason rather than a fault, so the
   // generic wording is the honest one: it says to read the stop reason.
   return ARCHIVE_INGEST_REMEDY
@@ -140,8 +142,29 @@ export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
   title: 'The hourly backup cannot run: a setting is missing',
   context: 'No hour is being backed up while this stands. It is not writing incomplete records, which is the safe choice.',
   fixHint:
-    'Set the named secret with wrangler secret put <NAME> --name bidspoke-worker. The next hourly run picks it ' +
-    'up and the skipped hours are backed up on later runs.',
+    'Set the setting the line names with wrangler secret put <NAME> --name bidspoke-worker, piping the value in. ' +
+    'The next hourly run picks it up and the skipped hours are backed up on later runs.',
+}
+
+/**
+ * The detail the archive run reports when the pepper is unset. One constant,
+ * used by the run and compared exactly here, so the remedy is chosen from a
+ * value both sides share rather than from wording (L35, #835).
+ */
+export const PEPPER_MISSING_DETAIL = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
+
+// SSN_HASH_PEPPER cannot be re-derived: a NEW value leaves every record already
+// archived unfindable by SSN for an erasure request (#835). So when the run
+// reports it missing, the fix restores the escrowed value and says never to
+// make one.
+export const ARCHIVE_PEPPER_MISSING_REMEDY: TitledRemedy = {
+  title: ARCHIVE_MISCONFIGURED_REMEDY.title,
+  context: ARCHIVE_MISCONFIGURED_REMEDY.context,
+  fixHint:
+    'Restore SSN_HASH_PEPPER from the 1Password item "Bidspoke recovery keys" with wrangler secret put ' +
+    'SSN_HASH_PEPPER --name bidspoke-worker, piping the value in. Never a new value: a new one leaves every ' +
+    'record already backed up unfindable by SSN. The next hourly run picks it up and the skipped hours are ' +
+    'backed up on later runs.',
 }
 
 export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
@@ -211,7 +234,7 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     alerts.push({
       jobName: result.stop === 'misconfigured' ? ARCHIVE_JOB_NAMES.misconfigured : ARCHIVE_JOB_NAMES.ingest,
       errors: [`Stopped because ${STOP_IN_WORDS[result.stop]}: ${result.detail}`],
-      remedy: ingestRemedyFor(result.stop),
+      remedy: ingestRemedyFor(result.stop, result.detail),
     })
   }
 

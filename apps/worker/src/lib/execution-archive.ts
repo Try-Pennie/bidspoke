@@ -18,7 +18,7 @@ import {
   clearedConditionsFor,
   ARCHIVE_JOB_NAMES,
   ARCHIVE_KILLED_REMEDY,
-  ARCHIVE_MISCONFIGURED_REMEDY,
+  PEPPER_MISSING_DETAIL,
 } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
@@ -371,14 +371,15 @@ export async function runExecutionArchive(
   // the hour stays unarchived until the secret is set (#927).
   const pepper = env.SSN_HASH_PEPPER
   if (typeof pepper !== 'string' || pepper.length === 0) {
-    const detail = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
+    const detail = PEPPER_MISSING_DETAIL
     for (const alert of alertsFor({ ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail })) {
       // The refusal wording, not the run-stopped wording, and its own job name
       // (#1259): alertsFor maps the misconfigured stop to execution-archive-
       // misconfigured, so this condition no longer shares a cooldown with a run
-      // that stopped partway. A missing secret is fixed by setting it rather than
-      // by reading a stop reason.
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, ARCHIVE_MISCONFIGURED_REMEDY)
+      // that stopped partway. The remedy is the one alertsFor chose from the
+      // setting reported missing: for the pepper, restore the escrowed value,
+      // never a new one (#835).
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
     }
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
   }
