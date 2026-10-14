@@ -355,7 +355,9 @@ async function alertOnDrain(deps: IncidentDrainDeps, nowMs: number, s: IncidentD
     if ((await readCondition(deps.kv, INCIDENT_DRAIN_ALERT_KEY)) !== null) {
       const delivered = await deliverAll(await deps.resolveSlack(), (slack) => deps.send(slack, {
         title: 'Incident record caught up',
-        errors: ['Every waiting incident event has been written to the record.'],
+        // Only what this run measured: nothing waits. A set aside event was not
+        // written, so the line says where it is rather than claiming it was.
+        errors: ['Nothing is waiting to be written to the record any more. Any event that was set aside stays under incident-outbox-refused: in the IDEMPOTENCY KV for 30 days.'],
       }))
       if (delivered) {
         await clearCondition(deps.kv, INCIDENT_DRAIN_ALERT_KEY)

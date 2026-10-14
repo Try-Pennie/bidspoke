@@ -52,14 +52,10 @@ BEGIN
 END
 $do$;
 
--- Created here only when absent, and dropped at the end only if this file created
--- it, so a database that already had dblink keeps it.
-SELECT NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') AS ai_created_dblink \gset
-CREATE EXTENSION IF NOT EXISTS dblink;
-
 -- run.sh hands over the container's own address (self_host): dblink lets a non
 -- superuser connect only with a password the server actually asked for, and the
 -- loopback is trust. Run by hand, pass it: psql -v self_host=<container ip>.
+-- Checked before anything is created, so a refusal leaves nothing behind.
 \if :{?self_host}
 \else
   \echo 'alert_incidents.test.sql needs -v self_host=<container address>; run it through scripts/sql-suite/run.sh'
@@ -67,12 +63,20 @@ CREATE EXTENSION IF NOT EXISTS dblink;
 \endif
 SELECT set_config('ai_test.self_host', :'self_host', false) AS self_host_set \gset
 
+-- dblink is created inside the block and dropped at its end only if the block
+-- created it. A failure anywhere in the block rolls the whole block back,
+-- the extension with it, so neither a passing nor a failing run leaves dblink in
+-- a database that did not have it, and one that had it keeps it.
 DO $do$
 DECLARE
+  created boolean := NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink');
   conn text := format('host=%s user=postgres password=postgres dbname=postgres', current_setting('ai_test.self_host'));
   call text := $q$SELECT public.record_alert_incident_opened('volume-cliff', 'ai-test-race', 'Main Flow', 'org', '11111111-1111-4111-8111-111111112100', '2026-10-14T10:00:00Z', NULL, 4)::text$q$;
   second text;
 BEGIN
+  IF created THEN
+    CREATE EXTENSION dblink;
+  END IF;
   PERFORM dblink_connect('ai_a', conn);
   PERFORM dblink_connect('ai_b', conn);
   -- The first holds its insert uncommitted while the second arrives, so the second
@@ -89,13 +93,12 @@ BEGIN
   IF (SELECT count(*) FROM public.alert_incidents WHERE subject = 'ai-test-race') <> 1 THEN
     RAISE EXCEPTION 'two racing opens made % rows', (SELECT count(*) FROM public.alert_incidents WHERE subject = 'ai-test-race');
   END IF;
+  IF created THEN
+    DROP EXTENSION dblink;
+  END IF;
   INSERT INTO ai_cases VALUES ('two racing opens make one row');
 END
 $do$;
-
-\if :ai_created_dblink
-DROP EXTENSION IF EXISTS dblink;
-\endif
 
 -- ── B. Pages ─────────────────────────────────────────────────────────────────
 DO $do$
