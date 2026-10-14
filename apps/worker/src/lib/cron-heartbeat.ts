@@ -259,11 +259,11 @@ interface AlertedStatus {
   status: HeartbeatStatus
   /** When it was paged. */
   at: string
-  /** The start stamp the page was about, so a follow-up can tell that run from a later one. */
+  /** The start stamp the page was about, so an all-clear can tell that run from a later one. */
   startedAt: string | null
   /** A completion after this is what shows the job finished again. */
   since: string | null
-  /** Orgs that already have the follow-up, so a retry reaches only the rest. */
+  /** Orgs that already have the all-clear, so a retry reaches only the rest. */
   deliveredTo: string[]
 }
 
@@ -450,7 +450,7 @@ async function checkJob(
     // and an unconditional delete would be two KV WRITES a minute per job for
     // the healthy case, which is almost all of them almost all of the time.
     if (await readCondition(kv, key)) {
-      // A "never finished" page whose job has now finished gets one follow-up
+      // A "never finished" page whose job has now finished gets one all-clear
       // (#2057): on 2026-10-14 the run had only finished late, and the channel
       // was left holding an accusation. Stood down only once it is delivered.
       const reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
@@ -520,7 +520,7 @@ async function checkJob(
   // outage does not silence the condition for a day.
   if (alerted) {
     await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-    // Which status was paged, and when, so the healthy side knows a follow-up is owed (#2057).
+    // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
     if (reminderOf === null) {
       const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
       const record: AlertedStatus = { status, at: new Date(nowMs).toISOString(), startedAt: lastRan, since, deliveredTo: [] }

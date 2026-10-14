@@ -2647,7 +2647,7 @@ export async function sendGroupedRecoveryAlert(
 }
 
 /**
- * The follow-up for a scheduled job the heartbeat check paged as "started and
+ * The all-clear for a scheduled job the heartbeat check paged as "started and
  * never finished" once a run of it has finished (#2057). On 2026-10-14 the run
  * had only finished late, and the page was left standing as an accusation. One
  * line, through the shared recovery sentence. Returns whether it reached Slack,
