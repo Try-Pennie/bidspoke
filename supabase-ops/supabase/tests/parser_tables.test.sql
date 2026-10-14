@@ -21,6 +21,7 @@ DO $$
 DECLARE
   v_table text;
   v_role text;
+  v_priv text;
   v_org uuid;
   v_id bigint;
 BEGIN
@@ -42,9 +43,13 @@ BEGIN
         RAISE EXCEPTION '% holds a privilege on %', v_role, v_table;
       END IF;
     END LOOP;
-    IF NOT has_table_privilege('service_role', v_table, 'SELECT,INSERT,UPDATE,DELETE') THEN
-      RAISE EXCEPTION 'service_role lacks a privilege on %', v_table;
-    END IF;
+    -- One privilege at a time: given a list, has_table_privilege is true when ANY
+    -- of them is held, so a list would pass a service role left with SELECT alone.
+    FOREACH v_priv IN ARRAY ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'] LOOP
+      IF NOT has_table_privilege('service_role', v_table, v_priv) THEN
+        RAISE EXCEPTION 'service_role lacks % on %', v_priv, v_table;
+      END IF;
+    END LOOP;
   END LOOP;
 
   -- The writer's insert: no organization_id, no id.
@@ -63,7 +68,7 @@ BEGIN
   END IF;
   RESET ROLE;
 
-  RAISE NOTICE 'parser_tables: 14 cases passed';
+  RAISE NOTICE 'parser_tables: 20 cases passed';
 END $$;
 
 ROLLBACK;
