@@ -38,6 +38,14 @@ import {
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
 
+/**
+ * Every status a held write can carry: the CHECK on the table, and what each
+ * action writes. The one list both the route's filter and the code read, so a
+ * status added later is added here or nowhere.
+ */
+export const HELD_WRITE_STATUSES = ['pending', 'replayed', 'refused', 'abandoned'] as const
+export type HeldWriteStatus = (typeof HELD_WRITE_STATUSES)[number]
+
 export interface HeldWriteRow {
   id: string
   organization_id: string

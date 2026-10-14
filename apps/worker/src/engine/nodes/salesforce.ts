@@ -755,7 +755,7 @@ async function fetchQueryPage(
     if (isEdgeErrorPage) {
       console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=query_page trace=${opts.traceId}`)
     }
-    if (!(res.status === 429 || res.status >= 500 || isEdgeErrorPage)) err.permanent = true
+    if (!salesforceFailureIsTransient(res.status, text)) err.permanent = true
     throw attachBlockSighting(err, sightingFromResponse(opts.instanceUrl, res.status, text, res.headers, 'salesforce:query_page'))
   }
   try {

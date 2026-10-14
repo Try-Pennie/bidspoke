@@ -42,6 +42,7 @@ import {
   previewReplay,
   replayHeldWrite,
   abandonHeldWrite,
+  HELD_WRITE_STATUSES,
   type ReplayResult,
 } from '../../lib/writeback-replay'
 import { writeAuditLog } from '../../lib/audit'
@@ -936,7 +937,6 @@ admin.post('/reencrypt-secrets', async (c) => {
 // scoped to the caller's organization, and every action is audited with no lead
 // value in the audit row.
 
-const HELD_WRITE_STATUSES = new Set(['pending', 'replayed', 'refused', 'abandoned'])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> = {
@@ -953,8 +953,8 @@ const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> =
 admin.get('/held-writes', async (c) => {
   const { orgId } = c.get('user')
   const status = c.req.query('status')
-  if (status !== undefined && !HELD_WRITE_STATUSES.has(status)) {
-    return c.json({ error: `status must be one of ${[...HELD_WRITE_STATUSES].join(', ')}` }, 400)
+  if (status !== undefined && !(HELD_WRITE_STATUSES as readonly string[]).includes(status)) {
+    return c.json({ error: `status must be one of ${HELD_WRITE_STATUSES.join(', ')}` }, 400)
   }
   try {
     return c.json({ writes: await supabaseHeldWriteStore(createSupabaseClient(c.env)).list(orgId, status) })
