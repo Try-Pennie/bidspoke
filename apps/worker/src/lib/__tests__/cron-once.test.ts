@@ -189,4 +189,25 @@ describe('runCronTickOnce (#1899)', () => {
     expect(retry).toBe('ran')
     expect(retryJobs).toHaveBeenCalledTimes(1)
   })
+  // #1904: the guard's own outcomes are counted so someone can be told.
+  it('reports each skip and each fail-open to onGuardEvent, and nothing for a tick it ran normally', async () => {
+    const { ns } = claimNamespace()
+    const events: string[] = []
+    const onGuardEvent = (kind: string) => { events.push(kind) }
+    const jobs = vi.fn(async () => {})
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 1_000 }, jobs, { now: () => MINUTE + 1_000, holder: () => 'a', onGuardEvent })
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 37_000 }, jobs, { now: () => MINUTE + 37_000, holder: () => 'b', onGuardEvent })
+    await runCronTickOnce(undefined, { cron: '0 9 * * *', scheduledTime: MINUTE }, jobs, { onGuardEvent })
+    expect(events).toEqual(['skipped_duplicate', 'failed_open'])
+  })
+
+  it('still runs the jobs when onGuardEvent throws: counting is bookkeeping, never a reason to skip', async () => {
+    const jobs = vi.fn(async () => {})
+    const outcome = await runCronTickOnce(undefined, { cron: '0 9 * * *', scheduledTime: MINUTE }, jobs, {
+      onGuardEvent: () => { throw new Error('kv gone') },
+    })
+    expect(outcome).toBe('ran')
+    expect(jobs).toHaveBeenCalledTimes(1)
+    expect(errors.join('\n')).toMatch(/could not record failed_open.*kv gone/)
+  })
 })
