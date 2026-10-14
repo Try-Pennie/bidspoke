@@ -12,6 +12,7 @@ vi.mock('../slack', () => ({
 }))
 import { detectSlowSpike, buildSlowDurations, runSlowExecutionCheck, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
 import { getSlackConnection, sendRecoveryAlert } from '../slack'
+import { transitions, withTickingClock } from './_incident-events'
 
 const THRESHOLD = 5000 // 5s
 
@@ -218,6 +219,24 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     vi.clearAllMocks()
     vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  it('records the opening before the page, on a clock that moves between reads (#2099)', async () => {
+    const kv = makeKv()
+    // The incident record refuses an organization id that is not a uuid.
+    const ORG_ID = '55555555-5555-4555-8555-555555555555'
+    const spiking = () =>
+      makeSupabase({
+        service_connections: [{ organization_id: ORG_ID }],
+        workflows: [{ ...wf, organization_id: ORG_ID }],
+        workflow_executions: new Array(MIN_SLOW_COUNT + 3)
+          .fill(0)
+          .map(() => ({ workflow_id: 'wf-1', duration_ms: THRESHOLD * 4, started_at: new Date(Date.now() - 1000).toISOString() })),
+      })
+    // The opening and the page must share the pass's one clock reading, or the
+    // page sorts first.
+    await withTickingClock(() => runSlowExecutionCheck(spiking() as never, kv as never, 'https://app.example.com'))
+    expect(transitions(kv.store)).toEqual(['opened wf-1', 'paged wf-1'])
   })
 
   it('announces the all-clear once the workflow is back under threshold', async () => {

@@ -273,7 +273,7 @@ export async function runSlowExecutionCheck(
     // ok:false) would otherwise suppress retries while the spike kept going.
     if (sent) {
       await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, 'slow-spike', wfId, incident)
+      await markAlerted(kv, 'slow-spike', wfId, incident, now)
       await recordPaged(kv, 'slow-spike', wfId, incident, now)
     }
   }

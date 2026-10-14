@@ -12,6 +12,10 @@ import {
 } from '../alert-recovery'
 import type { IncidentContext } from '../incident-outbox'
 
+// The marker functions take the caller's clock, never a default (one reading per
+// pass keeps an incident's records in the order they happened).
+const NOW_MS = Date.parse('2026-10-14T12:00:00.000Z')
+
 // The incident record's context (#2099), the same for every call here: these tests are
 // about the markers, and incident-outbox.test.ts covers what is recorded.
 const ORG: IncidentContext = { scope: { kind: 'org', organizationId: '11111111-1111-4111-8111-111111111111' }, subjectLabel: 'Main Flow' }
@@ -50,7 +54,7 @@ describe('recoveryKey', () => {
 describe('markAlerted', () => {
   it('records that we owe an all-clear', async () => {
     const kv = fakeKv()
-    await markAlerted(kv, 'volume-cliff', 'wf-1', ORG)
+    await markAlerted(kv, 'volume-cliff', 'wf-1', ORG, NOW_MS)
     expect(kv.store.get('volume-cliff-recovery:wf-1')).toBeTruthy()
   })
 
@@ -442,7 +446,7 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
 
   it('settleRecovery clears the marker, the running end and the cooldown', async () => {
     const kv = seeded()
-    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f', { ...ORG, reason: 'all_clear' })
+    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f', { ...ORG, reason: 'all_clear' }, NOW_MS)
     // Only the incident record's ended event is left (#2099), for the drain to take.
     expect([...kv.store.keys()].map((k) => k.split(':')[0])).toEqual(['incident-outbox'])
   })
@@ -456,8 +460,8 @@ describe('keepAlerted (#1274)', () => {
   it('writes the given start time with the recovery TTL, and again on the next call', async () => {
     const kv = fakeKv()
     const put = vi.spyOn(kv, 'put')
-    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM)
-    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM)
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM, NOW_MS)
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-05T06:00:00.000Z', PLATFORM, NOW_MS)
     expect(kv.store.get(recoveryKey('partner-reachability', 'host'))).toBe('2026-09-05T06:00:00.000Z')
     // The marker is written on both calls; the first also records the incident opening.
     expect(put.mock.calls.filter(([k]) => k === recoveryKey('partner-reachability', 'host'))).toHaveLength(2)
@@ -466,7 +470,7 @@ describe('keepAlerted (#1274)', () => {
 
   it('does not move an existing earlier start forward', async () => {
     const kv = fakeKv({ [recoveryKey('partner-reachability', 'host')]: '2026-09-05T06:00:00.000Z' })
-    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-06T06:00:00.000Z', PLATFORM)
+    await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-06T06:00:00.000Z', PLATFORM, NOW_MS)
     expect(kv.store.get(recoveryKey('partner-reachability', 'host'))).toBe('2026-09-05T06:00:00.000Z')
   })
 })

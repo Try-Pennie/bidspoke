@@ -4,7 +4,7 @@
  * (cooldown, opt-out) once we wire E2E. Pure logic is tested here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { outboxEvents, transitions } from './_incident-events'
+import { outboxEvents, transitions, withTickingClock } from './_incident-events'
 
 vi.mock('../slack', () => ({
   postMessage: vi.fn().mockResolvedValue('ts-1'),
@@ -532,8 +532,12 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
 
   it('records the outage to the KV outbox while every database read fails, and its end once it reads again (#2099)', async () => {
     const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
-    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
-    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    // A clock that moves on every read: the opening and the page must share the
+    // pass's one reading, or the page sorts first.
+    await withTickingClock(async () => {
+      await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+      await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    })
     expect(transitions(kv.store)).toEqual([`opened ${ORG}`, `paged ${ORG}`])
     // Back-date the incident past the re-arm window, then let the database answer.
     const back = new Date(Date.now() - 45 * 60000).toISOString()

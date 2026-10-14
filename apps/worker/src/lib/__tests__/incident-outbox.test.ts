@@ -18,6 +18,10 @@ import {
   type IncidentEvent,
 } from '../incident-outbox'
 
+// The marker functions take the caller's clock, never a default (one reading per
+// pass keeps an incident's records in the order they happened).
+const NOW_MS = Date.parse('2026-10-14T12:00:00.000Z')
+
 /**
  * The incident outbox (#2099). Every transition of an alert's incident (it
  * opened, a page about it reached Slack, it ended) is written to KV as one
@@ -81,20 +85,20 @@ describe('opened: the marker going from absent to present', () => {
 
   it('keepAlerted records once however many sightings follow', async () => {
     const kv = fakeKv()
-    for (let i = 0; i < 100; i++) await keepAlerted(kv, 'partner-reachability', 'api.partner.test', '2026-10-14T10:00:00.000Z', PLATFORM)
+    for (let i = 0; i < 100; i++) await keepAlerted(kv, 'partner-reachability', 'api.partner.test', '2026-10-14T10:00:00.000Z', PLATFORM, NOW_MS)
     expect(events(kv).map((e) => e.type)).toEqual(['opened'])
     expect(events(kv)[0]).toMatchObject({ scope: 'platform', organizationId: null, startedAt: '2026-10-14T10:00:00.000Z' })
   })
 
   it('keepAlerted moving the start earlier records the move, naming the start it replaces', async () => {
     const kv = fakeKv({ [recoveryKey('partner-reachability', 'h')]: '2026-10-14T10:00:00.000Z' })
-    await keepAlerted(kv, 'partner-reachability', 'h', '2026-10-14T09:30:00.000Z', PLATFORM)
+    await keepAlerted(kv, 'partner-reachability', 'h', '2026-10-14T09:30:00.000Z', PLATFORM, NOW_MS)
     const [e] = events(kv)
     expect(e).toMatchObject({ type: 'opened', startedAt: '2026-10-14T09:30:00.000Z', previousStartedAt: '2026-10-14T10:00:00.000Z' })
     // A later start never moves it, so records nothing.
     kv.store.clear()
     kv.store.set(recoveryKey('partner-reachability', 'h'), '2026-10-14T09:30:00.000Z')
-    await keepAlerted(kv, 'partner-reachability', 'h', '2026-10-14T11:00:00.000Z', PLATFORM)
+    await keepAlerted(kv, 'partner-reachability', 'h', '2026-10-14T11:00:00.000Z', PLATFORM, NOW_MS)
     expect(events(kv)).toEqual([])
   })
 
@@ -110,7 +114,7 @@ describe('opened: the marker going from absent to present', () => {
 
   it('markSpikeSeen, called on every failing tick, records nothing', async () => {
     const kv = fakeKv()
-    await markSpikeSeen(kv, 'volume-cliff', 'wf-1')
+    await markSpikeSeen(kv, 'volume-cliff', 'wf-1', NOW_MS)
     expect(events(kv)).toEqual([])
   })
 })
@@ -127,7 +131,7 @@ describe('paged: a page that reached Slack', () => {
   it('reports rather than guesses when no incident is open to page about', async () => {
     const kv = fakeKv()
     const onRecordError = vi.fn()
-    await recordPaged(kv, 'slow-spike', 'wf-1', { ...ORG, onRecordError })
+    await recordPaged(kv, 'slow-spike', 'wf-1', { ...ORG, onRecordError }, NOW_MS)
     expect(events(kv)).toEqual([])
     expect(onRecordError).toHaveBeenCalledWith(expect.stringContaining('no open incident'))
   })
@@ -145,7 +149,7 @@ describe('ended: settleRecovery', () => {
     kv.delete = (k: string) => { order.push(`delete ${k}`); return del(k) }
     kv.put.mockImplementation((k: string, v: string) => { order.push(`put ${k.startsWith(INCIDENT_OUTBOX_PREFIX) ? 'outbox' : k}`); kv.store.set(k, v); return Promise.resolve() })
 
-    await settleRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', { ...ORG, windowMinutes: 15, reason: 'all_clear' })
+    await settleRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', { ...ORG, windowMinutes: 15, reason: 'all_clear' }, NOW_MS)
 
     expect(order[0]).toBe('put outbox')
     const [e] = events(kv)
@@ -161,13 +165,13 @@ describe('ended: settleRecovery', () => {
 
   it('records an unknown end as null rather than inventing one', async () => {
     const kv = fakeKv({ [recoveryKey('pg-cron-watch', 'job')]: '2026-10-14T10:00:00.000Z' })
-    await settleRecovery(kv, 'pg-cron-watch', 'job', null, { scope: { kind: 'platform' }, subjectLabel: 'job', reason: 'all_clear' })
+    await settleRecovery(kv, 'pg-cron-watch', 'job', null, { scope: { kind: 'platform' }, subjectLabel: 'job', reason: 'all_clear' }, NOW_MS)
     expect(events(kv)[0]).toMatchObject({ type: 'ended', endedAt: null })
   })
 
   it('names the signal an incident was handed over to', async () => {
     const kv = fakeKv({ [recoveryKey('field-presence-dead', 'wf-1 f')]: '2026-10-14T10:00:00.000Z' })
-    await settleRecovery(kv, 'field-presence-dead', 'wf-1 f', null, { ...ORG, reason: 'handed_over', successor: 'field-presence-wrong-path' })
+    await settleRecovery(kv, 'field-presence-dead', 'wf-1 f', null, { ...ORG, reason: 'handed_over', successor: 'field-presence-wrong-path' }, NOW_MS)
     expect(events(kv)[0]).toMatchObject({ reason: 'handed_over', successor: 'field-presence-wrong-path' })
   })
 
@@ -175,14 +179,14 @@ describe('ended: settleRecovery', () => {
     const kv = fakeKv({ [recoveryKey('volume-cliff', 'wf-1')]: '2026-10-14T10:00:00.000Z' })
     kv.put.mockRejectedValue(new Error('KV down'))
     const onRecordError = vi.fn()
-    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear', onRecordError })
+    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear', onRecordError }, NOW_MS)
     expect(kv.store.has(recoveryKey('volume-cliff', 'wf-1'))).toBe(false)
     expect(onRecordError).toHaveBeenCalledWith(expect.stringContaining('KV down'))
   })
 
   it('records nothing when there was no incident to end', async () => {
     const kv = fakeKv()
-    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear' })
+    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear' }, NOW_MS)
     expect(events(kv)).toEqual([])
   })
 
@@ -199,8 +203,8 @@ describe('scope', () => {
   it('refuses an org scope on a platform signal and the reverse, recording nothing', async () => {
     const onRecordError = vi.fn()
     const kv = fakeKv()
-    await markAlerted(kv, 'pg-cron-watch', 'job', { ...ORG, onRecordError })
-    await markAlerted(kv, 'volume-cliff', 'wf-1', { ...PLATFORM, onRecordError })
+    await markAlerted(kv, 'pg-cron-watch', 'job', { ...ORG, onRecordError }, NOW_MS)
+    await markAlerted(kv, 'volume-cliff', 'wf-1', { ...PLATFORM, onRecordError }, NOW_MS)
     expect(events(kv)).toEqual([])
     expect(onRecordError).toHaveBeenCalledTimes(2)
     // The markers themselves are untouched by a recorder refusal: the all-clear still works.
@@ -210,7 +214,7 @@ describe('scope', () => {
   it('refuses an organization that is not an id, such as the probe\'s literal "probe"', async () => {
     const onRecordError = vi.fn()
     const kv = fakeKv()
-    await markAlerted(kv, 'volume-cliff', 'wf-1', { scope: { kind: 'org', organizationId: 'probe' }, subjectLabel: null, onRecordError })
+    await markAlerted(kv, 'volume-cliff', 'wf-1', { scope: { kind: 'org', organizationId: 'probe' }, subjectLabel: null, onRecordError }, NOW_MS)
     expect(events(kv)).toEqual([])
     expect(onRecordError).toHaveBeenCalledWith(expect.stringContaining('probe'))
   })
