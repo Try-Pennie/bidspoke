@@ -84,8 +84,8 @@ export interface AuditResult {
   snapshot_rows?: number
 }
 
-/** The audit's steps that touch our own database rather than Salesforce. */
 /**
+ * The audit's steps that touch our own database rather than Salesforce.
  * `baseline_write` is the save that rebuilds an untrustworthy copy, which runs
  * BEFORE anything is reported; `snapshot_write` is the save after a comparison,
  * which runs after its alert. Their alerts say different things (review of #2082).

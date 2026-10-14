@@ -212,9 +212,6 @@ describe('describeHowToCheck', () => {
     expect(advice).not.toMatch(/deploy|change set/i)
   })
 
-  // Judged on the dominant shape only, like every other branch here. A single
-  // Apex rejection among mostly real timeouts must not send the reader hunting
-  // for a deploy that has nothing to do with it.
   // #835: an Apex governor exception ("System.LimitException: Apex CPU time limit
   // exceeded") contains "limit exceeded", so the call pattern rule claimed it
   // first and sent the reader to our call volume for a fault in our own Apex.
@@ -237,6 +234,9 @@ describe('describeHowToCheck', () => {
     expect(advice).toMatch(/step/)
   })
 
+  // Judged on the dominant shape only, like every other branch here. A single
+  // Apex rejection among mostly real timeouts must not send the reader hunting
+  // for a deploy that has nothing to do with it.
   it('does not blame a deploy when the Apex error is the minority shape', () => {
     const { shapes } = topErrorShapes([SF_APEX_500, TIMEOUT, TIMEOUT, TIMEOUT])
     expect(shapes[0].sample).toContain('timed out')
