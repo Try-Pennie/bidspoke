@@ -219,7 +219,8 @@ const KIND_ORDER = (Object.keys(KIND_RANK) as StoredCopyKind[]).sort((a, b) => K
 /** The alert's words, from what the ledger measured and nothing more. */
 export function servingMessage(reading: LedgerReading): TitledMessage & { refusing: boolean } {
   const lines: string[] = [
-    `The database did not answer in time in ${reading.activeMinutes} of the last ${STORED_COPY_SERVING_WINDOW_MINUTES} minutes, so Bidspoke used its stored copies in its place.`,
+    // Any failed read serves a copy, not only a slow one (#835).
+    `A database read failed or timed out in ${reading.activeMinutes} of the last ${STORED_COPY_SERVING_WINDOW_MINUTES} minutes, so Bidspoke used its stored copies in its place.`,
   ]
   let refusing = false
   for (const kind of KIND_ORDER) {
@@ -475,6 +476,32 @@ export async function findStaleCopies(copies: KVNamespace, nowMs: number): Promi
   return { stale, unmeasured }
 }
 
+/**
+ * Where the job that confirms each copy logs why it could not (#835). The fix
+ * used to say "search for prewarm and stored-copy-sweep", but the prewarm
+ * swallows its loaders' errors and each loader logs under its own tag, so that
+ * search found nothing for most copies. `prewarm` marks the copies the per
+ * minute prewarm confirms, whose own failure to list the live workflows logs
+ * under [prewarm].
+ */
+const CONFIRMED_BY: Readonly<Record<StoredCopyKind, { tag: string; prewarm: boolean }>> = {
+  workflow_definition: { tag: 'workflow_definition_copy', prewarm: true },
+  custom_endpoint: { tag: '[stored-copy-sweep]', prewarm: false },
+  partner_config: { tag: '[stored-copy-sweep]', prewarm: false },
+  bid_matrix: { tag: '[stored-copy-sweep]', prewarm: false },
+  env_vars: { tag: '[env-loader]', prewarm: true },
+  partner_constants: { tag: '[partner-constants]', prewarm: true },
+  buyer_profiles: { tag: '[buyer-profiles]', prewarm: true },
+}
+
+/** The stale alert's fix line, naming the log tags of the jobs that confirm the copies listed. */
+export function staleCopyFix(kinds: readonly StoredCopyKind[]): string {
+  const present = KIND_ORDER.filter((k) => kinds.includes(k))
+  const tags = [...new Set(present.map((k) => CONFIRMED_BY[k].tag))]
+  if (present.some((k) => CONFIRMED_BY[k].prewarm)) tags.push('[prewarm]')
+  return `search the worker logs for ${tags.join(', ')}, where the jobs that confirm these copies say why they could not. This clears on the first run that confirms them.`
+}
+
 export function describeStaleCopy(s: StaleCopy): string {
   const what = `The stored copy of ${COPY_LABELS[s.copy]} for ${s.subject}`
   if (s.reason === 'copy_age_unknown' || s.ageMs === null) return `${what} carries no readable confirmation time.`
@@ -490,7 +517,7 @@ async function reportStale(deps: StoredCopyCheckDeps, notify: typeof notifyExpor
   await notify(deps.supabase, STORED_COPY_STALE_JOB, stale.map(describeStaleCopy), deps.kv, {
     title: 'Stored copies have gone stale',
     context: 'If the database fails now, leads that need these copies are refused rather than served.',
-    fixHint: 'the every minute prewarm and the stored copy sweep confirm these copies, so look for their errors in the worker logs (search for prewarm and stored-copy-sweep). This clears on the first run that confirms them.',
+    fixHint: staleCopyFix(stale.map((s) => s.copy)),
   }, nowMs, { keys: stale.map((s) => s.key) })
   return stale.length
 }

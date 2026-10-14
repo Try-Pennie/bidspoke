@@ -215,6 +215,28 @@ describe('describeHowToCheck', () => {
   // Judged on the dominant shape only, like every other branch here. A single
   // Apex rejection among mostly real timeouts must not send the reader hunting
   // for a deploy that has nothing to do with it.
+  // #835: an Apex governor exception ("System.LimitException: Apex CPU time limit
+  // exceeded") contains "limit exceeded", so the call pattern rule claimed it
+  // first and sent the reader to our call volume for a fault in our own Apex.
+  it('reads an Apex LimitException as our own code, not our call pattern', () => {
+    const apexLimit =
+      'Salesforce API error (500): [{"message":"LeadTriggerHandler: System.LimitException: Apex CPU time limit exceeded","errorCode":"APEX_ERROR"}]'
+    const { shapes } = topErrorShapes([apexLimit, apexLimit])
+    const advice = describeHowToCheck('Salesforce', shapes)
+    expect(advice).toMatch(/deploy/i)
+    expect(advice).not.toMatch(/concurrent/i)
+  })
+
+  // #835: "Upstream timeout" is not a vendor with a status page, so "confirm
+  // Upstream timeout health" sent the reader nowhere.
+  it('sends a timeout to the step that timed out in the named workflows', () => {
+    const { shapes } = topErrorShapes([TIMEOUT, TIMEOUT])
+    const advice = describeHowToCheck('Upstream timeout', shapes, { causeKey: 'timeout', workflowNames: ['Main Flow'] })
+    expect(advice).not.toMatch(/Upstream timeout health|status page/i)
+    expect(advice).toContain('Main Flow')
+    expect(advice).toMatch(/step/)
+  })
+
   it('does not blame a deploy when the Apex error is the minority shape', () => {
     const { shapes } = topErrorShapes([SF_APEX_500, TIMEOUT, TIMEOUT, TIMEOUT])
     expect(shapes[0].sample).toContain('timed out')

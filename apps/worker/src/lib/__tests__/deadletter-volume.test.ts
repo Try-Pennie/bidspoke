@@ -61,7 +61,7 @@ describe('recordDeadLetterVolume (#355)', () => {
     await recordDeadLetterVolume(kv, 'lead_sightings.insert', NOW)
     await recordDeadLetterVolume(kv, 'execution_finalize', NOW)
     const raw = kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)
-    expect(JSON.parse(raw!)).toEqual({ total: 2, unrecoverable: 1 })
+    expect(JSON.parse(raw!)).toEqual({ total: 2, unrecoverable: 1, labels: { 'lead_sightings.insert': 1, execution_finalize: 1 } })
   })
 
   it('keeps separate tallies per day and gives them a finite, multi-day life', async () => {
@@ -138,6 +138,24 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     expect(text).toMatch(/durable outcome store|build-now|build the/i)
   })
 
+  // #835: the fix line told the reader to move finalizeSighting out of waitUntil
+  // "or the 09:00 export", whatever had been counted. The tally counts every
+  // confirmed loss (the finalize kinds the drains rebuild, the Salesforce
+  // writeback), and the sightings export runs every two hours. The alert now
+  // says which kinds were counted, and the fix starts from them.
+  it('names the kinds of dead letter that were counted, and no stale schedule', async () => {
+    const kv = fakeKv()
+    await recordDeadLetterVolume(kv, 'lead_sightings.insert', NOW)
+    await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
+    await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
+    expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW)).toBe(true)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])
+    expect(text).toContain('lead_sightings.insert 1')
+    expect(text).toContain('sf_writeback 2')
+    expect(text).not.toContain('09:00')
+    expect(text).not.toContain('finalizeSighting out of waitUntil')
+  })
+
   it('suppresses a repeat while the cooldown is set', async () => {
     const kv = fakeKv({
       [`outcome-deadletter-daily:${utcDay(NOW)}`]: JSON.stringify({ total: 1, unrecoverable: 1 }),
@@ -196,6 +214,6 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     await recordDeadLetterVolume(kv, 'continuation_unfinished', NOW)
     expect(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)).toBeUndefined()
     await recordDeadLetterVolume(kv, 'lead_sightings.finalize', NOW)
-    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)!)).toEqual({ total: 1, unrecoverable: 0 })
+    expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)!)).toEqual({ total: 1, unrecoverable: 0, labels: { 'lead_sightings.finalize': 1 } })
   })
 })

@@ -294,10 +294,15 @@ async function checkOrg(
       `*${s.workflow_name}*`,
       '',
       `This workflow recorded ${s.sightings} leads in the last ${WINDOW_HOURS} hours and not one bid, while other bidding workflows in the same window recorded theirs normally.${inactive}`,
+      // Only when there were winners: "a winner on 0 of those leads" said
+      // nothing (#835).
+      ...(s.winners > 0
+        ? ['', `It also named a winner on ${s.winners} of those leads, so there is no record of what was bid, whether we won, or at what price.`]
+        : []),
       '',
-      `It also named a winner on ${s.winners} of those leads, so there is no record of what was bid, whether we won, or at what price.`,
-      '',
-      'The runs are succeeding, so this will not show up as a failure anywhere. The usual cause is that the workflow produces its bid in a shape the recording does not recognise.',
+      // Not "the runs are succeeding": this check reads sightings and bid rows,
+      // never run outcomes (#835). A bid that is not recorded fails no run.
+      'A bid that is not recorded does not fail the run, so no failure alert reports this. The usual cause is that the workflow produces its bid in a shape the recording does not recognise.',
     ].join('\n')
 
     const blocks = [
@@ -490,7 +495,9 @@ async function checkRatios(
       '',
       `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${RATIO_WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`,
       '',
-      'The runs are succeeding and most of the bid history is still there, so nothing else will report this. The usual cause is one partner or one branch dropping out of the recording while the rest carries on.',
+      // Derived from the ratio (#835). It fires below half the baseline, so the
+      // old "most of the bid history is still there" was false by construction.
+      `That is ${pct(c.ratio / c.baseline)} of what it normally records. A bid that is not recorded does not fail the run, so no failure alert reports this. The usual cause is one partner or one branch dropping out of the recording while the rest carries on.`,
     ].join('\n')
 
     const blocks = [

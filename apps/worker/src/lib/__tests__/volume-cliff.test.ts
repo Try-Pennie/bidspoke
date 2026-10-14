@@ -555,6 +555,9 @@ describe('the cliff alert reports what the self-check measured (#1297)', () => {
     })
     expect(text()).toContain('Database read FAILED')
     expect(text()).not.toContain("upstream caller isn't sending")
+    // #835: since stored copies (#1845) a failed read no longer means leads were
+    // refused, and the probe never measured whether any were.
+    expect(text()).not.toMatch(/refusing leads/)
   })
 
   it('reports both ends answering when both probes pass', async () => {

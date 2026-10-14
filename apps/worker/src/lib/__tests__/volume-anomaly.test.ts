@@ -267,5 +267,9 @@ describe('runVolumeAnomalyCheck', () => {
     // days, so detectAnomaly returns null and no alert fires. Full pagination
     // sees the real rows past index 1000 and correctly detects the drop.
     expect(fetchMock).toHaveBeenCalled()
+    // #835: the check counts runs and nothing else, so it may not guess a cause.
+    const body = String(fetchMock.mock.calls[0][1]?.body)
+    expect(body).toContain('20')
+    expect(body).not.toMatch(/may indicate|upstream source outage/)
   })
 })

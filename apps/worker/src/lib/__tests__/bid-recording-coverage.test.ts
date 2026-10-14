@@ -257,6 +257,17 @@ describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
     expect(body).toContain('Lead Economy')
     expect(body).toContain('1700')
     expect(body).not.toContain('Engine')
+    // #835: a sentence about winners when there were none, and a claim about the
+    // runs succeeding, which this check never reads.
+    expect(body).not.toContain('named a winner on 0')
+    expect(body).not.toMatch(/runs are succeeding/)
+  })
+
+  it('names the winners only when the workflow named some (#835)', async () => {
+    const withWinners = [SILENT[0], { ...SILENT[1], winners: 40 }]
+    const db = makeSupabase({ rpc: () => ({ data: withWinners, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, makeKv())
+    expect(JSON.stringify(postMessage.mock.calls[0])).toContain('named a winner on 40 of those leads')
   })
 
   it('says nothing when every workflow is recording', async () => {
@@ -422,6 +433,11 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
     expect(text).toContain('far fewer bids than usual')
     // The numbers a person needs to act, not just a percentage.
     expect(text).toContain('60 bid attempts across 1000 leads')
+    // #835: the alert fires below half the baseline, so "most of the bid history
+    // is still there" was false by construction, and run success is never read.
+    expect(text).not.toMatch(/most of the bid history/)
+    expect(text).not.toMatch(/runs are succeeding/)
+    expect(text).toContain('10% of what it normally records')
   })
 
   it('stays quiet when a workflow with a baseline is recording normally', async () => {

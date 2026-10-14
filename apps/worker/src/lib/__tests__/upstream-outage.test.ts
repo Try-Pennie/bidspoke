@@ -523,7 +523,11 @@ describe('partner API 5xx is a shared-upstream outage (#1361)', () => {
 
   it('tells the reader to check the partner, not our own recent deploys', () => {
     const { shapes } = topErrorShapes([PARTNER_5XX])
-    expect(describeHowToCheck('Partner API', shapes)).toMatch(/health/i)
+    const advice = describeHowToCheck('Partner API', shapes, { causeKey: 'partner_api', workflowNames: ['GigFi Ping'] })
+    expect(advice).toMatch(/health/i)
+    // #835: "Partner API" has no status page; the partner is the one behind the workflow.
+    expect(advice).not.toMatch(/status page/i)
+    expect(advice).toContain('GigFi Ping')
   })
 })
 

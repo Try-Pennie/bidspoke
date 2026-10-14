@@ -194,9 +194,9 @@ async function sendVolumeAlert(
 
   const header = isDrop ? 'Execution Volume Drop Detected' : 'Execution Volume Spike Detected'
   const baselineLabel = `${dayType} baseline`
-  const description = isDrop
-    ? `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the ${baselineLabel}* (avg ${baselineAvg}). This may indicate an upstream source outage.`
-    : `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the ${baselineLabel}* (avg ${baselineAvg}). This may indicate unexpected traffic.`
+  // The count is all this check measures, so it states the count and guesses no
+  // cause (#835): a drop is as often a source pausing its campaigns as an outage.
+  const description = `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the ${baselineLabel}* (avg ${baselineAvg}).`
 
   const baselineFieldLabel = dayType === 'weekend' ? 'Weekend baseline' : 'Weekday baseline'
   const blocks = [

@@ -62,6 +62,11 @@ export const DURABLE_STORE_BUILT = false
 export interface DeadLetterDayCounts {
   total: number
   unrecoverable: number
+  /**
+   * The same total by dead letter label, so the alert can say WHAT was counted
+   * (#835). Absent on a tally written before it existed, which then names no kind.
+   */
+  labels?: Record<string, number>
 }
 
 /** The UTC calendar day of a timestamp, as YYYY-MM-DD. */
@@ -100,13 +105,17 @@ function isConfirmedLoss(label: string): boolean {
 }
 
 function parseCounts(raw: string | null): DeadLetterDayCounts {
-  if (!raw) return { total: 0, unrecoverable: 0 }
+  if (!raw) return { total: 0, unrecoverable: 0, labels: {} }
   try {
     const parsed = JSON.parse(raw) as Partial<DeadLetterDayCounts>
     const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-    return { total: num(parsed.total), unrecoverable: num(parsed.unrecoverable) }
+    const labels: Record<string, number> = {}
+    if (parsed.labels && typeof parsed.labels === 'object') {
+      for (const [label, n] of Object.entries(parsed.labels)) if (num(n) > 0) labels[label] = num(n)
+    }
+    return { total: num(parsed.total), unrecoverable: num(parsed.unrecoverable), labels }
   } catch {
-    return { total: 0, unrecoverable: 0 }
+    return { total: 0, unrecoverable: 0, labels: {} }
   }
 }
 
@@ -128,6 +137,7 @@ export async function recordDeadLetterVolume(kv: KvLike, label: string, nowMs: n
     const next: DeadLetterDayCounts = {
       total: cur.total + 1,
       unrecoverable: cur.unrecoverable + (isUnrecoverableOutcomeLoss(label) ? 1 : 0),
+      labels: { ...cur.labels, [label]: (cur.labels?.[label] ?? 0) + 1 },
     }
     await kv.put(key, JSON.stringify(next), { expirationTtl: DAILY_COUNT_TTL_SECONDS })
   } catch (e) {
@@ -142,6 +152,8 @@ export interface BuildNowVerdict {
   unrecoverableRecent: number
   /** The completed days judged for the sustained-volume half, newest first. */
   volumeDays: { day: string; total: number }[]
+  /** Dead letters by label across today and those completed days, so the alert names what was counted (#835). */
+  byLabel: Record<string, number>
 }
 
 /**
@@ -160,23 +172,28 @@ export async function evaluateBuildNow(kv: KvLike, nowMs: number = Date.now()): 
   // Unrecoverable window: today back through BUILD_NOW_VOLUME_DAYS - 1 days.
   const unrecoverableDays: string[] = []
   for (let i = 0; i < BUILD_NOW_VOLUME_DAYS; i++) unrecoverableDays.push(utcDay(nowMs - i * DAY_MS))
-  const unrecoverableRecent = (
-    await Promise.all(unrecoverableDays.map(async (d) => parseCounts(await kv.get(dayKey(d))).unrecoverable))
-  ).reduce((sum, n) => sum + n, 0)
+  // Every day either window reads, today back through the oldest completed day,
+  // read once each.
+  const readDays = Array.from({ length: BUILD_NOW_VOLUME_DAYS + 1 }, (_unused, i) => utcDay(nowMs - i * DAY_MS))
+  const counts = new Map(await Promise.all(readDays.map(async (d) => [d, parseCounts(await kv.get(dayKey(d)))] as const)))
+  const countsOf = (d: string): DeadLetterDayCounts => counts.get(d) ?? { total: 0, unrecoverable: 0, labels: {} }
+
+  const unrecoverableRecent = unrecoverableDays.map((d) => countsOf(d).unrecoverable).reduce((sum, n) => sum + n, 0)
 
   // Volume window: the BUILD_NOW_VOLUME_DAYS completed days ending yesterday.
-  const volumeDays = await Promise.all(
-    Array.from({ length: BUILD_NOW_VOLUME_DAYS }, (_unused, i) => utcDay(nowMs - (i + 1) * DAY_MS)).map(
-      async (day) => ({ day, total: parseCounts(await kv.get(dayKey(day))).total }),
-    ),
-  )
+  const volumeDays = readDays.slice(1).map((day) => ({ day, total: countsOf(day).total }))
+
+  const byLabel: Record<string, number> = {}
+  for (const d of readDays) {
+    for (const [label, n] of Object.entries(countsOf(d).labels ?? {})) byLabel[label] = (byLabel[label] ?? 0) + n
+  }
   const sustainedVolume = volumeDays.every((d) => d.total >= BUILD_NOW_DAILY_VOLUME)
 
   const reasons: ('unrecoverable-loss' | 'sustained-volume')[] = []
   if (unrecoverableRecent > 0) reasons.push('unrecoverable-loss')
   if (sustainedVolume) reasons.push('sustained-volume')
 
-  return { tripped: reasons.length > 0, reasons, unrecoverableRecent, volumeDays }
+  return { tripped: reasons.length > 0, reasons, unrecoverableRecent, volumeDays, byLabel }
 }
 
 function buildBlocks(verdict: BuildNowVerdict, appUrl: string): unknown[] {
@@ -190,15 +207,24 @@ function buildBlocks(verdict: BuildNowVerdict, appUrl: string): unknown[] {
       ? `Dead-letter volume has stayed at or above ${BUILD_NOW_DAILY_VOLUME} a day for ${BUILD_NOW_VOLUME_DAYS} days running. Outages are now frequent enough that a lost row is a matter of time.`
       : 'The build-now condition fired earlier and the durable outcome store still has not been built.'
   const recent = verdict.volumeDays.map((d) => `${d.day}: ${d.total}`).join(', ')
+  // Largest first. Empty when every tally predates the per-label count.
+  const kinds = Object.entries(verdict.byLabel)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, n]) => `${label} ${n}`)
+    .join(', ')
   return [
     { type: 'header', text: { type: 'plain_text', text: 'Time to build the durable outcome store', emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: `${lead} The deferral ADR 0002 recorded has expired.` } },
     { type: 'section', text: { type: 'mrkdwn', text: `*Dead-letter totals, recent completed days:* ${recent}.` } },
+    ...(kinds ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Counted by kind, today and those days:* ${kinds}.` } }] : []),
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: 'The build goes behind the writeOutcome seam (one file): move finalizeSighting out of waitUntil into a per-execution alarm or the 09:00 export, finalizing from already-persisted columns. See the "Upgrade path" in docs/adr/0002-observability-vs-outcome-write-tiers.md, then flip DURABLE_STORE_BUILT to stop this reminder.',
+        // Starts from what was counted rather than prescribing the finalize move
+        // whatever it was (#835): the finalize kinds are already rebuilt by the
+        // strand drains, and the inserts are the rows nothing rebuilds.
+        text: 'The build goes behind the writeOutcome seam (one file), and starts from the kinds counted above: lead_sightings.insert and lead_sighting_bids.insert are rows no drain can rebuild, while the finalize kinds are rebuilt by the strand drains. See the "Upgrade path" in docs/adr/0002-observability-vs-outcome-write-tiers.md, then flip DURABLE_STORE_BUILT to stop this reminder.',
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard>` } },
