@@ -105,6 +105,9 @@ describe('a lock left behind by a killed run (#954)', () => {
     // The reason follows the rate as its own sentence. Appended raw it begins
     // lowercase, and the two run together into one unreadable line.
     expect(String((killed as unknown[])[2])).not.toMatch(/\. [a-z]/)
+    // The alert's context line says the run is going ahead and nothing is lost;
+    // the finding says it once, not twice (#1300, L605).
+    expect(String((killed as unknown[])[2])).not.toMatch(/proceeding|unarchived/)
   })
 
   it('carries what the dead run had reached, not just that it stopped (#1034)', async () => {

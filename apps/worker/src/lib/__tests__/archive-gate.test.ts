@@ -383,7 +383,7 @@ describe('a day whose counts do not reconcile', () => {
       {
         job: ARCHIVE_GATE_JOB,
         title: 'Run history will be deleted without a backup',
-        fix: 'Fix: back the day up again with POST /api/admin/re-archive and day 2026-08-15 before 11:30 PM ET.',
+        fix: 'Back the day up again with POST /api/admin/re-archive and day 2026-08-15 before 11:30 PM ET.',
       },
     ])
   })
@@ -832,7 +832,7 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
         job: ARCHIVE_GATE_CLEANUP_JOB,
         title: 'Old run history has not been cleaned up',
         fix:
-          'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+          'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
           'then find which scheduled job is blocking it at 11:30 PM ET.',
       },
     ])

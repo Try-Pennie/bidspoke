@@ -447,9 +447,9 @@ export async function runExecutionArchive(
             // news. The reason then follows as its own sentence, capitalised:
             // `decideLock` writes it to begin a clause, so appending it raw puts
             // a lowercase word after a full stop and the two run together.
-            `${notice.rate} ${sentence(lock.reason)}. This run is proceeding; the work its predecessor ` +
-              `did not finish is simply unarchived. ` +
-              describePredecessor(predecessor),
+            // What it means for the backup is said once, in the alert's context
+            // line (ARCHIVE_KILLED_REMEDY), not repeated here (#1300).
+            `${notice.rate} ${sentence(lock.reason)}. ` + describePredecessor(predecessor),
           ],
           env.IDEMPOTENCY,
           ARCHIVE_KILLED_REMEDY,

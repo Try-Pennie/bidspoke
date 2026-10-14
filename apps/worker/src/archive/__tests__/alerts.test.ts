@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -119,6 +119,63 @@ describe('alertsFor', () => {
   })
 })
 
+// #1300: a finding is read by someone who does not know the stop codes.
+describe('the failed run finding reads in words', () => {
+  const failedOn = (stop: string): RunResult =>
+    ({ failed: true, stop, detail: 'statement timeout', executionsArchived: 0, executionsRefused: 0, hoursArchived: 0, hoursEmpty: 0, hoursBehind: 0 }) as unknown as RunResult
+
+  for (const stop of ['read-failed', 'send-failed', 'wall-time', 'subrequests', 'max-hours'] as const) {
+    it(`names a ${stop} stop in words, keeping the detail`, () => {
+      const line = alertsFor(failedOn(stop))[0].errors[0]
+      expect(line).not.toContain(stop)
+      expect(line).toContain('statement timeout')
+    })
+  }
+})
+
+// One word for one unit (L118): what the backup refuses is executions, and
+// "run" in the same alert means the backup run itself.
+describe('the refusal findings read like the rest of the alert', () => {
+  const refused = (archived: number, refusedCount: number) =>
+    alertsFor({ failed: false, stop: 'caught-up', detail: '', executionsArchived: archived, executionsRefused: refusedCount, hoursArchived: 1, hoursEmpty: 0, hoursBehind: 0 } as unknown as RunResult)
+      .find((a) => a.jobName === ARCHIVE_JOB_NAMES.refusal)!.errors[0]
+
+  it('opens with a capital and does not call the backup "the archive"', () => {
+    for (const line of [refused(0, 4), refused(98, 2)]) {
+      expect(line).toMatch(/^[A-Z]/)
+      expect(line.toLowerCase()).not.toContain('archive')
+    }
+  })
+})
+
+describe('the refusal alert names what it refused the same way its finding does', () => {
+  it('says executions, never runs, for the refused things', () => {
+    const r = ARCHIVE_REFUSAL_REMEDY
+    expect(`${r.title} ${r.context}`).not.toMatch(/refused (some )?runs|Refused runs|every run/i)
+    expect(r.title).toContain('executions')
+  })
+})
+
+// The vanished run alert waits out its allowance and may never have posted, so
+// the takeover alert may not claim one came before it; only that it is the same
+// event if one did.
+describe('the takeover alert does not claim an alert it cannot know was sent', () => {
+  it('names the started and never finished alert conditionally', () => {
+    expect(ARCHIVE_KILLED_REMEDY.context).not.toMatch(/alert before this one/)
+    expect(ARCHIVE_KILLED_REMEDY.context).toMatch(/if .*started and never finished/i)
+  })
+})
+
+describe('the falling behind finding reads in words', () => {
+  it('names the stop it fell behind on in words', () => {
+    const behind = { failed: false, stop: 'wall-time', detail: '', executionsArchived: 5, executionsRefused: 0, hoursArchived: 3, hoursEmpty: 0, hoursBehind: 9 } as unknown as RunResult
+    const line = alertsFor(behind).find((a) => a.jobName === ARCHIVE_JOB_NAMES.lag)!.errors[0]
+    expect(line).not.toContain('wall-time')
+    expect(line).toContain('9 hours behind')
+  })
+})
+
+
 /**
  * The remedy is chosen from what actually stopped the run (#1042).
  *
@@ -130,8 +187,8 @@ describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
     const remedy = ingestRemedyFor('read-failed')
 
-    expect(remedy.consequence).toMatch(/This is Postgres, not Snowflake/)
-    expect(remedy.fixHint).toMatch(/not implicated/)
+    expect(remedy.title).toMatch(/could not read/)
+    expect(remedy.fixHint).toMatch(/in our database, not Snowflake/)
   })
 
   it('points a send failure at Snowflake, which is the case it belongs to', () => {

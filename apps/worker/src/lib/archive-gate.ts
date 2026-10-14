@@ -43,19 +43,19 @@ import type { Env } from '../index'
  */
 export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
   title: 'Run history will be deleted without a backup',
-  fixHint: 'Fix: back each day up again with POST /api/admin/re-archive and its day before its deadline.',
+  fixHint: 'Back each day up again with POST /api/admin/re-archive and its day before its deadline.',
 }
 
 export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
   title: 'Old run history has not been cleaned up',
   fixHint:
-    'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+    'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
     'then find which scheduled job is blocking it at 11:30 PM ET.',
 }
 
 export const ARCHIVE_GATE_COST_REMEDY: TitledRemedy = {
   title: 'The daily backup check is outgrowing its time slot',
-  fixHint: 'Fix: move the deletion gate to its own scheduled run before it slows the other 13:00 UTC jobs.',
+  fixHint: 'Move the deletion gate to its own scheduled run before it slows the other 13:00 UTC jobs.',
 }
 
 /** The alert keys for the two findings that are not the at risk one, so each pages and clears on its own. */
@@ -135,13 +135,13 @@ function atRiskRemedy(atRisk: Array<{ day: string }>, now: Date): TitledRemedy {
   if (atRisk.length === 1) {
     return {
       ...ARCHIVE_GATE_AT_RISK_REMEDY,
-      fixHint: `Fix: back the day up again with POST /api/admin/re-archive and day ${atRisk[0].day} before ${by}.`,
+      fixHint: `Back the day up again with POST /api/admin/re-archive and day ${atRisk[0].day} before ${by}.`,
     }
   }
   return {
     ...ARCHIVE_GATE_AT_RISK_REMEDY,
     fixHint:
-      'Fix: back each day up again with POST /api/admin/re-archive and its day ' +
+      'Back each day up again with POST /api/admin/re-archive and its day ' +
       `(${atRisk.map((d) => d.day).join(', ')}), earliest first, before ${by}.`,
   }
 }
@@ -931,7 +931,7 @@ async function gatePass(
     await notifyExportFailure(supabase, ARCHIVE_GATE_CLEANUP_JOB, cleanupLines, env.IDEMPOTENCY, {
       ...ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
       fixHint:
-        'Fix: run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
+        'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
         `then find which scheduled job is blocking it at ${etClock(nextPurgeAfter(now))}.`,
     })
   }

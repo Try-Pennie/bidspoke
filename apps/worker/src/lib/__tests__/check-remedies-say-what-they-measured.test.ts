@@ -65,13 +65,6 @@ import { ENGINE_SCRIPT_DRIFT_REMEDY } from '../engine-script-drift'
 import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
-  ['archive ingest', ARCHIVE_INGEST_REMEDY],
-  ['archive read failed', ARCHIVE_READ_FAILED_REMEDY],
-  ['archive send failed', ARCHIVE_SEND_FAILED_REMEDY],
-  ['archive misconfigured', ARCHIVE_MISCONFIGURED_REMEDY],
-  ['archive refusal', ARCHIVE_REFUSAL_REMEDY],
-  ['archive lag', ARCHIVE_LAG_REMEDY],
-  ['archive killed', ARCHIVE_KILLED_REMEDY],
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
   ['archive gate unreadable', ARCHIVE_GATE_UNREADABLE_REMEDY],
   ['archive read index', ARCHIVE_INDEX_REMEDY],
@@ -111,6 +104,14 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
  * sentence, so the findings and the title must carry the meaning between them.
  */
 const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
+  // The archive's own run alerts (#1300, Dan, 2026-09-10: "They're not easy to read").
+  ['archive ingest', ARCHIVE_INGEST_REMEDY],
+  ['archive read failed', ARCHIVE_READ_FAILED_REMEDY],
+  ['archive send failed', ARCHIVE_SEND_FAILED_REMEDY],
+  ['archive misconfigured', ARCHIVE_MISCONFIGURED_REMEDY],
+  ['archive refusal', ARCHIVE_REFUSAL_REMEDY],
+  ['archive lag', ARCHIVE_LAG_REMEDY],
+  ['archive killed', ARCHIVE_KILLED_REMEDY],
   ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
   ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
   ['salesforce revenue formulas disagree', REVENUE_FORMULAS_DISAGREE_REMEDY],
@@ -188,8 +189,15 @@ describe('every check says what it measured', () => {
       expect(remedy.title).not.toMatch(/^[a-z0-9-]+$/)
     })
 
+    // The sender prints "Fix:" before the fix line itself, so a fix line that
+    // also opens with it reads "Fix: Fix:" (#1300).
+    it(`${name} does not repeat the Fix label the sender prints`, () => {
+      expect(remedy.fixHint ?? '').not.toMatch(/^\s*fix:/i)
+    })
+
     it(`${name} does not borrow the export wording`, () => {
-      const words = `${remedy.title} ${remedy.fixHint ?? ''}`.toLowerCase()
+      // The context line carries much of a titled alert's meaning, so it is read too.
+      const words = `${remedy.title} ${remedy.context ?? ''} ${remedy.fixHint ?? ''}`.toLowerCase()
       for (const wrong of EXPORT_ONLY) expect(words).not.toContain(wrong)
     })
   }
