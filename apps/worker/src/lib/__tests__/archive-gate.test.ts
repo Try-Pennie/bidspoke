@@ -1229,7 +1229,11 @@ describe('days beneath the gate are measured again (#2085)', () => {
     const { summary, recorded } = await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
     expect(recorded.map((r) => r.p_day)).toContain(stranded)
     expect(resultFor(summary, stranded).refusals).toEqual([])
-    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT + 1)
+    // Counted apart from the candidates, so a pass never records more days
+    // measured than it considered (lessons review).
+    expect(summary.daysRemeasured).toEqual([stranded])
+    expect(summary.daysMeasured).toBe(CANDIDATE_COUNT)
+    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT)
   })
 
   it(`re-measures at most ${BENEATH_REMEASURE_PER_PASS} a pass, oldest first, and reads the rest as before`, async () => {

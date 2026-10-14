@@ -69,10 +69,10 @@ export const BENEATH_REMEASURE_PER_PASS = 3
 
 /**
  * A backed up day the cleanup has not taken (#1720). The cleanup takes only a
- * day measured in the last 36 hours, and the gate measures a day only until one
- * night past its own purge, so by the third missed night nothing scheduled can
- * take it, whatever stopped the first two (#835). The lines carry what the
- * cleanup itself recorded about the day rather than assuming a lock was lost.
+ * day measured in the last 36 hours. The gate measures its candidate days and,
+ * since #2085, re-measures up to BENEATH_REMEASURE_PER_PASS older days a pass, so
+ * a day here is verified again for that night's cleanup. The lines carry what
+ * the cleanup itself recorded about the day rather than assuming a lock was lost.
  */
 export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
   title: 'Old run history has not been cleaned up',
@@ -366,8 +366,12 @@ export interface GateRunSummary {
   runId: string | null
   /** Candidates the purge has already emptied and stamped, so they were not measured. */
   daysStamped: number
+  /** Candidate days measured; the days beneath the gate measured again are counted apart (#2085). */
   daysMeasured: number
+  /** Candidate days verified. */
   daysDeletable: number
+  /** Days beneath the gate this pass measured again (#2085); their readings are in `results` too. */
+  daysRemeasured: string[]
   results: GateDayResult[]
   failed: boolean
   detail: string
@@ -756,6 +760,12 @@ function daysLeftFor(day: string, now: Date): number {
  * reads as partial rather than as a smaller clean one, and it has its own
  * outcome for the same reason (L11).
  */
+/** A pass's readings of its candidate days, without the days beneath it measured again (#2085). */
+function candidateResults(summary: GateRunSummary): GateDayResult[] {
+  const remeasured = new Set(summary.daysRemeasured)
+  return summary.results.filter((r) => !remeasured.has(r.archiveDay))
+}
+
 export async function runArchiveGate(
   env: Env,
   supabase: SupabaseClient,
@@ -779,9 +789,10 @@ export async function runArchiveGate(
         daysStamped: summary.daysStamped,
         daysMeasured: summary.daysMeasured,
         daysDeletable: summary.daysDeletable,
-        daysErrored: summary.results.filter((r) => r.error !== null).length,
-        daysRefused: summary.results.filter((r) => r.error === null && r.refusals.length > 0).length,
+        daysErrored: candidateResults(summary).filter((r) => r.error !== null).length,
+        daysRefused: candidateResults(summary).filter((r) => r.error === null && r.refusals.length > 0).length,
         daysBeneathTheGate: summary.daysBeneathTheGate,
+        daysRemeasured: summary.daysRemeasured.length,
         cost: summary.cost,
       },
     }),
@@ -834,7 +845,7 @@ async function gatePass(
     return {
       cost: costNow(0),
       daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0, daysBeneathTheGate: [],
-      daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
+      daysMeasured: 0, daysDeletable: 0, daysRemeasured: [], results: [], failed: true, detail,
     }
   }
   const stored = (progress.data as { watermark_hour?: unknown } | null)?.watermark_hour
@@ -890,7 +901,7 @@ async function gatePass(
     return {
       cost: costNow(0),
       daysConsidered: candidates.length, daysAvailable: available.length, runId: null, daysStamped: 0,
-      daysBeneathTheGate: beneath, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
+      daysBeneathTheGate: beneath, daysMeasured: 0, daysDeletable: 0, daysRemeasured: [], results: [], failed: true, detail,
     }
   }
   const stamped = new Set(
@@ -1093,7 +1104,8 @@ async function gatePass(
     (remeasured.length > 0
       ? `${measuredBeneath} held ${measuredBeneath === 1 ? 'day' : 'days'} beneath the gate measured again, `
       : '') +
-    `${deletableDays.length} verified, ${atRisk.length} held back, ${notCleanedUp.length} not cleaned up`
+    `${deletableDays.filter((r) => !remeasuredSet.has(r.archiveDay)).length} verified, ${atRisk.length} held back, ` +
+    `${notCleanedUp.length} not cleaned up`
   console.log(`[archive-gate] ${detail}`)
   // Printed as well as recorded, so a run being watched live shows its cost
   // without a query, and recorded as well as printed, because stdout reaches its
@@ -1117,8 +1129,9 @@ async function gatePass(
     runId: null,
     daysBeneathTheGate: beneath,
     daysStamped: stampedCandidates,
-    daysMeasured: measured.length,
-    daysDeletable: deletableDays.length,
+    daysMeasured: measuredCandidates,
+    daysDeletable: deletableDays.filter((r) => !remeasuredSet.has(r.archiveDay)).length,
+    daysRemeasured: remeasured,
     results,
     failed: results.some((r) => r.error !== null),
     detail,
