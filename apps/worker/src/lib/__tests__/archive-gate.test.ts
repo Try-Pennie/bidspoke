@@ -27,6 +27,7 @@ import {
   readLastPurge,
   heldRemedy,
   ARCHIVE_GATE_AT_RISK_REMEDY,
+  BENEATH_REMEASURE_PER_PASS,
   type BeneathStatus,
   type PurgeRecord,
 } from '../archive-gate'
@@ -256,6 +257,7 @@ async function run(opts: {
   daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
   beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
   lastPurge?: (days: string[]) => Promise<Map<string, PurgeRecord>>
+  remeasureBeneath?: number
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -276,6 +278,7 @@ async function run(opts: {
     daysHeld: opts.daysHeld,
     beneathStatus: opts.beneathStatus,
     lastPurge: opts.lastPurge,
+    remeasureBeneath: opts.remeasureBeneath,
   })
   return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
 }
@@ -854,9 +857,9 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     // The hand CALL refuses a day this old as stale, so it is not the fix.
     expect(alert.fix).not.toMatch(/CALL truncate_verified_execution_partitions/)
     expect(alert.fix).not.toMatch(/blocking/)
-    // No action reaches a day this old today, so the line says so plainly
-    // rather than inventing one (#835, lessons review).
-    expect(alert.fix).toMatch(/until the deletion gate can measure days beneath it/)
+    // The pass re-measures held days now (#2085), so the fix says that rather
+    // than that nothing reaches a day this old.
+    expect(alert.fix).toMatch(/re-measures up to \d of these/)
   })
 
   it('says the cleanup record could not be read rather than guessing a cause', async () => {
@@ -877,9 +880,11 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)[0]).toMatch(/no cleanup has recorded anything about it\.$/)
   })
 
+  // The stored status path: a day beyond the pass's re-measure cap (#2085).
   it('treats a day it cannot show is backed up as at risk, not as housekeeping', async () => {
     const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
     await run({
+      remeasureBeneath: 0,
       daysHeld: async () => [stranded],
       beneathStatus: async () => new Map([[stranded, { backedUp: false }]]),
     })
@@ -894,6 +899,7 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     // An unreadable status is not evidence of a backup (L215).
     const stranded = daysBeforeNow(CANDIDATE_COUNT + 1)
     await run({
+      remeasureBeneath: 0,
       daysHeld: async () => [stranded],
       beneathStatus: async () => {
         throw new Error('postgres said no')
@@ -1205,5 +1211,70 @@ describe('the cleanup record is read per day (lessons review, #835)', () => {
 describe('the held day chooser with no days (lessons review, #835)', () => {
   it('returns the base remedy', () => {
     expect(heldRemedy([])).toBe(ARCHIVE_GATE_AT_RISK_REMEDY)
+  })
+})
+
+/**
+ * #2085: the cleanup takes only a day measured in the last 36 hours, and the gate
+ * measured a day only until one night past its purge, so a backed up day that
+ * missed twice could never be taken and its alert repeated for ever. Each full
+ * pass now re-measures a few of the days beneath it, oldest first, AFTER the
+ * candidate days so they never delay a day closer to deletion.
+ */
+describe('days beneath the gate are measured again (#2085)', () => {
+  const beneathDays = (n: number) => Array.from({ length: n }, (_, i) => daysBeforeNow(CANDIDATE_COUNT + 2 + (n - 1 - i)))
+
+  it('re-measures a held day, so a backed up one is verified for tonight\'s cleanup', async () => {
+    const [stranded] = beneathDays(1)
+    const { summary, recorded } = await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    expect(recorded.map((r) => r.p_day)).toContain(stranded)
+    expect(resultFor(summary, stranded).refusals).toEqual([])
+    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT + 1)
+  })
+
+  it(`re-measures at most ${BENEATH_REMEASURE_PER_PASS} a pass, oldest first, and reads the rest as before`, async () => {
+    const days = beneathDays(BENEATH_REMEASURE_PER_PASS + 2)
+    const read: string[][] = []
+    const { recorded } = await run({
+      daysHeld: async () => days,
+      beneathStatus: async (d) => { read.push(d); return new Map(d.map((x) => [x, { backedUp: true } as BeneathStatus])) },
+      lastPurge: async () => new Map(),
+    })
+    const measuredBeneath = recorded.map((r) => String(r.p_day)).filter((d) => days.includes(d))
+    expect(measuredBeneath).toEqual([...days].sort().slice(0, BENEATH_REMEASURE_PER_PASS))
+    expect(read.flat()).toEqual([...days].sort().slice(BENEATH_REMEASURE_PER_PASS))
+  })
+
+  it('measures the held days after every candidate day, so they never delay one closer to deletion', async () => {
+    const [stranded] = beneathDays(1)
+    const { recorded } = await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    expect(recorded[recorded.length - 1].p_day).toBe(stranded)
+  })
+
+  it('re-measures nothing on a restricted run, which sees only its own chunk', async () => {
+    const [stranded] = beneathDays(1)
+    const { recorded } = await run({
+      restrictDays: { from: daysBeforeNow(CANDIDATE_COUNT - 2) },
+      daysHeld: async () => [stranded],
+      beneathStatus: async (d) => new Map(d.map((x) => [x, { backedUp: true } as BeneathStatus])),
+    })
+    expect(recorded.map((r) => r.p_day)).not.toContain(stranded)
+  })
+
+  it('reports a held day that measures short once, with the re-archive fix, not also as beneath-short', async () => {
+    const [stranded] = beneathDays(1)
+    await run({ perDay: { [stranded]: facts({ sfExecutions: 2 }) }, daysHeld: async () => [stranded] })
+    const lines = alerted().filter((l) => l.includes(spoken(stranded)))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).not.toMatch(/older than the days the gate measures/)
+    expect(raised().find((r) => r.job === ARCHIVE_GATE_JOB)?.fix).toMatch(/Re-archive/)
+  })
+
+  it('says in the not cleaned up fix that each pass re-measures these days', async () => {
+    const [stranded] = beneathDays(1)
+    await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    const alert = raised().find((r) => r.job === ARCHIVE_GATE_CLEANUP_JOB)
+    expect(alert?.fix).toMatch(new RegExp(`re-measures up to ${BENEATH_REMEASURE_PER_PASS} of these`))
+    expect(alert?.fix).not.toMatch(/until the deletion gate can measure days beneath it/)
   })
 })

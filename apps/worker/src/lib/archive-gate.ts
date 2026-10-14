@@ -58,6 +58,16 @@ export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
 }
 
 /**
+ * Days beneath the gate a full pass measures again, oldest first (#2085, Dan
+ * 2026-10-14). The cleanup takes only a day measured in the last 36 hours, and
+ * the gate otherwise measures a day only until one night past its purge, so a
+ * backed up day that missed twice could never be taken. Capped so a long
+ * backlog cannot push the pass past its time budget; the rest follow on later
+ * nights.
+ */
+export const BENEATH_REMEASURE_PER_PASS = 3
+
+/**
  * A backed up day the cleanup has not taken (#1720). The cleanup takes only a
  * day measured in the last 36 hours, and the gate measures a day only until one
  * night past its own purge, so by the third missed night nothing scheduled can
@@ -67,9 +77,9 @@ export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
 export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
   title: 'Old run history has not been cleaned up',
   fixHint:
-    'Nothing scheduled and no admin route measures a day this old, and the cleanup takes only a day ' +
-    'measured in the last 36 hours, so it stays until the deletion gate can measure days beneath it. It ' +
-    'is fully backed up, so this costs disk space, not data.',
+    `Each nightly gate pass re-measures up to ${BENEATH_REMEASURE_PER_PASS} of these, oldest first, and that ` +
+    "night's cleanup can then take any still fully backed up. If a day stays on this list, the cleanup's " +
+    'record above says why. It is fully backed up, so this costs disk space, not data.',
 }
 
 /** What the nightly cleanup last recorded about a day, from `purge_run_log`. */
@@ -93,6 +103,7 @@ export const ARCHIVE_GATE_COST_JOB = 'execution-archive-gate-cost'
  * night takes the day; a third says the cleanup is not fixing itself.
  */
 export const CLEANUP_SILENT_NIGHTS = 2
+
 
 /** The minute of the nightly purge, `30 3 * * *` UTC. */
 const PURGE_MINUTE_OF_DAY_UTC = 3 * 60 + 30
@@ -389,6 +400,8 @@ export interface GateDeps {
   beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
   /** What the nightly cleanup last recorded about each day (#835). Injected for the same reason. */
   lastPurge?: (days: string[]) => Promise<Map<string, PurgeRecord>>
+  /** How many days beneath the gate a full pass re-measures (#2085). Defaults to BENEATH_REMEASURE_PER_PASS. */
+  remeasureBeneath?: number
 }
 
 /**
@@ -882,9 +895,17 @@ async function gatePass(
     ((stampedRead.data as Array<{ archive_day: unknown }> | null) ?? []).map((r) => String(r.archive_day)),
   )
   const days = candidates.filter((d) => !stamped.has(d))
+  // Days beneath the gate measured again (#2085), oldest first and AFTER the
+  // candidates, so they never delay a day closer to deletion. A restricted run
+  // sees only its chunk and leaves them to the full nightly pass.
+  const restricted = deps.restrictDays !== undefined
+  const remeasured = restricted
+    ? []
+    : [...beneath].sort().slice(0, deps.remeasureBeneath ?? BENEATH_REMEASURE_PER_PASS)
+  const remeasuredSet = new Set(remeasured)
   const results: GateDayResult[] = []
 
-  for (const day of days) {
+  for (const day of [...days, ...remeasured]) {
     const daysLeft = daysLeftFor(day, now)
     try {
       const measurement = await measureDay(() => { used.postgres += 1 }, supabase, day, query, now)
@@ -949,7 +970,11 @@ async function gatePass(
     r.refusals.some((x) => CLEARS_ITSELF_NEVER.includes(x.code))
   const urgent = results.filter(
     (r) =>
-      (r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null)) || alwaysReport(r),
+      // A re-measured day beneath the gate is past its purge, so anything it
+      // refused is reported, and its own reading replaces the stored status.
+      remeasuredSet.has(r.archiveDay)
+        ? r.refusals.length > 0 || r.error !== null
+        : (r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null)) || alwaysReport(r),
   )
   // A day whose last reading cannot vouch for it either way, as opposed to one
   // whose reading shows the archive short. The first is "not confirmed", the
@@ -968,18 +993,29 @@ async function gatePass(
   // Days older than anything the gate considers (#1025). The purge should have
   // taken them; whether that matters depends on whether they were backed up.
   const notCleanedUp: string[] = []
-  if (beneath.length > 0) {
+  // A day measured again this pass is judged on that reading; only the rest read
+  // their stored status (#2085).
+  const unmeasuredBeneath = beneath.filter((d) => !remeasuredSet.has(d))
+  for (const day of remeasured) {
+    const r = results.find((x) => x.archiveDay === day)
+    // Verified tonight, so tonight's cleanup can take it; reported as not
+    // cleaned up only once it has outlived the silent nights, as before.
+    if (r !== undefined && r.error === null && r.refusals.length === 0 && purgesMissed(day, now) > CLEANUP_SILENT_NIGHTS) {
+      notCleanedUp.push(day)
+    }
+  }
+  if (unmeasuredBeneath.length > 0) {
     let status: Map<string, BeneathStatus> | null = null
     // Carried into the line, so the fix's "the read named above" names one (#835).
     let statusError: string | null = null
     try {
       used.postgres += 1
-      status = await (deps.beneathStatus ?? ((d: string[]) => readBeneathStatus(supabase, d)))(beneath)
+      status = await (deps.beneathStatus ?? ((d: string[]) => readBeneathStatus(supabase, d)))(unmeasuredBeneath)
     } catch (err) {
       statusError = formatErr(err)
       console.error(`[archive-gate] could not read whether the days beneath the gate are backed up: ${statusError}`)
     }
-    for (const day of beneath) {
+    for (const day of unmeasuredBeneath) {
       const known = status?.get(day)
       if (known === undefined) atRisk.push({ day, kind: 'beneath-unknown', detail: statusError })
       else if (!known.backedUp) atRisk.push({ day, kind: 'beneath-short', detail: null })
@@ -1029,7 +1065,6 @@ async function gatePass(
   // pass stays the authority that clears. The `postsOrAdds` guards are written
   // inline rather than through a helper so each notifyExportFailure keeps its
   // literal job name, which the export-alert clear-coverage guard reads (#1967).
-  const restricted = deps.restrictDays !== undefined
   const postsOrAdds = (lines: string[]): boolean => !restricted || lines.length > 0
   if (postsOrAdds(atRiskLines)) {
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, heldRemedy(atRisk))
