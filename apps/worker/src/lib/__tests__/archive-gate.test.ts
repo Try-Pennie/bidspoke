@@ -1270,6 +1270,22 @@ describe('days beneath the gate are measured again (#2085)', () => {
     expect(raised().find((r) => r.job === ARCHIVE_GATE_JOB)?.fix).toMatch(/Re-archive/)
   })
 
+  // Lessons review: the stamped read covered only the candidates, so a held day
+  // the cleanup had already emptied would read zero against the archive's count
+  // and be refused as a surplus, about a deletion that has already happened.
+  it('does not re-measure a held day the cleanup has already emptied', async () => {
+    const [stranded] = beneathDays(1)
+    const { recorded } = await run({ stamped: [stranded], daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    expect(recorded.map((r) => r.p_day)).not.toContain(stranded)
+  })
+
+  it('says how many held days it measured apart from the candidate days', async () => {
+    const [stranded] = beneathDays(1)
+    const { summary } = await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })
+    expect(summary.detail).toMatch(new RegExp(`measured ${CANDIDATE_COUNT} of ${CANDIDATE_COUNT} candidate days`))
+    expect(summary.detail).toMatch(/1 held day beneath the gate measured again/)
+  })
+
   it('says in the not cleaned up fix that each pass re-measures these days', async () => {
     const [stranded] = beneathDays(1)
     await run({ daysHeld: async () => [stranded], lastPurge: async () => new Map() })

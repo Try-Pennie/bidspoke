@@ -880,7 +880,9 @@ async function gatePass(
   const stampedRead = await supabase
     .from('execution_archive_days')
     .select('archive_day')
-    .in('archive_day', candidates)
+    // The days beneath the gate too, so one the cleanup has already emptied is
+    // never re-measured into a false surplus (#2085).
+    .in('archive_day', [...candidates, ...beneath])
     .not('executions_truncated_at', 'is', null)
   if (stampedRead.error) {
     const detail = `the stamped days could not be read: ${formatErr(stampedRead.error)}`
@@ -901,7 +903,7 @@ async function gatePass(
   const restricted = deps.restrictDays !== undefined
   const remeasured = restricted
     ? []
-    : [...beneath].sort().slice(0, deps.remeasureBeneath ?? BENEATH_REMEASURE_PER_PASS)
+    : [...beneath].filter((d) => !stamped.has(d)).sort().slice(0, deps.remeasureBeneath ?? BENEATH_REMEASURE_PER_PASS)
   const remeasuredSet = new Set(remeasured)
   const results: GateDayResult[] = []
 
@@ -1082,10 +1084,16 @@ async function gatePass(
     await notifyExportFailure(supabase, ARCHIVE_GATE_COST_JOB, costLines, env.IDEMPOTENCY, ARCHIVE_GATE_COST_REMEDY)
   }
 
+  const measuredCandidates = measured.filter((r) => !remeasuredSet.has(r.archiveDay)).length
+  const measuredBeneath = measured.length - measuredCandidates
+  const stampedCandidates = candidates.filter((d) => stamped.has(d)).length
   const detail =
-    `measured ${measured.length} of ${candidates.length} candidate days ` +
-    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${atRisk.length} held back, ` +
-    `${notCleanedUp.length} not cleaned up`
+    `measured ${measuredCandidates} of ${candidates.length} candidate days ` +
+    `(${stampedCandidates} already emptied and skipped), ` +
+    (remeasured.length > 0
+      ? `${measuredBeneath} held ${measuredBeneath === 1 ? 'day' : 'days'} beneath the gate measured again, `
+      : '') +
+    `${deletableDays.length} verified, ${atRisk.length} held back, ${notCleanedUp.length} not cleaned up`
   console.log(`[archive-gate] ${detail}`)
   // Printed as well as recorded, so a run being watched live shows its cost
   // without a query, and recorded as well as printed, because stdout reaches its
@@ -1108,7 +1116,7 @@ async function gatePass(
     daysAvailable: available.length,
     runId: null,
     daysBeneathTheGate: beneath,
-    daysStamped: stamped.size,
+    daysStamped: stampedCandidates,
     daysMeasured: measured.length,
     daysDeletable: deletableDays.length,
     results,
