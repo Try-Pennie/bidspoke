@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { outboxEvents, transitions } from './_incident-events'
+import { outboxEvents, transitions, withTickingClock } from './_incident-events'
 vi.mock('../slack', () => ({
   sendFailureSpikeAlert: vi.fn().mockResolvedValue('ts-1'),
   getSlackConnection: vi.fn(),
@@ -467,8 +467,12 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
       workflows: [orgWf],
       workflow_executions: [failRow('ACRO_GATEWAY 1'), failRow('ACRO_GATEWAY 2'), failRow('ACRO_GATEWAY 3')],
     })
-    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
-    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+    // A clock that moves on every read: the opening and the page must share the
+    // pass's one reading, or the page sorts first.
+    await withTickingClock(async () => {
+      await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+      await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+    })
     expect(transitions(kv.store)).toEqual(['opened wf-1:ACRO_GATEWAY', 'paged wf-1:ACRO_GATEWAY'])
     expect(outboxEvents(kv.store)[0]).toMatchObject({
       signal: 'failure-rate', scope: 'org', organizationId: ORG_ID, subjectLabel: 'Engine Bidding: "ACRO_GATEWAY"', windowMinutes: 5,
