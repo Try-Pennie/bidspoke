@@ -17,7 +17,7 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { checkExecutionRetention, RETENTION_CHECK_JOB } from '../retention-check'
+import { checkExecutionRetention, RETENTION_CHECK_JOB, RETENTION_CHECK_REMEDY, retentionRemedyFor } from '../retention-check'
 import { notifyExportFailure } from '../export-alerts'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
 import type { Env } from '../../index'
@@ -274,5 +274,11 @@ describe('each purge job difference gets wording true for it', () => {
     // Nothing about the jobs differing was measured, so it may not open by
     // saying they are not as declared (lessons review, #835).
     expect(remedy.consequence).not.toMatch(/are not as this repo declares/)
+  })
+})
+
+describe('a clean run clears with the full remedy, never an empty one (lessons review, #835)', () => {
+  it('returns the declared remedy when there is no difference', () => {
+    expect(retentionRemedyFor([])).toBe(RETENTION_CHECK_REMEDY)
   })
 })

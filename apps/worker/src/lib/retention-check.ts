@@ -59,7 +59,9 @@ const DISAGREEMENTS = new Set(['retention-disagrees', 'jobs-disagree'])
  * disabled and a window nothing could read (lessons review, #835).
  */
 export function retentionRemedyFor(codes: readonly string[]): AlertRemedy {
-  if (codes.length > 0 && codes.every((c) => DISAGREEMENTS.has(c))) return RETENTION_CHECK_REMEDY
+  // No difference is the clear path, which carries the declared remedy rather
+  // than one built from nothing.
+  if (codes.length === 0 || codes.every((c) => DISAGREEMENTS.has(c))) return RETENTION_CHECK_REMEDY
   const has = (code: string) => codes.includes(code)
   const consequences: string[] = []
   const fixes: string[] = []
