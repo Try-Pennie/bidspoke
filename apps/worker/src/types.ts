@@ -135,6 +135,18 @@ export interface ExecutionContext {
    */
   runningSteps?: string[]
   /**
+   * Set by the walk around a post-answer Salesforce update (#2022): the node
+   * reports the request it is about to send, and again if it changes the body,
+   * so a write still out after 2 s can be recorded for the read-back.
+   */
+  noteSalesforceRequest?: (req: { object: string; record_id: string; operation: 'update'; body: Record<string, unknown> }) => void
+  /**
+   * Starts the watch on one post-answer Salesforce update (#2022). Set by the
+   * engine on live runs only (never a test or a shadow run), so its absence is
+   * what keeps a test run's writes unrecorded.
+   */
+  startAtRiskWatch?: (stepNamespace: string) => import('./engine/at-risk-writes').AtRiskWatch
+  /**
    * How the engine waits out a step's retry backoff (#1063). Undefined in
    * production, which means the real timer.
    *

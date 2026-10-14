@@ -78,6 +78,7 @@ import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailabl
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
+import { startAtRiskWatch, runWatched } from './at-risk-writes'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -464,6 +465,19 @@ export async function executeWorkflow(
   // along on it. The circuit-breaker trip alert needs it to stay silent on Test
   // Runner runs (#547).
   stampRunReality(ctx, options)
+  // A post-answer Salesforce update still out after 2 s is recorded for the
+  // read-back (#2022). Live runs only: a test run is kept out of every record, and
+  // a shadow run sends nothing to be at risk.
+  if (!reality.isTest && !reality.outboundStubbed) {
+    ctx.startAtRiskWatch = (stepNamespace) =>
+      startAtRiskWatch({
+        kv: env.IDEMPOTENCY,
+        keys: secretKeys(env),
+        clock: retryClock,
+        run: { orgId: org_id, workflowId, executionId },
+        stepNamespace,
+      })
+  }
   // The lead_sighting_bids rows nodes write are usually still retrying after
   // the response when the database is down, so they take the same budget.
   ctx.retryTiming = writeTiming
@@ -2202,12 +2216,22 @@ export async function walkGraph(
     let stepLogs: import('../types').StepLogEntry[] | undefined
 
     try {
-      const result = await withRetry(
-        (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
-        retryConfig,
-        classifyStepError,
-        retryStats,
-        ctx.retrySleep
+      // A Salesforce update after the answer is watched around its whole retry
+      // loop, so one still out after 2 s is recorded however it ends (#2022).
+      const atRisk =
+        pendingResponse !== null && node.type === 'salesforce' && node.config.operation === 'update'
+          ? (ctx.startAtRiskWatch?.(node.namespace) ?? null)
+          : null
+      const result = await runWatched(
+        atRisk,
+        (note) => { ctx.noteSalesforceRequest = note },
+        () => withRetry(
+          (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
+          retryConfig,
+          classifyStepError,
+          retryStats,
+          ctx.retrySleep
+        ),
       )
       retriesUsed = retryStats.retries
       output = result.output

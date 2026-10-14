@@ -263,6 +263,36 @@ describe('executeSalesforceNode', () => {
     expect((output as { body: null }).body).toBeNull()
   })
 
+  // #2022: the engine records a post-answer write still out after 2 s, and only
+  // the node knows the request it resolved, so it reports it as it sends.
+  it('update: reports the request it is about to send to the run\'s note hook', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(204, ''))
+    const ctx = makeCtx()
+    const notes: unknown[] = []
+    ctx.noteSalesforceRequest = (req) => { notes.push(req) }
+    await executeSalesforceNode(
+      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-999', body: { Status__c: 'Active' } }),
+      ctx,
+      env
+    )
+    expect(notes).toEqual([{ object: 'Prospect__c', record_id: 'SF-999', operation: 'update', body: { Status__c: 'Active' } }])
+  })
+
+  it('update: a rejection carries the status Salesforce answered, so a caller need not read the message', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(400, '[{"errorCode":"INVALID_FIELD","message":"no"}]'))
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-999', body: { Status__c: 'Active' } }),
+      makeCtx(),
+      env
+    ).then(() => null, (e: Error & { status?: number; permanent?: boolean }) => e)
+    expect(err?.status).toBe(400)
+    expect(err?.permanent).toBe(true)
+  })
+
   it('update: throws when record_id is missing', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')

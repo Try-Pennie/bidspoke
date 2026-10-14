@@ -186,6 +186,27 @@ describe('Salesforce node malformed-email recovery (#723)', () => {
     expect(warn?.message).toContain(ACCENTED_EMAIL)
   })
 
+  // #2022: a recorded at-risk write must hold the body that is actually sent, so
+  // an update the recovery blanks is reported again with the blanked body.
+  it('reports the blanked body of an update it retries, so a recorded write matches what was sent', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockTokenResponse())
+      .mockResolvedValueOnce(mockResponse(400, INVALID_EMAIL_400))
+      .mockResolvedValueOnce(mockResponse(204, ''))
+    const ctx = makeCtx()
+    const notes: Array<{ body: Record<string, unknown> }> = []
+    ctx.noteSalesforceRequest = (req) => { notes.push(req) }
+    await executeSalesforceNode(
+      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-7', body: { Email__c: ACCENTED_EMAIL, Phone__c: GOOD_PHONE } }),
+      ctx,
+      makeEnv(),
+    )
+    expect(notes.map((n) => n.body)).toEqual([
+      { Email__c: ACCENTED_EMAIL, Phone__c: GOOD_PHONE },
+      { Email__c: '', Phone__c: GOOD_PHONE },
+    ])
+  })
+
   it('rejects with an explicit no-contact reason, and does not retry, when no phone survives', async () => {
     fetchMock
       .mockResolvedValueOnce(mockTokenResponse())

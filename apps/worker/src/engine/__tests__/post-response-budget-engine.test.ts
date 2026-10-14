@@ -51,6 +51,7 @@ import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD, recordOutcomeDeadLetter } from '../durability'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
+import { decryptSecret } from '../../lib/secret-crypto'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
 
@@ -219,6 +220,8 @@ async function run(
     // Pre-seed the per-label dead-letter window counter so a single run of this
     // helper can cross a label's threshold (continuation_unfinished needs 3, #1942).
     seedWindows?: Record<string, number>
+    // Laid over the run's input, so a case can mark it a test run (#2022).
+    input?: Record<string, unknown>
   } = {},
 ) {
   const clock = new VirtualClock()
@@ -238,7 +241,7 @@ async function run(
   const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
 
   const result = await executeWorkflow(
-    { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine' },
+    { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
     env,
     { ...moneyRuntime(db.client), clock },
     executionCtx,
@@ -575,6 +578,95 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
     const { db } = await run(() => 'up', { SECRET_ENCRYPTION_KEY: key })
     expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
+  })
+
+  // #2022: a post-answer Salesforce update still out after 2 s is recorded in
+  // KV, its body encrypted, for the read-back (#2023). One that settles fast, one
+  // made before the answer, and any test run record nothing.
+  describe('recording a post-answer Salesforce update still out after 2 s (#2022)', () => {
+    const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 21)).toString('base64')
+    const REQ = { object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', operation: 'update' as const, body: { PDFlow_1__c: 'https://app/run' } }
+
+    function withSalesforce(beforeAnswer = false) {
+      const sf = { id: 'p', namespace: 'patch_submission', type: 'salesforce', config: { retries: 0, operation: 'update' } }
+      const resp = { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } }
+      return {
+        trigger: { id: 'trigger', type: 'trigger', config: {} },
+        nodes: beforeAnswer ? [sf, resp] : [resp, sf],
+        edges: [{ id: 'e0', source: beforeAnswer ? 'p' : 'r', target: beforeAnswer ? 'r' : 'p' }],
+      } as unknown as WorkflowDefinition
+    }
+
+    function writeTaking(ms: number | 'no answer', beforeAnswer = false) {
+      vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+        definition: withSalesforce(beforeAnswer),
+        workflow_version_id: 'v1',
+        workflow_name: 'Main Flow',
+        org_id: 'org-1',
+        slack_channel: null,
+        lane: 'money',
+      })
+      let clock: VirtualClock | null = null
+      const watched: boolean[] = []
+      vi.mocked(executeNode).mockImplementation(async (node, ctx) => {
+        if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+        watched.push(ctx.noteSalesforceRequest !== undefined)
+        ctx.noteSalesforceRequest?.(REQ)
+        // Before the answer the harness has not started driving the clock yet,
+        // so a write there settles at once; whether it was watched is the question.
+        if (beforeAnswer || ms === 0) return { output: { status: 204, body: null } }
+        if (!clock) throw new Error('the clock was not wired before the write ran')
+        if (ms === 'no answer') {
+          // Out well past the cut-off, then the step's own timeout: no answer came.
+          await clock.delay(60_000)
+          throw new Error('Step timed out after 60000ms')
+        }
+        await clock.delay(ms)
+        return { output: { status: 204, body: null } }
+      })
+      return { availability: (c: VirtualClock) => { clock = c; return 'up' as const }, watched }
+    }
+
+    const atRiskKeys = (store: Map<string, string>) => [...store.keys()].filter((k) => k.startsWith('at-risk-write:'))
+
+    it('keeps the record of a write that never got an answer, with its body encrypted', async () => {
+      const { idempotency } = await run(writeTaking('no answer').availability, { SECRET_ENCRYPTION_KEY: KEY })
+      const keys = atRiskKeys(idempotency.store)
+      expect(keys).toHaveLength(1)
+      expect(keys[0]).toMatch(/:patch_submission$/)
+      const entry = JSON.parse(idempotency.store.get(keys[0])!) as { sf_record_id: string; body_encrypted: string }
+      expect(entry.sf_record_id).toBe('a04Ui00000NkhG1IAJ')
+      expect(JSON.parse(await decryptSecret(entry.body_encrypted, KEY))).toEqual(REQ.body)
+    })
+
+    it('records nothing for a write that settles inside 2 s', async () => {
+      const { idempotency } = await run(writeTaking(100).availability, { SECRET_ENCRYPTION_KEY: KEY })
+      expect(idempotency.puts.filter((p) => p.key.startsWith('at-risk-write:'))).toEqual([])
+    })
+
+    it('clears the record of a write that lands after 2 s', async () => {
+      const { idempotency } = await run(writeTaking(5000).availability, { SECRET_ENCRYPTION_KEY: KEY })
+      expect(idempotency.puts.filter((p) => p.key.startsWith('at-risk-write:'))).toHaveLength(1)
+      expect(atRiskKeys(idempotency.store)).toEqual([])
+    })
+
+    it('watches a write after the answer, and not one made before it', async () => {
+      const after = writeTaking(100)
+      await run(after.availability, { SECRET_ENCRYPTION_KEY: KEY })
+      expect(after.watched).toEqual([true])
+      const before = writeTaking(100, true)
+      await run(before.availability, { SECRET_ENCRYPTION_KEY: KEY })
+      expect(before.watched).toEqual([false])
+    })
+
+    // A test run is answered only once its whole walk is done, so its write
+    // settles at once here; the question is whether the walk watched it.
+    it('does not watch a test run\'s writes', async () => {
+      const test = writeTaking(0)
+      const { idempotency } = await run(test.availability, { SECRET_ENCRYPTION_KEY: KEY }, { input: { isTest: true } })
+      expect(test.watched).toEqual([false])
+      expect(idempotency.puts.filter((p) => p.key.startsWith('at-risk-write:'))).toEqual([])
+    })
   })
 
   // #1882: the reason and the alert pointed at the Salesforce update, which had

@@ -129,6 +129,13 @@ metadata rather than payloads, but this has not been audited field by field
 against the classification above, and it should be before anyone claims consumer
 data is absent from it.
 
+The `IDEMPOTENCY` KV namespace also holds **at-risk Salesforce writes** (#2022),
+under the `at-risk-write:` prefix: a post-answer Salesforce update still out 2
+seconds after it started, with its body (lead fields) encrypted with
+`SECRET_ENCRYPTION_KEY`. Each entry expires 24 hours after it is written, and
+that expiry is its erasure bound: an erasure request is complete for this store
+24 hours after the subject's last run, with nothing to delete by hand.
+
 ### Salesforce
 
 Prospect records carry the full consumer identity and are the system of record
@@ -180,4 +187,5 @@ the site (Geoff, 2026-09-04), so the node sends no certificate. See #1081.
 | Full lead payloads | `workflow_executions`, `execution_steps` | 7 days | partition truncation, 03:30 UTC |
 | Encrypted identity | `persons` | n/a, table is empty | writer removed (#765) |
 | Consumer identity | Salesforce | not ours | Salesforce |
+| Lead fields of an at-risk Salesforce write, encrypted | KV `at-risk-write:` | 24 hours | KV expiry (#2022) |
 | Staff email, audit | `users`, `*_by_email` | indefinite | deliberate |

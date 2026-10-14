@@ -203,7 +203,7 @@ The engine decrypts every secret environment variable with this key on every exe
 
 1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
 2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
-3. Set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, then delete `SECRET_ENCRYPTION_KEY_NEXT`.
+3. Wait at least 24 hours after step 1, then set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, and delete `SECRET_ENCRYPTION_KEY_NEXT`. The wait is for the at-risk Salesforce write records in KV (`at-risk-write:`, #2022): the route does not re-lock them, so one written under the old key must expire (24 hours) before the old key stops opening it.
 4. Run the route once more as a preview: every row should count as already current under the primary alone.
 
 Every call site passes `secretKeys(env)`, never the raw key; `__guards__/worker/secret-key-ring-guard.test.ts` fails on one that does.
