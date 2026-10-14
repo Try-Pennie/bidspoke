@@ -1089,7 +1089,8 @@ const TRANSIENT_DB_CODES = new Set([
   '40P01', // deadlock_detected
   '55P03', // lock_not_available: the lock timeout
   '53000', // insufficient_resources
-  '53100', // disk_full
+  // 53100 disk_full is deliberately absent: a full disk does not clear by
+  // waiting, so it is sent to the error, not called an overload.
   '53200', // out_of_memory
   '53300', // too_many_connections
   'PGRST000', // PostgREST could not connect to the database

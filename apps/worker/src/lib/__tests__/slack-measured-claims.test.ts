@@ -136,6 +136,17 @@ describe('outcome dead letter: the Supabase health line only for a code known to
     expect(text).toMatch(/Inspect the error above/)
   })
 
+  it('does not call a full disk an overload that waiting clears', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'could not extend file: No space left on device', error_code: '53100' },
+      'https://app.test',
+    )
+    const text = lastText()
+    expect(text).not.toMatch(/overloaded or unreachable/)
+    expect(text).toMatch(/Inspect the error above/)
+  })
+
   it('still points at the database for a statement timeout, which is known to clear up', async () => {
     await sendOutcomeDeadLetterAlert(
       conn,
