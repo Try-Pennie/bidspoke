@@ -159,7 +159,7 @@ export class AlertClaimObject implements DurableObject {
    * cron tick runs; the rule is in the comment on TICK_LEASE_STALE_MS.
    */
   private async handleTickClaim(request: Request): Promise<Response> {
-    const body = await request.json<{ now?: unknown; scheduled_time?: unknown; holder?: unknown }>()
+    const body = await request.json<{ now?: unknown; scheduled_time?: unknown; holder?: unknown; after_wait?: unknown }>()
     if (!isFiniteNumber(body.now) || !isFiniteNumber(body.scheduled_time) || typeof body.holder !== 'string' || body.holder === '') {
       return json({ error: 'now, scheduled_time and holder are required' }, 400)
     }
@@ -173,11 +173,15 @@ export class AlertClaimObject implements DurableObject {
     const age = now - held.started_at
     const leaseAge = now - (held.renewed_at ?? held.started_at)
     const isRetry = held.status === 'running' && held.scheduled_time === scheduledTime && leaseAge >= TICK_LEASE_STALE_MS
+    // The second ask of a same-time wait (#2064) is the same delivery asking again:
+    // its first ask already counted a duplicate, which a takeover takes back.
+    const afterWait = body.after_wait === true
     if (isRetry) {
-      await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now })
+      const duplicates = afterWait ? Math.max(0, held.duplicates - 1) : held.duplicates
+      await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, duplicates })
       return json<TickClaimResult>({ run: true, reason: 'retry', holder: held.holder, holder_age_ms: age })
     }
-    const duplicates = held.duplicates + 1
+    const duplicates = afterWait ? held.duplicates : held.duplicates + 1
     await this.state.storage.put<TickStorage>('tick', { ...held, duplicates })
     return json<TickClaimResult>({
       run: false,

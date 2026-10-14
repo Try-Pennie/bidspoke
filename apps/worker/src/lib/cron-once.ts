@@ -113,10 +113,10 @@ async function decide(
   const holder = (options.holder ?? (() => crypto.randomUUID()))()
   const clock = options.now ?? Date.now
   const key = cronTickKey(event.cron, event.scheduledTime)
-  const ask = () => raceDeadline(async () => {
+  const ask = (afterWait = false) => raceDeadline(async () => {
     const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-claim', {
       method: 'POST',
-      body: JSON.stringify({ now: clock(), scheduled_time: event.scheduledTime, holder }),
+      body: JSON.stringify({ now: clock(), scheduled_time: event.scheduledTime, holder, after_wait: afterWait }),
     })
     if (!res.ok) throw new Error(`claim object answered ${res.status}`)
     const body = await res.json<TickClaimResult>()
@@ -143,7 +143,7 @@ async function decide(
     const waitMs = TICK_LEASE_STALE_MS - first.holder_lease_age_ms + LEASE_MARGIN_MS
     console.log(`[cron-once] waiting ${waitMs}ms on a same-time holder ${label} holder=${first.holder} lease_age_ms=${first.holder_lease_age_ms}`)
     await (options.sleep ?? sleepFor)(waitMs)
-    outcome = await ask()
+    outcome = await ask(true)
     if (outcome.kind === 'timed_out') return failOpen(`claim ${key} did not answer inside ${deadlineMs}ms after waiting on a same-time holder`)
     if (outcome.kind === 'threw') return failOpen(`claim ${key} failed after waiting on a same-time holder: ${formatErr(outcome.error)}`)
   }
@@ -175,6 +175,9 @@ function startRenewing(
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
   const key = cronTickKey(event.cron, event.scheduledTime)
   const clock = options.now ?? Date.now
+  let stop: () => void = () => {}
+  let stopped = false
+  const halt = () => { if (!stopped) { stopped = true; stop() } }
   const renew = async () => {
     const outcome = await raceDeadline(async () => {
       const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-renew', {
@@ -182,13 +185,22 @@ function startRenewing(
         body: JSON.stringify({ holder, now: clock() }),
       })
       if (!res.ok) throw new Error(`claim object answered ${res.status}`)
+      return res.json<{ renewed?: unknown }>()
     }, deadlineMs, options.delay)
     // Not fatal: a lease that goes stale lets a same-time delivery run the tick
     // again, which is the direction to err in.
     if (outcome.kind === 'timed_out') console.error(`[cron-once] could not renew ${key} inside ${deadlineMs}ms`)
     if (outcome.kind === 'threw') console.error(`[cron-once] could not renew ${key}: ${formatErr(outcome.error)}`)
+    // Refused: the tick was handed to a retry (this run's renewals had stopped
+    // reaching the object), so this run is now the second one. Said once, and
+    // renewing stops, because the lease is no longer this run's to keep.
+    if (outcome.kind === 'ok' && outcome.value?.renewed === false) {
+      console.warn(`[cron-once] renewal of ${key} was refused: the tick was handed to another delivery, holder=${holder} keeps running as a second run`)
+      halt()
+    }
   }
-  return (options.every ?? everyInterval)(() => { void renew() }, TICK_LEASE_RENEW_MS)
+  stop = (options.every ?? everyInterval)(() => { if (!stopped) void renew() }, TICK_LEASE_RENEW_MS)
+  return halt
 }
 
 /** Closes the tick as `done`, or frees it with `release`, for this holder only. */
@@ -208,9 +220,9 @@ async function settleTick(
     })
     if (!res.ok) throw new Error(`claim object answered ${res.status}`)
   }, deadlineMs, options.delay)
-  // Not fatal either way. An unmarked claim lets a later delivery of the same
-  // scheduled time take over as a retry after the floor; an unreleased one
-  // does the same, so a failed release delays the retry rather than losing it.
+  // Not fatal either way. An unmarked or unreleased claim stops being renewed,
+  // so a later delivery of the same scheduled time takes over as a retry once
+  // the lease is stale; a failed release delays the retry rather than losing it.
   if (outcome.kind === 'timed_out') console.error(`[cron-once] could not ${how} ${key} inside ${deadlineMs}ms`)
   if (outcome.kind === 'threw') console.error(`[cron-once] could not ${how} ${key}: ${formatErr(outcome.error)}`)
 }

@@ -111,6 +111,19 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     expect(retry).toMatchObject({ run: true, reason: 'retry', holder: 'a' })
   })
 
+  // Lessons review: the first ask of a same-time wait counted a duplicate, so a
+  // genuine retry that then took over was still recorded as one.
+  it('does not count the asks of a same-time wait as duplicates', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
+    const first = await tick(obj, { now: NOW + 2_100, scheduled_time: NOW, holder: 'b' })
+    expect(first).toMatchObject({ run: false, duplicates: 1 })
+    const retry = await obj.fetch(req('/tick-claim', { now: NOW + TICK_LEASE_STALE_MS + 250, scheduled_time: NOW, holder: 'b', after_wait: true }))
+    expect(await retry.json()).toMatchObject({ run: true, reason: 'retry' })
+    const later = await tick(obj, { now: NOW + 40_000, scheduled_time: NOW + 36_000, holder: 'c' })
+    expect(later).toMatchObject({ run: false, duplicates: 1 })
+  })
+
   it('takes a renewal only from the run that holds the tick', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })

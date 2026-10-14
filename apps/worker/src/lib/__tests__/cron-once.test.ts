@@ -148,6 +148,27 @@ describe('runCronTickOnce (#1899)', () => {
     expect(warns.join('\n')).toMatch(/took over.*cron="23 \* \* \* \*".*previous_holder=0d6edae1/)
   })
 
+  // Lessons review: a renewal the object refuses means the tick was handed to a
+  // retry; it was never read, so the old run carried on with no sign of it.
+  it('says so when its renewal is refused because the tick was taken over', async () => {
+    const { ns } = claimNamespace()
+    const clock = { t: MINUTE }
+    const job = pendingJob()
+    let renew: () => void = () => {}
+    let stopped = false
+    const run = runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE }, job.ran, {
+      now: () => clock.t, holder: () => 'old', every: (fn) => { renew = fn; return () => { stopped = true } },
+    })
+    await vi.waitFor(() => expect(job.ran).toHaveBeenCalledTimes(1))
+    clock.t += TICK_LEASE_STALE_MS + 1
+    expect(await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), { now: () => clock.t, holder: () => 'new', every: () => () => {} })).toBe('ran')
+    renew()
+    await vi.waitFor(() => expect(warns.join('\n')).toMatch(/renewal of .* was refused.*holder=old/))
+    expect(stopped).toBe(true)
+    job.finish()
+    await run
+  })
+
   it('renews the lease while the jobs run, and stops when they finish', async () => {
     const { ns } = claimNamespace()
     const job = pendingJob()
@@ -245,7 +266,7 @@ describe('runCronTickOnce (#1899)', () => {
       runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, async () => { throw new Error('createSupabaseClient threw') }, { now: () => scheduled, holder: () => 'req-a' }),
     ).rejects.toThrow('createSupabaseClient threw')
     expect(errors.join('\n')).toMatch(/released cron="0 13 \* \* \*".*jobs threw.*createSupabaseClient threw/)
-    // a retry inside the 35 s floor runs, which a merely unmarked claim would refuse
+    // the tick was released, so the next delivery runs at once, with no wait on a lease
     const retryJobs = vi.fn(async () => {})
     const retry = await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, retryJobs, { now: () => scheduled + 2_000, holder: () => 'req-b' })
     expect(retry).toBe('ran')
