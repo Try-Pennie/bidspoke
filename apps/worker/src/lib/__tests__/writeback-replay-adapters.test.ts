@@ -1,0 +1,119 @@
+/**
+ * The real store and the real Salesforce port behind the replay tool (#471).
+ *
+ * The store's predicates are what make a replay send once and stay inside the
+ * caller's organization, so the statements are asserted as built. The port is
+ * driven through a stubbed fetch, with the token already cached.
+ */
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../../index'
+
+vi.mock('../env-loader', () => ({ loadEnvVars: vi.fn() }))
+import { loadEnvVars } from '../env-loader'
+import { supabaseHeldWriteStore, salesforcePortFor } from '../writeback-replay'
+
+interface Built { table: string; op: string; columns?: string; patch?: unknown; filters: Array<[string, string, unknown]> }
+
+function recordingDb(answer: { data: unknown; error: unknown } = { data: [{ id: 'w-1' }], error: null }) {
+  const built: Built[] = []
+  const client = {
+    from(table: string) {
+      const q: Built = { table, op: 'select', filters: [] }
+      built.push(q)
+      const chain: Record<string, unknown> = {
+        select(cols?: string) { if (q.op === 'select') q.columns = cols; return chain },
+        update(patch: unknown) { q.op = 'update'; q.patch = patch; return chain },
+        eq(c: string, v: unknown) { q.filters.push(['eq', c, v]); return chain },
+        order() { return chain },
+        range() { return chain },
+        limit() { return chain },
+        maybeSingle() { return Promise.resolve({ data: { id: 'w-1' }, error: null }) },
+        then(res: (v: unknown) => unknown) { return Promise.resolve(answer).then(res) },
+      }
+      return chain
+    },
+  } as unknown as SupabaseClient
+  return { client, built }
+}
+
+const eqs = (b: Built) => Object.fromEntries(b.filters.map(([, c, v]) => [c, v]))
+
+describe('supabaseHeldWriteStore', () => {
+  it('reads a row only inside the caller\'s organization', async () => {
+    const db = recordingDb()
+    await supabaseHeldWriteStore(db.client).get('org-1', 'w-1')
+    expect(eqs(db.built[0])).toEqual({ organization_id: 'org-1', id: 'w-1' })
+  })
+
+  it('claims only a pending row at the attempt count it read, inside the organization', async () => {
+    const db = recordingDb()
+    expect(await supabaseHeldWriteStore(db.client).claim('org-1', 'w-1', 2)).toBe(true)
+    expect(db.built[0]).toMatchObject({ op: 'update', patch: { attempts: 3 } })
+    expect(eqs(db.built[0])).toEqual({ organization_id: 'org-1', id: 'w-1', status: 'pending', attempts: 2 })
+  })
+
+  it('reports a lost claim as false, not as an error', async () => {
+    const db = recordingDb({ data: [], error: null })
+    expect(await supabaseHeldWriteStore(db.client).claim('org-1', 'w-1', 2)).toBe(false)
+  })
+
+  it('throws on a real database error rather than reading it as a lost claim', async () => {
+    const db = recordingDb({ data: null, error: { code: '57014', message: 'statement timeout' } })
+    await expect(supabaseHeldWriteStore(db.client).claim('org-1', 'w-1', 2)).rejects.toThrow(/statement timeout/)
+  })
+
+  it('writes an outcome only while the row still holds the claim', async () => {
+    const db = recordingDb()
+    await supabaseHeldWriteStore(db.client).finish('w-1', 3, { status: 'replayed' })
+    expect(eqs(db.built[0])).toEqual({ id: 'w-1', status: 'pending', attempts: 3 })
+  })
+
+  it('lists without any encrypted column, inside the organization', async () => {
+    const db = recordingDb({ data: [], error: null })
+    await supabaseHeldWriteStore(db.client).list('org-1', 'pending')
+    expect(db.built[0].columns).not.toMatch(/encrypted/)
+    expect(eqs(db.built[0])).toEqual({ organization_id: 'org-1', status: 'pending' })
+  })
+})
+
+describe('salesforcePortFor', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function kv() {
+    const store = new Map<string, string>([['sf-token-org-1', 'cached-token']])
+    return {
+      store,
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => { store.set(k, v) },
+      delete: async (k: string) => { store.delete(k) },
+    }
+  }
+
+  it('refuses to build without the workflow\'s Salesforce credentials, naming them', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example' })
+    const env = { WORKFLOW_CACHE: kv() } as unknown as Env
+    await expect(salesforcePortFor(env, {} as SupabaseClient, 'k', 'org-1', 'wf-1')).rejects.toThrow(/SALESFORCE_CLIENT_ID/)
+  })
+
+  it('sends once more with a fresh login when the cached token was revoked', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+    const cache = kv()
+    const calls: Array<{ url: string; auth?: string; body?: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      const headers = (init.headers ?? {}) as Record<string, string>
+      calls.push({ url, auth: headers.Authorization, body: init.body })
+      if (url.endsWith('/services/oauth2/token')) return new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 })
+      return headers.Authorization === 'Bearer cached-token'
+        ? new Response('[{"errorCode":"INVALID_SESSION_ID"}]', { status: 401 })
+        : new Response(null, { status: 204 })
+    }))
+    const port = await salesforcePortFor({ WORKFLOW_CACHE: cache } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1')
+    const res = await port.send('PATCH', '/sobjects/Submission__c/a04Ui00000NkhG1IAJ', '{"A__c":1}')
+    expect(res.status).toBe(204)
+    const sends = calls.filter((c) => c.url.includes('/sobjects/'))
+    expect(sends.map((c) => c.auth)).toEqual(['Bearer cached-token', 'Bearer fresh-token'])
+    expect(sends[0].url).toBe('https://sf.example/services/data/v60.0/sobjects/Submission__c/a04Ui00000NkhG1IAJ')
+    expect(sends[1].body).toBe('{"A__c":1}')
+  })
+})

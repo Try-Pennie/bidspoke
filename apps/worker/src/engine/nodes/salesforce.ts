@@ -361,7 +361,7 @@ export async function executeSalesforceNode(
     }
     // A firewall block page on the instance is noted for the engine to report (#1265).
     noteBlockSighting(ctx, sightingFromResponse(instanceUrl, res.status, responseText, res.headers, node.namespace))
-    const isTransient = res.status === 429 || res.status >= 500 || matchesTransient || isEdgeErrorPage
+    const isTransient = salesforceFailureIsTransient(res.status, responseText) || matchesTransient
     if (!isTransient) err.permanent = true
 
     // Last chance before the lead is lost (#723). A field-level rejection on a
@@ -401,7 +401,7 @@ export async function executeSalesforceNode(
   return { output: { status: res.status, body: parsedBody }, resolvedInput, ...(warnLogs.length > 0 ? { logs: warnLogs } : {}) }
 }
 
-interface SalesforceCallOptions {
+export interface SalesforceCallOptions {
   url: string
   method: string
   headers: Record<string, string>
@@ -416,13 +416,24 @@ interface SalesforceCallOptions {
 }
 
 /**
+ * Whether a failed Salesforce answer is worth sending again: a rate limit, a
+ * server error, or an edge error page (the request died before Salesforce ran
+ * it, whatever status came with it, #694). Everything else is a business
+ * rejection. The node adds its own per node `transient_errors` on top; the
+ * replay tool (#471) judges a held write by this same rule.
+ */
+export function salesforceFailureIsTransient(status: number, responseText: string): boolean {
+  return status === 429 || status >= 500 || containsHtmlDocument(responseText)
+}
+
+/**
  * One Salesforce call: bulkhead slot, own timeout, response read and parsed.
  *
  * Extracted so the malformed-field recovery (#723) reruns the request through
  * exactly this path. A retry that skipped the bulkhead would sneak past the
  * inflight cap (ADR 0005) precisely when Salesforce is already struggling.
  */
-async function performSalesforceCall(
+export async function performSalesforceCall(
   bodyStr: string | undefined,
   opts: SalesforceCallOptions,
 ): Promise<{ res: Response; responseText: string; parsedBody: unknown }> {
