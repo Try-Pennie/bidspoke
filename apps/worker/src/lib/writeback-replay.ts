@@ -123,7 +123,19 @@ export type ReplayResult =
   | { kind: 'refused'; error: string; recorded: boolean }
   | { kind: 'still_pending'; error: string; recorded: boolean }
 
-export type AbandonResult = { kind: 'not_found' } | { kind: 'not_pending'; status: string } | { kind: 'conflict' } | { kind: 'abandoned' }
+export type AbandonResult =
+  | { kind: 'not_found' }
+  | { kind: 'not_pending'; status: string }
+  | { kind: 'replay_in_flight' }
+  | { kind: 'conflict' }
+  | { kind: 'abandoned' }
+
+/**
+ * How long a replay's claim holds the row against an abandon: longer than any
+ * replay can run (the bulkhead wait, the 15 s call timeout, a fresh login and one
+ * resend), so an abandon never closes a row whose write may still be landing.
+ */
+export const REPLAY_LEASE_MS = 2 * 60 * 1000
 
 /** Salesforce names: an API name, and a 15 or 18 character record id. Nothing else reaches a URL. */
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]*$/
@@ -227,7 +239,9 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
       return false
     }
   }
-  // The error is kept locked; if it cannot be locked it is left out, never stored in the clear.
+  // The error is kept locked; if it cannot be locked it is left out of the update,
+  // so the previous error stays rather than being wiped, and nothing is stored in the clear.
+  const withError = (locked: string | null): Partial<HeldWriteRow> => (locked === null ? {} : { last_error_encrypted: locked })
   const lock = (text: string): Promise<string | null> =>
     encryptSecret(text, deps.keys).catch((e) => {
       console.error(`[writeback-replay] the error of held write ${id} could not be encrypted, so it is not stored:`, formatErr(e))
@@ -240,7 +254,7 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   } catch (e) {
     // No answer is not a refusal: the write may be resent.
     const error = formatErr(e)
-    const recorded = await record({ last_error_encrypted: await lock(error), updated_at: now() })
+    const recorded = await record({ ...withError(await lock(error)), updated_at: now() })
     return { kind: 'still_pending', error, recorded }
   }
   if (answer.status >= 200 && answer.status < 300) {
@@ -252,23 +266,26 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   // Only a rejection of the write itself closes the row. A transient failure, or
   // a login or permission refusal (a fault on our side), leaves it pending.
   if (!salesforceRejectedTheWrite(answer.status, answer.text)) {
-    return { kind: 'still_pending', error, recorded: await record({ last_error_encrypted: lastError, updated_at: now() }) }
+    return { kind: 'still_pending', error, recorded: await record({ ...withError(lastError), updated_at: now() }) }
   }
   const at = now()
   const recorded = await record({
     status: 'refused',
     replayable: false,
-    last_error_encrypted: lastError,
+    ...withError(lastError),
     finished_at: at,
     updated_at: at,
   })
   return { kind: 'refused', error, recorded }
 }
 
-export async function abandonHeldWrite(store: HeldWriteStore, orgId: string, id: string): Promise<AbandonResult> {
+export async function abandonHeldWrite(store: HeldWriteStore, orgId: string, id: string, nowMs: number = Date.now()): Promise<AbandonResult> {
   const row = await store.get(orgId, id)
   if (!row) return { kind: 'not_found' }
   if (row.status !== 'pending') return { kind: 'not_pending', status: row.status }
+  // A claim moves updated_at, so a row a replay touched inside the lease may be
+  // mid send. A row never replayed (attempts 0) has no replay to wait for.
+  if (row.attempts > 0 && nowMs - Date.parse(row.updated_at) < REPLAY_LEASE_MS) return { kind: 'replay_in_flight' }
   const readAttempts = row.attempts
   const at = new Date().toISOString()
   return (await store.finish(id, readAttempts, { status: 'abandoned', finished_at: at, updated_at: at }))

@@ -12,6 +12,7 @@ import {
   previewReplay,
   replayHeldWrite,
   abandonHeldWrite,
+  REPLAY_LEASE_MS,
   type HeldWriteRow,
   type HeldWriteStore,
   type SalesforcePort,
@@ -204,6 +205,17 @@ describe('replayHeldWrite', () => {
     expect(await replayHeldWrite(deps(store, salesforce({ status: 204, text: '' }).port), ORG, ID)).toEqual({ kind: 'replayed', recorded: false })
   })
 
+  it('keeps the previous error when the new one cannot be locked, rather than wiping it', async () => {
+    rows[0] = await row({ last_error_encrypted: 'earlier-locked-error' })
+    const { store, finishes } = memoryStore(rows)
+    // A key ring that opens the body but cannot lock: a malformed NEXT key mid rotation.
+    const unlockable = { ...deps(store, salesforce({ status: 503, text: 'unavailable' }).port), keys: { encryptWith: 'not-a-key', decryptWith: [KEY] } }
+    const r = await replayHeldWrite(unlockable, ORG, ID)
+    expect(r.kind).toBe('still_pending')
+    expect(finishes[0].patch).not.toHaveProperty('last_error_encrypted')
+    expect(rows[0].last_error_encrypted).toBe('earlier-locked-error')
+  })
+
   it('reports a write that landed but could not be recorded, rather than claiming it was', async () => {
     const { store } = memoryStore(rows)
     store.finish = async () => false
@@ -212,6 +224,18 @@ describe('replayHeldWrite', () => {
 })
 
 describe('abandonHeldWrite', () => {
+  // A replay claims the row (bumping attempts) before it sends, and records the
+  // outcome after. An abandon between the two would close a row whose write may be
+  // landing, so a recent claim holds the row for the longest a replay can take.
+  it('refuses while a replay claimed the row moments ago, and abandons once that lease has passed', async () => {
+    const claimedAt = Date.parse('2026-10-13T21:00:00Z')
+    rows[0] = await row({ attempts: 1, updated_at: new Date(claimedAt).toISOString() })
+    const { store } = memoryStore(rows)
+    expect(await abandonHeldWrite(store, ORG, ID, claimedAt + 30_000)).toEqual({ kind: 'replay_in_flight' })
+    expect(rows[0].status).toBe('pending')
+    expect(await abandonHeldWrite(store, ORG, ID, claimedAt + REPLAY_LEASE_MS + 1)).toEqual({ kind: 'abandoned' })
+  })
+
   it('closes a pending row as abandoned and finished', async () => {
     const { store } = memoryStore(rows)
     expect(await abandonHeldWrite(store, ORG, ID)).toEqual({ kind: 'abandoned' })
