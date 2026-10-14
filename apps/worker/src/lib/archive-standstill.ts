@@ -220,7 +220,8 @@ async function raise(supabase: SupabaseClient, kv: KvLike, verdict: StandstillVe
   const base = verdict.status === 'unreadable' ? ARCHIVE_STANDSTILL_UNREADABLE_REMEDY : ARCHIVE_STANDSTILL_REMEDY
   await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [withCause], kv, {
     ...base,
-    fixHint: cause === null ? base.fixHint : cause.advice,
+    // The runs' advice cannot fix a progress row that could not be read.
+    fixHint: cause === null || verdict.status === 'unreadable' ? base.fixHint : cause.advice,
   })
   return true
 }

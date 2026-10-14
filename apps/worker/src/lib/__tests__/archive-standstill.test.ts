@@ -328,3 +328,16 @@ describe('the standstill alert claims only what it measured', () => {
     expect(consequenceSent()).toMatch(/could not be judged/)
   })
 })
+
+describe('an unreadable progress row keeps its own fix (lessons review, #835)', () => {
+  it('does not swap in advice about the runs when the progress could not be read', async () => {
+    const kv = kvDouble({ [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000) })
+    const supabase = supabaseDouble({ data: null, error: { message: 'connection reset' } }, [
+      { outcome: 'send-failed', started_at: ago(HOUR), finished_at: ago(HOUR - 60000) },
+    ])
+
+    await checkArchiveStandstill(supabase, kv, NOW)
+
+    expect(adviceGiven()[0]).toMatch(/execution_archive_progress/)
+  })
+})

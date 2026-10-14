@@ -35,8 +35,9 @@ export const LOGPUSH_UNREADABLE_REMEDY: AlertRemedy = {
   fixHint:
     'If the line says CLOUDFLARE_LOGS_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set, set it with wrangler secret ' +
     'put CLOUDFLARE_LOGS_TOKEN (or CLOUDFLARE_ACCOUNT_ID) --name bidspoke-worker, piping the value in. If ' +
-    'the list was refused, the token has expired or lost its Logs Write permission: issue a new one in the ' +
-    'Cloudflare dashboard and set it the same way.',
+    'the list was refused with code 1004, Logpush is switched off for the account: switch Logpush on under ' +
+    'Logs in the Cloudflare dashboard. Any other refusal means the token has expired or lost its Logs ' +
+    'Write permission: issue a new one in the Cloudflare dashboard and set it the same way.',
   headlineVerb: 'could not check the Logpush jobs',
   itemNoun: { one: 'reason', many: 'reasons' },
 }

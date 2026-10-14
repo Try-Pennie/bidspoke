@@ -89,7 +89,7 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
  * Snowflake was never asked, and a timeout, where the warehouse is the place to
  * look and a retry once it answers is served.
  */
-export function archiveReadRemedyFor(detail: string): AlertRemedy {
+export function archiveReadRemedyFor(detail: string, timedOut = false): AlertRemedy {
   const unset = unsetSecretNamed(detail)
   if (unset !== null) {
     return {
@@ -99,7 +99,7 @@ export function archiveReadRemedyFor(detail: string): AlertRemedy {
         'Archived reads fail before reaching Snowflake until it is set.',
     }
   }
-  if (/did not answer within/.test(detail)) {
+  if (timedOut) {
     return {
       ...ARCHIVE_READ_REMEDY,
       fixHint:
@@ -113,7 +113,8 @@ export function archiveReadRemedyFor(detail: string): AlertRemedy {
 const streakKey = `archive-read-failures:${ARCHIVE_READ_ALERT_JOB}`
 const cooldownKey = `archive-read-alert-cooldown:${ARCHIVE_READ_ALERT_JOB}`
 
-export type ArchiveReadOutcome = { kind: 'ok' } | { kind: 'unavailable'; detail: string }
+/** `timedOut` is set by the reader when its deadline won, never inferred from `detail` (#835). */
+export type ArchiveReadOutcome = { kind: 'ok' } | { kind: 'unavailable'; detail: string; timedOut?: true }
 
 export interface ArchiveReadHealthDeps {
   notify?: typeof notifyExportFailure
@@ -144,7 +145,7 @@ export async function recordArchiveReadOutcome(
   // there is no recovering from: a binding that is missing is exactly when a
   // signal is most likely to be needed and least likely to be looked for (L42).
   if (!kv) {
-    await post(notify, supabase, outcome.detail, 1)
+    await post(notify, supabase, outcome.detail, 1, outcome.timedOut === true)
     return true
   }
 
@@ -160,7 +161,7 @@ export async function recordArchiveReadOutcome(
 
   if (await kv.get(cooldownKey)) return false
 
-  await post(notify, supabase, outcome.detail, streak)
+  await post(notify, supabase, outcome.detail, streak, outcome.timedOut === true)
   await kv.put(cooldownKey, '1', { expirationTtl: ARCHIVE_READ_COOLDOWN_TTL_SECONDS })
   return true
 }
@@ -206,12 +207,13 @@ async function post(
   supabase: SupabaseClient,
   detail: string,
   streak: number,
+  timedOut: boolean,
 ): Promise<void> {
   await notify(
     supabase,
     ARCHIVE_READ_ALERT_JOB,
     [`${streak} archived reads in a row could not be served. The last one said: ${detail}`],
     undefined,
-    archiveReadRemedyFor(detail),
+    archiveReadRemedyFor(detail, timedOut),
   )
 }

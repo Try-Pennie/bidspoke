@@ -213,6 +213,14 @@ describe('the Logpush alert headline and fix follow the finding', () => {
     expect(remedy.headlineVerb).toMatch(/could not check/)
   })
 
+  it('tells a 1004 refusal to switch Logpush back on, not to replace the token', async () => {
+    const remedy = await sent(async () => ({
+      success: false,
+      errors: [{ code: 1004, message: 'logpush is not enabled for this account' }],
+    }))
+    expect(remedy.fixHint).toMatch(/switch Logpush on/)
+  })
+
   it('does not call a stale job a destination change', async () => {
     const body = liveBody()
     body.result[0].last_complete = '2026-09-01T00:00:00Z'

@@ -399,19 +399,24 @@ export interface GateDeps {
  * rather than that the cleanup recorded nothing (L215).
  */
 export async function readLastPurge(supabase: SupabaseClient, days: string[]): Promise<Map<string, PurgeRecord>> {
-  // paginate-ok: the few days beneath the gate, a handful of rows per night each
-  const { data, error } = await supabase
-    .from('purge_run_log')
-    .select('archive_day, outcome, reason, recorded_at')
-    .in('archive_day', days)
-    .order('recorded_at', { ascending: false })
-    .limit(days.length * 40)
-  if (error) throw new Error(`reading the cleanup record for ${days.join(', ')} failed: ${formatErr(error)}`)
   const last = new Map<string, PurgeRecord>()
-  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
-    const day = String(row.archive_day)
-    if (last.has(day) || typeof row.outcome !== 'string') continue
-    last.set(day, { outcome: row.outcome, reason: typeof row.reason === 'string' ? row.reason : null })
+  // One read per day, newest row only. A single read across all days with a
+  // shared limit let one busy day crowd another out, which then read as "no
+  // cleanup has recorded anything" (lessons review, #835). The days beneath the
+  // gate are a handful, so this is a handful of reads.
+  for (const day of days) {
+    // paginate-ok: one row, the newest for this day
+    const { data, error } = await supabase
+      .from('purge_run_log')
+      .select('archive_day, outcome, reason, recorded_at')
+      .eq('archive_day', day)
+      .order('recorded_at', { ascending: false })
+      .limit(1)
+    if (error) throw new Error(`reading the cleanup record for ${day} failed: ${formatErr(error)}`)
+    const row = ((data ?? []) as Array<Record<string, unknown>>)[0]
+    if (row !== undefined && typeof row.outcome === 'string') {
+      last.set(day, { outcome: row.outcome, reason: typeof row.reason === 'string' ? row.reason : null })
+    }
   }
   return last
 }
@@ -992,7 +997,7 @@ async function gatePass(
   let purgeRecords: Map<string, PurgeRecord> | null = null
   if (notCleanedUp.length > 0) {
     try {
-      used.postgres += 1
+      used.postgres += notCleanedUp.length
       purgeRecords = await (deps.lastPurge ?? ((d: string[]) => readLastPurge(supabase, d)))(notCleanedUp)
     } catch (err) {
       console.error(`[archive-gate] could not read the cleanup record: ${formatErr(err)}`)

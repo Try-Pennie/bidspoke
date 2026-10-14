@@ -24,6 +24,7 @@ import {
   ARCHIVE_GATE_COST_JOB,
   etClock,
   ARCHIVE_GATE_UNREADABLE_REMEDY,
+  readLastPurge,
   type BeneathStatus,
   type PurgeRecord,
 } from '../archive-gate'
@@ -1170,5 +1171,31 @@ describe('the unreadable gate alert states the real consequence', () => {
     expect(ARCHIVE_GATE_UNREADABLE_REMEDY.consequence).not.toMatch(/still runs on its own schedule/)
     expect(ARCHIVE_GATE_UNREADABLE_REMEDY.consequence).toMatch(/kept until a pass succeeds/)
     expect(ARCHIVE_GATE_UNREADABLE_REMEDY.fixHint).not.toMatch(/deadline/)
+  })
+})
+
+describe('the cleanup record is read per day (lessons review, #835)', () => {
+  it('asks for each day on its own, newest row first, so one busy day cannot crowd out another', async () => {
+    const asked: Array<{ day: unknown; limit: unknown }> = []
+    const client = {
+      from: () => {
+        const q: Record<string, unknown> = {}
+        let day: unknown
+        q.select = () => q
+        q.eq = (_c: string, v: unknown) => ((day = v), q)
+        q.order = () => q
+        q.limit = (n: unknown) => {
+          asked.push({ day, limit: n })
+          return Promise.resolve({ data: [{ archive_day: day, outcome: 'refused_unverified', reason: 'stale-measurement' }], error: null })
+        }
+        return q
+      },
+    } as unknown as SupabaseClient
+    const records = await readLastPurge(client, ['2026-08-01', '2026-08-02'])
+    expect(asked).toEqual([
+      { day: '2026-08-01', limit: 1 },
+      { day: '2026-08-02', limit: 1 },
+    ])
+    expect(records.get('2026-08-02')?.outcome).toBe('refused_unverified')
   })
 })
