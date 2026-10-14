@@ -452,41 +452,67 @@ const FIX_SETTING =
 const FIX_RETIRED =
   'For a setting the node no longer reads, remove it from the node on the canvas as its line says, then save the workflow; ' +
   'the repo already holds the right thing.'
-const FIX_CLOSE = 'The check runs hourly and goes quiet once the two agree; a mirror it could not read is reported in its own words.'
+// A node that is not there, or is another type now, has nothing to copy back (#835).
+const FIX_MISSING =
+  'For a node the workflow no longer has under that name, or one whose type changed, find whether it was renamed, removed or ' +
+  'replaced on the canvas: put it back and save if it should be there, or move the kept file or committed definition to the new node in a PR.'
+// A mirror that could not be read compared nothing for that workflow (#835).
+const FIX_UNREADABLE =
+  'Where the canvas mirror could not be read, nothing was compared for that workflow: fix what the error names, most often the ' +
+  'GitHub token or the backup repo.'
+const FIX_CLOSE = 'The check runs hourly and goes quiet once the two agree.'
 
-type FixKind = 'script' | 'setting' | 'retired'
-const FIX_FOR: Record<FixKind, string> = { script: FIX_SCRIPT, setting: FIX_SETTING, retired: FIX_RETIRED }
+type FixKind = 'script' | 'setting' | 'retired' | 'missing' | 'unreadable'
+const FIX_ORDER: readonly FixKind[] = ['script', 'setting', 'retired', 'missing', 'unreadable']
+const FIX_FOR: Record<FixKind, string> = { script: FIX_SCRIPT, setting: FIX_SETTING, retired: FIX_RETIRED, missing: FIX_MISSING, unreadable: FIX_UNREADABLE }
 
 function fixHintFor(kinds: readonly FixKind[]): string {
-  return [...(['script', 'setting', 'retired'] as const).filter((k) => kinds.includes(k)).map((k) => FIX_FOR[k]), FIX_CLOSE].join(' ')
+  return [...FIX_ORDER.filter((k) => kinds.includes(k)).map((k) => FIX_FOR[k]), FIX_CLOSE].join(' ')
 }
 
-/** Every kind, for the reviewed remedy list and for a run whose findings name no kind (an unreadable mirror). */
+/** Every kind, for the reviewed remedy list; a page carries only the fixes its findings need. */
 export const ENGINE_SCRIPT_DRIFT_REMEDY: AlertRemedy = {
   consequence:
     'A kept workflow on the canvas holds a code node script, or an outcome deciding node setting, that the repo does not hold: ' +
     'a script that is neither the kept copy in apps/worker/src/engine/scripts/<folder> nor the canvas script that copy was derived from, ' +
-    'a setting that differs from the committed definition under docs/workflows, or a setting the node no longer reads. The repo then ' +
-    'does not describe what is running. The workflow itself is unaffected. Each line names the workflow, the node, ' +
-    'and the first line or the setting that differs, with the values:',
-  fixHint: fixHintFor(['script', 'setting', 'retired']),
+    'a setting that differs from the committed definition under docs/workflows, a setting the node no longer reads, or a node the ' +
+    'repo names that the canvas no longer has as it was. The repo then does not describe what is running. The workflow itself is ' +
+    'unaffected. Each line names the workflow, the node, and the first line or the setting that differs, with the values:',
+  fixHint: fixHintFor(FIX_ORDER),
   headlineVerb: 'found a canvas script or node setting the repo does not hold',
   itemNoun: { one: 'difference', many: 'differences' },
+}
+
+/** A run whose only findings are mirrors it could not read: it compared nothing there, so it found no difference (#835). */
+export const ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    'The canvas mirror of a kept workflow could not be read, so its scripts and node settings were not compared with the repo this hour:',
+  fixHint: `${FIX_UNREADABLE} ${FIX_CLOSE}`,
+  headlineVerb: 'could not read a canvas mirror',
 }
 
 /**
  * The remedy for one run, its How to fix line built from the kinds of finding
  * the run made, so a page holding only a retired setting never tells anyone to
- * copy the canvas value into the repo or set it back on the node (L111).
+ * copy the canvas value into the repo or set it back on the node (L111), and a
+ * node that is gone or a mirror that was not read never gets the copy and
+ * paste fix (#835).
  */
 export function driftRemedyFor(summary: DriftSummary): AlertRemedy {
   const kinds = new Set<FixKind>()
-  for (const v of summary.verdicts) if (v.state === 'drift' || v.state === 'missing_node') kinds.add('script')
+  for (const v of summary.verdicts) {
+    if (v.state === 'drift') kinds.add('script')
+    else if (v.state === 'missing_node') kinds.add('missing')
+  }
   for (const v of summary.configVerdicts) {
     if (v.state === 'retired_setting') kinds.add('retired')
+    else if (v.state === 'missing_node' || v.state === 'type_changed') kinds.add('missing')
     else if (v.state !== 'agree') kinds.add('setting')
   }
-  return kinds.size === 0 ? ENGINE_SCRIPT_DRIFT_REMEDY : { ...ENGINE_SCRIPT_DRIFT_REMEDY, fixHint: fixHintFor([...kinds]) }
+  if (summary.unreadable) kinds.add('unreadable')
+  if (kinds.size === 0) return ENGINE_SCRIPT_DRIFT_REMEDY
+  if (kinds.size === 1 && kinds.has('unreadable')) return ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY
+  return { ...ENGINE_SCRIPT_DRIFT_REMEDY, fixHint: fixHintFor([...kinds]) }
 }
 
 export function productionDriftDeps(env: Env): DriftDeps {

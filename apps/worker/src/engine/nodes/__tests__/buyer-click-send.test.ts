@@ -116,6 +116,9 @@ function harness(opts: {
   post?: PartnerCallResult | (() => Promise<PartnerCallResult>)
   soldFails?: boolean
   freeFails?: boolean
+  /** What the sold mark or the release throws, when a test needs a particular error class (#835). */
+  soldThrows?: Error
+  freeThrows?: Error
   /** The counter refuses the add (a 4xx), so the click is known not to be counted. */
   addFails?: boolean
   /** The counter's answer to each ask in turn; an ask past the end answers. */
@@ -174,11 +177,13 @@ function harness(opts: {
           return typeof c === 'function' ? c() : c
         },
         sold: async (generation, outcome) => {
+          if (opts.soldThrows !== undefined) throw opts.soldThrows
           if (opts.soldFails) throw new Error('lead sale sold did not answer within 5000 ms')
           h.sold.push({ generation, outcome })
           return generation + 1
         },
         free: async (generation) => {
+          if (opts.freeThrows !== undefined) throw opts.freeThrows
           if (opts.freeFails) throw new Error('lead sale free answered 500')
           h.freed.push(generation)
           return generation + 1
@@ -801,6 +806,26 @@ describe('a refused send', () => {
     const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'refused', claim_freed: false })
     expect(h.alerts.map((a) => a.kind === 'page' && a.reason)).toEqual(['free_failed'])
+  })
+
+  // A mark or a release with no answer may have landed, so its page must not say the claim is still held (#835).
+  it('a sold mark or a release that got no answer pages as unanswered; one that got an answer does not', async () => {
+    const unanswered = (h: Harness) => h.alerts.map((a) => a.kind === 'page' && a.unanswered === true)
+    const markLate = harness({ soldThrows: new DeadlineError('lead sale sold', OBJECT_CALL_DEADLINE_MS) })
+    await run(markLate)
+    expect(unanswered(markLate)).toEqual([true])
+    const markLost = harness({ soldThrows: new ObjectCallLostError(new TypeError('Network connection lost.')) })
+    await run(markLost)
+    expect(unanswered(markLost)).toEqual([true])
+    const markRefused = harness({ soldThrows: new ObjectCallError('lead sale sold', 409, '{"error":"generation"}') })
+    await run(markRefused)
+    expect(unanswered(markRefused)).toEqual([false])
+    const freeLate = harness({ post: answer(422, 'Missing field: Email'), freeThrows: new DeadlineError('lead sale free', OBJECT_CALL_DEADLINE_MS) })
+    await run(freeLate)
+    expect(unanswered(freeLate)).toEqual([true])
+    const freeRefused = harness({ post: answer(422, 'Missing field: Email'), freeFails: true })
+    await run(freeRefused)
+    expect(unanswered(freeRefused)).toEqual([false])
   })
 })
 

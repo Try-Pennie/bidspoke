@@ -13,8 +13,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Timers } from '@bidspoke/buyer-profile'
+import type { AlertRemedy } from '../export-alerts'
 import {
   BUYER_OBJECTS_DRILL_JOB,
+  BUYER_OBJECTS_DRILL_REMEDY,
   SCHEDULED_DRILL_DEADLINE_MS,
   runScheduledBuyerObjectsDrill,
   type BuyerObjectsDrill,
@@ -139,6 +141,18 @@ describe('the scheduled buyer objects drill (#1643)', () => {
     expect(r.lines).toEqual(['the drill ran against p-tripoint, which is not a throwaway drill- buyer'])
     expect(closeOf(db.writes)).toMatchObject({ outcome: 'scenario_failed' })
     expect(notified).toEqual([r.lines])
+  })
+
+  // The page said "no real buyer count was touched" even over this line (#835).
+  it('never says no real buyer count was touched when the drill ran against a real buyer, and says it otherwise', async () => {
+    const remedies: AlertRemedy[] = []
+    const notify = async (_lines: string[], remedy: AlertRemedy) => { remedies.push(remedy) }
+    await runScheduledBuyerObjectsDrill({ supabase: supabaseDouble().client, drill: async () => ({ ...FAILED, partner_id: 'p-tripoint' }), notify, log: () => undefined })
+    await runScheduledBuyerObjectsDrill({ supabase: supabaseDouble().client, drill: async () => FAILED, notify, log: () => undefined })
+    expect(remedies[0].consequence).not.toMatch(/no real buyer count was touched/)
+    expect(remedies[0].consequence).toMatch(/real buyer/)
+    expect(remedies[1]).toBe(BUYER_OBJECTS_DRILL_REMEDY)
+    expect(remedies[1].consequence).toMatch(/no real buyer count was touched/)
   })
 
   it('the deadline is the admin route\'s 30 seconds', () => {

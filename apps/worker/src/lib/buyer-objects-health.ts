@@ -311,16 +311,33 @@ export const BUYER_OBJECTS_DRILL_REMEDY: AlertRemedy = {
   itemNoun: { one: 'failed scenario', many: 'failed scenarios' },
 }
 
+/**
+ * The drill page when it ran against something other than a throwaway drill
+ * buyer (#835): the standing remedy says no real buyer count was touched,
+ * which is exactly what that line says may not hold.
+ */
+const NOT_DRILL_CONSEQUENCE =
+  'The daily drill of the lead sale claim and the buyer ledger ran against a buyer that is not a throwaway drill buyer, so it ' +
+  'may have moved a real buyer count under the rehearsal kind. Each line names the scenario or the buyer and what it saw:'
+
+/** The page for one run: the standing wording, unless the run itself shows it touched a real buyer. */
+export function drillRemedyFor(run: DrillRun): AlertRemedy {
+  if (run.kind === 'report' && !run.report.partner_id.startsWith(DRILL_PARTNER_PREFIX)) {
+    return { ...BUYER_OBJECTS_DRILL_REMEDY, consequence: NOT_DRILL_CONSEQUENCE }
+  }
+  return BUYER_OBJECTS_DRILL_REMEDY
+}
+
 export interface ScheduledDrillDeps {
   supabase: SupabaseClient
   drill: () => Promise<BuyerObjectsDrill>
-  /** The shared alerter: a non empty list pages, an empty one clears. */
-  notify: (lines: string[]) => Promise<void>
+  /** The shared alerter: a non empty list pages, an empty one clears. The remedy follows the run (#835). */
+  notify: (lines: string[], remedy: AlertRemedy) => Promise<void>
   log: (line: string) => void
   timers?: Timers
 }
 
-type DrillRun = { kind: 'report'; report: BuyerObjectsDrill } | { kind: 'did_not_finish'; detail: string }
+export type DrillRun = { kind: 'report'; report: BuyerObjectsDrill } | { kind: 'did_not_finish'; detail: string }
 
 export interface ScheduledDrillResult {
   run: DrillRun
@@ -349,7 +366,7 @@ export async function runScheduledBuyerObjectsDrill(deps: ScheduledDrillDeps): P
   )
   const lines = failureLines(run)
   deps.log(`[${BUYER_OBJECTS_DRILL_JOB}] ${lines.length === 0 ? 'passed' : `failed: ${lines.join(' | ')}`}`)
-  await deps.notify(lines)
+  await deps.notify(lines, drillRemedyFor(run))
   return { run, lines }
 }
 
@@ -385,7 +402,7 @@ export function runScheduledBuyerObjectsDrillForEnv(supabase: SupabaseClient, en
   return runScheduledBuyerObjectsDrill({
     supabase,
     drill: () => runBuyerObjectsDrill(env),
-    notify: (lines) => notifyExportFailure(supabase, BUYER_OBJECTS_DRILL_JOB, lines, env.IDEMPOTENCY, BUYER_OBJECTS_DRILL_REMEDY),
+    notify: (lines, remedy) => notifyExportFailure(supabase, BUYER_OBJECTS_DRILL_JOB, lines, env.IDEMPOTENCY, remedy),
     log: (line) => (line.includes('failed') ? console.error(line) : console.log(line)),
   })
 }

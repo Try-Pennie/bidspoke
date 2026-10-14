@@ -17,7 +17,9 @@ import {
   BUYER_SALE_DRAIN_BACKLOG_REMEDY,
   BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY,
   BUYER_SALE_DRAIN_MIXED_REMEDY,
+  BUYER_SALE_DRAIN_SEVERAL_REMEDY,
   BUYER_SALE_DRAIN_UNLISTED_REMEDY,
+  BUYER_SALE_DRAIN_UNMARKED_REMEDY,
   UNREADABLE_SINCE_KEY,
   drainRemedyFor,
   kvUnreadableSince,
@@ -616,6 +618,56 @@ describe('drainRemedyFor: one title per kind of page', () => {
     expect(drainRemedyFor(['tripoint:unmeasured'])).toBe(BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY)
     expect(drainRemedyFor(['tripoint:backlog', 'acme:unmeasured'])).toBe(BUYER_SALE_DRAIN_MIXED_REMEDY)
     expect(drainRemedyFor(['buyers-unlisted'])).toBe(BUYER_SALE_DRAIN_UNLISTED_REMEDY)
+  })
+
+  // #835: each page says only what its lines measured.
+  it('never tells a reader selling is unaffected when a ledger, which every sale reserves through, cannot be read', () => {
+    for (const r of [BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY, BUYER_SALE_DRAIN_MIXED_REMEDY]) {
+      expect(r.context ?? '').not.toMatch(/^Selling is not affected/)
+      expect(r.context ?? '').toMatch(/reserves/)
+    }
+    expect(BUYER_SALE_DRAIN_BACKLOG_REMEDY.context).toMatch(/Selling is not affected/)
+  })
+
+  it('points a ledger it cannot read at that buyer, never at the drill, which exercises a throwaway buyer', () => {
+    for (const r of [BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY, BUYER_SALE_DRAIN_MIXED_REMEDY, BUYER_SALE_DRAIN_UNMARKED_REMEDY]) {
+      expect(r.fixHint).not.toMatch(/drill/)
+      expect(r.fixHint).toMatch(/partner page/)
+    }
+  })
+
+  it('a row written whose ledger mark failed is its own page, never "not reaching the sales table"', async () => {
+    const old = entry({ reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
+    const ledger = { ...fakeLedger([old]), markMirrored: async () => { throw new Error('buyer ledger mark answered 500') } }
+    const d = deps({ ledger: () => ledger })
+    const summary = await runBuyerSaleDrain(d)
+    // Counted exactly as before: the entry is still uncopied in the ledger's eyes.
+    expect(summary.buyers[0]).toMatchObject({ pending: 1, delivered: 0, failed: 1 })
+    const [lines, keys] = vi.mocked(d.notify).mock.calls[0] as [string[], string[]]
+    expect(lines[0]).toMatch(/tripoint has 1 ledger entry in the sales table that the ledger could not mark as copied/)
+    expect(lines[0]).not.toMatch(/not yet copied to the sales table/)
+    expect(keys).toEqual(['tripoint:unmarked'])
+    expect(drainRemedyFor(keys)).toBe(BUYER_SALE_DRAIN_UNMARKED_REMEDY)
+    expect(BUYER_SALE_DRAIN_UNMARKED_REMEDY.title).not.toMatch(/not reaching the sales table/)
+  })
+
+  it('a buyer with both unwritten and unmarked entries names each count', async () => {
+    const a = entry({ lead_key: 'lead-a', reserved_at: NOW - OUTBOX_BACKLOG_MS - 2000 })
+    const b = entry({ lead_key: 'lead-b', reserved_at: NOW - OUTBOX_BACKLOG_MS - 1000 })
+    const rpc = vi.fn(async (_fn: string, args: { p_row: { id: string; status: string; lead_key: string } }) =>
+      args.p_row.lead_key === 'lead-a' ? { data: null, error: { message: 'db down' } } : { data: { id: args.p_row.id, status: args.p_row.status }, error: null })
+    const ledger = { ...fakeLedger([a, b]), markMirrored: async () => { throw new Error('mark failed') } }
+    const d = deps({ ledger: () => ledger, supabase: { rpc } as never })
+    await runBuyerSaleDrain(d)
+    const [lines, keys] = vi.mocked(d.notify).mock.calls[0] as [string[], string[]]
+    expect(lines[0]).toMatch(/tripoint has 1 ledger entry not yet copied to the sales table/)
+    expect(lines[0]).toMatch(/1 more is in the sales table but the ledger could not mark it as copied/)
+    expect(keys).toEqual(['tripoint:backlog'])
+  })
+
+  it('an unmarked page beside another kind gets a title true of both', () => {
+    expect(drainRemedyFor(['tripoint:unmarked', 'acme:backlog'])).toBe(BUYER_SALE_DRAIN_SEVERAL_REMEDY)
+    expect(drainRemedyFor(['tripoint:unmarked', 'acme:unmeasured'])).toBe(BUYER_SALE_DRAIN_SEVERAL_REMEDY)
   })
 })
 

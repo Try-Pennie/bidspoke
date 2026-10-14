@@ -82,6 +82,12 @@ export type ClickAlert =
        * timed out may still have landed (#1849).
        */
       hold_recorded: HoldRecorded | null
+      /**
+       * True when the call this page is about (the sold mark, the release) got
+       * NO answer, a deadline or a call lost in transit, so it may have landed
+       * (#835). The page then says so rather than that the claim is still held.
+       */
+      unanswered?: boolean
       workflow_id: string
       trace_id: string
       at: number
@@ -118,8 +124,12 @@ export function clickAlertKey(alert: ClickAlert): { key: string; ttlSeconds: num
     : { key: `buyer-click-over-cap:${alert.partner_id}:${alert.date}`, ttlSeconds: CLICK_OVER_CAP_TTL_SECONDS }
 }
 
-/** What each page says happened and what it left behind. Complete over the reasons at compile time (L113). */
-const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = {
+/**
+ * What each page says happened and what it left behind. Complete over the
+ * reasons at compile time (L113). `heldUnanswered` replaces `held` when the
+ * call the page is about got no answer and so may have landed (#835).
+ */
+const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string; heldUnanswered?: string }> = {
   outcome_unknown: {
     header: 'sent a click with no readable answer',
     held: 'Whether the buyer received the lead is not known. The claim on this prospect is held, so no later click on it sends until a person checks with the buyer and releases it.',
@@ -130,7 +140,9 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
   },
   sold_mark_failed: {
     header: 'confirmed receipt of a click but the claim could not be marked sold',
-    held: 'The buyer confirmed receipt of the lead. The claim is still held in flight, so a later click on this prospect will not send; the count below says whether the click was counted.',
+    held: 'The buyer confirmed receipt of the lead. The claim is still held in flight, so a later click on this prospect will not send.',
+    heldUnanswered:
+      'The buyer confirmed receipt of the lead. Marking the claim sold got no answer in time, so it may have landed; if it did not, the claim is held in flight and a later click on this prospect will not send.',
   },
   count_failed: {
     header: 'sent a click that could not be counted',
@@ -143,10 +155,13 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string }> = 
   free_failed: {
     header: 'refused a click, and the claim could not be released',
     held: 'The buyer refused this prospect. The claim is still held, so a later click on it will not retry until a person releases it.',
+    heldUnanswered:
+      'The buyer refused this prospect. Releasing the claim got no answer in time, so it may have landed; if it did not, the claim is held and a later click on it will not retry until a person releases it.',
   },
   cap_unreadable: {
-    header: "click buyer has no readable daily cap",
-    held: "The click was handled, but the over cap notice cannot be judged, so it will not post for this buyer until its buyer profile can be read and holds clicks per day.",
+    header: 'click buyer has no valid daily cap',
+    // The profile was read; the cap it holds is the problem (#835), and the line above names it.
+    held: "The click was handled, but the over cap notice cannot be judged without a daily cap, so it will not post for this buyer until the profile's daily cap is set to a whole number above zero.",
   },
   partner_not_click: {
     header: 'is named on a Buyer Click Check but is not sold on the click',
@@ -191,7 +206,7 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
       header: `${alert.partner_slug} ${w.header}`,
       body: [
         alert.prospect_id === null ? `${alert.detail}.` : `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
-        w.held,
+        alert.unanswered === true && w.heldUnanswered !== undefined ? w.heldUnanswered : w.held,
         ...release,
         `Further ${alert.reason} pages for ${alert.partner_slug} are held for ${CLICK_PAGE_COOLDOWN_SECONDS / 60} minutes; the executions list shows every occurrence. Seen at ${etTime(alert.at)}.`,
       ].join('\n\n'),
