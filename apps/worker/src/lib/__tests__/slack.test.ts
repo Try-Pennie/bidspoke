@@ -417,7 +417,7 @@ describe('sendSecretDriftAlert (#199)', () => {
     expect(text).toContain('Secret Out of Sync')
     expect(text).toContain('STRIPE_KEY')
     expect(text).toContain('WF_TOKEN')
-    expect(text).toContain('missing from Cloudflare')
+    expect(text).toContain('no copy in Cloudflare')
   })
 
   it('does nothing and reports not-sent when there are no missing secrets', async () => {
@@ -1470,7 +1470,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('<!here>')
-    expect(text).toContain('Salesforce appears degraded')
+    expect(text).toContain('with errors matching *Salesforce*')
     expect(text).toContain('23 leads')
     expect(text).toContain('Engine Bidding')
     // Every header block must opt out of emoji rendering.
@@ -1536,7 +1536,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
 
     expect(ts).toBe('9.99')
     const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
-    expect(text).toContain('Salesforce appears degraded')
+    expect(text).toContain('with errors matching *Salesforce*')
     expect(text).toContain('review the affected runs')
     expect(text).not.toContain('status page')
     expect(text).not.toContain('What they failed on')

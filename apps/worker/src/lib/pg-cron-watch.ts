@@ -146,6 +146,10 @@ const ALL_STATUSES = [
   'awaiting_first_run',
   'unknown_identity',
   'unknown_schedule',
+  // The health read returned a last success time that does not parse. Its own
+  // status rather than unknown_schedule, whose remedy (simplify the schedule) is
+  // wrong for it: the schedule read fine, the timestamp did not (#835).
+  'unreadable_success',
   'inactive',
 ] as const
 
@@ -275,7 +279,7 @@ export function judgeJob(job: PgCronJob, nowMs: number, ctx: JudgeContext): PgCr
   if (Number.isNaN(ageMs)) {
     return {
       jobname: job.jobname,
-      status: 'unknown_schedule',
+      status: 'unreadable_success',
       detail: `the last success time '${job.last_success_at}' could not be read, so staleness cannot be judged`,
     }
   }
