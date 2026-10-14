@@ -101,7 +101,14 @@ export interface IncidentDrainSummary {
   lapsed: number
   alerted: boolean
   allClear: boolean
+  /** Failures to read or write the outbox and the record's writes: these make a run a failed one. */
   errors: string[]
+  /**
+   * Problems of the lapse check, logged but never counted as a failed drain: one
+   * of them (an open row naming a retired signal) can stand for good, and must
+   * not hold the drain's alert up for ever or claim the writes are failing.
+   */
+  lapseNotices: string[]
 }
 
 type RpcResult = { data: unknown; error: { message: string; code?: string } | null }
@@ -146,7 +153,7 @@ async function listOutbox(kv: DrainKv): Promise<string[]> {
 export async function runIncidentDrain(deps: IncidentDrainDeps): Promise<IncidentDrainSummary> {
   const log = deps.log ?? ((line: string) => console.log(line))
   const nowMs = deps.now()
-  const s: IncidentDrainSummary = { listed: 0, applied: 0, refused: 0, failed: 0, deferred: 0, waiting: 0, oldestWaitingMs: null, suspect: 0, lapsed: 0, alerted: false, allClear: false, errors: [] }
+  const s: IncidentDrainSummary = { listed: 0, applied: 0, refused: 0, failed: 0, deferred: 0, waiting: 0, oldestWaitingMs: null, suspect: 0, lapsed: 0, alerted: false, allClear: false, errors: [], lapseNotices: [] }
   const refusedReasons: string[] = []
   const waitingSince: number[] = []
 
@@ -259,14 +266,14 @@ async function checkOpenIncidents(deps: IncidentDrainDeps, nowMs: number, s: Inc
     .order('started_at', { ascending: true })
     .limit(OPEN_READ_LIMIT)
   if (error) {
-    s.errors.push(`the open incidents could not be read, so none was checked for a lapse: ${error.message}`)
+    s.lapseNotices.push(`the open incidents could not be read, so none was checked for a lapse: ${error.message}`)
     return
   }
   const rows = (data ?? []) as Array<{ id: string; signal: string; subject: string; started_at: string }>
-  if (rows.length >= OPEN_READ_LIMIT) s.errors.push(`${rows.length} open incidents, the most one run reads; the newest were not checked for a lapse`)
+  if (rows.length >= OPEN_READ_LIMIT) s.lapseNotices.push(`${rows.length} open incidents, the most one run reads; the newest were not checked for a lapse`)
   for (const row of rows) {
     if (!isIncidentSignal(row.signal)) {
-      s.errors.push(`open incident ${row.id} names signal ${row.signal}, which nothing arms any more, so its marker cannot be read`)
+      s.lapseNotices.push(`open incident ${row.id} names signal ${row.signal}, which nothing arms any more, so its marker cannot be read`)
       continue
     }
     try {
@@ -280,13 +287,13 @@ async function checkOpenIncidents(deps: IncidentDrainDeps, nowMs: number, s: Inc
         p_now: new Date(nowMs).toISOString(),
       })) as RpcResult
       if (checkError) {
-        s.errors.push(`open incident ${row.id}: the lapse check failed: ${checkError.message}`)
+        s.lapseNotices.push(`open incident ${row.id}: the lapse check failed: ${checkError.message}`)
         continue
       }
       if (verdict === 'lapsed') s.lapsed += 1
       else if (verdict === 'suspect') s.suspect += 1
     } catch (e) {
-      s.errors.push(`open incident ${row.id}: the lapse check failed: ${formatErr(e)}`)
+      s.lapseNotices.push(`open incident ${row.id}: the lapse check failed: ${formatErr(e)}`)
     }
   }
 }

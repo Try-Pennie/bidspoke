@@ -817,6 +817,7 @@ const scheduledJobs = {
                 console.log(`[incident-drain] listed=${s.listed} applied=${s.applied} refused=${s.refused} failed=${s.failed} waiting=${s.waiting} oldest_waiting_ms=${s.oldestWaitingMs ?? '-'} suspect=${s.suspect} lapsed=${s.lapsed} alerted=${s.alerted} all_clear=${s.allClear}`)
               }
               if (s.errors.length) console.error(`[incident-drain] errors=${s.errors.join(' | ')}`)
+              if (s.lapseNotices.length) console.error(`[incident-drain] lapse_check=${s.lapseNotices.join(' | ')}`)
             })
             .catch((e) => console.error('[incident-drain] drain failed:', e)),
           INCIDENT_DRAIN_JOB,

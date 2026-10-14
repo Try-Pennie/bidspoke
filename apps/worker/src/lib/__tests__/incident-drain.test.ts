@@ -252,7 +252,17 @@ describe('lapsed incidents', () => {
     const h = harness(fakeDb({ open: [{ ...OPEN, signal: 'retired-signal' }] }))
     const s = await runIncidentDrain(h.deps())
     expect(check(h)).toEqual([])
-    expect(s.errors.some((e) => e.includes('retired-signal'))).toBe(true)
+    expect(s.lapseNotices.some((e) => e.includes('retired-signal'))).toBe(true)
+  })
+
+  it('never counts a lapse check problem as a failed drain, since one can stand for good', async () => {
+    const h = harness(fakeDb({ open: [{ ...OPEN, signal: 'retired-signal' }] }))
+    for (let i = 0; i < 4; i++) {
+      const s = await runIncidentDrain(h.deps())
+      expect(s.errors).toEqual([])
+      h.clock.now += 5 * MIN
+    }
+    expect(h.posted).toEqual([])
   })
 
   it('judges no lapse while events still wait, since the incident\'s own end may be one of them', async () => {
@@ -271,7 +281,7 @@ describe('lapsed incidents', () => {
   it('reports an open incident read that failed', async () => {
     const h = harness(fakeDb({ openError: 'canceling statement due to statement timeout' }))
     const s = await runIncidentDrain(h.deps())
-    expect(s.errors.some((e) => e.includes('statement timeout'))).toBe(true)
+    expect(s.lapseNotices.some((e) => e.includes('statement timeout'))).toBe(true)
   })
 })
 
