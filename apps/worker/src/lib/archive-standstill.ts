@@ -21,19 +21,34 @@ import { standstillCause, type RecentRun, type StandstillCause } from '../archiv
 import { ARCHIVE_JOB_RUN } from './job-run-record'
 
 /**
- * The archive is running and its watermark is not moving. Every other signal
- * reads healthy, which is exactly why this exists.
+ * The archive's cron is firing and its watermark is not moving.
+ *
+ * Says only what this check measures, the heartbeat and the watermark (#835).
+ * It used to add that the runs were "completing" and "honestly successful",
+ * which it never read, above a cause line from job_runs that could say they had
+ * failed or that the lock was held. What the runs did is that cause line's job.
  */
 export const ARCHIVE_STANDSTILL_REMEDY: AlertRemedy = {
   consequence:
-    'The archive is running and completing, and it is not actually moving forward. Nothing else reports ' +
-    'this, because every run is honestly successful. While it stands, closed hours have no backup and ' +
-    'the deletion gate cannot clear their day:',
+    "The archive's cron is firing and its watermark is not moving forward. While it stands, closed hours " +
+    'have no backup and the deletion gate cannot clear their day:',
   fixHint:
     'Read the execution_archive_progress row for the executions stream and check its watermark hour and ' +
     'when it was last updated, then the [execution-archive] worker logs for the hourly run. The message ' +
     'below says which of the three cases this is.',
   headlineVerb: 'reports the archive is not moving',
+  itemNoun: { one: 'reading', many: 'readings' },
+}
+
+/** The progress could not be read, so whether the archive moves is unknown, not stalled (#835). */
+export const ARCHIVE_STANDSTILL_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    "Whether the archive is moving forward could not be judged, so a standstill would go unreported until " +
+    'this check can read its progress again:',
+  fixHint:
+    'The line below names what could not be read. Fix that read of the execution_archive_progress row for ' +
+    'the executions stream; the next hourly check judges it again.',
+  headlineVerb: 'could not judge whether the archive is moving',
   itemNoun: { one: 'reading', many: 'readings' },
 }
 
@@ -85,17 +100,15 @@ function alertFor(verdict: StandstillVerdict): string | null {
       return null
     case 'never-wrote-progress':
       return (
-        `The execution archive has been running for ${hours(verdict.runningForMs)} and has never written a ` +
-        'watermark, so nothing has been archived at all. Every other signal reads healthy: the cron fires, ' +
-        'the runs complete and the run lock is free. Check execution_archive_progress, which should hold one ' +
-        `row for the '${ARCHIVE_STREAM}' stream.`
+        `The execution archive's cron has been firing for ${hours(verdict.runningForMs)} and the archive has ` +
+        'never written a watermark, so nothing has been archived at all. Check execution_archive_progress, ' +
+        `which should hold one row for the '${ARCHIVE_STREAM}' stream.`
       )
     case 'stalled':
       return (
         `The execution archive's watermark has not advanced for ${hours(verdict.frozenForMs)} while ` +
         `${verdict.hoursBehind} closed and settled hour${verdict.hoursBehind === 1 ? '' : 's'} are waiting to be ` +
-        'archived. The runs are completing, so this is not a failure anything else will report. Until it moves, ' +
-        'those hours have no backup and the deletion gate cannot clear their day.'
+        'archived.'
       )
     case 'unreadable':
       return (
@@ -202,9 +215,12 @@ async function raise(supabase: SupabaseClient, kv: KvLike, verdict: StandstillVe
   const cause = runs === null ? null : standstillCause(runs)
   const withCause = cause === null ? message : `${message} ${describeCause(cause)}`
 
+  // An unreadable verdict has its own wording: it measured nothing about
+  // movement, so it may not say the archive is not moving (#835).
+  const base = verdict.status === 'unreadable' ? ARCHIVE_STANDSTILL_UNREADABLE_REMEDY : ARCHIVE_STANDSTILL_REMEDY
   await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [withCause], kv, {
-    ...ARCHIVE_STANDSTILL_REMEDY,
-    fixHint: cause === null ? ARCHIVE_STANDSTILL_REMEDY.fixHint : cause.advice,
+    ...base,
+    fixHint: cause === null ? base.fixHint : cause.advice,
   })
   return true
 }

@@ -36,15 +36,30 @@ export const RETENTION_CHECK_REMEDY: AlertRemedy = {
   consequence:
     'The window the database purge jobs actually destroy execution data on, and the window this repo ' +
     'declares, disagree. Nothing failed and nothing is missing. What is wrong is that the deletion gate ' +
-    'is quoting a deadline that is not the real one, or, where a job is disabled, that retention is not ' +
-    'being enforced at all:',
+    'measures days on one window while the purge deletes on another, or, where a job is disabled, that ' +
+    'retention is not being enforced at all:',
   fixHint:
     'Decide which side is right, then either re-align the scheduled purge jobs in Postgres with the ' +
     'declared value, or change the declared value in this repo and its guard test. A disabled job has to ' +
-    'be re-enabled. If a line says the jobs could not be read, the check itself needs attention rather ' +
-    'than the schedule.',
+    'be re-enabled.',
   headlineVerb: 'found the purge window disagrees',
   itemNoun: { one: 'difference', many: 'differences' },
+}
+
+/**
+ * The jobs could not be read, or the check itself failed, so whether the
+ * windows match is unknown (#835). It used to arrive under "disagree. Nothing
+ * failed", which nothing had measured.
+ */
+export const RETENTION_CHECK_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    'The execution purge jobs could not be read, so whether their window matches the one this repo ' +
+    'declares is unknown, and a drift would go unreported until this check reads them again:',
+  fixHint:
+    'The line below names what failed: the execution_purge_retention function in our database, or this ' +
+    'check itself. Fix that; the check runs again on its next daily pass.',
+  headlineVerb: 'could not read the purge window',
+  itemNoun: { one: 'failure', many: 'failures' },
 }
 
 export const RETENTION_CHECK_JOB = 'execution-retention-drift'
@@ -102,7 +117,7 @@ export async function checkExecutionRetention(
   } catch (err) {
     const detail = `the execution retention check itself failed: ${formatErr(err)}`
     console.error(`[retention-check] ${detail}`)
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], RETENTION_CHECK_UNREADABLE_REMEDY)
     return { observed: [], differences: [{ code: 'failed', message: detail }], alerted: true }
   }
 }
@@ -117,9 +132,14 @@ export async function checkExecutionRetention(
  * RECOVERY signal and uses it to clear its alert state, so short-circuiting a
  * clean run here would leave a resolved drift looking unresolved to the next one.
  */
-async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
+async function alertQuietly(
+  supabase: SupabaseClient,
+  env: Env,
+  messages: string[],
+  remedy: AlertRemedy = RETENTION_CHECK_REMEDY,
+): Promise<void> {
   try {
-    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY, RETENTION_CHECK_REMEDY)
+    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY, remedy)
   } catch (err) {
     console.error('[retention-check] could not send its alert:', formatErr(err))
   }
@@ -137,7 +157,7 @@ async function runCheck(env: Env, supabase: SupabaseClient): Promise<RetentionCh
         ? `the execution purge jobs could not be read: ${formatErr(error)}`
         : 'the execution purge jobs could not be read: the function answered with no payload at all'
     const differences = [{ code: 'unreadable', message: detail }]
-    await alertQuietly(supabase, env, [detail])
+    await alertQuietly(supabase, env, [detail], RETENTION_CHECK_UNREADABLE_REMEDY)
     console.error(`[retention-check] ${detail}`)
     return { observed: [], differences, alerted: true }
   }

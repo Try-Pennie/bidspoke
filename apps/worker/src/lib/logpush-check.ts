@@ -9,16 +9,36 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
  */
 export const LOGPUSH_CHECK_REMEDY: AlertRemedy = {
   consequence:
-    "The Cloudflare account's Logpush jobs no longer match what this repo expects, or the list could not " +
-    'be read. Where a line names personal data, consumer information is leaving Pennie right now to the ' +
+    "The Cloudflare account's Logpush jobs no longer match what this repo expects, or one has stopped " +
+    'delivering. Where a line names personal data, consumer information is leaving Pennie right now to the ' +
     'destination it names:',
   fixHint:
     'Act in the Cloudflare dashboard for the shared Pennie account, under Logs and then Logpush: remove ' +
     'the unexpected job, remove the added fields, restore the destination, or re-enable a job that is ' +
     'delivering nothing. If the change was intended, update the expected job list in this repo, and note ' +
     'that adding a field carrying personal data is an architecture decision rather than an edit.',
-  headlineVerb: 'found a destination change',
+  // Not "found a destination change": most findings are a disabled or stale
+  // job, or a field added or removed (#835).
+  headlineVerb: 'found a Logpush job that differs from what this repo expects',
   itemNoun: { one: 'difference', many: 'differences' },
+}
+
+/**
+ * The job list could not be read, so nothing about the jobs is known (#835).
+ * It used to share the drift wording, whose fix (remove a job, restore a
+ * destination) does nothing for an unset or refused token.
+ */
+export const LOGPUSH_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    "The Cloudflare account's Logpush job list could not be read, so whether any job is sending personal " +
+    'data somewhere unexpected is unknown until it can:',
+  fixHint:
+    'If the line says CLOUDFLARE_LOGS_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set, set it with wrangler secret ' +
+    'put CLOUDFLARE_LOGS_TOKEN (or CLOUDFLARE_ACCOUNT_ID) --name bidspoke-worker, piping the value in. If ' +
+    'the list was refused, the token has expired or lost its Logs Write permission: issue a new one in the ' +
+    'Cloudflare dashboard and set it the same way.',
+  headlineVerb: 'could not check the Logpush jobs',
+  itemNoun: { one: 'reason', many: 'reasons' },
 }
 
 export const LOGPUSH_CHECK_JOB = 'logpush-destinations'
@@ -154,12 +174,14 @@ export async function checkLogpush(
 
   const differences = logpushDifferences(observed, expected, now())
 
+  // An unreadable list returns only the unreadable lines, never drift beside
+  // them, so the wording is chosen from which of the two this run is.
   await notifyExportFailure(
     supabase,
     LOGPUSH_CHECK_JOB,
     differences,
     env.IDEMPOTENCY as never,
-    LOGPUSH_CHECK_REMEDY,
+    observed.unreadable.length > 0 ? LOGPUSH_UNREADABLE_REMEDY : LOGPUSH_CHECK_REMEDY,
   )
 
   console.log(

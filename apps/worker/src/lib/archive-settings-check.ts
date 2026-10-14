@@ -64,6 +64,53 @@ export const ARCHIVE_SETTINGS_REMEDY: AlertRemedy = {
 }
 
 /**
+ * The wording for THIS run's differences, chosen from their codes (#835).
+ *
+ * One remedy used to say "what we say about undoing an accidental deletion is
+ * wrong" and "alter the table" for every finding, including a read that failed
+ * and a check reading the wrong account, where neither sentence is true. The
+ * consequence names the undo window only when the table's own window changed,
+ * and the fix carries one sentence per kind of difference present.
+ */
+export function settingsRemedyFor(codes: readonly string[]): AlertRemedy {
+  const has = (code: string) => codes.includes(code)
+  const consequence =
+    "The archive table's settings in Snowflake and the settings this repo declares disagree, or a setting " +
+    'could not be read. This is about configuration, not data: nothing was sent anywhere and nothing is ' +
+    'missing' +
+    (has('retention-changed')
+      ? '. Until one side changes, what we say about undoing an accidental deletion is wrong:'
+      : ':')
+  const fixes: string[] = []
+  if (has('unreadable')) {
+    fixes.push(
+      'For a setting that could not be read, the line names the read. The check reads as ' +
+        'bidspoke_archive_reader, so check that role and its key: wrangler secret put ' +
+        'ARCHIVE_READER_PRIVATE_KEY --name bidspoke-worker.',
+    )
+  }
+  if (has('wrong-account')) {
+    fixes.push(
+      `Point SNOWFLAKE_ACCOUNT back at ${DECLARED_SNOWFLAKE_ACCOUNT} with wrangler secret put SNOWFLAKE_ACCOUNT ` +
+        '--name bidspoke-worker, or, if the archive really moved, change the declared account in this repo ' +
+        'and ADR 0009.',
+    )
+  }
+  if (codes.some((c) => c === 'retention-changed' || c.startsWith('surrounding-retention'))) {
+    fixes.push(
+      'For a Time Travel window, decide which side is right, then either alter the table, schema or database ' +
+        'in Snowflake to match, or change the declared value in this repo and ADR 0009.',
+    )
+  }
+  if (has('columns-missing')) fixes.push('Add each missing column to the archive table in Snowflake.')
+  if (has('columns-added')) {
+    fixes.push('Declare each added column in this repo, or drop it in Snowflake if nobody meant to add it.')
+  }
+  fixes.push('Re-run on demand with POST /api/admin/archive-settings-check.')
+  return { ...ARCHIVE_SETTINGS_REMEDY, consequence, fixHint: fixes.join(' ') }
+}
+
+/**
  * The Snowflake account the archive setup was applied to (ADR 0009, measured
  * 2026-08-20).
  *
@@ -323,7 +370,7 @@ async function settingsPass(
     ARCHIVE_SETTINGS_JOB,
     differences.map((d) => d.message),
     env.IDEMPOTENCY,
-    ARCHIVE_SETTINGS_REMEDY,
+    settingsRemedyFor(differences.map((d) => d.code)),
   )
 
   const surrounding = observed.surroundingRetentionDays

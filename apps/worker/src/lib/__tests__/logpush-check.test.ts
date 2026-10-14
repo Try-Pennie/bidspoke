@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// Recorded rather than sent, so a test can read which wording a finding got
+// (#835). The other tests here assert only the verdict, which this leaves alone.
+vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn(async () => undefined) }))
+
 import { checkLogpush } from '../logpush-check'
+import { notifyExportFailure } from '../export-alerts'
 import { EXPECTED_LOGPUSH_JOBS, type ExpectedLogpushJob } from '../logpush-expectation'
 
 // A Supabase double that records nothing: notifyExportFailure is exercised
@@ -176,5 +182,41 @@ describe('checkLogpush', () => {
       expect(r.alerted).toBe(true)
       expect(r.differences.join(' ')).toContain('10000')
     })
+  })
+})
+
+/**
+ * #835: every Logpush finding arrived headed "found a destination change" with
+ * "remove the job, restore the destination, re-enable" as the fix, including an
+ * unset token, a refused API call, a stale job and a removed field. A list that
+ * could not be read now has its own headline and the token fix.
+ */
+describe('the Logpush alert headline and fix follow the finding', () => {
+  const sent = async (fetchJobs: () => Promise<unknown>) => {
+    vi.mocked(notifyExportFailure).mockClear()
+    await checkLogpush({}, supabase, { fetchJobs, now: NOW, expected })
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => (c[2] as string[]).length > 0)
+    return call?.[4] as { headlineVerb?: string; consequence: string; fixHint: string }
+  }
+
+  it('gives an unset token its own headline and the token fix', async () => {
+    const remedy = await sent(async () => {
+      throw new Error('CLOUDFLARE_LOGS_TOKEN is not set on the worker')
+    })
+    expect(remedy.headlineVerb).not.toMatch(/destination change/)
+    expect(remedy.fixHint).toMatch(/wrangler secret put CLOUDFLARE_LOGS_TOKEN/)
+    expect(remedy.consequence).not.toMatch(/leaving Pennie right now/)
+  })
+
+  it('gives a refused list the same could-not-check headline', async () => {
+    const remedy = await sent(async () => ({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }))
+    expect(remedy.headlineVerb).toMatch(/could not check/)
+  })
+
+  it('does not call a stale job a destination change', async () => {
+    const body = liveBody()
+    body.result[0].last_complete = '2026-09-01T00:00:00Z'
+    const remedy = await sent(async () => body)
+    expect(remedy.headlineVerb).not.toMatch(/destination change/)
   })
 })

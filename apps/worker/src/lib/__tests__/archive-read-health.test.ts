@@ -253,3 +253,34 @@ describe('a streak counter that cannot be read', () => {
     expect(Number.isFinite(Number(stored))).toBe(true)
   })
 })
+
+/**
+ * #835: the fix line led with "check Snowflake first" and the consequence said
+ * retrying "will not help", even when the failure named an unset secret, where
+ * Snowflake was never asked, and on a timeout, where a retry may well work.
+ */
+describe('the archived reads fix line leads with what the failure names', () => {
+  const remedyFor = async (detail: string) => {
+    let remedy: { consequence: string; fixHint: string } | undefined
+    const notify = async (_s: SupabaseClient, _j: string, _e: string[], _kv: unknown, r: unknown) => {
+      remedy = r as { consequence: string; fixHint: string }
+    }
+    await recordArchiveReadOutcome(supabase, undefined, fail(detail), { notify })
+    return remedy as { consequence: string; fixHint: string }
+  }
+
+  it('names the unset secret first, not Snowflake', async () => {
+    const remedy = await remedyFor(
+      'ARCHIVE_READER_PRIVATE_KEY is not set, so the archive cannot authenticate to Snowflake',
+    )
+    expect(remedy.fixHint).toMatch(/^Set ARCHIVE_READER_PRIVATE_KEY with wrangler secret put ARCHIVE_READER_PRIVATE_KEY/)
+    expect(remedy.fixHint).not.toMatch(/Check Snowflake first/)
+  })
+
+  it('points a timeout at the warehouse resuming, and does not say a retry will not help', async () => {
+    const remedy = await remedyFor('the archive did not answer within 20 seconds')
+    expect(remedy.fixHint).toMatch(/warehouse/)
+    expect(remedy.fixHint).not.toMatch(/wrangler secret put/)
+    expect(remedy.consequence).not.toMatch(/it will not help/)
+  })
+})

@@ -182,3 +182,43 @@ describe('checkExecutionRetention', () => {
     expect(result.differences.map((d) => d.code)).toEqual(['unreadable'])
   })
 })
+
+/**
+ * #835: "the window ... and the window this repo declares disagree. Nothing
+ * failed" was sent when the check itself failed or could not read the jobs,
+ * where nothing about the windows is known. And the gate no longer quotes a
+ * deadline, so "quoting a deadline that is not the real one" is gone too.
+ */
+describe('the retention alert says unknown when it could not read the jobs', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === RETENTION_CHECK_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+      headlineVerb?: string
+    }
+
+  it('does not say the windows disagree when the read failed', async () => {
+    await checkExecutionRetention(env, supabaseDouble({ error: { message: 'permission denied' } }).client)
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/disagree\. Nothing failed/)
+    expect(remedy.consequence).toMatch(/unknown/)
+    expect(remedy.headlineVerb ?? '').not.toMatch(/disagrees/)
+  })
+
+  it('does not say the windows disagree when the check itself threw', async () => {
+    const client = {
+      rpc: () => {
+        throw new Error('client exploded')
+      },
+    } as unknown as SupabaseClient
+    await checkExecutionRetention(env, client)
+    expect(remedySent().consequence).toMatch(/unknown/)
+  })
+
+  it('keeps the disagreement wording for a real difference, without a deadline the gate no longer quotes', async () => {
+    await checkExecutionRetention(env, supabaseDouble({ data: [row(TRUNCATE, { retention_days: 9 }), row(REAP)] }).client)
+    const remedy = remedySent()
+    expect(remedy.consequence).toMatch(/disagree/)
+    expect(`${remedy.consequence} ${alerted().join(' ')}`).not.toMatch(/deadline/)
+  })
+})

@@ -34,6 +34,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+import { ARCHIVE_WAREHOUSE } from './archive-snowflake'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -71,7 +72,7 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
   consequence:
     'Archived executions cannot be read. Nothing has been deleted and nothing is missing: what is ' +
     'broken is the path that serves executions older than the seven days Postgres keeps, so anybody ' +
-    'investigating a dispute on an older lead is being told to try again and it will not help:',
+    'investigating a dispute on an older lead is being told to try again:',
   fixHint:
     'Check Snowflake first: whether the warehouse the archive reads from can resume, and whether ' +
     'bidspoke_archive_reader still holds SELECT on the archive table. If both are fine, the named ' +
@@ -80,6 +81,36 @@ export const ARCHIVE_READ_REMEDY: AlertRemedy = {
     'direction and is worth reading beside this.',
   headlineVerb: 'could not be read',
   itemNoun: { one: 'failed read', many: 'failed reads' },
+}
+
+/** A secret the failure says is unset, as `archiveConfig` words it. */
+const UNSET_SECRET = /\b([A-Z][A-Z0-9_]+) is not set\b/
+
+/**
+ * The fix line led by what the failure names (#835). It used to lead with
+ * "check Snowflake first" for every failure, including an unset secret, where
+ * Snowflake was never asked, and a timeout, where the warehouse is the place to
+ * look and a retry once it answers is served.
+ */
+export function archiveReadRemedyFor(detail: string): AlertRemedy {
+  const unset = UNSET_SECRET.exec(detail)?.[1]
+  if (unset !== undefined) {
+    return {
+      ...ARCHIVE_READ_REMEDY,
+      fixHint:
+        `Set ${unset} with wrangler secret put ${unset} --name bidspoke-worker, piping the value in. ` +
+        'Archived reads fail before reaching Snowflake until it is set.',
+    }
+  }
+  if (/did not answer within/.test(detail)) {
+    return {
+      ...ARCHIVE_READ_REMEDY,
+      fixHint:
+        `The reads are timing out. Check in Snowflake that the ${ARCHIVE_WAREHOUSE} warehouse can resume and ` +
+        'is not queued; a read retried once it answers is served.',
+    }
+  }
+  return ARCHIVE_READ_REMEDY
 }
 
 const streakKey = `archive-read-failures:${ARCHIVE_READ_ALERT_JOB}`
@@ -184,6 +215,6 @@ async function post(
     ARCHIVE_READ_ALERT_JOB,
     [`${streak} archived reads in a row could not be served. The last one said: ${detail}`],
     undefined,
-    ARCHIVE_READ_REMEDY,
+    archiveReadRemedyFor(detail),
   )
 }

@@ -48,11 +48,44 @@ export const ARCHIVE_IDENTITY_REMEDY: AlertRemedy = {
     'what to thirteen months of unredacted identity data:',
   fixHint:
     'Act in Snowflake. Revoke DELETE on the archive table from the writer and reader, grant it to the ' +
-    'eraser, and clear default secondary roles on any identity that has them active. If a line says an ' +
-    'identity could not be verified, the named secret is the fix: wrangler secret put <NAME> --name ' +
-    'bidspoke-worker.',
+    'eraser, and clear default secondary roles on any identity that has them active. If a line says a ' +
+    'secret is not set, set it with wrangler secret put and its name, --name bidspoke-worker.',
   headlineVerb: 'found a permission problem',
   itemNoun: { one: 'finding', many: 'findings' },
+}
+
+/** A secret the line says is unset, as `archiveConfig` words it. */
+const UNSET_SECRET = /\b([A-Z][A-Z0-9_]+) is not set\b/
+
+/**
+ * The fix line for THIS run's findings (#835).
+ *
+ * "The named secret is the fix" used to be printed for every identity that
+ * could not be verified, including a Snowflake 5xx, a timeout or a shape this
+ * could not read, where setting a secret changes nothing. Each sentence now
+ * appears only for the finding it fixes.
+ */
+export function identityRemedyFor(findings: readonly IdentityFinding[]): AlertRemedy {
+  const fixes: string[] = []
+  if (findings.some((f) => f.code !== 'unreadable')) {
+    fixes.push(
+      'Act in Snowflake. Revoke DELETE on the archive table from the writer and reader, grant it to the ' +
+        'eraser, and clear default secondary roles on any identity that has them active.',
+    )
+  }
+  const unreadable = findings.filter((f) => f.code === 'unreadable')
+  const unset = [...new Set(unreadable.map((f) => UNSET_SECRET.exec(f.message)?.[1]).filter((n): n is string => !!n))]
+  for (const name of unset) {
+    fixes.push(`Set ${name} with wrangler secret put ${name} --name bidspoke-worker, piping the value in.`)
+  }
+  if (unreadable.some((f) => !UNSET_SECRET.test(f.message))) {
+    fixes.push(
+      'Where an identity could not be verified for another reason, the line carries the error Snowflake ' +
+        'gave: an outage or a timeout is checked again on the next daily run, and anything else needs that ' +
+        "role's grants read in Snowflake.",
+    )
+  }
+  return { ...ARCHIVE_IDENTITY_REMEDY, fixHint: fixes.join(' ') }
 }
 
 export const ARCHIVE_IDENTITY_JOB = 'execution-archive-identities'
@@ -261,7 +294,7 @@ async function identityPass(
     ARCHIVE_IDENTITY_JOB,
     findings.map((f) => f.message),
     env.IDEMPOTENCY,
-    ARCHIVE_IDENTITY_REMEDY,
+    findings.length === 0 ? ARCHIVE_IDENTITY_REMEDY : identityRemedyFor(findings),
   )
 
   console.log(
