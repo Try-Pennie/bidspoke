@@ -13,7 +13,7 @@ Instead, on every run the engine derives the set of fields that **something down
 - **Structured references** in node configs, node variables, and edge conditions: anything written as `steps.x.y.z`.
 - **Code node scripts**, scanned for the same literal `steps.x.y.z` chains, and then for one level of alias: a script that writes `const r = steps.scout.$return_value` and later reads `r.final` has `scout.final` watched, even though that path is never written out in full. A read followed by `(` is a method call, not a field, and is skipped. An alias taken through a fixed list position is followed into that position: `const row = steps.query_record.output.body.records?.[0]` and a later `row.Id` watch `query_record.body.records.0.Id`, the first record's Id, not an Id on the list itself, which no run could ever have (#1799).
 
-For each watched field it records one boolean per execution: did the producing node run, and did the field carry a value. A field that only ending steps read (Response and Exit nodes, such as a refusal reason that only the refusal response sends back) is recorded only on runs where one of those steps ran, because on any other run nothing read it. Without that, a week with no refusals reads as a refusal reason that never resolves (#1215). This is limited to ending steps on purpose: a field read by a code node or a router can stop that reader running when it goes missing, and gating on such a reader would turn a total collapse into silence. Only booleans are stored, so no value and no PII is persisted. Those booleans roll up nightly into per-day counts per (workflow, field), which is what the detector reads.
+For each watched field it records, per execution: did the producing node run, did the field's key appear in its output, and did the field carry a value (#2018). A key that appears with an empty value and a key that never appears are different facts. The first is often by design, such as a lookup that legitimately finds nothing. The second means the reference names something the step never returns. A field that only ending steps read (Response and Exit nodes, such as a refusal reason that only the refusal response sends back) is recorded only on runs where one of those steps ran, because on any other run nothing read it. Without that, a week with no refusals reads as a refusal reason that never resolves (#1215). This is limited to ending steps on purpose: a field read by a code node or a router can stop that reader running when it goes missing, and gating on such a reader would turn a total collapse into silence. Only these yes or no facts are stored, so no value and no PII is persisted. Those booleans roll up nightly into per-day counts per (workflow, field), which is what the detector reads.
 
 Because the set is derived from the definition in memory at run time, it always matches the version that actually ran. There is no stored copy to drift.
 
@@ -29,9 +29,9 @@ Resolving aliases closed the gap that used to dominate here. Measured 2026-09-01
 
 Still, do not read a clean coverage manifest as proof that every field a workflow depends on is watched. A field is only watched because something references it, so a value nothing reads is invisible here by design, and multi-level aliasing and destructuring are not followed.
 
-## The two alerts
+## The alerts
 
-Both post to your org's Slack channel (or the workflow's `slack_channel` override) and are gated on the same `volume_alerts_enabled` toggle as the volume alerts, on the Integrations page.
+There are three alerts and one check that only logs. All the alerts post to your org's Slack channel (or the workflow's `slack_channel` override) and are gated on the same `volume_alerts_enabled` toggle as the volume alerts, on the Integrations page.
 
 ### Output Field Stopped (hourly)
 
@@ -41,13 +41,25 @@ It only considers a field whose own history is stable: present on at least 90% o
 
 It fires when today's rate falls below the field's own baseline by more than four standard deviations or ten percentage points, whichever is larger, and only once at least 20 runs have happened today.
 
-### Output Field Never Resolves (daily)
+### Output Field Not Resolving (daily)
 
-A field that has never carried a value, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%. For a field only ending steps read, the runs counted are the runs where one of those steps ran.
+A field that has all but stopped carrying values, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%. For a field only ending steps read, the runs counted are the runs where one of those steps ran.
+
+Since #2018 this alert mostly covers fields that **have carried a value** in the last 28 days, which is the Scout case: the step still runs, and the field inside its output has gone empty. The usual cause is an upstream that is down or now answers in a different shape. A field that has never carried a value is judged by its key instead, below, once there is enough evidence: 3 days and 200 runs on which the key was measured. Until then it stays on this alert, so nothing goes unwatched while key evidence builds, and the message names both causes for that reason.
+
+On a workflow with fewer than 200 runs on its most recent day, the alert cannot say the field was empty "on the most recent day", so it says that day had too few runs to judge, and an open incident is held rather than stood down on too little evidence (#1803).
 
 The day floor matters as much as the run floor. A field enters the watched set the moment something starts referencing it, and on a workflow running 500,000 executions a week a brand new field clears 200 runs within hours. Without the day floor, "never resolved over 7 days" would be a claim made from a few hours of one day. So a newly referenced field is not judged for its first few days, which is the honest cost of not accusing it on no evidence.
 
-This is a different problem from the one above, and the message says so. A field that has never once resolved usually means the reference path is **wrong or obsolete**, not that an upstream is down. The fix is normally to correct the path or delete the reference.
+### Output Field Path Not Found (daily)
+
+A field that has never carried a value, and whose **key never appeared** on any run recorded since key presence was measured, over at least 3 days and 200 runs. That is the signature of a reference that names something the step does not return, so the advice to correct the path or remove the reference is true here and only here. It stands down by itself on the first run the key appears.
+
+A field whose key does appear but always with an empty value is **empty by design** and never pages. The 2026-10-13 example: Liberty1's `External_Exchange_Status__c` and `External_Routing_Code__c` markers come back from Salesforce present and blank on every run, which is correct, and used to page as dead. An open dead incident on such a field is stood down with a line saying so, and one on a field now followed as a path not found is handed over with a line saying that.
+
+### Gone silent (log only, not yet paging)
+
+The hourly check above only watches fields with a stable baseline, so a field that normally carries a value only some of the time, such as Scout's eligibility answer at about 4% of leads, can collapse without crossing it. The gone silent check (#1215) judges such a field against its own usual rate: it widens a window back from the newest day until that rate predicts at least 10 values, and calls the field silent when the window has none. It writes a log line today and does not page. Switching it to paging is #2047, after its would-page lines have been reviewed against real traffic.
 
 ### Why the thresholds are the numbers they are
 
@@ -66,10 +78,10 @@ It runs the detector's own functions over the live rollup, replays the drought c
 ## When you get paged
 
 1. **Open the workflow** from the link in the alert and find the named field.
-2. **Decide which of three things it is.**
-   - The upstream genuinely broke. Fix the upstream; the all-clear posts by itself once the field is measured healthy again.
-   - The reference is wrong or obsolete. Correct the path or remove it. The field stops being watched as soon as nothing reads it.
-   - The field is legitimately allowed to be empty. Silence it, with a reason.
+2. **Read which alert it is, then decide.**
+   - **Stopped or Not Resolving:** the field used to carry values. Most often the upstream broke or changed its answer. Check the step's recent output, fix the upstream; the all-clear posts by itself once the field is measured healthy again.
+   - **Path Not Found:** the key has never appeared. The reference is wrong or obsolete. Correct the path or remove it. The field stops being watched as soon as nothing reads it.
+   - Either way, if the field is legitimately allowed to be empty, silence it, with a reason.
 3. **Do not ignore it.** The drought check produced zero hits across 24 days of real traffic, so a page is not routine noise.
 
 ### Silencing a field
