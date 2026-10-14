@@ -61,8 +61,8 @@ export interface ClaimResult {
  *   - it is `running` and the caller carries a DIFFERENT scheduled time: a
  *     duplicate. A retry always carries its own run's scheduled time.
  *   - it is `running`, the caller carries the SAME scheduled time, and the
- *     holder's lease was renewed less than TICK_LEASE_STALE_MS ago: a duplicate
- *     for now. The answer says how old the lease is, and cron-once waits until a
+ *     holder's lease was renewed less than TICK_LEASE_STALE_MS ago: answered as
+ *     a duplicate on this ask. The answer says how old the lease is, and cron-once waits until a
  *     dead holder's lease would have gone stale and asks again, because a lease
  *     is still fresh just after a kill (the 2026-10-14 retry came 0.4 s after).
  *   - otherwise the holder has stopped renewing: a retry, and it takes over.
