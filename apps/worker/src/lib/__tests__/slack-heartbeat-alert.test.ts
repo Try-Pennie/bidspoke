@@ -122,6 +122,34 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).toContain('may have completed part of its work')
   })
 
+  // #1300 (Dan, 2026-09-10: "They're not easy to read"). What happened and what
+  // to do come first; the schedule string and how the check saw it come last.
+  for (const status of ['vanished', 'stale', 'never_ran', 'unstamped'] as const) {
+    it(`a ${status} alert leads with what happened and keeps the schedule string to its last line`, async () => {
+      await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, status, 90 * 60_000)
+      const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+      expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
+      expect(sections.at(-1)).toContain(job.triggerCron)
+      expect(sections[0]).not.toMatch(/^The .* cron/)
+    })
+  }
+
+  it('keeps the schedule line last on a reminder too', async () => {
+    const now = Date.parse('2026-10-05T13:00:00Z')
+    const standing = { since: new Date(now - 26 * 3_600_000).toISOString(), alerts: 2 }
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000, standing, now)
+    const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+    expect(sections.at(-1)).toContain(job.triggerCron)
+    expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
+  })
+
+  it('says when the next run retries in words, not as a schedule string', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000)
+    // The fix line itself, not the schedule line every alert ends with.
+    const fix = lastPost().blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    expect(fix).toContain('tries again on its own (every hour at :23)')
+  })
+
   it('says a stale job is dark and points at the trigger configuration, not at termination reasons', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000)
 
