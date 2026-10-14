@@ -351,6 +351,18 @@ describe('export failure: the consequence follows each error phase', () => {
     expect(text).toMatch(/already in Snowflake/)
   })
 
+  it('a purge job keeps the purge consequence when its error carries some other prefix', async () => {
+    // The job name decides for a purge job whatever the line starts with: a
+    // Cloudflare edge page or a Supabase error is still a purge that fell behind,
+    // and its rows are already in Snowflake.
+    for (const error of ['error code: 522', 'Supabase error: canceling statement due to statement timeout']) {
+      await send('Sightings purge', [error])
+      const text = lastText()
+      expect(text, error).not.toMatch(/were not exported/)
+      expect(text, error).toMatch(/already exported to Snowflake/)
+    }
+  })
+
   it('a real export failure keeps the not exported sentence', async () => {
     await send('Lead sightings export', ['bids export: Snowflake 401: JWT token is invalid'])
     expect(lastText()).toMatch(/not exported/)

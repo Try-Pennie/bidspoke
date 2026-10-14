@@ -2,6 +2,7 @@
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
 import { scheduleInWords } from './schedule-words'
+import { DRAIN_STALL_SCHEDULES } from './strand-schedules'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
@@ -1547,21 +1548,9 @@ export async function sendBackupFailureAlert(
   )) !== null
 }
 
-/**
- * The pg_cron schedules of the three jobs that finalize stranded lead sightings,
- * as the drain stall alert quotes them (#835). The alert used to name "08:00 +
- * 08:30 UTC daily drains", a schedule that had changed twice since. A web guard
- * (drain-stall-schedules-match-cron) ties each of these to the schedule the
- * migrations leave the job on, so the copy cannot go stale again silently.
- */
-export const DRAIN_STALL_SCHEDULES = {
-  // The shallow 1 day pass, recoverable strands only.
-  'reduce-finalize-stranded': '27,57 * * * *',
-  // The daily deep 8 day pass, the same function.
-  'reduce-finalize-stranded-deep': '45 7 * * *',
-  // Finalizes EVERY sighting older than 26 hours, recoverable or not.
-  'finalize-unrecoverable-stranded': '30 8 * * *',
-} as const
+// The strand job schedules the drain stall alert quotes, from a leaf module a web
+// guard imports to tie them to the migrations (#835). Re-exported for callers here.
+export { DRAIN_STALL_SCHEDULES }
 
 /** "every hour at :27 and :57" for a minute list, or the daily time in words. */
 function drainScheduleWords(cron: string, now: Date): string {
@@ -2331,7 +2320,10 @@ function exportErrorConsequence(jobName: string, error: string): string {
   if (/\.exported_at \(/.test(error) && /matched zero rows/.test(error)) {
     return 'These rows are already in Snowflake but were not marked as exported, so each run sends them again and they are not purged until the mark lands.'
   }
-  if (phase.endsWith('purge') || (phase === '' && jobName.toLowerCase().includes('purge'))) {
+  // A purge job's every error is a purge falling behind, whatever its line starts
+  // with (an edge page reads "error code: 522", a database error its own prefix),
+  // so the job name decides there; a purge phase inside an export job decides too.
+  if (phase.endsWith('purge') || jobName.toLowerCase().includes('purge')) {
     return 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists.'
   }
   return 'The affected rows were not exported and retry on the next run, so Snowflake is missing them until a run succeeds.'
