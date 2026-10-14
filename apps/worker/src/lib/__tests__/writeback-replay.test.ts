@@ -198,6 +198,12 @@ describe('replayHeldWrite', () => {
     expect(sf.sent).toEqual([])
   })
 
+  it('reports a sent write whose outcome the database refused to record, rather than throwing over it', async () => {
+    const { store } = memoryStore(rows)
+    store.finish = async () => { throw new Error('statement timeout') }
+    expect(await replayHeldWrite(deps(store, salesforce({ status: 204, text: '' }).port), ORG, ID)).toEqual({ kind: 'replayed', recorded: false })
+  })
+
   it('reports a write that landed but could not be recorded, rather than claiming it was', async () => {
     const { store } = memoryStore(rows)
     store.finish = async () => false

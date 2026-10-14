@@ -214,6 +214,25 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   if (!(await deps.store.claim(orgId, id, readAttempts))) return { kind: 'conflict' }
   const claimed = readAttempts + 1
   const now = () => new Date().toISOString()
+  // Once the patch is sent, nothing may throw over what Salesforce answered: a
+  // database fault while recording the outcome is reported as not recorded,
+  // never as a failed replay, since the write may well have landed.
+  const record = async (patch: Partial<HeldWriteRow>): Promise<boolean> => {
+    try {
+      const done = await deps.store.finish(id, claimed, patch)
+      if (!done) console.error(`[writeback-replay] the outcome of held write ${id} was not recorded: the row changed meanwhile`)
+      return done
+    } catch (e) {
+      console.error(`[writeback-replay] the outcome of held write ${id} could not be recorded:`, formatErr(e))
+      return false
+    }
+  }
+  // The error is kept locked; if it cannot be locked it is left out, never stored in the clear.
+  const lock = (text: string): Promise<string | null> =>
+    encryptSecret(text, deps.keys).catch((e) => {
+      console.error(`[writeback-replay] the error of held write ${id} could not be encrypted, so it is not stored:`, formatErr(e))
+      return null
+    })
 
   let answer: { status: number; text: string }
   try {
@@ -221,26 +240,23 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   } catch (e) {
     // No answer is not a refusal: the write may be resent.
     const error = formatErr(e)
-    const recorded = await deps.store.finish(id, claimed, { last_error_encrypted: await encryptSecret(error, deps.keys), updated_at: now() })
+    const recorded = await record({ last_error_encrypted: await lock(error), updated_at: now() })
     return { kind: 'still_pending', error, recorded }
   }
   if (answer.status >= 200 && answer.status < 300) {
     const at = now()
-    const recorded = await deps.store.finish(id, claimed, { status: 'replayed', finished_at: at, updated_at: at })
-    if (!recorded) console.error(`[writeback-replay] the write ${id} landed in Salesforce but could not be marked replayed`)
-    return { kind: 'replayed', recorded }
+    return { kind: 'replayed', recorded: await record({ status: 'replayed', finished_at: at, updated_at: at }) }
   }
   const error = `Salesforce API error (${answer.status}): ${answer.text}`
-  const lastError = await encryptSecret(error, deps.keys)
+  const lastError = await lock(error)
   // A login or permission refusal (401 after the fresh login, 403) is a fault on
   // our side, not Salesforce rejecting this write, so it stays pending: closing it
   // would lose a write that fixing the credentials lets through.
   if (salesforceFailureIsTransient(answer.status, answer.text) || answer.status === 401 || answer.status === 403) {
-    const recorded = await deps.store.finish(id, claimed, { last_error_encrypted: lastError, updated_at: now() })
-    return { kind: 'still_pending', error, recorded }
+    return { kind: 'still_pending', error, recorded: await record({ last_error_encrypted: lastError, updated_at: now() }) }
   }
   const at = now()
-  const recorded = await deps.store.finish(id, claimed, {
+  const recorded = await record({
     status: 'refused',
     replayable: false,
     last_error_encrypted: lastError,
