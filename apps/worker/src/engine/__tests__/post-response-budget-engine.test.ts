@@ -514,6 +514,40 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     expect((call![1] as { resolvedInput?: unknown }).resolvedInput).toEqual(request)
   })
 
+  // The same request travels from a code chain that fails after the answer. The
+  // chain runs as one sandbox call, so its per step input is rebuilt by the walk,
+  // and that rebuilt input is what the failure must carry (#2050 review).
+  it('hands the dead letter a failed code chain step\'s resolved request too', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: {
+        trigger: { id: 'trigger', type: 'trigger', config: {} },
+        nodes: [
+          { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+          { id: 'a', namespace: 'shape_patch', type: 'code', config: { script: 'return 1', props: [{ name: 'lead', source: '{{trigger.payload.lead}}' }] } },
+          { id: 'b', namespace: 'after_patch', type: 'code', config: { script: 'return 2' } },
+        ],
+        edges: [{ id: 'e0', source: 'r', target: 'a' }, { id: 'e1', source: 'a', target: 'b' }],
+      } as unknown as WorkflowDefinition,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      throw new Error(`${node.namespace} ran outside the chain`)
+    })
+    // A dispatch that throws for a reason other than a missing bundle fails the
+    // chain at its first step, with no timer involved.
+    const loader = { get: () => ({ fetch: () => Promise.reject(new Error('binding resolve failed')) }) }
+    await run(() => 'up', { DYNAMIC_WORKER_LOADER: loader } as unknown as Record<string, string>)
+    const call = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === 'sf_writeback')
+    expect(call, 'the failed chain step was not dead-lettered').toBeDefined()
+    expect((call![1] as { stepNamespace?: string }).stepNamespace).toBe('shape_patch')
+    expect((call![1] as { resolvedInput?: unknown }).resolvedInput).toMatchObject({ resolved: { props: { lead: 1 } } })
+  })
+
   // #1993: a failed post-answer Salesforce write is kept, encrypted, for replay,
   // whatever the alert does with it: a Salesforce outage, which the alert gates
   // stay quiet for, is exactly when these writes fail.
