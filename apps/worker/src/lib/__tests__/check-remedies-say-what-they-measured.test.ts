@@ -58,13 +58,15 @@ import {
   BUYER_SALE_DRAIN_BACKLOG_REMEDY,
   BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY,
   BUYER_SALE_DRAIN_MIXED_REMEDY,
+  BUYER_SALE_DRAIN_SEVERAL_REMEDY,
   BUYER_SALE_DRAIN_UNLISTED_REMEDY,
+  BUYER_SALE_DRAIN_UNMARKED_REMEDY,
 } from '../buyer-sale-drain'
-import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
+import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNLISTED_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
 import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
-import { ENGINE_SCRIPT_DRIFT_REMEDY } from '../engine-script-drift'
-import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
+import { ENGINE_SCRIPT_DRIFT_REMEDY, ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY } from '../engine-script-drift'
+import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_PATH_UNREAD_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
@@ -90,11 +92,14 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['export schema drift', EXPORT_SCHEMA_REMEDY],
   ['export schema unreadable', EXPORT_SCHEMA_UNREADABLE_REMEDY],
   ['buyer sales mismatch', BUYER_SALES_MISMATCH_REMEDY],
+  ['buyer sales buyer list unread', BUYER_SALES_UNLISTED_REMEDY],
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
   ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
   ['buyer objects drill', BUYER_OBJECTS_DRILL_REMEDY],
   ['engine script drift', ENGINE_SCRIPT_DRIFT_REMEDY],
+  ['engine script drift mirror unreadable', ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY],
+  ['click path read failed', CLICK_PATH_UNREAD_REMEDY],
   ['click check errors', CLICK_CHECK_ERRORS_REMEDY],
   ['click path quiet', CLICK_PATH_QUIET_REMEDY],
   ['click send refusals', CLICK_SEND_REFUSALS_REMEDY],
@@ -137,6 +142,8 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['buyer sale drain ledger unreadable', BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY],
   ['buyer sale drain backlog and unreadable ledger', BUYER_SALE_DRAIN_MIXED_REMEDY],
   ['buyer sale drain buyer list unread', BUYER_SALE_DRAIN_UNLISTED_REMEDY],
+  ['buyer sale drain ledger mark failed', BUYER_SALE_DRAIN_UNMARKED_REMEDY],
+  ['buyer sale drain more than one problem', BUYER_SALE_DRAIN_SEVERAL_REMEDY],
 ]
 
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']
