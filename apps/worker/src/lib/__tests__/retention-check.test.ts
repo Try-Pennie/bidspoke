@@ -222,3 +222,54 @@ describe('the retention alert says unknown when it could not read the jobs', () 
     expect(`${remedy.consequence} ${alerted().join(' ')}`).not.toMatch(/deadline/)
   })
 })
+
+/**
+ * Lessons review on #2088: the drift remedy also carries job-missing,
+ * job-inactive and retention-unreadable, where "disagree. Nothing failed and
+ * nothing is missing" is false. Each kind now gets wording true for it, and
+ * the "the check needs attention rather than the schedule" fix survives for a
+ * window that could not be read.
+ */
+describe('each purge job difference gets wording true for it', () => {
+  const remedySent = () =>
+    vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === RETENTION_CHECK_JOB && (c[2] as string[]).length > 0)?.[4] as {
+      consequence: string
+      fixHint: string
+      headlineVerb?: string
+    }
+  const runWith = (rows: Array<Record<string, unknown>>) =>
+    checkExecutionRetention(env, supabaseDouble({ data: rows }).client)
+
+  it('says disagree, and nothing failed, only when the windows really disagree', async () => {
+    await runWith([row(TRUNCATE, { retention_days: 9 }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).toMatch(/disagree/)
+    expect(remedy.headlineVerb).toMatch(/disagrees/)
+    expect(remedy.fixHint).toMatch(/Decide which side is right/)
+  })
+
+  it('does not say nothing is missing when a job is missing', async () => {
+    await runWith([row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/nothing is missing|Nothing failed/i)
+    expect(remedy.headlineVerb).not.toMatch(/disagrees/)
+    expect(remedy.fixHint).toMatch(/Recreate the missing job/)
+  })
+
+  it('says a disabled job is not enforcing retention, and how to turn it back on', async () => {
+    await runWith([row(TRUNCATE, { active: false }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/Nothing failed/)
+    expect(remedy.consequence).toMatch(/not being enforced/)
+    expect(remedy.fixHint).toMatch(/Re-enable/)
+  })
+
+  it('keeps the fix that a window it could not parse needs the check, not the schedule', async () => {
+    await runWith([row(TRUNCATE, { retention_days: null, command: 'CALL something_else()' }), row(REAP)])
+    const remedy = remedySent()
+    expect(remedy.consequence).not.toMatch(/disagree\./)
+    expect(remedy.consequence).toMatch(/unknown/)
+    expect(remedy.fixHint).toMatch(/the check itself needs attention rather than the schedule/)
+    expect(remedy.fixHint).not.toMatch(/Decide which side is right/)
+  })
+})
