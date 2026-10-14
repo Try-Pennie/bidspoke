@@ -145,7 +145,9 @@ describe('sendCronHeartbeatAlert', () => {
 
   it('says when the next run retries in words, not as a schedule string', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000)
-    expect(textOf(lastPost())).toContain('every hour at :23')
+    // The fix line itself, not the schedule line every alert ends with.
+    const fix = lastPost().blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    expect(fix).toContain('tries again on its own (every hour at :23)')
   })
 
   it('says a stale job is dark and points at the trigger configuration, not at termination reasons', async () => {
