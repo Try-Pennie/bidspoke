@@ -36,6 +36,15 @@ import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
 import { secretKeys } from '../../lib/secret-crypto'
 import { reencryptSecrets } from '../../lib/secret-reencrypt'
+import {
+  supabaseHeldWriteStore,
+  salesforcePortFor,
+  previewReplay,
+  replayHeldWrite,
+  abandonHeldWrite,
+  HELD_WRITE_STATUSES,
+  type ReplayResult,
+} from '../../lib/writeback-replay'
 import { writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
@@ -914,6 +923,113 @@ admin.post('/reencrypt-secrets', async (c) => {
       })
     }
     return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
+  } catch (err) {
+    return c.json({ error: formatErr(err) }, 500)
+  }
+})
+
+// ------------------------------------------------------------------
+// Held Salesforce writes (#471)
+// ------------------------------------------------------------------
+// A post-answer Salesforce write that failed is kept in
+// outcome_writeback_deadletters (#1993). These are the manual actions on it:
+// list, replay (a preview unless dryRun is false), and abandon. Every call is
+// scoped to the caller's organization, and every action is audited with no lead
+// value in the audit row.
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> = {
+  not_found: 404,
+  not_replayable: 409,
+  conflict: 409,
+  unreadable: 500,
+  no_salesforce: 502,
+  replayed: 200,
+  refused: 200,
+  still_pending: 200,
+}
+
+admin.get('/held-writes', async (c) => {
+  const { orgId } = c.get('user')
+  const status = c.req.query('status')
+  if (status !== undefined && !(HELD_WRITE_STATUSES as readonly string[]).includes(status)) {
+    return c.json({ error: `status must be one of ${HELD_WRITE_STATUSES.join(', ')}` }, 400)
+  }
+  try {
+    return c.json({ writes: await supabaseHeldWriteStore(createSupabaseClient(c.env)).list(orgId, status) })
+  } catch (err) {
+    return c.json({ error: formatErr(err) }, 500)
+  }
+})
+
+admin.post('/held-writes/:id/replay', async (c) => {
+  const { orgId, email } = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID.test(id)) return c.json({ error: 'id must be the held write\'s uuid' }, 400)
+  const parsed: unknown = await c.req.json().catch(() => ({}))
+  const body = parsed !== null && typeof parsed === 'object' ? (parsed as { dryRun?: unknown }) : {}
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') return c.json({ error: 'dryRun must be true or false' }, 400)
+  const dryRun = body.dryRun !== false
+
+  const supabase = createSupabaseClient(c.env)
+  const keys = secretKeys(c.env)
+  const store = supabaseHeldWriteStore(supabase)
+  const deps = {
+    store,
+    keys,
+    salesforce: async () => {
+      const row = await store.get(orgId, id)
+      if (!row) throw new Error('the held write is gone')
+      return salesforcePortFor(c.env, supabase, keys, orgId, row.workflow_id)
+    },
+  }
+  try {
+    if (dryRun) {
+      const preview = await previewReplay(deps, orgId, id)
+      if (preview.kind === 'preview') {
+        await writeAuditLog(supabase, orgId, 'held_salesforce_write', id, 'held_write_replay_previewed', email ?? 'unknown', {
+          execution_id: preview.execution_id,
+          sf_object: preview.sf_object,
+          sf_record_id: preview.sf_record_id,
+          fields: preview.fields.map((f) => f.field),
+          fields_changed_since: preview.fields.filter((f) => f.differs === true).map((f) => f.field),
+        })
+        return c.json({ dryRun: true, ...preview })
+      }
+      return c.json({ dryRun: true, ...preview }, preview.kind === 'not_found' ? 404 : preview.kind === 'not_replayable' ? 409 : 500)
+    }
+    const result = await replayHeldWrite(deps, orgId, id)
+    if (result.kind === 'replayed' || result.kind === 'refused' || result.kind === 'still_pending') {
+      await writeAuditLog(supabase, orgId, 'held_salesforce_write', id, 'held_write_replayed', email ?? 'unknown', {
+        outcome: result.kind,
+        recorded: result.recorded,
+      })
+    }
+    const warning =
+      'recorded' in result && !result.recorded
+        ? 'The write landed in Salesforce, or was answered, but its row could not be updated, so it still reads pending. Replaying it again resends the same update.'
+        : undefined
+    return c.json({ dryRun: false, ...result, ...(warning ? { warning } : {}) }, REPLAY_STATUS[result.kind])
+  } catch (err) {
+    return c.json({ error: formatErr(err) }, 500)
+  }
+})
+
+admin.post('/held-writes/:id/abandon', async (c) => {
+  const { orgId, email } = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID.test(id)) return c.json({ error: 'id must be the held write\'s uuid' }, 400)
+  const parsed: unknown = await c.req.json().catch(() => ({}))
+  const reason = parsed !== null && typeof parsed === 'object' ? (parsed as { reason?: unknown }).reason : undefined
+  if (typeof reason !== 'string' || reason.trim() === '') return c.json({ error: 'reason is required: say how the write was dealt with' }, 400)
+  const supabase = createSupabaseClient(c.env)
+  try {
+    const result = await abandonHeldWrite(supabaseHeldWriteStore(supabase), orgId, id)
+    if (result.kind === 'abandoned') {
+      await writeAuditLog(supabase, orgId, 'held_salesforce_write', id, 'held_write_abandoned', email ?? 'unknown', { reason: reason.trim() })
+    }
+    return c.json(result, result.kind === 'abandoned' ? 200 : result.kind === 'not_found' ? 404 : 409)
   } catch (err) {
     return c.json({ error: formatErr(err) }, 500)
   }
