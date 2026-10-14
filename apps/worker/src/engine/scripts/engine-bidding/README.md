@@ -65,9 +65,9 @@ or `sign_failed`), and nothing fails the bid. The helper block between the
 `BEGIN`/`END link token (#2089)` markers is identical in Lead Economy's
 `../lead-economy/return_response.js`, and `../__tests__/link-token.test.ts` holds the two
 to one text and pins the token to the issue's worked example. It is pasted on its own:
-no other script reads the new field. The drift check reads it as awaiting paste (its
-baseline is the version it was derived from, read on 2026-10-14) until the paste lands;
-clear the baseline in the change after.
+no other script reads the new field. Dan pasted it on 2026-10-14 (2:25 PM ET), the
+drift check read it as agree, and its baseline was cleared (#2093), so a canvas put
+back to the script before #2089 pages as a drift.
 
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
@@ -82,9 +82,9 @@ The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
 a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
-on the canvas since version 101. Of the kept Engine scripts only
-`build_response_body` carries a baseline, until its #2089 paste lands (see above);
-for the other three any difference from the canvas is a drift.
+on the canvas since version 101, and none of the kept Engine scripts carries a
+baseline now (the #2089 paste of `build_response_body` landed 2026-10-14), so any
+difference from the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce

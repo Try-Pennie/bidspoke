@@ -100,23 +100,22 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance, except build_response_body awaiting its #2089 paste: Engine Bidding version 106 (2026-10-02) holds the other three, so any difference there is a drift or a missing node', () => {
+  it('carry no canvas baseline and no new node allowance: the canvas holds all four, the #2089 paste of build_response_body (2026-10-14 2:25 PM ET) included, so any difference is a drift or a missing node', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) {
       expect(kept.newNodeSince, kept.file).toBeUndefined()
-      if (kept.namespace === 'build_response_body') continue
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
     }
   })
 
-  it('build_response_body (#2089) is an awaited paste while the canvas holds exactly the script it was derived from, and a drift once the canvas holds anything else', async () => {
+  it('build_response_body pages a canvas put back to its pre #2089 script as a drift, now that the paste has landed (#2093)', async () => {
+    // A restore of the old script would send every offer link out unsigned, and
+    // trypennie.com refuses those for records created after its cutoff.
     const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
-    expect(kept.baselineReadOn).toBe('2026-10-14')
     const before = BEFORE_2089_BUILD_RESPONSE_BODY
-    expect(await sha256Hex(before)).toBe(kept.canvasBaselineSha256)
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
-    const [awaiting] = await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow')
-    expect(awaiting.state).toBe('awaiting_paste')
+    const [restored] = await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow')
+    expect(restored.state).toBe('drift')
     const [agree] = await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow')
     expect(agree.state).toBe('agree')
     const [drift] = await judgeKeptScripts([kept], definition(before + '\n// edited'), 'Engine Bidding Workflow')
@@ -394,7 +393,7 @@ describe('endingOf', () => {
 describe('Lead Economy (#2089)', () => {
   const leadEconomy = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'lead-economy')
 
-  it('is watched on its live workflow with return_response, the file on disk, awaiting its paste against the canvas script it was derived from', async () => {
+  it('is watched on its live workflow with return_response, the file on disk, with no baseline now its #2089 paste has landed (#2093)', async () => {
     expect(leadEconomy?.workflowId).toBe('89b1a6af-7e0f-43de-bc66-1e888184551f')
     expect(leadEconomy?.configSources).toEqual([])
     expect(leadEconomy?.scripts.map((k) => k.namespace)).toEqual(['return_response'])
@@ -402,10 +401,11 @@ describe('Lead Economy (#2089)', () => {
     expect(kept.script).toBe(LEAD_ECONOMY_RETURN_RESPONSE_RAW as string)
     expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
     expect(kept.newNodeSince).toBeUndefined()
-    expect(kept.baselineReadOn).toBe('2026-10-14')
-    expect(await sha256Hex(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE)).toBe(kept.canvasBaselineSha256)
+    expect(kept.canvasBaselineSha256).toBeNull()
+    expect(kept.baselineReadOn).toBeNull()
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'return_response', config: { script } }] })
-    expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE), 'Lead Economy'))[0].state).toBe('awaiting_paste')
+    // Put back to the script before #2089, every offer link goes out unsigned, so it pages.
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE), 'Lead Economy'))[0].state).toBe('drift')
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Lead Economy'))[0].state).toBe('agree')
     expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE + '\n// edited'), 'Lead Economy'))[0].state).toBe('drift')
   })

@@ -16,6 +16,7 @@ in the Engine Bidding Workflow's `build_response_body.js`;
 `../__tests__/link-token.test.ts` holds the two to one text and pins the token to
 the issue's worked example.
 
-Until it is pasted, the drift check reads it as `awaiting_paste`, because its
-baseline is the canvas script it was derived from. Once the check reads `agree`,
-clear `canvasBaselineSha256` and `baselineReadOn` in `KEPT_LEAD_ECONOMY_SCRIPTS`.
+Dan pasted it on 2026-10-14 (2:27 PM ET) and the drift check read it as `agree`,
+so it carries no baseline (#2093): any difference from the canvas, a restore of the
+script before #2089 included, pages as a drift. To edit it here before a paste
+again, record the live canvas script's hash as its baseline in the same change.
