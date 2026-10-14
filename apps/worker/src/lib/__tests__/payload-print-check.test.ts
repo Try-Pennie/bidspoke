@@ -84,6 +84,10 @@ describe('checkPayloadPrints', () => {
     expect(text).toContain('Main Flow')
     expect(text).toContain('scout')
     expect(text).toContain('parsedBody')
+    // Logs left the only Logpush job on 2026-09-09 (logpush-expectation.ts), so
+    // the value stays in Workers Logs rather than leaving Bidspoke (#835).
+    expect(text).not.toMatch(/off-platform|leaves Bidspoke/)
+    expect(text).toMatch(/Workers Logs/)
   })
 
   it('sends nothing when there is nothing to report', async () => {

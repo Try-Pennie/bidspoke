@@ -193,9 +193,11 @@ export const CLICK_PATH_QUIET_REMEDY: AlertRemedy = {
 }
 
 export const CLICK_SEND_REFUSALS_REMEDY: AlertRemedy = {
+  // A refusal frees the claim (buyer_click_send's `refused` route), so it is not
+  // final for the prospect: a later click on it is sent again (#835).
   consequence:
-    'A click sold buyer refused most of the clicks sent to it in the last hour. A refusal is final: the prospect is marked Fail in ' +
-    'Salesforce and later clicks on it are not sent. Each line names the buyer and the share:',
+    'A click sold buyer refused most of the clicks sent to it in the last hour. A refused prospect is marked Fail in ' +
+    'Salesforce and its claim is freed, so a later click on it is sent again. Each line names the buyer and the share:',
   fixHint:
     "Open the newest refused Buyer Click Send step and read the buyer's own error. The same error on every refusal usually means " +
     'our request body or the buyer\'s intake rules changed; ask the buyer before the next click is refused.',
@@ -214,6 +216,41 @@ export const CLICK_RECONCILE_REMEDY: AlertRemedy = {
     'A click paged as possibly not counted is listed here only when its add never landed.',
   headlineVerb: 'found a click count that disagrees with Salesforce',
   itemNoun: { one: 'disagreement', many: 'disagreements' },
+}
+
+/**
+ * A family whose lines are only reads that failed (#835): nothing was judged for
+ * what they name, so none of the finding wording above is true of them.
+ */
+const UNREAD_FIX =
+  'Where a read failed, check that the system the error names (Supabase, Salesforce or the click counter) is answering and ' +
+  'that its credentials are valid; the check judges again on its next run.'
+
+export const CLICK_PATH_UNREAD_REMEDY: AlertRemedy = {
+  consequence:
+    'A click buyer check could not read what it judges, so it measured nothing for what each line names. Each line names the ' +
+    'read that failed and its error:',
+  fixHint: UNREAD_FIX,
+  headlineVerb: 'could not read what it judges',
+}
+
+const FINDING_REMEDY: Record<ClickAlertJob, AlertRemedy> = {
+  [CLICK_CHECK_ERRORS_JOB]: CLICK_CHECK_ERRORS_REMEDY,
+  [CLICK_PATH_QUIET_JOB]: CLICK_PATH_QUIET_REMEDY,
+  [CLICK_SEND_REFUSALS_JOB]: CLICK_SEND_REFUSALS_REMEDY,
+  [CLICK_RECONCILE_JOB]: CLICK_RECONCILE_REMEDY,
+}
+
+/** A family's page for how many of its lines are findings and how many are reads that failed (#835). */
+export function clickRemedyFor(job: ClickAlertJob, findings: number, unread: number): AlertRemedy {
+  const finding = FINDING_REMEDY[job]
+  if (unread === 0) return finding
+  if (findings === 0) return CLICK_PATH_UNREAD_REMEDY
+  return {
+    ...finding,
+    consequence: `${finding.consequence.replace(/:$/, '.')} A line saying a read failed measured nothing for what it names:`,
+    fixHint: `${finding.fixHint} ${UNREAD_FIX}`,
+  }
 }
 
 // ── Shapes ────────────────────────────────────────────────────────────────────
@@ -271,7 +308,8 @@ export interface ClickPathDeps {
   /** Salesforce submissions with NO Prospect, this routing code, exchange status Completed, and External_Timestamp__c in [fromMs, toMs). */
   readCompletedSubmissionsWithoutProspect(orgId: string, routingCode: number, fromMs: number, toMs: number): Promise<CompletedProspect[]>
   kv: BackoffKv
-  notify: Record<ClickAlertJob, (lines: string[]) => Promise<void>>
+  /** The remedy follows the lines (#835): findings, reads that failed, or both. */
+  notify: Record<ClickAlertJob, (lines: string[], remedy: AlertRemedy) => Promise<void>>
   now(): number
   localDev: boolean
   appUrl: string
@@ -370,13 +408,15 @@ export async function runClickPathChecks(deps: ClickPathDeps): Promise<ClickPath
     subjects = await deps.listSubjects()
   } catch (err) {
     const reason = `the workflows naming click buyers could not be read, so no click buyer was checked: ${messageOf(err)}`
-    await deps.notify[CLICK_CHECK_ERRORS_JOB]([reason])
+    await deps.notify[CLICK_CHECK_ERRORS_JOB]([reason], CLICK_PATH_UNREAD_REMEDY)
     paged[CLICK_CHECK_ERRORS_JOB] = 1
     return { unmeasured: reason, subjects: [], paged }
   }
 
   const lines: Record<ClickAlertJob, string[]> = { [CLICK_CHECK_ERRORS_JOB]: [], [CLICK_PATH_QUIET_JOB]: [], [CLICK_SEND_REFUSALS_JOB]: [], [CLICK_RECONCILE_JOB]: [] }
   const flagged: Record<ClickAlertJob, Set<string>> = { [CLICK_CHECK_ERRORS_JOB]: new Set(), [CLICK_PATH_QUIET_JOB]: new Set(), [CLICK_SEND_REFUSALS_JOB]: new Set(), [CLICK_RECONCILE_JOB]: new Set() }
+  /** Per family, how many of its lines are reads that failed rather than findings. */
+  const unread: Record<ClickAlertJob, number> = { [CLICK_CHECK_ERRORS_JOB]: 0, [CLICK_PATH_QUIET_JOB]: 0, [CLICK_SEND_REFUSALS_JOB]: 0, [CLICK_RECONCILE_JOB]: 0 }
   let reconcileRan = false
   const summaries: SubjectSummary[] = []
 
@@ -386,22 +426,23 @@ export async function runClickPathChecks(deps: ClickPathDeps): Promise<ClickPath
     const name = s.slug ?? subject.partner_id
     const page = `${deps.appUrl}/partners?selected=${encodeURIComponent(name)}`
     if (s.check_errors.verdict === 'elevated') { lines[CLICK_CHECK_ERRORS_JOB].push(`${name}: ${s.check_errors.detail}. Partner page: ${page}`); flagged[CLICK_CHECK_ERRORS_JOB].add(subject.partner_id) }
-    if (s.check_errors.verdict === 'unmeasured') lines[CLICK_CHECK_ERRORS_JOB].push(`${name}: the check runs could not be read, so whether the check is answering is not known: ${s.check_errors.reason}`)
+    if (s.check_errors.verdict === 'unmeasured') { lines[CLICK_CHECK_ERRORS_JOB].push(`${name}: the check runs could not be read, so whether the check is answering is not known: ${s.check_errors.reason}`); unread[CLICK_CHECK_ERRORS_JOB] += 1 }
     if (s.quiet.verdict === 'quiet') { lines[CLICK_PATH_QUIET_JOB].push(...s.quiet.lines.map((l) => `${name}: ${l}`)); flagged[CLICK_PATH_QUIET_JOB].add(subject.partner_id) }
     // An unread check says so rather than passing as a clean run (L98), like check_errors and reconcile below.
-    if (s.quiet.verdict === 'unmeasured') lines[CLICK_PATH_QUIET_JOB].push(`${name}: whether the path is quiet is not known, because what it reads could not be read: ${s.quiet.reason}`)
+    if (s.quiet.verdict === 'unmeasured') { lines[CLICK_PATH_QUIET_JOB].push(`${name}: whether the path is quiet is not known, because what it reads could not be read: ${s.quiet.reason}`); unread[CLICK_PATH_QUIET_JOB] += 1 }
     if (s.refusals.verdict === 'elevated') { lines[CLICK_SEND_REFUSALS_JOB].push(`${name}: ${s.refusals.detail}. Partner page: ${page}`); flagged[CLICK_SEND_REFUSALS_JOB].add(subject.partner_id) }
-    if (s.refusals.verdict === 'unmeasured') lines[CLICK_SEND_REFUSALS_JOB].push(`${name}: the sends could not be read, so whether the buyer is refusing is not known: ${s.refusals.reason}`)
+    if (s.refusals.verdict === 'unmeasured') { lines[CLICK_SEND_REFUSALS_JOB].push(`${name}: the sends could not be read, so whether the buyer is refusing is not known: ${s.refusals.reason}`); unread[CLICK_SEND_REFUSALS_JOB] += 1 }
     if (s.reconcile.verdict === 'mismatch' || s.reconcile.verdict === 'unmeasured' || s.reconcile.verdict === 'match') reconcileRan = true
     if (s.reconcile.verdict === 'mismatch') { lines[CLICK_RECONCILE_JOB].push(`${name} on ${s.reconcile.date} (Pacific day): ${s.reconcile.detail}`); flagged[CLICK_RECONCILE_JOB].add(subject.partner_id) }
-    if (s.reconcile.verdict === 'unmeasured') lines[CLICK_RECONCILE_JOB].push(`${name} on ${s.reconcile.date} (Pacific day) could not be reconciled, and is tried again on the next run: ${s.reconcile.reason}`)
+    if (s.reconcile.verdict === 'unmeasured') { lines[CLICK_RECONCILE_JOB].push(`${name} on ${s.reconcile.date} (Pacific day) could not be reconciled, and is tried again on the next run: ${s.reconcile.reason}`); unread[CLICK_RECONCILE_JOB] += 1 }
   }
 
   for (const job of CLICK_ALERT_JOBS) {
     // The reconcile runs once a day; a run that did not reconcile says nothing, so it neither pages nor clears a standing page.
     if (job === CLICK_RECONCILE_JOB && !reconcileRan) continue
     await letNewSubjectsOut(deps.kv, job, subjects, flagged[job])
-    await deps.notify[job](lines[job])
+    // The words follow the lines (#835); which lines page is decided above and unchanged.
+    await deps.notify[job](lines[job], clickRemedyFor(job, lines[job].length - unread[job], unread[job]))
     paged[job] = lines[job].length
   }
   return { subjects: summaries, paged }
@@ -800,10 +841,10 @@ export function productionClickPathDeps(supabase: SupabaseClient, env: Env): Cli
     },
     kv: env.IDEMPOTENCY,
     notify: {
-      [CLICK_CHECK_ERRORS_JOB]: (lines) => notifyExportFailure(supabase, CLICK_CHECK_ERRORS_JOB, lines, env.IDEMPOTENCY, CLICK_CHECK_ERRORS_REMEDY),
-      [CLICK_PATH_QUIET_JOB]: (lines) => notifyExportFailure(supabase, CLICK_PATH_QUIET_JOB, lines, env.IDEMPOTENCY, CLICK_PATH_QUIET_REMEDY),
-      [CLICK_SEND_REFUSALS_JOB]: (lines) => notifyExportFailure(supabase, CLICK_SEND_REFUSALS_JOB, lines, env.IDEMPOTENCY, CLICK_SEND_REFUSALS_REMEDY),
-      [CLICK_RECONCILE_JOB]: (lines) => notifyExportFailure(supabase, CLICK_RECONCILE_JOB, lines, env.IDEMPOTENCY, CLICK_RECONCILE_REMEDY),
+      [CLICK_CHECK_ERRORS_JOB]: (lines, remedy) => notifyExportFailure(supabase, CLICK_CHECK_ERRORS_JOB, lines, env.IDEMPOTENCY, remedy),
+      [CLICK_PATH_QUIET_JOB]: (lines, remedy) => notifyExportFailure(supabase, CLICK_PATH_QUIET_JOB, lines, env.IDEMPOTENCY, remedy),
+      [CLICK_SEND_REFUSALS_JOB]: (lines, remedy) => notifyExportFailure(supabase, CLICK_SEND_REFUSALS_JOB, lines, env.IDEMPOTENCY, remedy),
+      [CLICK_RECONCILE_JOB]: (lines, remedy) => notifyExportFailure(supabase, CLICK_RECONCILE_JOB, lines, env.IDEMPOTENCY, remedy),
     },
     now: () => Date.now(),
     localDev: Boolean(env.LOCAL_DEV),

@@ -128,8 +128,10 @@ export async function checkPayloadPrints(
     ...newFindings.map(
       (f) =>
         `${f.workflowName} / ${f.namespace} prints the whole of \`${f.identifier}\` to the log. ` +
-        'Console output is captured by the platform before any redaction of ours runs and is ' +
-        'exportable off-platform, so this leaves Bidspoke.',
+        // No Logpush job exports console output since 2026-09-09 (logpush-expectation.ts), so the
+        // value stays in Workers Logs, which is still readable by anyone with log access (#835).
+        'Console output is captured by the platform before any redaction of ours runs, so the whole ' +
+        'value is kept in Workers Logs, where anyone with log access to this worker can read it.',
     ),
   ]
 

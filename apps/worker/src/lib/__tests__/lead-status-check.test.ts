@@ -525,8 +525,21 @@ describe('checkLeadStatus', () => {
     }))
 
     expect(sentRemedy()?.title).toBe(LEAD_STATUS_BROKEN_REMEDY.title)
-    expect(sentRemedy()?.fixHint).toBe(LEAD_STATUS_BROKEN_REMEDY.fixHint)
     expect(alerted()).toHaveLength(2)
+    // Each partner gets its own fix (#835): the copy and a backfill for AmOne,
+    // the buyer answer check for Tripoint, whose day synced.
+    const fix = sentRemedy()?.fixHint ?? ''
+    expect(fix).toMatch(/Lead for AmOne\. That copy needs fixing in Salesforce, and then the older AmOne sales need a backfill/)
+    expect(fix).toMatch(/For Tripoint: Set the Lead's External Exchange Status to Completed in Salesforce only for a sale the buyer accepted/)
+    expect(fix).not.toMatch(/this partner|Tripoint sales need a backfill/)
+  })
+
+  it('a broken day alone names its partner in the fix (#835)', async () => {
+    await checkLeadStatus(env, supabase, deps({ AmOne: { submissions: 55, leads: 0, backlog: 248 } }))
+    expect(sentRemedy()?.fixHint).toBe(
+      'Salesforce has stopped copying Completed from the Submission to the Lead for AmOne. That copy needs fixing in Salesforce, ' +
+        'and then the older AmOne sales need a backfill.',
+    )
   })
 })
 

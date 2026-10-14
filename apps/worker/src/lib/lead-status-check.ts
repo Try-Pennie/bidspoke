@@ -185,11 +185,35 @@ interface Finding {
   zeroFor?: string
   /** Set on a backlog line that says what the buyer answered for each sale (#1837). */
   answered?: boolean
+  /** The Salesforce partner a broken or backlog line is about, so the fix can name it (#835). */
+  partner?: string
+}
+
+const andList = (names: readonly string[]): string =>
+  names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+
+/**
+ * The broken page's fix, naming each partner with its own fix (#835). A broken
+ * day can share a page with another partner's backlog, and "this partner ...
+ * the older sales need a backfill" then read as the fix for both.
+ */
+function brokenFix(findings: Finding[]): string {
+  const broken = [...new Set(findings.filter((f) => f.kind === 'broken' && f.partner).map((f) => f.partner as string))]
+  const parts = [
+    `Salesforce has stopped copying Completed from the Submission to the Lead for ${andList(broken)}. That copy needs fixing in ` +
+      `Salesforce, and then the older ${andList(broken)} sales need a backfill.`,
+  ]
+  for (const f of findings) {
+    if (f.kind !== 'backlog' || !f.partner) continue
+    const fix = (f.answered ? LEAD_STATUS_ANSWERED_BACKLOG_REMEDY : LEAD_STATUS_BACKLOG_REMEDY).fixHint ?? ''
+    parts.push(`For ${f.partner}: ${fix}`)
+  }
+  return parts.join(' ')
 }
 
 /** The broken title outranks the backlog one, which outranks a check that could not run. */
 function remedyFor(findings: Finding[]): TitledRemedy {
-  if (findings.some((f) => f.kind === 'broken')) return LEAD_STATUS_BROKEN_REMEDY
+  if (findings.some((f) => f.kind === 'broken')) return { ...LEAD_STATUS_BROKEN_REMEDY, fixHint: brokenFix(findings) }
   const backlogs = findings.filter((f) => f.kind === 'backlog')
   if (backlogs.length) return backlogs.every((f) => f.answered) ? LEAD_STATUS_ANSWERED_BACKLOG_REMEDY : LEAD_STATUS_BACKLOG_REMEDY
   return LEAD_STATUS_UNCHECKED_REMEDY
@@ -450,6 +474,7 @@ async function measure(
         `Only ${fmt(leads.n)} of ${fmt(subs.n)} ${partner} sales on ${on} reached their Lead ` +
         `(${Math.round((leads.n / subs.n) * 100)}%). Normally ${before} do, so new sales aren't syncing.${older}`,
       key: `broken:${partner}`,
+      partner,
     })
   }
 
@@ -457,7 +482,7 @@ async function measure(
     findings.push({ kind: 'unchecked', text: `The check couldn't count older ${partner} sales waiting on their Lead: ${backlog.err}`, key: `backlog-uncounted:${partner}` })
   } else if (judged && backlog.own > 0 && !findings.some((f) => f.kind === 'broken')) {
     const answered = rule.buyerAnswers === true
-    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog, answered), key: backlogKey(partner, backlog), answered })
+    findings.push({ kind: 'backlog', text: describeBacklog(partner, backlog, answered), key: backlogKey(partner, backlog), answered, partner })
   }
 
   return { status, findings }

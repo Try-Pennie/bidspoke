@@ -22,9 +22,12 @@ import { profilesTableDouble } from './_profiles-table-double'
 import {
   BID_PURGE_HORIZON_MS,
   BUYER_OUTCOME_RATE_JOB,
+  BUYER_OUTCOME_RATE_REMEDY,
   BUYER_SALES_CHECKS_JOB,
   BUYER_SALES_MISMATCH_JOB,
+  BUYER_SALES_UNLISTED_REMEDY,
   BUYER_SALES_UNRESOLVED_JOB,
+  BUYER_SALES_UNRESOLVED_REMEDY,
   OUTCOME_BASELINE_DAYS,
   OUTCOME_BASELINE_MIN_ATTEMPTS,
   OUTCOME_RATE_MIN_ATTEMPTS,
@@ -101,7 +104,7 @@ interface Fixture {
 
 function deps(f: Fixture = {}, over: Partial<Omit<ChecksDeps, 'kv'>> = {}): Omit<ChecksDeps, 'kv'> & { kv: ReturnType<typeof fakeKv> } {
   const kv = fakeKv()
-  const notifyMismatch = vi.fn(async (_lines: string[]) => {})
+  const notifyMismatch = vi.fn(async (_lines: string[], _remedy: unknown) => {})
   const notifyUnresolved = vi.fn(async (_lines: string[]) => {})
   const notifyOutcomeRate = vi.fn(async (_lines: string[]) => {})
   const entries = f.entries ?? { '2027-09-20': [accepted('lead-1', NOW - 10 * 60_000)], '2027-09-19': [] }
@@ -138,7 +141,7 @@ describe('runBuyerSalesChecks', () => {
     expect(b.completeness.verdict).toBe('complete')
     expect(b.consistency.verdict).toBe('consistent')
     expect(b.independent.verdict).toBe('verified')
-    expect(d.notifyMismatch).toHaveBeenCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenCalledWith([], expect.anything())
     expect(d.notifyUnresolved).toHaveBeenCalledWith([])
     expect(endingOf(summary).outcome).toBe('ok')
   })
@@ -147,7 +150,7 @@ describe('runBuyerSalesChecks', () => {
     const d = deps({ unmirroredOldestMs: 6 * 60_000, sales: [] })
     const summary = await runBuyerSalesChecks(d)
     expect(summary.buyers[0].completeness).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/outbox.*6 minutes/) })
-    expect(d.notifyMismatch).toHaveBeenCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenCalledWith([], expect.anything())
     expect(endingOf(summary).outcome).toBe('unmeasured')
   })
 
@@ -155,7 +158,7 @@ describe('runBuyerSalesChecks', () => {
     const d = deps({ sales: [] })
     const first = await runBuyerSalesChecks(d)
     expect(first.buyers[0].completeness.verdict).toBe('mismatch')
-    expect(d.notifyMismatch).toHaveBeenLastCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenLastCalledWith([], expect.anything())
     const second = await runBuyerSalesChecks(d)
     expect(second.buyers[0].completeness.verdict).toBe('mismatch')
     const lines = vi.mocked(d.notifyMismatch).mock.calls[1][0] as string[]
@@ -171,12 +174,12 @@ describe('runBuyerSalesChecks', () => {
     d.readSalesRows = async (_p, day) => (day === '2027-09-20' ? [{ lead_key: 'lead-1', status: 'accepted', kind: 'live' }] : [])
     const second = await runBuyerSalesChecks(d)
     expect(second.buyers[0].completeness.verdict).toBe('complete')
-    expect(d.notifyMismatch).toHaveBeenLastCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenLastCalledWith([], expect.anything())
     await runBuyerSalesChecks(d)
     d.readSalesRows = async () => []
     const fourth = await runBuyerSalesChecks(d)
     expect(fourth.buyers[0].completeness.verdict).toBe('mismatch')
-    expect(d.notifyMismatch).toHaveBeenLastCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenLastCalledWith([], expect.anything())
   })
 
   it('an accepted ledger entry with no winner row fails the CONSISTENCY check, which is named as such and not as independent (L58)', async () => {
@@ -197,7 +200,7 @@ describe('runBuyerSalesChecks', () => {
     const d = deps({ entries: { '2027-09-20': [], '2027-09-19': [old] }, winners: [], sales: [{ lead_key: 'lead-old', status: 'accepted', kind: 'live' }] })
     const summary = await runBuyerSalesChecks(d)
     expect(summary.buyers[0].consistency).toMatchObject({ verdict: 'unmeasured', reason: 'beyond_bid_purge_horizon', unmeasured_hours: 1 })
-    expect(d.notifyMismatch).toHaveBeenCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenCalledWith([], expect.anything())
   })
 
   it('an accepted entry whose reference Salesforce never received fails the independent check; a buyer with no write back is unmeasured, never clean', async () => {
@@ -287,7 +290,7 @@ describe('runBuyerSalesChecks', () => {
     expect(summary.buyers[0].consistency.verdict).toBe('unmeasured')
     expect(summary.buyers[0].independent.verdict).toBe('unmeasured')
     expect(endingOf(summary).outcome).toBe('unmeasured')
-    expect(d.notifyMismatch).toHaveBeenCalledWith([])
+    expect(d.notifyMismatch).toHaveBeenCalledWith([], expect.anything())
   })
 
   it('a buyer list that cannot be read is a failed run, not an empty one', async () => {
@@ -295,7 +298,7 @@ describe('runBuyerSalesChecks', () => {
     const summary = await runBuyerSalesChecks(d)
     expect(summary.unmeasured).toMatch(/buyer_profiles unreadable/)
     expect(endingOf(summary).outcome).toBe('unmeasured')
-    expect(d.notifyMismatch).not.toHaveBeenCalledWith([])
+    expect(d.notifyMismatch).not.toHaveBeenCalledWith([], expect.anything())
   })
 
   it('does nothing in local dev and says so', async () => {
@@ -547,5 +550,111 @@ describe('the independent record lookup (#1737)', () => {
     await runBuyerSalesChecks(d)
     // The fixture checks Eastern days 2027-09-20 and 2027-09-19; 2027-09-19 starts at 04:00 UTC (EDT).
     expect(seen).toEqual([Date.UTC(2027, 8, 19, 3, 0, 0)])
+  })
+})
+
+/**
+ * What each page says, derived from what the check measured (#835). Every
+ * sentence here used to be one fixed paragraph per page, which told a reader
+ * about a lost bid logger write when the winner rows were LONG, about a missing
+ * Salesforce write back when Salesforce was never asked, and about a ledger
+ * disagreement when the buyer list could not even be read.
+ */
+describe('the page wording follows what was measured (#835)', () => {
+  type Sent = { consequence: string; fixHint: string; headlineVerb?: string }
+  const mismatchRemedy = (d: ReturnType<typeof deps>, call: number): Sent => vi.mocked(d.notifyMismatch).mock.calls[call][1] as Sent
+
+  it('a buyer list that cannot be read is said in its own words, never as a ledger disagreement', async () => {
+    const d = deps({}, { listBuyers: async () => { throw new Error('buyer_profiles unreadable') } })
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 0)
+    expect(sent).toBe(BUYER_SALES_UNLISTED_REMEDY)
+    expect(sent.consequence).not.toMatch(/disagreed/)
+    expect(sent.consequence).toMatch(/buyer list/)
+    expect(`${sent.consequence} ${sent.headlineVerb}`).not.toMatch(/disagreement/)
+  })
+
+  it('more winner rows than accepted sales in an hour is never called a lost bid logger write', async () => {
+    const twoWinners = [
+      { execution_id: 'exec-lead-1', attempted_at_utc: new Date(NOW - 10 * 60_000).toISOString() },
+      { execution_id: 'exec-lead-x', attempted_at_utc: new Date(NOW - 9 * 60_000).toISOString() },
+    ]
+    const d = deps({ winners: twoWinners })
+    await runBuyerSalesChecks(d)
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 1)
+    expect(sent.fixHint).not.toMatch(/write was lost|no winner row/)
+    expect(sent.fixHint).toMatch(/more winner rows than accepted sales/)
+    // Only the check that disagreed gets a fix line.
+    expect(sent.fixHint).not.toMatch(/Completeness|Salesforce/)
+  })
+
+  it('fewer winner rows than accepted sales is the lost write case, and only that clause is given', async () => {
+    const d = deps({ winners: [] })
+    await runBuyerSalesChecks(d)
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 1)
+    expect(sent.fixHint).toMatch(/fewer winner rows than accepted sales/)
+    expect(sent.fixHint).toMatch(/lost/)
+    expect(sent.fixHint).not.toMatch(/more winner rows/)
+  })
+
+  it('an attempt whose winner row and reservation fall either side of an hour is named as that before a lost write', async () => {
+    // Reserved at 15:00:30, its winner row stamped at 14:59:50: hour 14 has a winner and no sale, hour 15 the reverse.
+    const reservedAt = Date.UTC(2027, 8, 20, 15, 0, 30)
+    const d = deps({
+      entries: { '2027-09-20': [accepted('lead-1', reservedAt)], '2027-09-19': [] },
+      winners: [{ execution_id: 'exec-lead-1', attempted_at_utc: new Date(Date.UTC(2027, 8, 20, 14, 59, 50)).toISOString() }],
+    })
+    await runBuyerSalesChecks(d)
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 1)
+    expect(sent.fixHint).toMatch(/began in one hour and reserved in the next/)
+  })
+
+  it('an accepted sale with no buyer reference is not described as missing from Salesforce, which was never asked about it', async () => {
+    const blank = { ...accepted('lead-1', NOW - 10 * 60_000), outcome: { buyer_reference: null, result_code: '1000', http_status: 200, payout_cents: 2190 } } as unknown as LedgerEntry
+    const d = deps({ entries: { '2027-09-20': [blank], '2027-09-19': [] } })
+    await runBuyerSalesChecks(d)
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 1)
+    expect(sent.fixHint).not.toMatch(/Salesforce holds no write back/)
+    expect(sent.fixHint).toMatch(/no buyer reference/)
+  })
+
+  it('a reference Salesforce lacks keeps the write back fix', async () => {
+    const d = deps({ salesforce: new Set() })
+    await runBuyerSalesChecks(d)
+    await runBuyerSalesChecks(d)
+    const sent = mismatchRemedy(d, 1)
+    expect(sent.fixHint).toMatch(/Salesforce holds no write back/)
+    expect(sent.fixHint).not.toMatch(/no buyer reference/)
+  })
+
+  it('the outcome rate page claims no baseline it may not have had and no runs it did not read', () => {
+    // A saturated hour is judged with no baseline at all, and an unclassified answer holds the lead and can fail the run.
+    const words = `${BUYER_OUTCOME_RATE_REMEDY.consequence} ${BUYER_OUTCOME_RATE_REMEDY.headlineVerb}`
+    expect(words).not.toMatch(/prior 14 days|than usual/)
+    expect(words).not.toMatch(/succeeded|nothing else pages/)
+  })
+
+  it("an unresolved sale from an earlier day is counted, but only today's are said to hold today's caps", async () => {
+    const yesterday = { ...unresolved('lead-u0', NOW - 20 * HOUR), et_day: '2027-09-19' }
+    const today = unresolved('lead-u1', NOW - 40 * 60_000)
+    const d = deps({}, {
+      ledger: () => ({
+        entries: async () => [],
+        unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+        unresolved: async () => [yesterday, today],
+      }),
+    })
+    const s = await runBuyerSalesChecks(d)
+    // The count and the page decision are unchanged: both entries are waiting on a person.
+    expect(s.buyers[0].unresolved.count).toBe(2)
+    const line = (vi.mocked(d.notifyUnresolved).mock.calls[0][0] as string[])[0]
+    expect(line).toMatch(/tripoint: 2 unresolved sales, oldest 20 hours/)
+    expect(line).toMatch(/1 of the 500 lead slots/)
+    expect(line).toMatch(/\$21\.90 of the \$1,000\.00/)
+    expect(BUYER_SALES_UNRESOLVED_REMEDY.consequence).not.toMatch(/Each holds a slot/)
   })
 })
