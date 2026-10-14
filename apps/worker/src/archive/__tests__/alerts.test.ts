@@ -61,13 +61,11 @@ describe('alertsFor', () => {
   })
 
   // Chosen from what the run reported, not assumed: a second required setting
-  // added to this exit later gets the general remedy, which still warns against
-  // minting a new recovery secret (lessons review, #835).
-  it('gives any other missing setting the general remedy, which still warns against a new recovery secret', () => {
+  // added to this exit later gets the general remedy, never the pepper one (#835).
+  it('gives any other missing setting the general remedy, not the pepper one', () => {
     const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: 'SOME_OTHER_SETTING is not set' }))
-    expect(alert.remedy.fixHint).toMatch(/wrangler secret put/)
-    expect(alert.remedy.fixHint).toMatch(/Bidspoke recovery keys/)
-    expect(alert.remedy.fixHint).not.toMatch(/SSN_HASH_PEPPER from/)
+    expect(alert.remedy.fixHint).toMatch(/wrangler secret put <NAME>/)
+    expect(alert.remedy.fixHint).not.toMatch(/SSN_HASH_PEPPER/)
   })
 
   // Separate names so a per-execution refusal cannot suppress a genuine ingest

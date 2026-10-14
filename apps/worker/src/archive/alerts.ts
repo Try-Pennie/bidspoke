@@ -124,7 +124,6 @@ export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
   context: 'No hour is being backed up while this stands. It is not writing incomplete records, which is the safe choice.',
   fixHint:
     'Set the setting the line names with wrangler secret put <NAME> --name bidspoke-worker, piping the value in. ' +
-    'If it is a recovery secret, restore it from the 1Password item "Bidspoke recovery keys", never a new value. ' +
     'The next hourly run picks it up and the skipped hours are backed up on later runs.',
 }
 
