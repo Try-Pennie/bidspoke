@@ -34,7 +34,7 @@ import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs } fro
 import {
   getSalesforceToken,
   performSalesforceCall,
-  salesforceFailureIsTransient,
+  salesforceRejectedTheWrite,
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
 
@@ -249,10 +249,9 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   }
   const error = `Salesforce API error (${answer.status}): ${answer.text}`
   const lastError = await lock(error)
-  // A login or permission refusal (401 after the fresh login, 403) is a fault on
-  // our side, not Salesforce rejecting this write, so it stays pending: closing it
-  // would lose a write that fixing the credentials lets through.
-  if (salesforceFailureIsTransient(answer.status, answer.text) || answer.status === 401 || answer.status === 403) {
+  // Only a rejection of the write itself closes the row. A transient failure, or
+  // a login or permission refusal (a fault on our side), leaves it pending.
+  if (!salesforceRejectedTheWrite(answer.status, answer.text)) {
     return { kind: 'still_pending', error, recorded: await record({ last_error_encrypted: lastError, updated_at: now() }) }
   }
   const at = now()

@@ -427,6 +427,17 @@ export function salesforceFailureIsTransient(status: number, responseText: strin
 }
 
 /**
+ * Whether Salesforce rejected the write ITSELF: a failed answer that is neither
+ * worth sending again nor a login or permission refusal (401, 403), which is a
+ * fault on our side that fixing the credentials clears. A different question from
+ * the retry rule above, so it is its own function rather than a clause beside it:
+ * the replay tool (#471) closes a held write only on this.
+ */
+export function salesforceRejectedTheWrite(status: number, responseText: string): boolean {
+  return status >= 400 && status !== 401 && status !== 403 && !salesforceFailureIsTransient(status, responseText)
+}
+
+/**
  * One Salesforce call: bulkhead slot, own timeout, response read and parsed.
  *
  * Extracted so the malformed-field recovery (#723) reruns the request through
