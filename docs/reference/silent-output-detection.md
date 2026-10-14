@@ -45,7 +45,7 @@ It fires when today's rate falls below the field's own baseline by more than fou
 
 A field that has all but stopped carrying values, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%. For a field only ending steps read, the runs counted are the runs where one of those steps ran.
 
-Since #2018 this alert covers fields that **have carried a value** in the last 28 days, which is the Scout case: the step still runs, and the field inside its output has gone empty. The usual cause is an upstream that is down or now answers in a different shape, and the alert says so. A field that has never carried a value is judged by its key instead, below.
+Since #2018 this alert mostly covers fields that **have carried a value** in the last 28 days, which is the Scout case: the step still runs, and the field inside its output has gone empty. The usual cause is an upstream that is down or now answers in a different shape. A field that has never carried a value is judged by its key instead, below, once there is enough evidence: 3 days and 200 runs on which the key was measured. Until then it stays on this alert, so nothing goes unwatched while key evidence builds, and the message names both causes for that reason.
 
 On a workflow with fewer than 200 runs on its most recent day, the alert cannot say the field was empty "on the most recent day", so it says that day had too few runs to judge, and an open incident is held rather than stood down on too little evidence (#1803).
 

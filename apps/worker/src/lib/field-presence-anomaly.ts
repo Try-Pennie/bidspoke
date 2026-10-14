@@ -1178,13 +1178,14 @@ export async function sendFieldDeadAlert(
       text: {
         type: 'mrkdwn',
         text:
-          // A path whose key never appears has its own alert (#2018), so what is
-          // left here is a field that carried values and stopped: most often an
-          // upstream that is down or now answers in a different shape.
-          'The step still runs, but this field has stopped carrying values. Most often an upstream ' +
-          'is down or now answers in a different shape, so check the step\'s recent output first. ' +
-          'If the upstream comes back, no action is needed: this stands down by itself on the first ' +
-          'day the field resolves again.',
+          // A path whose key never appears has its own alert (#2018). What is left
+          // here is mostly a field that carried values and stopped, plus a field
+          // that never has but whose key cannot be judged yet, so both are named.
+          'The step still runs, but this field has all but stopped resolving. If it used to carry ' +
+          'values, most often an upstream is down or now answers in a different shape, so check the ' +
+          'step\'s recent output first. If it never has, the reference path may be wrong: correct it ' +
+          'or remove the reference. Either way this stands down by itself on the first day the field ' +
+          'resolves again.',
       },
     },
   ]
