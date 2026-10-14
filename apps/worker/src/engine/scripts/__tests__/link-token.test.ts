@@ -32,7 +32,7 @@ const RETURN_RESPONSE = keptScript('lead-economy', 'return_response')
 // characters are signed, so its 18 character form below pins the same token.
 const SECRET = 'example-secret-for-testing-only'
 const RECORD_ID = 'a04Ui00000ABCDEFGH'
-const TOKEN = 'bbfRE5LpCpRlM6AY5qvdHVXEzAqsv1ZGRh8Oy0JTb7A'
+const WORKED_EXAMPLE_T = 'bbfRE5LpCpRlM6AY5qvdHVXEzAqsv1ZGRh8Oy0JTb7A'
 
 type Json = Record<string, unknown>
 type Offer = { click_url: string }
@@ -74,27 +74,27 @@ describe('Engine Bidding: build_response_body signs the offer link', () => {
 
   it('appends the issue example token to the Pennie portal link, and says it signed', async () => {
     const out = (await runCanvasScript(BUILD_RESPONSE_BODY, engineRun({}))) as Response
-    expect(out.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${RECORD_ID}?t=${TOKEN}`)
+    expect(out.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
     expect(out.link_token).toBe('signed')
   })
 
   it('gives the 15 character id the same token as its 18 character form', async () => {
     const short = RECORD_ID.slice(0, 15)
     const out = (await runCanvasScript(BUILD_RESPONSE_BODY, engineRun({ prospectId: short }))) as Response
-    expect(out.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${short}?t=${TOKEN}`)
+    expect(out.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${short}?t=${WORKED_EXAMPLE_T}`)
   })
 
   it('signs the alternate and experiment landing pages too', async () => {
     const alt = (await runCanvasScript(BUILD_RESPONSE_BODY, engineRun({ pt: { ...fixtures.prospect_trades_not_sell_off, altLandingPage: true } }))) as Response
-    expect(alt.body.offers[0].click_url).toBe(`https://trypennie.com/offerhub/${RECORD_ID}?t=${TOKEN}`)
+    expect(alt.body.offers[0].click_url).toBe(`https://trypennie.com/offerhub/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
     const exp = (await runCanvasScript(BUILD_RESPONSE_BODY, engineRun({ pt: { ...fixtures.prospect_trades_not_sell_off, expLandingPage: true } }))) as Response
-    expect(exp.body.offers[0].click_url).toBe(`https://trypennie.com/offerportal/${RECORD_ID}?t=${TOKEN}`)
+    expect(exp.body.offers[0].click_url).toBe(`https://trypennie.com/offerportal/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
   })
 
   it('signs a sold Tripoint lead landing on trypennie.com/portal/tpl', async () => {
     const sold = { output: { sale: { skipped: false, accepted: true, buyer_reference: 'x', result_code: '1001', partner_slug: 'tripoint', partner_name: 'Tripoint', click_url: LIVE_ENGINE_PAGES.TripointClickUrl, routing_code: 2, response_class: 'Success' } } }
     const out = (await runCanvasScript(BUILD_RESPONSE_BODY, engineRun({ pt: fixtures.prospect_trades_sell_off, steps: { tripoint_ping: sold } }))) as Response
-    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/tpl/${RECORD_ID}?t=${TOKEN}`)
+    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/tpl/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
   })
 
   const clickSteps = (clickUrl: string): CanvasRun['steps'] => ({
@@ -106,13 +106,13 @@ describe('Engine Bidding: build_response_body signs the offer link', () => {
   it('signs a click buyer whose landing page is our own site (Liberty1)', async () => {
     const run = engineRun({ pt: fixtures.prospect_trades_sell_off, steps: clickSteps('https://trypennie.com/portal/liberty/{prospect_id}') })
     const out = (await runCanvasScript(BUILD_RESPONSE_BODY, run)) as Response
-    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/liberty/${RECORD_ID}?t=${TOKEN}`)
+    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/liberty/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
   })
 
   it('joins with & when the link already carries a query', async () => {
     const run = engineRun({ pt: fixtures.prospect_trades_sell_off, steps: clickSteps('https://trypennie.com/portal/liberty/{prospect_id}?src=engine') })
     const out = (await runCanvasScript(BUILD_RESPONSE_BODY, run)) as Response
-    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/liberty/${RECORD_ID}?src=engine&t=${TOKEN}`)
+    expect(out.body.offers[0].click_url).toBe(`https://trypennie.com/portal/liberty/${RECORD_ID}?src=engine&t=${WORKED_EXAMPLE_T}`)
   })
 
   it('never sends the token to a partner domain, including one that merely ends in trypennie.com', async () => {
@@ -170,13 +170,13 @@ describe('Lead Economy: return_response signs the offer link', () => {
 
   it('appends the issue example token to the Pennie portal link', async () => {
     const out = (await runCanvasScript(RETURN_RESPONSE, leRun({}))) as LeResponse
-    expect(out.response.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${RECORD_ID}?t=${TOKEN}`)
+    expect(out.response.body.offers[0].click_url).toBe(`https://www.trypennie.com/portal/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
     expect(out.link_token).toBe('signed')
   })
 
   it('signs a sell off lead Tripoint took, landing on /portal/tpl', async () => {
     const out = (await runCanvasScript(RETURN_RESPONSE, leRun({ pt: pt({ sellOff: true }), fetch: answerWith(200, { ok: true, data: { createLead: { resultCode: 1001, id: 'tp-1' } } }) }))) as LeResponse
-    expect(out.response.body.offers[0].click_url).toBe(`https://trypennie.com/portal/tpl/${RECORD_ID}?t=${TOKEN}`)
+    expect(out.response.body.offers[0].click_url).toBe(`https://trypennie.com/portal/tpl/${RECORD_ID}?t=${WORKED_EXAMPLE_T}`)
   })
 
   it('with no secret sends the link unsigned, warns, and says why', async () => {
