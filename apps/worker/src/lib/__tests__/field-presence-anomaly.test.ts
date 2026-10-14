@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { outboxEvents, transitions } from './_incident-events'
+import { outboxEvents, transitions, withTickingClock } from './_incident-events'
 
 vi.mock('../slack', () => ({
   getSlackConnection: vi.fn(),
@@ -810,6 +810,22 @@ describe('field-presence alerting', () => {
     expect(text).toContain('Main Flow')
     expect(text).toContain('100.0%')
     expect(text).toContain('0.0%')
+  })
+
+  it('starts the incident at the same reading as its running end, on a clock that moves between reads (#2099)', async () => {
+    // The incident record refuses an organization id that is not a uuid.
+    const orgWf = { ...WF, organization_id: '66666666-6666-4666-8666-666666666666' }
+    const kv = makeKv()
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [orgWf])
+    // The opening and the page must share the pass's one clock reading, or the
+    // page sorts first.
+    await withTickingClock(() => runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL))
+    expect(transitions(kv.store)).toEqual(['opened wf-1 scout.final', 'paged wf-1 scout.final'])
+    // The incident's start and its running end come from the same reading, so the
+    // all-clear can never measure an end earlier than the start.
+    const at = (marker: string) => [...kv.store.entries()].find(([k]) => k.includes(marker))?.[1]
+    expect(at('-recovery:')).toBeDefined()
+    expect(at('-recovery:')).toBe(at('-active:'))
   })
 
   it('does not page twice for the same field while the cooldown holds', async () => {
