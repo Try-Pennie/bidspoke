@@ -71,6 +71,13 @@ describe('findMissingRequiredSecrets', () => {
     expect(REQUIRED_PARTNER_SECRETS).toContain('EQUIFAX_PASSWORD')
   })
 
+  it('requires the link token secret (#2089): without it every offer link goes out unsigned and trypennie.com refuses it', () => {
+    expect(REQUIRED_PARTNER_SECRETS).toContain('LINK_TOKEN_SECRET')
+    const env = fullSecretEnv()
+    delete env.LINK_TOKEN_SECRET
+    expect(findMissingRequiredSecrets(env as unknown as Env)).toEqual(['LINK_TOKEN_SECRET'])
+  })
+
   it('does not require partner config that lives in the environment_variables table (guarded by #394) or misnamed keys', () => {
     // SALESFORCE_INSTANCE_URL / SALESFORCE_CLIENT_ID are non-secret DB env vars,
     // not worker secrets, so this guard always saw them as absent (false positive).
