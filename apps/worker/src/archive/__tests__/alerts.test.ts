@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS, PEPPER_MISSING_DETAIL } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -47,6 +47,25 @@ describe('alertsFor', () => {
     expect(alerts).toHaveLength(1)
     expect(alerts[0].jobName).toBe(ARCHIVE_JOB_NAMES.misconfigured)
     expect(ARCHIVE_JOB_NAMES.misconfigured).not.toBe(ARCHIVE_JOB_NAMES.ingest)
+  })
+
+  // #835: the only secret this exit names is SSN_HASH_PEPPER, which cannot be
+  // re-derived. "Set the named secret" invited a NEW value, which leaves every
+  // record already archived unfindable by SSN for an erasure request. The fix
+  // is to restore the escrowed value, never to make one.
+  it('tells the reader to restore the escrowed pepper, never to set a new one', () => {
+    const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: PEPPER_MISSING_DETAIL }))
+    expect(alert.remedy.fixHint).toMatch(/Bidspoke recovery keys/)
+    expect(alert.remedy.fixHint).toMatch(/never a new value/i)
+    expect(alert.remedy.fixHint).not.toMatch(/<NAME>/)
+  })
+
+  // Chosen from what the run reported, not assumed: a second required setting
+  // added to this exit later gets the general remedy, never the pepper one (#835).
+  it('gives any other missing setting the general remedy, not the pepper one', () => {
+    const [alert] = alertsFor(run({ failed: true, stop: 'misconfigured', detail: 'SOME_OTHER_SETTING is not set' }))
+    expect(alert.remedy.fixHint).toMatch(/wrangler secret put <NAME>/)
+    expect(alert.remedy.fixHint).not.toMatch(/SSN_HASH_PEPPER/)
   })
 
   // Separate names so a per-execution refusal cannot suppress a genuine ingest
@@ -185,27 +204,27 @@ describe('the falling behind finding reads in words', () => {
  */
 describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
-    const remedy = ingestRemedyFor('read-failed')
+    const remedy = ingestRemedyFor('read-failed', '')
 
     expect(remedy.title).toMatch(/could not read/)
     expect(remedy.fixHint).toMatch(/in our database, not Snowflake/)
   })
 
   it('points a send failure at Snowflake, which is the case it belongs to', () => {
-    const remedy = ingestRemedyFor('send-failed')
+    const remedy = ingestRemedyFor('send-failed', '')
 
     expect(remedy.fixHint).toMatch(/Check Snowflake availability/)
   })
 
   it('points a misconfiguration at the secret that is unset', () => {
-    expect(ingestRemedyFor('misconfigured').fixHint).toMatch(/wrangler secret put/)
+    expect(ingestRemedyFor('misconfigured', '').fixHint).toMatch(/wrangler secret put/)
   })
 
   it('gives every fault its own distinct advice', () => {
     // The defect was that these were all the same sentence. A test that only
     // checked each one said something would have passed throughout.
     const hints = (['read-failed', 'send-failed', 'misconfigured'] as const).map(
-      (stop) => ingestRemedyFor(stop).fixHint,
+      (stop) => ingestRemedyFor(stop, '').fixHint,
     )
     expect(new Set(hints).size).toBe(3)
   })
@@ -228,15 +247,15 @@ describe('ingestRemedyFor', () => {
     const readAlert = alertsFor(failed('read-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
     const sendAlert = alertsFor(failed('send-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
 
-    expect(readAlert?.remedy.fixHint).toBe(ingestRemedyFor('read-failed').fixHint)
-    expect(sendAlert?.remedy.fixHint).toBe(ingestRemedyFor('send-failed').fixHint)
+    expect(readAlert?.remedy.fixHint).toBe(ingestRemedyFor('read-failed', '').fixHint)
+    expect(sendAlert?.remedy.fixHint).toBe(ingestRemedyFor('send-failed', '').fixHint)
     expect(readAlert?.remedy.fixHint).not.toBe(sendAlert?.remedy.fixHint)
   })
 
   it('keeps the generic wording for a run that stopped on a budget rather than a fault', () => {
     // wall-time is not a failure of anything, so naming a system to go and
     // check would be inventing a cause (L11).
-    const remedy = ingestRemedyFor('wall-time')
+    const remedy = ingestRemedyFor('wall-time', '')
 
     expect(remedy.fixHint).toMatch(/Read the stop reason/)
     expect(remedy.fixHint).not.toMatch(/Check Snowflake availability/)
