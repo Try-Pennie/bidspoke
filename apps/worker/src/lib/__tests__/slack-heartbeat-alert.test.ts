@@ -134,6 +134,15 @@ describe('sendCronHeartbeatAlert', () => {
     })
   }
 
+  it('keeps the schedule line last on a reminder too', async () => {
+    const now = Date.parse('2026-10-05T13:00:00Z')
+    const standing = { since: new Date(now - 26 * 3_600_000).toISOString(), alerts: 2 }
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000, standing, now)
+    const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+    expect(sections.at(-1)).toContain(job.triggerCron)
+    expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
+  })
+
   it('says when the next run retries in words, not as a schedule string', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000)
     expect(textOf(lastPost())).toContain('every hour at :23')

@@ -213,8 +213,8 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     alerts.push({
       jobName: ARCHIVE_JOB_NAMES.lag,
       errors: [
-        `archive is ${result.hoursBehind} hours behind after stopping on ${result.stop}, ` +
-          `past the ${LAG_ALERT_HOURS} hour threshold, so it is not keeping up with its own cadence`,
+        `${result.hoursBehind} hours behind, past the ${LAG_ALERT_HOURS} hour line. ` +
+          `The last run stopped because ${STOP_IN_WORDS[result.stop]}.`,
       ],
       remedy: ARCHIVE_LAG_REMEDY,
     })

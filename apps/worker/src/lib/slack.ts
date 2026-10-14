@@ -1623,8 +1623,9 @@ export async function sendCronHeartbeatAlert(
   // shape below carries this sentence, and the header says "still" (#1334).
   const repeat = describeRepeat(standing, nowMs, unchanged)
   const again = repeat ? ' still' : ''
+  // The reminder line goes before the schedule line, which stays last (#1300).
   const withRepeat = (blocks: object[]): object[] =>
-    repeat ? [...blocks, { type: 'section', text: { type: 'mrkdwn', text: repeat } }] : blocks
+    repeat ? [...blocks.slice(0, -1), { type: 'section', text: { type: 'mrkdwn', text: repeat } }, blocks[blocks.length - 1]] : blocks
   // What happened and what to do lead; the schedule string and how the check
   // saw it come last, in one line (#1300, Dan, 2026-09-10: "They're not easy to read").
   const words = scheduleInWords(job.triggerCron, new Date(nowMs))

@@ -140,6 +140,15 @@ describe('the failed run finding reads in words', () => {
   }
 })
 
+describe('the falling behind finding reads in words', () => {
+  it('names the stop it fell behind on in words', () => {
+    const behind = { failed: false, stop: 'wall-time', detail: '', executionsArchived: 5, executionsRefused: 0, hoursArchived: 3, hoursEmpty: 0, hoursBehind: 9 } as unknown as RunResult
+    const line = alertsFor(behind).find((a) => a.jobName === ARCHIVE_JOB_NAMES.lag)!.errors[0]
+    expect(line).not.toContain('wall-time')
+    expect(line).toContain('9 hours behind')
+  })
+})
+
 describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
     const remedy = ingestRemedyFor('read-failed')
