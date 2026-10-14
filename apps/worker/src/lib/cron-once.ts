@@ -187,6 +187,9 @@ function startRenewing(
       if (!res.ok) throw new Error(`claim object answered ${res.status}`)
       return res.json<{ renewed?: unknown }>()
     }, deadlineMs, options.delay)
+    // A renewal still in flight when this run finished answers after tick-done or
+    // tick-release; its refusal or failure says nothing about this run.
+    if (stopped) return
     // Not fatal: a lease that goes stale lets a same-time delivery run the tick
     // again, which is the direction to err in.
     if (outcome.kind === 'timed_out') console.error(`[cron-once] could not renew ${key} inside ${deadlineMs}ms`)

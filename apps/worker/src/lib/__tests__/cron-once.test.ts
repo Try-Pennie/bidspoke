@@ -169,6 +169,37 @@ describe('runCronTickOnce (#1899)', () => {
     await run
   })
 
+  // Lessons review: a renewal still in flight when the jobs finish reaches the
+  // object after tick-done and is refused; that is not a takeover.
+  it('does not call a renewal refused after its own finish a takeover', async () => {
+    const { ns } = claimNamespace()
+    const gate = { open: () => {} }
+    const slowNs = {
+      idFromName: ns.idFromName.bind(ns),
+      get: (id: unknown) => {
+        const stub = (ns.get as (i: unknown) => { fetch: (u: string, i?: RequestInit) => Promise<Response> })(id)
+        return {
+          fetch: async (url: string, init?: RequestInit) => {
+            if (url.endsWith('/tick-renew')) await new Promise<void>((r) => { gate.open = r })
+            return stub.fetch(url, init)
+          },
+        }
+      },
+    } as unknown as DurableObjectNamespace
+    const job = pendingJob()
+    let renew: () => void = () => {}
+    const run = runCronTickOnce(slowNs, { cron: '0 * * * *', scheduledTime: MINUTE }, job.ran, {
+      now: () => MINUTE, holder: () => 'req-a', every: (fn) => { renew = fn; return () => {} },
+    })
+    await vi.waitFor(() => expect(job.ran).toHaveBeenCalledTimes(1))
+    renew()
+    job.finish()
+    await run
+    gate.open()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(warns.join('\n')).not.toMatch(/was refused/)
+  })
+
   it('renews the lease while the jobs run, and stops when they finish', async () => {
     const { ns } = claimNamespace()
     const job = pendingJob()
