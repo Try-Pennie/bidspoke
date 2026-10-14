@@ -94,7 +94,11 @@ export function retentionRemedyFor(codes: readonly string[]): AlertRemedy {
     )
   }
   return {
-    consequence: `The execution purge jobs are not as this repo declares. ${consequences.join(' ').replace(/\.$/, ':')}`,
+    // Opens with "not as declared" only when a difference was measured; a
+    // window that could not be read says only that it is unknown (#835).
+    consequence:
+      (codes.some((c) => c !== 'retention-unreadable') ? 'The execution purge jobs are not as this repo declares. ' : '') +
+      consequences.join(' ').replace(/\.$/, ':'),
     fixHint: fixes.join(' '),
     headlineVerb: 'found a problem with the purge jobs',
     itemNoun: { one: 'difference', many: 'differences' },

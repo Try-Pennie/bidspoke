@@ -102,8 +102,9 @@ export function standstillCause(runs: RecentRun[]): StandstillCause {
       // than naming a cause on its behalf.
       outcomes: [...new Set(failing.map((r) => r.outcome as string))],
       advice:
-        'Recent runs are failing. The outcome above says which half: a read failure points at Postgres ' +
-        'and the query it timed out on, a send failure at Snowflake and its credentials, and ' +
+        'Recent runs are failing. The outcome above says which part: a read failure points at Postgres ' +
+        'and the query it timed out on, a send failure at Snowflake and its credentials, record-failed at ' +
+        'the write to execution_archive_ids in our own database after Snowflake took the hour, and ' +
         'misconfigured at a secret that is not set.',
     }
   }

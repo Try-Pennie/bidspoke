@@ -271,5 +271,8 @@ describe('each purge job difference gets wording true for it', () => {
     expect(remedy.consequence).toMatch(/unknown/)
     expect(remedy.fixHint).toMatch(/the check itself needs attention rather than the schedule/)
     expect(remedy.fixHint).not.toMatch(/Decide which side is right/)
+    // Nothing about the jobs differing was measured, so it may not open by
+    // saying they are not as declared (lessons review, #835).
+    expect(remedy.consequence).not.toMatch(/are not as this repo declares/)
   })
 })
