@@ -276,6 +276,15 @@ export async function executeSalesforceNode(
     tokenMs,
   }
 
+  // Reported before it goes out, so a write still out after 2 s can be recorded
+  // by the walk (#2022). Updates only: no post-answer create or upsert is live.
+  const noteUpdate = (body: unknown) => {
+    if (operation === 'update' && resolvedRecordId && body && typeof body === 'object' && !Array.isArray(body)) {
+      ctx.noteSalesforceRequest?.({ object, record_id: resolvedRecordId, operation: 'update', body: body as Record<string, unknown> })
+    }
+  }
+  noteUpdate(resolvedBodyForInput)
+
   let { res, responseText, parsedBody } = await performSalesforceCall(bodyStr, callOpts)
 
   // A cached token Salesforce has revoked answers 401 INVALID_SESSION_ID. Evicting
@@ -332,8 +341,10 @@ export async function executeSalesforceNode(
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
     // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
     // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
-    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; status?: number; mayHaveLanded?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
     err.resolvedInput = resolvedInput
+    // The answer's status, typed, so a caller judges the failure without reading the message (#2022).
+    err.status = res.status
     if (warnLogs.length > 0) err.logs = warnLogs
     const transientErrors = config.transient_errors ?? []
     let matchesTransient = false
@@ -374,6 +385,10 @@ export async function executeSalesforceNode(
       callOpts,
       warnLogs,
       resolvedInput,
+      noteBody: noteUpdate,
+      // The original error still throws, but the resend may have landed, so it
+      // must not read as a clean refusal to the at-risk watch.
+      onRetryMayHaveLanded: () => { err.mayHaveLanded = true },
     })
     if (recovered) return recovered
 
@@ -546,6 +561,10 @@ async function recoverFromRejectedField(args: {
   callOpts: SalesforceCallOptions
   warnLogs: StepLogEntry[]
   resolvedInput: ResolvedStepInput
+  /** Reports the body the retry will send instead (#2022). */
+  noteBody: (body: unknown) => void
+  /** Called when the retry got a transient answer, so it may have landed (#2022). */
+  onRetryMayHaveLanded: () => void
 }): Promise<StepExecutionResult | null> {
   const { parsedBody, operation, body, callOpts, warnLogs, resolvedInput } = args
 
@@ -601,11 +620,13 @@ async function recoverFromRejectedField(args: {
     template: resolvedInput.template,
     resolved: { ...(resolvedInput.resolved as Record<string, unknown>), body: blanked },
   }
+  args.noteBody(blanked)
   const retry = await performSalesforceCall(JSON.stringify(blanked), { ...callOpts, resolvedInput: retryInput })
   if (!retry.res.ok) {
     // The retry failed too. Say nothing new: the caller throws the ORIGINAL
     // error, so diagnostics never get worse than before this recovery existed.
     console.log(`[salesforce] event=salesforce_field_blanked_retry_failed status=${retry.res.status} trace=${callOpts.traceId}`)
+    if (salesforceFailureIsTransient(retry.res.status, retry.responseText)) args.onRetryMayHaveLanded()
     return null
   }
 
