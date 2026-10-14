@@ -987,9 +987,15 @@ export default {
     const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
       const timer = tickTimer()
       const work = scheduledJobs.start(event, env, platformCtx, timer)
+      // Only the minute tick is reported: the hourly and daily ones run for
+      // minutes by design. The checkpoint covers a tick killed before its end.
+      const minuteTick = event.cron === '* * * * *'
+      const stopCheckpoint = minuteTick
+        ? timer.checkpoint(event.cron, { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>), log: (l) => console.warn(l) })
+        : () => {}
       await Promise.allSettled(work)
-      // Only the minute tick: the hourly and daily ones run for minutes by design.
-      const slow = event.cron === '* * * * *' ? timer.report(event.cron) : null
+      stopCheckpoint()
+      const slow = minuteTick ? timer.report(event.cron) : null
       if (slow) console.warn(slow)
       // A cron that started nothing (a retired one) leaves nothing to count.
       // The count is bookkeeping, never a reason to run the jobs again.

@@ -16,6 +16,19 @@
 /** The usual minute tick takes 5 to 15 s (measured 2026-10-14), so past 20 s is slow. */
 export const TICK_SLOW_MS = 20_000
 
+/**
+ * When a still running tick logs the jobs it is waiting on. A tick killed at
+ * its limit never reaches the end of tick line, so this is the one that names
+ * the job in that case. Well past the usual 15 s and the 20 s line.
+ */
+export const TICK_CHECKPOINT_MS = 60_000
+
+export interface CheckpointSeams {
+  setTimer: (fn: () => void, ms: number) => unknown
+  clearTimer: (handle: unknown) => void
+  log: (line: string) => void
+}
+
 interface Timed { name: string; ms: number | null; failed: boolean; startedAt: number }
 
 export function tickTimer(now: () => number = Date.now) {
@@ -44,6 +57,14 @@ export function tickTimer(now: () => number = Date.now) {
         .sort((a, b) => b.shown - a.shown)
         .map((j) => `${j.name}:${j.shown}${j.ms === null ? ' unfinished' : j.failed ? ' failed' : ''}`)
       return `[tick-timing] cron="${cron}" total_ms=${total} jobs=${list.join(',')}`
+    },
+    /** Logs the report once at TICK_CHECKPOINT_MS if the tick is still running; returns the stop. */
+    checkpoint(cron: string, seams: CheckpointSeams): () => void {
+      const handle = seams.setTimer(() => {
+        const line = this.report(cron)
+        if (line) seams.log(`${line} (checkpoint, still running)`)
+      }, TICK_CHECKPOINT_MS)
+      return () => seams.clearTimer(handle)
     },
   }
 }
