@@ -53,6 +53,21 @@ describe('getSalesforceToken', () => {
     expect(classifyStepError(err)).toBe('transient')
   })
 
+  // Headers can arrive and the body then never finish; the deadline covers both,
+  // as the real fetch's signal does by failing the body read when it aborts.
+  it('gives up on a body that never finishes, not only on missing headers', async () => {
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener('abort', () => controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+        },
+      })
+      return Promise.resolve(new Response(body, { status: 200 }))
+    })
+    const err = await token({ timeoutMs: 1 }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/token fetch timed out after 1 ms/)
+  })
+
   it('gives up when the step itself is cut off, without waiting for its own deadline', async () => {
     hangUntilAborted(fetchMock)
     const step = new AbortController()

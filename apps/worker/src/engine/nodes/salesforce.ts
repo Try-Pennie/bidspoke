@@ -19,7 +19,6 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
-import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
 import { classifyHttpErrorWithBody } from '../error-classifier'
 import { shadowSalesforceStub } from '../shadow'
@@ -99,7 +98,10 @@ export async function getSalesforceToken(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   linkAbort(controller, opts.signal)
+  // The deadline covers the body as well as the headers: a body that never
+  // finishes holds the lead just as long.
   let res: Response
+  let text: string
   try {
     res = await fetch(`${instanceUrl}/services/oauth2/token`, {
       method: 'POST',
@@ -111,6 +113,7 @@ export async function getSalesforceToken(
       }),
       signal: controller.signal,
     })
+    text = await res.text()
   } catch (e) {
     // Unmarked, so the step classifier reads it as transient and retries.
     if (controller.signal.aborted) {
@@ -126,7 +129,6 @@ export async function getSalesforceToken(
   }
 
   if (!res.ok) {
-    const text = await res.text()
     // No execution context here, so a block page rides on the error (#1265). A token
     // endpoint is exactly the kind of host a firewall blocks first.
     const err = attachBlockSighting(
@@ -141,9 +143,15 @@ export async function getSalesforceToken(
     throw err
   }
 
-  const data = await parseJson<{ access_token: string }>(res)
-  await env.WORKFLOW_CACHE.put(cacheKey, data.access_token, { expirationTtl: TOKEN_TTL_S })
-  return data.access_token
+  let token: unknown
+  try {
+    token = (JSON.parse(text) as { access_token?: unknown }).access_token
+  } catch {
+    throw new Error(`Salesforce token response was not JSON (${res.status}): ${text.slice(0, 200)}`)
+  }
+  if (typeof token !== 'string' || token === '') throw new Error(`Salesforce token response carried no access_token (${res.status})`)
+  await env.WORKFLOW_CACHE.put(cacheKey, token, { expirationTtl: TOKEN_TTL_S })
+  return token
 }
 
 export async function executeSalesforceNode(
