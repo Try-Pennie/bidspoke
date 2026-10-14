@@ -117,9 +117,10 @@ function changedLine(change: FormulaChange | null): string | undefined {
   const when = new Date(change.at.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'))
   if (Number.isNaN(when.getTime())) return undefined
   const day = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(when)
+  // Only the Lead formula's change is read (formulaChangeReader), so it is named (#835).
   return change.by
-    ? `The Salesforce formula was last changed ${day} by ${change.by}.`
-    : `The Salesforce formula was last changed ${day}.`
+    ? `The Salesforce ${LEAD_REVENUE_FIELD.label} formula was last changed ${day} by ${change.by}.`
+    : `The Salesforce ${LEAD_REVENUE_FIELD.label} formula was last changed ${day}.`
 }
 
 /** A Salesforce formula field: the label people call it by, its object's API name, and its developer name. */
@@ -245,9 +246,10 @@ async function finish(
 }
 
 /**
- * The mismatch title when every difference is one, with who changed the
- * formula; the could not run title otherwise. A failed lookup of who changed it
- * drops only that line, never the alert.
+ * The mismatch title when any difference is one, with who changed the formula,
+ * and saying so when another part could not be read; the could not run title
+ * only when nothing was compared. A failed lookup of who changed it drops only
+ * that line, never the alert.
  */
 async function remedyFor(
   differences: PricingDifference[],
@@ -255,11 +257,16 @@ async function remedyFor(
 ): Promise<TitledRemedy> {
   const isMismatch = (d: PricingDifference) => MISMATCH_CODES.has(d.code)
   const isFormulaMismatch = (d: PricingDifference) => FORMULA_MISMATCH_CODES.has(d.code)
-  if (differences.length === 0 || !differences.every((d) => isMismatch(d) || isFormulaMismatch(d))) {
+  if (differences.length === 0 || !differences.some((d) => isMismatch(d) || isFormulaMismatch(d))) {
     return TRIPOINT_PRICING_UNREADABLE_REMEDY
   }
-  if (!differences.some(isMismatch)) return REVENUE_FORMULAS_DISAGREE_REMEDY
-  const base = differences.some(isFormulaMismatch) ? PARTNER_RATES_MISMATCH_REMEDY : TRIPOINT_PRICING_MISMATCH_REMEDY
+  // A mismatch the check did measure is the title even when another part could
+  // not be read (#835): "couldn't run" over a real disagreement hid it. The
+  // title then says both, so it claims nothing the lines do not.
+  const partRefused = differences.some((d) => !isMismatch(d) && !isFormulaMismatch(d))
+  const withRefusal = (r: TitledRemedy): TitledRemedy => (partRefused ? { ...r, title: `${r.title}, and part of the check couldn't run` } : r)
+  if (!differences.some(isMismatch)) return withRefusal(REVENUE_FORMULAS_DISAGREE_REMEDY)
+  const base = withRefusal(differences.some(isFormulaMismatch) ? PARTNER_RATES_MISMATCH_REMEDY : TRIPOINT_PRICING_MISMATCH_REMEDY)
   let change: FormulaChange | null = null
   try {
     change = await readFormulaChange()

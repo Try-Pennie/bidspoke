@@ -98,38 +98,90 @@ const OUTCOME_RATE_MIN_RISE = 0.25
  */
 export const INDEPENDENT_RECORD_BUYERS: ReadonlySet<string> = new Set(['tripoint'])
 
-export const BUYER_SALES_MISMATCH_REMEDY: AlertRemedy = {
-  consequence:
-    'A buyer ledger and the records it should agree with have disagreed on two consecutive checks. Selling is unaffected; ' +
-    'the ledger decides caps and the ledger is what the copies are compared against. Each line names the buyer, which check ' +
-    'disagreed and by how much:',
-  fixHint:
+/**
+ * What a paged mismatch line can be, each with its own fix (#835). The fix line
+ * names only the kinds the page carries, so a page about winner rows that are
+ * LONG never says a bid logger write was lost, and one about a sale with no
+ * buyer reference never says Salesforce lacks a write back it was never asked
+ * about (L11).
+ */
+export const MISMATCH_KINDS = [
+  'completeness',
+  'consistency_short',
+  'consistency_long',
+  'consistency_split',
+  'independent_missing',
+  'independent_blank',
+] as const
+export type MismatchKind = (typeof MISMATCH_KINDS)[number]
+
+const MISMATCH_FIX: Record<MismatchKind, string> = {
+  completeness:
     'Completeness: the buyer_sales copy is short or long against the ledger for the day; check the drain job for errors, then ' +
-    'compare GET /api/buyer-sales against the ledger summary. Consistency: an accepted sale has no winner row in ' +
-    'lead_sighting_bids, so the bid logger write was lost; find the execution by lead key. Independent: Salesforce holds no ' +
-    'write back for a lead the ledger says was sold; look at the patch step of that execution before trusting the sale.',
-  headlineVerb: 'found a disagreement',
-  itemNoun: { one: 'disagreement', many: 'disagreements' },
+    'compare GET /api/buyer-sales against the ledger summary.',
+  consistency_short:
+    'Consistency, an hour with fewer winner rows than accepted sales: a bid logger write may have been lost; find the ' +
+    'execution in that hour by lead key and read its bid log step.',
+  consistency_long:
+    'Consistency, an hour with more winner rows than accepted sales: the bid logger recorded a win the ledger does not hold as ' +
+    'accepted; find the execution in lead_sighting_bids and compare it with its ledger entry.',
+  consistency_split:
+    'A short hour next to a long one by the same count is usually one attempt that began in one hour and reserved in the next, ' +
+    'not a lost write; check that execution first.',
+  independent_missing:
+    'Independent: Salesforce holds no write back for a lead the ledger says was sold; look at the patch step of that execution ' +
+    'before trusting the sale.',
+  independent_blank:
+    'Independent: a sale with no buyer reference could not be looked up in Salesforce at all; find the execution by lead key ' +
+    'and read what the buyer answered, since a sale the buyer took should carry its lead id.',
+}
+
+const MISMATCH_CONSEQUENCE =
+  'A buyer ledger and the records it should agree with have disagreed on two consecutive checks. Selling is unaffected; ' +
+  'the ledger decides caps and the ledger is what the copies are compared against. Each line names the buyer, which check ' +
+  'disagreed and by how much:'
+
+/** The mismatch page for the kinds its lines carry. */
+export function buyerSalesMismatchRemedy(kinds: ReadonlySet<MismatchKind>): AlertRemedy {
+  return {
+    consequence: MISMATCH_CONSEQUENCE,
+    fixHint: MISMATCH_KINDS.filter((k) => kinds.has(k)).map((k) => MISMATCH_FIX[k]).join(' '),
+    headlineVerb: 'found a disagreement',
+    itemNoun: { one: 'disagreement', many: 'disagreements' },
+  }
+}
+
+/** Every clause at once: what the wording review reads. A page carries only its own kinds. */
+export const BUYER_SALES_MISMATCH_REMEDY: AlertRemedy = buyerSalesMismatchRemedy(new Set(MISMATCH_KINDS))
+
+/** The buyer list could not be read, so nothing was compared, and nothing disagreed (#835). */
+export const BUYER_SALES_UNLISTED_REMEDY: AlertRemedy = {
+  consequence:
+    "The buyer sales checks could not read the buyer list, so no buyer's ledger was compared with its copies this run. " +
+    'The error was:',
+  fixHint:
+    'Read the error on the line. If it is a database timeout or outage, check that Supabase is answering; if it names a column, ' +
+    'a table or a permission, the buyer_profiles read in the buyer sales checks needs fixing.',
+  headlineVerb: 'could not read the buyer list',
 }
 
 export const BUYER_OUTCOME_RATE_REMEDY: AlertRemedy = {
   consequence:
-    'A buyer is failing or declining far more of the leads offered to it in the last hour than it did over the prior ' +
-    '14 days. Every one of those runs succeeded and the leads went on to the next buyer or to the workflow, so nothing ' +
-    'else pages for this. Each line names the buyer and the shares:',
+    'A buyer failed or declined an unusual share of the leads offered to it in the last hour. A decline or a buyer error ' +
+    'is an expected answer, so the outage alerts do not count it. Each line names the buyer and what was measured:',
   fixHint:
     'A run of failed attempts: open the partner page and the newest execution details, and read the HTTP status the ' +
     'buyer answered. A block page, a 401 or a 403 means the buyer is refusing us, not the leads; check its endpoint and ' +
     'credential. A run of declines: compare the declined leads with the profile and ask the buyer whether its intake ' +
     'rules changed.',
-  headlineVerb: 'shows a buyer refusing far more leads than usual',
+  headlineVerb: 'shows a buyer failing or declining an unusual share of leads',
   itemNoun: { one: 'buyer', many: 'buyers' },
 }
 
 export const BUYER_SALES_UNRESOLVED_REMEDY: AlertRemedy = {
   consequence:
-    "Sales nobody could classify are waiting on a person. Each holds a slot and its payout against the buyer's caps today " +
-    'until it is settled, so a buyer can be refused leads over sales that may never have happened. Nothing failed; the lines ' +
+    "Sales nobody could classify are waiting on a person. One reserved today holds a slot and its payout against the buyer's " +
+    'caps until it is settled, so a buyer can be refused leads over sales that may never have happened. Nothing failed; the lines ' +
     'below say which buyer and how many:',
   fixHint:
     'Open the partner page linked on each line, read what the buyer answered for each sale, and settle it: Count as sold when ' +
@@ -185,7 +237,8 @@ export interface ChecksDeps {
   /** Counts over live buyer_sales rows with et_day in [fromDay, toDay). */
   readOutcomeBaseline(partnerId: string, fromDay: string, toDay: string): Promise<OutcomeBaseline>
   kv: BackoffKv
-  notifyMismatch(lines: string[]): Promise<void>
+  /** The remedy is chosen by what the lines carry (#835): the buyer list unread, or the kinds of disagreement. */
+  notifyMismatch(lines: string[], remedy: AlertRemedy): Promise<void>
   notifyUnresolved(lines: string[]): Promise<void>
   notifyOutcomeRate(lines: string[]): Promise<void>
   now(): number
@@ -199,12 +252,21 @@ export type Verdict<Good extends string, Bad extends string> =
   | { verdict: Bad; detail: string }
   | { verdict: 'unmeasured'; reason: string; unmeasured_hours?: number }
 
+/** One Eastern hour whose accepted sales and winner rows differ, as the consistency check counted it. */
+export interface ConsistencyHour {
+  hour: number
+  ledger: number
+  winners: number
+}
+
 export interface BuyerCheckSummary {
   partner_id: string
   slug: string
   completeness: Verdict<'complete', 'mismatch'>
-  consistency: Verdict<'consistent', 'inconsistent'> & { unmeasured_hours?: number }
-  independent: Verdict<'verified', 'unverified'>
+  /** `hours` is set on an inconsistent verdict, so the page's fix can say which way each hour differs (#835). */
+  consistency: Verdict<'consistent', 'inconsistent'> & { unmeasured_hours?: number; hours?: ConsistencyHour[] }
+  /** `missing` and `blank` are set on an unverified verdict: references Salesforce lacks, and sales with no reference to ask about. */
+  independent: Verdict<'verified', 'unverified'> & { missing?: number; blank?: number }
   unresolved: { count: number; oldest_age_ms: number | null; paged: boolean }
   /** Rehearsal reservations the ledger alarm released over the days read (#1515): a leak count, never a page. */
   rehearsals_expired: number
@@ -285,15 +347,17 @@ export function judgeConsistency(accepted: LedgerEntry[], winners: WinnerRow[], 
   }
   let unmeasuredHours = 0
   const diffs: string[] = []
+  const differing: ConsistencyHour[] = []
   for (const [h, slot] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
     const hourEnd = (h + 1) * HOUR_MS
     if (hourEnd <= horizonStart) { unmeasuredHours += 1; continue }
     if (slot.ledger !== slot.winners) {
       const label = new Date(h * HOUR_MS).toISOString().slice(0, 13) + ':00Z'
       diffs.push(`hour ${label}: ${slot.ledger} accepted in the ledger, ${slot.winners} winner rows`)
+      differing.push({ hour: h, ledger: slot.ledger, winners: slot.winners })
     }
   }
-  if (diffs.length > 0) return { verdict: 'inconsistent', detail: diffs.join('; '), unmeasured_hours: unmeasuredHours }
+  if (diffs.length > 0) return { verdict: 'inconsistent', detail: diffs.join('; '), unmeasured_hours: unmeasuredHours, hours: differing }
   if (unmeasuredHours > 0 && byHour.size === unmeasuredHours) return { verdict: 'unmeasured', reason: 'beyond_bid_purge_horizon', unmeasured_hours: unmeasuredHours }
   return { verdict: 'consistent', unmeasured_hours: unmeasuredHours }
 }
@@ -309,7 +373,25 @@ export function judgeIndependent(accepted: LedgerEntry[], found: Set<string> | n
   const parts: string[] = []
   if (missing.length) parts.push(`${plural(missing.length, 'accepted sale has', 'accepted sales have')} no Salesforce write back: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', ...' : ''}`)
   if (blank) parts.push(`${plural(blank, 'accepted sale carries', 'accepted sales carry')} no buyer reference to look up`)
-  return { verdict: 'unverified', detail: parts.join('; ') }
+  return { verdict: 'unverified', detail: parts.join('; '), missing: missing.length, blank }
+}
+
+/** The fix kinds a buyer's paged mismatch carries, read from what each check found. */
+export function mismatchKindsOf(s: Pick<BuyerCheckSummary, 'completeness' | 'consistency' | 'independent'>): MismatchKind[] {
+  const kinds: MismatchKind[] = []
+  if (s.completeness.verdict === 'mismatch') kinds.push('completeness')
+  if (s.consistency.verdict === 'inconsistent') {
+    const hours = s.consistency.hours ?? []
+    if (hours.some((h) => h.ledger > h.winners)) kinds.push('consistency_short')
+    if (hours.some((h) => h.winners > h.ledger)) kinds.push('consistency_long')
+    const split = hours.some((a) => hours.some((b) => b.hour === a.hour + 1 && a.winners - a.ledger === b.ledger - b.winners && a.winners > a.ledger))
+    if (split) kinds.push('consistency_split')
+  }
+  if (s.independent.verdict === 'unverified') {
+    if ((s.independent.missing ?? 0) > 0) kinds.push('independent_missing')
+    if ((s.independent.blank ?? 0) > 0) kinds.push('independent_blank')
+  }
+  return kinds
 }
 
 /** How a baseline that could not be read is handed to the judge, with the reason. */
@@ -360,11 +442,20 @@ export function judgeOutcomeRate(
   return { verdict: 'normal', detail: `${attempts} attempts in the last hour, ${percent(failedShare)} failed ${against(failedBase)}, ${percent(declinedShare)} declined ${against(declinedBase)}` }
 }
 
+/**
+ * The page line for a buyer's unresolved sales. The count and the oldest age are
+ * every unresolved entry; the slots and dollars are only today's, because the
+ * daily caps count entries by the Eastern day they were reserved on (the
+ * ledger's counted()), so one from an earlier day holds nothing against today's
+ * caps (#835). This changes the words only: the count, which decides the page,
+ * is the same.
+ */
 export function unresolvedLine(buyer: CheckBuyer, entries: LedgerEntry[], nowMs: number, appUrl: string): string {
   const oldest = entries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
   const age = oldest === null ? 'unknown age' : (describeDuration(nowMs - oldest) ?? `${nowMs - oldest} ms`)
-  const cents = entries.reduce((n, e) => n + e.payout_cents, 0)
-  const slots = buyer.caps.daily_lead_cap === null ? `${plural(entries.length, 'lead slot', 'lead slots')} (no daily lead cap)` : `${entries.length} of the ${buyer.caps.daily_lead_cap} lead slots`
+  const todays = entries.filter((e) => e.et_day === easternParts(nowMs).date)
+  const cents = todays.reduce((n, e) => n + e.payout_cents, 0)
+  const slots = buyer.caps.daily_lead_cap === null ? `${plural(todays.length, 'lead slot', 'lead slots')} (no daily lead cap)` : `${todays.length} of the ${buyer.caps.daily_lead_cap} lead slots`
   const spend = buyer.caps.daily_spend_cap_cents === null ? `${money(cents)} (no daily spend cap)` : `${money(cents)} of the ${money(buyer.caps.daily_spend_cap_cents)} daily spend`
   return `${buyer.slug}: ${plural(entries.length, 'unresolved sale', 'unresolved sales')}, oldest ${age}, holding ${slots} and ${spend} today. Settle them at ${appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`
 }
@@ -386,7 +477,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     buyers = await deps.listBuyers()
   } catch (err) {
     const reason = `the buyer list could not be read, so nothing was checked: ${messageOf(err)}`
-    await deps.notifyMismatch([reason])
+    await deps.notifyMismatch([reason], BUYER_SALES_UNLISTED_REMEDY)
     return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [] }
   }
 
@@ -394,6 +485,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   const mismatchLines: string[] = []
   const unresolvedLines: string[] = []
   const outcomeRateLines: string[] = []
+  const mismatchKinds = new Set<MismatchKind>()
   let unresolvedGrew = false
   let newlyElevated = false
 
@@ -409,7 +501,10 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     const marker = mismatchMarkerKey(buyer.partner_id)
     if (mismatches.length > 0) {
       const seenBefore = (await deps.kv.get(marker)) !== null
-      if (seenBefore) mismatchLines.push(`${buyer.slug}: ${mismatches.join(' | ')}`)
+      if (seenBefore) {
+        mismatchLines.push(`${buyer.slug}: ${mismatches.join(' | ')}`)
+        for (const k of mismatchKindsOf(s)) mismatchKinds.add(k)
+      }
       await deps.kv.put(marker, new Date(now).toISOString(), { expirationTtl: 24 * 3600 })
     } else {
       await deps.kv.delete(marker)
@@ -454,7 +549,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
   }
 
-  await deps.notifyMismatch(mismatchLines)
+  await deps.notifyMismatch(mismatchLines, buyerSalesMismatchRemedy(mismatchKinds))
   await deps.notifyUnresolved(unresolvedLines)
   await deps.notifyOutcomeRate(outcomeRateLines)
   return {
@@ -688,7 +783,7 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       return { attempts, failed, declined }
     },
     kv: env.IDEMPOTENCY,
-    notifyMismatch: (lines) => notifyExportFailure(supabase, BUYER_SALES_MISMATCH_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_MISMATCH_REMEDY),
+    notifyMismatch: (lines, remedy) => notifyExportFailure(supabase, BUYER_SALES_MISMATCH_JOB, lines, env.IDEMPOTENCY, remedy),
     notifyUnresolved: (lines) => notifyExportFailure(supabase, BUYER_SALES_UNRESOLVED_JOB, lines, env.IDEMPOTENCY, BUYER_SALES_UNRESOLVED_REMEDY),
     notifyOutcomeRate: (lines) => notifyExportFailure(supabase, BUYER_OUTCOME_RATE_JOB, lines, env.IDEMPOTENCY, BUYER_OUTCOME_RATE_REMEDY),
     now: () => Date.now(),

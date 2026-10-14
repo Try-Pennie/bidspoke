@@ -24,6 +24,7 @@ import {
   refreshableDays,
   runParityRefresh,
   runParityRefreshAndPage,
+  BUYER_SELECT_PARITY_REMEDY,
   EVERY_ORGANIZATION,
   summariseParityDay,
   windowComplete,
@@ -759,5 +760,13 @@ describe('readStoredParityDay (#1884)', () => {
     await expect(readStoredParityDay(rowSupabase({ data: null, error: { message: 'permission denied' } }).supabase, 'wf', '2027-09-19')).rejects.toThrow(
       /buyer_select_parity_days: permission denied/,
     )
+  })
+})
+
+// A workflow list or rules read that failed names no day, and the list read no workflow (#835).
+describe('the parity page wording', () => {
+  it('does not promise every line names a workflow and a day', () => {
+    expect(BUYER_SELECT_PARITY_REMEDY.consequence).not.toMatch(/name the workflow, the day/)
+    expect(BUYER_SELECT_PARITY_REMEDY.consequence).toMatch(/days or workflows named/)
   })
 })
