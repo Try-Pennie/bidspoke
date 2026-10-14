@@ -1,8 +1,12 @@
 /**
- * Parallel node — PRD Section 5.2
+ * Parallel node, PRD Section 5.2.
  * Tests: wait_for all/first, timeout partial/fail, child failure handling.
+ *
+ * On a fake clock (#2090): these raced real timers and asserted wall clock
+ * spreads, so under full suite load they timed out or failed while passing
+ * alone (L290, L524). Each test now advances time itself.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeParallelNode } from '../parallel'
 import type { ParallelChildResult } from '../parallel'
 import type { NodeDefinition } from '../../../types'
@@ -36,7 +40,11 @@ function makeRunChild(results: ParallelChildResult[], delayMs: number[] = []) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('executeParallelNode', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+  })
+  afterEach(() => vi.useRealTimers())
 
   describe('empty children', () => {
     it('returns empty array when no children are configured', async () => {
@@ -96,24 +104,19 @@ describe('executeParallelNode', () => {
     })
 
     it('runs children concurrently (all start before any finish)', async () => {
-      const startTimes: number[] = []
       const children = [makeChild('bid_a'), makeChild('bid_b'), makeChild('bid_c')]
-
       const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) => {
-        startTimes.push(Date.now())
         await new Promise((r) => setTimeout(r, 20))
         return fulfilled(child.namespace)
       })
 
-      const before = Date.now()
-      await executeParallelNode(makeNode({ wait_for: 'all', timeout_ms: 5000 }), children, runChild)
-      const elapsed = Date.now() - before
-
-      // All 3 children at 20ms each sequentially = 60ms; parallel = ~20ms
-      expect(elapsed).toBeLessThan(50)
-      // All 3 started within a short window of each other (not sequentially)
-      const spread = Math.max(...startTimes) - Math.min(...startTimes)
-      expect(spread).toBeLessThan(15)
+      const done = executeParallelNode(makeNode({ wait_for: 'all', timeout_ms: 5000 }), children, runChild)
+      // Every child has started while no time has passed: none waited on another.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(runChild).toHaveBeenCalledTimes(3)
+      // One child's 20 ms is enough for all three, which is what running together means.
+      await vi.advanceTimersByTimeAsync(20)
+      expect((await done).output).toHaveLength(3)
     })
 
     describe('on_timeout', () => {
@@ -124,12 +127,13 @@ describe('executeParallelNode', () => {
           return fulfilled(child.namespace)
         })
 
-        const result = await executeParallelNode(
+        const pending = executeParallelNode(
           makeNode({ wait_for: 'all', timeout_ms: 50, on_timeout: 'partial', on_child_error: 'continue' }),
           children,
           runChild
         )
-        const output = result.output as ParallelChildResult[]
+        await vi.advanceTimersByTimeAsync(50)
+        const output = (await pending).output as ParallelChildResult[]
 
         expect(output).toHaveLength(2)
         expect(output[0].status).toBe('fulfilled')
@@ -149,13 +153,15 @@ describe('executeParallelNode', () => {
             return fulfilled('bid_slow')
           }
         )
-        const out = await executeParallelNode(
+        const pending = executeParallelNode(
           makeNode({ wait_for: 'all', timeout_ms: 10, on_timeout: 'partial', on_child_error: 'continue' }),
           [makeChild('bid_fast'), makeChild('bid_slow')],
           runChild
         )
+        await vi.advanceTimersByTimeAsync(10)
+        const out = await pending
         expect((out.output as ParallelChildResult[]).find((c) => c.namespace === 'bid_slow')?.status).toBe('timeout')
-        await new Promise((r) => setTimeout(r, 50)) // let the straggler finish
+        await vi.advanceTimersByTimeAsync(30) // the straggler settles at 40 ms
         expect(lateSignalAborted).toBe(true)
       })
 
@@ -166,13 +172,14 @@ describe('executeParallelNode', () => {
           return fulfilled(child.namespace)
         })
 
-        await expect(
-          executeParallelNode(
-            makeNode({ wait_for: 'all', timeout_ms: 50, on_timeout: 'fail' }),
-            children,
-            runChild
-          )
-        ).rejects.toThrow(/timed out/)
+        const pending = executeParallelNode(
+          makeNode({ wait_for: 'all', timeout_ms: 50, on_timeout: 'fail' }),
+          children,
+          runChild
+        )
+        const verdict = expect(pending).rejects.toThrow(/timed out/)
+        await vi.advanceTimersByTimeAsync(50)
+        await verdict
       })
     })
   })
@@ -187,12 +194,13 @@ describe('executeParallelNode', () => {
         return fulfilled(child.namespace)
       })
 
-      const result = await executeParallelNode(
+      const pending = executeParallelNode(
         makeNode({ wait_for: 'first', timeout_ms: 5000 }),
         children,
         runChild
       )
-      const output = result.output as ParallelChildResult[]
+      await vi.advanceTimersByTimeAsync(10)
+      const output = (await pending).output as ParallelChildResult[]
 
       expect(output).toHaveLength(1)
       expect(output[0].namespace).toBe('bid_b')
@@ -230,9 +238,10 @@ describe('executeParallelNode', () => {
         return fulfilled(child.namespace)
       })
 
-      await expect(
-        executeParallelNode(makeNode({ wait_for: 'first', timeout_ms: 30 }), children, runChild)
-      ).rejects.toThrow(/timed out/i)
+      const pending = executeParallelNode(makeNode({ wait_for: 'first', timeout_ms: 30 }), children, runChild)
+      const verdict = expect(pending).rejects.toThrow(/timed out/i)
+      await vi.advanceTimersByTimeAsync(30)
+      await verdict
     })
   })
 })
