@@ -34,6 +34,7 @@ import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMem
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
+import { runCronGuardWatchLive, recordCronGuardEvent } from './lib/cron-guard-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -667,6 +668,13 @@ const scheduledJobs = {
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
       )
+      // Pages when the cron tick guard keeps failing open, or Cloudflare keeps
+      // delivering ticks twice (#1904). The guard records each event as it
+      // happens (the scheduled handler below); this counts the last 24 hours.
+      ctx.waitUntil(
+        runCronGuardWatchLive(supabase, env.IDEMPOTENCY)
+          .catch((e) => console.error('[cron-guard-watch] check failed:', e))
+      )
       // Warns when an API query is approaching its role's statement_timeout, before
       // one is cancelled at it with a 57014 (#1043, #1040). pg_cron_health above
       // watches the database's own jobs; this watches the Worker's and the browser's
@@ -991,6 +999,12 @@ export default {
         await flushStoredCopyLedger(env.IDEMPOTENCY)
           .catch((e) => console.error('[stored-copy-ledger] flush after the scheduled run failed:', e))
       }
+    }, {
+      onGuardEvent: (kind) =>
+        platformCtx.waitUntil(
+          recordCronGuardEvent(env.IDEMPOTENCY, kind, Date.now())
+            .catch((e) => console.error(`[cron-once] could not record ${kind}:`, e)),
+        ),
     }).then(() => undefined)
     platformCtx.waitUntil(run.catch(() => undefined))
     return run
