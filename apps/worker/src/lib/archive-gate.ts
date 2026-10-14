@@ -41,16 +41,41 @@ import type { Env } from '../index'
  * each is its own alert with its own title, and neither title can misdescribe the
  * other's lines. The wording is Dan's (2026-10-02).
  */
+/**
+ * A day the gate cannot verify is HELD BACK, not deleted (#835). The nightly
+ * cleanup (`truncate_verified_execution_partitions`) takes only days verified in
+ * the last 36 hours and logs every other expired day as `refused_unverified`, so
+ * the deadline this alert used to quote ("due to be deleted at 11:30 PM ET, and
+ * after that it cannot be recovered") was never real. What is true is that the
+ * database holds the only copy until the day is backed up.
+ */
 export const ARCHIVE_GATE_AT_RISK_REMEDY: TitledRemedy = {
-  title: 'Run history will be deleted without a backup',
-  fixHint: 'Back each day up again with POST /api/admin/re-archive and its day before its deadline.',
+  title: 'Run history is held back from deletion until it is backed up',
+  context: 'Nothing is lost while it is held, but until then the database holds the only copy.',
+  fixHint:
+    'Re-archive each day named with POST /api/admin/re-archive, or fix the read a line names and re-run ' +
+    'the pass with POST /api/admin/archive-gate.',
 }
 
+/**
+ * A backed up day the cleanup has not taken (#1720). The cleanup takes only a
+ * day measured in the last 36 hours, and the gate measures a day only until one
+ * night past its own purge, so by the third missed night nothing scheduled can
+ * take it, whatever stopped the first two (#835). The lines carry what the
+ * cleanup itself recorded about the day rather than assuming a lock was lost.
+ */
 export const ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY: TitledRemedy = {
   title: 'Old run history has not been cleaned up',
   fixHint:
-    'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
-    'then find which scheduled job is blocking it at 11:30 PM ET.',
+    'The cleanup takes only a day measured in the last 36 hours, and nothing measures a day this old ' +
+    'again, so it will keep refusing it. Ask for the day to be measured again so the next cleanup can ' +
+    'take it.',
+}
+
+/** What the nightly cleanup last recorded about a day, from `purge_run_log`. */
+export interface PurgeRecord {
+  outcome: string
+  reason: string | null
 }
 
 export const ARCHIVE_GATE_COST_REMEDY: TitledRemedy = {
@@ -82,23 +107,11 @@ export function nominalPurgeFor(day: string): Date {
   return new Date(utcMidnight(day) + (RETENTION_DAYS + 1) * DAY_MS + PURGE_MINUTE_OF_DAY_UTC * 60 * 1000)
 }
 
-/** The first purge at or after `now`. */
-function nextPurgeAfter(now: Date): Date {
-  const atToday = utcMidnight(now.toISOString().slice(0, 10)) + PURGE_MINUTE_OF_DAY_UTC * 60 * 1000
-  return new Date(atToday >= now.getTime() ? atToday : atToday + DAY_MS)
-}
-
 /** Nightly purges that have run since a day was first due; 0 before it was. */
 export function purgesMissed(day: string, now: Date): number {
   const due = nominalPurgeFor(day).getTime()
   if (now.getTime() < due) return 0
   return Math.floor((now.getTime() - due) / DAY_MS) + 1
-}
-
-/** When a day's database copy is next due to go: its own purge, or the next one if that has passed. */
-export function deletionDeadline(day: string, now: Date): Date {
-  const nominal = nominalPurgeFor(day)
-  return nominal.getTime() >= now.getTime() ? nominal : nextPurgeAfter(now)
 }
 
 const ET = 'America/New_York'
@@ -115,35 +128,73 @@ export function etClock(instant: Date): string {
   return `${new Intl.DateTimeFormat('en-US', { timeZone: ET, hour: 'numeric', minute: '2-digit' }).format(instant)} ET`
 }
 
-function etCalendarDay(instant: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: ET, year: 'numeric', month: '2-digit', day: '2-digit' }).format(
-    instant,
-  )
+/**
+ * Why a held back day is held, which decides what fixes it (#835).
+ *
+ * - `refused`: measured, and short in a way re-archiving fills.
+ * - `surplus`: measured, and the archive holds MORE than the database, which
+ *   re-archiving cannot clear.
+ * - `unmeasured`: the measurement itself failed.
+ * - `beneath-short`: older than the gate measures, and its last reading was short.
+ * - `beneath-unknown`: older than the gate measures, and its record could not be read.
+ */
+export type HeldKind = 'refused' | 'surplus' | 'unmeasured' | 'beneath-short' | 'beneath-unknown'
+
+export interface HeldDay {
+  day: string
+  kind: HeldKind
+  /** The refusal messages or the error, for the line. */
+  detail: string | null
 }
 
-/** "tonight" when the deadline falls on the reader's own ET evening, otherwise "on Saturday, Oct 4". */
-export function etWhen(deadline: Date, now: Date): string {
-  if (etCalendarDay(deadline) === etCalendarDay(now)) return 'tonight'
-  const day = new Intl.DateTimeFormat('en-US', { timeZone: ET, weekday: 'long', month: 'short', day: 'numeric' })
-  return `on ${day.format(deadline)}`
+/** One line per held day, saying only what was measured about it. */
+export function heldLine({ day, kind, detail }: HeldDay): string {
+  const spoken = spokenDay(day)
+  switch (kind) {
+    case 'refused':
+    case 'surplus':
+      return `${spoken} cannot be verified as backed up in Snowflake: ${detail}.`
+    case 'unmeasured':
+      return `${spoken} could not be measured, so it is not confirmed as backed up in Snowflake: ${detail}.`
+    case 'beneath-short':
+      return (
+        `${spoken} is older than the days the gate measures, and its last measurement showed it not fully ` +
+        'backed up in Snowflake.'
+      )
+    case 'beneath-unknown':
+      return (
+        `${spoken} is older than the days the gate measures, and whether it is backed up in Snowflake could ` +
+        'not be read.'
+      )
+  }
 }
 
-/** The at risk fix line names the day and the deadline it has to beat. */
-function atRiskRemedy(atRisk: Array<{ day: string }>, now: Date): TitledRemedy {
-  if (atRisk.length === 0) return ARCHIVE_GATE_AT_RISK_REMEDY
-  const by = etClock(deletionDeadline(atRisk[0].day, now))
-  if (atRisk.length === 1) {
-    return {
-      ...ARCHIVE_GATE_AT_RISK_REMEDY,
-      fixHint: `Back the day up again with POST /api/admin/re-archive and day ${atRisk[0].day} before ${by}.`,
-    }
+/** The fix line, chosen from why each day is held rather than one remedy for all (#835). */
+export function heldRemedy(held: HeldDay[]): TitledRemedy {
+  if (held.length === 0) return ARCHIVE_GATE_AT_RISK_REMEDY
+  const daysOf = (kinds: HeldKind[]) => held.filter((h) => kinds.includes(h.kind)).map((h) => h.day)
+  const list = (days: string[]) => days.join(', ')
+  const reArchive = daysOf(['refused', 'beneath-short'])
+  const remeasure = daysOf(['unmeasured', 'beneath-unknown'])
+  const surplus = daysOf(['surplus'])
+  const parts: string[] = []
+  if (reArchive.length === 1) {
+    parts.push(`Re-archive ${reArchive[0]} with POST /api/admin/re-archive and that day.`)
+  } else if (reArchive.length > 1) {
+    parts.push(`Re-archive ${list(reArchive)} with POST /api/admin/re-archive, one day per call, earliest first.`)
   }
-  return {
-    ...ARCHIVE_GATE_AT_RISK_REMEDY,
-    fixHint:
-      'Back each day up again with POST /api/admin/re-archive and its day ' +
-      `(${atRisk.map((d) => d.day).join(', ')}), earliest first, before ${by}.`,
+  if (remeasure.length > 0) {
+    parts.push(
+      `For ${list(remeasure)}, fix the read named above, then re-run the pass with POST /api/admin/archive-gate.`,
+    )
   }
+  if (surplus.length > 0) {
+    parts.push(
+      `For ${list(surplus)}, re-archiving will not help: the archive holds executions the database does not, ` +
+        'so find which ones are filed under that day.',
+    )
+  }
+  return { ...ARCHIVE_GATE_AT_RISK_REMEDY, fixHint: parts.join(' ') }
 }
 
 /**
@@ -164,13 +215,16 @@ export interface BeneathStatus {
  * never happened must not read the same (L98).
  */
 export const ARCHIVE_GATE_UNREADABLE_REMEDY: AlertRemedy = {
+  // Not "the purge still runs on its own schedule", which read as data about to
+  // go: the cleanup takes only days measured in the last 36 hours, so a skipped
+  // pass KEEPS the days it would have verified (#835).
   consequence:
-    'The deletion gate could not read what it needs and abandoned its pass, so nothing was verified this ' +
-    'time and no day is vouched for. The purge still runs on its own schedule:',
+    'The deletion gate could not read what it needs and abandoned its pass, so no day was measured. The ' +
+    'nightly cleanup deletes only days measured in the last 36 hours, so the days this pass would have ' +
+    'verified are kept until a pass succeeds:',
   fixHint:
     'The line below names the read that failed. Fix that read against Supabase, then re-run the pass ' +
-    'with POST /api/admin/archive-gate rather than waiting for tomorrow, because a day can fall past its ' +
-    'deadline in between.',
+    'with POST /api/admin/archive-gate so the next cleanup has measurements to act on.',
   headlineVerb: 'could not run',
   itemNoun: { one: 'reason', many: 'reasons' },
 }
@@ -333,6 +387,33 @@ export interface GateDeps {
   daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
   /** Whether each day beneath the gate is backed up (#1720). Injected for the same reason as `daysHeld`. */
   beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
+  /** What the nightly cleanup last recorded about each day (#835). Injected for the same reason. */
+  lastPurge?: (days: string[]) => Promise<Map<string, PurgeRecord>>
+}
+
+/**
+ * The newest `purge_run_log` row for each day, so the not cleaned up alert says
+ * what the cleanup recorded rather than guessing a cause (#835).
+ *
+ * THROWS on a failed read, so the caller says the record could not be read
+ * rather than that the cleanup recorded nothing (L215).
+ */
+export async function readLastPurge(supabase: SupabaseClient, days: string[]): Promise<Map<string, PurgeRecord>> {
+  // paginate-ok: the few days beneath the gate, a handful of rows per night each
+  const { data, error } = await supabase
+    .from('purge_run_log')
+    .select('archive_day, outcome, reason, recorded_at')
+    .in('archive_day', days)
+    .order('recorded_at', { ascending: false })
+    .limit(days.length * 40)
+  if (error) throw new Error(`reading the cleanup record for ${days.join(', ')} failed: ${formatErr(error)}`)
+  const last = new Map<string, PurgeRecord>()
+  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+    const day = String(row.archive_day)
+    if (last.has(day) || typeof row.outcome !== 'string') continue
+    last.set(day, { outcome: row.outcome, reason: typeof row.reason === 'string' ? row.reason : null })
+  }
+  return last
 }
 
 /**
@@ -869,10 +950,15 @@ async function gatePass(
   // whose reading shows the archive short. The first is "not confirmed", the
   // second "not fully backed up": a message may claim only what was measured (L11).
   const UNCONFIRMED = ['never-measured', 'stale-measurement']
-  const atRisk: Array<{ day: string; confirmedShort: boolean }> = urgent.map((r) => ({
-    day: r.archiveDay,
-    confirmedShort: r.error === null && !r.refusals.every((x) => UNCONFIRMED.includes(x.code)),
-  }))
+  const atRisk: HeldDay[] = urgent.map((r): HeldDay => {
+    if (r.error !== null) return { day: r.archiveDay, kind: 'unmeasured', detail: r.error }
+    const detail = r.refusals.map((x) => x.message).join('; ')
+    if (r.refusals.every((x) => UNCONFIRMED.includes(x.code))) return { day: r.archiveDay, kind: 'unmeasured', detail }
+    // Re-archiving adds rows, so it cannot clear a day whose only fault is a
+    // surplus; every other refusal is filled by re-archiving the day.
+    const surplusOnly = r.refusals.every((x) => x.code === 'executions-surplus')
+    return { day: r.archiveDay, kind: surplusOnly ? 'surplus' : 'refused', detail }
+  })
 
   // Days older than anything the gate considers (#1025). The purge should have
   // taken them; whether that matters depends on whether they were backed up.
@@ -887,8 +973,8 @@ async function gatePass(
     }
     for (const day of beneath) {
       const known = status?.get(day)
-      if (known === undefined) atRisk.push({ day, confirmedShort: false })
-      else if (!known.backedUp) atRisk.push({ day, confirmedShort: true })
+      if (known === undefined) atRisk.push({ day, kind: 'beneath-unknown', detail: null })
+      else if (!known.backedUp) atRisk.push({ day, kind: 'beneath-short', detail: null })
       // Backed up, so nothing is lost, and silent for the first nights: a lock
       // lost to a busy minute is taken the next night (Dan, 2026-10-02).
       else if (purgesMissed(day, now) > CLEANUP_SILENT_NIGHTS) notCleanedUp.push(day)
@@ -896,19 +982,32 @@ async function gatePass(
   }
   atRisk.sort((a, b) => a.day.localeCompare(b.day))
 
-  const atRiskLines = atRisk.map(({ day, confirmedShort }) => {
-    const deadline = deletionDeadline(day, now)
+  const atRiskLines = atRisk.map(heldLine)
+
+  // What the cleanup recorded about each day, read only when there is one to
+  // explain. A failed read is said as such, never as "nothing recorded" (L215).
+  let purgeRecords: Map<string, PurgeRecord> | null = null
+  if (notCleanedUp.length > 0) {
+    try {
+      used.postgres += 1
+      purgeRecords = await (deps.lastPurge ?? ((d: string[]) => readLastPurge(supabase, d)))(notCleanedUp)
+    } catch (err) {
+      console.error(`[archive-gate] could not read the cleanup record: ${formatErr(err)}`)
+    }
+  }
+  const cleanupLines = notCleanedUp.map((day) => {
+    const record = purgeRecords?.get(day)
+    const said =
+      purgeRecords === null
+        ? "the cleanup's record of it could not be read"
+        : record === undefined
+          ? 'no cleanup has recorded anything about it'
+          : `the last cleanup recorded ${record.outcome}${record.reason === null ? '' : ` (${record.reason})`} for it`
     return (
-      `${spokenDay(day)} is ${confirmedShort ? 'not fully backed up' : 'not confirmed as fully backed up'} in ` +
-      `Snowflake. The database copy is due to be deleted at ${etClock(deadline)} ${etWhen(deadline, now)}, and ` +
-      'after that it cannot be recovered.'
+      `${spokenDay(day)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. ` +
+      `It has outlived ${purgesMissed(day, now)} nightly cleanups, and ${said}.`
     )
   })
-  const cleanupLines = notCleanedUp.map(
-    (day) =>
-      `${spokenDay(day)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. The ` +
-      `nightly cleanup has been blocked for ${purgesMissed(day, now)} nights in a row, so it is not fixing itself.`,
-  )
 
   const cost = costNow(measured.length)
   const costLines = costWarnings(cost, measured.length)
@@ -925,15 +1024,16 @@ async function gatePass(
   const restricted = deps.restrictDays !== undefined
   const postsOrAdds = (lines: string[]): boolean => !restricted || lines.length > 0
   if (postsOrAdds(atRiskLines)) {
-    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, atRiskRemedy(atRisk, now))
+    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, atRiskLines, env.IDEMPOTENCY, heldRemedy(atRisk))
   }
   if (postsOrAdds(cleanupLines)) {
-    await notifyExportFailure(supabase, ARCHIVE_GATE_CLEANUP_JOB, cleanupLines, env.IDEMPOTENCY, {
-      ...ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
-      fixHint:
-        'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
-        `then find which scheduled job is blocking it at ${etClock(nextPurgeAfter(now))}.`,
-    })
+    await notifyExportFailure(
+      supabase,
+      ARCHIVE_GATE_CLEANUP_JOB,
+      cleanupLines,
+      env.IDEMPOTENCY,
+      ARCHIVE_GATE_NOT_CLEANED_UP_REMEDY,
+    )
   }
   if (postsOrAdds(costLines)) {
     await notifyExportFailure(supabase, ARCHIVE_GATE_COST_JOB, costLines, env.IDEMPOTENCY, ARCHIVE_GATE_COST_REMEDY)
@@ -941,7 +1041,7 @@ async function gatePass(
 
   const detail =
     `measured ${measured.length} of ${candidates.length} candidate days ` +
-    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${atRisk.length} at risk, ` +
+    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${atRisk.length} held back, ` +
     `${notCleanedUp.length} not cleaned up`
   console.log(`[archive-gate] ${detail}`)
   // Printed as well as recorded, so a run being watched live shows its cost

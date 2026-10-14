@@ -911,10 +911,11 @@ export function summariseReArchive(r: ReArchiveResult): RunResult {
   const skipped =
     r.skipped.length > 0 ? `; ${r.skipped.length} hours were not attempted (${r.skipped.join(', ')})` : ''
   return {
-    // Its own stop reason would need a new member of a union every alert reads.
-    // A repair that could not do what it was asked reports the same read-failed
-    // it would report inside the loop, and names the hours.
-    stop: failed ? 'read-failed' : 'caught-up',
+    // The failure the repair actually had, so the alert's remedy points at the
+    // right system (#835). Mapping every failure to read-failed paged "our
+    // database, not Snowflake" about a Snowflake send. Mixed failures take the
+    // first hour's kind; the detail names each hour's own reason.
+    stop: failed ? r.failures[0].kind : 'caught-up',
     failed,
     hoursArchived: r.hoursArchived,
     hoursEmpty: r.hoursEmpty,

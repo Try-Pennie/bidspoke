@@ -47,7 +47,7 @@ export type StandstillCause =
 const SKIPPED_OUTCOMES = new Set(['skipped-locked'])
 
 /** Outcomes that mean the run itself went wrong. */
-const FAILURE_OUTCOMES = new Set(['read-failed', 'send-failed', 'misconfigured', 'threw', 'failed'])
+const FAILURE_OUTCOMES = new Set(['read-failed', 'send-failed', 'record-failed', 'misconfigured', 'threw', 'failed'])
 
 /**
  * Reads the cause off the recent runs, newest first.

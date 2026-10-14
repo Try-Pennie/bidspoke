@@ -87,7 +87,10 @@ export const ARCHIVE_INGEST_REMEDY: TitledRemedy = {
 export const ARCHIVE_READ_FAILED_REMEDY: TitledRemedy = {
   title: 'The hourly backup could not read the run history',
   context:
-    'It stopped before sending anything. Nothing is lost; the hours it did not reach are backed up on a later run.',
+    // Not "it stopped before sending anything": a read that fails on a later
+    // slice, or a count that does not reconcile, comes after earlier slices were
+    // sent (#835).
+    'Nothing is lost; the hours it did not reach are backed up on a later run.',
   fixHint:
     'The failure above names the query, which is in our database, not Snowflake. A timeout on a count usually ' +
     'means a day without the index the backup reads by.',
@@ -105,11 +108,27 @@ export const ARCHIVE_SEND_FAILED_REMEDY: TitledRemedy = {
 }
 
 /**
+ * Snowflake took the batch and our own record of it could not be written
+ * (#835). It used to share the send remedy, so a Postgres write failing paged
+ * "could not reach Snowflake".
+ */
+export const ARCHIVE_RECORD_FAILED_REMEDY: TitledRemedy = {
+  title: 'The hourly backup could not record what it sent',
+  context:
+    'The hour reached Snowflake, but our database did not record it, so the hour is backed up again on the ' +
+    'next run. Sending it twice is harmless.',
+  fixHint:
+    'The failure above names the write, which is to execution_archive_ids in our database, not Snowflake. ' +
+    'If it repeats, fix that write: the next run that records the hour clears this.',
+}
+
+/**
  * The remedy for a failed run, chosen from the stop reason the run already
  * classified (#1042), so a wrong cause never costs a diagnosis (L11, L111).
  */
 export function ingestRemedyFor(stop: RunStop): TitledRemedy {
   if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
+  if (stop === 'record-failed') return ARCHIVE_RECORD_FAILED_REMEDY
   if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
   if (stop === 'misconfigured') return ARCHIVE_MISCONFIGURED_REMEDY
   // Everything else stopped for a budget reason rather than a fault, so the
@@ -128,7 +147,10 @@ export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
 export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
   title: 'The hourly backup refused some executions',
   context:
-    'Refused executions have no backup anywhere, and their history is still deleted on the usual schedule. ' +
+    // Not "deleted on the usual schedule": a refused execution is an orphan the
+    // deletion gate never clears, so its day is kept (disposition.ts, #835).
+    'Refused executions have no backup anywhere, so their whole day is held back from deletion until they ' +
+    'are backed up. ' +
     'Refusing every execution points at one shared cause rather than one bad record.',
   fixHint:
     'Read the reasons in the execution_archive_refusals table for this run, fix the cause, then back the ' +
@@ -138,10 +160,12 @@ export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
 export const ARCHIVE_LAG_REMEDY: TitledRemedy = {
   title: 'The hourly backup is falling behind',
   context:
-    'Every run reports success, but the backup is not keeping up. Nothing is lost yet; until it catches up, ' +
-    'those days are kept rather than deleted.',
+    // Raised only by a run that did not fail (#835), so this says what that one
+    // run showed rather than claiming every run succeeds.
+    'The last run finished without a fault, but the backup is not keeping up. Nothing is lost yet; until it ' +
+    'catches up, those days are kept rather than deleted.',
   fixHint:
-    'This is throughput, not a failure. If the gap is not closing, catch up a day at a time with POST ' +
+    'If the gap is not closing, catch up a day at a time with POST ' +
     '/api/admin/re-archive, then compare the per run hour cap and time budget with the [execution-archive] logs.',
 }
 
@@ -152,8 +176,11 @@ export const ARCHIVE_KILLED_REMEDY: TitledRemedy = {
     'before this, it is the same event. This run is going ahead normally. Nothing is lost: the hours the ' +
     'stopped run did not reach are backed up on a later run.',
   fixHint:
-    'Nothing to do unless this repeats. If it does, read the stopped runs\' outcomes for bidspoke-worker in ' +
-    'the Cloudflare dashboard to see what is stopping them.',
+    // No "nothing to do unless this repeats": this alert speaks only once kills
+    // have repeated past the ordinary rate, or the rate could not be read
+    // (kill-rate.ts, #835).
+    'Read the stopped runs\' outcomes for bidspoke-worker in the Cloudflare dashboard to see what is ' +
+    'stopping them.',
 }
 
 /** Each stop reason as a reader says it (#1300); every value of RunStop is named, so a new one fails to compile. */
@@ -164,6 +191,7 @@ const STOP_IN_WORDS: Record<RunStop, string> = {
   'max-hours': 'it reached the most hours one run may back up',
   'read-failed': 'it could not read the run history',
   'send-failed': 'it could not send to Snowflake',
+  'record-failed': 'it could not record in our database what it sent',
   misconfigured: 'a setting it needs is missing',
 }
 
@@ -195,7 +223,9 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     // wording, because a proportion cannot distinguish one bad out of two from
     // all bad out of all (L139).
     const seen = result.executionsArchived + result.executionsRefused
-    const everything = result.executionsArchived === 0
+    // A run that refused some and then FAILED also archived nothing, without
+    // having refused everything it read (#835).
+    const everything = result.executionsArchived === 0 && !result.failed
     alerts.push({
       jobName: ARCHIVE_JOB_NAMES.refusal,
       errors: [
@@ -207,9 +237,11 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     })
   }
 
-  if (result.hoursBehind > LAG_ALERT_HOURS) {
+  if (result.hoursBehind > LAG_ALERT_HOURS && !result.failed) {
     // Every clean stop is honestly successful, so without this the archive can
-    // fall permanently behind while every run reports success (L13).
+    // fall permanently behind while every run reports success (L13). A failed
+    // run already raises its own alert, whose remedy is the one that applies;
+    // the lag wording ("not a fault") would contradict it (#835).
     alerts.push({
       jobName: ARCHIVE_JOB_NAMES.lag,
       errors: [

@@ -24,6 +24,7 @@ import {
   ARCHIVE_REFUSAL_REMEDY,
   ARCHIVE_LAG_REMEDY,
   ARCHIVE_KILLED_REMEDY,
+  ARCHIVE_RECORD_FAILED_REMEDY,
 } from '../../archive/alerts'
 import { ARCHIVE_BACKLOG_REMEDY } from '../archive-backlog-run'
 import {
@@ -112,6 +113,7 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['archive refusal', ARCHIVE_REFUSAL_REMEDY],
   ['archive lag', ARCHIVE_LAG_REMEDY],
   ['archive killed', ARCHIVE_KILLED_REMEDY],
+  ['archive record failed', ARCHIVE_RECORD_FAILED_REMEDY],
   ['tripoint pricing mismatch', TRIPOINT_PRICING_MISMATCH_REMEDY],
   ['tripoint pricing unreadable', TRIPOINT_PRICING_UNREADABLE_REMEDY],
   ['salesforce revenue formulas disagree', REVENUE_FORMULAS_DISAGREE_REMEDY],

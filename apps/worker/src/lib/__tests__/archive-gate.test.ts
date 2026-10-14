@@ -23,8 +23,9 @@ import {
   ARCHIVE_GATE_CLEANUP_JOB,
   ARCHIVE_GATE_COST_JOB,
   etClock,
-  etWhen,
+  ARCHIVE_GATE_UNREADABLE_REMEDY,
   type BeneathStatus,
+  type PurgeRecord,
 } from '../archive-gate'
 import { encodeBundle } from '../../archive/bundle'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
@@ -251,6 +252,7 @@ async function run(opts: {
   restrictDays?: { from?: string; to?: string; limit?: number }
   daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
   beneathStatus?: (days: string[]) => Promise<Map<string, BeneathStatus>>
+  lastPurge?: (days: string[]) => Promise<Map<string, PurgeRecord>>
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -270,6 +272,7 @@ async function run(opts: {
     restrictDays: opts.restrictDays,
     daysHeld: opts.daysHeld,
     beneathStatus: opts.beneathStatus,
+    lastPurge: opts.lastPurge,
   })
   return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
 }
@@ -282,12 +285,6 @@ describe('times are spoken in Eastern time, daylight saving included', () => {
   it('says 11:30 PM ET for the 03:30 UTC purge in summer and 10:30 PM ET in winter', () => {
     expect(etClock(new Date('2026-08-23T03:30:00.000Z'))).toBe('11:30 PM ET')
     expect(etClock(new Date('2026-01-10T03:30:00.000Z'))).toBe('10:30 PM ET')
-  })
-
-  it('calls a deadline tonight only when it falls on the reader\'s own Eastern evening', () => {
-    const now = new Date('2026-08-22T13:00:00.000Z')
-    expect(etWhen(new Date('2026-08-23T03:30:00.000Z'), now)).toBe('tonight')
-    expect(etWhen(new Date('2026-08-24T03:30:00.000Z'), now)).toBe('on Sunday, Aug 23')
   })
 })
 
@@ -368,24 +365,43 @@ describe('a healthy set of days', () => {
 })
 
 describe('a day whose counts do not reconcile', () => {
-  it('refuses it and alerts when the purge takes it tonight', async () => {
+  it('refuses it and says the day is held back, with the reason, and no deadline', async () => {
     const { summary } = await run({
       perDay: { [DUE_TONIGHT]: facts({ sfExecutions: 2 }) },
     })
 
     expect(resultFor(summary, DUE_TONIGHT).refusals.map((r) => r.code)).toEqual(['executions-disagree'])
-    // Dan's wording (2026-10-02): the deadline first, in ET, and what is lost after it.
-    expect(alerted()).toEqual([
-      'Aug 15 is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ET ' +
-        'tonight, and after that it cannot be recovered.',
-    ])
+    // #835: the cleanup takes only verified days, so this day is KEPT. The old
+    // "due to be deleted at 11:30 PM ET, and after that it cannot be recovered"
+    // quoted a deadline the cleanup never enforces.
+    const message = resultFor(summary, DUE_TONIGHT).refusals[0].message
+    expect(alerted()).toEqual([`Aug 15 cannot be verified as backed up in Snowflake: ${message}.`])
+    expect(alerted().join(' ')).not.toMatch(/due to be deleted|cannot be recovered/)
     expect(raised()).toEqual([
       {
         job: ARCHIVE_GATE_JOB,
-        title: 'Run history will be deleted without a backup',
-        fix: 'Back the day up again with POST /api/admin/re-archive and day 2026-08-15 before 11:30 PM ET.',
+        title: 'Run history is held back from deletion until it is backed up',
+        fix: 'Re-archive 2026-08-15 with POST /api/admin/re-archive and that day.',
       },
     ])
+  })
+
+  it('does not tell the reader to re-archive a day whose only fault is a surplus', async () => {
+    // Re-archiving adds rows; it cannot clear an archive that holds MORE than
+    // the database (#835).
+    await run({ perDay: { [DUE_TONIGHT]: facts({ sfExecutions: facts().pgExecutions + 3 }) } })
+    const [alert] = raised()
+    expect(alert.fix).toMatch(/re-archiving will not help/)
+    expect(alert.fix).not.toMatch(/^Re-archive/)
+  })
+
+  it('tells the reader to fix the read and re-run the pass when the measurement threw', async () => {
+    await run({ recordErrorFor: DUE_TONIGHT })
+    expect(alerted().join(' ')).toMatch(/could not be measured, so it is not confirmed as backed up/)
+    expect(alerted().join(' ')).toMatch(/recording blew up/)
+    const [alert] = raised()
+    expect(alert.fix).toMatch(/fix the read named above, then re-run the pass with POST \/api\/admin\/archive-gate/)
+    expect(alert.fix).not.toMatch(/re-archive/)
   })
 
   it('says so when a day is past retention and the purge did not take it', async () => {
@@ -398,11 +414,8 @@ describe('a day whose counts do not reconcile', () => {
     })
 
     expect(resultFor(summary, OLDEST_DAY).daysLeft).toBeLessThan(0)
-    // Past its own purge, so the deadline is the NEXT one, tonight, not a date gone by.
-    expect(alerted()).toEqual([
-      'Aug 14 is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ET ' +
-        'tonight, and after that it cannot be recovered.',
-    ])
+    expect(alerted()).toHaveLength(1)
+    expect(alerted()[0]).toMatch(/^Aug 14 cannot be verified as backed up in Snowflake: /)
   })
 
   it('records the refusal but stays quiet for a day with plenty of runway', async () => {
@@ -611,7 +624,7 @@ describe('when one day cannot be measured at all', () => {
     // The day it failed on is the closest to deletion, so it is alerted.
     // A day that could not be measured is not shown to be short, so the line
     // claims only what is known (L11).
-    expect(alerted().join(' ')).toMatch(/Aug 14 is not confirmed as fully backed up in Snowflake\./)
+    expect(alerted().join(' ')).toMatch(/Aug 14 could not be measured, so it is not confirmed as backed up in Snowflake: /)
   })
 
   it('does not fabricate a measurement when the Postgres RPC answers with no row', async () => {
@@ -820,22 +833,43 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     expect(raised()).toEqual([])
   })
 
-  it('alerts once a backed up day has survived three nightly cleanups, and says nothing is lost', async () => {
+  it('alerts once a backed up day has survived three nightly cleanups, and says what the cleanup recorded', async () => {
     const stranded = daysBeforeNow(CANDIDATE_COUNT + 2)
-    await run({ daysHeld: async () => [stranded], beneathStatus: backedUp })
+    await run({
+      daysHeld: async () => [stranded],
+      beneathStatus: backedUp,
+      lastPurge: async () => new Map([[stranded, { outcome: 'refused_unverified', reason: 'stale-measurement' }]]),
+    })
+    // #835: "blocked" was never measured. The cleanup's own record says why.
     expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)).toEqual([
-      `${spoken(stranded)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. The ` +
-        'nightly cleanup has been blocked for 3 nights in a row, so it is not fixing itself.',
+      `${spoken(stranded)} is still in the database. It is fully backed up in Snowflake, so nothing is lost. ` +
+        'It has outlived 3 nightly cleanups, and the last cleanup recorded refused_unverified ' +
+        '(stale-measurement) for it.',
     ])
-    expect(raised()).toEqual([
-      {
-        job: ARCHIVE_GATE_CLEANUP_JOB,
-        title: 'Old run history has not been cleaned up',
-        fix:
-          'Run the cleanup by hand in the Supabase SQL editor with CALL truncate_verified_execution_partitions(7) ' +
-          'then find which scheduled job is blocking it at 11:30 PM ET.',
+    const [alert] = raised()
+    expect(alert.title).toBe('Old run history has not been cleaned up')
+    // The hand CALL refuses a day this old as stale, so it is not the fix.
+    expect(alert.fix).not.toMatch(/CALL truncate_verified_execution_partitions/)
+    expect(alert.fix).not.toMatch(/blocking/)
+    expect(alert.fix).toMatch(/measured again/)
+  })
+
+  it('says the cleanup record could not be read rather than guessing a cause', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 2)
+    await run({
+      daysHeld: async () => [stranded],
+      beneathStatus: backedUp,
+      lastPurge: async () => {
+        throw new Error('postgres said no')
       },
-    ])
+    })
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)[0]).toMatch(/the cleanup's record of it could not be read\.$/)
+  })
+
+  it('says when no cleanup recorded anything about the day', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 2)
+    await run({ daysHeld: async () => [stranded], beneathStatus: backedUp, lastPurge: async () => new Map() })
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)[0]).toMatch(/no cleanup has recorded anything about it\.$/)
   })
 
   it('treats a day it cannot show is backed up as at risk, not as housekeeping', async () => {
@@ -845,10 +879,10 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
       beneathStatus: async () => new Map([[stranded, { backedUp: false }]]),
     })
     expect(alerted()).toEqual([
-      `${spoken(stranded)} is not fully backed up in Snowflake. The database copy is due to be deleted at 11:30 PM ` +
-        'ET tonight, and after that it cannot be recovered.',
+      `${spoken(stranded)} is older than the days the gate measures, and its last measurement showed it not ` +
+        'fully backed up in Snowflake.',
     ])
-    expect(raised().map((r) => r.title)).toEqual(['Run history will be deleted without a backup'])
+    expect(raised().map((r) => r.title)).toEqual(['Run history is held back from deletion until it is backed up'])
   })
 
   it('does not claim a day is safe when its backup status could not be read', async () => {
@@ -860,7 +894,9 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
         throw new Error('postgres said no')
       },
     })
-    expect(alerted().join(' ')).toMatch(new RegExp(`${spoken(stranded)} is not confirmed as fully backed up`))
+    expect(alerted().join(' ')).toMatch(
+      new RegExp(`${spoken(stranded)} is older than the days the gate measures, and whether it is backed up`),
+    )
     expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB)).toEqual([])
   })
 
@@ -872,11 +908,11 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
       beneathStatus: backedUp,
     })
     expect(raised().map((r) => [r.job, r.title])).toEqual([
-      [ARCHIVE_GATE_JOB, 'Run history will be deleted without a backup'],
+      [ARCHIVE_GATE_JOB, 'Run history is held back from deletion until it is backed up'],
       [ARCHIVE_GATE_CLEANUP_JOB, 'Old run history has not been cleaned up'],
     ])
     expect(sentTo(ARCHIVE_GATE_JOB).join(' ')).not.toMatch(/nothing is lost/)
-    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB).join(' ')).toMatch(/4 nights in a row/)
+    expect(sentTo(ARCHIVE_GATE_CLEANUP_JOB).join(' ')).toMatch(/outlived 4 nightly cleanups/)
   })
 
   it('clears each alert on a run that has nothing to say about it', async () => {
@@ -1083,21 +1119,16 @@ describe('a day with no archived hour at all is reported at once', () => {
 
     const said = alerts().filter((m) => m.includes(spoken(NOT_URGENT)))
     expect(said, `nothing was said about ${NOT_URGENT}`).toHaveLength(1)
-    expect(said[0]).toMatch(/is not fully backed up in Snowflake/)
+    expect(said[0]).toMatch(/cannot be verified as backed up in Snowflake/)
   })
 
-  it('says what is at risk rather than that a gate refused', async () => {
+  it('says what is uncovered, and no deadline the cleanup does not enforce', async () => {
     await run({ perDay: { [NOT_URGENT]: facts({ hoursRecorded: 0, pgExecutions: 104599 }) } })
 
     const said = alerts().find((m) => m.includes(spoken(NOT_URGENT))) as string
-    // The reader has to be able to act: what is uncovered, and the deadline, as
-    // a real ET day when it is not tonight (Dan, 2026-10-02).
-    const deadline = new Date(Date.parse(`${NOT_URGENT}T03:30:00.000Z`) + (RETENTION_DAYS + 1) * 86400000)
-    expect(said).toBe(
-      `${spoken(NOT_URGENT)} is not fully backed up in Snowflake. The database copy is due to be deleted at ` +
-        `11:30 PM ET ${etWhen(deadline, NOW)}, and after that it cannot be recovered.`,
-    )
-    expect(etWhen(deadline, NOW)).toMatch(/^on [A-Z][a-z]+day, Aug \d+$/)
+    expect(said).toMatch(new RegExp(`^${spoken(NOT_URGENT)} cannot be verified as backed up in Snowflake: `))
+    expect(said).toMatch(/104,599/)
+    expect(said).not.toMatch(/due to be deleted|cannot be recovered/)
   })
 
   it('reports incomplete rows while there is still runway to re-archive them', async () => {
@@ -1121,5 +1152,18 @@ describe('a day with no archived hour at all is reported at once', () => {
     // Naming a mechanism nobody built is worse than saying nothing: it reads as
     // "this will sort itself out" and the day then refuses for ever (L11).
     expect(alerts().join(' ')).not.toMatch(/amend pass/i)
+  })
+})
+
+/**
+ * #835: an abandoned pass KEEPS the days it would have verified. The cleanup
+ * takes only days measured in the last 36 hours, so "the purge still runs on its
+ * own schedule" read as data about to go when nothing would be deleted.
+ */
+describe('the unreadable gate alert states the real consequence', () => {
+  it('says the days are kept until a pass succeeds, not that the purge runs regardless', () => {
+    expect(ARCHIVE_GATE_UNREADABLE_REMEDY.consequence).not.toMatch(/still runs on its own schedule/)
+    expect(ARCHIVE_GATE_UNREADABLE_REMEDY.consequence).toMatch(/kept until a pass succeeds/)
+    expect(ARCHIVE_GATE_UNREADABLE_REMEDY.fixHint).not.toMatch(/deadline/)
   })
 })
