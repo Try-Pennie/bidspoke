@@ -196,7 +196,8 @@ describe('every check says what it measured', () => {
     })
 
     it(`${name} does not borrow the export wording`, () => {
-      const words = `${remedy.title} ${remedy.fixHint ?? ''}`.toLowerCase()
+      // The context line carries much of a titled alert's meaning, so it is read too.
+      const words = `${remedy.title} ${remedy.context ?? ''} ${remedy.fixHint ?? ''}`.toLowerCase()
       for (const wrong of EXPORT_ONLY) expect(words).not.toContain(wrong)
     })
   }

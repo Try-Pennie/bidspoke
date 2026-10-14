@@ -200,8 +200,8 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
       jobName: ARCHIVE_JOB_NAMES.refusal,
       errors: [
         everything
-          ? `archive refused every one of the ${result.executionsRefused} executions it read, so nothing was backed up this run`
-          : `archive refused ${result.executionsRefused} of ${seen} executions, which have no backup until the refusal is resolved`,
+          ? `Refused every one of the ${result.executionsRefused} executions it read, so nothing was backed up this run.`
+          : `Refused ${result.executionsRefused} of ${seen} executions, which have no backup until the cause is fixed.`,
       ],
       remedy: ARCHIVE_REFUSAL_REMEDY,
     })

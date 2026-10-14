@@ -119,13 +119,6 @@ describe('alertsFor', () => {
   })
 })
 
-/**
- * The remedy is chosen from what actually stopped the run (#1042).
- *
- * One fixed remedy fired for every failure. On 2026-08-24 the cause was a
- * Postgres statement timeout on our own unindexed count, and the advice named
- * Snowflake, the export credentials and Supabase disk. Three wrong places.
- */
 // #1300: a finding is read by someone who does not know the stop codes.
 describe('the failed run finding reads in words', () => {
   const failedOn = (stop: string): RunResult =>
@@ -142,6 +135,19 @@ describe('the failed run finding reads in words', () => {
 
 // One word for one unit (L118): what the backup refuses is executions, and
 // "run" in the same alert means the backup run itself.
+describe('the refusal findings read like the rest of the alert', () => {
+  const refused = (archived: number, refusedCount: number) =>
+    alertsFor({ failed: false, stop: 'caught-up', detail: '', executionsArchived: archived, executionsRefused: refusedCount, hoursArchived: 1, hoursEmpty: 0, hoursBehind: 0 } as unknown as RunResult)
+      .find((a) => a.jobName === ARCHIVE_JOB_NAMES.refusal)!.errors[0]
+
+  it('opens with a capital and does not call the backup "the archive"', () => {
+    for (const line of [refused(0, 4), refused(98, 2)]) {
+      expect(line).toMatch(/^[A-Z]/)
+      expect(line.toLowerCase()).not.toContain('archive')
+    }
+  })
+})
+
 describe('the refusal alert names what it refused the same way its finding does', () => {
   it('says executions, never runs, for the refused things', () => {
     const r = ARCHIVE_REFUSAL_REMEDY
@@ -169,6 +175,14 @@ describe('the falling behind finding reads in words', () => {
   })
 })
 
+
+/**
+ * The remedy is chosen from what actually stopped the run (#1042).
+ *
+ * One fixed remedy fired for every failure. On 2026-08-24 the cause was a
+ * Postgres statement timeout on our own unindexed count, and the advice named
+ * Snowflake, the export credentials and Supabase disk. Three wrong places.
+ */
 describe('ingestRemedyFor', () => {
   it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
     const remedy = ingestRemedyFor('read-failed')
