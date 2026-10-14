@@ -80,7 +80,7 @@ import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { ClaimBody, ClaimResult } from '../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../durable-objects/sale-outcome'
 import type { AddMemberResult } from '../../durable-objects/daily-cap'
-import { addAskingOnceMore, addKnownRefused, ClickCounterClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type AddFailure, type ClickClaimKey } from '../../lib/buyer-object-clients'
+import { addAskingOnceMore, addKnownRefused, ClickCounterClient, gotNoAnswer, LeadSaleClient, OBJECT_CALL_DEADLINE_MS, type AddFailure, type ClickClaimKey } from '../../lib/buyer-object-clients'
 import { loadBuyerProfiles, switchedOffProfile, type BuyerProfilesSnapshot } from '../../lib/buyer-profile-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 import { postToPartner, type PartnerCallResult } from '../../lib/post-to-partner'
@@ -645,7 +645,7 @@ class Run {
       } catch (err) {
         this.out.claim_freed = false
         const detail = `the buyer refused it (${verdict.detail}) and the claim could not be released: ${messageOf(err)}`
-        await this.holdAndPage(v, 'free_failed', detail, null)
+        await this.holdAndPage(v, 'free_failed', detail, null, gotNoAnswer(err))
       }
       return this.done('refused', 'refused_by_buyer', verdict.detail)
     }
@@ -655,7 +655,7 @@ class Run {
       await sale.sold(generation, { buyer_reference: verdict.partnerLeadId, result_code: 'created', http_status: res.status, payout_cents: 0 })
     } catch (err) {
       const detail = `the buyer confirmed receipt with id ${verdict.partnerLeadId}, and marking the claim sold failed: ${messageOf(err)}`
-      await this.holdAndPage(v, 'sold_mark_failed', detail, verdict.partnerLeadId)
+      await this.holdAndPage(v, 'sold_mark_failed', detail, verdict.partnerLeadId, gotNoAnswer(err))
     }
     await this.count(v, claimStartedAt)
     return this.done('sent', 'sent', `the buyer confirmed receipt with id ${verdict.partnerLeadId}`)
@@ -747,10 +747,13 @@ class Run {
     await this.page(v, known ? 'count_failed' : 'count_unknown', detail, null)
   }
 
-  /** A held claim: record it for the partner page, then page with whether that record landed. */
-  private async holdAndPage(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null): Promise<void> {
+  /**
+   * A held claim: record it for the partner page, then page with whether that record landed.
+   * `unanswered` is whether the call the page is about got no answer and so may have landed (#835).
+   */
+  private async holdAndPage(v: Validated, reason: HeldClickReason, detail: string, partnerLeadId: string | null, unanswered = false): Promise<void> {
     const recorded = await this.recordHold(v, reason, detail, partnerLeadId)
-    await this.page(v, reason, detail, recorded)
+    await this.page(v, reason, detail, recorded, unanswered)
   }
 
   /**
@@ -786,9 +789,9 @@ class Run {
   }
 
   /** holdRecorded: what recordHold answered for this page's hold, null for a page that holds no claim. */
-  private async page(v: Validated, reason: ClickPageReason, detail: string, holdRecorded: HoldRecorded | null): Promise<void> {
+  private async page(v: Validated, reason: ClickPageReason, detail: string, holdRecorded: HoldRecorded | null, unanswered = false): Promise<void> {
     const outcome = await this.alert({
-      kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail, hold_recorded: holdRecorded,
+      kind: 'page', reason, partner_id: v.partnerId, partner_slug: v.slug, prospect_id: v.prospectId, detail, hold_recorded: holdRecorded, unanswered,
       workflow_id: this.ctx.trigger.workflow_id, trace_id: this.ctx.trigger.trace_id, at: this.deps.clock(),
     })
     this.out.pages.push({ reason, outcome })

@@ -245,3 +245,38 @@ describe('a page about a held claim says where a person releases it (#1552)', ()
     expect(body).toMatch(/could not be added to the Held clicks list/)
   })
 })
+
+/**
+ * A page says only what the node knew when it raised it (#835). A mark or a
+ * release that got no answer may still have landed, so "the claim is still
+ * held" is a guess there; a cap the profile holds was READ, so "until its
+ * profile can be read" names the wrong fix.
+ */
+describe('a page says only what the node knew (#835)', () => {
+  const body = (over: Partial<Extract<ClickAlert, { kind: 'page' }>>) =>
+    clickAlertMessage({ ...(page as Extract<ClickAlert, { kind: 'page' }>), ...over }, 'https://app.example').body
+
+  it('sold_mark_failed points at no count, because the message carries none', () => {
+    expect(body({ reason: 'sold_mark_failed' })).not.toMatch(/count below/)
+  })
+
+  it('a mark or a release that got an answer says the claim is still held', () => {
+    expect(body({ reason: 'sold_mark_failed', unanswered: false })).toMatch(/claim is still held in flight/)
+    expect(body({ reason: 'free_failed' })).toMatch(/claim is still held/)
+  })
+
+  it('a mark or a release that got no answer says it may have landed, never that the claim is still held', () => {
+    for (const reason of ['sold_mark_failed', 'free_failed'] as const) {
+      const b = body({ reason, unanswered: true })
+      expect(b).toMatch(/may have landed/)
+      expect(b).not.toMatch(/claim is still held/)
+    }
+  })
+
+  it('a cap the profile holds but that is not a cap names the cap to fix, never the profile being read', () => {
+    const b = body({ reason: 'cap_unreadable', prospect_id: null, detail: 'the enabled buyer profile holds daily cap 0, not a whole number above zero', hold_recorded: null })
+    expect(b).toMatch(/daily cap 0/)
+    expect(b).not.toMatch(/can be read/)
+    expect(b).toMatch(/set to a whole number above zero/)
+  })
+})

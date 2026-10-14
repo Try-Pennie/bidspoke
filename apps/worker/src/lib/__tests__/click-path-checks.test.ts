@@ -16,15 +16,20 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { LoadedBuyer } from '../buyer-profile-loader'
+import type { AlertRemedy } from '../export-alerts'
 import {
   CHECK_ERROR_MIN_RUNS,
   CHECK_ERROR_SATURATION_MIN_RUNS,
   CLICK_CHECK_ERRORS_JOB,
+  CLICK_CHECK_ERRORS_REMEDY,
   CLICK_PATH_CHECKS_JOB,
   CLICK_PATH_QUIET_JOB,
+  CLICK_PATH_UNREAD_REMEDY,
   CLICK_RECONCILE_REMEDY,
   CLICK_RECONCILE_JOB,
   CLICK_SEND_REFUSALS_JOB,
+  CLICK_SEND_REFUSALS_REMEDY,
+  clickRemedyFor,
   NO_CLICK_MIN_OFFERS,
   QUIET_MIN_RUNS,
   REFUSAL_MIN_COUNT,
@@ -112,7 +117,11 @@ interface World {
 
 function deps(w: World = {}) {
   const pages: Record<string, string[][]> = {}
-  const notify = (job: string) => async (lines: string[]) => { (pages[job] ??= []).push(lines) }
+  const remedies: Record<string, AlertRemedy[]> = {}
+  const notify = (job: string) => async (lines: string[], remedy: AlertRemedy) => {
+    ;(pages[job] ??= []).push(lines)
+    ;(remedies[job] ??= []).push(remedy)
+  }
   const sfCalls: Array<{ routingCode: number; fromMs: number; toMs: number }> = []
   const submissionCalls: Array<{ routingCode: number; fromMs: number; toMs: number }> = []
   const d: ClickPathDeps = {
@@ -149,7 +158,7 @@ function deps(w: World = {}) {
     appUrl: 'https://app.test',
     log: () => undefined,
   }
-  return { d, pages, sfCalls, submissionCalls }
+  return { d, pages, remedies, sfCalls, submissionCalls }
 }
 
 /** The lines a family was last notified with, or undefined when it was not notified this run. */
@@ -456,5 +465,53 @@ describe('the job run record', () => {
     const s = await runClickPathChecks({ ...d, listSubjects: async () => { throw new Error('workflows unreadable') } })
     expect(endingOf(s).outcome).toBe('unmeasured')
     expect((last(pages, CLICK_CHECK_ERRORS_JOB) ?? [])[0]).toMatch(/workflows unreadable/)
+  })
+})
+
+/**
+ * Each family's page says what its lines measured (#835). A family used to carry
+ * one paragraph, so a line saying a read failed arrived under "a click sold
+ * buyer is not being offered on many leads" or "refused most of the clicks".
+ */
+describe('the page wording follows what was measured (#835)', () => {
+  const lastRemedy = (remedies: Record<string, AlertRemedy[]>, job: string) => remedies[job]?.[remedies[job].length - 1]
+
+  it('a family whose only lines are reads that failed gets the unread wording, never the finding', async () => {
+    const { d, remedies } = deps()
+    d.readSendRuns = async () => { throw new Error('steps timed out') }
+    await runClickPathChecks(d)
+    expect(lastRemedy(remedies, CLICK_SEND_REFUSALS_JOB)).toBe(CLICK_PATH_UNREAD_REMEDY)
+  })
+
+  it('a profile that cannot be read is not called a path gone quiet', async () => {
+    const { d, remedies } = deps({ buyer: new Error('db down') })
+    await runClickPathChecks(d)
+    expect(lastRemedy(remedies, CLICK_PATH_QUIET_JOB)).toBe(CLICK_PATH_UNREAD_REMEDY)
+  })
+
+  it('a subject list that cannot be read is not called a check that cannot answer', async () => {
+    const { d, remedies } = deps()
+    await runClickPathChecks({ ...d, listSubjects: async () => { throw new Error('workflows unreadable') } })
+    expect(lastRemedy(remedies, CLICK_CHECK_ERRORS_JOB)).toBe(CLICK_PATH_UNREAD_REMEDY)
+  })
+
+  it('a real finding keeps its own wording', async () => {
+    const runs = [...checkRuns('eligible', 20), ...checkRuns('cap_check_error', 6)]
+    const { d, remedies } = deps({ checks: runs })
+    await runClickPathChecks(d)
+    expect(lastRemedy(remedies, CLICK_CHECK_ERRORS_JOB)).toBe(CLICK_CHECK_ERRORS_REMEDY)
+  })
+
+  it('a finding beside a failed read keeps the finding wording and adds the read fix', () => {
+    const r = clickRemedyFor(CLICK_SEND_REFUSALS_JOB, 1, 1)
+    expect(r.consequence).toContain(CLICK_SEND_REFUSALS_REMEDY.consequence.replace(/:$/, ''))
+    expect(r.consequence).toMatch(/read failed/)
+    expect(r.fixHint).toContain(CLICK_SEND_REFUSALS_REMEDY.fixHint)
+    expect(r.fixHint).toContain(CLICK_PATH_UNREAD_REMEDY.fixHint)
+  })
+
+  it('says a refusal frees the claim for a later click, never that later clicks are not sent', () => {
+    expect(CLICK_SEND_REFUSALS_REMEDY.consequence).not.toMatch(/later clicks on it are not sent|is final/)
+    expect(CLICK_SEND_REFUSALS_REMEDY.consequence).toMatch(/later click on it is sent again/)
   })
 })

@@ -88,8 +88,21 @@ const UNLISTED_KEY = 'buyers-unlisted'
 /** What every drain page says under its findings (Dan, 2026-10-01: plain title, full sentences, one fix line). */
 const SELLING_UNAFFECTED =
   'Selling is not affected, because the ledger decides caps. The partner page and the sales checks read the sales table, so they may be behind until it catches up.'
+/**
+ * Said only where the ledger itself could not be read (#835): every sale to the
+ * buyer reserves its cap slot through that same ledger, so "selling is not
+ * affected" is not something this check measured there.
+ */
+const LEDGER_DOWN =
+  'Every sale to that buyer reserves its cap slot through this ledger, so its sales may be failing too, and its sales table copy cannot catch up until the ledger answers.'
 const BACKLOG_FIX = 'Read the last error on each line. A database error clears on its own: once the database answers, the next minute copies everything waiting.'
-const LEDGER_FIX = 'Check the worker logs for the buyer ledger, and run the drill at POST /api/admin/buyer-objects/drill to see whether it answers.'
+/**
+ * The drill exercises a throwaway drill buyer's ledger, never this buyer's, so
+ * it cannot say whether this one answers (#835). The partner page's usage panel
+ * reads this buyer's own ledger.
+ */
+const LEDGER_FIX =
+  "Check the worker logs for that buyer's ledger. The buyer's partner page reads the same ledger for its usage counts, so counts there mean it answers again."
 
 export const BUYER_SALE_DRAIN_BACKLOG_REMEDY: TitledRemedy = {
   title: 'Buyer sales are not reaching the sales table',
@@ -99,13 +112,30 @@ export const BUYER_SALE_DRAIN_BACKLOG_REMEDY: TitledRemedy = {
 
 export const BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY: TitledRemedy = {
   title: "A buyer ledger can't be read",
-  context: SELLING_UNAFFECTED,
+  context: LEDGER_DOWN,
   fixHint: LEDGER_FIX,
 }
 
 export const BUYER_SALE_DRAIN_MIXED_REMEDY: TitledRemedy = {
   title: "Buyer sales are behind, and a buyer ledger can't be read",
-  context: SELLING_UNAFFECTED,
+  context: `For the buyer whose ledger can't be read: ${LEDGER_DOWN.charAt(0).toLowerCase()}${LEDGER_DOWN.slice(1)}`,
+  fixHint: `${BACKLOG_FIX} ${LEDGER_FIX}`,
+}
+
+/**
+ * The row reached the sales table and only the ledger's note that it had was
+ * refused (#835), so the sales table is not behind for it; the ledger hands it
+ * back every minute until the note lands.
+ */
+export const BUYER_SALE_DRAIN_UNMARKED_REMEDY: TitledRemedy = {
+  title: "A buyer ledger isn't recording its sales as copied",
+  context: 'These sales are already in the sales table. The ledger keeps offering them to be copied again each minute until it records them.',
+  fixHint: LEDGER_FIX,
+}
+
+/** An unmarked page beside a backlog or an unreadable ledger: a title true of every line, and every fix they need. */
+export const BUYER_SALE_DRAIN_SEVERAL_REMEDY: TitledRemedy = {
+  title: 'The buyer sales copy has more than one problem',
   fixHint: `${BACKLOG_FIX} ${LEDGER_FIX}`,
 }
 
@@ -120,6 +150,8 @@ export function drainRemedyFor(keys: readonly string[]): TitledRemedy {
   if (keys.includes(UNLISTED_KEY)) return BUYER_SALE_DRAIN_UNLISTED_REMEDY
   const unreadable = keys.some((k) => k.endsWith(':unmeasured'))
   const backlog = keys.some((k) => k.endsWith(':backlog'))
+  const unmarked = keys.some((k) => k.endsWith(':unmarked'))
+  if (unmarked) return unreadable || backlog ? BUYER_SALE_DRAIN_SEVERAL_REMEDY : BUYER_SALE_DRAIN_UNMARKED_REMEDY
   if (unreadable && backlog) return BUYER_SALE_DRAIN_MIXED_REMEDY
   return unreadable ? BUYER_SALE_DRAIN_LEDGER_UNREADABLE_REMEDY : BUYER_SALE_DRAIN_BACKLOG_REMEDY
 }
@@ -212,6 +244,12 @@ export interface DrainBuyerSummary {
   unmeasured?: string
   /** Set when the first read got no answer and the second read succeeded, naming the first ask's error. */
   first_read_failed?: string
+  /**
+   * Of `failed`, the entries whose row WAS written and only the ledger's mark
+   * failed (#835). Set only when above zero. Counted in `failed` as before; it
+   * decides which words the page uses, never whether it pages.
+   */
+  unmarked?: number
 }
 
 export interface DrainSummary {
@@ -319,12 +357,22 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
       // judged on the oldest entry still undelivered, never on the age the
       // ledger reported before delivery.
       const lastError = errors.filter((e) => e.startsWith(`${buyer.slug}:`)).at(-1)
-      paged.push(
-        `${buyer.slug} has ${plural(summary.pending - summary.delivered, 'ledger entry', 'ledger entries')} not yet copied to the sales table. ` +
-          `The oldest is ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old.` +
-          (lastError ? ` The last error was: ${sentence(lastError.slice(buyer.slug.length + 2))}` : ''),
-      )
-      keys.push(`${buyer.slug}:backlog`)
+      // An entry whose row was written and whose ledger mark failed is not
+      // missing from the sales table, so it is said apart (#835). Which words is
+      // all this decides: the page itself was decided on the age above.
+      const left = summary.pending - summary.delivered
+      const unmarked = summary.unmarked ?? 0
+      const unwritten = left - unmarked
+      const age = `The oldest is ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old.`
+      const last = lastError ? ` The last error was: ${sentence(lastError.slice(buyer.slug.length + 2))}` : ''
+      if (unwritten === 0) {
+        paged.push(`${buyer.slug} has ${plural(unmarked, 'ledger entry', 'ledger entries')} in the sales table that the ledger could not mark as copied. ${age}${last}`)
+        keys.push(`${buyer.slug}:unmarked`)
+      } else {
+        const also = unmarked === 0 ? '' : ` ${unmarked} more ${unmarked === 1 ? 'is' : 'are'} in the sales table but the ledger could not mark ${unmarked === 1 ? 'it' : 'them'} as copied.`
+        paged.push(`${buyer.slug} has ${plural(unwritten, 'ledger entry', 'ledger entries')} not yet copied to the sales table.${also} ${age}${last}`)
+        keys.push(`${buyer.slug}:backlog`)
+      }
     }
   }
 
@@ -427,13 +475,22 @@ async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[], 
   for (let i = 0; i < outbox.entries.length; i++) {
     const entry: LedgerEntry = outbox.entries[i]
     const meta: BuyerSaleRowMeta = { partner_id: buyer.partner_id, organization_id: buyer.organization_id, ...(existing.get(ids[i]) ?? NO_META) }
+    // mirrorBuyerSale marks only after the row it wrote came back as the one sent,
+    // so reaching the mark means the sales table holds the row (#835).
+    let written = false
     try {
       const row = await buildBuyerSaleRow(entry, meta)
-      await mirrorBuyerSale(deps.supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
+      await mirrorBuyerSale(deps.supabase, row, entry, {
+        markMirrored: (key) => {
+          written = true
+          return ledger.markMirrored([key]).then(() => undefined)
+        },
+      })
       base.delivered += 1
       base.delivered_row_ids.push(ids[i])
     } catch (err) {
       base.failed += 1
+      if (written) base.unmarked = (base.unmarked ?? 0) + 1
       leave(entry)
       errors.push(`${buyer.slug}: ${entry.lead_key} (${entry.status}): ${messageOf(err)}`)
     }

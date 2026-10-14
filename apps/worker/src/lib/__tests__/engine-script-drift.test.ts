@@ -18,6 +18,8 @@ import {
   LIBERTY1_CLICK_WORKFLOW_ID,
   ENGINE_BIDDING_WORKFLOW_ID,
   ENGINE_SCRIPT_DRIFT_JOB,
+  ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY,
+  driftRemedyFor,
   describeVerdict,
   endingOf,
   judgeKeptScripts,
@@ -526,5 +528,43 @@ describe('the remedy follows the kind of finding', () => {
   it('a clean run carries the full remedy with its clear, which no page shows', async () => {
     const { lines } = await page(canvas((n) => n))
     expect(lines).toEqual([])
+  })
+})
+
+/**
+ * A run that compared nothing, and a node that is not there, are not a canvas
+ * edit to copy back (#835): the copy and paste fix used to come with both.
+ */
+describe('the remedy for a mirror it could not read, and a node that is gone (#835)', () => {
+  const base = { workflow: 'Engine Bidding Workflow', namespace: 'tripoint_ping', file: 'f.js' }
+  const COPY = /copy the canvas script into the kept file|copy it into the committed file/
+
+  it('a run that read no mirror says so in its own words and gives only the read fix', () => {
+    const r = driftRemedyFor({ verdicts: [], configVerdicts: [], findings: ['could not read the canvas mirror: 401'], unreadable: '401' })
+    expect(r).toBe(ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY)
+    expect(r.consequence).not.toMatch(/holds a code node script/)
+    expect(r.fixHint).not.toMatch(COPY)
+    expect(r.fixHint).toMatch(/GitHub token/)
+  })
+
+  it('a missing code node gets the gone node fix, never the copy and paste one', () => {
+    const r = driftRemedyFor({ verdicts: [{ ...base, state: 'missing_node' }], configVerdicts: [], findings: ['x'] })
+    expect(r.fixHint).toMatch(/renamed, removed or replaced/)
+    expect(r.fixHint).not.toMatch(COPY)
+  })
+
+  it('a node whose type changed, or that the committed definition names and the canvas lacks, gets the gone node fix', () => {
+    const changed = driftRemedyFor({ verdicts: [], configVerdicts: [{ ...base, state: 'type_changed', committedType: 'code', canvasType: 'filter' }], findings: ['x'] })
+    const gone = driftRemedyFor({ verdicts: [], configVerdicts: [{ ...base, state: 'missing_node', nodeType: 'buyer_select' }], findings: ['x'] })
+    for (const r of [changed, gone]) {
+      expect(r.fixHint).toMatch(/renamed, removed or replaced/)
+      expect(r.fixHint).not.toMatch(COPY)
+    }
+  })
+
+  it('a drift beside a mirror it could not read carries both fixes', () => {
+    const r = driftRemedyFor({ verdicts: [{ ...base, state: 'drift', line: 3, kept: 'a', canvas: 'b' }], configVerdicts: [], findings: ['x', 'y'], unreadable: '401' })
+    expect(r.fixHint).toMatch(/copy the canvas script into the kept file/)
+    expect(r.fixHint).toMatch(/GitHub token/)
   })
 })
