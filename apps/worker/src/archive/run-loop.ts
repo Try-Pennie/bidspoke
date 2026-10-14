@@ -31,6 +31,13 @@ export type RunStop =
   | 'read-failed'
   | 'send-failed'
   /**
+   * Snowflake took the batch and our own record of it (`execution_archive_ids`,
+   * in Postgres) could not be written (#835). Its own stop, because it used to
+   * share `send-failed` and so paged "could not reach Snowflake" about a write
+   * to our database. The hour is retried; sending it again is harmless.
+   */
+  | 'record-failed'
+  /**
    * A configuration fault that affects every row, not one execution.
    *
    * Its own stop rather than a read failure, because the remedy is different:
@@ -193,6 +200,7 @@ export type HourOutcome =
   | { kind: 'empty' }
   | { kind: 'read-failed'; reason: string; executionsArchived: number; executionsRefused: number }
   | { kind: 'send-failed'; reason: string; executionsArchived: number; executionsRefused: number }
+  | { kind: 'record-failed'; reason: string; executionsArchived: number; executionsRefused: number }
   /**
    * A send was refused because the run had no time left for it (#1591). The
    * run's budget stopping it, not Snowflake failing, so it is its own kind: a
@@ -218,6 +226,8 @@ export async function archiveHour(
   // reported as a read failure. They have different remedies and must not share
   // one status (L53).
   let sendFailure: string | null = null
+  // Set when Snowflake took a batch and recording it locally failed (#835).
+  let recordFailure: string | null = null
   let outOfTime: string | null = null
 
   let hour: HourStream
@@ -251,8 +261,6 @@ export async function archiveHour(
           // to a COUNT(DISTINCT) gate. The reverse order would let us believe a
           // backup exists that does not, and authorise deleting unarchived data.
           await deps.send(batch)
-          await deps.recordArchived(batch.map((b) => b.executionId))
-          executionsArchived += batch.length
         } catch (err) {
           if (err instanceof SnowflakeNotSentError) outOfTime = err.message
           else sendFailure = formatErr(err)
@@ -260,6 +268,15 @@ export async function archiveHour(
           // of the hour into a destination that is refusing it.
           throw err
         }
+        try {
+          await deps.recordArchived(batch.map((b) => b.executionId))
+        } catch (err) {
+          // Not a send failure: Snowflake has the batch. Named apart so the
+          // alert points at our database rather than at Snowflake (#835).
+          recordFailure = formatErr(err)
+          throw err
+        }
+        executionsArchived += batch.length
       }
     })
   } catch (err) {
@@ -268,6 +285,7 @@ export async function archiveHour(
     // the send-failed status, because a status field shared by two unrelated
     // causes can report neither (L53).
     if (outOfTime !== null) return { kind: 'out-of-time', reason: outOfTime, executionsArchived, executionsRefused }
+    if (recordFailure !== null) return { kind: 'record-failed', reason: recordFailure, executionsArchived, executionsRefused }
     if (sendFailure === null) throw err
     return { kind: 'send-failed', reason: String(sendFailure), executionsArchived, executionsRefused }
   }
@@ -393,8 +411,8 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       return result
     }
 
-    if (outcome.kind === 'send-failed') {
-      result.stop = 'send-failed'
+    if (outcome.kind === 'send-failed' || outcome.kind === 'record-failed') {
+      result.stop = outcome.kind
       result.failed = true
       result.detail = `hour ${next.hourStart}: ${outcome.reason}`
       result.hoursBehind = await measureLag()
@@ -484,7 +502,7 @@ export interface ReArchiveResult {
   executionsArchived: number
   executionsRefused: number
   /** Hours that did not archive, each with why. Never collapsed into a count. */
-  failures: Array<{ hourStart: string; reason: string }>
+  failures: Array<{ hourStart: string; reason: string; kind: 'read-failed' | 'send-failed' | 'record-failed' }>
   /** Hours not attempted because a budget ran out, so a partial run says what it skipped (L98). */
   skipped: string[]
   /**
@@ -582,10 +600,11 @@ export async function reArchiveHours(
       break
     }
 
-    if (outcome.kind === 'read-failed' || outcome.kind === 'send-failed') {
+    if (outcome.kind === 'read-failed' || outcome.kind === 'send-failed' || outcome.kind === 'record-failed') {
       // One hour failing does not stop the others: they are independent repairs
-      // and a caller who asked for six wants the five that can be done.
-      result.failures.push({ hourStart, reason: outcome.reason })
+      // and a caller who asked for six wants the five that can be done. The
+      // kind is kept, so the alert names the failure each hour had (#835).
+      result.failures.push({ hourStart, reason: outcome.reason, kind: outcome.kind })
       continue
     }
 

@@ -330,10 +330,12 @@ async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
 
   if (outcome.kind === 'set-aside') {
     await deps.alertSetAside(
+      // Not "purged on schedule whether or not it is archived": a day missing
+      // hours is refused by the cleanup and kept until it is archived (#835).
       `the archive backlog is setting ${day} aside after ${outcome.attempts} runs that recorded nothing. It holds ` +
-        `${after} of ${HOURS_PER_DAY} hours, so the rest of that day has no backup, and its Postgres partition will ` +
-        `be purged on schedule whether or not it is archived. The walk is moving on to the days behind it and will ` +
-        `try this one again later. The last run said: ${result.detail}`,
+        `${after} of ${HOURS_PER_DAY} hours, so the rest of that day has no backup, and the day is held back from ` +
+        `deletion until it is archived. The walk is moving on to the days behind it and will try this one again ` +
+        `later. The last run said: ${result.detail}`,
     )
   } else if (outcome.kind === 'no-progress') {
     // Deliberately not an alert. Stated in the log so a person reading the run
@@ -356,18 +358,19 @@ async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
 
 /**
  * The backlog walk sets a day aside after repeated runs that record nothing.
- * Nothing was exported and nothing failed loudly: the day simply has no backup
- * and a deadline, which is the whole point of saying so (2026-09-10).
+ * Nothing was exported and nothing failed loudly: the day simply has no backup,
+ * which is the whole point of saying so (2026-09-10). It has no deadline either:
+ * the cleanup refuses a day with hours missing and keeps it (#835).
  */
 export const ARCHIVE_BACKLOG_REMEDY: AlertRemedy = {
   consequence:
     'The backlog walk has given up on a day for now and moved to older ones. That day is partly ' +
-    'archived, the rest of it has no backup anywhere, and its Postgres partition is deleted on the ' +
-    'retention schedule whether or not it is archived. This is a deadline, not an outage:',
+    'archived, and the rest of it has no backup anywhere, so the day is held back from deletion until ' +
+    'it is archived and the database holds the only copy:',
   fixHint:
     'Re-archive the named day with POST /api/admin/re-archive and a day of YYYY-MM-DD, which fills only ' +
     'the missing hours. Read the quoted last run detail and the [archive-backlog] logs to see why the ' +
-    'hours are not being recorded. After that day is purged the hours cannot be recovered.',
+    'hours are not being recorded.',
   headlineVerb: 'set a day aside',
   itemNoun: { one: 'day', many: 'days' },
 }

@@ -55,6 +55,19 @@ export const ARCHIVE_HEADROOM_REMEDY: AlertRemedy = {
   itemNoun: { one: 'measurement', many: 'measurements' },
 }
 
+/**
+ * Below a ratio of 1.0 the busiest hour, by this measurement, no longer fits in
+ * one run, so "nothing is broken yet" is no longer true (#835).
+ */
+export const ARCHIVE_HEADROOM_EXHAUSTED_REMEDY: AlertRemedy = {
+  ...ARCHIVE_HEADROOM_REMEDY,
+  consequence:
+    'By this measurement the busiest hour no longer fits inside one run of the execution archive. A run ' +
+    'that reaches an hour that size archives no hours at all and completes cleanly, so at peak the archive ' +
+    'stops advancing and the first visible symptom is the archive stalling hours later:',
+  headlineVerb: 'has run out of room for its busiest hour',
+}
+
 export interface HeadroomCheckDeps {
   readRuns?: (supabase: SupabaseClient, now: Date) => Promise<HourRun[]>
   notify?: typeof notifyExportFailure
@@ -104,7 +117,7 @@ export async function checkArchiveHeadroom(
         `over ${reading.runsMeasured} single-hour runs. At 1.0 the archive can no longer advance at peak.`,
     ],
     env.IDEMPOTENCY,
-    ARCHIVE_HEADROOM_REMEDY,
+    reading.ratio < 1 ? ARCHIVE_HEADROOM_EXHAUSTED_REMEDY : ARCHIVE_HEADROOM_REMEDY,
   )
   return { reading, alerted: true }
 }

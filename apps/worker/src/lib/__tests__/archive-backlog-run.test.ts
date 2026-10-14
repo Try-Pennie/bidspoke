@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { LOOKBACK_DAYS, runArchiveBacklog, backlogDeps } from '../archive-backlog-run'
+import { LOOKBACK_DAYS, runArchiveBacklog, backlogDeps, ARCHIVE_BACKLOG_REMEDY } from '../archive-backlog-run'
 import { PAGE_SIZE } from '../paginate'
 import { MAX_NO_PROGRESS_ATTEMPTS, SET_ASIDE_MS, emptyBacklogState, type BacklogState } from '../../archive/backlog'
 
@@ -204,6 +204,16 @@ describe('runArchiveBacklog', () => {
     // this how much data is about to be purged with no backup.
     expect(message).toMatch(/4 of 24/)
     expect(d.state.setAsideUntil['2026-08-16']).toBe(NOW.getTime() + SET_ASIDE_MS)
+    // #835: a day missing hours is refused by the cleanup and KEPT, so it is
+    // not "purged on schedule whether or not it is archived".
+    expect(message).not.toMatch(/purged on schedule/)
+    expect(message).toMatch(/held back from deletion/)
+  })
+
+  it('does not call the set-aside day a deadline it is not (#835)', () => {
+    const words = `${ARCHIVE_BACKLOG_REMEDY.consequence} ${ARCHIVE_BACKLOG_REMEDY.fixHint}`
+    expect(words).not.toMatch(/deadline|deleted on the retention schedule|cannot be recovered/)
+    expect(ARCHIVE_BACKLOG_REMEDY.consequence).toMatch(/held back from deletion/)
   })
 
   // #1967: the set-aside alert was the only one this job raised and it NEVER
