@@ -57,6 +57,7 @@ import {
   outageNetwork,
   type FixtureOutcome,
   type ObservedStep,
+  ownExecutionId,
   type OutageExemption,
   type OutageRecord,
   type OutageShape,
@@ -195,11 +196,12 @@ function recordOf(run: RunResult, steps: ObservedStep[], doState: Record<string,
     decisions: decisionsFrom(steps),
     do_state: doState,
     error: run.error,
+    execution_id: ownExecutionId(steps),
   }
 }
 
 const observer = (into: ObservedStep[]) => (entry: ObservedStep) => {
-  into.push({ step_order: entry.step_order, step_namespace: entry.step_namespace, step_node_id: entry.step_node_id, step_type: entry.step_type, output: structuredClone(entry.output) })
+  into.push({ step_order: entry.step_order, step_namespace: entry.step_namespace, step_node_id: entry.step_node_id, step_type: entry.step_type, output: structuredClone(entry.output), execution_id: entry.execution_id })
 }
 
 it('keeps every money flow answering, as it would with the database up, while the database fails', async () => {
