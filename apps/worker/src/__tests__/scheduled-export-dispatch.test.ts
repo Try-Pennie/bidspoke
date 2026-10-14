@@ -110,6 +110,24 @@ describe('export crash alerts name the real cause', () => {
     expect(errors[0]).toBe('could not query the database for the schema cache (PGRST002)')
   })
 
+  // #835: the crash branch used to be a .catch after the success branch, so it
+  // also caught the ALERTER's own failure (a KV read throwing after a clean run)
+  // and posted it as "<export> failed" with the export's wording, for a run that
+  // had exported everything. The alerter failing is logged; it is not an export.
+  it.each([
+    ['0 9 * * *', 'Achieve export'],
+    ['37 */2 * * *', 'Lead sightings export'],
+  ] as const)('does not report the alerter failing after a clean %s run as an export failure', async (cron, job) => {
+    vi.mocked(notifyExportFailure).mockRejectedValueOnce(new Error('KV GET failed: 503'))
+
+    await fireAndFlush(cron)
+
+    const calls = vi.mocked(notifyExportFailure).mock.calls.filter((c) => c[1] === job)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][2]).toEqual([])
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('alert'), expect.anything())
+  })
+
   it('still uses the message of a real Error', async () => {
     vi.mocked(runAchieveExport).mockRejectedValueOnce(new Error('Snowflake 503'))
 
