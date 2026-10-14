@@ -1321,7 +1321,7 @@ export async function sendOutcomeDeadLetterAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.label, payload.error_code, payload.run !== undefined) },
+      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.label, payload.error_code, Boolean(payload.run)) },
     },
     // The run behind the latest loss when the caller has one (#835), which is
     // where the record has to be rebuilt from; the dashboard otherwise.
@@ -1920,9 +1920,11 @@ export async function sendPgCronAlert(
   const fixes: Record<AlertingStatus, string> = {
     failing: `*How to fix:* read the error above. \`cron.job_run_details\` holds the full message and the run history for this job.`,
     // The job is in cron.job and enabled (or it would not be judged, or would be
-    // reported as disabled), and no run finished failing, so what is left is a
-    // run that never finished or a scheduler that is not starting it (#835).
-    stalled: `*How to fix:* the job is scheduled and enabled and no run has failed, so either a run is stuck or pg_cron is not starting it. Read its latest rows in \`cron.job_run_details\`: a row with no end_time is a stuck run, which cancelling its pid frees for the next slot, and no row since the last success means the scheduler is not launching it.`,
+    // reported as disabled), and no run has failed since its last success (a
+    // newer failure is reported as failing; an older one may already have been
+    // reported and recovered), so what is left is a run that never finished or a
+    // scheduler that is not starting it (#835).
+    stalled: `*How to fix:* the job is scheduled and enabled and no run has failed since its last success, so either a run is stuck or pg_cron is not starting it. Read its latest rows in \`cron.job_run_details\`: a row with no end_time is a stuck run, which cancelling its pid frees for the next slot, and no row since the last success means the scheduler is not launching it.`,
     never_succeeded: `*How to fix:* the job is scheduled and has not completed successfully in the window. Read its most recent run in \`cron.job_run_details\`.`,
     unknown_identity: `*How to fix:* \`pg_cron_health\` is not returning this job's \`jobid\`, so a job that was just rescheduled cannot be told apart from one that has never run. Apply the outstanding database migrations, since the worker is running ahead of them.`,
     unknown_schedule: `*How to fix:* the staleness half of this check is not running for this job. Either simplify the schedule or teach \`expectedGapMs\` to read this shape.`,
@@ -2184,13 +2186,6 @@ export async function sendWorkflowScheduleAlert(
 }
 
 /**
- * Alert that the hourly bid-matrix sync had problems (#408): one or more partner
- * configs failed to sync (Salesforce down / token expired, so the matrix is going
- * stale) and/or returned empty so the last-known matrix was preserved instead of
- * applied (#407). Aggregated per org; uses the config-alerts toggle. Returns true
- * when delivered. A manual "Sync now" intentionally does not call this.
- */
-/**
  * What to do about one failed matrix sync, read from the error the sync threw
  * (bid-matrix-sync.ts, salesforce-creds.ts, bid-range-flags.ts, paginate.ts).
  * An error none of these recognise is sent to its own text, never to a guess.
@@ -2211,6 +2206,13 @@ function matrixSyncRemedy(error: string): string {
   return 'Read the error above to find which step failed.'
 }
 
+/**
+ * Alert that the hourly bid-matrix sync had problems (#408): one or more partner
+ * configs failed to sync (the matrix is going stale) and/or returned empty so the
+ * last-known matrix was preserved instead of applied (#407). Aggregated per org;
+ * uses the config-alerts toggle. Returns true when delivered. A manual "Sync now"
+ * intentionally does not call this. The remedy follows each error (#835).
+ */
 export async function sendMatrixSyncFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
@@ -2760,19 +2762,6 @@ function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
 }
 
 /**
- * The all-clear for a rate-aggregated alert (#253).
- *
- * The three rate checks paged when a rate started spiking and said nothing when
- * it recovered, so silence in Slack meant both "still broken, suppressed by the
- * cooldown" and "fine again". Those are the two states a reader most needs to
- * tell apart during an incident, so recovery is now announced explicitly and
- * says how long the condition lasted.
- *
- * Returns whether it actually reached Slack. The caller only clears its
- * recovery marker on true, so a kicked bot retries rather than leaving the page
- * as the last word.
- */
-/**
  * Whether a read error names a database object that is missing or not permitted
  * (#835): a function or table PostgREST cannot find, an undefined function,
  * table or column, or a missing grant. Each answers the same way until a
@@ -2825,6 +2814,19 @@ export async function sendDatabaseUnreachableAlert(
   return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
 }
 
+/**
+ * The all-clear for a rate-aggregated alert (#253).
+ *
+ * The three rate checks paged when a rate started spiking and said nothing when
+ * it recovered, so silence in Slack meant both "still broken, suppressed by the
+ * cooldown" and "fine again". Those are the two states a reader most needs to
+ * tell apart during an incident, so recovery is now announced explicitly and
+ * says how long the condition lasted.
+ *
+ * Returns whether it actually reached Slack. The caller only clears its
+ * recovery marker on true, so a kicked bot retries rather than leaving the page
+ * as the last word.
+ */
 export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,

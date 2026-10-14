@@ -264,6 +264,10 @@ describe('pg_cron alert: remedies the check has not already ruled out', () => {
     expect(text).not.toMatch(/still present and active/)
     expect(text).toContain('job_run_details')
     expect(text).toMatch(/end_time/)
+    // A stall can follow a failure that was reported and recovered, so the claim
+    // is bounded to the time since the last success, which judgeJob guarantees.
+    expect(text).not.toMatch(/no run has failed,/)
+    expect(text).toContain('no run has failed since its last success')
   })
 
   it('an unreadable last success time has its own wording, not the schedule remedy', async () => {
