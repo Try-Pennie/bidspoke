@@ -29,7 +29,7 @@ const REQUEST = {
 
 interface Written { table: string; op: string; rows: unknown }
 
-function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = {}) {
+function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown; writebackDeleted?: number } = {}) {
   const writes: Written[] = []
   const client = {
     from(table: string) {
@@ -49,6 +49,13 @@ function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = 
           // audit-shaped rows made this fixture mean something nobody chose
           // (pgDouble is what exercises them).
           const isAudit = table === 'audit_log'
+          // The failed writeback store (#1993) is erased by run id the same way.
+          if (table === 'outcome_writeback_deadletters') {
+            return Promise.resolve({
+              data: Array.from({ length: opts.writebackDeleted ?? 0 }, (_, i) => ({ id: `w-${i}` })),
+              error: null,
+            }).then(res)
+          }
           return Promise.resolve({
             data: isAudit
               ? Array.from({ length: opts.auditDeleted ?? 0 }, (_, i) => ({ id: `a-${i}` }))
@@ -71,9 +78,12 @@ interface PgQuery { table: string; op: string; filters: unknown[] }
  * functions were called.
  */
 function pgDouble(opts: {
-  sightings?: Array<{ id: string; execution_started_at_utc: string }>
+  sightings?: Array<{ id: string; execution_started_at_utc: string; execution_id?: string }>
   bids?: Array<{ id: string; attempted_at_utc: string }>
+  /** Fails the sightings reads only, so the stores keyed by run id still answer. */
   resolveError?: { message: string } | null
+  writebackRows?: number
+  writebackError?: { message: string; code?: string }
 } = {}) {
   const queries: PgQuery[] = []
   const client = {
@@ -91,9 +101,16 @@ function pgDouble(opts: {
         gte(col: string, v: unknown) { q.filters.push(['gte', col, v]); return chain },
         lte(col: string, v: unknown) { q.filters.push(['lte', col, v]); return chain },
         then(res: (v: unknown) => unknown) {
-          const err = opts.resolveError ?? null
+          const sightingsRead = table === 'lead_sightings' || table === 'lead_sighting_bids'
+          const err = sightingsRead
+            ? (opts.resolveError ?? null)
+            : table === 'outcome_writeback_deadletters'
+              ? (opts.writebackError ?? null)
+              : null
           let data: unknown[] = []
-          if (err === null) {
+          if (table === 'outcome_writeback_deadletters') {
+            data = Array.from({ length: opts.writebackRows ?? 0 }, (_, i) => ({ id: `w-${i}` }))
+          } else if (err === null) {
             // Answer the FIRST page only. fetchAllPaged keeps asking until a
             // short page comes back, so a double that returned the same rows
             // forever would spin rather than fail, which is the worse failure.
@@ -167,7 +184,7 @@ describe('rowsAffected', () => {
 
 describe('an erasure that finds the subject', () => {
   it('deletes from every target and reports each count separately', async () => {
-    const db = supabaseDouble({ auditDeleted: 2 })
+    const db = supabaseDouble({ auditDeleted: 2, writebackDeleted: 1 })
     const sf = snowflakeDouble({ deleted: { execution_archive: 3, lead_sightings: 1, lead_sighting_bids: 5 } })
 
     const result = await eraseSubject(env, db.client, REQUEST, { query: sf.query })
@@ -181,7 +198,11 @@ describe('an erasure that finds the subject', () => {
       ['pg_lead_sighting_bids', 0],
       ['pg_lead_sightings', 0],
       ['audit_log', 2],
+      // A failed Salesforce write held for replay carries the subject's lead
+      // fields, encrypted, so it is erased with the rest (#1993).
+      ['pg_outcome_writeback_deadletters', 1],
     ])
+    expect(db.writes.some((w) => w.table === 'outcome_writeback_deadletters' && w.op === 'delete')).toBe(true)
   })
 
   it('erases the sightings tables, not only the archive', async () => {
@@ -498,6 +519,57 @@ describe('eraseSubject over the Postgres sightings tables', () => {
     const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
     const pg = r.outcomes.filter((o) => o.target.startsWith('pg_'))
     expect(pg.every((o) => o.rowsDeleted === null && o.error !== null)).toBe(true)
+  })
+
+  // #1993 review. A run whose archive row is gone but whose Postgres sighting
+  // remains is found only here, and its failed writeback holds the subject's
+  // lead fields, so the writeback erasure must reach it too.
+  it('erases the failed writebacks of runs only the Postgres sightings know about', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z', execution_id: 'e-pg' }], writebackRows: 2 })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({ resolved: [['e-1', '2026-08-20']] }).query })
+    const del = db.queries.find((x) => x.table === 'outcome_writeback_deadletters' && x.op === 'delete')
+    const ids = (del?.filters.find((f) => Array.isArray(f) && f[0] === 'in' && f[1] === 'execution_id') as [string, string, string[]] | undefined)?.[2]
+    expect([...(ids ?? [])].sort()).toEqual(['e-1', 'e-pg'])
+    expect(r.outcomes.find((o) => o.target === 'pg_outcome_writeback_deadletters')).toEqual({ target: 'pg_outcome_writeback_deadletters', rowsDeleted: 2, error: null })
+  })
+
+  it('a dry run counts the failed writebacks it would erase, rather than reporting zero', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z', execution_id: 'e-pg' }], writebackRows: 3 })
+    const r = await eraseSubject(env, db.client, { ...REQUEST, dryRun: true }, { query: snowflakeDouble({}).query })
+    expect(r.outcomes.find((o) => o.target === 'pg_outcome_writeback_deadletters')?.rowsDeleted).toBe(3)
+    expect(db.queries.filter((x) => x.table === 'outcome_writeback_deadletters' && x.op === 'delete')).toEqual([])
+  })
+
+  it('still erases the writebacks it can find when the Postgres sightings cannot be resolved, and says the rest are unknown', async () => {
+    const db = pgDouble({ resolveError: { message: 'statement timeout' }, writebackRows: 1 })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({ resolved: [['e-1', '2026-08-20']] }).query })
+    expect(db.queries.some((x) => x.table === 'outcome_writeback_deadletters' && x.op === 'delete')).toBe(true)
+    const w = r.outcomes.find((o) => o.target === 'pg_outcome_writeback_deadletters')
+    expect(w?.rowsDeleted).toBeNull()
+    expect(w?.error).toMatch(/1 .*removed.*could not be resolved/)
+  })
+
+  // #1993 review. The run ids are found through the archive and the sightings,
+  // so the writebacks go FIRST: if their delete fails, the stores that name the
+  // runs are kept, and a re-run can still find and finish them.
+  it('erases the writebacks before the stores that name their runs, and keeps those stores when it fails', async () => {
+    const db = pgDouble({
+      sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z', execution_id: 'e-pg' }],
+      writebackError: { message: 'statement timeout', code: '57014' },
+    })
+    const sf = snowflakeDouble({ resolved: [['e-1', '2026-08-20']] })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: sf.query })
+    expect(sf.statements.filter((s) => /^DELETE/.test(s))).toEqual([])
+    expect(db.queries.filter((x) => x.op === 'delete').map((x) => x.table)).toEqual(['outcome_writeback_deadletters'])
+    const held = r.outcomes.filter((o) => o.target !== 'pg_outcome_writeback_deadletters')
+    expect(held.every((o) => o.rowsDeleted === null && /kept so a re-run can find/.test(o.error ?? ''))).toBe(true)
+    expect(r.verdict.status).toBe('partial')
+  })
+
+  it('erases the writebacks before any other store when it succeeds', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z', execution_id: 'e-pg' }], writebackRows: 1 })
+    await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    expect(db.queries.filter((x) => x.op === 'delete').map((x) => x.table)[0]).toBe('outcome_writeback_deadletters')
   })
 
   it('a dry run issues no Postgres delete', async () => {

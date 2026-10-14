@@ -548,6 +548,35 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     expect((call![1] as { resolvedInput?: unknown }).resolvedInput).toMatchObject({ resolved: { props: { lead: 1 } } })
   })
 
+  // #1993: a failed post-answer Salesforce write is kept, encrypted, for replay,
+  // whatever the alert does with it: a Salesforce outage, which the alert gates
+  // stay quiet for, is exactly when these writes fail.
+  it('keeps a failed post-answer Salesforce write for replay, even when the failure reads as a Salesforce outage', async () => {
+    const withSalesforce = {
+      ...withContinuation,
+      nodes: [
+        withContinuation.nodes[0],
+        { id: 'p', namespace: 'patch_submission', type: 'salesforce', config: { retries: 0 } },
+      ],
+    } as unknown as WorkflowDefinition
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: withSalesforce,
+      workflow_version_id: 'v1',
+      workflow_name: 'Main Flow',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    const request = { template: {}, resolved: { operation: 'update', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body: { External_Exchange_Status__c: 'Completed' } } }
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      throw Object.assign(new Error('Salesforce API error (503): Service Unavailable'), { resolvedInput: request })
+    })
+    const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
+    const { db } = await run(() => 'up', { SECRET_ENCRYPTION_KEY: key })
+    expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
+  })
+
   // #1882: the reason and the alert pointed at the Salesforce update, which had
   // finished 87 ms after the answer; the step still out was the Achieve call after
   // it. They now name the step the walk was running when the wait gave up.

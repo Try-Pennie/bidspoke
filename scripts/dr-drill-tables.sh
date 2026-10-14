@@ -40,6 +40,9 @@ DRILL_COPY_TABLES=(
 DRILL_STRUCTURE_ONLY_TABLES=(
   # Raw personal data (SSNs and contact details)
   persons lead_sightings lead_sighting_bids achieve_evaluations
+  # Failed Salesforce writes held for replay (#1993): encrypted lead fields, and
+  # a restore has no use for another day's undelivered patches
+  outcome_writeback_deadletters
   # Execution logs, tens of GB, rebuildable and not needed to bid
   workflow_executions execution_steps
   # Execution archive bookkeeping; the archive itself lives outside Supabase

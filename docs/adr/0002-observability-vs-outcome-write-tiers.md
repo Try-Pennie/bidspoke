@@ -49,6 +49,23 @@ The counter and the bar's constants live in `lib/deadletter-volume.ts`; change t
 
 When dead-letter volume proves the loss is real, the durable upgrade goes behind the `writeOutcome` seam — one file. The preferred mechanism is **not a generic outbox**: it is to move `finalizeSighting` out of `waitUntil` into a per-execution Durable Object alarm or the existing 09:00 Snowflake export job (which already reads `lead_sightings`), finalizing from **already-persisted columns**. That sidesteps the `ctx.steps`-reconstruction problem and avoids standing up a new PII-at-rest store. The daily `reduce_finalize_stranded` cron is effectively a coarse, batch-grained prototype of this path.
 
+## Tier 3 replay store, a scoped exception (#1993, 2026-10-13)
+
+The upgrade path above prefers rebuilding from already-persisted columns and avoiding a new PII-at-rest store. That works for the tier-2 Supabase records. It cannot work for the tier-3 Salesforce writeback: the patch is resolved from a run's step outputs at the moment it is sent, and no column the run keeps holds it (`sighting_finalize` is a code node's output, and step logs are not a replay source). On 2026-10-13, 8 of 18 post-answer writes checked after a Salesforce slowdown had never landed (#2015) and had to be rebuilt by hand.
+
+So the tier-3 tier gets the one store this ADR otherwise avoids, scoped as narrowly as it can be:
+
+- **What:** `outcome_writeback_deadletters`, one row per failed post-answer Salesforce `update`, holding the resolved request the failed step carries (#1992). Only what a replay could resend is stored. A Salesforce failure without an object, a record id and a body is dead-lettered as `outcome_writeback_deadletters.uncapturable` instead, so a row always means "this can be resent".
+- **PII handling:**
+  - The body and the error text are encrypted with `SECRET_ENCRYPTION_KEY`, and the table is service role only.
+  - It is an erasure target, by run id.
+  - Its columns are re-locked by the key rotation route.
+  - The restore drill restores it as structure only.
+- **Retention:** a finished row is purged 30 days after it finishes. A pending row is never purged.
+- **Write path:** through `writeOutcome`, so it is retried and read back like any tier-2 record. It is captured outside every alert gate, since a classified Salesforce outage is when these writes fail.
+
+Not yet built: the replay itself (#471), the automatic drain (#468), and the daily backlog alert, which belongs with the replay. Until something can move a row out of `pending`, a daily page about it would have no action that changes it.
+
 ## Post-response `waitUntil` write audit (#362)
 
 The strand loss above is one instance of a general shape: the engine registers several independent `executionCtx.waitUntil(...)` writes after the early response, any of which the isolate can drop on eviction. #362 enumerated them and classified each so the must-not-lose ones are knowingly protected and the rest are knowingly accepted:
@@ -74,7 +91,7 @@ The danger is that this is an invisible structural dependency. If the Engine flo
 ## Consequences
 
 - Every per-lead outcome write declares its tier and gets retry + dead-letter; the external-HTTP (SF) tier gets a dead-letter without faking a `withDbRetry` op; observability writes have a named home with unchanged behavior.
-- A Phase 3 CI guard (`apps/web/src/lib/__tests__/durability-seam-guard.test.ts`) scans `apps/worker/src/engine/` and fails if any file other than the seam-routed `lead-sightings.ts` writes an outcome table directly. Batch/admin writers (`lib/sightings-export.ts`, `routes/api/admin.ts`) are intentionally out of scope and documented in the guard.
+- A Phase 3 CI guard (`apps/web/src/lib/__guards__/worker/durability-seam-guard.test.ts`) scans `apps/worker/src/engine/` and fails if any file other than the two seam-routed writers writes an outcome table directly: `lead-sightings.ts`, and `writeback-deadletter.ts` for the replay store (see "Tier 3 replay store, a scoped exception" above). Batch and admin writers (`lib/sightings-export.ts`, `routes/api/admin.ts`, and the erasure and key rotation writes to the replay store in `lib/archive-erasure.ts` and `lib/secret-reencrypt.ts`) are intentionally out of scope and documented in the guard.
 - Any future log-sink/queue work must keep the tiers separable, not merge them.
 - See ADR 0003 for how tier-3 writeback failure maps to the `degraded` execution status.
 - For the end-to-end recovery pipeline (live finalize, the projection, the 30-min rich drain, the unrecoverable relabel, the export, and the drift guard), see [Lead outcome recovery](../concepts/lead-outcome-recovery.md).

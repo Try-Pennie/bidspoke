@@ -213,6 +213,7 @@ export async function eraseSubject(
   }
 
   const outcomes: TargetOutcome[] = []
+  let heldBack = false
 
   if (resolveError !== null) {
     // Every target is unknown, because nothing could be resolved. Reported as
@@ -222,51 +223,77 @@ export async function eraseSubject(
       outcomes.push({ target, rowsDeleted: null, error: `the subject could not be resolved: ${resolveError}` })
     }
   } else {
-    outcomes.push(
-      await deleteTarget(
-        'execution_archive',
-        executionIds.length === 0
-          ? []
-          : renderStatements(chunk(executionIds, IDS_PER_STATEMENT).map(
-              (ids) => ({
-                sql:
-                  `FROM ${ARCHIVE} WHERE execution_id IN (${placeholders(ids)})` +
-                  // A pruning hint only. The id list is the correctness bound, and
-                  // the day list comes from the same rows, so it can never exclude
-                  // one the ids would include.
-                  (days.length > 0 ? ` AND archive_day IN (${placeholders(days)})` : ''),
-                bindings: days.length > 0 ? [...ids, ...days] : [...ids],
-              }),
-            ), dryRun),
-        query,
-      ),
+    // THE WRITEBACKS FIRST (#1993). Their rows are found only by run id, and the
+    // run ids only through the archive and the sightings, so they go before
+    // either. When their delete fails, the stores that name the runs are KEPT,
+    // so a re-run can still find them, rather than leaving encrypted lead fields
+    // that nothing can resolve any more.
+    const pgResolve = await resolvePostgresSightings(supabase, spellings)
+    const pgRunIds = pgResolve.ok
+      ? pgResolve.sightings.map((r) => r.execution_id).filter((id): id is string => typeof id === 'string')
+      : []
+    const writeback = await eraseWritebackRows(
+      supabase,
+      request.organizationId,
+      [...new Set([...executionIds, ...pgRunIds])],
+      pgResolve.ok,
+      dryRun,
     )
-    outcomes.push(
-      await deleteTarget(
-        'lead_sightings',
-        renderStatements(
-          [{ sql: `FROM ${SIGHTINGS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
-          dryRun,
+    if (writeback.deleteFailed) {
+      heldBack = true
+      const held = `kept so a re-run can find the failed Salesforce writes of these runs, whose erasure failed: ${writeback.outcome.error}`
+      for (const target of ERASURE_TARGETS) {
+        outcomes.push(target === writeback.outcome.target ? writeback.outcome : { target, rowsDeleted: null, error: held })
+      }
+    } else {
+      outcomes.push(
+        await deleteTarget(
+          'execution_archive',
+          executionIds.length === 0
+            ? []
+            : renderStatements(chunk(executionIds, IDS_PER_STATEMENT).map(
+                (ids) => ({
+                  sql:
+                    `FROM ${ARCHIVE} WHERE execution_id IN (${placeholders(ids)})` +
+                    // A pruning hint only. The id list is the correctness bound, and
+                    // the day list comes from the same rows, so it can never exclude
+                    // one the ids would include.
+                    (days.length > 0 ? ` AND archive_day IN (${placeholders(days)})` : ''),
+                  bindings: days.length > 0 ? [...ids, ...days] : [...ids],
+                }),
+              ), dryRun),
+          query,
         ),
-        query,
-      ),
-    )
-    outcomes.push(
-      await deleteTarget(
-        'lead_sighting_bids',
-        renderStatements(
-          [{ sql: `FROM ${SIGHTING_BIDS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
-          dryRun,
+      )
+      outcomes.push(
+        await deleteTarget(
+          'lead_sightings',
+          renderStatements(
+            [{ sql: `FROM ${SIGHTINGS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
+            dryRun,
+          ),
+          query,
         ),
-        query,
-      ),
-    )
-    outcomes.push(...(await erasePostgresSightings(supabase, spellings, dryRun)))
-    outcomes.push(
-      dryRun
-        ? { target: 'audit_log', rowsDeleted: 0, error: null }
-        : await deleteAuditRows(supabase, request.organizationId, executionIds),
-    )
+      )
+      outcomes.push(
+        await deleteTarget(
+          'lead_sighting_bids',
+          renderStatements(
+            [{ sql: `FROM ${SIGHTING_BIDS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
+            dryRun,
+          ),
+          query,
+        ),
+      )
+      outcomes.push(...(await erasePostgresSightings(supabase, spellings, pgResolve, dryRun)))
+      outcomes.push(
+        dryRun
+          ? { target: 'audit_log', rowsDeleted: 0, error: null }
+          : await deleteAuditRows(supabase, request.organizationId, executionIds),
+      )
+      // Reported last, where it always was, though it ran first.
+      outcomes.push(writeback.outcome)
+    }
   }
 
   // WRITTEN WHATEVER THE OUTCOME, and before the day's Postgres partition is
@@ -274,11 +301,11 @@ export async function eraseSubject(
   // then failed to record it would make the gate report a shortfall it can never
   // clear: re-running the archiver re-inserts nothing, because the rows were
   // deliberately destroyed.
-  // NOT on a dry run. A recorded erasure makes the archive gate subtract rows
-  // that are still there, and nothing puts them back: re-running the archiver
-  // re-inserts nothing, because the gate believes they were deliberately
-  // destroyed.
-  if (!dryRun) await recordErasures(supabase, executionIds, days, request.reason)
+  // NOT on a dry run, nor when the stores were held back. A recorded erasure
+  // makes the archive gate subtract rows that are still there, and nothing puts
+  // them back: re-running the archiver re-inserts nothing, because the gate
+  // believes they were deliberately destroyed.
+  if (!dryRun && !heldBack) await recordErasures(supabase, executionIds, days, request.reason)
 
   const verdict = erasureVerdict(outcomes)
   return {
@@ -293,14 +320,36 @@ export async function eraseSubject(
   }
 }
 
-/**
- * The audit rows the archived-read path writes (A6, #874).
- *
- * That path does not exist yet, so this target legitimately matches nothing
- * today. It still RUNS and still reports its zero, because a target nobody ran
- * and a target that found nothing are different facts, and the enumerated set
- * has to be complete before A6 makes it non-empty rather than after.
- */
+type PgSighting = { id: string; execution_started_at_utc: string; execution_id: string | null }
+type PgResolve = { ok: true; sightings: PgSighting[] } | { ok: false; error: string }
+
+/** The subject's Postgres sightings, read once and before anything is deleted. */
+async function resolvePostgresSightings(supabase: SupabaseClient, spellings: string[]): Promise<PgResolve> {
+  try {
+    // PAGED, and this is not a performance note. PostgREST caps a read at 1,000
+    // rows, so an unpaged select would have seen the first 1,000 sightings of a
+    // subject who has more, deleted those, and reported the erasure complete.
+    // A silent partial erasure is the exact failure this whole path exists to
+    // prevent. Ordered by id so the pages cannot repeat or skip rows.
+    const sightings = await fetchAllPaged<PgSighting>(
+      (from, to) =>
+        supabase
+          .from('lead_sightings')
+          .select('id, execution_started_at_utc, execution_id')
+          .in('ssn', spellings)
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<{
+          data: unknown[] | null
+          error: { message: string } | null
+        }>,
+      'pg_lead_sightings resolve',
+    )
+    return { ok: true, sightings }
+  } catch (err) {
+    return { ok: false, error: formatErr(err) }
+  }
+}
+
 /**
  * The POSTGRES `lead_sightings` and `lead_sighting_bids` (#823).
  *
@@ -318,40 +367,20 @@ export async function eraseSubject(
 async function erasePostgresSightings(
   supabase: SupabaseClient,
   spellings: string[],
+  resolved: PgResolve,
   dryRun: boolean,
 ): Promise<TargetOutcome[]> {
-  const unknown = (why: string): TargetOutcome[] => [
-    { target: 'pg_lead_sighting_bids', rowsDeleted: null, error: why },
-    { target: 'pg_lead_sightings', rowsDeleted: null, error: why },
-  ]
-
-  let sightings: Array<{ id: string; execution_started_at_utc: string }>
-  try {
-    // PAGED, and this is not a performance note. PostgREST caps a read at 1,000
-    // rows, so an unpaged select would have seen the first 1,000 sightings of a
-    // subject who has more, deleted those, and reported the erasure complete.
-    // A silent partial erasure is the exact failure this whole path exists to
-    // prevent. Ordered by id so the pages cannot repeat or skip rows.
-    sightings = await fetchAllPaged<{ id: string; execution_started_at_utc: string }>(
-      (from, to) =>
-        supabase
-          .from('lead_sightings')
-          .select('id, execution_started_at_utc')
-          .in('ssn', spellings)
-          .order('id')
-          .range(from, to) as unknown as PromiseLike<{
-          data: unknown[] | null
-          error: { message: string } | null
-        }>,
-      'pg_lead_sightings resolve',
-    )
-  } catch (err) {
+  if (!resolved.ok) {
     // Unknown, not zero. A resolve that failed and a subject with no Postgres
     // rows are different facts, and only one of them means there is nothing to
     // erase.
-    return unknown(`the Postgres sightings could not be resolved: ${formatErr(err)}`)
+    const why = `the Postgres sightings could not be resolved: ${resolved.error}`
+    return [
+      { target: 'pg_lead_sighting_bids', rowsDeleted: null, error: why },
+      { target: 'pg_lead_sightings', rowsDeleted: null, error: why },
+    ]
   }
-
+  const sightings = resolved.sightings
   if (sightings.length === 0) {
     return [
       { target: 'pg_lead_sighting_bids', rowsDeleted: 0, error: null },
@@ -431,6 +460,14 @@ async function erasePostgresSightings(
   return outcomes
 }
 
+/**
+ * The audit rows the archived-read path writes (A6, #874).
+ *
+ * That path does not exist yet, so this target legitimately matches nothing
+ * today. It still RUNS and still reports its zero, because a target nobody ran
+ * and a target that found nothing are different facts, and the enumerated set
+ * has to be complete before A6 makes it non-empty rather than after.
+ */
 async function deleteAuditRows(
   supabase: SupabaseClient,
   organizationId: string,
@@ -461,6 +498,71 @@ async function deleteAuditRows(
     return { target: 'audit_log', rowsDeleted: total, error: null }
   } catch (err) {
     return { target: 'audit_log', rowsDeleted: null, error: formatErr(err) }
+  }
+}
+
+/**
+ * The failed Salesforce writes held for replay (#1993), by the subject's run ids.
+ * Its body is encrypted lead fields, so a subject erased everywhere else but here
+ * would still have them on record. Same shape as the audit rows: a zero match is
+ * the common, legitimate answer, since most runs never fail a write.
+ *
+ * A dry run COUNTS the rows rather than reporting zero, so the preview names what
+ * the real run would remove. When the Postgres sightings could not be resolved,
+ * the rows of the runs that were found are still removed, and the outcome is
+ * unknown rather than a count, since runs only those sightings record may remain.
+ * `deleteFailed` says the delete itself failed, which is what holds the other
+ * stores back.
+ */
+async function eraseWritebackRows(
+  supabase: SupabaseClient,
+  organizationId: string,
+  executionIds: string[],
+  allRunsResolved: boolean,
+  dryRun: boolean,
+): Promise<{ outcome: TargetOutcome; deleteFailed: boolean }> {
+  const target = 'pg_outcome_writeback_deadletters'
+  try {
+    let total = 0
+    for (const ids of chunk(executionIds, IDS_PER_STATEMENT)) {
+      if (dryRun) {
+        const rows = await fetchAllPaged<{ id: string }>(
+          (from, to) =>
+            supabase
+              .from('outcome_writeback_deadletters')
+              .select('id')
+              .eq('organization_id', organizationId)
+              .in('execution_id', ids)
+              .order('id')
+              .range(from, to),
+          'outcome_writeback_deadletters count',
+          { maxPages: 200 },
+        )
+        total += rows.length
+        continue
+      }
+      const { rows, error } = await requireRowsAffected<{ id: string }>(
+        'outcome_writeback_deadletters erasure',
+        () =>
+          supabase
+            .from('outcome_writeback_deadletters')
+            .delete()
+            .eq('organization_id', organizationId)
+            .in('execution_id', ids)
+            .select('id'),
+      )
+      if (error && !isNoRowMatchedError(error)) throw new Error(formatErr(error))
+      total += rows.length
+    }
+    if (!allRunsResolved) {
+      const error =
+        `${total} ${dryRun ? 'would be' : 'were'} removed for the runs that were found, but the Postgres ` +
+        'sightings could not be resolved, so the rows of runs only they record may remain'
+      return { outcome: { target, rowsDeleted: null, error }, deleteFailed: false }
+    }
+    return { outcome: { target, rowsDeleted: total, error: null }, deleteFailed: false }
+  } catch (err) {
+    return { outcome: { target, rowsDeleted: null, error: formatErr(err) }, deleteFailed: !dryRun }
   }
 }
 
