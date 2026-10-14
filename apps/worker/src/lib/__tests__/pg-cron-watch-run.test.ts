@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 
 import { sendPgCronAlert, sendPgCronRecoveryAlert } from '../slack'
 import { runPgCronWatch, type PgCronJob } from '../pg-cron-watch'
+import { outboxEvents, transitions } from './_incident-events'
 
 /**
  * The orchestration half of the database scheduled-job watch (#770): what
@@ -183,6 +184,16 @@ describe('runPgCronWatch: the all-clear when a job recovers (#851)', () => {
     expect(sendPgCronRecoveryAlert).toHaveBeenCalledTimes(1)
     // The all-clear cleared the cooldown so a fresh failure pages at once.
     expect(kv.store.has(`pg-cron-watch:${failing.jobname}:alerted`)).toBe(false)
+  })
+
+  it('records the job\'s incident as the platform\'s: opened, paged, ended on the all-clear (#2099)', async () => {
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing]), kv, NOW)
+    await runPgCronWatch(fakeSupabase([healthy(failing.jobname)]), kv, NOW + HOUR)
+    expect(transitions(kv.store)).toEqual([`opened ${failing.jobname}`, `paged ${failing.jobname}`, `ended ${failing.jobname} all_clear`])
+    for (const e of outboxEvents(kv.store)) {
+      expect(e).toMatchObject({ signal: 'pg-cron-watch', scope: 'platform', organizationId: null, subjectLabel: failing.jobname })
+    }
   })
 
   it('announces nothing for a job that was never paged', async () => {

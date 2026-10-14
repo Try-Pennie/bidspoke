@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { outboxEvents, transitions } from './_incident-events'
 vi.mock('../slack', () => ({
   sendFailureSpikeAlert: vi.fn().mockResolvedValue('ts-1'),
   getSlackConnection: vi.fn(),
@@ -450,5 +451,39 @@ describe('runFailureRateCheck re-arm (#814)', () => {
     expect(sendRecoveryAlert).not.toHaveBeenCalled() // 73 min quiet, under the 90 min window
     await tickAt('2026-08-15T03:10:00.000Z', () => withSignal([failRow('unrelated'), okRow(), okRow(), okRow()]), kv)
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runFailureRateCheck and the incident record (#2099)', () => {
+  beforeEach(() => vi.clearAllMocks())
+  const ORG_ID = '44444444-4444-4444-8444-444444444444'
+  const orgWf = { ...wf, organization_id: ORG_ID }
+
+  it('records the opening and the page with this signal\'s own window, once, and nothing while the cooldown holds', async () => {
+    vi.mocked(sendFailureSpikeAlert).mockResolvedValue(true)
+    const kv = makeKv()
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: ORG_ID }],
+      workflows: [orgWf],
+      workflow_executions: [failRow('ACRO_GATEWAY 1'), failRow('ACRO_GATEWAY 2'), failRow('ACRO_GATEWAY 3')],
+    })
+    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(transitions(kv.store)).toEqual(['opened wf-1:ACRO_GATEWAY', 'paged wf-1:ACRO_GATEWAY'])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({
+      signal: 'failure-rate', scope: 'org', organizationId: ORG_ID, subjectLabel: 'Engine Bidding: "ACRO_GATEWAY"', windowMinutes: 5,
+    })
+  })
+
+  it('records nothing for an alert Slack refused', async () => {
+    vi.mocked(sendFailureSpikeAlert).mockResolvedValue(false)
+    const kv = makeKv()
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: ORG_ID }],
+      workflows: [orgWf],
+      workflow_executions: [failRow('ACRO_GATEWAY 1'), failRow('ACRO_GATEWAY 2'), failRow('ACRO_GATEWAY 3')],
+    })
+    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(transitions(kv.store)).toEqual([])
   })
 })
