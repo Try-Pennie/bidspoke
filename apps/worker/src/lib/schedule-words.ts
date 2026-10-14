@@ -35,7 +35,7 @@ export function scheduleInWords(cron: string, at: Date = new Date()): string | n
   if (hour === '*') {
     if (minute === '*') return 'every minute'
     const everyMinutes = stepOf(minute, 59)
-    if (everyMinutes !== null) return `every ${everyMinutes} minutes`
+    if (everyMinutes !== null) return everyMinutes === 1 ? 'every minute' : `every ${everyMinutes} minutes`
     const m = inRange(minute, 59)
     if (m === null) return null
     return m === 0 ? 'every hour on the hour' : `every hour at :${pad(m)}`
@@ -43,7 +43,10 @@ export function scheduleInWords(cron: string, at: Date = new Date()): string | n
   const m = inRange(minute, 59)
   if (m === null) return null
   const everyHours = stepOf(hour, 23)
-  if (everyHours !== null) return `every ${everyHours} hours at :${pad(m)}`
+  if (everyHours !== null) {
+    if (everyHours > 1) return `every ${everyHours} hours at :${pad(m)}`
+    return m === 0 ? 'every hour on the hour' : `every hour at :${pad(m)}`
+  }
   const h = inRange(hour, 23)
   if (h === null) return null
 

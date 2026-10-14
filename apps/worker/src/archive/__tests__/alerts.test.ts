@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, ARCHIVE_KILLED_REMEDY, LAG_ALERT_HOURS } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -147,6 +147,16 @@ describe('the refusal alert names what it refused the same way its finding does'
     const r = ARCHIVE_REFUSAL_REMEDY
     expect(`${r.title} ${r.context}`).not.toMatch(/refused (some )?runs|Refused runs|every run/i)
     expect(r.title).toContain('executions')
+  })
+})
+
+// The vanished run alert waits out its allowance and may never have posted, so
+// the takeover alert may not claim one came before it; only that it is the same
+// event if one did.
+describe('the takeover alert does not claim an alert it cannot know was sent', () => {
+  it('names the started and never finished alert conditionally', () => {
+    expect(ARCHIVE_KILLED_REMEDY.context).not.toMatch(/alert before this one/)
+    expect(ARCHIVE_KILLED_REMEDY.context).toMatch(/if .*started and never finished/i)
   })
 })
 

@@ -148,9 +148,9 @@ export const ARCHIVE_LAG_REMEDY: TitledRemedy = {
 export const ARCHIVE_KILLED_REMEDY: TitledRemedy = {
   title: 'The hourly backup cleaned up after a stopped run',
   context:
-    'The previous run stopped part way through (that is the "started and never finished" alert before this ' +
-    'one). This run is going ahead normally. Nothing is lost: the hours the stopped run did not reach are ' +
-    'backed up on a later run.',
+    'The previous run stopped part way through. If a "started and never finished" alert for the backup came ' +
+    'before this, it is the same event. This run is going ahead normally. Nothing is lost: the hours the ' +
+    'stopped run did not reach are backed up on a later run.',
   fixHint:
     'Nothing to do unless this repeats. If it does, read the stopped runs\' outcomes for bidspoke-worker in ' +
     'the Cloudflare dashboard to see what is stopping them.',

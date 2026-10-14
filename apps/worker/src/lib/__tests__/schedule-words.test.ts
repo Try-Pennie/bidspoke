@@ -13,6 +13,8 @@ describe('scheduleInWords', () => {
     expect(scheduleInWords('23 * * * *')).toBe('every hour at :23')
     expect(scheduleInWords('0 * * * *')).toBe('every hour on the hour')
     expect(scheduleInWords('37 */2 * * *')).toBe('every 2 hours at :37')
+    expect(scheduleInWords('*/1 * * * *')).toBe('every minute')
+    expect(scheduleInWords('37 */1 * * *')).toBe('every hour at :37')
   })
 
   it('reads a daily time in Eastern time, which is how the reader thinks', () => {
