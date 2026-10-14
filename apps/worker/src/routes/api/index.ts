@@ -28,6 +28,7 @@ import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
 import mutedAlertRoutes from './muted-alerts'
+import incidentRoutes from './incidents'
 
 type Variables = AuthVariables
 
@@ -57,6 +58,9 @@ api.route('/env-folders', envFolders)
 api.route('/config-warnings', configWarnings)
 // Which alerts are currently muted and when they return (#1047).
 api.route('/muted-alerts', mutedAlertRoutes)
+// The incident record for the dashboard (#2101): the caller's organization's
+// incidents and the platform's.
+api.route('/incidents', incidentRoutes)
 api.route('/field-coverage', fieldCoverage)
 // Buyer profile routes share the /partners prefix (#1412); a Hono sub app
 // matches only its own paths, so /partners/:id and /partners/:id/buyer-profile

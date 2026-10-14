@@ -465,6 +465,16 @@ The releases refuse 409 `claim_changed` when the claim moved since the page read
 
 Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no expiry and stays until cleared by hand), `secondsRemaining`, and the `standingSince` and `reminders` from the condition record when one is present. These mutes are global operational state, not per org. A KV read failure returns a 500 rather than an empty list, so a silence is never mistaken for a healthy, unmuted system.
 
+## Incidents
+
+`/api/incidents`. The incident record: every alert incident of your organization, and every platform wide one (a partner host, the database, a scheduled job), from when it started to when it ended.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/incidents` | One page of incidents: ongoing ones first, then the newest start. Query `limit` (default 50, at most 100) and `offset` (default 0). |
+
+The response is `{ incidents, has_more, next_offset }`; pass `next_offset` as `offset` to read the next page. Each incident carries `signal` and its reader label `signal_label` (`Unrecognised signal`, with `signal_known: false`, for a signal no current check names), `subject_name` (never a raw id; a deleted workflow is marked `(deleted)`), `scope` (`org` or `platform`), `started_at`, `ended_at`, `state` (`ongoing`, `ended`, or `end_not_recorded` when the incident closed without an end being recorded), `duration` (worded by the same rule as the Slack all-clear, or null when there is no recorded end) and `pages_sent`. Closed incidents are listed for 90 days of start; an ongoing one is listed however old. A failed read returns a 500 with a message, never an empty list.
+
 ## Field coverage
 
 `/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Each field's health carries `drought` (a field that is normally present has collapsed), `dead` (a field that has carried values in the last four weeks has stopped, or one that cannot yet be judged by whether its key appears), `wrong_path` (its key never appears on the step's output) and `empty_by_design` (its key appears but never with a value, so it is not reported). Silences set here make the detector skip those fields.

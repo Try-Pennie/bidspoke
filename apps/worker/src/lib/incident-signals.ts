@@ -23,6 +23,13 @@
  *    reports one (a one tick incident there is the window, not a zero span).
  *    `per_call` when each instance carries its own (failure-rate), null when the
  *    check judges a state rather than a window.
+ *  - `subject`: what the incident's subject key is (#2101), so a reader facing
+ *    surface can name it rather than show a raw id. `workflow` when it starts
+ *    with a Bidspoke workflow id (volume-cliff and slow-spike key on the id
+ *    alone, failure-rate on `${id}:${match}`, the field presence tiers on
+ *    `${id} ${fieldPath}`), `organization` when it is an organization id, and
+ *    `name` when the key is itself readable (a host, a job name, a GitHub
+ *    workflow file, a fixed id). Required, so a new signal must say.
  *  - `kinds`: for a signal whose one prefix covers several problems or subjects,
  *    what they are.
  *
@@ -38,11 +45,13 @@
  */
 
 export type IncidentScopeKind = 'org' | 'platform'
+export type IncidentSubjectKind = 'workflow' | 'organization' | 'name'
 
 export interface IncidentSignalEntry {
   signal: string
   label: string
   scope: IncidentScopeKind
+  subject: IncidentSubjectKind
   startMeans: string
   windowMinutes: number | 'per_call' | null
   kinds?: readonly string[]
@@ -52,17 +61,18 @@ const FIRST_PAGE = 'The first page that reached Slack.'
 const FIRST_SEEN = 'When the condition was first seen, before any page.'
 
 export const INCIDENT_SIGNALS = [
-  { signal: 'failure-rate', label: 'Failure rate', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 'per_call' },
-  { signal: 'slow-spike', label: 'Slow execution', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 5 },
-  { signal: 'volume-cliff', label: 'Volume cliff', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 4 },
-  { signal: 'db-unreachable', label: 'Database unreachable', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: null },
-  { signal: 'field-presence-drought', label: 'Output field stopped', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 60 },
-  { signal: 'field-presence-dead', label: 'Output field not resolving', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 7 * 1440 },
-  { signal: 'field-presence-wrong-path', label: 'Output field path not found', scope: 'org', startMeans: FIRST_PAGE, windowMinutes: 7 * 1440 },
+  { signal: 'failure-rate', label: 'Failure rate', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 'per_call' },
+  { signal: 'slow-spike', label: 'Slow execution', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
+  { signal: 'volume-cliff', label: 'Volume cliff', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 4 },
+  { signal: 'db-unreachable', label: 'Database unreachable', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },
+  { signal: 'field-presence-drought', label: 'Output field stopped', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 60 },
+  { signal: 'field-presence-dead', label: 'Output field not resolving', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 7 * 1440 },
+  { signal: 'field-presence-wrong-path', label: 'Output field path not found', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 7 * 1440 },
   {
     signal: 'partner-reachability',
     label: 'Partner reachability',
     scope: 'platform',
+    subject: 'name',
     startMeans: FIRST_SEEN,
     windowMinutes: null,
     kinds: ['blocked', 'unreachable', 'control-failing', 'probe-broken'],
@@ -71,13 +81,14 @@ export const INCIDENT_SIGNALS = [
     signal: 'supabase-memory',
     label: 'Database memory',
     scope: 'platform',
+    subject: 'name',
     startMeans: FIRST_SEEN,
     windowMinutes: null,
     kinds: ['memory', 'feed'],
   },
-  { signal: 'pg-cron-watch', label: 'Database job', scope: 'platform', startMeans: FIRST_PAGE, windowMinutes: null },
-  { signal: 'stored-copy-serving', label: 'Stored copy', scope: 'platform', startMeans: FIRST_SEEN, windowMinutes: 5 },
-  { signal: 'workflow-schedule', label: 'Scheduled workflow', scope: 'platform', startMeans: FIRST_PAGE, windowMinutes: null },
+  { signal: 'pg-cron-watch', label: 'Database job', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },
+  { signal: 'stored-copy-serving', label: 'Stored copy', scope: 'platform', subject: 'name', startMeans: FIRST_SEEN, windowMinutes: 5 },
+  { signal: 'workflow-schedule', label: 'Scheduled workflow', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']
@@ -92,6 +103,19 @@ export function incidentSignal(signal: IncidentSignal): IncidentSignalEntry {
 /** Whether a stored string names a registered signal (the drain reads events written by older code). */
 export function isIncidentSignal(value: unknown): value is IncidentSignal {
   return typeof value === 'string' && BY_SIGNAL.has(value)
+}
+
+/** What a reader sees for a stored signal the registry no longer (or never) named. */
+export const UNRECOGNISED_SIGNAL_LABEL = 'Unrecognised signal'
+
+/**
+ * The reader's label for a stored signal string (#2101). A signal the registry
+ * does not name (written by older code, or a retired check) is called what it
+ * is, never given an invented label; the caller shows its raw key beside it.
+ */
+export function incidentSignalLabel(value: string): { label: string; known: boolean } {
+  const entry = BY_SIGNAL.get(value)
+  return entry ? { label: entry.label, known: true } : { label: UNRECOGNISED_SIGNAL_LABEL, known: false }
 }
 
 /** Why an incident ended. `lapsed` means its marker went away with no all-clear, so its end was never recorded. */

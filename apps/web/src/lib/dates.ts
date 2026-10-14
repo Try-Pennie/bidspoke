@@ -23,6 +23,17 @@ export function formatDate(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
+/** "Oct 14, 2:34 PM": day and clock time in ET with no zone suffix, for a column whose header says ET once. */
+export function formatEtDayTime(dateStr: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ET,
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(dateStr))
+}
+
 /** "2:34:12 PM" — for execution list sidebar timestamps. Seconds matter when many runs fire in the same minute. */
 export function formatTime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-US', {

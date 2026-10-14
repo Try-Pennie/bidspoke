@@ -19,6 +19,7 @@ import { listSteps } from '../engine/running-step'
 import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
+import { describeDuration, measureIncidentSpan } from './incident-span'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
@@ -2705,25 +2706,11 @@ function recoveredStatus(item: RecoveredSubject, wording: RecoveryWording): stri
  * group that all paged and cleared on the same tick shares one of these (#1270).
  */
 function recoveryTiming(item: RecoveredSubject, wording: RecoveryWording, now: number): string {
-  const started = Date.parse(item.alertedAt)
-  // The all-clear waits out a re-arm window before it is sent (#814), so the
-  // duration is measured to the LAST OBSERVED FAILURE. Measuring to now would
-  // add the whole quiet window to every reported outage. Falls back to now when
-  // no end was recorded, and then claims nothing about when it cleared.
-  const ended = item.endedAt ? Date.parse(item.endedAt) : NaN
-  const clearedAt = Number.isFinite(ended) ? ended : null
-  // An unparseable marker must not render "NaN minutes"; say nothing about the
-  // duration rather than something wrong (LESSONS L11, L50).
-  const lasted = Number.isFinite(started) ? describeDuration((clearedAt ?? now) - started) : null
-
-  // A windowed check that saw the condition on only one tick knows the incident
-  // happened somewhere inside that window and nothing finer. Reporting the tick
-  // gap there would assert a duration nobody measured, so the window is named
-  // instead.
-  const windowMs = (wording.measuredWindowMinutes ?? 0) * 60 * 1000
-  const spanMs = Number.isFinite(started) ? (clearedAt ?? now) - started : NaN
-  const withinOneWindow = windowMs > 0 && Number.isFinite(spanMs) && spanMs < windowMs
-  const windowWords = withinOneWindow ? describeDuration(windowMs) : null
+  // The span itself comes from the one rule the dashboard's incident record also
+  // reads (incident-span.ts, #2101): measured to the LAST OBSERVED FAILURE, not to
+  // now (#814); the window in place of a span shorter than one window (#1101);
+  // nothing at all for an unreadable marker (L11, L50).
+  const span = measureIncidentSpan(item.alertedAt, item.endedAt, wording.measuredWindowMinutes, now)
 
   // Inside one window there is no observed END either (#1268): the last tick the
   // condition was seen on is the tick that paged, so "clearing at" would name
@@ -2731,14 +2718,17 @@ function recoveryTiming(item: RecoveredSubject, wording: RecoveryWording, now: n
   // told the reader a LendSwift outage cleared at 6:01 AM while the ping API
   // went on failing until 6:52. What the check DID observe is that the condition
   // had passed by the tick that announced this, so that is what it says.
-  const howLong = withinOneWindow && windowWords
-    ? ` and covered the ${windowWords} before it, which is as precisely as this check measures. ` +
+  let howLong = '.'
+  if (span.kind === 'within_window') {
+    howLong =
+      ` and covered the ${describeDuration(span.windowMs)} before it, which is as precisely as this check measures. ` +
       `It had passed by ${etTime(now)}.`
-    : lasted
-      ? ` and lasted ${lasted}${clearedAt !== null ? `, clearing at ${etTime(clearedAt)}` : ''}.`
-      : '.'
+  } else if (span.kind === 'measured') {
+    const lasted = describeDuration(span.ms)
+    if (lasted) howLong = ` and lasted ${lasted}${span.clearedAt !== null ? `, clearing at ${etTime(span.clearedAt)}` : ''}.`
+  }
 
-  return `The ${wording.signal} alert fired at ${etTime(started)}${howLong}`
+  return `The ${wording.signal} alert fired at ${etTime(Date.parse(item.alertedAt))}${howLong}`
 }
 
 /**
@@ -2976,18 +2966,6 @@ export async function sendWorkflowScheduleRecoveryAlert(
     },
     now,
   )
-}
-
-/** A duration in plain words. Rounded, because nobody acts on the seconds. */
-export function describeDuration(ms: number): string | null {
-  if (!Number.isFinite(ms) || ms < 0) return null
-  const minutes = Math.round(ms / 60000)
-  if (minutes < 1) return 'under a minute'
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`
-  const hours = Math.floor(minutes / 60)
-  const rem = minutes % 60
-  const h = `${hours} hour${hours === 1 ? '' : 's'}`
-  return rem === 0 ? h : `${h} ${rem} minute${rem === 1 ? '' : 's'}`
 }
 
 /** One ET timestamp format, so a new alert does not add another copy of it. */

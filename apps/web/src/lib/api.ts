@@ -190,6 +190,32 @@ export interface PartnerUuid {
   created_at: string
 }
 
+/**
+ * One incident as GET /api/incidents returns it (#2101). The worker resolves
+ * every reader facing field (apps/worker/src/lib/incidents-read.ts, IncidentView),
+ * so the page only lays them out.
+ */
+export interface Incident {
+  id: string
+  /** The stored signal key, shown beside the label only when the signal is unrecognised. */
+  signal: string
+  signal_label: string
+  signal_known: boolean
+  subject_name: string
+  scope: 'org' | 'platform'
+  started_at: string
+  ended_at: string | null
+  state: 'ongoing' | 'ended' | 'end_not_recorded'
+  duration: string | null
+  pages_sent: number
+}
+
+export interface IncidentsResponse {
+  incidents: Incident[]
+  has_more: boolean
+  next_offset: number | null
+}
+
 export interface StatsResponse {
   window_days: number
   summary: {
@@ -963,6 +989,9 @@ export const api = {
   },
   configWarnings: {
     get: () => req<ConfigWarningsResponse>('/api/config-warnings'),
+  },
+  incidents: {
+    list: (offset = 0) => req<IncidentsResponse>(`/api/incidents?offset=${offset}`),
   },
 
   servicePresets: {

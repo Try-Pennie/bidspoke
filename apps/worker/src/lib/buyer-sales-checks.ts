@@ -64,7 +64,7 @@ import { parseJson } from './json'
 import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
-import { describeDuration } from './slack'
+import { describeDuration } from './incident-span'
 
 export { BID_PURGE_HORIZON_MS }
 
