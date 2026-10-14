@@ -18,7 +18,7 @@
  * claim only decides who posts.
  *
  * The same object also answers "does this delivery of a cron tick run?" (#1899)
- * under `/tick-claim`, `/tick-done` and `/tick-release`; see TickClaimResult below.
+ * under `/tick-claim`, `/tick-renew`, `/tick-done` and `/tick-release`; see TickClaimResult below.
  */
 
 interface ClaimStorage {
@@ -71,11 +71,10 @@ export interface ClaimResult {
  * 1.7 s fell inside it. A holder that cannot reach this object to renew looks
  * dead, and its tick then runs twice, which is the direction to err in.
  */
-/** How often a running holder renews its lease. */
-export const TICK_LEASE_RENEW_MS = 3_000
+export const TICK_LEASE_STALE_MS = 3 * 3_000
 
-/** A lease not renewed for this long belongs to a run that was killed: three missed renewals. */
-export const TICK_LEASE_STALE_MS = 3 * TICK_LEASE_RENEW_MS
+/** How often a running holder renews its lease: a third of TICK_LEASE_STALE_MS, so a dead run is three missed renewals. */
+export const TICK_LEASE_RENEW_MS = TICK_LEASE_STALE_MS / 3
 
 /**
  * How long a tick's record is kept before its alarm deletes it: well past the
