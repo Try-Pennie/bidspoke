@@ -121,6 +121,18 @@ export interface ObservedStep {
   step_node_id?: string | null
   step_type: string
   output: unknown
+  execution_id?: string
+}
+
+/**
+ * The run's own execution id: the one id every step it logged carries. None,
+ * or more than one, gives undefined, and then nothing is masked (#2009).
+ */
+export function ownExecutionId(steps: ObservedStep[]): string | undefined {
+  const ids = new Set(steps.map((s) => s.execution_id))
+  if (ids.size !== 1) return undefined
+  const [id] = ids
+  return id || undefined
 }
 
 export interface RouteRecord { node: string; namespace: string; type: string; route: string }
@@ -170,6 +182,8 @@ export interface OutageRecord {
   decisions: Decisions
   do_state: Record<string, unknown>
   error: string | undefined
+  /** The run's own execution id, from its own step log; masked wherever it appears (#2009). */
+  execution_id?: string
 }
 
 export interface OutageDifference { field: string; detail: string }
@@ -188,6 +202,18 @@ const short = (v: unknown) => {
 }
 
 /**
+ * Both values cut around the first character where they part, so a long value
+ * that differs late shows the difference rather than a shared opening (#2009).
+ */
+function parting(a: string, b: string): [string, string] {
+  let i = 0
+  while (i < a.length && i < b.length && a[i] === b[i]) i++
+  const from = Math.max(0, i - 100)
+  const cut = (s: string) => `${from > 0 ? '...' : ''}${s.slice(from, from + 300)}${s.length > from + 300 ? '...' : ''}`
+  return [cut(a), cut(b)]
+}
+
+/**
  * Every way the database-down run differs from its database-up twin, the error
  * first: a run that threw differs everywhere after it, and the throw is what an
  * exemption names. Outbound requests and dispatches are compared as sorted lists,
@@ -201,14 +227,32 @@ export function compareOutage(up: OutageRecord, down: OutageRecord): OutageDiffe
       // The first place the runs part: a long list cut short would hide it (L445).
       let i = 0
       while (i < a.length && i < b.length && canonical(a[i]) === canonical(b[i])) i++
+      if (i < a.length && i < b.length) {
+        const [ua, db] = parting(canonical(a[i]), canonical(b[i]))
+        diffs.push({ field, detail: `at [${i}]: up ${ua}; down ${db} (up has ${a.length}, down has ${b.length})` })
+        return
+      }
       const at = (xs: unknown[]) => (i < xs.length ? short(xs[i]) : '(nothing)')
       diffs.push({ field, detail: `at [${i}]: up ${at(a)}; down ${at(b)} (up has ${a.length}, down has ${b.length})` })
       return
     }
-    diffs.push({ field, detail: `up ${short(a)}; down ${short(b)}` })
+    const [ua, db] = parting(canonical(a), canonical(b))
+    diffs.push({ field, detail: `up ${ua}; down ${db}` })
   }
+  // Each run's OWN execution id, read from its own step log, is masked wherever
+  // it appears (#2009). It is minted after the definition load, which under a
+  // hung database races its deadline, so a slow runner draws a different number
+  // of random values first and the id shifts while every decision is the same.
+  // Only the run's own id: any other id, the twin's included, still differs.
+  const own = (rec: OutageRecord) => <T>(v: T): T => {
+    if (!rec.execution_id) return v
+    const id = rec.execution_id
+    return JSON.parse(JSON.stringify(v ?? null).split(id).join('<own-execution>')) as T
+  }
+  const maskUp = own(up)
+  const maskDown = own(down)
   if ((up.error ?? null) !== (down.error ?? null)) diffs.push({ field: 'error', detail: down.error ?? `down run did not throw; up threw ${up.error}` })
-  check('response', up.response, down.response)
+  check('response', maskUp(up.response), maskDown(down.response))
   const sorted = <T>(xs: T[]) => [...xs].map(canonical).sort()
   // The run's OWN execution id is minted fresh each run from the drill's pinned RNG,
   // so a correct outage path that draws from it shifts it even when the money flow is
@@ -221,12 +265,12 @@ export function compareOutage(up: OutageRecord, down: OutageRecord): OutageDiffe
   // real money difference that must still fail.
   const EXEC_LINK_RE = /([?&]execution=)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
   const sortedOutbound = <T>(xs: T[]) => [...xs].map((x) => canonical(x).replace(EXEC_LINK_RE, '$1<uuid>')).sort()
-  check('outbound', sortedOutbound(up.outbound), sortedOutbound(down.outbound))
+  check('outbound', sortedOutbound(maskUp(up.outbound)), sortedOutbound(maskDown(down.outbound)))
   check('code_dispatch', sorted(up.code_dispatch), sorted(down.code_dispatch))
   check('routes', up.decisions.routes, down.decisions.routes)
   check('nodes_executed', up.decisions.nodes_executed, down.decisions.nodes_executed)
   check('final_node', up.decisions.final_node, down.decisions.final_node)
-  check('do_state', comparedDoState(up.do_state), comparedDoState(down.do_state))
+  check('do_state', maskUp(comparedDoState(up.do_state)), maskDown(comparedDoState(down.do_state)))
   return diffs
 }
 

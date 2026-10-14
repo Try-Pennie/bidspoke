@@ -12,6 +12,7 @@ import {
   lateAnswer,
   HUNG_ANSWER_ALLOWANCE_MS,
   isLastGoodKey,
+  ownExecutionId,
   isOutageNetworkRejection,
   outageNetwork,
   type OutageRecord,
@@ -126,6 +127,19 @@ const base: OutageRecord = {
   error: undefined,
 }
 
+describe('ownExecutionId', () => {
+  const step = (execution_id?: string) => ({ step_order: 1, step_namespace: 'a', step_type: 'code', output: null, execution_id })
+  it('reads the one execution id every step of the run carries', () => {
+    expect(ownExecutionId([step('e1'), step('e1')])).toBe('e1')
+  })
+  // Masking the wrong id could hide a real difference, so an ambiguous log masks nothing.
+  it('is undefined when the steps carry none, or more than one', () => {
+    expect(ownExecutionId([])).toBeUndefined()
+    expect(ownExecutionId([step()])).toBeUndefined()
+    expect(ownExecutionId([step('e1'), step('e2')])).toBeUndefined()
+  })
+})
+
 describe('compareOutage', () => {
   it('finds nothing when the down run decided and sent exactly what its twin did', () => {
     expect(compareOutage(base, structuredClone(base))).toEqual([])
@@ -190,6 +204,47 @@ describe('compareOutage', () => {
     const up = { ...base, outbound: [b(25000, '01a0f7fa-bd80-7780-ae45-9057801d3651')] }
     const down = { ...base, outbound: [b(19000, '01a0f7fa-bd80-7606-aea2-b53569c3b6c9')] }
     expect(compareOutage(up, down).map((d) => d.field)).toContain('outbound')
+  })
+
+  // #2009: the id is minted after the definition load, which under a hung
+  // database races its deadline, so a slow runner draws a different number of
+  // random values first and the run's OWN id shifts. Salesforce bodies and the
+  // buyer ledger carry it as a plain field, not only in a link, so each run's own
+  // id (read from its own step log) is masked wherever it appears.
+  const UP_ID = '01a0f7fa-bd80-7ac7-91de-300d2210bcd4'
+  const DOWN_ID = '01a0f7fa-bd80-714b-a47f-b4ee256c769c'
+  const sf = (id: string) => ({ ...base.outbound[0], body: { executionId: id, Credit_Pull_Result_ES__c: 'Fail' } })
+
+  it('does not count a body field carrying each run\'s own execution id', () => {
+    const up = { ...base, execution_id: UP_ID, outbound: [sf(UP_ID)] }
+    const down = { ...base, execution_id: DOWN_ID, outbound: [sf(DOWN_ID)] }
+    expect(compareOutage(up, down)).toEqual([])
+  })
+
+  it('does not count Durable Object state carrying each run\'s own execution id', () => {
+    const ledger = (id: string) => ({ BUYER_LEDGER: { k: { tables: { entries: [JSON.stringify({ execution_id: id, payout_cents: 2500 })] } } } })
+    expect(compareOutage({ ...base, execution_id: UP_ID, do_state: ledger(UP_ID) }, { ...base, execution_id: DOWN_ID, do_state: ledger(DOWN_ID) })).toEqual([])
+  })
+
+  it('still counts a down run that carried an id other than its own', () => {
+    const up = { ...base, execution_id: UP_ID, outbound: [sf(UP_ID)] }
+    const down = { ...base, execution_id: DOWN_ID, outbound: [sf('01a0f7fa-bd80-7000-8000-000000000000')] }
+    expect(compareOutage(up, down).map((d) => d.field)).toEqual(['outbound'])
+  })
+
+  it('masks nothing when a run recorded no execution id', () => {
+    const up = { ...base, outbound: [sf(UP_ID)] }
+    const down = { ...base, outbound: [sf(DOWN_ID)] }
+    expect(compareOutage(up, down).map((d) => d.field)).toEqual(['outbound'])
+  })
+
+  // A value that differs late was shown cut at its start, so the report could not
+  // say where the twins parted (the 2026-10-14 do_state mismatches).
+  it('shows a long value around where the two runs part, not from its start', () => {
+    const big = (tail: string) => ({ CAPS: { k: { pad: 'x'.repeat(600), tail } } })
+    const diff = compareOutage({ ...base, do_state: big('sold') }, { ...base, do_state: big('held') }).find((d) => d.field === 'do_state')!
+    expect(diff.detail).toMatch(/"tail":"sold"/)
+    expect(diff.detail).toMatch(/"tail":"held"/)
   })
 
   // A long list differing late would be cut off before the difference, so a
