@@ -255,6 +255,19 @@ describe('lapsed incidents', () => {
     expect(s.errors.some((e) => e.includes('retired-signal'))).toBe(true)
   })
 
+  it('judges no lapse while events still wait, since the incident\'s own end may be one of them', async () => {
+    const h = harness(fakeDb({
+      open: [OPEN],
+      answer: (c) => c.fn === 'record_alert_incident_ended'
+        ? { data: null, error: { message: 'upstream connect error' } }
+        : c.fn === 'record_alert_incident_marker_check' ? { data: 'suspect', error: null } : { data: '99999999-9999-4999-8999-999999999999', error: null },
+    }))
+    await seedIncident(h.kv, h.clock)
+    const s = await runIncidentDrain(h.deps())
+    expect(s.waiting).toBe(1)
+    expect(check(h)).toEqual([])
+  })
+
   it('reports an open incident read that failed', async () => {
     const h = harness(fakeDb({ openError: 'canceling statement due to statement timeout' }))
     const s = await runIncidentDrain(h.deps())

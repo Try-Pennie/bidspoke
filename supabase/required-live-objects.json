@@ -372,5 +372,21 @@
     },
     "anon": "denied",
     "note": "The incident drain (apps/worker/src/lib/incident-drain.ts, #2100) writes its check of an open incident's KV marker, closing it as lapsed after two absent drains, to alert_incidents through this as service_role, every five minutes. A WRITE, revoked from anon and authenticated, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names, and as anon the call is refused before the body runs."
+  },
+  {
+    "name": "purge_alert_incidents",
+    "args": {},
+    "anon": "denied",
+    "note": "The incident record's retention (#2100): run daily by the purge-alert-incidents pg_cron job, deleting alert_incidents rows closed over 90 days ago. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
+  },
+  {
+    "name": "alert_incident_moved_from",
+    "args": {
+      "p_signal": "probe",
+      "p_subject": "probe",
+      "p_started_at": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Used inside the incident record's transition functions (#2100) to find the row whose start moved earlier. It reads alert_incidents, which is service role only, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names."
   }
 ]

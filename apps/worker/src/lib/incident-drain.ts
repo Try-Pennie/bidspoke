@@ -15,8 +15,9 @@
  *    event cannot hold the drain or its alert for ever. Set aside events are
  *    reported at once.
  *
- * Then every open incident in the record has its KV marker read directly. A
- * marker gone (or holding a later incident's start) is reported to the database,
+ * Then, on a run that left nothing waiting, every open incident in the record
+ * has its KV marker read directly. A marker gone (or holding a later incident's
+ * start) is reported to the database,
  * which closes the row as lapsed, with no end time, the second time in a row it
  * is told so (record_alert_incident_marker_check). Two drains, not one, because
  * the incident's own ended event can lag the deletion of its marker in a list.
@@ -240,9 +241,11 @@ export async function runIncidentDrain(deps: IncidentDrainDeps): Promise<Inciden
   s.waiting = waitingSince.length
   s.oldestWaitingMs = waitingSince.length > 0 ? nowMs - Math.min(...waitingSince) : null
 
-  // Lapses, judged only when the outbox was read: an unread outbox may hold the
-  // very ended event that would have closed the row properly.
-  if (listedOk) await checkOpenIncidents(deps, nowMs, s)
+  // Lapses, judged only when the outbox was read and emptied of everything this run
+  // could see: an unread outbox, a failed write or a deferred event may be the very
+  // ended event that would close the row properly. The backlog alert covers a
+  // drain that stays stuck.
+  if (listedOk && s.waiting === 0) await checkOpenIncidents(deps, nowMs, s)
 
   await alertOnDrain(deps, nowMs, s, refusedReasons)
   return s
