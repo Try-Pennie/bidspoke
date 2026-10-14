@@ -26,5 +26,10 @@ describe('scheduleInWords', () => {
     expect(scheduleInWords('0 9 * * 1')).toBeNull()
     expect(scheduleInWords('5,35 * * * *')).toBeNull()
     expect(scheduleInWords('not a cron')).toBeNull()
+    // Out of range reads as nothing, never as a wrong time.
+    expect(scheduleInWords('99 * * * *')).toBeNull()
+    expect(scheduleInWords('0 25 * * *')).toBeNull()
+    expect(scheduleInWords('*/0 * * * *')).toBeNull()
+    expect(scheduleInWords('5 */0 * * *')).toBeNull()
   })
 })

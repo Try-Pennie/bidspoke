@@ -126,10 +126,10 @@ export const ARCHIVE_MISCONFIGURED_REMEDY: TitledRemedy = {
 }
 
 export const ARCHIVE_REFUSAL_REMEDY: TitledRemedy = {
-  title: 'The hourly backup refused some runs',
+  title: 'The hourly backup refused some executions',
   context:
-    'Refused runs have no backup anywhere, and their history is still deleted on the usual schedule. Refusing ' +
-    'every run points at one shared cause rather than one bad record.',
+    'Refused executions have no backup anywhere, and their history is still deleted on the usual schedule. ' +
+    'Refusing every execution points at one shared cause rather than one bad record.',
   fixHint:
     'Read the reasons in the execution_archive_refusals table for this run, fix the cause, then back the ' +
     'affected hours up again with POST /api/admin/re-archive.',

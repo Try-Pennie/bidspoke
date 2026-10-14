@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, clearedConditionsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, ARCHIVE_REFUSAL_REMEDY, LAG_ALERT_HOURS } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -138,6 +138,16 @@ describe('the failed run finding reads in words', () => {
       expect(line).toContain('statement timeout')
     })
   }
+})
+
+// One word for one unit (L118): what the backup refuses is executions, and
+// "run" in the same alert means the backup run itself.
+describe('the refusal alert names what it refused the same way its finding does', () => {
+  it('says executions, never runs, for the refused things', () => {
+    const r = ARCHIVE_REFUSAL_REMEDY
+    expect(`${r.title} ${r.context}`).not.toMatch(/refused (some )?runs|Refused runs|every run/i)
+    expect(r.title).toContain('executions')
+  })
 })
 
 describe('the falling behind finding reads in words', () => {
