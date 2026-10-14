@@ -143,6 +143,21 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
   // confirmed loss (the finalize kinds the drains rebuild, the Salesforce
   // writeback), and the sightings export runs every two hours. The alert now
   // says which kinds were counted, and the fix starts from them.
+  // Review of #2082: the fix line pointed at "the kinds counted above" even when
+  // no kinds line was printed, on a standing reminder whose tallies had aged out
+  // and on tallies written before the per-kind count existed.
+  it.each([
+    ['a standing reminder whose tallies aged out', { 'outcome-deadletter-buildnow-tripped': '2026-10-01T13:00:00.000Z' }],
+    ['a tally written before kinds were counted', { [`outcome-deadletter-daily:${utcDay(NOW)}`]: JSON.stringify({ total: 1, unrecoverable: 1 }) }],
+  ])('does not point at a kinds line it did not print: %s', async (_case, seed) => {
+    const kv = fakeKv(seed as Record<string, string>)
+    expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW)).toBe(true)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])
+    expect(text).not.toContain('Counted by kind')
+    expect(text).not.toContain('counted above')
+    expect(text).toContain('Upgrade path')
+  })
+
   it('names the kinds of dead letter that were counted, and no stale schedule', async () => {
     const kv = fakeKv()
     await recordDeadLetterVolume(kv, 'lead_sightings.insert', NOW)

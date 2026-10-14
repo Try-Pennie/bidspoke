@@ -224,7 +224,12 @@ function buildBlocks(verdict: BuildNowVerdict, appUrl: string): unknown[] {
         // Starts from what was counted rather than prescribing the finalize move
         // whatever it was (#835): the finalize kinds are already rebuilt by the
         // strand drains, and the inserts are the rows nothing rebuilds.
-        text: 'The build goes behind the writeOutcome seam (one file), and starts from the kinds counted above: lead_sightings.insert and lead_sighting_bids.insert are rows no drain can rebuild, while the finalize kinds are rebuilt by the strand drains. See the "Upgrade path" in docs/adr/0002-observability-vs-outcome-write-tiers.md, then flip DURABLE_STORE_BUILT to stop this reminder.',
+        // "The kinds counted above" only when that line was printed: a standing
+        // reminder whose tallies aged out, or tallies from before the per-kind
+        // count, print none (review of #2082).
+        text:
+          `The build goes behind the writeOutcome seam (one file)${kinds ? ', and starts from the kinds counted above' : ''}: ` +
+          'lead_sightings.insert and lead_sighting_bids.insert are rows no drain can rebuild, while the finalize kinds are rebuilt by the strand drains. See the "Upgrade path" in docs/adr/0002-observability-vs-outcome-write-tiers.md, then flip DURABLE_STORE_BUILT to stop this reminder.',
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard>` } },
