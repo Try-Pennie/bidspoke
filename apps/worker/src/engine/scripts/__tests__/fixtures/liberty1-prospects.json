@@ -1,5 +1,5 @@
 {
-  "_note": "Invented Prospect__c records for the Liberty1 click scripts (#1545). No value here belongs to a real person: names are placeholders, SSNs start 000 (never issued), phones use 555-01xx, IPs are the 203.0.113.0/24 documentation range and emails are example.com. Field names are the ones Brian's flow selects plus the two offer fields, checked against the org's FieldDefinition on 2026-09-24.",
+  "_note": "Invented Prospect__c records for the Liberty1 click scripts (#1545). No value here belongs to a real person: names are placeholders, SSNs start 000 (never issued), phones use 555-01xx, IPs are the 203.0.113.0/24 documentation range and emails are example.com. Field names are the ones Brian's flow selects plus the two offer fields, checked against the org's FieldDefinition on 2026-09-24. EngineDebt__c (#2110) checked against the org on 2026-10-14.",
   "records": {
     "dv1_state_plain": {
       "Id": "a0P5f00000TestA1AA",
@@ -28,7 +28,8 @@
       "TCPAConsentFlag__c": true,
       "User_IP__c": "203.0.113.7",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 34500
     },
     "di4_state_apt_bare": {
       "Id": "a0P5f00000TestB",
@@ -57,7 +58,8 @@
       "TCPAConsentFlag__c": true,
       "User_IP__c": "203.0.113.22",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 28750.42
     },
     "apt_with_suite_prefix": {
       "Id": "a0P5f00000TestC3AA",
@@ -86,7 +88,8 @@
       "TCPAConsentFlag__c": false,
       "User_IP__c": "203.0.113.40",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 59902
     },
     "apt_with_hash": {
       "Id": "a0P5f00000TestD4AA",
@@ -115,7 +118,8 @@
       "TCPAConsentFlag__c": true,
       "User_IP__c": "203.0.113.41",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 20000
     },
     "eleven_digit_phone_dv1": {
       "Id": "a0P5f00000TestE5AA",
@@ -144,7 +148,8 @@
       "TCPAConsentFlag__c": true,
       "User_IP__c": "203.0.113.55",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 45120.5
     },
     "lowercase_dv1_state": {
       "Id": "a0P5f00000TestF6AA",
@@ -173,7 +178,8 @@
       "TCPAConsentFlag__c": true,
       "User_IP__c": "203.0.113.66",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": 31000
     },
     "missing_optionals": {
       "Id": "a0P5f00000TestG7AA",
@@ -200,7 +206,8 @@
       "FCRAConsentFlag__c": null,
       "TCPAConsentFlag__c": "true",
       "ExternalRoutingCode__c": 4,
-      "ExternalExchangeStatus__c": "Bid"
+      "ExternalExchangeStatus__c": "Bid",
+      "EngineDebt__c": null
     }
   }
 }

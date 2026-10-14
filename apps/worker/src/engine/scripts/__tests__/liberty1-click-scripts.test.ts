@@ -11,7 +11,9 @@
  * submissionAsProspect then buildPayload built (2026-09-29), with one
  * deliberate difference: consentsToTcpa is true on every click, because the
  * button the person pressed sits under Liberty1's own TCPA disclosure (Dan,
- * 2026-09-29), where his flow copied the earlier form's flag. pick_click_record
+ * 2026-09-29), where his flow copied the earlier form's flag. And one field his
+ * flow never sent: debtAmount, the lead's Engine Debt (#2110), which Liberty1
+ * asked for to route the client to the right agents. pick_click_record
  * decides which record a click is for and whether it may be sent. liberty1_click_patch must write his three Salesforce bodies, with
  * Completed only when buyer_click_send routed `sent` and Fail only on
  * `refused`, and nothing at all on any other route. resolve_click_input picks
@@ -77,8 +79,15 @@ function routeFor(state: unknown): { name: string; url: string } {
   return { name: picked.route.name, url: picked.route.url }
 }
 
-/** His body with the one field the port sets differently: the click is the TCPA consent. */
-const clicked = <T extends Rec>(body: T): T => ({ ...body, consentsToTcpa: true })
+/** A debt figure as the port sends it: Salesforce's number, or null when the record has none. */
+const debtOf = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v))
+
+/**
+ * His body with the two fields the port sets itself: the click is the TCPA
+ * consent, and the record's Engine Debt goes as debtAmount (#2110), which his
+ * flow never sent.
+ */
+const clicked = <T extends Rec>(body: T, engineDebt: unknown): T & { debtAmount: number | null } => ({ ...body, consentsToTcpa: true, debtAmount: debtOf(engineDebt) })
 
 describe("build_liberty1_request against Brian's buildPayload", () => {
   it('a click tells Liberty1 the person consented to TCPA, even when the earlier form\'s flag was false', async () => {
@@ -92,10 +101,25 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     for (const record of Object.values(RECORDS)) expect((await build(record)).body.consentsToTcpa).toBe(true)
   })
 
+  // #2110: Liberty1 asked for the debt amount to route the client to the right
+  // agents (Todd, 2026-10-14). Dan chose Engine Debt, the figure the profile's
+  // 20,000 minimum judged and Liberty1 revenue is priced on.
+  it("sends the lead's Engine Debt as debtAmount, a number, and null (never 0) when the prospect has none", async () => {
+    expect(buildPayload(RECORDS.dv1_state_plain)).not.toHaveProperty('debtAmount')
+    expect((await build(RECORDS.dv1_state_plain)).body.debtAmount).toBe(34500)
+    expect((await build(RECORDS.di4_state_apt_bare)).body.debtAmount).toBe(28750.42)
+    expect((await build(RECORDS.missing_optionals)).body.debtAmount).toBeNull()
+  })
+
+  it("a Submission with no Prospect sends the Submission's own Engine Debt, and null when it has none", async () => {
+    expect((await build((await pick('submission', SUBMISSIONS.di4_lead_mobile)).record as Rec)).body.debtAmount).toBe(41250)
+    expect((await build((await pick('submission', SUBMISSIONS.dv1_home_phone_no_lead)).record as Rec)).body.debtAmount).toBeNull()
+  })
+
   for (const [name, record] of Object.entries(RECORDS)) {
     it(`${name}: the body is exactly what his flow sent, and its state takes the profile to his route`, async () => {
       const out = await build(record)
-      const theirs = clicked(buildPayload(record))
+      const theirs = clicked(buildPayload(record), record.EngineDebt__c)
       // Byte for byte: key order and every null included, as JSON on the wire.
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
       expect(routeFor(out.state)).toEqual({ name: pickRoute(theirs.state), url: CANVAS_ROUTES[pickRoute(theirs.state)] })
@@ -106,7 +130,7 @@ describe("build_liberty1_request against Brian's buildPayload", () => {
     it(`${name}: a Submission with no Prospect sends exactly what his flow sends from the Submission`, async () => {
       const picked = await pick('submission', row)
       const out = await build(picked.record as Rec)
-      const theirs = clicked(buildPayload(submissionAsProspect(row)))
+      const theirs = clicked(buildPayload(submissionAsProspect(row)), row.EngineDebt__c)
       expect(JSON.stringify(out.body)).toBe(JSON.stringify(theirs))
       expect(routeFor(out.state).url).toBe(CANVAS_ROUTES[pickRoute(theirs.state)])
     })
@@ -296,7 +320,8 @@ describe('pick_click_record', () => {
   it('a Submission with no Prospect is TRUSTED (Dan, 2026-09-29): open with no offer mark, keyed on the submission, no prospect to write', async () => {
     const out = await pick('submission', SUB)
     expect(out).toMatchObject({ verdict: 'open', offer: 'trusted', prospect_id: null, submission_id: SUB.Id, lead_id: SUB.Lead__c, sale_key: SUB.Id })
-    expect(out.record).toEqual(submissionAsProspect(SUB))
+    // His mapping, plus the Submission's Engine Debt for debtAmount (#2110).
+    expect(out.record).toEqual({ ...submissionAsProspect(SUB), EngineDebt__c: SUB.EngineDebt__c })
   })
 
   it('a trusted Submission already sold to Liberty1 (routing code 4, Completed) is completed, so a repeat click is never sent', async () => {
@@ -337,7 +362,7 @@ describe('resolve_click_input', () => {
     const r = await resolve({ Prospect__c: PROSPECT_18 })
     expect(r).toMatchObject({ valid: true, reason: null, source: 'prospect', prospect_id: PROSPECT_18, submission_id: null })
     expect(r.soql).toMatch(new RegExp(`FROM Prospect__c WHERE Id = '${PROSPECT_18}'$`))
-    for (const f of ['SocialSecurityNumber__c', 'User_IP__c', 'ExternalRoutingCode__c', 'ExternalExchangeStatus__c']) expect(r.soql).toContain(f)
+    for (const f of ['SocialSecurityNumber__c', 'User_IP__c', 'ExternalRoutingCode__c', 'ExternalExchangeStatus__c', 'EngineDebt__c']) expect(r.soql).toContain(f)
   })
 
   it("a valid Submission__c queries the submission itself: Brian's submission fields, its offer fields, and every prospect field through Prospect__r", async () => {
@@ -346,7 +371,7 @@ describe('resolve_click_input', () => {
     expect(r.soql).toMatch(new RegExp(`^SELECT .* FROM Submission__c WHERE Id = '${SUBMISSION_15}'$`))
     const selected = String(r.soql).replace(/^SELECT /, '').replace(/ FROM .*$/, '').split(', ')
     for (const f of SUBMISSION_FIELDS) expect(selected).toContain(f)
-    for (const f of ['External_Routing_Code__c', 'External_Exchange_Status__c', 'Prospect__r.Id', 'Prospect__r.State__c', 'Prospect__r.ExternalRoutingCode__c', 'Prospect__r.ExternalExchangeStatus__c', 'Prospect__r.TCPAConsentFlag__c']) expect(selected).toContain(f)
+    for (const f of ['External_Routing_Code__c', 'External_Exchange_Status__c', 'Prospect__r.Id', 'Prospect__r.State__c', 'Prospect__r.ExternalRoutingCode__c', 'Prospect__r.ExternalExchangeStatus__c', 'Prospect__r.TCPAConsentFlag__c', 'EngineDebt__c', 'Prospect__r.EngineDebt__c']) expect(selected).toContain(f)
     expect(new Set(selected).size).toBe(selected.length)
   })
 
