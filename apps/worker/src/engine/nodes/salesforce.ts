@@ -21,6 +21,7 @@ import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
+import { classifyHttpErrorWithBody } from '../error-classifier'
 import { shadowSalesforceStub } from '../shadow'
 import { shadowOf } from '../run-reality'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
@@ -70,29 +71,74 @@ const TOKEN_TTL_S = 3500
 /** The one KV key an organization's Salesforce token is cached under, read here and cleared on a 401 by every caller. */
 export const salesforceTokenCacheKey = (orgId: string): string => `sf-token-${orgId}`
 
-export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: string, clientId: string, clientSecret: string): Promise<string> {
+/** How long a token fetch may take before it gives up (#1389): under the 15 s a call itself gets. */
+export const SALESFORCE_TOKEN_TIMEOUT_MS = 10_000
+
+/**
+ * A token for the org's Salesforce, cached.
+ *
+ * Bounded like every other outbound call (#1389): its own deadline, and the
+ * step's signal when a step is waiting on it, so a hung token endpoint cannot
+ * hold a lead. A failure is judged by the shared HTML page rule (#694, #756): an
+ * HTML page means the request died at an edge, so it is retryable; any other
+ * refusal of the credentials is final.
+ */
+export async function getSalesforceToken(
+  env: Env,
+  orgId: string,
+  instanceUrl: string,
+  clientId: string,
+  clientSecret: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string> {
   const cacheKey = salesforceTokenCacheKey(orgId)
   const cached = await env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return cached
 
-  const res = await fetch(`${instanceUrl}/services/oauth2/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  })
+  const timeoutMs = opts.timeoutMs ?? SALESFORCE_TOKEN_TIMEOUT_MS
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  linkAbort(controller, opts.signal)
+  let res: Response
+  try {
+    res = await fetch(`${instanceUrl}/services/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+      signal: controller.signal,
+    })
+  } catch (e) {
+    // Unmarked, so the step classifier reads it as transient and retries.
+    if (controller.signal.aborted) {
+      throw new Error(
+        opts.signal?.aborted
+          ? 'Salesforce token fetch stopped: the step ran out of time'
+          : `Salesforce token fetch timed out after ${timeoutMs} ms`,
+      )
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (!res.ok) {
     const text = await res.text()
     // No execution context here, so a block page rides on the error (#1265). A token
     // endpoint is exactly the kind of host a firewall blocks first.
-    throw attachBlockSighting(
-      new Error(`Salesforce token fetch failed (${res.status}): ${text}`),
+    const err = attachBlockSighting(
+      new Error(summarizeHtmlErrorBody(`Salesforce token fetch failed (${res.status}): ${text}`)),
       sightingFromResponse(`${instanceUrl}/services/oauth2/token`, res.status, text, res.headers, 'salesforce:token'),
-    )
+    ) as Error & { status?: number; permanent?: boolean }
+    err.status = res.status
+    if (classifyHttpErrorWithBody(res.status, text) === 'permanent') err.permanent = true
+    else if (containsHtmlDocument(text)) {
+      console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=token target=${instanceUrl}`)
+    }
+    throw err
   }
 
   const data = await parseJson<{ access_token: string }>(res)
@@ -130,7 +176,7 @@ export async function executeSalesforceNode(
   }
 
   const tokenStart = Date.now()
-  const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret)
+  const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })
   const tokenMs = Date.now() - tokenStart
   const operation = config.operation ?? 'create'
   const object = config.object ?? ''
@@ -295,7 +341,7 @@ export async function executeSalesforceNode(
   if (res.status === 401) {
     await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
     console.log(`[salesforce] event=session_rejected_retry operation=${operation} target=${targetLabel} trace=${ctx.trigger.trace_id}`)
-    headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret)}`
+    headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })}`
     ;({ res, responseText, parsedBody } = await performSalesforceCall(bodyStr, callOpts))
   }
 
