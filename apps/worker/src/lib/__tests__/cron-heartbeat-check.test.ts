@@ -17,6 +17,7 @@ import {
   firstSeenKey,
   CRON_JOBS,
   cronJob,
+  ALL_CLEAR_MAX_ATTEMPTS,
 } from '../cron-heartbeat'
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
@@ -384,6 +385,24 @@ describe('the never finished all-clear says only what a completion shows (#2057 
     later.store.set(completedKey(archive().id), iso(NOW + 90_000))
     await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), later, NOW + 2 * 60_000)
     expect(vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls[0][2]).toMatchObject({ sameRun: false })
+  })
+
+  it('stops retrying an all-clear one org keeps refusing, logging who never got it', async () => {
+    const started = NOW - archive().maxRunMs - 5 * 60_000
+    const orgs = [{ organization_id: 'org-1' }, { organization_id: 'org-2' }]
+    const kv = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive().id)]: iso(started), [completedWatchKey(archive().id)]: iso(NOW - 24 * H) })
+    await paged(kv, orgs)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementation(async (_s, orgId) => orgId === 'org-1')
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    for (let i = 1; i <= ALL_CLEAR_MAX_ATTEMPTS + 3; i++) {
+      await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + i * 60_000)
+    }
+    const toOrg2 = vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls.filter((c) => c[1] === 'org-2')
+    expect(toOrg2).toHaveLength(ALL_CLEAR_MAX_ATTEMPTS)
+    expect(errors.mock.calls.map((c) => c.join(' ')).join('\n')).toMatch(/all-clear.*org-2/)
+    errors.mockRestore()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementation(async () => true)
   })
 
   it('retries the all-clear only to the org that did not get it', async () => {

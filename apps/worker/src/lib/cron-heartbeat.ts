@@ -255,6 +255,13 @@ export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
 /** The status a standing incident was first paged with, and when (#2057). */
 export const alertedStatusKey = (id: string) => `cron-heartbeat:${id}:alerted-status`
 
+/**
+ * Tries an all-clear gets before it stands down without some org (#2057 review).
+ * A Slack connection that keeps refusing (a revoked token, a missing channel)
+ * must not hold the incident open for ever, posting again to everyone else.
+ */
+export const ALL_CLEAR_MAX_ATTEMPTS = 10
+
 interface AlertedStatus {
   status: HeartbeatStatus
   /** When it was paged. */
@@ -265,6 +272,8 @@ interface AlertedStatus {
   since: string | null
   /** Orgs that already have the all-clear, so a retry reaches only the rest. */
   deliveredTo: string[]
+  /** All-clear rounds tried so far. */
+  attempts: number
 }
 
 function parseAlertedStatus(raw: string | null): AlertedStatus | null {
@@ -278,6 +287,7 @@ function parseAlertedStatus(raw: string | null): AlertedStatus | null {
       startedAt: typeof v.startedAt === 'string' ? v.startedAt : null,
       since: typeof v.since === 'string' ? v.since : null,
       deliveredTo: Array.isArray(v.deliveredTo) ? v.deliveredTo.filter((x): x is string => typeof x === 'string') : [],
+      attempts: typeof v.attempts === 'number' && Number.isFinite(v.attempts) ? v.attempts : 0,
     }
   } catch {
     return null
@@ -478,9 +488,16 @@ async function checkJob(
           )
           if (sent) reported.deliveredTo.push(orgId)
         }
-        if (orgIds.some((o) => !reported.deliveredTo.includes(o))) {
-          await kv.put(alertedStatusKey(job.id), JSON.stringify(reported))
-          return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+        reported.attempts += 1
+        const missed = orgIds.filter((o) => !reported.deliveredTo.includes(o))
+        if (missed.length > 0) {
+          if (reported.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
+            await kv.put(alertedStatusKey(job.id), JSON.stringify(reported))
+            return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+          }
+          console.error(
+            `[cron-heartbeat] ${job.id}: standing down without the all-clear for ${missed.join(', ')} after ${reported.attempts} tries; Slack refused it each time`,
+          )
         }
       }
       await clearCondition(kv, key)
@@ -527,7 +544,7 @@ async function checkJob(
     // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
     if (reminderOf === null) {
       const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
-      const record: AlertedStatus = { status, at: new Date(nowMs).toISOString(), startedAt: lastRan, since, deliveredTo: [] }
+      const record: AlertedStatus = { status, at: new Date(nowMs).toISOString(), startedAt: lastRan, since, deliveredTo: [], attempts: 0 }
       await kv.put(alertedStatusKey(job.id), JSON.stringify(record))
     }
   }
