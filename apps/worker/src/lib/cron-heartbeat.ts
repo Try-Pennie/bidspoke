@@ -300,15 +300,19 @@ export interface HeartbeatVerdict {
  * Pure freshness decision.
  * - started present and strictly older than staleMs: stale (the trigger stopped
  *   firing; that remedy takes precedence over anything about the last run).
- * - started present, no completion at or after it, the run is past its
- *   allowance, and it started at or after completions were being watched for:
- *   vanished (the run was killed or is hung).
+ * - for a minute job (completionDroughtMs set, #2057): vanished when no run has
+ *   completed for the whole drought, measured from the last completion or from
+ *   when completions began being watched, and that watch is itself older than
+ *   the drought. Its age is then how long nothing has finished.
+ * - otherwise, started present, no completion at or after it, the run is past
+ *   its allowance, and it started at or after completions were being watched
+ *   for: vanished (the run was killed or is hung).
  * - started present otherwise: healthy (completed, still inside its allowance,
  *   or begun before anything could have recorded its completion).
  * - started absent: never_ran if it was first seen longer ago than staleMs,
  *   otherwise pending (fresh deploy grace, or nothing recorded yet).
- * The completion and allowance arguments are optional so the four-argument form
- * keeps its meaning for callers that have no completed stamp.
+ * The completion, allowance, watch and drought arguments are optional so the
+ * four-argument form keeps its meaning for callers that have no completed stamp.
  */
 export function evaluateHeartbeat(
   lastRan: string | null,
