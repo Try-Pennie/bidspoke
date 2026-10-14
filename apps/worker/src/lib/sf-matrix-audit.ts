@@ -20,6 +20,7 @@ import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { getSlackConnection, postMessage } from './slack'
 import { parseJson } from './json'
+import { formatErr } from './format-error'
 import { fetchAllPaged } from './paginate'
 import { fetchPartnerFlags, type PartnerFlag } from './bid-range-flags'
 import { buildMatrixAuditMessage, type MatrixAuditAlert, type MatrixCellChange } from './matrix-audit-message'
@@ -79,6 +80,36 @@ export interface AuditResult {
   /** The snapshot was rebuilt without comparing (empty, or the partner list changed). */
   baseline: boolean
   alerted: boolean
+  /** Rows in the saved copy, carried on an empty read so its alert can say how big the matrix was (#835). */
+  snapshot_rows?: number
+}
+
+/**
+ * The audit's steps that touch our own database rather than Salesforce.
+ * `baseline_write` is the save that rebuilds an untrustworthy copy, which runs
+ * BEFORE anything is reported; `snapshot_write` is the save after a comparison,
+ * which runs after its alert. Their alerts say different things (review of #2082).
+ */
+export type MatrixAuditStep = 'snapshot_read' | 'baseline_write' | 'snapshot_write'
+
+/**
+ * A failure in one of the audit's own database steps, named so its alert can
+ * say which system refused (#835). Everything else the audit throws comes from
+ * reading the matrix or its credentials.
+ */
+export class MatrixAuditStepError extends Error {
+  constructor(readonly step: MatrixAuditStep, cause: unknown) {
+    super(formatErr(cause))
+    this.name = 'MatrixAuditStepError'
+  }
+}
+
+async function inStep<T>(step: MatrixAuditStep, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (err) {
+    throw new MatrixAuditStepError(step, err)
+  }
 }
 
 export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promise<AuditResult> {
@@ -99,20 +130,20 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
     token,
     `SELECT ${rowFields(flags)} FROM BidRangeRow__c ORDER BY RowId__c, RangeLow__c, Id`,
   )
-  const existing = await readSnapshot(supabase)
+  const existing = await inStep('snapshot_read', () => readSnapshot(supabase))
   const matrixUrl = deriveBidMatrixListUrl(instanceUrl)
 
   // An empty read is a failed read (the matrix holds about 1,500 rows): compare
   // nothing and rebuild nothing, and let the matrix audit watcher alert on it.
   if (sfRows.length === 0) {
-    return { rows_fetched: 0, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false }
+    return { rows_fetched: 0, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false, snapshot_rows: existing.length }
   }
 
   const decision = decideBaseline(existing, flags)
   if (decision.baseline) {
     // Nothing trustworthy to compare against, so record what is there now and
     // say so once, rather than reporting every row as an edit made this hour.
-    await writeSnapshot(supabase, existing, sfRows, flags, startedAt)
+    await inStep('baseline_write', () => writeSnapshot(supabase, existing, sfRows, flags, startedAt))
     await notifyBaseline(supabase, decision, sfRows.length, matrixUrl)
     return { rows_fetched: sfRows.length, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: true, alerted: false }
   }
@@ -154,7 +185,7 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   // Advance the snapshot only when there's nothing pending to alert, or the
   // alert was delivered.
   if (changes.length === 0 || delivered) {
-    if (sfRows.length > 0) await writeSnapshot(supabase, existing, sfRows, flags, startedAt)
+    if (sfRows.length > 0) await inStep('snapshot_write', () => writeSnapshot(supabase, existing, sfRows, flags, startedAt))
   }
 
   return result

@@ -579,7 +579,9 @@ export function describeSelfCheck(selfCheck: SelfCheckResult): string {
   const conclusion = selfCheck.error
     ? 'The worker may be unreachable. Investigate Cloudflare (DNS, route, TLS) first.'
     : !selfCheck.database.ok
-      ? 'The worker is up but cannot read the database, so it has been refusing leads. Investigate Supabase first.'
+      // Not "so it has been refusing leads": since #1845 a failed read serves a
+      // stored copy, and this probe never measured whether a lead was refused (#835).
+      ? 'The worker is up but its database read failed. Investigate Supabase first.'
       : !selfCheck.ok
         ? 'Investigate worker health.'
         : 'Both ends we control answer now. The missing runs either did not arrive or arrived while one of them was down; check the caller and any database alert above.'

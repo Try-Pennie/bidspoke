@@ -126,8 +126,8 @@ describe('buildFixHint', () => {
     expect(lines).toHaveLength(2) // db_congestion + transient_snowflake, deduped
   })
 
-  it('keeps the generic line when nothing is recognised', () => {
-    expect(buildFixHint(['bids export: something nobody has seen before'])).toBe(GENERIC_FIX_HINT)
+  it('keeps the generic line when nothing is recognised and no step is named', () => {
+    expect(buildFixHint(['something nobody has seen before'])).toBe(GENERIC_FIX_HINT)
   })
 
   it('appends the generic line alongside a known class when an unknown error is also present', () => {
@@ -277,5 +277,77 @@ describe('a slow buyer ledger read (2026-10-04, retired by #1895)', () => {
   ])('pages %s on the first occurrence', (line) => {
     expect(classifyExportError(line)).toBe('unknown')
     expect(isTransientExportError(line)).toBe(false)
+  })
+})
+
+// #835: the fix line must name what the failing step actually touches. The export
+// jobs prefix every error with the step it came from, and those steps touch
+// different systems: the trades backfill and the sandbox purge only Supabase, the
+// enrollment view Salesforce, the three exports Supabase and Snowflake. An error
+// none of the rules recognises used to get "Check Snowflake availability" whatever
+// the step was.
+describe('the fix line names the system the failing step touches (#835)', () => {
+  it('does not send an unrecognised Supabase only failure to Snowflake', () => {
+    for (const msg of ['trades backfill: something nobody has seen before', 'sandbox purge: something nobody has seen before']) {
+      const hint = buildFixHint([msg])
+      expect(hint).toContain('Supabase')
+      expect(hint).not.toContain('Snowflake availability')
+      expect(hint).not.toMatch(/came from Snowflake/)
+    }
+  })
+
+  it('says an unrecognised export failure could be either side of the copy, and that unstamped rows are sent again', () => {
+    const hint = buildFixHint(['bids export: something nobody has seen before'])
+    expect(hint).toContain('Supabase')
+    expect(hint).toContain('Snowflake')
+    expect(hint).toMatch(/next run/)
+    expect(hint).not.toContain('Snowflake availability')
+  })
+
+  it('names Salesforce for the enrollment view, and never promises its leads a retry', () => {
+    for (const msg of [
+      'enrollment view backfill: Salesforce query failed (400): <html>bad request</html>',
+      // Transient classes: their own line says the rows come back next run, which
+      // is false here, because a lead exported without the view never gets it.
+      'enrollment view backfill: canceling statement due to statement timeout (57014)',
+      'enrollment view backfill: error code: 522',
+    ]) {
+      const hint = buildFixHint([msg])
+      expect(hint).toContain('Salesforce')
+      expect(hint).toMatch(/never filled in later/)
+      expect(hint).not.toMatch(/retry on the next run|picked up automatically on the next run|export on the next run/)
+      expect(hint).not.toContain('Snowflake availability')
+    }
+  })
+
+  // #2086: the grace holds a first transient failure because the next run retries
+  // it. The enrollment view's leads are never retried, so holding the error a run
+  // costs that day's leads their view with nobody told.
+  it.each([
+    ['enrollment view backfill: canceling statement due to statement timeout (57014)'],
+    ['enrollment view backfill: error code: 522'],
+  ])('does not hold an enrollment view error as a passing blip: %s', (msg) => {
+    expect(isTransientExportError(msg)).toBe(false)
+  })
+
+  it('still holds the same class from a step that does retry', () => {
+    expect(isTransientExportError('evaluations export: error code: 522')).toBe(true)
+  })
+
+  it('keeps the transient line for the same class in a step that does retry', () => {
+    // Negative control: the phase rule must not swallow the class rule elsewhere.
+    expect(buildFixHint(['evaluations export: canceling statement due to statement timeout (57014)'])).toMatch(/retry on the next run/)
+  })
+
+  it('reads the error rather than guessing a system when no step is named', () => {
+    // A crash the job's own catch reports carries no step prefix.
+    expect(GENERIC_FIX_HINT).not.toContain('Snowflake')
+    expect(buildFixHint(['could not query the database for the schema cache (PGRST002)'])).toBe(GENERIC_FIX_HINT)
+  })
+
+  it('does not name RLS for a Supabase permission denial, which the service role bypasses', () => {
+    const hint = buildFixHint(['sandbox purge: permission denied for table achieve_evaluations (42501)'])
+    expect(hint).toContain('grant')
+    expect(hint).not.toMatch(/RLS/)
   })
 })

@@ -47,36 +47,81 @@ import type { Env } from '../index'
 
 export const EXPORT_SCHEMA_JOB = 'export-schema-drift'
 
+/**
+ * The consequence claims only what the comparison measured (#835). It used to
+ * say no export had failed yet, which this check never reads, that the next
+ * export would fail every run, when a NOT NULL refusal sets the row aside
+ * instead (#427), and it called the exports nightly, when the sightings export
+ * runs every two hours.
+ */
 export const EXPORT_SCHEMA_REMEDY: AlertRemedy = {
   consequence:
-    'A Snowflake table the nightly exports write to no longer accepts what the export sends, or its ' +
-    'columns could not be read. No export has failed because of this yet, but the next one that meets ' +
-    'the mismatch will, and it will keep failing every run until one side changes:',
+    'A Snowflake table the exports write to no longer matches what its export sends, so a row that ' +
+    'carries one of these columns can be refused by Snowflake or stored differently from how Supabase holds it:',
   fixHint:
     'For each column listed, decide which side is right. Usually Snowflake is altered to match (ALTER ' +
     'TABLE ... ADD COLUMN, ALTER COLUMN ... DROP NOT NULL); otherwise change the column list in ' +
     'apps/worker/src/lib/sightings-export.ts or achieve-export.ts. Record the change in ' +
-    'docs/snowflake-setup.sql. If the columns could not be read, check the export credentials and that ' +
-    'Snowflake was reachable. This check runs again at 13:00 UTC.',
+    'docs/snowflake-setup.sql. This check runs again at 13:00 UTC.',
   headlineVerb: 'found a Snowflake table that disagrees with its export',
   itemNoun: { one: 'column', many: 'columns' },
+}
+
+/** Why the columns could not be read, each with its own repair (#835). */
+export type SchemaUnreadableKind =
+  | 'no_schema'
+  | 'unreachable'
+  | 'timed_out'
+  | 'unreadable_shape'
+  | 'none_visible'
+  | 'table_not_visible'
+
+/**
+ * One repair per cause. "Check Snowflake was reachable and the credentials"
+ * used to be the repair for all of them, including the causes where Snowflake
+ * answered perfectly well (#835).
+ */
+export const EXPORT_SCHEMA_UNREADABLE_FIXES: Readonly<Record<SchemaUnreadableKind, string>> = {
+  no_schema:
+    'Set the schema the exports write to with `wrangler secret put SNOWFLAKE_SCHEMA --name bidspoke-worker`.',
+  unreachable:
+    'Check that the export credentials (SNOWFLAKE_*) are set and valid and that Snowflake is up. If the ' +
+    'exports ran normally since, this was a passing outage, and the check runs again at 13:00 UTC.',
+  timed_out:
+    'Snowflake answered too slowly. If the exports ran normally since, this was a passing slowdown, and the ' +
+    'check runs again at 13:00 UTC.',
+  unreadable_shape:
+    'Snowflake answered, in a shape this check cannot read, so the reader in ' +
+    'apps/worker/src/lib/export-schema-check.ts needs updating to match the answer.',
+  none_visible:
+    "Snowflake answered with no columns for any exported table: confirm SNOWFLAKE_SCHEMA names the schema " +
+    "the exports write to, and that the export's role can see its tables.",
+  table_not_visible:
+    "For a table Snowflake returned no columns for, create it from docs/snowflake-setup.sql or grant the " +
+    "export's role access to it.",
 }
 
 /**
  * When the columns could not be read at all. Its own wording, because a header
  * saying a table disagrees with its export would be a claim the check never
- * measured (L11).
+ * measured (L11). The fix line here is the commonest cause's; a run replaces it
+ * with the fixes for the causes it actually met.
  */
 export const EXPORT_SCHEMA_UNREADABLE_REMEDY: AlertRemedy = {
   consequence:
     'The daily comparison of the Snowflake export tables against the columns the exports send could not ' +
     'read those tables, so whether they still agree is unknown:',
-  fixHint:
-    'Check that Snowflake was reachable and that the export credentials (SNOWFLAKE_*) are set and valid. ' +
-    'If the exports ran normally today, this was most likely a passing outage and the check runs again at ' +
-    '13:00 UTC.',
+  fixHint: EXPORT_SCHEMA_UNREADABLE_FIXES.unreachable,
   headlineVerb: 'could not read the Snowflake export tables',
   itemNoun: { one: 'reason', many: 'reasons' },
+}
+
+/** The remedy for one run: drift wording when anything disagreed, and a fix for every unreadable cause met. */
+export function exportSchemaRemedy(drift: boolean, unreadable: readonly SchemaUnreadableKind[]): AlertRemedy {
+  const base = drift ? EXPORT_SCHEMA_REMEDY : EXPORT_SCHEMA_UNREADABLE_REMEDY
+  const fixes = [...new Set(unreadable)].map((k) => EXPORT_SCHEMA_UNREADABLE_FIXES[k])
+  if (fixes.length === 0) return base
+  return { ...base, fixHint: (drift ? [EXPORT_SCHEMA_REMEDY.fixHint, ...fixes] : fixes).join(' ') }
 }
 
 /** Total time this check may wait on Snowflake, so a slow morning cannot hold the daily batch open. */
@@ -257,9 +302,9 @@ function columnIndex(response: SnowflakeStatementResponse, name: string): number
 async function readColumns(
   env: Env,
   deps: ExportSchemaDeps,
-): Promise<{ columns: ObservedColumn[] } | { reason: string }> {
+): Promise<{ columns: ObservedColumn[] } | { reason: string; kind: SchemaUnreadableKind }> {
   const config = readSnowflakeConfig(env)
-  if (!config.schema) return { reason: 'no Snowflake schema is configured (SNOWFLAKE_SCHEMA)' }
+  if (!config.schema) return { reason: 'no Snowflake schema is configured (SNOWFLAKE_SCHEMA)', kind: 'no_schema' }
 
   const query = deps.query ?? ((statement: string) => executeStatement(config, statement))
   const deadlineMs = deps.deadlineMs ?? EXPORT_SCHEMA_DEADLINE_MS
@@ -275,11 +320,11 @@ async function readColumns(
   try {
     const raced = await withDeadline(deadlineMs, () => query(statement), { sleep: deps.sleep })
     if (raced.timedOut) {
-      return { reason: `Snowflake did not answer inside the ${Math.round(deadlineMs / 1000)} second budget` }
+      return { reason: `Snowflake did not answer inside the ${Math.round(deadlineMs / 1000)} second budget`, kind: 'timed_out' }
     }
     response = raced.value
   } catch (err) {
-    return { reason: `Snowflake refused or could not be reached: ${formatErr(err)}` }
+    return { reason: `Snowflake refused or could not be reached: ${formatErr(err)}`, kind: 'unreachable' }
   }
 
   const at = {
@@ -293,12 +338,12 @@ async function readColumns(
     .filter(([, i]) => i < 0)
     .map(([k]) => k)
   if (missing.length > 0) {
-    return { reason: `Snowflake answered in a shape without the expected columns (${missing.join(', ')})` }
+    return { reason: `Snowflake answered in a shape without the expected columns (${missing.join(', ')})`, kind: 'unreadable_shape' }
   }
 
   const rows = response.data ?? []
   if (rows.length === 0) {
-    return { reason: "Snowflake returned no columns for any exported table, so the export's identity cannot see them" }
+    return { reason: "Snowflake returned no columns for any exported table, so the export's identity cannot see them", kind: 'none_visible' }
   }
 
   const columns: ObservedColumn[] = []
@@ -308,7 +353,7 @@ async function readColumns(
     const dataType = r[at.dataType]
     const nullable = r[at.nullable]
     if (typeof table !== 'string' || typeof name !== 'string' || typeof dataType !== 'string') {
-      return { reason: 'Snowflake returned a column row this could not read' }
+      return { reason: 'Snowflake returned a column row this could not read', kind: 'unreadable_shape' }
     }
     columns.push({
       table,
@@ -331,7 +376,10 @@ async function schemaPass(env: Env, supabase: SupabaseClient, deps: ExportSchema
   const messages = [...unreadable, ...findings]
   // Findings take the drift wording even beside an unreadable table: something
   // was measured to disagree, and the unreadable lines say which table was not.
-  const remedy = findings.length > 0 ? EXPORT_SCHEMA_REMEDY : EXPORT_SCHEMA_UNREADABLE_REMEDY
+  // Each unreadable cause brings its own fix (#835).
+  const kinds: SchemaUnreadableKind[] =
+    'reason' in read ? [read.kind] : unreadable.length > 0 ? ['table_not_visible'] : []
+  const remedy = exportSchemaRemedy(findings.length > 0, kinds)
   await notifyExportFailure(supabase, EXPORT_SCHEMA_JOB, messages, env.IDEMPOTENCY, remedy)
   console.log(`[export-schema] findings=${findings.length} unreadable=${unreadable.length}`)
   return { findings, unreadable, alerted: messages.length > 0 }

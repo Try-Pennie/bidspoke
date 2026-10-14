@@ -43,9 +43,50 @@ describe('runMatrixAudit', () => {
 
     const result = await runMatrixAudit({} as Env, client)
 
-    expect(result).toEqual({ rows_fetched: 0, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false })
+    expect(result).toEqual({ rows_fetched: 0, rows_added: 0, rows_edited: 0, rows_removed: 0, matrices_changed: 0, baseline: false, alerted: false, snapshot_rows: 0 })
     expect(writes).toEqual([])
     expect(tables).not.toContain('service_connections')
     expect(fetchSpy.mock.calls.map((c) => String(c[0])).some((u) => u.includes('slack.com'))).toBe(false)
+  })
+})
+
+// #835: a failure in our own database was reported in Salesforce's words. Each
+// snapshot step now throws an error naming itself, so the alert can say which
+// system refused and whether an edit was already reported.
+describe('runMatrixAudit names the snapshot step that failed (#835)', () => {
+  function failingSupabase(failOn: 'select' | 'upsert') {
+    const chain = (op: string | null): unknown => new Proxy({}, {
+      get(_, prop) {
+        if (prop === 'then') {
+          const error = op === failOn ? { message: `${failOn} refused`, code: '42501' } : null
+          return (res: (v: unknown) => unknown) => Promise.resolve({ data: error ? null : [], error }).then(res)
+        }
+        const next = ['select', 'upsert', 'delete'].includes(String(prop)) ? String(prop) : op
+        return () => chain(next)
+      },
+    })
+    return { from: () => chain(null) } as unknown as SupabaseClient
+  }
+
+  function salesforce(records: unknown[]) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/sobjects/BidRangeRow__c/describe')) return new Response(JSON.stringify(BID_RANGE_ROW_DESCRIBE), { status: 200 })
+      if (url.includes('/query?q=')) return new Response(JSON.stringify({ records, done: true }), { status: 200 })
+      throw new Error(`unexpected request to ${url}`)
+    })
+  }
+
+  it('a snapshot read failure is the snapshot_read step', async () => {
+    salesforce([])
+    await expect(runMatrixAudit({} as Env, failingSupabase('select'))).rejects.toMatchObject({ step: 'snapshot_read' })
+  })
+
+  // The save that REBUILDS an untrustworthy copy runs before anything is reported,
+  // unlike the save after a comparison, which runs after its alert. They are two
+  // steps so the alert can say which (merge review of #2082).
+  it('a failed save while rebuilding an empty copy is the baseline_write step', async () => {
+    salesforce([{ Id: 'a1', RowId__c: 1, RangeLow__c: 600, RangeHigh__c: 650, BidAmount__c: 10 }])
+    await expect(runMatrixAudit({} as Env, failingSupabase('upsert'))).rejects.toMatchObject({ step: 'baseline_write' })
   })
 })
