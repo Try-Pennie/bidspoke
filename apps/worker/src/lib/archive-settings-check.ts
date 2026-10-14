@@ -73,6 +73,8 @@ export const ARCHIVE_SETTINGS_REMEDY: AlertRemedy = {
  * and the fix carries one sentence per kind of difference present.
  */
 export function settingsRemedyFor(codes: readonly string[]): AlertRemedy {
+  // A clean run carries the declared remedy, not one built from nothing (#835).
+  if (codes.length === 0) return ARCHIVE_SETTINGS_REMEDY
   const has = (code: string) => codes.includes(code)
   const consequence =
     "The archive table's settings in Snowflake and the settings this repo declares disagree, or a setting " +

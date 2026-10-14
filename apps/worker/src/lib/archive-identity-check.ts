@@ -64,6 +64,8 @@ export const ARCHIVE_IDENTITY_REMEDY: AlertRemedy = {
  * appears only for the finding it fixes.
  */
 export function identityRemedyFor(findings: readonly IdentityFinding[]): AlertRemedy {
+  // No findings is the clear path, which carries the declared remedy (#835).
+  if (findings.length === 0) return ARCHIVE_IDENTITY_REMEDY
   const fixes: string[] = []
   if (findings.some((f) => f.code !== 'unreadable')) {
     fixes.push(
@@ -292,7 +294,7 @@ async function identityPass(
     ARCHIVE_IDENTITY_JOB,
     findings.map((f) => f.message),
     env.IDEMPOTENCY,
-    findings.length === 0 ? ARCHIVE_IDENTITY_REMEDY : identityRemedyFor(findings),
+    identityRemedyFor(findings),
   )
 
   console.log(

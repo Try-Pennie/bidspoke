@@ -17,7 +17,7 @@ vi.mock('../export-alerts', () => ({
   notifyExportRecovery: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { checkArchiveIdentities, ARCHIVE_IDENTITY_JOB, deleteProbeStatement } from '../archive-identity-check'
+import { checkArchiveIdentities, ARCHIVE_IDENTITY_JOB, ARCHIVE_IDENTITY_REMEDY, deleteProbeStatement, identityRemedyFor } from '../archive-identity-check'
 import { ARCHIVE_ROLES, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE, type ArchiveIdentity } from '../archive-snowflake'
 import { notifyExportFailure } from '../export-alerts'
 import { SnowflakeStatementError, type SnowflakeStatementResponse } from '../snowflake'
@@ -360,5 +360,13 @@ describe('the identity fix line is chosen from the findings', () => {
     await run({ reader: { privileges: ['SELECT', 'DELETE'], onDelete: 'allow' } }).result
     expect(fixSent()).toMatch(/Revoke DELETE/)
     expect(fixSent()).not.toMatch(/wrangler secret put/)
+  })
+})
+
+// Lessons review (#835): the chooser itself returns the declared remedy for no
+// findings, rather than relying on its one caller to guard it.
+describe('the identity chooser with no findings', () => {
+  it('returns the base remedy', () => {
+    expect(identityRemedyFor([])).toBe(ARCHIVE_IDENTITY_REMEDY)
   })
 })

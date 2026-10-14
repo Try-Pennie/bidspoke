@@ -25,6 +25,8 @@ vi.mock('../export-alerts', () => ({
 
 import {
   checkArchiveSettings,
+  settingsRemedyFor,
+  ARCHIVE_SETTINGS_REMEDY,
   ARCHIVE_SETTINGS_JOB,
   DECLARED_SNOWFLAKE_ACCOUNT,
   EXPECTED_EXTRA_COLUMNS,
@@ -459,5 +461,19 @@ describe('the settings remedy is chosen from what differed', () => {
     const remedy = remedySent()
     expect(remedy.fixHint).toMatch(/add/i)
     expect(remedy.consequence).not.toMatch(/undoing an accidental deletion is wrong/)
+  })
+})
+
+// Lessons review (#835): a clean run carries the declared remedy, never one
+// built from an empty list ("nothing is missing:" with only a re-run as the fix).
+describe('a clean settings run uses the declared remedy', () => {
+  it('returns the base remedy for no differences', () => {
+    expect(settingsRemedyFor([])).toBe(ARCHIVE_SETTINGS_REMEDY)
+  })
+
+  it('passes the base remedy on a clean run', async () => {
+    await run()
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_SETTINGS_JOB)
+    expect(call?.[4]).toBe(ARCHIVE_SETTINGS_REMEDY)
   })
 })

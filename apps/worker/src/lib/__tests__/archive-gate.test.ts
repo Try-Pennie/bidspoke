@@ -25,6 +25,8 @@ import {
   etClock,
   ARCHIVE_GATE_UNREADABLE_REMEDY,
   readLastPurge,
+  heldRemedy,
+  ARCHIVE_GATE_AT_RISK_REMEDY,
   type BeneathStatus,
   type PurgeRecord,
 } from '../archive-gate'
@@ -1197,5 +1199,11 @@ describe('the cleanup record is read per day (lessons review, #835)', () => {
       { day: '2026-08-02', limit: 1 },
     ])
     expect(records.get('2026-08-02')?.outcome).toBe('refused_unverified')
+  })
+})
+
+describe('the held day chooser with no days (lessons review, #835)', () => {
+  it('returns the base remedy', () => {
+    expect(heldRemedy([])).toBe(ARCHIVE_GATE_AT_RISK_REMEDY)
   })
 })
