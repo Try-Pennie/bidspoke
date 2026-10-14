@@ -15,6 +15,7 @@ import {
   atRiskKey,
   outcomeOfFailedWrite,
   startWatchSafely,
+  runWatched,
   AT_RISK_WRITE_PREFIX,
   AT_RISK_AFTER_MS,
   AT_RISK_WRITE_TTL_SECONDS,
@@ -191,5 +192,33 @@ describe('startWatchSafely', () => {
 
   it('has no watch to start on a run that sets none', () => {
     expect(startWatchSafely(undefined, 'patch_submission')).toBeNull()
+  })
+})
+
+describe('runWatched', () => {
+  const refusal = () => Object.assign(new Error('Salesforce API error (400)'), { permanent: true, status: 400 })
+
+  async function settledRecord(retriesBefore: number) {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    const done = runWatched(w, () => {}, async () => {
+      w.note(REQ)
+      await clock.delay(AT_RISK_AFTER_MS + 1)
+      throw refusal()
+    }, () => retriesBefore).catch(() => {})
+    await clock.run()
+    await done
+    return store.store.size
+  }
+
+  it('clears the record on a refusal at the first attempt', async () => {
+    expect(await settledRecord(0)).toBe(0)
+  })
+
+  // Only a transient failure is retried, so an earlier attempt may have landed:
+  // a later refusal cannot speak for it, and the record stays for the read-back.
+  it('keeps the record on a refusal after a retry, since an earlier attempt may have landed', async () => {
+    expect(await settledRecord(1)).toBe(1)
   })
 })

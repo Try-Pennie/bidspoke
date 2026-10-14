@@ -2232,6 +2232,7 @@ export async function walkGraph(
           retryStats,
           ctx.retrySleep
         ),
+        () => retryStats.retries,
       )
       retriesUsed = retryStats.retries
       output = result.output

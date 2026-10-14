@@ -118,6 +118,8 @@ export async function runWatched<T>(
   watch: AtRiskWatch | null,
   setNote: (note: AtRiskWatch['note'] | undefined) => void,
   work: () => Promise<T>,
+  /** How many times the step was retried. Only a transient failure is retried. */
+  retries: () => number,
 ): Promise<T> {
   if (!watch) return work()
   setNote(watch.note)
@@ -126,7 +128,10 @@ export async function runWatched<T>(
     await watch.settle('landed')
     return result
   } catch (e) {
-    await watch.settle(outcomeOfFailedWrite(e))
+    // A retry means an earlier attempt failed transiently and may have landed,
+    // so a later refusal cannot clear the record: it is unknown.
+    const outcome = outcomeOfFailedWrite(e)
+    await watch.settle(outcome === 'refused' && retries() > 0 ? 'unknown' : outcome)
     throw e
   } finally {
     setNote(undefined)
