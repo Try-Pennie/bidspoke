@@ -1178,10 +1178,13 @@ export async function sendFieldDeadAlert(
       text: {
         type: 'mrkdwn',
         text:
-          'This usually means the reference path is wrong or has gone obsolete, rather than ' +
-          'an upstream being down. Either correct the path or remove the reference. If an ' +
-          'upstream was down, no action is needed: this stands down by itself on the first day ' +
-          'the field resolves again.',
+          // A path whose key never appears has its own alert (#2018), so what is
+          // left here is a field that carried values and stopped: most often an
+          // upstream that is down or now answers in a different shape.
+          'The step still runs, but this field has stopped carrying values. Most often an upstream ' +
+          'is down or now answers in a different shape, so check the step\'s recent output first. ' +
+          'If the upstream comes back, no action is needed: this stands down by itself on the first ' +
+          'day the field resolves again.',
       },
     },
   ]

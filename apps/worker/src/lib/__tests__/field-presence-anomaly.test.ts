@@ -694,6 +694,16 @@ describe('the dead alert does not contradict its own numbers (#1336)', () => {
     expect(text.toLowerCase()).not.toContain('never carried a value')
   })
 
+  // Since #2018 a field whose key never appears goes to its own Path Not Found
+  // alert, so the dead tier holds fields that did carry values and stopped (the
+  // Scout case). Advice that the path is "usually" wrong would now point the
+  // reader at the least likely cause.
+  it('does not tell the reader the path is usually wrong, now that wrong paths have their own alert', async () => {
+    const text = (await render(7, 21254)).toLowerCase()
+    expect(text).not.toContain('usually means the reference path is wrong')
+    expect(text).toContain('upstream')
+  })
+
   it('states the ceiling and the recency it actually measured', async () => {
     const text = await render(7, 21254)
     // The claim the check can support: at or under the dead rate across the
