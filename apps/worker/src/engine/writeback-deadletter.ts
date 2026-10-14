@@ -27,12 +27,17 @@ import { encryptSecret, type SecretKeyInput } from '../lib/secret-crypto'
 import { formatErr } from '../lib/format-error'
 import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
+import { WRITEBACK_UNCAPTURABLE_LABEL } from './dead-letter-labels'
 
 /** The durable path's label for the store's insert. */
 export const WRITEBACK_STORE_LABEL = 'outcome_writeback_deadletters.insert'
 
-/** A Salesforce step's failure the store could not hold, counted and alerted on. */
-export const WRITEBACK_UNCAPTURABLE_LABEL = 'outcome_writeback_deadletters.uncapturable'
+/**
+ * A Salesforce step's failure the store could not hold, counted and alerted on.
+ * Declared in the leaf label module, so the alert copy can route on it without
+ * an import cycle (#835), and re-exported here for the callers that import it.
+ */
+export { WRITEBACK_UNCAPTURABLE_LABEL }
 
 /** The operations a replay can resend. Post-answer writes are updates today (#2015). */
 const REPLAYABLE_OPERATIONS = new Set(['update'])

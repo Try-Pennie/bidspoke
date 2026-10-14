@@ -56,13 +56,14 @@ describe('sendPgCronAlert: each status says a different thing', () => {
     expect(body).toContain('duplicate key')
   })
 
-  it('says the job has stopped running, and points at cron.job', async () => {
-    // The distinguishing detail: a job removed by a migration produces no failed
-    // runs, so the reader has to be told to look at whether it still exists.
+  it('says the job has stopped running, and points at its run history', async () => {
+    // A job removed from cron.job is not in the health read, and a disabled one
+    // is reported as inactive, so neither explains a stall (#835). What is left
+    // is a stuck run or a scheduler not starting it, both read in job_run_details.
     await send('stalled', 'last succeeded 50h ago')
     const body = JSON.stringify(lastPost())
     expect(body).toContain('has stopped running')
-    expect(body).toContain('cron.job')
+    expect(body).toContain('cron.job_run_details')
   })
 
   it('says the check cannot tell, rather than accusing the job', async () => {

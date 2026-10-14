@@ -169,7 +169,11 @@ describe('judgeJob: the check cannot judge this job', () => {
   it('reports an unreadable success timestamp rather than treating it as fresh', () => {
     // A value that fails to parse yields NaN, which compares false against every
     // threshold and would land on the healthy side with no error raised (L50).
-    expect(judgeJob(job({ last_success_at: 'not a timestamp' }), NOW, ctx()).status).toBe('unknown_schedule')
+    // Its own status (#835): the schedule read fine, so the unknown_schedule
+    // remedy, simplify the schedule, would send the reader to the wrong place.
+    const v = judgeJob(job({ last_success_at: 'not a timestamp' }), NOW, ctx())
+    expect(v.status).toBe('unreadable_success')
+    expect(v.detail).toContain('not a timestamp')
   })
 
   it('reports a failing job even when its schedule is unreadable', () => {
