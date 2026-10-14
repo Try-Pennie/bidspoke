@@ -14,6 +14,7 @@ import {
   startAtRiskWatch,
   atRiskKey,
   outcomeOfFailedWrite,
+  startWatchSafely,
   AT_RISK_WRITE_PREFIX,
   AT_RISK_AFTER_MS,
   AT_RISK_WRITE_TTL_SECONDS,
@@ -171,5 +172,24 @@ describe('outcomeOfFailedWrite', () => {
     expect(outcomeOfFailedWrite(new Error('Step timed out after 30000ms'))).toBe('unknown')
     expect(outcomeOfFailedWrite(Object.assign(new Error('x'), { permanent: true }))).toBe('unknown')
     expect(outcomeOfFailedWrite('aborted')).toBe('unknown')
+  })
+})
+
+describe('startWatchSafely', () => {
+  // The watch guards a write; it must never be what stops it.
+  it('runs the write unwatched when the watch cannot start, and says so', () => {
+    const errors: unknown[][] = []
+    const original = console.error
+    console.error = (...a: unknown[]) => { errors.push(a) }
+    try {
+      expect(startWatchSafely(() => { throw new Error('no key') }, 'patch_submission')).toBeNull()
+    } finally {
+      console.error = original
+    }
+    expect(errors.map((e) => e.join(' ')).join('\n')).toMatch(/patch_submission.*no key/s)
+  })
+
+  it('has no watch to start on a run that sets none', () => {
+    expect(startWatchSafely(undefined, 'patch_submission')).toBeNull()
   })
 })

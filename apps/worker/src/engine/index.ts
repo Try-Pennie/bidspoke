@@ -78,7 +78,7 @@ import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailabl
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
-import { startAtRiskWatch, runWatched } from './at-risk-writes'
+import { startAtRiskWatch, startWatchSafely, runWatched } from './at-risk-writes'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -2220,7 +2220,7 @@ export async function walkGraph(
       // loop, so one still out after 2 s is recorded however it ends (#2022).
       const atRisk =
         pendingResponse !== null && node.type === 'salesforce' && node.config.operation === 'update'
-          ? (ctx.startAtRiskWatch?.(node.namespace) ?? null)
+          ? startWatchSafely(ctx.startAtRiskWatch, node.namespace)
           : null
       const result = await runWatched(
         atRisk,

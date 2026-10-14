@@ -89,9 +89,30 @@ export function outcomeOfFailedWrite(err: unknown): WriteOutcome {
 }
 
 /**
+ * Starts a step's watch, or none: a watch that cannot start leaves the write
+ * running unwatched, said in the log, rather than failing a write it was only
+ * meant to guard.
+ */
+export function startWatchSafely(start: ((stepNamespace: string) => AtRiskWatch) | undefined, stepNamespace: string): AtRiskWatch | null {
+  if (!start) return null
+  try {
+    return start(stepNamespace)
+  } catch (e) {
+    console.error(`[at-risk-writes] could not start the watch on step ${stepNamespace}, so it runs unrecorded:`, formatErr(e))
+    return null
+  }
+}
+
+/**
  * Runs one post-answer Salesforce step under its watch: the node's request hook
  * points at the watch while the whole retry loop runs, and the outcome settles
  * it. With no watch the step simply runs.
+ *
+ * The hook is one slot on the run's context, which holds because only the
+ * walk's own sequential step loop runs watched steps: a parallel node's children
+ * run their own loop, unwatched, while the walk waits on them, so two watched
+ * steps never overlap. A post-answer update inside a parallel node is therefore
+ * NOT recorded; none is live.
  */
 export async function runWatched<T>(
   watch: AtRiskWatch | null,

@@ -139,7 +139,7 @@ export interface ExecutionContext {
    * reports the request it is about to send, and again if it changes the body,
    * so a write still out after 2 s can be recorded for the read-back.
    */
-  noteSalesforceRequest?: (req: { object: string; record_id: string; operation: 'update'; body: Record<string, unknown> }) => void
+  noteSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => void
   /**
    * Starts the watch on one post-answer Salesforce update (#2022). Set by the
    * engine on live runs only (never a test or a shadow run), so its absence is
