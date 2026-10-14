@@ -218,7 +218,7 @@ describe('runEmailDropRateCheck: who gets told (#744)', () => {
     // #835: the rule is a fixed rate, not a change against a baseline, so the
     // alert may not call it a sudden rise.
     expect(JSON.stringify(postMessage.mock.calls[0])).not.toMatch(/sudden rise/)
-    expect(JSON.stringify(postMessage.mock.calls[0])).toContain('above the 5% this alert allows')
+    expect(JSON.stringify(postMessage.mock.calls[0])).toContain('at or above the 5% this alert allows')
   })
 
   it('says nothing when every source is within threshold', async () => {
