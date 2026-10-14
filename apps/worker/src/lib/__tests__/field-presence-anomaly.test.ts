@@ -1062,6 +1062,28 @@ describe('field-presence alerting', () => {
     expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
   })
 
+  it('records one field\'s end and another\'s opening at the same reading in one pass (#2099)', async () => {
+    // The incident record refuses an organization id that is not a uuid.
+    const orgWf = { ...WF, organization_id: '77777777-7777-4777-8777-777777777777' }
+    const both = (aPresent: number, bPresent: number) => {
+      const a = collapsedWindow('a.field', 500, aPresent, today)
+      const b = collapsedWindow('b.field', 500, bPresent, today)
+      return makeSupabase({ rollup: [...a.rollup, ...b.rollup], window: [...a.window, ...b.window] }, [], [orgWf])
+    }
+    const kv = makeKv()
+    await runFieldPresenceDroughtCheck(both(0, 500) as never, kv, APP_URL)
+    kv.store.set('field-presence-drought-active:wf-1 a.field', new Date(Date.now() - 3600_000).toISOString())
+    for (const k of [...kv.store.keys()]) if (k.startsWith('incident-outbox:')) kv.store.delete(k)
+    // a.field recovers while b.field collapses, on a clock that moves between reads.
+    await withTickingClock(() => runFieldPresenceDroughtCheck(both(500, 0) as never, kv, APP_URL))
+    const events = outboxEvents(kv.store)
+    const ended = events.find((e) => e.type === 'ended' && e.subject === 'wf-1 a.field')
+    const opened = events.find((e) => e.type === 'opened' && e.subject === 'wf-1 b.field')
+    expect(ended).toBeDefined()
+    expect(opened).toBeDefined()
+    expect(ended?.at).toBe(opened?.at)
+  })
+
   it('stands the dead tier down in its own words once the field resolves (#1336)', async () => {
     // Until #1336 this path had effectively never run in production: a dead
     // field could only recover by the whole seven day window flipping, which is

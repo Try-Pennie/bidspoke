@@ -446,7 +446,7 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
 
   it('settleRecovery clears the marker, the running end and the cooldown', async () => {
     const kv = seeded()
-    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f', { ...ORG, reason: 'all_clear' })
+    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f', { ...ORG, reason: 'all_clear' }, NOW_MS)
     // Only the incident record's ended event is left (#2099), for the drain to take.
     expect([...kv.store.keys()].map((k) => k.split(':')[0])).toEqual(['incident-outbox'])
   })

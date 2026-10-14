@@ -149,7 +149,7 @@ describe('ended: settleRecovery', () => {
     kv.delete = (k: string) => { order.push(`delete ${k}`); return del(k) }
     kv.put.mockImplementation((k: string, v: string) => { order.push(`put ${k.startsWith(INCIDENT_OUTBOX_PREFIX) ? 'outbox' : k}`); kv.store.set(k, v); return Promise.resolve() })
 
-    await settleRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', { ...ORG, windowMinutes: 15, reason: 'all_clear' })
+    await settleRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', { ...ORG, windowMinutes: 15, reason: 'all_clear' }, NOW_MS)
 
     expect(order[0]).toBe('put outbox')
     const [e] = events(kv)
@@ -165,13 +165,13 @@ describe('ended: settleRecovery', () => {
 
   it('records an unknown end as null rather than inventing one', async () => {
     const kv = fakeKv({ [recoveryKey('pg-cron-watch', 'job')]: '2026-10-14T10:00:00.000Z' })
-    await settleRecovery(kv, 'pg-cron-watch', 'job', null, { scope: { kind: 'platform' }, subjectLabel: 'job', reason: 'all_clear' })
+    await settleRecovery(kv, 'pg-cron-watch', 'job', null, { scope: { kind: 'platform' }, subjectLabel: 'job', reason: 'all_clear' }, NOW_MS)
     expect(events(kv)[0]).toMatchObject({ type: 'ended', endedAt: null })
   })
 
   it('names the signal an incident was handed over to', async () => {
     const kv = fakeKv({ [recoveryKey('field-presence-dead', 'wf-1 f')]: '2026-10-14T10:00:00.000Z' })
-    await settleRecovery(kv, 'field-presence-dead', 'wf-1 f', null, { ...ORG, reason: 'handed_over', successor: 'field-presence-wrong-path' })
+    await settleRecovery(kv, 'field-presence-dead', 'wf-1 f', null, { ...ORG, reason: 'handed_over', successor: 'field-presence-wrong-path' }, NOW_MS)
     expect(events(kv)[0]).toMatchObject({ reason: 'handed_over', successor: 'field-presence-wrong-path' })
   })
 
@@ -179,14 +179,14 @@ describe('ended: settleRecovery', () => {
     const kv = fakeKv({ [recoveryKey('volume-cliff', 'wf-1')]: '2026-10-14T10:00:00.000Z' })
     kv.put.mockRejectedValue(new Error('KV down'))
     const onRecordError = vi.fn()
-    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear', onRecordError })
+    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear', onRecordError }, NOW_MS)
     expect(kv.store.has(recoveryKey('volume-cliff', 'wf-1'))).toBe(false)
     expect(onRecordError).toHaveBeenCalledWith(expect.stringContaining('KV down'))
   })
 
   it('records nothing when there was no incident to end', async () => {
     const kv = fakeKv()
-    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear' })
+    await settleRecovery(kv, 'volume-cliff', 'wf-1', null, { ...ORG, reason: 'all_clear' }, NOW_MS)
     expect(events(kv)).toEqual([])
   })
 

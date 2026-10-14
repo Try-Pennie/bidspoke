@@ -255,7 +255,7 @@ export async function settleRecovery(
   id: string,
   cooldownKey: string | null,
   end: IncidentEnd,
-  now: number = Date.now(),
+  now: number,
 ): Promise<void> {
   try {
     const startedAt = await kv.get(recoveryKey(prefix, id))
@@ -309,7 +309,9 @@ export async function announceRecovery(
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
   opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
-  const due = await recoveryDue(kv, prefix, id, opts)
+  // One reading for the whole all-clear: judging it due and recording its end.
+  const now = opts.now ?? Date.now()
+  const due = await recoveryDue(kv, prefix, id, { ...opts, now })
   if (!due) return false
 
   // #817: a check that recovers on the ABSENCE of its condition (the three rate
@@ -342,6 +344,6 @@ export async function announceRecovery(
   }
   if (!delivered) return false
 
-  await settleRecovery(kv, prefix, id, cooldownKey, { ...incident, reason: 'all_clear' }, opts.now)
+  await settleRecovery(kv, prefix, id, cooldownKey, { ...incident, reason: 'all_clear' }, now)
   return true
 }

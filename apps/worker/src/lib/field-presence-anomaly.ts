@@ -1362,7 +1362,7 @@ async function alertOnStates(
     if (state.verdict === 'healthy') {
       // Decided per field, announced per channel below (#1267): the page is one
       // message per channel, and its all-clear has to be the same shape.
-      const due = await recoveryDue(kv, cfg.prefix, id)
+      const due = await recoveryDue(kv, cfg.prefix, id, { now: nowMs })
       if (due) recoverable.push({ wf, state, id, cooldownKey, due })
       continue
     }
@@ -1438,7 +1438,7 @@ async function alertOnStates(
     })
     if (!sent) continue
     for (const item of group.items) {
-      await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey, { ...fieldIncident(item), ...(cfg.endReason ?? { reason: 'all_clear' }) })
+      await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey, { ...fieldIncident(item), ...(cfg.endReason ?? { reason: 'all_clear' }) }, nowMs)
       recovered++
     }
   }
