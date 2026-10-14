@@ -144,16 +144,16 @@ const scheduledJobs = {
     // any of them served or refused (#1848) are counted, in one write.
     const work: Promise<unknown>[] = []
     // Only waitUntil is used below, and the type holds every job to that.
-    const ctx: Pick<ExecutionContext, 'waitUntil'> = {
-      waitUntil: (p: Promise<unknown>) => {
-        work.push(p)
-        platformCtx.waitUntil(p)
-      },
+    // Every job handed over is also timed (#2058), so none can be added untimed;
+    // one with no name shows in the slow tick line by its order, as job#n.
+    const handOver = (p: Promise<unknown>, name = `job#${work.length + 1}`) => {
+      const tracked = timer ? timer.track(name, p) : p
+      work.push(tracked)
+      platformCtx.waitUntil(tracked)
     }
-    // A minute job is named and timed, so a tick that ran slow says which job
-    // held it up (#2058). The name is required, so a new minute job cannot be
-    // added untimed.
-    const minuteJob = (name: string, p: Promise<unknown>) => ctx.waitUntil(timer ? timer.track(name, p) : p)
+    const ctx: Pick<ExecutionContext, 'waitUntil'> = { waitUntil: (p: Promise<unknown>) => handOver(p) }
+    // A minute job carries its name, so a slow minute tick names the job that held it up.
+    const minuteJob = (name: string, p: Promise<unknown>) => handOver(p, name)
     // Stamps a watched job "completed" once its work has SETTLED, whichever way
     // it settled (#985). The work's own handler owns logging and alerting; this
     // only records that the run reached its end. It is deliberately not chained
@@ -988,7 +988,8 @@ export default {
       const timer = tickTimer()
       const work = scheduledJobs.start(event, env, platformCtx, timer)
       await Promise.allSettled(work)
-      const slow = timer.report(event.cron)
+      // Only the minute tick: the hourly and daily ones run for minutes by design.
+      const slow = event.cron === '* * * * *' ? timer.report(event.cron) : null
       if (slow) console.warn(slow)
       // A cron that started nothing (a retired one) leaves nothing to count.
       // The count is bookkeeping, never a reason to run the jobs again.

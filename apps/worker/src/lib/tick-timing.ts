@@ -35,7 +35,7 @@ export function tickTimer(now: () => number = Date.now) {
     report(cron: string, slowMs: number = TICK_SLOW_MS): string | null {
       const at = now()
       const total = at - started
-      // A tick that timed no job (only the minute jobs are named) has nothing to name.
+      // A tick that timed no job has nothing to name.
       if (jobs.length === 0 || total <= slowMs) return null
       // A job still running is named with its time so far, never left out:
       // the one that has not finished is the likeliest to be the slow one.

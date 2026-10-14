@@ -67,8 +67,7 @@ describe('tickTimer', () => {
     expect(timer.report('* * * * *')).toMatch(/jobs=heartbeat-checks:20005 unfinished/)
   })
 
-  // Only the minute jobs are named; the hourly and daily ticks run for minutes
-  // by design, and a line naming no job would be noise on every one of them.
+  // A line naming no job says nothing about where the time went.
   it('says nothing for a slow tick that timed no job', () => {
     const c = clock()
     const timer = tickTimer(c.now)
