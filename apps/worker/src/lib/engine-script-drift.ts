@@ -128,9 +128,9 @@ export interface KeptWorkflow {
  * version 106 on 2026-10-02, so none of the four carries one.
  *
  * #2089 edited build_response_body here first (the signed link token on the offer
- * link), so it carries the hash of the canvas script it was derived from, read from
- * the mirror on 2026-10-14, until Dan pastes it. Clear both fields in the change
- * after the hourly check reads it as agree.
+ * link). Dan pasted it on 2026-10-14 (2:25 PM ET) and the hourly check read it as
+ * agree, so its baseline was cleared (#2093): a canvas put back to the script
+ * before #2089, which sends every offer link out unsigned, pages as a drift.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -144,9 +144,8 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    // The canvas script before #2089, read from the mirror on 2026-10-14.
-    canvasBaselineSha256: 'c0a5dd456988bcf9f10382f8a89c4419f098a9e94ad304f4bd2effdc4d6ef6b6',
-    baselineReadOn: '2026-10-14',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
   {
     namespace: 'patch_prospect_body',
@@ -198,9 +197,9 @@ export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
  * Lead Economy (#2089), which builds the same trypennie.com offer links as the
  * Engine Bidding Workflow in its return_response code node. Only that script is
  * kept: it was copied from the mirror on 2026-10-14 and the signed link token
- * added here, so it carries the hash of the canvas script it was derived from
- * until Dan pastes it. No settings are committed for this workflow, so none are
- * judged.
+ * added here. Dan pasted it the same day (2:27 PM ET) and the hourly check read it
+ * as agree, so it carries no baseline (#2093): any difference from the canvas is
+ * a drift. No settings are committed for this workflow, so none are judged.
  */
 export const LEAD_ECONOMY_WORKFLOW_ID = '89b1a6af-7e0f-43de-bc66-1e888184551f'
 
@@ -209,9 +208,8 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
     namespace: 'return_response',
     file: 'return_response.js',
     script: LEAD_ECONOMY_RETURN_RESPONSE,
-    // The canvas script before #2089, read from the mirror on 2026-10-14.
-    canvasBaselineSha256: 'ba4e5217857f78f7a8fdee671095d1f019e1ab298c7ccaa0438fc175092e00d6',
-    baselineReadOn: '2026-10-14',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
 ]
 
