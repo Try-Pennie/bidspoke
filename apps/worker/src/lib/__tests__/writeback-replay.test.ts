@@ -155,6 +155,18 @@ describe('replayHeldWrite', () => {
     expect(await decryptSecret(rows[0].last_error_encrypted!, KEY)).toContain('FIELD_CUSTOM_VALIDATION_EXCEPTION')
   })
 
+  // A credential or permission fault is ours, not Salesforce rejecting this
+  // write: closing the row would lose a write that fixing the login lets through.
+  it('leaves a write pending when Salesforce refuses the login or the permission, not the write', async () => {
+    for (const status of [401, 403]) {
+      rows = [await row()]
+      const { store } = memoryStore(rows)
+      const r = await replayHeldWrite(deps(store, salesforce({ status, text: '[{"errorCode":"INSUFFICIENT_ACCESS"}]' }).port), ORG, ID)
+      expect(r.kind, String(status)).toBe('still_pending')
+      expect(rows[0], String(status)).toMatchObject({ status: 'pending', replayable: true })
+    }
+  })
+
   it('leaves a transient failure pending with its error, so it can be sent again', async () => {
     const { store } = memoryStore(rows)
     const r = await replayHeldWrite(deps(store, salesforce({ status: 503, text: 'unavailable' }).port), ORG, ID)

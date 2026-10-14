@@ -232,7 +232,10 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   }
   const error = `Salesforce API error (${answer.status}): ${answer.text}`
   const lastError = await encryptSecret(error, deps.keys)
-  if (salesforceFailureIsTransient(answer.status, answer.text)) {
+  // A login or permission refusal (401 after the fresh login, 403) is a fault on
+  // our side, not Salesforce rejecting this write, so it stays pending: closing it
+  // would lose a write that fixing the credentials lets through.
+  if (salesforceFailureIsTransient(answer.status, answer.text) || answer.status === 401 || answer.status === 403) {
     const recorded = await deps.store.finish(id, claimed, { last_error_encrypted: lastError, updated_at: now() })
     return { kind: 'still_pending', error, recorded }
   }
