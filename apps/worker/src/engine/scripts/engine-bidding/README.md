@@ -82,9 +82,9 @@ The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
 a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
-on the canvas since version 101, and none of the kept Engine scripts carries a
-baseline now (version 103 holds all four), so any difference from the canvas is
-a drift.
+on the canvas since version 101. Of the kept Engine scripts only
+`build_response_body` carries a baseline, until its #2089 paste lands (see above);
+for the other three any difference from the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce
