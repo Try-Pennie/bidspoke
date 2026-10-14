@@ -24,7 +24,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { rateLimitedOrgAlert } from './alert-fanout'
-import { CONTINUATION_UNFINISHED_LABEL } from '../engine/dead-letter-labels'
+import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -93,15 +93,26 @@ export function isUnrecoverableOutcomeLoss(label: string): boolean {
 }
 
 /**
- * Whether a dead-letter label is a CONFIRMED loss that should count toward the
- * volume bar. continuation_unfinished is an unknown outcome (the walk did not
- * finish in time but may well have landed), not a loss, so it is excluded: counting
- * it would inflate the sustained-volume half and the "dead-letter totals" copy with
- * runs that lost nothing (#355). Every other dead-letter label is a real tier-2 or
- * tier-3 loss, reconstructable or not.
+ * The dead-letter labels that are a failed Salesforce update rather than a write
+ * to our own database (#2087, Dan 2026-10-14). They have their own alerts and the
+ * replay tool, and this bar exists to decide whether OUR database writes need a
+ * durable store, so they do not count toward it. A failure to save into the
+ * replay store (outcome_writeback_deadletters.insert) is a database write and
+ * still counts.
+ */
+const SALESFORCE_UPDATE_LABELS: ReadonlySet<string> = new Set(['sf_writeback', WRITEBACK_UNCAPTURABLE_LABEL])
+
+/**
+ * Whether a dead-letter label is a CONFIRMED database loss that should count
+ * toward the volume bar. continuation_unfinished is an unknown outcome (the walk
+ * did not finish in time but may well have landed), not a loss, so it is
+ * excluded: counting it would inflate the sustained-volume half and the
+ * "dead-letter totals" copy with runs that lost nothing (#355). A failed
+ * Salesforce update is excluded too (#2087). Every other label is a real tier-2
+ * loss, reconstructable or not.
  */
 function isConfirmedLoss(label: string): boolean {
-  return label !== CONTINUATION_UNFINISHED_LABEL
+  return label !== CONTINUATION_UNFINISHED_LABEL && !SALESFORCE_UPDATE_LABELS.has(label)
 }
 
 function parseCounts(raw: string | null): DeadLetterDayCounts {
