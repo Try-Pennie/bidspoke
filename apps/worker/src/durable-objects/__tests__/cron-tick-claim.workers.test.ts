@@ -11,7 +11,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { runCronTickOnce } from '../../lib/cron-once'
-import { TICK_RETRY_AFTER_MS } from '../alert-claim'
+import { TICK_LEASE_STALE_MS } from '../alert-claim'
 
 const bindings = env as unknown as Pick<Env, 'ALERT_CLAIM'>
 
@@ -20,7 +20,8 @@ const bindings = env as unknown as Pick<Env, 'ALERT_CLAIM'>
  * covers that): a cold object in a busy workerd run can take over 2 s to
  * answer, which would fail the claim open and test nothing.
  */
-const SLOW_OK = { deadlineMs: 30_000 }
+// No real waiting on a same-time holder (#2064): the second ask comes at once.
+const SLOW_OK = { deadlineMs: 30_000, sleep: async () => {} }
 
 /** 2027-10-08 14:37 UTC. */
 const MINUTE = Date.UTC(2027, 9, 8, 14, 37)
@@ -44,11 +45,12 @@ describe('the cron tick claim in workerd (#1899)', () => {
     // The jobs are called only once the claim is granted, so waiting on them
     // proves the killed run holds the tick before anything else asks.
     const killedJobs = vi.fn(() => new Promise<void>(() => {}))
-    void runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, killedJobs, { ...SLOW_OK, now: () => minute, holder: () => 'killed' })
+    // A killed run renews nothing (#2064): its renewal timer never fires.
+    void runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, killedJobs, { ...SLOW_OK, now: () => minute, holder: () => 'killed', every: () => () => {} })
     await vi.waitFor(() => expect(killedJobs).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     const twin = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute + 36_000 }, async () => {}, { ...SLOW_OK, now: () => minute + 36_000 })
     expect(twin).toBe('skipped')
-    const retry = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute + TICK_RETRY_AFTER_MS + 1, holder: () => 'retry' })
+    const retry = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '23 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute + TICK_LEASE_STALE_MS + 1, holder: () => 'retry' })
     expect(retry).toBe('ran')
     const other = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '*/5 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute })
     expect(other).toBe('ran')

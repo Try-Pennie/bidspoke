@@ -9,7 +9,7 @@
  * no real time passes (L524).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { AlertClaimObject, TICK_RETRY_AFTER_MS } from '../../durable-objects/alert-claim'
+import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS } from '../../durable-objects/alert-claim'
 import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS } from '../cron-once'
 
 /** Storage with the surface the claim object uses, held in a Map. */
@@ -90,19 +90,81 @@ describe('runCronTickOnce (#1899)', () => {
     expect(job.ran).toHaveBeenCalledTimes(1)
   })
 
-  it('(b) runs one of two deliveries with the SAME scheduled time (2026-10-05)', async () => {
+  it('(b) runs one of two deliveries with the SAME scheduled time while the first is alive (2026-10-05)', async () => {
     const { ns } = claimNamespace()
+    const clock = { t: MINUTE + 8_300 }
+    const now = () => clock.t
     const job = pendingJob()
-    const firstRun = runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, { now: () => MINUTE + 8_300, holder: () => 'req-a' })
+    let renewTick: () => void = () => {}
+    const firstRun = runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, {
+      now, holder: () => 'req-a', every: (fn) => { renewTick = fn; return () => {} },
+    })
     await vi.waitFor(() => expect(job.ran).toHaveBeenCalledTimes(1))
-    const twin = await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, { now: () => MINUTE + 8_800, holder: () => 'req-b' })
+    clock.t += 500
+    // The twin waits for a dead holder's lease to go stale; the live holder renews meanwhile.
+    const twin = await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, {
+      now, holder: () => 'req-b',
+      sleep: async (ms) => {
+        for (let waited = 0; waited < ms; waited += TICK_LEASE_RENEW_MS) {
+          clock.t += Math.min(TICK_LEASE_RENEW_MS, ms - waited)
+          renewTick()
+          await vi.waitFor(() => Promise.resolve())
+        }
+      },
+    })
     expect(twin).toBe('skipped')
     job.finish()
     await firstRun
     // and once the run is done, a late delivery of the same time is still a duplicate
-    const late = await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, { now: () => MINUTE + 8_000 + 10 * TICK_RETRY_AFTER_MS, holder: () => 'req-c' })
+    const late = await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 8_000 }, job.ran, { now: () => MINUTE + 8_000 + 10 * TICK_LEASE_STALE_MS, holder: () => 'req-c' })
     expect(late).toBe('skipped')
     expect(job.ran).toHaveBeenCalledTimes(1)
+  })
+
+  // #2064, measured 2026-10-14 05:23 UTC: the first delivery was cancelled 1.7 s
+  // in, and the retry with the same scheduled time arrived 0.4 s after it ended.
+  // The 35 s floor dropped it and the hour's archive never ran.
+  it('(b) runs the retry of a run cancelled seconds in, once its lease has gone stale (2026-10-14)', async () => {
+    const { ns } = claimNamespace()
+    const clock = { t: Date.parse('2026-10-14T05:23:12.299Z') }
+    const now = () => clock.t
+    const scheduled = Date.parse('2026-10-14T05:23:11.000Z')
+    const killed = vi.fn(() => new Promise<void>(() => {}))
+    // A killed run renews nothing: its renewal timer never fires.
+    void runCronTickOnce(ns, { cron: '23 * * * *', scheduledTime: scheduled }, killed, { now, holder: () => '0d6edae1', every: () => () => {} })
+    await vi.waitFor(() => expect(killed).toHaveBeenCalledTimes(1))
+    clock.t = Date.parse('2026-10-14T05:23:13.834Z')
+    const slept: number[] = []
+    const retryJobs = vi.fn(async () => {})
+    const retry = await runCronTickOnce(ns, { cron: '23 * * * *', scheduledTime: scheduled }, retryJobs, {
+      now, holder: () => 'retry', every: () => () => {},
+      sleep: async (ms) => { slept.push(ms); clock.t += ms },
+    })
+    expect(retry).toBe('ran')
+    expect(retryJobs).toHaveBeenCalledTimes(1)
+    // It waited only as long as a dead holder's lease takes to go stale, then asked once more.
+    expect(slept).toHaveLength(1)
+    expect(slept[0]).toBeLessThanOrEqual(TICK_LEASE_STALE_MS)
+    expect(warns.join('\n')).toMatch(/took over.*cron="23 \* \* \* \*".*previous_holder=0d6edae1/)
+  })
+
+  it('renews the lease while the jobs run, and stops when they finish', async () => {
+    const { ns } = claimNamespace()
+    const job = pendingJob()
+    let renew: () => void = () => {}
+    let stopped = false
+    let interval = 0
+    const run = runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE }, job.ran, {
+      now: () => MINUTE, holder: () => 'req-a',
+      every: (fn, ms) => { renew = fn; interval = ms; return () => { stopped = true } },
+    })
+    await vi.waitFor(() => expect(job.ran).toHaveBeenCalledTimes(1))
+    expect(interval).toBe(TICK_LEASE_RENEW_MS)
+    expect(stopped).toBe(false)
+    renew()
+    job.finish()
+    await run
+    expect(stopped).toBe(true)
   })
 
   it('(c) runs every expression that fires in the same minute: each is its own claim', async () => {
@@ -128,7 +190,7 @@ describe('runCronTickOnce (#1899)', () => {
     const { ns } = claimNamespace()
     const killed = vi.fn(() => new Promise<void>(() => {}))
     const scheduled = Date.parse('2026-10-08T14:00:01.000Z')
-    void runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: scheduled }, killed, { now: () => scheduled, holder: () => 'req-killed' })
+    void runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: scheduled }, killed, { now: () => scheduled, holder: () => 'req-killed', every: () => () => {} })
     await vi.waitFor(() => expect(killed).toHaveBeenCalledTimes(1))
     // the twin with a different second, while the killed run still holds the claim, stays skipped
     const twin = await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: scheduled + 36_000 }, vi.fn(async () => {}), { now: () => scheduled + 36_000, holder: () => 'req-twin' })
@@ -172,7 +234,7 @@ describe('runCronTickOnce (#1899)', () => {
     const { ns } = claimNamespace()
     const scheduled = MINUTE + 1_000
     await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, vi.fn(async () => {}), { now: () => scheduled, holder: () => 'req-a' })
-    const later = await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, vi.fn(async () => {}), { now: () => scheduled + 10 * TICK_RETRY_AFTER_MS, holder: () => 'req-b' })
+    const later = await runCronTickOnce(ns, { cron: '0 13 * * *', scheduledTime: scheduled }, vi.fn(async () => {}), { now: () => scheduled + 10 * TICK_LEASE_STALE_MS, holder: () => 'req-b' })
     expect(later).toBe('skipped')
   })
 
