@@ -1755,6 +1755,20 @@ describe('sendRecoveryAlert (#253, #814)', () => {
     expect(text).not.toContain('NaN')
     expect(text).not.toContain('lasted')
   })
+
+  it('reads an end recorded before the start as a zero length span, never a negative one (#2101)', async () => {
+    // The real db-unreachable row recorded before #2115: its last sighting was
+    // read 36 seconds before its start. The one span rule reads it as zero.
+    await sendRecoveryAlert(
+      slack,
+      '#alerts',
+      { ...base, alertedAt: '2026-10-14T21:48:37.000Z', endedAt: '2026-10-14T21:48:01.000Z' },
+      Date.parse('2026-10-14T22:20:00.000Z'),
+    )
+    const text = sentText()
+    expect(text).toContain('lasted under a minute, clearing at Oct 14, 5:48 PM EDT')
+    expect(text).not.toContain('-')
+  })
 })
 
 /**

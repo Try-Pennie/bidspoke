@@ -465,6 +465,17 @@ The releases refuse 409 `claim_changed` when the claim moved since the page read
 
 Each entry carries the `jobName`, `returnsAt` (ISO, or null when the mute has no expiry and stays until cleared by hand), `secondsRemaining`, and the `standingSince` and `reminders` from the condition record when one is present. These mutes are global operational state, not per org. A KV read failure returns a 500 rather than an empty list, so a silence is never mistaken for a healthy, unmuted system.
 
+## Incidents
+
+`/api/incidents`. The incident record: every alert incident of your organization, and every platform wide one (a partner host, the database, a scheduled job), from when it started to when it ended.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/incidents/ongoing` | Every incident still open, newest start first. |
+| GET | `/api/incidents` | One page of the incidents that have closed and started or ended in the window, newest start first. Query `days` (7, 14 or 30, default 7), `limit` (default 50, at most 100) and `offset` (default 0). |
+
+Both carry `signal` and its reader label `signal_label` (`Unrecognised signal`, with `signal_known: false`, for a signal no current check names), `subject_name` (never a raw id; a deleted workflow is marked `(deleted)`), `scope` (`org` or `platform`), `started_at` and `pages_sent`. An ongoing incident adds `so_far` (how long it has run, as "1 hour 20 minutes so far"); the list carries `has_more` when more are open than it returns. A closed incident adds `ended_at`, `state` (`ended`, or `end_not_recorded` when it closed without an end being recorded) and `duration` (worded by the same rule as the Slack all-clear, or null when no end was recorded). The closed list is `{ incidents, has_more, next_offset }`; pass `next_offset` as `offset` to read the next page. A failed read returns a 500 with a message, never an empty list.
+
 ## Field coverage
 
 `/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Each field's health carries `drought` (a field that is normally present has collapsed), `dead` (a field that has carried values in the last four weeks has stopped, or one that cannot yet be judged by whether its key appears), `wrong_path` (its key never appears on the step's output) and `empty_by_design` (its key appears but never with a value, so it is not reported). Silences set here make the detector skip those fields.

@@ -190,6 +190,42 @@ export interface PartnerUuid {
   created_at: string
 }
 
+/** What every incident in the record carries (#2101). The worker resolves every reader facing field (apps/worker/src/lib/incidents-read.ts), so the page only lays them out. */
+interface IncidentBase {
+  id: string
+  /** The stored signal key, shown beside the label only when the signal is unrecognised. */
+  signal: string
+  signal_label: string
+  signal_known: boolean
+  subject_name: string
+  scope: 'org' | 'platform'
+  started_at: string
+  pages_sent: number
+}
+
+/** A closed incident, as GET /api/incidents returns it for the Incidents card. */
+export interface Incident extends IncidentBase {
+  ended_at: string | null
+  state: 'ended' | 'end_not_recorded'
+  duration: string | null
+}
+
+/** An open incident, as GET /api/incidents/ongoing returns it for the line under the page header. */
+export interface OngoingIncident extends IncidentBase {
+  so_far: string | null
+}
+
+export interface IncidentsResponse {
+  incidents: Incident[]
+  has_more: boolean
+  next_offset: number | null
+}
+
+export interface OngoingIncidentsResponse {
+  incidents: OngoingIncident[]
+  has_more: boolean
+}
+
 export interface StatsResponse {
   window_days: number
   summary: {
@@ -963,6 +999,10 @@ export const api = {
   },
   configWarnings: {
     get: () => req<ConfigWarningsResponse>('/api/config-warnings'),
+  },
+  incidents: {
+    list: (days: 7 | 14 | 30, offset = 0) => req<IncidentsResponse>(`/api/incidents?days=${days}&offset=${offset}`),
+    ongoing: () => req<OngoingIncidentsResponse>('/api/incidents/ongoing'),
   },
 
   servicePresets: {

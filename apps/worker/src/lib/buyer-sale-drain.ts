@@ -40,7 +40,8 @@ import { chunk } from './chunk'
 import { buildBuyerSaleRow, buyerSaleRowId, mirrorBuyerSale, type BuyerSaleRowMeta } from './buyer-sale-mirror'
 import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
-import { describeDuration, etTime } from './slack'
+import { describeDuration } from './incident-span'
+import { etTime } from './slack'
 
 export const BUYER_SALE_DRAIN_JOB = 'buyer-sale-drain'
 

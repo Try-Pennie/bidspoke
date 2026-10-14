@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { INCIDENT_SIGNALS, incidentSignal, type IncidentSignal } from '../incident-signals'
+import { INCIDENT_SIGNALS, UNRECOGNISED_SIGNAL_LABEL, incidentSignal, incidentSignalLabel, type IncidentSignal, type IncidentSignalEntry } from '../incident-signals'
 import { WINDOW_MINUTES as SLOW_WINDOW_MINUTES } from '../slow-execution-rate'
 import { RECENT_WINDOW_MINUTES } from '../volume-cliff'
 import { DAY_WINDOW_MINUTES, DEAD_SIGNAL, DEAD_WINDOW_DAYS, DROUGHT_WINDOW_MINUTES, WRONG_PATH_SIGNAL } from '../field-presence-anomaly'
@@ -82,5 +82,38 @@ describe('INCIDENT_SIGNALS', () => {
   it('lists the partner kinds and the two database memory subjects', () => {
     expect(incidentSignal('partner-reachability').kinds).toEqual(['blocked', 'unreachable', 'control-failing', 'probe-broken'])
     expect(incidentSignal('supabase-memory').kinds).toEqual(['memory', 'feed'])
+  })
+
+  it('says which signals key their subject on a workflow id (#2101)', () => {
+    // Read from each check's call site: volume-cliff and slow-spike key on the
+    // workflow id, failure-rate on `${workflowId}:${match}`, and the three field
+    // presence tiers on `${workflowId} ${fieldPath}`. db-unreachable keys on the
+    // organization; the rest key on a readable name (a host, a job, a GitHub
+    // workflow file, or a fixed id).
+    const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
+    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'slow-spike', 'volume-cliff'])
+    expect(incidentSignal('db-unreachable').subject).toBe('organization')
+    for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule'] as const) {
+      expect(incidentSignal(s).subject, s).toBe('name')
+    }
+  })
+})
+
+describe('incidentSignalLabel (#2101)', () => {
+  it('reads the registry label for a known signal', () => {
+    expect(incidentSignalLabel('volume-cliff')).toEqual({ label: 'Volume cliff', known: true })
+  })
+
+  it('names an unknown signal as unrecognised rather than inventing a label', () => {
+    expect(incidentSignalLabel('retired-check')).toEqual({ label: UNRECOGNISED_SIGNAL_LABEL, known: false })
+  })
+
+  it('cannot hold an entry with no label', () => {
+    // The compiler refuses an entry without a label (the typecheck runs over this
+    // file), and every entry present carries a non empty one.
+    // @ts-expect-error a registry entry must have a label
+    const unlabelled: IncidentSignalEntry = { signal: 'x', scope: 'org', subject: 'name', startMeans: 'x', windowMinutes: null }
+    expect(unlabelled.signal).toBe('x')
+    for (const s of INCIDENT_SIGNALS) expect(s.label.trim().length, s.signal).toBeGreaterThan(0)
   })
 })

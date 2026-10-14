@@ -23,6 +23,49 @@ export function formatDate(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
+/** "Oct 14, 2:34 PM": day and clock time in ET with no zone suffix, for a column whose header says ET once. */
+export function formatEtDayTime(dateStr: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ET,
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(dateStr))
+}
+
+/** "2:34 PM": the ET clock time alone, for a row under a day heading. */
+export function formatEtClock(dateStr: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ET,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(dateStr))
+}
+
+/** "2026-10-14": the ET calendar day a moment falls on. */
+export function etDayKey(at: string | number): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: ET, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date(at))
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
+/**
+ * "Today", "Yesterday", or "Mon, Oct 12": a day heading in ET. Yesterday is the
+ * calendar day before today's, so a day with a clock change still counts as one.
+ */
+export function etDayHeading(dateStr: string, now: number): string {
+  const day = etDayKey(dateStr)
+  const today = etDayKey(now)
+  if (day === today) return 'Today'
+  const before = new Date(`${today}T12:00:00Z`)
+  before.setUTCDate(before.getUTCDate() - 1)
+  if (day === before.toISOString().slice(0, 10)) return 'Yesterday'
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' })
+    .format(new Date(`${day}T12:00:00Z`))
+}
+
 /** "2:34:12 PM" — for execution list sidebar timestamps. Seconds matter when many runs fire in the same minute. */
 export function formatTime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-US', {
