@@ -157,6 +157,7 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
       await cleanupOnce()
     },
     (line) => wiring.log(line),
+    { hint: `rerun with --cleanup ${parsed.ledgerPath}` },
   )
 
   let exitCode = 0

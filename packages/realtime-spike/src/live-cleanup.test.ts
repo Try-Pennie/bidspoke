@@ -6,7 +6,7 @@ const config = { supabaseUrl: 'http://127.0.0.1:1', secretKey: 'k' } as SpikeCon
 const MARKER_EMAIL = 'org-b@realtime-spike-20261015t153012z.example.com'
 
 /** A client double recording every filter a delete is narrowed by. */
-function recordingClient(authEmail: string | null) {
+function recordingClient(authEmail: string | null, listed: Array<{ id: string; email: string }> = []) {
   const filters: string[] = []
   const deletedAuth: string[] = []
   const query = (table: string) => {
@@ -28,6 +28,10 @@ function recordingClient(authEmail: string | null) {
           authEmail === null
             ? { data: { user: null }, error: { status: 404, message: 'User not found' } }
             : { data: { user: { id, email: authEmail } }, error: null },
+        listUsers: async ({ page }: { page: number; perPage: number }) => ({
+          data: { users: page === 1 ? listed.slice(0, 2) : page === 2 ? listed.slice(2) : [] },
+          error: null,
+        }),
         deleteUser: async (id: string) => {
           deletedAuth.push(id)
           return { error: null }
@@ -65,5 +69,23 @@ describe('liveCleanupOps: a delete by id only touches the row that carries the m
     expect(c.deletedAuth).toEqual(['u-1'])
     const gone = recordingClient(null)
     expect(await liveCleanupOps(config, gone.client).deleteAuthUser('u-1', MARKER_EMAIL)).toBe('absent')
+  })
+})
+
+describe('liveCleanupOps.findAuthUserIdByEmail: the auth user is found by its own email, page by page', () => {
+  it('reads past a full page to the user with the marker email', async () => {
+    const c = recordingClient(MARKER_EMAIL, [
+      { id: 'u-a', email: 'a@trypennie.com' },
+      { id: 'u-b', email: 'b@trypennie.com' },
+      { id: 'u-spike', email: MARKER_EMAIL },
+    ])
+    const ops = liveCleanupOps(config, c.client, { authPageSize: 2 })
+    expect(await ops.findAuthUserIdByEmail(MARKER_EMAIL)).toBe('u-spike')
+  })
+
+  it('answers null once a short page has been read without it', async () => {
+    const c = recordingClient(null, [{ id: 'u-a', email: 'a@trypennie.com' }])
+    const ops = liveCleanupOps(config, c.client, { authPageSize: 2 })
+    expect(await ops.findAuthUserIdByEmail(MARKER_EMAIL)).toBeNull()
   })
 })

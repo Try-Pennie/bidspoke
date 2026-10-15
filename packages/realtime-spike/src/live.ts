@@ -94,7 +94,8 @@ export type CleanupClient = ReturnType<typeof admin>
  * user, which cannot be filtered that way, is read first and refused unless its
  * email is the ledger's.
  */
-export function liveCleanupOps(config: SpikeConfig, db: CleanupClient = admin(config)): CleanupOps {
+export function liveCleanupOps(config: SpikeConfig, db: CleanupClient = admin(config), opts: { authPageSize?: number } = {}): CleanupOps {
+  const authPageSize = opts.authPageSize ?? 1000
   const deleted = async (table: string, filters: Array<[string, string]>): Promise<number> => {
     let query = db.from(table).delete()
     for (const [column, value] of filters) query = query.eq(column, value)
@@ -107,6 +108,17 @@ export function liveCleanupOps(config: SpikeConfig, db: CleanupClient = admin(co
       const { data, error } = await db.from('users').select('id').eq('email', email).maybeSingle<{ id: string }>()
       if (error) throw new Error(`users: ${error.message}`)
       return data?.id ?? null
+    },
+    findAuthUserIdByEmail: async (email) => {
+      // The admin API has no lookup by email, so read the users a page at a time;
+      // a page shorter than the page size is the last one.
+      for (let page = 1; ; page++) {
+        const { data, error } = await db.auth.admin.listUsers({ page, perPage: authPageSize })
+        if (error) throw new Error(`auth users: ${error.message}`)
+        const match = data.users.find((u) => u.email === email)
+        if (match) return match.id
+        if (data.users.length < authPageSize) return null
+      }
     },
     deletePublicUser: (id, email) => deleted('users', [['id', id], ['email', email]]),
     deleteAuthUser: async (id, email) => {
@@ -173,8 +185,24 @@ async function connectDb(config: SpikeConfig, env: NodeJS.ProcessEnv): Promise<p
   return client
 }
 
+/**
+ * Nothing may already answer on the probe port: a wrangler left by an earlier
+ * killed run would answer the health check first, and the run would measure that
+ * stale Worker instead of its own (#2157 lessons review).
+ */
+export async function assertWorkerPortFree(fetchFn: (url: string) => Promise<Response> = fetch): Promise<void> {
+  let answered: Response | null = null
+  try {
+    answered = await fetchFn(`${WORKER_ORIGIN}/health`)
+  } catch {
+    return
+  }
+  throw new Error(`something already answers on ${WORKER_ORIGIN} (HTTP ${answered.status}), probably a wrangler left by an earlier run; stop it, then run again`)
+}
+
 async function startWorker(log: (line: string) => void, register: (closer: () => Promise<void>) => void): Promise<ChildProcess> {
   if (!existsSync(WRANGLER)) throw new Error(`wrangler not found at ${WRANGLER}; run pnpm install`)
+  await assertWorkerPortFree()
   const child = spawn(WRANGLER, ['dev', '--config', path.join(PACKAGE_DIR, 'worker', 'wrangler.toml'), '--port', String(WORKER_PORT), '--ip', '127.0.0.1', '--show-interactive-dev-session=false'], {
     cwd: PACKAGE_DIR,
     detached: true,

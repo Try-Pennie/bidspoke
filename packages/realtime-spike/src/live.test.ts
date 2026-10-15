@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { assertSameProject, keepJoinStatus, loadConfig, watchConnection, WORKER_ORIGIN } from './live.ts'
+import { assertSameProject, assertWorkerPortFree, keepJoinStatus, loadConfig, watchConnection, WORKER_ORIGIN } from './live.ts'
 
 describe('watchConnection: a dropped database connection is reported, not a crash before cleanup', () => {
   it('handles the client\'s error event and logs it', () => {
@@ -76,5 +76,15 @@ describe('assertSameProject: the sender and the subscribers must use one databas
 
   it('refuses any other kind of SUPABASE_URL, rather than not checking it', () => {
     expect(() => assertSameProject({ supabaseUrl: 'https://supabase.example.org', project: 'supabase' } as SpikeConfig, { PGHOST: 'db.example.org' })).toThrow(/neither/)
+  })
+})
+
+describe('assertWorkerPortFree: a leftover wrangler must not stand in for this run\'s Worker (#2157 lessons review)', () => {
+  it('refuses when something already answers on the probe port', async () => {
+    await expect(assertWorkerPortFree(async () => new Response('ok'))).rejects.toThrow(/already answers/)
+  })
+
+  it('passes when nothing is listening', async () => {
+    await expect(assertWorkerPortFree(async () => { throw new TypeError('fetch failed') })).resolves.toBeUndefined()
   })
 })

@@ -30,6 +30,7 @@ function wiring(overrides: Partial<Wiring> = {}) {
   }
   const cleanupOps: CleanupOps = {
     findUserIdByEmail: async () => null,
+    findAuthUserIdByEmail: async () => null,
     deletePublicUser: async () => 0,
     deleteAuthUser: async () => 'absent',
     deleteOrganization: async (id) => {
@@ -103,6 +104,7 @@ describe('main', () => {
     const h = wiring({
       cleanupOps: () => ({
         findUserIdByEmail: async () => null,
+        findAuthUserIdByEmail: async () => null,
         deletePublicUser: async () => 0,
         deleteAuthUser: async () => 'absent',
         deleteOrganization: async () => {
@@ -164,6 +166,7 @@ describe('main', () => {
     const h = wiring({
       cleanupOps: () => ({
         findUserIdByEmail: async () => null,
+        findAuthUserIdByEmail: async () => null,
         deletePublicUser: async () => 0,
         deleteAuthUser: async () => 'absent',
         deleteOrganization: async () => {
@@ -216,6 +219,7 @@ describe('main', () => {
         order.push('cleanup started')
         return {
           findUserIdByEmail: async () => null,
+          findAuthUserIdByEmail: async () => null,
           deletePublicUser: async () => 0,
           deleteAuthUser: async () => 'absent',
           deleteOrganization: async () => 0,

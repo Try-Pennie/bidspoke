@@ -18,6 +18,10 @@ function recordingOps(overrides: Partial<CleanupOps> = {}): CleanupOps & { calls
       calls.push(`find ${email}`)
       return 'u-found'
     },
+    findAuthUserIdByEmail: async (email) => {
+      calls.push(`find auth ${email}`)
+      return null
+    },
     deletePublicUser: async (id, email) => {
       calls.push(`public_user ${id} ${email}`)
       return 1
@@ -93,6 +97,17 @@ describe('cleanupLedger', () => {
     const report = await cleanupLedger(ledgerWith(everything), ops)
     expect(report.failed).toEqual([`organization ${SLUG} (org-b): violates foreign key constraint`])
     expect(ops.calls).toContain(`allowlist ${EMAIL}`)
+  })
+
+  it('finds an auth user by its own email when an earlier cleanup already removed the users row (#2157 lessons review)', async () => {
+    const ops = recordingOps({
+      findUserIdByEmail: async () => null,
+      findAuthUserIdByEmail: async () => 'u-auth',
+    })
+    const report = await cleanupLedger(ledgerWith([{ kind: 'auth_user', key: EMAIL, id: null, state: 'planned' }]), ops)
+    expect(ops.calls).toContain(`auth_user u-auth ${EMAIL}`)
+    expect(report.removed).toContain(`auth_user ${EMAIL}`)
+    expect(report.failed).toEqual([])
   })
 
   it('refuses a hand edited key that only contains the marker, and removes nothing for it', async () => {

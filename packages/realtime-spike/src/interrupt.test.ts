@@ -83,4 +83,22 @@ describe('installInterruptCleanup', () => {
     expect(proc.listeners('SIGINT')).toBe(0)
     expect(proc.listeners('SIGTERM')).toBe(0)
   })
+
+  it('exits with the cleanup command once cleanup outlives its deadline, rather than hanging (#2157 lessons review)', async () => {
+    const proc = fakeProcess()
+    const lines: string[] = []
+    let fire: () => void = () => {}
+    installInterruptCleanup(proc, () => new Promise<void>(() => {}), (line) => lines.push(line), {
+      deadlineMs: 90_000,
+      setTimer: (fn) => {
+        fire = fn
+      },
+      hint: 'rerun with --cleanup /l.json',
+    })
+    proc.emit('SIGINT')
+    expect(proc.exits).toEqual([])
+    fire()
+    expect(await proc.exited).toBe(130)
+    expect(lines.some((l) => /did not finish within 90 s.*--cleanup \/l\.json/.test(l))).toBe(true)
+  })
 })

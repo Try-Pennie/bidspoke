@@ -13,6 +13,8 @@ import { keyCarriesMarker, type EntryKind, type Ledger, type LedgerEntry } from 
 export interface CleanupOps {
   /** The users row the signup trigger made has the auth user's id. */
   findUserIdByEmail(email: string): Promise<string | null>
+  /** The auth user itself, by email, for when an earlier cleanup already removed the users row. */
+  findAuthUserIdByEmail(email: string): Promise<string | null>
   // Each delete by id also names the marker bearing key, and touches only a
   // row carrying it, so a ledger id pointing at a real row removes nothing.
   deletePublicUser(id: string, email: string): Promise<number>
@@ -52,7 +54,11 @@ export async function cleanupLedger(ledger: Ledger, ops: CleanupOps): Promise<Cl
   let resolvedUserId: string | null | undefined
   const userId = async (entry: LedgerEntry): Promise<string | null> => {
     if (entry.id) return entry.id
-    if (resolvedUserId === undefined) resolvedUserId = await ops.findUserIdByEmail(entry.key)
+    if (resolvedUserId === undefined) {
+      // The users row goes first, so a cleanup that removed it and then failed on
+      // the auth user leaves only the auth user to find it by (#2157 lessons review).
+      resolvedUserId = (await ops.findUserIdByEmail(entry.key)) ?? (await ops.findAuthUserIdByEmail(entry.key))
+    }
     return resolvedUserId
   }
 
