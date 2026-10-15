@@ -29,11 +29,19 @@
  *
  * Every non-test run, outside every alert gate: a classified Salesforce outage
  * is exactly when these writes are at risk.
+ *
+ * A CREDIT INQUIRY POST IS RECORDED BEFORE IT IS SENT (#2172, Dan's D5 on #1680).
+ * Each such Apex call attaches a new file to the Lead, so it is never resent
+ * blind, and an isolate cancelled inside the first 2 s would otherwise leave no
+ * trace of it. Its watch records it at once (recordNow), and the node waits for that record
+ * before the call goes out; a confirmed answer clears it, as for an update. It
+ * is one call a lead (about 3,100 a day), so a KV write and delete each is cheap.
  */
 import { encryptSecret, type SecretKeyInput } from '../lib/secret-crypto'
 import { formatErr } from '../lib/format-error'
 import type { RetryClock } from '../lib/post-response-budget'
 import type { ResolvedStepInput } from '../types'
+import { CREDIT_INQUIRY_APEX_PATH } from './inquiry-post'
 
 export const AT_RISK_WRITE_PREFIX = 'at-risk-write:'
 /** The entry's lifetime, and so its erasure bound and the key rotation's wait. */
@@ -49,7 +57,10 @@ export interface AtRiskEntry {
   step_namespace: string
   sf_object: string
   sf_record_id: string
-  sf_operation: 'update'
+  /** An update, or the credit inquiry post (#2172), whose record is the Submission it names. */
+  sf_operation: 'update' | 'apex'
+  /** apex only: the endpoint, always the credit inquiry post. */
+  apex_path?: string
   body_encrypted: string
   /** When the step started, ISO: the order the read-back merges entries for one record in. */
   first_attempt_at: string
@@ -61,7 +72,9 @@ export interface AtRiskEntry {
 export interface SalesforceRequestNote {
   object: string
   record_id: string
-  operation: 'update'
+  operation: 'update' | 'apex'
+  /** apex only: the credit inquiry post's endpoint. */
+  apex_path?: string
   body: Record<string, unknown>
 }
 
@@ -82,6 +95,12 @@ export interface HeldWrite {
 export interface AtRiskWatch {
   /** The request as the node resolved it; called again if the node changes it. */
   note(req: SalesforceRequestNote): void
+  /**
+   * The request, recorded at once rather than after 2 s: a credit inquiry post
+   * (#2172). Resolves once the record is written (or failed, said in the log),
+   * so the node sends after it.
+   */
+  recordNow(req: SalesforceRequestNote): Promise<void>
   /** The latest request the node noted, or null when it noted none. */
   noted(): SalesforceRequestNote | null
   /**
@@ -114,7 +133,10 @@ export function parseAtRiskEntry(raw: string | null): AtRiskEntry | null {
     return typeof value === 'string' && value !== '' ? value : null
   }
   const keys = ['org_id', 'workflow_id', 'execution_id', 'step_namespace', 'sf_object', 'sf_record_id', 'body_encrypted', 'first_attempt_at', 'recorded_at'] as const
-  if (v.v !== 1 || v.sf_operation !== 'update' || keys.some((k) => text(k) === null)) return null
+  // An apex record is read only for the credit inquiry post (#2172), the one Apex
+  // call the read-back knows how to judge.
+  const operationOk = v.sf_operation === 'update' || (v.sf_operation === 'apex' && v.apex_path === CREDIT_INQUIRY_APEX_PATH)
+  if (v.v !== 1 || !operationOk || keys.some((k) => text(k) === null)) return null
   if (!Number.isFinite(Date.parse(v.first_attempt_at as string)) || !Number.isFinite(Date.parse(v.recorded_at as string))) return null
   return v as unknown as AtRiskEntry
 }
@@ -210,11 +232,23 @@ interface NotedFailure {
 function carryNotedRequest(err: unknown, noted: SalesforceRequestNote | null, held: HeldWrite | null): unknown {
   if (!noted || !err || typeof err !== 'object') return err
   const failure = err as NotedFailure
-  if (failure.resolvedInput) return err
+  if (failure.resolvedInput) {
+    // A credit inquiry post has no replay store to fall back on (only updates are
+    // stored), so when the watch holds it, the failure says so whoever built its
+    // request, and the capture leaves it to the read-back (#2172).
+    if (held && noted.operation === 'apex') failure.atRiskHeldUntil = held.expires_at
+    return err
+  }
   failure.resolvedInput = {
     // The node's config is not part of the note; the run page shows the request as sent.
     template: null,
-    resolved: { operation: noted.operation, object: noted.object, record_id: noted.record_id, body: noted.body },
+    resolved: {
+      operation: noted.operation,
+      object: noted.object,
+      record_id: noted.record_id,
+      body: noted.body,
+      ...(noted.apex_path ? { apex_path: noted.apex_path } : {}),
+    },
   }
   if (held) failure.atRiskHeldUntil = held.expires_at
   return err
@@ -264,6 +298,7 @@ export function startAtRiskWatch(opts: {
           sf_object: req.object,
           sf_record_id: req.record_id,
           sf_operation: req.operation,
+          ...(req.apex_path ? { apex_path: req.apex_path } : {}),
           body_encrypted: await encryptSecret(JSON.stringify(req.body), opts.keys),
           first_attempt_at: firstAttemptAt,
           recorded_at: new Date(putAt).toISOString(),
@@ -280,7 +315,8 @@ export function startAtRiskWatch(opts: {
   }
 
   void opts.clock.timer(AT_RISK_AFTER_MS, watching.signal).then(() => {
-    if (watching.signal.aborted) return
+    // Already recorded at its note (a credit inquiry post): nothing more to write.
+    if (watching.signal.aborted || due) return
     due = true
     record()
   })
@@ -289,6 +325,14 @@ export function startAtRiskWatch(opts: {
     note(req) {
       latest = req
       if (due) record()
+    },
+    recordNow(req) {
+      // A credit inquiry post is recorded before it is sent (see the header), and
+      // the caller waits for the record.
+      latest = req
+      due = true
+      record()
+      return chain
     },
     noted() {
       return latest

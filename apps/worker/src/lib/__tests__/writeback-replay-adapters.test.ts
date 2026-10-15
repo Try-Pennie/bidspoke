@@ -116,4 +116,38 @@ describe('salesforcePortFor', () => {
     expect(sends[0].url).toBe('https://sf.example/services/data/v60.0/sobjects/Submission__c/a04Ui00000NkhG1IAJ')
     expect(sends[1].body).toBe('{"A__c":1}')
   })
+
+  // #2172: the read-back's one resend of a credit inquiry post goes to the Apex
+  // REST path under the instance, not under the data API, as a POST.
+  it('posts to an Apex REST path under the instance, with the same fresh login on a revoked token', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+    const calls: Array<{ url: string; method?: string; auth?: string; body?: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      const headers = (init.headers ?? {}) as Record<string, string>
+      calls.push({ url, method: init.method, auth: headers.Authorization, body: init.body })
+      if (url.endsWith('/services/oauth2/token')) return new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 })
+      return headers.Authorization === 'Bearer cached-token'
+        ? new Response('[{"errorCode":"INVALID_SESSION_ID"}]', { status: 401 })
+        : new Response('{"statusCode":"200"}', { status: 200 })
+    }))
+    const port = await salesforcePortFor({ WORKFLOW_CACHE: kv() } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1')
+    const res = await port.postApex('/services/apexrest/credit-inquiries', '{"submissionId":"a"}')
+    expect(res.status).toBe(200)
+    const sends = calls.filter((c) => c.url.includes('/apexrest/'))
+    expect(sends.map((c) => [c.url, c.method, c.auth])).toEqual([
+      ['https://sf.example/services/apexrest/credit-inquiries', 'POST', 'Bearer cached-token'],
+      ['https://sf.example/services/apexrest/credit-inquiries', 'POST', 'Bearer fresh-token'],
+    ])
+    expect(sends[1].body).toBe('{"submissionId":"a"}')
+  })
+
+  it('refuses a path that is not a plain Apex REST path, sending nothing', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const port = await salesforcePortFor({ WORKFLOW_CACHE: kv() } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1')
+    await expect(port.postApex('/services/data/v60.0/sobjects/Lead', '{}')).rejects.toThrow(/not an Apex REST path/)
+    await expect(port.postApex('/services/apexrest/credit-inquiries?x=1', '{}')).rejects.toThrow(/not an Apex REST path/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
