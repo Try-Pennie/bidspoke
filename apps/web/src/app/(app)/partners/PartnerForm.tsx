@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useReducer, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRules, parseRoutingCode,
@@ -226,7 +226,6 @@ export default function PartnerForm({
   const [resolverType, setResolverType] = useState<BidResolverType>(partner?.bid_resolver_type ?? 'api')
   const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(partner?.bid_resolver_config ?? {})
   const [outboundMapping, setOutboundMapping] = useState<Record<string, unknown> | null>(partner?.outbound_field_mapping ?? null)
-  const [bidMode, setBidMode] = useState<BidMode>(partner?.bid_mode ?? 'commit')
   const [bidComparisonSource, setBidComparisonSource] = useState<BidComparisonSource>(partner?.bid_comparison_source ?? 'auto')
   const [extraExtraction, setExtraExtraction] = useState<ExtraExtractionConfig | null>(partner?.extra_extraction ?? null)
   const [lastProbeResponse, setLastProbeResponse] = useState<unknown>(partner?.last_probe_response ?? null)
@@ -344,7 +343,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors, acceptSignals, externalRoutingCode, duplicateSignals }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors, acceptSignals, externalRoutingCode, duplicateSignals }
   }
 
   // Dirty tracking — compare current values against the values at mount (reset
@@ -416,7 +415,7 @@ export default function PartnerForm({
     setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
     setResolverType(snap.resolverType); setResolverConfig(snap.resolverConfig)
     setOutboundMapping(snap.outboundMapping)
-    setBidMode(snap.bidMode); setBidComparisonSource(snap.bidComparisonSource)
+    setBidComparisonSource(snap.bidComparisonSource)
     setExtraExtraction(snap.extraExtraction); setLastProbeResponse(snap.lastProbeResponse)
     setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
@@ -867,24 +866,8 @@ export default function PartnerForm({
         </Section>}
 
         {isBuyerPartner(partnerType) && resolverType === 'api' && <Section title="Response handling">
-          <Field label="Bid mode" hint="commit: the API call creates a lead. ping_only: the call is a lightweight bid quote with no side effects.">
-            <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
-              {(['commit', 'ping_only'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setBidMode(m)}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors duration-100 ${
-                    bidMode === m ? 'bg-p-blue-dark text-white' : 'text-gray-500 hover:text-graphite'
-                  }`}
-                >
-                  {m === 'commit' ? 'Commit' : 'Ping only'}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <div className="border-t border-gray-100 pt-4">
+          {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
+          <div>
             <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
             <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
           </div>

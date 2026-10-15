@@ -29,6 +29,7 @@ export interface Partner {
   bid_resolver_type: BidResolverType
   bid_resolver_config: Record<string, unknown>
   outbound_field_mapping: Record<string, unknown> | null
+  /** Read only (PM-9, #2136): off the page, kept until its contract step drops the column. */
   bid_mode: BidMode
   bid_comparison_source: BidComparisonSource
   extra_extraction: ExtraExtractionConfig | null
@@ -74,8 +75,12 @@ export interface Partner {
   last_save_id?: string | null
 }
 
-/** The fields a partner save may name: the row less its identity, its bookkeeping and what the Worker derives. */
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
+/**
+ * The fields a partner save may name: the row less its identity, its
+ * bookkeeping, what the Worker derives, and bid_mode, which the page no longer
+ * edits (PM-9, #2136), so no save the page makes can carry it.
+ */
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
 
 /** A versioned partner save (#2132): the version edited from and this press's id. */
 export interface PartnerSaveVersioning {

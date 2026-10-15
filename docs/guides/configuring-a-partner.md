@@ -47,11 +47,6 @@ The matrix is read-only in the UI by design while Salesforce stays canonical. If
 
 ## Response handling (buyer, API resolver only)
 
-When the resolver is Partner API, set the Bid mode:
-
-- Commit - the API call creates a lead on the partner's side (a real submission).
-- Ping only (`ping_only`) - the call is a lightweight bid quote with no side effects (the conversion is a separate out-of-band step).
-
 Use the Sample response and Extra extraction panels to capture the partner's response shape so the editor can map fields out of it.
 
 ## Outbound field mapping (buyer only)

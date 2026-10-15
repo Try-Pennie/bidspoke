@@ -13,7 +13,7 @@ function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
     name: 'Acme', apiEndpoint: '', cfSecretKey: '', clickUrl: '', isActive: true,
     priority: '', dailyCap: '', minBid: '', bidFormula: '',
     resolverType: 'formula', resolverConfig: {}, outboundMapping: null,
-    bidMode: 'commit', bidComparisonSource: 'auto', extraExtraction: null, lastProbeResponse: null,
+    bidComparisonSource: 'auto', extraExtraction: null, lastProbeResponse: null,
     dedupEndpoint: '', circuitEnabled: true, circuitThreshold: '', circuitWindow: '', circuitCooldown: '',
     signalRules: { rejection: [], transient: [], permanent: [] },
     alertTransient: true, alertPermanent: true,
@@ -30,6 +30,14 @@ describe('buildPartnerBody (#98)', () => {
   it('carries is_active through both ways (the Undo re-enable case)', () => {
     expect(buildPartnerBody(snap({ isActive: false }), { slug: 's', isExisting: true }).is_active).toBe(false)
     expect(buildPartnerBody(snap({ isActive: true }), { slug: 's', isExisting: true }).is_active).toBe(true)
+  })
+
+  // PM-9 (#2136): bid mode is off the page, so no body the page builds names it,
+  // for an existing partner or a new one. The Worker keeps a stored value when
+  // the key is absent and defaults a new partner to commit.
+  it('never carries bid_mode, for an existing partner or a new one', () => {
+    expect('bid_mode' in buildPartnerBody(snap(), { slug: 'acme', isExisting: true })).toBe(false)
+    expect('bid_mode' in buildPartnerBody(snap(), { slug: 'acme', isExisting: false })).toBe(false)
   })
 
   it('omits slug for an existing partner and includes it for a new one', () => {
@@ -138,7 +146,7 @@ describe('parseRules and serializeRules round trip every signal operator (#1463)
 // touched whose value differs from what the page loaded (base), so a save made
 // on top of someone else's newer save cannot put their change back.
 describe('the partner draft: base, draft and touched (#2132)', () => {
-  const base = buildPartnerBody(snap({ name: 'Acme', bidMode: 'ping_only', dailyCap: '100' }), { slug: 'acme', isExisting: true })
+  const base = buildPartnerBody(snap({ name: 'Acme', dailyCap: '100' }), { slug: 'acme', isExisting: true })
 
   it('starts with nothing touched and nothing to send', () => {
     const s = initDraft(base)
