@@ -58,6 +58,8 @@ const run = {
 
 beforeEach(() => vi.mocked(recordOutcomeDeadLetter).mockClear())
 
+const FIELD_ERROR = '[{"message":"Bid status: bad value for restricted picklist field: Maybe","errorCode":"INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST","fields":["BidStatus__c"]}]'
+
 describe('which failures can be stored for replay', () => {
   it('stores a Salesforce update with its record and body', () => {
     expect(writebackFromFailure('salesforce', update({}))).toEqual({
@@ -110,10 +112,10 @@ describe('captureFailedWriteback', () => {
     expect(await decryptSecret(row.error_encrypted as string, KEY)).toContain('unavailable for p@example.com')
   })
 
-  it('stores a permanent failure as already refused and finished, so the replay leaves it and retention reaches it', async () => {
+  it('stores a write Salesforce rejected as already refused and finished, so the replay leaves it and retention reaches it', async () => {
     const db = fakeSupabase()
     await captureFailedWriteback(
-      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): INVALID_FIELD'), resolvedInput: update({}) },
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error(`Salesforce API error (400): ${FIELD_ERROR}`), resolvedInput: update({}), salesforceAnswer: { status: 400, text: FIELD_ERROR } },
       { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
     )
     expect(db.inserts[0]).toMatchObject({ replayable: false, status: 'refused' })
@@ -204,6 +206,62 @@ describe('captureFailedWriteback', () => {
 })
 
 /**
+ * #2054: the capture decides refused by the replay tool's own rule
+ * (salesforceRejectedTheWrite, #471), applied to Salesforce's answer to the write.
+ * A login refused even after a fresh one, or a permission refusal, is a fault on
+ * our side that fixing the credentials clears, so the write is kept to replay.
+ */
+describe('a login or permission refusal is kept to replay (#2054)', () => {
+  const capture = (errorType: 'permanent' | 'transient', status: number | null, text: string) => {
+    const db = fakeSupabase()
+    return captureFailedWriteback(
+      {
+        ...run,
+        nodeType: 'salesforce',
+        errorType,
+        error: new Error(status === null ? 'Salesforce token fetch failed (400): {"error":"invalid_grant"}' : `Salesforce API error (${status}): ${text}`),
+        resolvedInput: update({}),
+        ...(status === null ? {} : { salesforceAnswer: { status, text } }),
+      },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    ).then((result) => ({ result, row: db.inserts[0] }))
+  }
+
+  it('stores a 401 that survived the fresh login as replayable and pending', async () => {
+    const { result, row } = await capture('permanent', 401, '[{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]')
+    expect(result).toEqual({ kind: 'stored' })
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null, error_type: 'permanent' })
+  })
+
+  it('stores a 403 as replayable and pending', async () => {
+    const { row } = await capture('permanent', 403, '[{"message":"insufficient access rights on object id","errorCode":"INSUFFICIENT_ACCESS_OR_READONLY"}]')
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null })
+  })
+
+  it('still stores a 400 with a field error as refused', async () => {
+    const { row } = await capture('permanent', 400, FIELD_ERROR)
+    expect(row).toMatchObject({ replayable: false, status: 'refused' })
+    expect(typeof row.finished_at).toBe('string')
+  })
+
+  // A fresh login the token endpoint itself refused never reached the write, so
+  // Salesforce gave the write no answer; as in the replay tool, no answer is not
+  // a refusal. The token endpoint's own 400 is not the write's status.
+  it('stores a write whose fresh login failed, which Salesforce never answered, as replayable and pending', async () => {
+    const { row } = await capture('permanent', null, '')
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null })
+  })
+
+  // A node can name a Salesforce error code worth retrying (transient_errors),
+  // which the replay tool does not know about: the engine classed it transient,
+  // so it is not stored as refused.
+  it('keeps a failure the node classed transient pending, even with a 400 answer', async () => {
+    const { row } = await capture('transient', 400, '[{"errorCode":"UNABLE_TO_LOCK_ROW"}]')
+    expect(row).toMatchObject({ replayable: true, status: 'pending' })
+  })
+})
+
+/**
  * #2163: a timed out update is an unknown outcome, held in KV by the at-risk
  * watch, not a refusal for the replay store and never "cannot be replayed". The
  * request the failure carries came from the watch, with the held record's expiry.
@@ -281,7 +339,7 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
   it('still stores a refusal, which the watch does not hold', async () => {
     const db = fakeSupabase()
     const result = await captureFailedWriteback(
-      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): FIELD_CUSTOM_VALIDATION_EXCEPTION'), resolvedInput: update({}), heldUntil: null },
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): FIELD_CUSTOM_VALIDATION_EXCEPTION'), resolvedInput: update({}), heldUntil: null, salesforceAnswer: { status: 400, text: '[{"errorCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION"}]' } },
       { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
     )
     expect(result).toEqual({ kind: 'stored' })
