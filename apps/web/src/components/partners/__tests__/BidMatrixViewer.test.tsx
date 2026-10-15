@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -75,5 +75,62 @@ describe('BidMatrixViewer — sync problems (#208)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Sync now/ }))
     await waitFor(() => expect(api.partnerBidConfigs.sync).toHaveBeenCalled())
     expect(screen.queryByText(/overlap|no coverage/i)).not.toBeInTheDocument()
+  })
+})
+
+// #2134: deleting a matrix was the browser's bare confirm(), which said nothing
+// about what goes with it. It is now the one Dialog shell, whose consequence is
+// derived from what is stored (L180), and every incidental dismissal keeps it.
+describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
+  const rows = [
+    { id: 'r1', config_id: 'cfg-1', is_sell_off: false, row_low: 0, row_high: 9999, range_low: 600, range_high: 699, bid_amount: 10 },
+    { id: 'r2', config_id: 'cfg-1', is_sell_off: false, row_low: 10000, row_high: null, range_low: 600, range_high: 699, bid_amount: 20 },
+  ]
+
+  async function openDelete(onConfigsChange = vi.fn()) {
+    vi.mocked(api.partnerBidConfigs.get).mockResolvedValue({ config, rows } as never)
+    render(<BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={[config]} onConfigsChange={onConfigsChange} />)
+    await screen.findByText('Standard rows (2)')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    return { dialog: await screen.findByRole('alertdialog', { name: 'Delete matrix "sofi default"?' }), onConfigsChange }
+  }
+
+  it('names the matrix and its row count, and says what comes back and what does not', async () => {
+    const { dialog } = await openDelete()
+    expect(dialog).toHaveAccessibleDescription('Its 2 rows and its change history are deleted with it. Salesforce still holds the rows, so adding a matrix and syncing brings them back; the history does not come back.')
+    expect(screen.getByRole('button', { name: 'Keep matrix' })).toHaveFocus()
+  })
+
+  it('Escape deletes nothing', async () => {
+    const { dialog, onConfigsChange } = await openDelete()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(api.partnerBidConfigs.delete).not.toHaveBeenCalled()
+    expect(onConfigsChange).not.toHaveBeenCalled()
+  })
+
+  it('Delete matrix deletes it and takes it off the list', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const { onConfigsChange } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    await waitFor(() => expect(onConfigsChange).toHaveBeenCalledWith([]))
+    expect(api.partnerBidConfigs.delete).toHaveBeenCalledWith('cfg-1')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('a delete that fails says nothing was deleted, in the dialog, and keeps the matrix', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValue(new Error('API 500: boom'))
+    const { dialog, onConfigsChange } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/^Not deleted:/)
+    expect(onConfigsChange).not.toHaveBeenCalled()
+  })
+
+  it('when the rows could not be read, the consequence does not claim a count', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockRejectedValue(new Error('API 500'))
+    render(<BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={[config]} onConfigsChange={vi.fn()} />)
+    await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    expect(await screen.findByRole('alertdialog')).toHaveAccessibleDescription(/^Its rows and its change history are deleted with it\./)
   })
 })

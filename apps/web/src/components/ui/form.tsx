@@ -234,7 +234,8 @@ export function Checkbox({ id, checked, onChange, label, disabled }: { id: strin
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
+/** destructive: the solid red button that answers a dialog with a deletion; danger is the quieter outlined one beside a row. */
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost'
 
 export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, className }: {
   variant: ButtonVariant

@@ -4,6 +4,9 @@ import { useEffect, useState } from 'react'
 import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension, MatrixProblem } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-react'
+import { Dialog } from '@/components/Dialog'
+import { Button } from '@/components/ui/form'
+import { errorSentence } from '@/lib/error-sentence'
 
 interface Props {
   partnerId: string
@@ -19,6 +22,8 @@ type SyncState = 'idle' | 'syncing' | 'synced' | 'error'
 export function BidMatrixViewer(p: Props) {
   const [activeId, setActiveId] = useState<string | null>(p.selectedConfigId ?? p.configs[0]?.id ?? null)
   const [rows, setRows] = useState<BidMatrixRow[]>([])
+  /** False when the rows could not be read, so nothing claims how many there are. */
+  const [rowsKnown, setRowsKnown] = useState(false)
   const [loadingRows, setLoadingRows] = useState(false)
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
@@ -27,6 +32,8 @@ export function BidMatrixViewer(p: Props) {
   // the break immediately, instead of waiting for the next hourly Slack alert.
   const [problems, setProblems] = useState<MatrixProblem[]>([])
   const [creating, setCreating] = useState(false)
+  /** The delete dialog (#2134): null when closed; otherwise whether it is deleting and why it last failed. */
+  const [deleteAsk, setDeleteAsk] = useState<{ deleting: boolean; error: string | null } | null>(null)
 
   useEffect(() => {
     if (p.selectedConfigId && p.selectedConfigId !== activeId) {
@@ -35,14 +42,15 @@ export function BidMatrixViewer(p: Props) {
   }, [p.selectedConfigId, activeId])
 
   useEffect(() => {
-    if (!activeId) { setRows([]); return }
+    if (!activeId) { setRows([]); setRowsKnown(false); return }
     let cancelled = false
     // A different matrix is now in view — its problems (if any) come from its own
     // sync, not the one we may have just shown.
     setProblems([])
     setLoadingRows(true)
+    setRowsKnown(false)
     api.partnerBidConfigs.get(activeId)
-      .then((res) => { if (!cancelled) setRows(res.rows) })
+      .then((res) => { if (!cancelled) { setRows(res.rows); setRowsKnown(true) } })
       .catch(() => { if (!cancelled) setRows([]) })
       .finally(() => { if (!cancelled) setLoadingRows(false) })
     return () => { cancelled = true }
@@ -94,12 +102,31 @@ export function BidMatrixViewer(p: Props) {
   }
 
   async function handleDelete() {
-    if (!activeConfig) return
-    if (!confirm(`Delete matrix "${activeConfig.name}"?`)) return
-    await api.partnerBidConfigs.delete(activeConfig.id)
+    if (!activeConfig || deleteAsk?.deleting) return
+    setDeleteAsk({ deleting: true, error: null })
+    try {
+      await api.partnerBidConfigs.delete(activeConfig.id)
+    } catch (err) {
+      setDeleteAsk({ deleting: false, error: `Not deleted: ${errorSentence(err, 'the matrix delete failed')}` })
+      return
+    }
+    setDeleteAsk(null)
     const remaining = p.configs.filter((c) => c.id !== activeConfig.id)
     p.onConfigsChange(remaining)
     setActiveId(remaining[0]?.id ?? null)
+  }
+
+  /**
+   * What deleting the matrix takes with it, from what is stored (L180): its rows
+   * and its change history go with it (both cascade), and only the rows of a
+   * matrix synced from Salesforce can come back.
+   */
+  function deleteConsequence(config: PartnerBidConfig): string {
+    const what = rowsKnown ? `Its ${rows.length} ${rows.length === 1 ? 'row' : 'rows'} and its change history are` : 'Its rows and its change history are'
+    const back = config.sync_source === 'salesforce'
+      ? 'Salesforce still holds the rows, so adding a matrix and syncing brings them back; the history does not come back.'
+      : 'Neither can be brought back.'
+    return `${what} deleted with it. ${back}`
   }
 
   return (
@@ -155,7 +182,7 @@ export function BidMatrixViewer(p: Props) {
             </button>
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={() => setDeleteAsk({ deleting: false, error: null })}
               className="rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
               aria-label="Delete this matrix"
               title="Delete this matrix"
@@ -165,6 +192,23 @@ export function BidMatrixViewer(p: Props) {
           </>
         )}
       </div>
+
+      {deleteAsk && activeConfig && (
+        <Dialog
+          warning
+          title={`Delete matrix "${activeConfig.name}"?`}
+          description={deleteConsequence(activeConfig)}
+          onDismiss={() => { if (!deleteAsk.deleting) setDeleteAsk(null) }}
+          actions={
+            <>
+              <Button variant="secondary" onClick={() => setDeleteAsk(null)} disabled={deleteAsk.deleting}>Keep matrix</Button>
+              <Button variant="destructive" onClick={() => { void handleDelete() }} busy={deleteAsk.deleting}>Delete matrix</Button>
+            </>
+          }
+        >
+          {deleteAsk.error && <p role="alert" className="text-sm text-red-700">{deleteAsk.error}</p>}
+        </Dialog>
+      )}
 
       {activeConfig && (
         <div className="space-y-2">
