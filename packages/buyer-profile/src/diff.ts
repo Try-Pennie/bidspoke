@@ -57,7 +57,11 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
   // missing one as empty would save a profile offered in no state.
   if (!paths.has('allowed_states')) throw new Error('unflattenProfileDocument: allowed_states is missing')
   const states = paths.get('allowed_states')
-  const rows = <T>(prefix: string): T[] => [...paths.entries()].filter(([k]) => k.startsWith(`${prefix}[`)).map(([, v]) => ({ ...(v as object) }) as T)
+  if (!Array.isArray(states)) throw new Error('unflattenProfileDocument: allowed_states is not a list')
+  const rows = <T>(prefix: string): T[] => [...paths.entries()].filter(([k]) => k.startsWith(`${prefix}[`)).map(([k, v]) => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error(`unflattenProfileDocument: ${k} is not a row`)
+    return { ...v } as T
+  })
   const doc: BuyerProfileDocument = {
     sold_on: scalar('sold_on') as BuyerProfileDocument['sold_on'],
     is_enabled: scalar('is_enabled') as boolean,

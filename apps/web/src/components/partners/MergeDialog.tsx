@@ -84,14 +84,14 @@ function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose
   )
 }
 
-export function MergeDialog({ result, theirName, onChoose, onSave, onKeepEditing, saving = false }: {
+export function MergeDialog({ result, theirName, onChoose, onSave, onKeepEditing }: {
   result: MergeResult
   /** Who saved first, or null when no editor is on record. */
   theirName: string | null
   onChoose: (key: string, side: MergeSide) => void
   onSave: () => void
+  /** Closes the dialog; the save it starts shows its progress beside the page's Save button. */
   onKeepEditing: () => void
-  saving?: boolean
 }) {
   const left = unansweredCount(result)
   const who = theirName ?? 'Someone else'
@@ -104,7 +104,7 @@ export function MergeDialog({ result, theirName, onChoose, onSave, onKeepEditing
       actions={
         <>
           <Button variant="secondary" onClick={onKeepEditing}>Keep editing</Button>
-          <Button variant="primary" onClick={onSave} disabled={left > 0} busy={saving}>Save both</Button>
+          <Button variant="primary" onClick={onSave} disabled={left > 0}>Save both</Button>
         </>
       }
     >

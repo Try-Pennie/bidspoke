@@ -67,6 +67,15 @@ describe('unflattenProfileDocument', () => {
     expect(() => unflattenProfileDocument(paths)).toThrow(/is not a route of an address and states/)
   })
 
+  it('refuses a row that is not an object and a state list that is not a list, by name', () => {
+    const rowPaths = flattenProfileDocument(fixture.cases[0].document)
+    rowPaths.set('windows[1:540]', 'monday')
+    expect(() => unflattenProfileDocument(rowPaths)).toThrow(/windows\[1:540\] is not a row/)
+    const statePaths = flattenProfileDocument(fixture.cases[0].document)
+    statePaths.set('allowed_states', 'TX')
+    expect(() => unflattenProfileDocument(statePaths)).toThrow(/allowed_states is not a list/)
+  })
+
   it('refuses a path it cannot place rather than dropping it', () => {
     const paths = flattenProfileDocument(fixture.cases[1].document)
     paths.set('loan_amount_max', 5)

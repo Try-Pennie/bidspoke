@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useReducer, useRef } from 'react'
+import { useState, useEffect, useMemo, useReducer, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
@@ -596,7 +596,11 @@ export default function PartnerForm({
     restoreSnapshot(mergedSnap)
   }
 
-  const mergeResult = pendingMerge ? mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices) : null
+  // Only when the pending merge or an answer changes, not on every keystroke behind a closed dialog.
+  const mergeResult = useMemo(
+    () => (pendingMerge ? mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices) : null),
+    [pendingMerge],
+  )
 
   /** Save both: the answers on screen at their versions, then one save of what is still mine. */
   function saveMerged() {
