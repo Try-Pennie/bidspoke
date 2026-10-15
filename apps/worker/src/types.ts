@@ -149,13 +149,20 @@ export interface ExecutionContext {
    */
   noteSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => void
   /**
+   * Set by the walk beside it, around a credit inquiry post (#2172): records the
+   * post at once, and the node waits for it before sending, so an isolate
+   * cancelled mid call still leaves the record.
+   */
+  recordSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => Promise<void>
+  /**
    * This write's marker (#2023), set by the walk around a post-answer Salesforce
    * update for that step only, and stamped by the node on the objects that have
    * the field (engine/write-marker.ts). Absent before the answer.
    */
   writeMarker?: string
   /**
-   * Starts the watch on one post-answer Salesforce update (#2022). Set by the
+   * Starts the watch on one post-answer Salesforce update (#2022), or on a credit
+   * inquiry post before or after the answer (#2172). Set by the
    * engine on live runs only (never a test or a shadow run), so its absence is
    * what keeps a test run's writes unrecorded.
    */

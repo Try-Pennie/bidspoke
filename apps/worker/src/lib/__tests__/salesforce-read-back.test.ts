@@ -153,6 +153,8 @@ function makeSalesforce(records: Record<string, Record<string, unknown>>) {
         state.inflight--
       }
     },
+    // No update is ever posted to an Apex endpoint.
+    postApex: () => Promise.reject(new Error('an update was posted to Apex')),
   }
   return { port, calls, state, records }
 }
@@ -282,7 +284,7 @@ describe('cut off, then missing', () => {
     const order: string[] = []
     r.kv.put.mockImplementation(async (k: string, v: string) => { order.push(`put ${k}`); r.kv.store.set(k, v) })
     const send = r.sf.port.send
-    r.deps.portFor = async () => ({ send: async (m, p, b) => { order.push(`${m}`); return send(m, p, b) } })
+    r.deps.portFor = async () => ({ ...r.sf.port, send: async (m, p, b) => { order.push(`${m}`); return send(m, p, b) } })
     await runSalesforceReadBack(r.deps)
     const statePut = order.findIndex((o) => o.startsWith('put sf-read-back:state:'))
     expect(statePut).toBeGreaterThan(-1)
