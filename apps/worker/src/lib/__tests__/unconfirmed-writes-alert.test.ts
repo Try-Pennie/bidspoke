@@ -4,7 +4,7 @@
  * finds the record missing. Read as Slack would render them.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendUnconfirmedWritesAlert, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert, type SlackConnection } from '../slack'
+import { sendUnconfirmedWritesAlert, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert, sendRepeatedSlowdownAlert, type SlackConnection } from '../slack'
 import { READ_BACK_MISSING_CODE } from '../db-retry'
 
 let fetchMock: ReturnType<typeof vi.fn>
@@ -85,15 +85,12 @@ describe('slowdown summary (#1881)', () => {
     expect(text).not.toContain('<!channel>')
   })
 
-  it('says when, how many runs on which workflows, and that every record landed', async () => {
-    await sendSlowdownSummaryAlert(conn, { ...base, landed: 62, lost: 0, steps_missing: 0 }, 'https://app.test')
+  it('says when and how many runs on which workflows', async () => {
+    await sendSlowdownSummaryAlert(conn, { ...base, landed: 61, lost: 0, steps_missing: 1 }, 'https://app.test')
     const text = textOf()
-    expect(text).toContain('Database slowdown, every record saved')
     expect(text).toContain('Between 8:20 AM and 8:21 AM ET')
     expect(text).toContain('20 runs')
     expect(text).toContain('Engine Bidding Workflow (12), RML LendSwift (5), Lead Economy (3)')
-    expect(text).toContain('all 62 landed')
-    expect(text).toContain('*Fix:* Nothing to do.')
     for (const c of BANNED) expect(text).not.toContain(c)
   })
 
@@ -121,6 +118,43 @@ describe('slowdown summary (#1881)', () => {
     expect(text).toMatch(/\*Fix:\* Re-derive the lost records from the runs below/)
     expect(text).toContain('<https://app.test/workflows/wf-1?execution=ex-1|Lead Economy run> (run records, lead sightings)')
     for (const c of BANNED) expect(text).not.toContain(c)
+  })
+})
+
+describe('repeated slowdowns that saved every record (#2165)', () => {
+  const slowdowns = [
+    { from: '2026-10-15T13:31:10Z', to: '2026-10-15T13:31:10Z', runs: 1, workflows: [{ name: 'RML LendSwift', runs: 1 }] },
+    { from: '2026-10-15T17:02:05Z', to: '2026-10-15T17:03:40Z', runs: 3, workflows: [{ name: 'Engine Bidding Workflow', runs: 2 }, { name: '<!here> & co', runs: 1 }] },
+    { from: '2026-10-16T01:15:00Z', to: '2026-10-16T01:15:00Z', runs: 2, workflows: [{ name: 'Main Flow', runs: 2 }] },
+  ]
+
+  it('says how many, when each was in ET, which workflows, that nothing was lost, and where to look', async () => {
+    const sent = await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24 }, 'https://app.test')
+    expect(sent).toBe(true)
+    const text = textOf()
+    expect(text).toContain('Database slowdowns are repeating')
+    expect(text).toContain('3 times in the last 24 hours')
+    expect(text).toContain('Oct 15 at 9:31 AM ET: 1 run, RML LendSwift (1)')
+    expect(text).toContain('Oct 15 from 1:02 PM to 1:03 PM ET: 3 runs, Engine Bidding Workflow (2), &lt;!here&gt; &amp; co (1)')
+    expect(text).toContain('Oct 15 at 9:15 PM ET: 2 runs, Main Flow (2)')
+    expect(text).toContain('Each time, every record was saved')
+    expect(text).toContain('*Fix:* Check the database load on Supabase.')
+    expect(text).not.toContain('<!here>')
+    expect(text).not.toMatch(/UTC|GMT/)
+    for (const c of BANNED) expect(text).not.toContain(c)
+  })
+
+  it('names at most ten slowdowns and counts the rest', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ ...slowdowns[0], from: `2026-10-15T1${i % 10}:00:00Z`, to: `2026-10-15T1${i % 10}:00:00Z` }))
+    await sendRepeatedSlowdownAlert(conn, { slowdowns: many, window_hours: 24 }, 'https://app.test')
+    const text = textOf()
+    expect(text.match(/RML LendSwift \(1\)/g)).toHaveLength(10)
+    expect(text).toContain('and 2 more')
+  })
+
+  it('reports a Slack refusal as not delivered', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
+    expect(await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24 }, 'https://app.test')).toBe(false)
   })
 })
 
