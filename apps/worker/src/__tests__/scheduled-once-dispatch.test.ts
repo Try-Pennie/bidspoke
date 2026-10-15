@@ -31,7 +31,14 @@ vi.mock('../lib/stored-copy-ledger', async (importOriginal) => ({
   flushStoredCopyLedger: (...a: unknown[]) => flushStoredCopyLedger(...a),
 }))
 
+// The guard event recorder's backoff waits are injected away, so no real time passes (L524).
+vi.mock('../lib/cron-guard-record', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../lib/cron-guard-record')>()
+  return { ...real, isolateCronGuardRecorder: real.createCronGuardRecorder({ sleep: async () => {} }) }
+})
+
 const worker = (await import('../index')).default
+const { countCronGuardEvents } = await import('../lib/cron-guard-watch')
 
 function claimNamespace(): DurableObjectNamespace {
   const objects = new Map<string, AlertClaimObject>()
@@ -58,9 +65,29 @@ function claimNamespace(): DurableObjectNamespace {
   } as unknown as DurableObjectNamespace
 }
 
-function envWith(ns: DurableObjectNamespace): Env {
+/** The IDEMPOTENCY namespace held in a Map, whose writes fail while `down`, listing as KV does. */
+function idempotencyKv() {
+  const store = new Map<string, string>()
+  const kv = {
+    down: false,
+    store,
+    get: async (k: string) => store.get(k) ?? null,
+    put: vi.fn(async (k: string, v: string) => {
+      if (kv.down) throw new Error('KV PUT failed: 500 Internal Server Error')
+      store.set(k, v)
+    }),
+    delete: async (k: string) => { store.delete(k) },
+    list: async ({ prefix }: { prefix: string }) => ({
+      keys: [...store.keys()].filter((k) => k.startsWith(prefix)).sort().map((name) => ({ name })),
+      list_complete: true,
+    }),
+  }
+  return kv
+}
+
+function envWith(ns: DurableObjectNamespace, idempotency?: ReturnType<typeof idempotencyKv>): Env {
   return {
-    IDEMPOTENCY: { get: async () => null, put: async () => undefined, delete: async () => undefined },
+    IDEMPOTENCY: idempotency ?? { get: async () => null, put: async () => undefined, delete: async () => undefined },
     WORKFLOW_CACHE: { get: async () => null, put: async () => undefined, delete: async () => undefined, list: async () => ({ keys: [], list_complete: true }) },
     ALERT_CLAIM: ns,
     SUPABASE_URL: 'https://example.supabase.co',
@@ -131,5 +158,39 @@ describe('the scheduled handler runs each tick once (#1899)', () => {
     expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toMatch(/kv write failed/)
     await fire(env, '* * * * *', minute + 37_000)
     expect(prewarmKvCaches).toHaveBeenCalledTimes(1)
+  })
+})
+
+// #2166: on 2026-10-14 the KV write counting each fail-open failed in the same
+// blip that made the guard fail open, so the hourly check read zero.
+describe('a fail-open whose record fails in the same tick is still counted (#2166)', () => {
+  const minute = Date.parse('2026-10-14T21:34:00.000Z')
+
+  it('holds the record it could not write, says why, and writes it at its own time on the next tick that reaches the store', async () => {
+    const kv = idempotencyKv()
+    kv.down = true
+    // Earlier cases in this file fail open too; read only this case's lines.
+    vi.mocked(console.error).mockClear()
+    const before = Date.now()
+    // No claim binding, so the guard fails open, and KV is down in the same tick.
+    await fire(envWith(undefined as unknown as DurableObjectNamespace, kv), '* * * * *', minute)
+    const after = Date.now()
+    expect(prewarmKvCaches).toHaveBeenCalledTimes(1)
+    expect(await countCronGuardEvents(kv, 'failed_open', Date.now())).toEqual({ count: 0, capped: false })
+    const errors = vi.mocked(console.error).mock.calls.flat().map(String).join('\n')
+    const id = /FAILED OPEN event=(\S+)/.exec(errors)?.[1]
+    expect(id).toBeTruthy()
+    expect(errors).toMatch(new RegExp(`could not record failed_open event=${id} after 3 attempts: .*KV PUT failed: 500 Internal Server Error`))
+
+    // The store answers again by the next tick: the held record is written then.
+    kv.down = false
+    await fire(envWith(claimNamespace(), kv), '* * * * *', minute + 60_000)
+    expect(await countCronGuardEvents(kv, 'failed_open', Date.now())).toEqual({ count: 1, capped: false })
+    // At the fail-open's own time, so it is counted in the window it belongs to.
+    const key = [...kv.store.keys()].find((k) => k.startsWith('cron-guard:event:failed_open:'))!
+    const at = 9_999_999_999_999 - Number(key.split(':')[3])
+    expect(at).toBeGreaterThanOrEqual(before)
+    expect(at).toBeLessThanOrEqual(after)
+    expect(key.endsWith(`:${id}`)).toBe(true)
   })
 })
