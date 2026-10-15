@@ -68,8 +68,10 @@
  * while writes wait (checkSalesforceReadBackLiveness).
  *
  * Its own state is in KV beside the held writes, under `sf-read-back:`, and holds
- * field names and counts, never a value, so the key rotation does not touch it.
- * It expires with the held write it describes.
+ * field names, counts and times, never a value, so the key rotation does not
+ * touch it. A write's record expires with the held write it describes (24 hours),
+ * the per field conflict counts after 8 days, and the liveness check's one
+ * first-seen time never (see checkSalesforceReadBackLiveness).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
