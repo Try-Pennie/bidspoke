@@ -5,11 +5,11 @@ export const runtime = 'edge'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { Partner, PartnerBody } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Plus, ChevronRight, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
-import PartnerForm, { UNSAVED_CHANGES_MESSAGE } from './PartnerForm'
+import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
 
 export default function PartnersPage() {
   const router = useRouter()
@@ -109,13 +109,28 @@ export default function PartnersPage() {
     }
   }
 
-  async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[]) {
+  async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[], versioning?: PartnerSaveVersioning): Promise<PartnerSaveResult | void> {
     if (id) {
-      const { stored_copy_warning: copyWarning, ...updated } = await api.partners.update(id, body)
-      // Saved, but its stored outage copy could not be cleared yet: say so (#1846).
-      if (copyWarning) setError(copyWarning)
+      // An edit is a versioned save of only the changed fields (#2132). The form
+      // reports a refusal (stale version, reload required) itself, so it throws
+      // through to it.
+      if (!versioning) throw new Error('A partner edit needs the version it was made from.')
+      let answer: Partner & { stored_copy_warning?: string }
+      try {
+        answer = await api.partners.update(id, body, versioning)
+      } catch (err) {
+        // A press whose answer was lost but whose save landed is refused as stale
+        // with its own save id: the stored row is the saved one (#2132).
+        const e = err as { status?: number; body?: Partial<PartnerStaleVersion> }
+        if (e.status === 409 && e.body?.last_save_id === versioning.save_id && e.body.current) answer = e.body.current
+        else throw err
+      }
+      const { stored_copy_warning: copyWarning, ...updated } = answer
       setPartners((prev) => prev.map((p) => p.id === id ? updated : p))
       selectPartner(updated)
+      // Saved, but its stored outage copy could not be cleared yet: the form
+      // shows it beside Saved, never as an error, because the save happened (#1846, #2132).
+      return { partner: updated, copyWarning: copyWarning ?? null }
     } else {
       const created = await api.partners.create(body as Required<PartnerBody>)
       if (pendingUuids?.length) {

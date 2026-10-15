@@ -99,7 +99,7 @@ describe('prewarmKvCaches keeps the buyer profile copy warm (#1632)', () => {
     const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     try {
-      await expect(prewarmKvCaches(supabase, envWith(kv))).resolves.toBeUndefined()
+      await expect(prewarmKvCaches(supabase, envWith(kv))).resolves.toMatchObject({ workflowsReadError: null })
       expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/keep warm failed for org org-1: connection reset/)
     } finally {
       logs.mockRestore()

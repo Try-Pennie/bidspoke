@@ -83,7 +83,7 @@ describe('minute tick timing (#2058)', () => {
 
   // The 2026-10-14 shape: a KV call that never answers, inside the sweep.
   it('ends the minute at the deadline when a KV call inside the sweep never answers', async () => {
-    vi.mocked(prewarmKvCaches).mockImplementationOnce(async () => {})
+    vi.mocked(prewarmKvCaches).mockImplementationOnce(async () => ({ workflowsReadError: null, reconfirms: {} }))
     const hungKv = { list: () => new Promise(() => {}), get: () => new Promise(() => {}) }
     const handed = fireWatched('* * * * *', { WORKFLOW_CACHE: hungKv } as unknown as Env)
     await vi.advanceTimersByTimeAsync(MINUTE_JOB_DEADLINE_MS)

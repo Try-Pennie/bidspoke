@@ -632,6 +632,7 @@ export type Database = {
           hourly_lead_cap: number | null
           hourly_spend_cap_cents: number | null
           is_enabled: boolean
+          last_save_id: string | null
           loan_amount_min: number | null
           organization_id: string
           partner_id: string
@@ -654,6 +655,7 @@ export type Database = {
           hourly_lead_cap?: number | null
           hourly_spend_cap_cents?: number | null
           is_enabled?: boolean
+          last_save_id?: string | null
           loan_amount_min?: number | null
           organization_id: string
           partner_id: string
@@ -676,6 +678,7 @@ export type Database = {
           hourly_lead_cap?: number | null
           hourly_spend_cap_cents?: number | null
           is_enabled?: boolean
+          last_save_id?: string | null
           loan_amount_min?: number | null
           organization_id?: string
           partner_id?: string
@@ -1984,6 +1987,7 @@ export type Database = {
           id: string
           is_active: boolean
           last_probe_response: Json | null
+          last_save_id: string | null
           min_bid: number | null
           name: string
           organization_id: string
@@ -1999,6 +2003,7 @@ export type Database = {
           updated_by: string | null
           updated_by_email: string | null
           updated_by_name: string | null
+          version: number
         }
         Insert: {
           accept_signals?: Json
@@ -2025,6 +2030,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           last_probe_response?: Json | null
+          last_save_id?: string | null
           min_bid?: number | null
           name: string
           organization_id: string
@@ -2040,6 +2046,7 @@ export type Database = {
           updated_by?: string | null
           updated_by_email?: string | null
           updated_by_name?: string | null
+          version?: number
         }
         Update: {
           accept_signals?: Json
@@ -2066,6 +2073,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           last_probe_response?: Json | null
+          last_save_id?: string | null
           min_bid?: number | null
           name?: string
           organization_id?: string
@@ -2081,6 +2089,7 @@ export type Database = {
           updated_by?: string | null
           updated_by_email?: string | null
           updated_by_name?: string | null
+          version?: number
         }
         Relationships: [
           {
@@ -3019,6 +3028,7 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      partner_configs_unversioned_columns: { Args: never; Returns: string[] }
       pg_cron_health: {
         Args: { window_hours?: number }
         Returns: {
@@ -3160,6 +3170,19 @@ export type Database = {
           p_org: string
           p_partner: string
           p_profile: Json
+        }
+        Returns: Json
+      }
+      save_partner_config: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_actor_name: string
+          p_expected_version: number
+          p_id: string
+          p_org: string
+          p_patch: Json
+          p_save_id: string
         }
         Returns: Json
       }

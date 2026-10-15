@@ -35,6 +35,7 @@
     "record_alert_incident_opened",
     "record_alert_incident_paged",
     "record_alert_incident_ended",
-    "record_alert_incident_marker_check"
+    "record_alert_incident_marker_check",
+    "save_partner_config"
   ]
 }
