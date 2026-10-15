@@ -126,13 +126,13 @@ The response can also be classified and have extra fields pulled out. See [Respo
 | `duplicate_signals` | Signal[] | No | `[]` | Decline answers that mean the buyer already holds the lead. A decline matching any of them is recorded as `Duplicate`, any other decline as `Fail`, an accept as `Success`. Same Signal shape as `accept_signals`. Empty means every decline is `Fail`. |
 | `dedup_endpoint` | string (URL) | No | `null` | Optional dedup check called before each bid. See [Dedup](#dedup). |
 
-## Bid mode and response handling
+## Response handling
 
 These apply to the `api` resolver only.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `bid_mode` | `'commit'` \| `'ping_only'` | No | `'commit'` | `commit`: the API call creates a lead on the partner side. `ping_only`: the call is a lightweight bid quote with no side effects (used for ping/post partners whose conversion POST is a separate out-of-band call). |
+| `bid_mode` | `'commit'` \| `'ping_only'` | No | `'commit'` | Not on the partners page since PM-9 (#2136). Stored on the partner and shown in a Partner Bid step's resolved input only; nothing branches on it, so a `commit` and a `ping_only` partner are called, read and classified the same way. The API still accepts it and a new partner gets `commit`, until a contract step drops the column. |
 | `extra_extraction` | JSON object | No | `null` | Declarative map of extra values to pull from the response. Each key becomes an entry in the node output's `extra`. A value is either a dot-path string into the response body, `{ path: '...' }`, or `{ classifier: '...' }` to run a named classifier (currently `tripoint_result`, which maps a Tripoint `resultCode` to `Success` / `Duplicate` / `Fail`). |
 | `last_probe_response` | any | No | `null` | A saved sample response from the partner, used by the editor to help build extraction paths. Not used at run time. |
 

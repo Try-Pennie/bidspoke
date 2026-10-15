@@ -54,7 +54,7 @@ If `bid_resolver_type` is not set on an older partner row, the resolver falls ba
 
 ### Bid mode
 
-A partner can be set to `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'`. This value is stored on the partner and surfaced in the step's resolved input for visibility, but the node itself runs the same resolve-and-classify path regardless. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node.
+A partner stores `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'`. The node reads it only to copy it into the step's resolved input (`baseTemplate` in `apps/worker/src/engine/nodes/partner-bid.ts:289`) and runs the same resolve-and-classify path either way. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node. The setting is no longer on the partners page (PM-9, #2136); the column stays until a contract step drops it.
 
 ## Output shape
 

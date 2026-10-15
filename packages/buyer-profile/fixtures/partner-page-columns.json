@@ -1,5 +1,5 @@
 {
-  "about": "Every column of the five tables the partners page edits, each either with the registry path it is edited at or excluded with a reason (#2132, L96). supabase/tests/partner_page_columns.test.sql fails when a table gains a column this file does not list; apps/web/src/app/(app)/partners/__tests__/partner-field-registry.test.ts fails when a path here matches no registry entry, or more than one. Paths are in the registry's spelling: a partner field as its name, a buyer profile path under profile. in the TypeScript spelling. An exclusion's kind is identity (who or what the row is, never edited) or bookkeeping (about a change, not the change; for partner_configs exactly the columns partner_configs_unversioned_columns() names that the page does not edit).",
+  "about": "Every column of the five tables the partners page edits, each either with the registry path it is edited at or excluded with a reason (#2132, L96). supabase/tests/partner_page_columns.test.sql fails when a table gains a column this file does not list; apps/web/src/app/(app)/partners/__tests__/partner-field-registry.test.ts fails when a path here matches no registry entry, or more than one. Paths are in the registry's spelling: a partner field as its name, a buyer profile path under profile. in the TypeScript spelling. An exclusion's kind is identity (who or what the row is, never edited), bookkeeping (about a change, not the change; for partner_configs exactly the columns partner_configs_unversioned_columns() names that the page does not edit) or retired (a column the page no longer edits, kept until a contract step drops it).",
   "tables": {
     "partner_configs": {
       "id": { "excluded": "identity", "reason": "The row's key." },
@@ -28,7 +28,7 @@
       "bid_resolver_type": { "path": "bid_resolver_type" },
       "bid_resolver_config": { "path": "bid_resolver_config" },
       "outbound_field_mapping": { "path": "outbound_field_mapping" },
-      "bid_mode": { "path": "bid_mode" },
+      "bid_mode": { "excluded": "retired", "reason": "Off the page since PM-9 (#2136): nothing acts on it. The engine and the money gate still read it, so the column stays until its contract step drops it." },
       "bid_comparison_source": { "path": "bid_comparison_source" },
       "extra_extraction": { "path": "extra_extraction" },
       "last_probe_response": { "path": "last_probe_response" },

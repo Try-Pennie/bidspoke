@@ -5,7 +5,7 @@
 // the React component.
 import { FIELD_LABELS, SECTION_LABELS } from '@/components/partners/buyer-profile/labels'
 import type { Signal, SignalOperator } from '@bidspoke/buyer-profile'
-import type { PartnerBody, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
+import type { PartnerBody, BidResolverType, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
 import type { PartnerType } from '@/lib/partner-roles'
 import { listToString, operatorOf, parseList, signalFrom, valueTextOf } from '@/lib/signal-text'
 
@@ -54,7 +54,6 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('click_url', 'Endpoints', 'Click URL', 'workflow_values'),
   partnerField('dedup_endpoint', 'Endpoints', 'Dedup endpoint', 'bid_group'),
   partnerField('outbound_field_mapping', 'Outbound field mapping', 'Outbound field mapping', 'bid_group'),
-  partnerField('bid_mode', 'Response handling', 'Bid mode', 'bid_group'),
   partnerField('extra_extraction', 'Response handling', 'Extra extraction', 'bid_group'),
   partnerField('last_probe_response', 'Response handling', 'Sample response', 'bid_group'),
   partnerField('daily_cap', 'Bidding limits', 'Daily attempt cap (bidding workflows)', 'bid_group'),
@@ -105,7 +104,7 @@ export function registryEntriesFor(path: string): FieldEntry[] {
  */
 const PARTNER_BODY_KEY_RECORD: Record<keyof PartnerBody, true> = {
   name: true, slug: true, api_endpoint: true, cf_secret_key: true, daily_cap: true, min_bid: true, bid_formula: true,
-  bid_resolver_type: true, bid_resolver_config: true, outbound_field_mapping: true, bid_mode: true, bid_comparison_source: true,
+  bid_resolver_type: true, bid_resolver_config: true, outbound_field_mapping: true, bid_comparison_source: true,
   extra_extraction: true, last_probe_response: true, dedup_endpoint: true, response_classification: true, accept_signals: true,
   duplicate_signals: true, external_routing_code: true, alert_config: true, circuit_error_threshold: true, circuit_window_seconds: true,
   circuit_cooldown_seconds: true, circuit_enabled: true, confirmation_window_ms: true, is_active: true, priority: true,
@@ -189,7 +188,7 @@ export interface FormSnapshot {
   priority: string; dailyCap: string; minBid: string; bidFormula: string
   resolverType: BidResolverType; resolverConfig: Record<string, unknown>
   outboundMapping: Record<string, unknown> | null
-  bidMode: BidMode; bidComparisonSource: BidComparisonSource
+  bidComparisonSource: BidComparisonSource
   extraExtraction: ExtraExtractionConfig | null; lastProbeResponse: unknown
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
@@ -318,7 +317,6 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     bid_resolver_type: snap.resolverType,
     bid_resolver_config: snap.resolverConfig,
     outbound_field_mapping: snap.outboundMapping,
-    bid_mode: snap.bidMode,
     bid_comparison_source: snap.bidComparisonSource,
     extra_extraction: snap.extraExtraction,
     last_probe_response: snap.lastProbeResponse,

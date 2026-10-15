@@ -24,7 +24,7 @@ This is the common shape for lead routing. The fan-out, bid collection, winner s
 
 A partner sends Pennie a ping asking for a bid on a lead they hold. The workflow validates the ping, runs its decision logic, and responds with a single bid (or a decline). The partner decides whether to post the lead based on the response. Here Bidspoke is the bidder, not the router: the workflow ends in a [Response node](../nodes/response.md) carrying the bid, not in a routing step.
 
-Some partners are ping-only on the inbound side: the bid call has no side effects and a later conversion is a separate out-of-band call. That is the partner's `bid_mode: 'ping_only'` setting.
+Some partners are ping-only on the inbound side: the bid call has no side effects and a later conversion is a separate out-of-band call. That is a property of the partner's API contract, not a Bidspoke setting. A partner still stores a `bid_mode` value (`commit` or `ping_only`), but it is shown only in a Partner Bid step's resolved input and nothing branches on it; it is no longer on the partners page (PM-9).
 
 ## How a single bid flows
 

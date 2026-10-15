@@ -64,6 +64,14 @@ describe('the partners page field registry (#2132)', () => {
     }
   })
 
+  // PM-9 (#2136): the page no longer edits bid_mode. The column stays until its
+  // contract step, so the column list keeps it, excluded as retired.
+  it('bid_mode is not a path the page edits, and its column is excluded as retired', () => {
+    expect(PARTNER_BODY_KEYS).not.toContain('bid_mode')
+    expect(registryEntriesFor('bid_mode')).toEqual([])
+    expect(columns.tables.partner_configs.bid_mode).toMatchObject({ excluded: 'retired' })
+  })
+
   it('no two entries share a pattern', () => {
     const patterns = PARTNER_FIELD_REGISTRY.map((e) => e.pattern)
     expect(new Set(patterns).size).toBe(patterns.length)
