@@ -45,9 +45,10 @@ and detailed in its section below.
    attaches a new file to the Lead on every call that carries inquiries, so its
    retry needs deciding on purpose. See question 3.
 3. **The Update Submission relay sends exactly 28 named fields and drops
-   everything else**, `executionId` included. Every Main Flow post body sends
-   `executionId`; nothing else in the bodies falls outside the 28 (checked
-   against the live definition). A native PATCH must leave `executionId` out:
+   everything else**, `executionId` included. Every one of the nine Main Flow
+   posts to this relay sends `executionId`; nothing else in their bodies falls
+   outside the 28 (checked against the live definition). The inquiry post goes
+   to the other relay and carries no `executionId`. A native PATCH must leave `executionId` out:
    it is not a Salesforce field name. See question 1.
 4. **The Inquiries relay makes two Salesforce calls per post with no filter**:
    a Submission PATCH of `PDFlow_4__c` and `VantageScore__c`, then the Apex REST
@@ -489,7 +490,11 @@ Post-answer writes, all `update Prospect__c` (record id =
 `{{steps.generate_trades_body.output.prospectId}}`):
 
 - `patch_prospect`: winner writeback, body from the Lead Economy
-  `patch_prospect_body` code node.
+  `patch_prospect_body` code node, which writes `Base_Bid__c`, `BidAmount__c`,
+  `BidStatus__c`, `Bid_Response_Timestamp__c`, `Collections_Bid_Discount__c`,
+  `ExternalDebtAmount__c`, `ExternalExchangeStatus__c`,
+  `ExternalPartnerName__c`, `ExternalRoutingCode__c`, `OfferLandingPage__c` and
+  `RejectionReason__c` (read from the live definition's code, 2026-10-15).
 - `patch_prospect_success` / `patch_prospect_duplicate` / `patch_prospect_error`:
   `{ "TripointLeadID__c": <createLead.id>, "Tripoint_Response__c": "Success" |
   "Duplicate" | "Fail" }`.
