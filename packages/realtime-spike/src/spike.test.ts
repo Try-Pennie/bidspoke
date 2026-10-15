@@ -375,6 +375,21 @@ describe('runSpike: every control that fails is a problem the exit code carries'
     expect(result.problems.join('\n')).toMatch(/B was not admitted to its own topic/)
   })
 
+  it('still checks Org B and returns the result when closing a subscription throws', async () => {
+    const h = harness(makeWorld())
+    const real = h.deps.subscribe
+    h.deps.subscribe = async (label, jwt, topic) => {
+      const sub = await real(label, jwt, topic)
+      sub.close = async () => {
+        throw new Error('disconnect failed')
+      }
+      return sub
+    }
+    const result = await h.run()
+    expect(result.orgBEmpty).toBe(true)
+    expect(result.problems.join('\n')).toMatch(/disconnect failed/)
+  })
+
   it('reports REST broadcasts that were accepted but never arrived', async () => {
     const result = await harness(makeWorld({ undeliveredTopics: ['partners:org-a'] })).run()
     expect(result.problems.join('\n')).toMatch(/REST .*3 of 3 never arrived/)

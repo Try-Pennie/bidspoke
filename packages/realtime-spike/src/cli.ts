@@ -117,10 +117,17 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   // that arrives while the normal path is cleaning up waits for that same
   // cleanup, then exits, instead of killing it with rows still present.
   const closers: Array<() => Promise<void>> = []
+  let closing = false
+  const runCloser = (closer: () => Promise<void>) => closer().catch((err: unknown) => wiring.log(`closing: ${errorText(err)}`))
   const close = async () => {
-    for (const closer of closers.splice(0).reverse()) {
-      await closer().catch((err: unknown) => wiring.log(`closing: ${errorText(err)}`))
-    }
+    closing = true
+    for (const closer of closers.splice(0).reverse()) await runCloser(closer)
+  }
+  // Something started after the cleanup began (a wrangler spawned while the
+  // signal was being handled) is stopped at once rather than left running.
+  const register = (closer: () => Promise<void>) => {
+    if (closing) void runCloser(closer)
+    else closers.push(closer)
   }
   let tracked: Tracked<SpikeDeps> | null = null
   let cleaning: Promise<boolean> | null = null
@@ -154,7 +161,7 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
 
   let exitCode = 0
   try {
-    const live = await wiring.liveDeps(config, ledger, marker, (closer) => closers.push(closer))
+    const live = await wiring.liveDeps(config, ledger, marker, register)
     tracked = trackInflight(live.deps, REMOTE_CALLS)
     const result = await wiring.spike(tracked.deps, {
       ...DEFAULT_OPTIONS,

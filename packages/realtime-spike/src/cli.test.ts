@@ -269,6 +269,23 @@ describe('main', () => {
     expect(h.calls).toContain('stopped worker')
   })
 
+  it('stops something started after a signal\'s cleanup began, rather than leaving it running', async () => {
+    let lateRegister: (closer: () => Promise<void>) => void = () => {}
+    const h = wiring({
+      liveDeps: async (_config, _ledger, _marker, register) => {
+        lateRegister = register
+        h.emitter.emit('SIGINT')
+        return new Promise<never>(() => {})
+      },
+    })
+    void main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    expect(await h.exited).toBe(130)
+    lateRegister(async () => {
+      h.calls.push('stopped late worker')
+    })
+    await expect.poll(() => h.calls).toContain('stopped late worker')
+  })
+
   it('refuses a ledger path that already exists, before creating anything', async () => {
     const h = wiring()
     h.files.set('/l.json', '{}')

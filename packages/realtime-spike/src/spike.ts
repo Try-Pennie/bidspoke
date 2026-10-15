@@ -132,6 +132,17 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : JSON.stringify(err)
 }
 
+/** A subscription that fails to close is a problem to report, never a reason to drop the result. */
+async function closeAll(subs: Subscription[], problems: string[]): Promise<void> {
+  for (const s of subs) {
+    try {
+      await s.close()
+    } catch (err) {
+      problems.push(`closing a subscription failed: ${errorText(err)}`)
+    }
+  }
+}
+
 async function waitFor(deps: SpikeDeps, timeoutMs: number, done: () => boolean): Promise<boolean> {
   const deadline = deps.now() + timeoutMs
   while (!done()) {
@@ -241,7 +252,7 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
 
   if (present && Object.values(subs).some((s) => MISSING_PARTITION.test(s.detail ?? ''))) {
     log('joins were refused for a missing partition that now exists: joining again')
-    for (const s of Object.values(subs)) await s.close()
+    await closeAll(Object.values(subs), problems)
     subs = await joinAll()
     joinAttempts = 2
   }
@@ -363,7 +374,7 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
     problems.push(`the subscriber in workerd did not receive (${worker.status}: ${worker.detail ?? 'no detail'}), so decision 2's Worker monitor is not proved`)
   }
 
-  for (const s of Object.values(subs)) await s.close()
+  await closeAll(Object.values(subs), problems)
 
   // 7. Org B must hold nothing a cross organization job could pick up (L261).
   let orgBRows: OrgRowCounts | null = null
