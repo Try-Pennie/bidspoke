@@ -235,6 +235,36 @@
     "note": "The partner save (#2132), the Worker's only partner UPDATE. A WRITE: anon reaching it could switch a partner on or change where leads are posted. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing."
   },
   {
+    "name": "save_partner_page",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_partner_version": 0,
+      "p_patch": {},
+      "p_expected_profile_version": null,
+      "p_profile": null,
+      "p_save_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_actor_name": "probe"
+    },
+    "anon": "denied",
+    "note": "The partners page save (#2133): the partner record and the buyer profile in one transaction, behind the Worker's PUT /partners/:id/page. A WRITE: anon reaching it could switch a partner or a buyer on, or reprice one. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing. The page calls this route, so the function must exist before the Worker that serves it deploys."
+  },
+  {
+    "name": "_apply_buyer_profile",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner": "00000000-0000-0000-0000-000000000000",
+      "p_profile": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_audit_extra": {}
+    },
+    "anon": "denied",
+    "note": "The body of a buyer profile save (#2133), called only by save_buyer_profile and save_partner_page, which hold the row locks and compare the version first. Internal, with no grant to anyone: reached directly it would write a profile with no version check. Probed with the all zero partner, so nothing could be written even if a grant appeared."
+  },
+  {
     "name": "buyer_profile_document",
     "args": {
       "p_partner": "00000000-0000-0000-0000-000000000000"
