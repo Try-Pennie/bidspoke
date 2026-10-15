@@ -8,6 +8,13 @@
  *    or 30, default 7), `limit` (default 50, at most 100) and `offset` (default
  *    0). The response says whether more exist and the offset that reads them.
  *
+ *  - GET /api/incidents/:id/failed-runs (#2102): one failure rate incident's
+ *    failed runs, for the workflow page's run panel opened from the card's
+ *    "12 failed runs" link (`/workflows/<id>?incident=<incident id>`). The runs
+ *    are the ones failure rate's own rule matches, inside the incident's span,
+ *    among the runs still kept; `count` is the length of `runs`. 404 for an
+ *    incident the caller cannot see, 400 for one of another signal.
+ *
  * Who may call them: any signed in, allowlisted user (jwtAuth on every /api
  * route). Whose data they touch: the caller's organization's incidents and the
  * platform's, never another organization's. alert_incidents has no RLS policy,
@@ -24,8 +31,10 @@ import {
   INCIDENTS_MAX_LIMIT,
   isIncidentWindowDays,
   readClosedIncidents,
+  readIncidentFailedRuns,
   readOngoingIncidents,
 } from '../../lib/incidents-read'
+import { isUuid } from '../../lib/query-validators'
 
 type Ctx = Context<{ Bindings: Env; Variables: AuthVariables }>
 
@@ -74,6 +83,20 @@ incidents.get('/', async (c) => {
     )
   } catch (err) {
     return readFailed(c, err, 'The incident record')
+  }
+})
+
+incidents.get('/:id/failed-runs', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  if (!isUuid(id)) return c.json({ error: 'The incident id must be a uuid' }, 400)
+  try {
+    const result = await readIncidentFailedRuns(createSupabaseClient(c.env), orgId, id, { now: Date.now() })
+    if (result.kind === 'not_found') return c.json({ error: 'Incident not found' }, 404)
+    if (result.kind === 'not_failure_rate') return c.json({ error: 'Only a failure rate incident has failed runs to list' }, 400)
+    return c.json(result.body)
+  } catch (err) {
+    return readFailed(c, err, "The incident's failed runs")
   }
 })
 
