@@ -486,7 +486,8 @@ export default function PartnerForm({
         const message = opts.undo
           ? staleUndoSentence(stale)
           : profileStale && !partnerStale
-            ? 'Nothing saved. The buyer profile changed underneath you. Compare below.'
+            // Never a direction word: the Save button sits under the section (#1464, L111).
+            ? `Nothing saved. ${e.body.changed_by_name ?? 'Someone else'} saved the buyer profile while you were editing it. Compare the two at the top of the Buyer profile section.`
             : staleSaveSentence(stale)
         setSaveOutcome({ kind: 'failed', message })
         return { kind: 'refused' }

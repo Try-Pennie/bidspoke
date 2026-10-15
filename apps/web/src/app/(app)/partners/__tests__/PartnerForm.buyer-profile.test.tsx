@@ -261,6 +261,8 @@ describe('the Buyer profile section', () => {
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     const dialog = await screen.findByRole('alertdialog', { name: /saved by someone else/i })
     expect(dialog).toHaveTextContent(/Leads per day/)
+    // The outcome beside Save names who and where to look, never a direction (#1464, L111).
+    expect(screen.getByText('Nothing saved. Brian Nelms saved the buyer profile while you were editing it. Compare the two at the top of the Buyer profile section.')).toBeInTheDocument()
     expect(screen.getByLabelText('Leads per day')).toHaveValue(600)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save over theirs' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
