@@ -48,7 +48,7 @@ import { executeNode } from '../nodes/index'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert } from '../../lib/slack'
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
-import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD, recordOutcomeDeadLetter } from '../durability'
+import { recordOutcomeDeadLetter } from '../durability'
 import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS, CONTINUATION_WINDOW_MS } from '../../lib/post-response-budget'
 import { executeSalesforceNode } from '../nodes/salesforce'
 import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
@@ -196,12 +196,13 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps, writebacks }
 }
 
-function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false) {
+function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean) {
   const store = new Map<string, string>()
   const puts: Array<{ at: number; key: string }> = []
   let journalPuts = 0
   const kv = {
     async get(k: string, t?: string) {
+      if (getFails?.(k)) throw new Error('KV GET failed: 503 Service Unavailable')
       const v = store.get(k)
       return v === undefined ? null : t === 'json' ? JSON.parse(v) : v
     },
@@ -233,9 +234,6 @@ async function run(
   options: {
     slowFirstJournalPut?: boolean
     refuseSecondJournalPutOnce?: boolean
-    // Pre-seed the per-label dead-letter window counter so a single run of this
-    // helper can cross a label's threshold (continuation_unfinished needs 3, #1942).
-    seedWindows?: Record<string, number>
     // Laid over the run's input, so a case can mark it a test run (#2022).
     input?: Record<string, unknown>
     // Runs each step's per attempt deadline and retry backoff on the virtual
@@ -245,16 +243,16 @@ async function run(
     // real asynchronous work (WebCrypto, a Response body) can be mid await with no
     // virtual timer pending, and running the clock to the end then fires the
     // cut-off first. With this, the clock moves in small steps until the walk is
-    // done, and only then runs out (#2163).
-    walkDone?: () => boolean
+    // done, and only then runs out (#2163). Handed the run's KV store, so a case
+    // can also wait for an at-risk record to land (#2024).
+    walkDone?: (store: Map<string, string>) => boolean
+    // A KV read of a key this matches fails, as a KV outage would (#2024).
+    kvGetFails?: (key: string) => boolean
   } = {},
 ) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
-  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce)
-  for (const [label, count] of Object.entries(options.seedWindows ?? {})) {
-    idempotency.store.set(`outcome-deadletter-window:org-1:${label}`, String(count))
-  }
+  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails)
   const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
@@ -273,7 +271,7 @@ async function run(
   )
   // The response is out at virtual time zero. Let the post-response work run.
   if (options.walkDone) {
-    while (!options.walkDone()) {
+    while (!options.walkDone(idempotency.store)) {
       if (clock.now() >= CUTOFF) throw new Error('the walk after the answer did not settle before the cut-off')
       await clock.run(clock.now() + 10)
     }
@@ -517,10 +515,9 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     // Unfinished is not a failed Salesforce write: counted under its own label.
     expect(deadLetters('continuation_unfinished')).toHaveLength(1)
     expect(deadLetters('sf_writeback')).toEqual([])
-    // A single unfinished continuation is "unknown, probably fine", so it is
-    // recorded (the window counter above and the 'degraded' row) but does NOT
-    // page: the label needs several in the window to alert (#1942).
-    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    // A code node is nothing the Salesforce read-back holds, so nothing checks it
+    // later: even a single one pages (#2024, which retired #1942's three).
+    expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).toEqual(['continuation_unfinished'])
   })
 
   // #1992: the post-answer Salesforce write that failed is what the replay store
@@ -1025,6 +1022,89 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     })
   })
 
+  /**
+   * #2024: work still out at the cut-off pages only when the Salesforce read-back
+   * does not hold all of it. These run the REAL Salesforce node, the real at-risk
+   * watch and the read-back's own classifier on the record the watch wrote: the
+   * post-answer Prospect update never gets an answer, so it is still out at the
+   * cut-off, recorded and stamped.
+   */
+  describe('paging on unfinished work the read-back does not hold (#2024)', () => {
+    const SF_ENV = {
+      SECRET_ENCRYPTION_KEY: Buffer.from(new Uint8Array(32).map((_, i) => i + 41)).toString('base64'),
+      SALESFORCE_INSTANCE_URL: 'https://pennie.my.salesforce.test',
+      SALESFORCE_CLIENT_ID: 'id',
+      SALESFORCE_CLIENT_SECRET: 'secret',
+    }
+    // Longer than the 12 s window, so the update is still out at the cut-off.
+    const patch = { id: 'p', namespace: 'patch_prospect_reject', type: 'salesforce', config: { operation: 'update', object: 'Prospect__c', record_id: 'a06Ui00002sLkNuIAK', body: { BidStatus__c: 'Rejected' }, timeout_ms: 30_000, retries: 0 } }
+
+    function workflow(after: { id: string; namespace: string; type: string }) {
+      vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+        definition: {
+          trigger: { id: 'trigger', type: 'trigger', config: {} },
+          nodes: [{ id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } }, patch, { ...after, config: { retries: 0 } }],
+          edges: [{ id: 'e0', source: 'r', target: 'p' }, { id: 'e1', source: 'p', target: after.id }],
+        } as unknown as WorkflowDefinition,
+        workflow_version_id: 'v1',
+        workflow_name: 'Engine Bidding Workflow',
+        org_id: 'org-1',
+        slack_channel: null,
+        lane: 'money',
+      })
+      const walked: string[] = []
+      vi.mocked(executeNode).mockImplementation(async (n, ctx, env, _db, signal) => {
+        walked.push(n.namespace)
+        if (n.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+        if (n.type === 'salesforce') return executeSalesforceNode(n, ctx, env as Env, signal)
+        return { output: { ran: n.namespace } }
+      })
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (String(url).includes('/services/oauth2/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 })
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+        })
+      }))
+      return walked
+    }
+
+    // The watch records the update 2 s in, with real WebCrypto, so the clock moves
+    // in small steps until the record is in KV, and only then runs out.
+    const recorded = (store: Map<string, string>) => [...store.keys()].some((k) => k.startsWith('at-risk-write:'))
+    const unfinishedDeadLetters = () => vi.mocked(recordOutcomeDeadLetter).mock.calls.filter((c) => c[0] === 'continuation_unfinished')
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('stays quiet when the only work still out is a write the read-back holds', async () => {
+      workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
+      const { db, result, deadLetters, idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded })
+      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
+      expect(unfinishedDeadLetters()).toEqual([])
+      expect(deadLetters('continuation_unfinished')).toEqual([])
+      expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+      // The run still says what happened.
+      const row = db.executions.get(result.executionId)
+      expect(row?.status).toBe('degraded')
+      expect(String(row?.error_message)).toContain('patch_prospect_reject')
+    })
+
+    it('still pages when a recorded write is followed by a step the read-back does not track', async () => {
+      const walked = workflow({ id: 'a', namespace: 'achieve_after', type: 'achieve_offers' })
+      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded })
+      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
+      expect(walked).not.toContain('achieve_after')
+      expect(unfinishedDeadLetters()).toHaveLength(1)
+      expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).toEqual(['continuation_unfinished'])
+    })
+
+    it('pages when the at-risk record cannot be read', async () => {
+      workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
+      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, kvGetFails: (k) => k.startsWith('at-risk-write:') })
+      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
+      expect(unfinishedDeadLetters()).toHaveLength(1)
+    })
+  })
+
   // #1882: the reason and the alert pointed at the Salesforce update, which had
   // finished 87 ms after the answer; the step still out was the Achieve call after
   // it. They now name the step the walk was running when the wait gave up.
@@ -1055,17 +1135,10 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       if (node.namespace === 'under_10000_sf_post') return { output: { posted: true } }
       return late()
     })
-    // The window is seeded to one below the threshold so THIS unfinished
-    // continuation is the one that pages (#1942), letting us assert the alert
-    // payload names the step the walk was on.
-    const { db, result } = await run(
-      (c) => {
-        late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
-        return 'up'
-      },
-      {},
-      { seedWindows: { continuation_unfinished: CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1 } },
-    )
+    const { db, result } = await run((c) => {
+      late = () => c.sleep(60_000).then(() => ({ output: { late: true } }))
+      return 'up'
+    })
     const reason = String(db.executions.get(result.executionId)?.error_message)
     expect(reason).toContain('Achieve under 10k (achieve_under_10k)')
     expect(reason).not.toContain('under_10000_sf_post')
