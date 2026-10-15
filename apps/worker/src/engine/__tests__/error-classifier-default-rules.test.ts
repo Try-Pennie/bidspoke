@@ -63,7 +63,8 @@ const before = {
   },
 }
 
-const STATUSES = [-1, 0, ...Array.from({ length: 600 }, (_, i) => i), 600, 999]
+// A status that is not a whole number too: the old body answered permanent for NaN, because every comparison with it is false.
+const STATUSES = [-1, 0, ...Array.from({ length: 600 }, (_, i) => i), 600, 999, NaN, Infinity, -Infinity, 429.5]
 const BODIES: Array<string | null | undefined> = [undefined, null, '', '{"error":"x"}', 'Expected <number>, got <string>', '<!DOCTYPE html><html><body>Edge</body></html>', '<!doctypehtml><p>x', '<html lang="en">']
 const NAMES: Array<string | undefined> = [undefined, '', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'Error', 'AbortError', 'typeerror']
 const MESSAGES = ['', 'Cannot read properties of undefined', 'fetch failed', 'Failed to fetch', 'Network connection lost.', 'The network connection was lost', 'Connection was closed', 'connection lost', 'REQUEST_LIMIT_EXCEEDED: ConcurrentRequests', 'x REQUEST_LIMIT_EXCEEDED y', 'request_limit_exceeded']

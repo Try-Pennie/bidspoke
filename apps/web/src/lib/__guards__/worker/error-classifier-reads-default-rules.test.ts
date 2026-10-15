@@ -24,7 +24,6 @@ function literalsOf(rules: readonly DefaultErrorRule[]): string[] {
   for (const { match } of rules) {
     if (match.kind === 'status') out.push(...match.statuses.map(String))
     if (match.kind === 'status_from') out.push(String(match.from))
-    if (match.kind === 'status_below') out.push(String(match.below))
     if (match.kind === 'saturated') out.push(...match.markers)
     if (match.kind === 'code_error') out.push(...match.names, match.networkFailureName, ...match.unlessMessageContains)
   }

@@ -33,8 +33,8 @@ export type ErrorRuleMatch =
   | { kind: 'status'; statuses: readonly number[] }
   /** Any other status at or above `from`. */
   | { kind: 'status_from'; from: number }
-  /** Any other status below `below`: a non success answer that is not an error status. */
-  | { kind: 'status_below'; below: number }
+  /** Any status no rule above names, a number below 400 or none readable at all: unrecognized, so no retry is spent on it. */
+  | { kind: 'status_other' }
   /** The answer's body is an HTML document, at any status: it died at an edge or proxy. */
   | { kind: 'html_error_page' }
   /** The thrower marked the error permanent itself (a Salesforce 4xx, a Branch node's else that errors). */
@@ -111,11 +111,11 @@ export const DEFAULT_ERROR_RULES = [
   },
   {
     id: 'unrecognized_status',
-    match: { kind: 'status_below', below: 400 },
+    match: { kind: 'status_other' },
     decision: 'permanent',
     retriedInRun: true,
     appliesTo: ['partner_call', 'service_call', 'code_node'],
-    label: 'Any other unsuccessful status below 400',
+    label: 'Any other unsuccessful status',
     notShownBecause: null,
   },
   {
@@ -170,7 +170,13 @@ export function defaultErrorRule<K extends ErrorRuleMatch['kind']>(id: DefaultEr
   return rule as DefaultErrorRule & { match: Extract<ErrorRuleMatch, { kind: K }> }
 }
 
-/** The status rules in the order the classifier reads them: listed statuses, then the ranges. */
+const STATUS_OTHER = defaultErrorRule('unrecognized_status', 'status_other')
+
+/**
+ * The status rules in the order the classifier reads them: the listed
+ * statuses, then the range, then status_other for anything left, a status
+ * that is not a number included, so every input has a decision (L50).
+ */
 export function statusDecision(status: number): ErrorDecision {
   for (const rule of DEFAULT_ERROR_RULES as readonly DefaultErrorRule[]) {
     const m = rule.match
@@ -179,9 +185,8 @@ export function statusDecision(status: number): ErrorDecision {
   for (const rule of DEFAULT_ERROR_RULES as readonly DefaultErrorRule[]) {
     const m = rule.match
     if (m.kind === 'status_from' && status >= m.from) return rule.decision
-    if (m.kind === 'status_below' && status < m.below) return rule.decision
   }
-  throw new Error(`no default error rule covers status ${status}`)
+  return STATUS_OTHER.decision
 }
 
 export interface DefaultErrorRows {

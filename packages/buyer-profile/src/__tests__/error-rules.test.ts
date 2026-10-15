@@ -33,6 +33,8 @@ describe('DEFAULT_ERROR_RULES', () => {
     expect([429, 502, 503, 504].map(statusDecision)).toEqual(['transient', 'transient', 'transient', 'transient'])
     expect([400, 401, 403, 404, 409, 422, 499, 500, 501, 505, 599, 600].map(statusDecision)).toEqual(Array(12).fill('permanent'))
     expect([-1, 0, 200, 302, 399].map(statusDecision)).toEqual(Array(5).fill('permanent'))
+    // A status that is not a number still has a decision, the unrecognized one (L50).
+    expect([NaN, Infinity, -Infinity].map(statusDecision)).toEqual(Array(3).fill('permanent'))
   })
 
   it('refuses an id or kind that names no rule, so a rename fails where the rule is read', () => {
