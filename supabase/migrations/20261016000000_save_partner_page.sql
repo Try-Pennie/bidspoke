@@ -27,7 +27,8 @@
 --    records the press on both rows, and returns both documents and versions.
 --
 -- Expand only (docs/adr/0007): one new function, one internal function, and
--- three functions replaced with their signatures kept. The release before calls
+-- two functions replaced with their signatures kept (save_buyer_profile and
+-- buyer_profile_tables_direct_sql_audit). The release before calls
 -- save_buyer_profile and save_partner_config exactly as it did.
 
 -- ── _apply_buyer_profile ─────────────────────────────────────────────────────
