@@ -878,6 +878,9 @@ not in this section. Times are UTC.
 
 ### What these change in the #1680 plan
 
+"Plan point N", "R1", "R2" and "D5" below are the numbered items of the
+approved #1680 plan comment, not this document's own numbered lists.
+
 1. **R1 does not happen: a `"null"` VantageScore lands.** `VantageScore__c` is
    a `Text(255)` field on both Submission and Lead, so the string `"null"` is
    stored as text, not refused. All 210 Submissions posted with it in 3 days
@@ -885,7 +888,7 @@ not in this section. Times are UTC.
    link from the same post). Keeping the text body keeps today's behaviour
    exactly (the literal text `null` on about 70 Submissions a day); it breaks
    nothing in the write.
-2. **Point 15 is wrong about the empty case: the Apex call writes nothing at
+2. **Plan point 15 is wrong about the empty case: the Apex call writes nothing at
    all when there are no inquiries.** `InquiryParserRest` only deletes, inserts,
    updates the Lead's counts and attaches the file when the parsed list is
    non-empty. Live posts never carry an empty list: 11.7% carry no `inquiries`
@@ -902,15 +905,20 @@ not in this section. Times are UTC.
    30 second Salesforce slowdown, waits up to 21.5 s). 46 of the 50 fail-opens
    came on the evening of 2026-10-12 and during the 2026-10-13 incident: the
    bulkhead Durable Object itself errored and calls went ahead without a slot,
-   so the cap did not hold when it mattered most. Point 7's separate post-answer key stands; its test
-   should also cover the fail-open path.
-4. **The timeout budget is tight.** `set_completed_submission` (a Submission
-   PATCH that does not complete the Submission) has p99.9 4,474 ms and max
-   14,540 ms per attempt. The completing outcome PATCH runs more Salesforce
-   automation synchronously (the completion flip, the Lead sync, the Lead
-   flows), so it is probably at least as slow (inferred, not measured), and two attempts of that plus the Apex
-   call do not fit in the 12 s window at the tail. Point 5's budget test will
-   have to choose between one attempt and a shorter per-attempt timeout.
+   so the cap did not hold when it mattered most. Plan point 7's separate
+   post-answer bulkhead key stands; its test should also cover the fail-open
+   path.
+4. **The timeout budget is tight.** Work after the answer gets 12 s: a run
+   waits at most 12 s after its response for the rest of its walk
+   (`apps/worker/src/lib/post-response-budget.ts`, #1882; plan point 5).
+   `set_completed_submission` (a Submission PATCH that does not complete the
+   Submission) has p99.9 4,474 ms and max 14,540 ms per attempt. The
+   completing outcome PATCH runs more Salesforce automation synchronously
+   (the completion flip, the Lead sync, the Lead flows), so it is probably at
+   least as slow (inferred, not measured). Two attempts at the p99.9 already
+   take about 9 s before the Apex call starts, and one attempt at the
+   measured maximum takes more than the whole 12 s. Plan point 5's budget test
+   will have to choose between one attempt and a shorter per-attempt timeout.
 5. **R2: moving the Apex call after the completion flip changes no final field
    value**, and sends the inquiry counts to the right Submission in the one case
    where today they go to an older one.
