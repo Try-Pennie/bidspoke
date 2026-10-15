@@ -66,8 +66,11 @@ already sets it last today, so its value stands (plan point 2).
 **Timeouts.** Work after the answer gets 12 s (`CONTINUATION_WINDOW_MS`). The
 outcome write gets one attempt of 4.5 s, near the p99.9 of
 `set_completed_submission` (4,474 ms over 7 days; 7,077 ms over the 3 days to
-2026-10-15, so roughly 1 write in 1,000 to 1 in 500 times out and is held by the
-at-risk record for #2023's read-back rather than resent). The Apex call gets one
+2026-10-15). Counted against 4.5 s, 25 of its 23,364 single attempts in 7 days
+took longer, 22 of them in the last 3 days, so expect one or two writes in 1,000
+to time out (more if the completing write is slower, which is inferred, not
+measured); each is held by the at-risk record for #2023's read-back rather than
+resent. The Apex call gets one
 attempt of 4.5 s, sized on the same org's `credit-trades` call (p99 4,001 ms).
 The body step gets 500 ms. The longest branch, `send_salesforce`, whose
 `calculate_internal_debt` runs after its answer, has a worst case of 11.45 s; a

@@ -109,9 +109,13 @@ export type PortStage = keyof typeof PORT_STAGES
  * (#1680 plan amendment 3): two attempts at the p99.9 of the same object's
  * lighter PATCH already take about 9 s. 4.5 s is that p99.9 over 7 days
  * (`set_completed_submission`, 4,474 ms, 23,318 attempts); over the 3 days to
- * 2026-10-15 its p99 was 1,887 ms and p99.9 7,077 ms (10,332 attempts), so about
- * 1 in 1,000 writes will time out. A timed out write may still have landed; it is
- * recorded by the at-risk watch for #2023's read-back rather than resent here.
+ * 2026-10-15 its p99 was 1,887 ms and p99.9 7,077 ms (10,332 attempts). Counted
+ * against 4.5 s directly: 25 of 23,364 single attempts in the 7 days took longer
+ * (about 1 in 935), 22 of them in the last 3 days (about 1 in 470), so expect one
+ * or two outcome writes in 1,000 to time out, more if the completing write is
+ * slower than this lighter one (inferred, not measured). A timed out write may
+ * still have landed; it is recorded by the at-risk watch for #2023's read-back
+ * rather than resent here.
  *
  * The Apex call gets one attempt of 4.5 s, sized on the closest call we measure,
  * the same org's `credit-trades` Apex REST step (`trades_request`, p50 2,014 ms,

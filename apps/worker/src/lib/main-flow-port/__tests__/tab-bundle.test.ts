@@ -1,7 +1,7 @@
 /**
  * The script a session runs in Dan's logged in tab (#2171) is built from the very
  * transform.ts and apply.ts the other tests prove, by stripping their types. This
- * evaluates the built text as a browser would, with a stand in localStorage and
+ * evaluates the built text as a browser would, with a stand in document.cookie and
  * fetch, and checks it reads, refuses and PUTs as the module does.
  */
 import { describe, expect, it } from 'vitest'

@@ -26,7 +26,7 @@ function argsFrom(argv: string[]): TabArgs {
   const [action, target, workerUrl] = argv
   if (!workerUrl || !/^https:\/\//.test(workerUrl)) throw new Error('the last argument is the worker URL, https://...')
   if (action === 'preview' || action === 'apply') {
-    if (!(target in PORT_STAGES)) throw new Error(`unknown stage ${target}; one of ${Object.keys(PORT_STAGES).join(', ')}`)
+    if (!Object.hasOwn(PORT_STAGES, target)) throw new Error(`unknown stage ${target}; one of ${Object.keys(PORT_STAGES).join(', ')}`)
     return { action, stage: target as PortStage, workerUrl }
   }
   if (action === 'rollback') {
