@@ -335,6 +335,20 @@ describe('runSpike: a send that throws is a result, not an aborted run', () => {
   })
 })
 
+describe('runSpike: every control that fails is a problem the exit code carries', () => {
+  it('reports a Worker subscriber that could not join or received nothing', async () => {
+    const h = harness(makeWorld())
+    h.deps.workerSubscribe = async () => ({ status: 'CHANNEL_ERROR', detail: 'socket closed', receivedAfterMs: null })
+    const result = await h.run()
+    expect(result.problems.join('\n')).toMatch(/subscriber in workerd .*CHANNEL_ERROR.*socket closed/)
+  })
+
+  it('reports REST broadcasts that were accepted but never arrived', async () => {
+    const result = await harness(makeWorld({ undeliveredTopics: ['partners:org-a'] })).run()
+    expect(result.problems.join('\n')).toMatch(/REST .*3 of 3 never arrived/)
+  })
+})
+
 describe('runSpike: the controls on a failure (L248)', () => {
   it('still measures the Worker REST sender to the same subscribers when the database sender fails', async () => {
     const result = await harness(makeWorld({ partitionAfterChecks: Infinity })).run()

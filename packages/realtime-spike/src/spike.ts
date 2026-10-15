@@ -334,6 +334,9 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
     await deps.sleep(options.gapMs)
   }
   const restSender = { statuses, latency: summarize(restLatencies) }
+  if (restSender.latency.lost > 0) {
+    problems.push(`REST broadcasts to ${topicA}: ${restSender.latency.lost} of ${restSender.latency.sent} never arrived at A`)
+  }
 
   // 6. A subscriber in workerd, sent to by whichever sender was proved.
   const sender: 'database' | 'rest' = dbSender.verdict === 'proved' ? 'database' : 'rest'
@@ -342,6 +345,9 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
     else await deps.restSend(topicA, 'spike-worker', { marker, seq: 'worker' })
   })
   const workerSubscriber = { ...worker, sender }
+  if (worker.status !== 'SUBSCRIBED' || worker.receivedAfterMs === null) {
+    problems.push(`the subscriber in workerd did not receive (${worker.status}: ${worker.detail ?? 'no detail'}), so decision 2's Worker monitor is not proved`)
+  }
 
   for (const s of Object.values(subs)) await s.close()
 

@@ -41,6 +41,14 @@ describe('parseArgs', () => {
     expect(parseArgs(['--cleanup', '/tmp/l.json'])).toEqual({ mode: 'cleanup', ledgerPath: '/tmp/l.json' })
   })
 
+  it('refuses a flag where a path or number belongs, rather than swallowing it as the value', () => {
+    const swallowed = parseArgs(['--ledger', '--i-have-approval'])
+    expect(swallowed.mode).toBe('refuse')
+    if (swallowed.mode === 'refuse') expect(swallowed.message).toMatch(/--ledger needs a value/)
+    expect(parseArgs(['--cleanup', '--samples']).mode).toBe('refuse')
+    expect(parseArgs(['--i-have-approval', '--ledger']).mode).toBe('refuse')
+  })
+
   it('refuses an unknown flag rather than ignoring it', () => {
     const parsed = parseArgs(['--i-have-approval', '--ledger', 'l.json', '--sampels', '5'])
     expect(parsed.mode).toBe('refuse')

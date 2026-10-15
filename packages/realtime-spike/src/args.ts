@@ -25,11 +25,15 @@ export function parseArgs(argv: string[]): Parsed {
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
-    const value = () => {
+    // A flag where a value belongs is refused, never taken as the value:
+    // `--ledger --i-have-approval` would otherwise name the ledger after the
+    // approval flag and drop the approval.
+    const value = (): string | null => {
       const v = argv[i + 1]
       i += 1
-      return v
+      return v === undefined || v.startsWith('--') ? null : v
     }
+    const needsValue = (flag: string): Parsed => ({ mode: 'refuse', message: `${flag} needs a value\n${USAGE}` })
     switch (arg) {
       case '--i-have-approval':
         approved = true
@@ -38,14 +42,17 @@ export function parseArgs(argv: string[]): Parsed {
         selfInterrupt = true
         break
       case '--ledger':
-        ledgerPath = value() ?? null
+        ledgerPath = value()
+        if (ledgerPath === null) return needsValue(arg)
         break
       case '--cleanup':
-        cleanupPath = value() ?? null
+        cleanupPath = value()
+        if (cleanupPath === null) return needsValue(arg)
         break
       case '--samples': {
         const raw = value()
-        if (!raw || !/^[1-9]\d*$/.test(raw)) return { mode: 'refuse', message: `--samples must be a positive whole number, got '${raw ?? ''}'\n${USAGE}` }
+        if (raw === null) return needsValue(arg)
+        if (!/^[1-9]\d*$/.test(raw)) return { mode: 'refuse', message: `--samples must be a positive whole number, got '${raw}'\n${USAGE}` }
         samples = Number(raw)
         break
       }
