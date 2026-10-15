@@ -202,14 +202,17 @@ describe('Undo is a versioned save of the inverse (#2132)', () => {
     expect(onSave.mock.calls[1][3].expected_version).toBe(4)
   })
 
-  it('an Undo refused as stale is reported the same way and overwrites nothing', async () => {
-    const onSave = vi.fn().mockResolvedValueOnce(saved()).mockRejectedValueOnce(stale({}))
+  it('an Undo refused as stale names who saved, overwrites nothing, and leaves the screen showing what is stored', async () => {
+    const onSave = vi.fn().mockResolvedValueOnce(saved({ name: 'M1 renamed' })).mockRejectedValueOnce(stale({}))
     renderForm(onSave)
     rename()
     save()
     fireEvent.click(await screen.findByRole('button', { name: /^Undo/ }))
-    expect(await screen.findByText('Not saved. Brian Nelms saved this partner at Oct 15, 2:02 PM ET. Your changes are still here.')).toBeInTheDocument()
+    expect(await screen.findByText('Undo not made. Brian Nelms saved this partner at Oct 15, 2:02 PM ET.')).toBeInTheDocument()
     expect(onSave).toHaveBeenCalledTimes(2)
+    // The save that landed is still what the form shows, so nothing reads as unsaved.
+    expect(screen.getByDisplayValue('M1 renamed')).toBeInTheDocument()
+    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
   })
 })
 

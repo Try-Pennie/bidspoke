@@ -59,6 +59,14 @@ export function staleSaveSentence(stale: Pick<PartnerStaleVersion, 'changed_by_n
     : `Not saved. This partner was changed at ${when}, outside the partners page. Your changes are still here.`
 }
 
+/** The same refusal for an Undo, which has no edits of its own to keep: the form still shows what is stored. */
+export function staleUndoSentence(stale: Pick<PartnerStaleVersion, 'changed_by_name' | 'changed_at'>): string {
+  const when = stale.changed_at ? `${formatEtDayTime(stale.changed_at)} ET` : 'an unknown time'
+  return stale.changed_by_name
+    ? `Undo not made. ${stale.changed_by_name} saved this partner at ${when}.`
+    : `Undo not made. This partner was changed at ${when}, outside the partners page.`
+}
+
 /** The id of one press of Save (#2132), reused only by a retry of that press. */
 function mintSaveId(): string {
   return crypto.randomUUID()
@@ -430,7 +438,7 @@ export default function PartnerForm({
    * who and when, and nothing is overwritten. Every outcome but 'saved' has
    * already said so on the page.
    */
-  async function savePartnerRecord(patch: Partial<PartnerBody>): Promise<{ kind: 'saved'; partner: Partner | null; copyWarning: string | null } | { kind: 'refused' }> {
+  async function savePartnerRecord(patch: Partial<PartnerBody>, opts: { undo?: boolean } = {}): Promise<{ kind: 'saved'; partner: Partner | null; copyWarning: string | null } | { kind: 'refused' }> {
     if (!partner) return { kind: 'refused' }
     const version = versionRef.current
     const key = JSON.stringify({ patch, version })
@@ -454,14 +462,15 @@ export default function PartnerForm({
           versionRef.current = current?.version ?? version + 1
           return { kind: 'saved', partner: current, copyWarning: null }
         }
-        setSaveOutcome({ kind: 'failed', message: staleSaveSentence({ changed_by_name: e.body.changed_by_name ?? null, changed_at: e.body.changed_at ?? null }) })
+        const stale = { changed_by_name: e.body.changed_by_name ?? null, changed_at: e.body.changed_at ?? null }
+        setSaveOutcome({ kind: 'failed', message: opts.undo ? staleUndoSentence(stale) : staleSaveSentence(stale) })
         return { kind: 'refused' }
       }
       // The route's sentence, never its code, and a refusal naming a field lands
       // on that field: the click URL an enabled click buyer is offered on (#1561).
       const sentence = errorSentence(err, 'the partner save failed')
       setProfileErrors(fieldErrorsOf(err))
-      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
+      setSaveOutcome({ kind: 'failed', message: `${opts.undo ? 'Undo not made' : 'Nothing saved'}: ${sentence}` })
       return { kind: 'refused' }
     }
   }
@@ -471,18 +480,20 @@ export default function PartnerForm({
     const { snapshot: snap, patch } = undo
     setUndo(null)
     setUndoSecondsLeft(0)
-    restoreSnapshot(snap)
     setError(null)
     setCopyWarningText(null)
     setSaveState('saving')
     setSaveOutcome({ kind: 'working', label: 'Undoing the save', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     // The inverse of the save just made, at the version it produced, so an Undo
-    // can never put back over a newer save someone else made (#98, #2132).
-    const result = await savePartnerRecord(patch)
+    // can never put back over a newer save someone else made (#98, #2132). The
+    // form keeps showing what is stored until the Undo lands, so a refused Undo
+    // leaves nothing reading as an unsaved edit.
+    const result = await savePartnerRecord(patch, { undo: true })
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
     }
+    restoreSnapshot(snap)
     baselineDirtyKey.current = JSON.stringify({ ...snap, slug })
     baselineSnapshot.current = snap
     dispatchDraft({ type: 'rebase', base: buildPartnerBody(snap, bodyCtx) })
