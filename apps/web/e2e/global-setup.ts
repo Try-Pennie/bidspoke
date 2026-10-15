@@ -4,7 +4,7 @@
  *
  * Next.js middleware uses @supabase/ssr which reads auth from COOKIES (not
  * localStorage). We compute the same cookie format that createBrowserClient
- * uses (JSON-stringified session, chunked at 3180 chars) and inject them
+ * uses (JSON-stringified session, chunked as session-cookies.ts does) and inject them
  * directly into the Playwright browser context before saving storage state.
  */
 import { chromium } from '@playwright/test'
@@ -13,6 +13,7 @@ import * as dotenv from 'dotenv'
 import * as path from 'path'
 import * as fs from 'fs'
 import { assertIsolatedOrg } from './org-isolation'
+import { buildCookieChunks, sessionStorageKey } from './session-cookies'
 
 dotenv.config({ path: path.resolve(__dirname, '../.env.test') })
 
@@ -21,32 +22,9 @@ const SUPABASE_ANON_KEY = 'sb_publishable_XT7MGOY5A0SftphNV29YZw_iexJjW9O'
 const STORAGE_FILE = path.resolve(__dirname, '.auth/storage.json')
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000'
 
-// @supabase/ssr derives the localStorage/cookie key from the project ref
-const PROJECT_REF = new URL(SUPABASE_URL).hostname.split('.')[0]
-const STORAGE_KEY = `sb-${PROJECT_REF}-auth-token`
-const MAX_CHUNK_SIZE = 3180
-
-/** Replicates @supabase/ssr's createChunks logic */
-function buildCookieChunks(key: string, value: string): Array<{ name: string; value: string }> {
-  let encoded = encodeURIComponent(value)
-  if (encoded.length <= MAX_CHUNK_SIZE) {
-    return [{ name: key, value }]
-  }
-  const chunks: string[] = []
-  while (encoded.length > 0) {
-    let head = encoded.slice(0, MAX_CHUNK_SIZE)
-    const lastEscape = head.lastIndexOf('%')
-    if (lastEscape > MAX_CHUNK_SIZE - 3) head = head.slice(0, lastEscape)
-    let valueHead = ''
-    while (head.length > 0) {
-      try { valueHead = decodeURIComponent(head); break }
-      catch { head = head.slice(0, head.length - 3) }
-    }
-    chunks.push(valueHead)
-    encoded = encoded.slice(encodeURIComponent(valueHead).length)
-  }
-  return chunks.map((v, i) => ({ name: `${key}.${i}`, value: v }))
-}
+// @supabase/ssr derives the localStorage/cookie key from the project ref. The
+// cookie builder is shared with the deploy check that reads /partners (#2132).
+const STORAGE_KEY = sessionStorageKey(SUPABASE_URL)
 
 export default async function globalSetup() {
   const email = process.env.E2E_EMAIL

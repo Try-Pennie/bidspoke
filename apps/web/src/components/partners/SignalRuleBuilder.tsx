@@ -13,7 +13,7 @@ import { Plus, X } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import {
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory, type SignalRules,
-} from '@/app/(app)/partners/partner-body'
+} from '@/app/(app)/partners/partner-draft'
 import { LIST_OPERATORS } from '@/lib/signal-text'
 
 type RuleKind = 'body' | 'status'

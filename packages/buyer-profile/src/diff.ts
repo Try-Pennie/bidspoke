@@ -1,9 +1,12 @@
 /**
  * diffProfileDocuments (#1412): the paths on which two documents differ, keyed
- * the way buyer_profile_flatten keys them in the database (a tier by population
- * and lower bound, a window by day and opening minute, a blackout by date, the
- * state list as one value), so the 409 side by side and the history list speak
- * one vocabulary (L83).
+ * by the same things buyer_profile_flatten keys them by in the database (a tier
+ * by population and lower bound, a window by day and opening minute, a blackout
+ * by date, the state list as one value), so the 409 side by side and the history
+ * list speak one vocabulary (L83). The two SPELL those keys differently
+ * (`windows[1:540]` here, `windows.1.540` there, and a tier here is one row
+ * where there it is two fields); normaliseSqlPath (paths.ts) converts, and
+ * fixtures/flatten-cases.json pins both (#2132).
  */
 import type { BuyerProfileDocument } from './document'
 
@@ -18,7 +21,8 @@ const SCALARS = [
   'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents',
 ] as const
 
-function flatten(doc: BuyerProfileDocument): Map<string, unknown> {
+/** The document as paths in this package's spelling, each with its value. */
+export function flattenProfileDocument(doc: BuyerProfileDocument): Map<string, unknown> {
   const out = new Map<string, unknown>()
   for (const key of SCALARS) out.set(key, doc[key] ?? null)
   out.set('allowed_states', [...doc.allowed_states].sort())
@@ -37,8 +41,8 @@ function flatten(doc: BuyerProfileDocument): Map<string, unknown> {
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 export function diffProfileDocuments(mine: BuyerProfileDocument, theirs: BuyerProfileDocument): ProfileFieldDiff[] {
-  const a = flatten(mine)
-  const b = flatten(theirs)
+  const a = flattenProfileDocument(mine)
+  const b = flattenProfileDocument(theirs)
   const paths = [...new Set([...a.keys(), ...b.keys()])]
   const out: ProfileFieldDiff[] = []
   for (const path of paths) {

@@ -64,9 +64,33 @@ export interface Partner {
   updated_at: string
   updated_by_email: string | null
   updated_by_name: string | null
+  /**
+   * Moved by the database on every change (#2132). A save names the version it
+   * was edited from, and a newer one refuses it. Absent only on a row read from
+   * a Worker older than the versioned save.
+   */
+  version?: number
+  /** The save press that last wrote the row (#2132). */
+  last_save_id?: string | null
 }
 
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
+/** The fields a partner save may name: the row less its identity, its bookkeeping and what the Worker derives. */
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
+
+/** A versioned partner save (#2132): the version edited from and this press's id. */
+export interface PartnerSaveVersioning {
+  expected_version: number
+  save_id: string
+}
+
+/** What a stale partner save is answered with (#2132): the row as stored now and who last changed it. */
+export interface PartnerStaleVersion {
+  error: 'stale_version'
+  current: Partner | null
+  last_save_id: string | null
+  changed_by_name: string | null
+  changed_at: string | null
+}
 
 // ── Partner Bid Configs (matrix definitions) ──────────────────────────────────
 
@@ -911,8 +935,8 @@ export const api = {
     get: (id: string) => req<Partner>(`/api/partners/${id}`),
     create: (body: PartnerBody) =>
       req<Partner>('/api/partners', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: Partial<PartnerBody>) =>
-      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<PartnerBody>, versioning: PartnerSaveVersioning) =>
+      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify({ ...body, ...versioning }) }),
     delete: (id: string) =>
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>

@@ -700,8 +700,14 @@ jobs:
     # propagation sampler below to wait on a route that never flips, plus
     # headroom. Bounds a HANG, not slowness (#1062). A test derives the sum.
     timeout-minutes: 10
-    needs: [verify, changes]
-    if: needs.changes.outputs.pages == 'true'
+    # After the Worker (#2132). A partners page opened before a Worker change
+    # that refuses its saves is told to reload, which only helps if the page it
+    # reloads into is the new one, so the site never goes live ahead of a Worker
+    # deploy that failed. always() lets a skipped Worker deploy (a web only
+    # change) through, and then Verify has to be re-asserted by hand, exactly as
+    # in deploy-worker. deploy-pages-follows-worker.test.ts evaluates this.
+    needs: [verify, changes, deploy-worker]
+    if: always() && needs.changes.outputs.pages == 'true' && needs.verify.result == 'success' && (needs.deploy-worker.result == 'success' || needs.deploy-worker.result == 'skipped')
     steps:
       - uses: actions/checkout@v7
 
@@ -776,6 +782,42 @@ jobs:
           . .github/scripts/pages-routes.sh
           # shellcheck disable=SC2086
           bash .github/scripts/pages-propagation-sample.sh "$SITE_URL" "$GITHUB_SHA" 300 15 $PAGES_ROUTES
+
+  # Whether the partners page has followed the Worker (#2132). The sampler above
+  # is a measurement that never gates and reads public routes only, by a
+  # recorded decision, so this is its own job: it signs in as the e2e user,
+  # fetches /partners the way a person does (no cache busting, the same reason
+  # the sampler gives) and reads the commit stamp with pages-commit-from-html.sh.
+  # Until the page follows, an open partners page refuses saves with a reload
+  # message, so a page that has not followed within the budget fails this job,
+  # and each other outcome (could not sign in, no stamp, no password) says so by
+  # name. BUDGET_SECONDS: the sampler's slowest reading over 8 deploys from
+  # 2026-10-13 to 15 was 18 s; 180 s is ten times that. The timeout is derived
+  # from it by deploy-pages-follows-worker.test.ts.
+  partners-page-follows:
+    name: Partners page follows the Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy-pages]
+    if: always() && needs.deploy-pages.result == 'success'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Read the commit the signed in partners page serves
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          EXPECTED_SHA: ${{ github.sha }}
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_EMAIL: ${{ vars.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          BUDGET_SECONDS: '180'
+          INTERVAL_SECONDS: '15'
+        run: node --experimental-strip-types .github/scripts/partners-page-commit.mjs
 
   # Note: deploy failures are not Slack-alerted (reverted #328) — GitHub's
   # default Actions failure email already covers them, and the Slack page was

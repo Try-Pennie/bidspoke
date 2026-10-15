@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '../SignalRuleBuilder'
-import { parseRules } from '@/app/(app)/partners/partner-body'
+import { parseRules } from '@/app/(app)/partners/partner-draft'
 
 const REJECTION_ONLY = SIGNAL_SECTIONS.filter((s) => s.cat === 'rejection')
 
