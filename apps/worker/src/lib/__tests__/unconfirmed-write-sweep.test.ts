@@ -784,13 +784,39 @@ describe('a slowdown that saved every record (#2165)', () => {
     )
   })
 
-  it('all saved slowdowns further apart than a day never add up to a repeat', async () => {
+  // The window rolls over the whole set: the oldest slowdown still counted must
+  // have ended within ALL_SAVED_REPEAT_WINDOW_MS of the tick that settles the
+  // newest. Pinned from both sides, so neither a wider nor a narrower bound passes.
+  it('three all saved slowdowns each more than a day apart never alert', async () => {
     const kv = makeKv()
     const db = makeDb()
     db.tables.lead_sightings.push(LANDED_ROW)
-    const gap = ALL_SAVED_REPEAT_WINDOW_MS / 2 + HOUR
-    for (let i = 0; i < 5; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS + HOUR
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
     expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+
+  it('three whose neighbours are under a day apart but whose first and third are more than a day apart never alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    // 13 hours between neighbours, 26 hours from the first to the third.
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS / 2 + HOUR
+    expect(gap).toBeLessThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    expect(2 * gap).toBeGreaterThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+
+  it('three whose first and third fall just inside a day do alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    // The third settles SUMMARY_QUIET_MS after it starts; the set still spans under a day then.
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS / 2 - 5 * 60_000
+    expect(2 * gap + SUMMARY_QUIET_MS).toBeLessThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
   })
 
   it('counts each slowdown once when two sweeps settle it at the same moment', async () => {
