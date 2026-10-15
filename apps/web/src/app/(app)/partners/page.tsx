@@ -5,7 +5,7 @@ export const runtime = 'edge'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { Partner, PartnerBody, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Plus, ChevronRight, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -109,28 +109,30 @@ export default function PartnersPage() {
     }
   }
 
-  async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[], versioning?: PartnerSaveVersioning): Promise<PartnerSaveResult | void> {
+  async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest): Promise<PartnerSaveResult | void> {
     if (id) {
-      // An edit is a versioned save of only the changed fields (#2132). The form
-      // reports a refusal (stale version, reload required) itself, so it throws
+      // An edit is one save of the whole page (#2133): only the changed partner
+      // fields (#2132) and the profile when it changed, at the pair of versions
+      // it was edited from. The form reports a refusal itself, so it throws
       // through to it.
-      if (!versioning) throw new Error('A partner edit needs the version it was made from.')
-      let answer: Partner & { stored_copy_warning?: string }
+      if (!request) throw new Error('A partner edit needs the versions it was made from.')
+      let answer: PartnerPageSaved
       try {
-        answer = await api.partners.update(id, body, versioning)
+        answer = await api.partners.savePage(id, body, request)
       } catch (err) {
         // A press whose answer was lost but whose save landed is refused as stale
-        // with its own save id: the stored row is the saved one (#2132).
-        const e = err as { status?: number; body?: Partial<PartnerStaleVersion> }
-        if (e.status === 409 && e.body?.last_save_id === versioning.save_id && e.body.current) answer = e.body.current
-        else throw err
+        // with its own save id: the stored halves are the saved ones (#2132, #2133).
+        const e = err as { status?: number; body?: Partial<PartnerPageStale> }
+        if (e.status === 409 && e.body?.last_save_id === request.save_id && e.body.partner) {
+          answer = { partner: e.body.partner, profile: e.body.profile ?? null, partner_version: e.body.partner_version ?? e.body.partner.version ?? 0, profile_version: e.body.profile_version ?? 0 }
+        } else throw err
       }
-      const { stored_copy_warning: copyWarning, ...updated } = answer
+      const updated = answer.partner
       setPartners((prev) => prev.map((p) => p.id === id ? updated : p))
       selectPartner(updated)
-      // Saved, but its stored outage copy could not be cleared yet: the form
+      // Saved, but a stored outage copy could not be cleared yet: the form
       // shows it beside Saved, never as an error, because the save happened (#1846, #2132).
-      return { partner: updated, copyWarning: copyWarning ?? null }
+      return { partner: updated, profile: answer.profile, copyWarning: answer.stored_copy_warning ?? null }
     } else {
       const created = await api.partners.create(body as Required<PartnerBody>)
       if (pendingUuids?.length) {

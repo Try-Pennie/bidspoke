@@ -82,16 +82,37 @@ export interface Partner {
  */
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
 
-/** A versioned partner save (#2132): the version edited from and this press's id. */
-export interface PartnerSaveVersioning {
-  expected_version: number
+/**
+ * The page's one save beside its partner patch (#2133): the pair of versions it
+ * was edited from, the profile document when it saves one, and this press's id.
+ * A save that never read the profile (a source partner, or a profile read that
+ * failed) names neither the profile nor its version, and is not compared on it.
+ */
+export interface PartnerPageSaveRequest {
+  expected_partner_version: number
+  expected_profile_version: number | null
+  profile: BuyerProfileDocument | null
   save_id: string
 }
 
-/** What a stale partner save is answered with (#2132): the row as stored now and who last changed it. */
-export interface PartnerStaleVersion {
+/** What a page save answers (#2133): both halves as stored after it, and the stored copy warning when there is one. */
+export interface PartnerPageSaved extends StoredCopyAnswer {
+  partner: Partner
+  profile: BuyerProfileDocument | null
+  partner_version: number
+  profile_version: number
+}
+
+/**
+ * What a stale page save is answered with (#2132, #2133): both halves as
+ * stored now, the press that last saved, and who last changed either half.
+ */
+export interface PartnerPageStale {
   error: 'stale_version'
-  current: Partner | null
+  partner: Partner | null
+  profile: BuyerProfileDocument | null
+  partner_version: number | null
+  profile_version: number | null
   last_save_id: string | null
   changed_by_name: string | null
   changed_at: string | null
@@ -940,22 +961,22 @@ export const api = {
     get: (id: string) => req<Partner>(`/api/partners/${id}`),
     create: (body: PartnerBody) =>
       req<Partner>('/api/partners', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: Partial<PartnerBody>, versioning: PartnerSaveVersioning) =>
-      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify({ ...body, ...versioning }) }),
+    // The page's one save (#2133): the partner patch and the buyer profile in
+    // one transaction. A refusal throws carrying `status` and the parsed body; a
+    // 409 body is a PartnerPageStale.
+    savePage: (id: string, patch: Partial<PartnerBody>, request: PartnerPageSaveRequest) =>
+      req<PartnerPageSaved>(`/api/partners/${id}/page`, { method: 'PUT', body: JSON.stringify({ ...request, patch }) }),
     delete: (id: string) =>
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
   },
 
-  // The buyer profile routes (#1412). A refused save throws an Error carrying
-  // `status` and the parsed `body`; a 409 body holds `current`, the document
-  // saved now, which the form shows beside the person's edits.
+  // The buyer profile read routes (#1412). The profile is saved with the
+  // partner through partners.savePage (#2133).
   buyerProfiles: {
     get: (partnerId: string) =>
       req<{ profile: BuyerProfileDocument | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>(`/api/partners/${partnerId}/buyer-profile`),
-    save: (partnerId: string, body: { expected_version: number; profile: BuyerProfileDocument }) =>
-      req<{ profile: BuyerProfileDocument }>(`/api/partners/${partnerId}/buyer-profile`, { method: 'PUT', body: JSON.stringify(body) }),
     history: (partnerId: string) =>
       req<{ entries: Array<{ changed_at: string; changed_by: string | null; action: string; changes: Record<string, { old: unknown; new: unknown }> | null }> }>(`/api/partners/${partnerId}/buyer-profile/history`),
     // An offer buyer's ledger counts, or a click buyer's clicks today (#1543), told apart by sold_on.

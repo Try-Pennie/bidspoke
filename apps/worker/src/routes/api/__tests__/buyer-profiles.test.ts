@@ -134,6 +134,54 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((c) => c[0])).toEqual(['org-abc'])
   })
 
+  // #2133: the page saves through PUT /partners/:id/page now, and this route is
+  // kept one release for pages opened before. Each call is counted durably per
+  // UTC day, so its removal is decided on a record rather than a log search.
+  describe('the legacy call record (#2133)', () => {
+    function kvCounter(initial: Record<string, string> = {}, opts: { failing?: boolean } = {}) {
+      const store = new Map(Object.entries(initial))
+      const puts: Array<{ key: string; value: string; ttl?: number }> = []
+      return {
+        store,
+        puts,
+        kv: {
+          get: async (k: string) => { if (opts.failing) throw new Error('kv unavailable'); return store.get(k) ?? null },
+          put: async (k: string, v: string, o?: { expirationTtl?: number }) => { if (opts.failing) throw new Error('kv unavailable'); store.set(k, v); puts.push({ key: k, value: v, ttl: o?.expirationTtl }) },
+          delete: async () => {},
+        },
+      }
+    }
+    const legacyPut = (env: Env, body: unknown) => app.request('/partners/p-1/buyer-profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: JSON.stringify(body),
+    }, env, mockCtx)
+
+    afterEach(() => { vi.useRealTimers() })
+
+    it('adds one to the day\'s count on every call, a refused one included', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-16T03:30:00Z'))
+      const { kv, store, puts } = kvCounter({ 'legacy-buyer-profile-calls:2026-10-16': '4' })
+      const env = { ...testEnv, WORKFLOW_CACHE: kv } as unknown as Env
+      supabaseWith({ partner_configs: { single: partnerRow } }, { rpc: vi.fn().mockResolvedValue({ data: { ...doc, version: 3 }, error: null }) })
+      expect((await legacyPut(env, { expected_version: 2, profile: doc })).status).toBe(200)
+      expect((await legacyPut(env, { profile: doc })).status).toBe(400)
+      expect(store.get('legacy-buyer-profile-calls:2026-10-16')).toBe('6')
+      // Kept long enough to read seven clear days back, and never for ever.
+      expect(puts.every((p) => p.ttl !== undefined && p.ttl >= 30 * 86400)).toBe(true)
+    })
+
+    it('a count that cannot be written is logged and never fails the save', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { kv } = kvCounter({}, { failing: true })
+      const env = { ...testEnv, WORKFLOW_CACHE: kv } as unknown as Env
+      supabaseWith({ partner_configs: { single: partnerRow } }, { rpc: vi.fn().mockResolvedValue({ data: { ...doc, version: 3 }, error: null }) })
+      expect((await legacyPut(env, { expected_version: 2, profile: doc })).status).toBe(200)
+      expect(logged.mock.calls.some((c) => String(c[0]).includes('legacy-buyer-profile-calls'))).toBe(true)
+    })
+  })
+
   it('a malformed body is 400 naming every bad field, and nothing is saved', async () => {
     const rpc = vi.fn()
     supabaseWith({ partner_configs: { single: partnerRow } }, { rpc })

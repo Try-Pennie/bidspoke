@@ -346,7 +346,7 @@ describe('PUT /partners/:id refuses a click URL an enabled click buyer cannot be
     const body = await res.json() as { error: string; message: string; errors: Array<{ code: string; path: string; message: string }> }
     expect(body.error).toBe('click_url_has_no_prospect_id')
     expect(body.message).toContain('{prospect_id}')
-    expect(body.errors).toEqual([{ code: 'click_url_has_no_prospect_id', path: 'clickUrl', message: body.message }])
+    expect(body.errors).toEqual([{ code: 'click_url_has_no_prospect_id', path: 'clickUrl', field: 'click_url', message: body.message }])
     expect(wrote(sb)).toBe(false)
     expect(vi.mocked(readBuyerSale).mock.calls[0].slice(1)).toEqual(['org-abc', 'p-1'])
   })
