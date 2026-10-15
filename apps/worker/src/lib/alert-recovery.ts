@@ -21,10 +21,11 @@
  * is written to the KV outbox (incident-outbox.ts) on the transition only, never
  * per sighting, and never in the way of a page or an all-clear: a recorder fault
  * is reported and the alert carries on. Every function here takes the signal as
- * `IncidentSignal`, so a check arming a prefix the registry does not name fails
- * to compile.
+ * `RecoveryMarkerSignal`, so a check arming a prefix the registry does not name,
+ * or one whose registry entry keeps its marker elsewhere (the cron heartbeat,
+ * #2103), fails to compile.
  */
-import type { IncidentSignal } from './incident-signals'
+import type { RecoveryMarkerSignal } from './incident-signals'
 import { reportRecordError, writeIncidentEvent, type IncidentContext, type IncidentEnd } from './incident-outbox'
 import { formatErr } from './format-error'
 
@@ -64,7 +65,7 @@ export const RECOVERY_TTL_SECONDS = 48 * 60 * 60
 export const RECOVERY_REARM_MINUTES = 30
 
 /** Key holding the time we first paged for `id`. */
-export function recoveryKey(prefix: IncidentSignal, id: string): string {
+export function recoveryKey(prefix: RecoveryMarkerSignal, id: string): string {
   return `${prefix}-recovery:${id}`
 }
 
@@ -75,7 +76,7 @@ export function recoveryKey(prefix: IncidentSignal, id: string): string {
  * of the incident and must never move, this one pins its running END and moves
  * on every failing tick (LESSONS L53).
  */
-export function activeKey(prefix: IncidentSignal, id: string): string {
+export function activeKey(prefix: RecoveryMarkerSignal, id: string): string {
   return `${prefix}-active:${id}`
 }
 
@@ -90,7 +91,7 @@ export function activeKey(prefix: IncidentSignal, id: string): string {
  */
 export async function keepAlerted(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   alertedAtIso: string,
   incident: IncidentContext,
@@ -118,7 +119,7 @@ export async function keepAlerted(
  * over, but it is not a sighting either, so it can neither start an incident nor
  * say whose it is.
  */
-export async function refreshAlerted(kv: RecoveryKv, prefix: IncidentSignal, id: string): Promise<void> {
+export async function refreshAlerted(kv: RecoveryKv, prefix: RecoveryMarkerSignal, id: string): Promise<void> {
   const key = recoveryKey(prefix, id)
   const existing = await kv.get(key)
   if (existing !== null) await kv.put(key, existing, { expirationTtl: RECOVERY_TTL_SECONDS })
@@ -133,7 +134,7 @@ export async function refreshAlerted(kv: RecoveryKv, prefix: IncidentSignal, id:
  */
 export async function recordPaged(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   incident: IncidentContext,
   now: number,
@@ -164,7 +165,7 @@ export async function recordPaged(
  */
 export async function markAlerted(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   incident: IncidentContext,
   now: number,
@@ -187,7 +188,7 @@ export async function markAlerted(
  */
 export async function markSpikeSeen(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   now: number,
 ): Promise<void> {
@@ -214,7 +215,7 @@ export interface RecoveryDue {
  */
 export async function recoveryDue(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   opts: { now?: number; rearmMinutes?: number } = {},
 ): Promise<RecoveryDue | null> {
@@ -251,7 +252,7 @@ export async function recoveryDue(
  */
 export async function settleRecovery(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   cooldownKey: string | null,
   end: IncidentEnd,
@@ -302,7 +303,7 @@ export async function settleRecovery(
  */
 export async function announceRecovery(
   kv: RecoveryKv,
-  prefix: IncidentSignal,
+  prefix: RecoveryMarkerSignal,
   id: string,
   cooldownKey: string | null,
   incident: IncidentContext,

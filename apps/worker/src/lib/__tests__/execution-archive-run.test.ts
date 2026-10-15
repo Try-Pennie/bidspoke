@@ -314,6 +314,11 @@ describe('runExecutionArchive', () => {
     for (const call of notifyExportFailure.mock.calls) {
       expect((call[2] as string[]).length).toBeGreaterThan(0)
     }
+    // #2103: the alerts open and settle incidents, so they take the run's own
+    // clock, never a second read of the real one.
+    const runAt = Date.parse('2026-08-18T11:00:00.000Z')
+    for (const call of notifyExportFailure.mock.calls) expect(call[5], call[1] as string).toBe(runAt)
+    for (const call of notifyExportRecovery.mock.calls) expect(call[2], call[1] as string).toBe(runAt)
   })
 })
 

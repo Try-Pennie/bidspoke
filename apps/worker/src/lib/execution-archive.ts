@@ -379,7 +379,7 @@ export async function runExecutionArchive(
       // that stopped partway. The remedy is the one alertsFor chose from the
       // setting reported missing: for the pepper, restore the escrowed value,
       // never a new one (#835).
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy, now().getTime())
     }
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
   }
@@ -454,6 +454,7 @@ export async function runExecutionArchive(
           ],
           env.IDEMPOTENCY,
           ARCHIVE_KILLED_REMEDY,
+          now().getTime(),
         )
       }
     } catch (err) {
@@ -479,7 +480,7 @@ export async function runExecutionArchive(
     // own try/catch: this runs before any archiving, so a KV or Slack failure
     // here must not turn one clean run into a second killed one (L71).
     try {
-      await notifyExportRecovery(env.IDEMPOTENCY, ARCHIVE_JOB_NAMES.killed)
+      await notifyExportRecovery(env.IDEMPOTENCY, ARCHIVE_JOB_NAMES.killed, now().getTime())
     } catch (err) {
       console.error(`[execution-archive] clearing the killed condition failed: ${formatErr(err)}`)
     }
@@ -732,11 +733,13 @@ export async function runExecutionArchive(
     // errors does the same thing (it no longer deletes the grace marker), so
     // either path is now safe; this one stays explicit because the archive
     // computes its failures and its recoveries from different predicates.
+    // One reading of the run's clock for every incident these open or settle (#2103).
+    const alertedAtMs = now().getTime()
     for (const alert of alertsFor(result)) {
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy, alertedAtMs)
     }
     for (const jobName of clearedConditionsFor(result)) {
-      await notifyExportRecovery(env.IDEMPOTENCY, jobName)
+      await notifyExportRecovery(env.IDEMPOTENCY, jobName, alertedAtMs)
     }
 
     console.log(

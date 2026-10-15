@@ -410,7 +410,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('clears the standing condition, so the reminders stop and the schedule resets', async () => {
     const kv = makeKv({ [CONDITION_KEY]: JSON.stringify({ since: '2026-09-21T16:26:00.000Z', alerts: 2 }) })
 
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
 
     expect(kv.delete).toHaveBeenCalledWith(CONDITION_KEY)
     expect(kv.delete).toHaveBeenCalledWith(COOLDOWN_KEY)
@@ -419,7 +419,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('keeps the grace marker rather than deleting it, so an alternating job still pages', async () => {
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
 
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
 
     expect(kv.delete).not.toHaveBeenCalledWith(PENDING_KEY)
     expect(await kv.get(PENDING_KEY)).toContain('2026-09-21T16:26:00.000Z')
@@ -428,7 +428,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('does nothing when the job has no failure recorded, so a healthy job writes nothing', async () => {
     const kv = makeKv()
 
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
 
     expect(kv.put).not.toHaveBeenCalled()
   })
@@ -436,7 +436,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('still pages when a failure follows a recovery, which is the pattern the grace protects', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
     vi.clearAllMocks()
 
     await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
@@ -447,7 +447,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('does not claim a standing failure when successful runs came in between', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
 
     await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
 
@@ -498,7 +498,7 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
   it('keeps the original first-failure time on the first failure after a recovery', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-09-21T16:26:00.000Z' })
-    await notifyExportRecovery(kv, JOB)
+    await notifyExportRecovery(kv, JOB, Date.parse('2026-09-22T12:00:00.000Z'))
 
     await notifyExportFailure(makeSupabase(['org-1']), JOB, TRANSIENT, kv, 'export-job')
 

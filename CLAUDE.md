@@ -81,6 +81,10 @@
   alerts fire while Postgres is the thing failing. A new delivery site calls `recordPaged`
   after its marker is armed. The drain (`lib/incident-drain.ts`, five minute cron) writes
   `alert_incidents` and closes as lapsed an incident whose marker went with no end.
+  A check that keeps its open incident in its own state instead of alert-recovery's
+  marker (the cron heartbeat, #2103) names that key as its registry entry's `marker`,
+  which is where the drain's lapse check reads it, and gives that key an expiry the
+  check renews while the incident stands, so it can never keep an incident open for ever.
 
 ## Code Standards
 - Prefer TypeScript over JavaScript for all new code

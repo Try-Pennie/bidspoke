@@ -16,9 +16,11 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  * The signal's words appearing somewhere is not enough: most of them are also
  * an alert key or a log tag. So a signal counts as armed only where a file
  * passes it as the signal of a call that arms a marker (markAlerted or
- * keepAlerted), either as the literal itself, as a constant that same file
- * declares equal to it, or (the field presence tiers) as a tier's `prefix:`
- * in a file whose arming calls take `cfg.prefix`.
+ * keepAlerted), or opens an incident on a marker the check keeps in its own
+ * state (a writeIncidentEvent of type 'opened', the cron heartbeat, #2103),
+ * either as the literal itself, as a constant that same file declares equal to
+ * it, or (the field presence tiers) as a tier's `prefix:` in a file whose
+ * arming calls take `cfg.prefix`.
  */
 const REGISTRY = path.join(WORKER_SRC, 'lib', 'incident-signals.ts')
 
@@ -28,9 +30,11 @@ const files = listTsFiles(WORKER_SRC)
   .filter((full) => full !== REGISTRY && !full.replace(/\\/g, '/').includes('/__tests__/'))
   .map((full) => sanitizeSource(readFileSync(full, 'utf8'), { blankStrings: false }))
 
-/** The second argument of every arming call in `src`, as written. */
+/** The signal of every arming call in `src`, as written. */
 function armedArgs(src: string): string[] {
-  return [...src.matchAll(/\b(?:markAlerted|keepAlerted)\(\s*[\w.]+\s*,\s*([\w.]+|'[^']*')/g)].map((m) => m[1])
+  const recovery = [...src.matchAll(/\b(?:markAlerted|keepAlerted)\(\s*[\w.]+\s*,\s*([\w.]+|'[^']*')/g)].map((m) => m[1])
+  const opened = [...src.matchAll(/\bwriteIncidentEvent\(\s*[\w.]+\s*,\s*\{\s*type:\s*'opened',\s*signal:\s*([\w.]+|'[^']*')/g)].map((m) => m[1])
+  return [...recovery, ...opened]
 }
 
 function armedIn(src: string, signal: string): boolean {
@@ -43,7 +47,7 @@ function armedIn(src: string, signal: string): boolean {
 
 describe('incident registry entries are armed', () => {
   it('reads the registry', () => {
-    expect(registered.length).toBe(12)
+    expect(registered.length).toBe(14)
   })
 
   it.each(registered)('%s is armed by a marker call outside the registry', (signal) => {
@@ -53,5 +57,10 @@ describe('incident registry entries are armed', () => {
   it('does not count a signal named only as an alert key or a log tag', () => {
     expect(armedIn(`const key = 'volume-cliff:cooldown'\nconsole.log('[volume-cliff] tick')\nawait markAlerted(kv, OTHER, id, ctx)`, 'volume-cliff')).toBe(false)
     expect(armedIn(`const P = 'volume-cliff'\nawait markAlerted(kv, P, id, ctx)`, 'volume-cliff')).toBe(true)
+  })
+
+  it('counts an incident opened on a check\'s own marker, and not one only paged or ended', () => {
+    expect(armedIn(`const S = 'cron-heartbeat'\nawait writeIncidentEvent(kv, { type: 'opened', signal: S, subject: id, startedAt }, ctx, now)`, 'cron-heartbeat')).toBe(true)
+    expect(armedIn(`const S = 'cron-heartbeat'\nawait writeIncidentEvent(kv, { type: 'paged', signal: S, subject: id, startedAt }, ctx, now)`, 'cron-heartbeat')).toBe(false)
   })
 })
