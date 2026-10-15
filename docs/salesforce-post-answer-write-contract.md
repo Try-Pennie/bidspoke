@@ -901,8 +901,9 @@ approved #1680 plan comment, not this document's own numbered lists.
    are not deleted in that case (12 of 150 sampled Leads keep rows from an
    earlier pull).
 3. **The bulkhead reached its cap once in 7 days and never shed, but it failed
-   open 50 times.** Peak in flight 20 of 20 on 2026-10-11 at about 17:14 (a
-   30 second Salesforce slowdown, waits up to 21.5 s). 46 of the 50 fail-opens
+   open 50 times.** Peak in flight 20 of 20 on 2026-10-11 at about 17:14,
+   with waits up to 21.5 s (the runs that logged waits started between
+   17:14:31 and 17:14:56; the slowdown's own length was not measured). 46 of the 50 fail-opens
    came on the evening of 2026-10-12 and during the 2026-10-13 incident: the
    bulkhead Durable Object itself errored and calls went ahead without a slot,
    so the cap did not hold when it mattered most. Plan point 7's separate
@@ -1034,9 +1035,9 @@ grouped by message (7 day searches miss lines), covering 2026-10-08 16:00 to
 - **Sheds: 0 in 7 days.** Control: the same filter mechanism returned the
   waited lines in every window, and `execution_steps` holds no step whose
   error starts `Salesforce bulkhead` in the same days.
-- **Peak: 20 of 20, once**, on 2026-10-11 between about 17:14:30 and 17:15:00
-  (traces from Engine Bidding and LendSwift runs started then), with waits up
-  to 21,507 ms. Nothing shed because slots freed within the wait.
+- **Peak: 20 of 20, once**, on 2026-10-11 at about 17:14 (the sampled traces
+  are Engine Bidding and LendSwift runs started between 17:14:31 and
+  17:14:56), with waits up to 21,507 ms. Nothing shed because slots freed within the wait.
 - Most waited lines show a low `inflight` (1 to 4) with a multi second wait: the
   wait was the Durable Object round trip itself, not a full bulkhead.
 - **Fail open 50 times**, with waits up to 29,341 ms: 4 in the 10-10 to 10-11
