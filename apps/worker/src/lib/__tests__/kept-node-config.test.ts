@@ -248,6 +248,10 @@ describe('the committed sources the check reads', () => {
       ['update_lead', 'external_id_value', '{{trigger.payload.leadUuid}}'],
       ['query_record', 'apex_path', '/services/apexrest/click'],
       ['query_record', 'apex_method', 'GET'],
+      // The relay port's write options (#2170) decide what is written, so they are watched.
+      ['update_submission', 'omit_fields', ['executionId']],
+      ['update_submission', 'rename_fields', { UUID: 'Engine_UUID_SO__c' }],
+      ['update_submission', 'skip_when_empty', true],
     ]
     for (const [namespace, field, value] of added) {
       it(`${namespace} gaining ${field} on the canvas is a finding naming it, since the committed definition has none`, () => {

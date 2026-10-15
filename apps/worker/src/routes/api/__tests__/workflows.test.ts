@@ -166,6 +166,47 @@ describe('PUT /workflows/:id', () => {
     expect(body.error).toContain('validate')
   })
 
+  // The relay port's write options (#2170) are refused by name at save, by the rule
+  // the executor applies, so a definition PUT from a file cannot carry one the
+  // step would refuse on every run.
+  it('rejects a Salesforce step with a malformed write option with 400 naming the step and the option', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'invalid_state_sf_post', type: 'salesforce', config: { operation: 'update', object: 'Submission__c', rename_fields: ['UUID'] } }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe('invalid_state_sf_post: rename_fields must map each field name to a new field name')
+  })
+
+  // The Salesforce rule judges Salesforce steps only, so node entries that are not
+  // objects save as they did before it (#2170). A null entry is not shown here: the
+  // cycle check reads it before this rule and answers 500 on main too.
+  it('saves a definition whose nodes hold non-object entries beside a valid Salesforce step, as before the rule', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const definition = {
+      nodes: [5, 'x', { id: 'a', namespace: 'post', type: 'salesforce', config: { operation: 'update', omit_fields: ['submissionId'] } }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(200)
+  })
+
   it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
     // A dropped error here defaulted nextVersion to 1, risking a clobber of the
     // existing version chain. A real (non-PGRST116) error must abort.
@@ -1810,6 +1851,21 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     app = await makeApp()
   })
 
+  // A node entry that is not an object is not the Salesforce rule's to judge
+  // (#2170): before that rule, create stored such a definition and answered 201,
+  // and it still does, rather than crashing on the entry with a 500.
+  it('POST still creates a definition whose nodes hold entries that are not objects, as it did before the Salesforce rule', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = { nodes: [null, 5, 'x'], edges: [], trigger: { type: 'http_webhook', config: {} } }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(201)
+    expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+
   it('POST creates the workflow with is_active false', async () => {
     const sb = makeSupabase({
       users: { single: testUser },
@@ -1819,6 +1875,25 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
     expect(res.status).toBe(201)
     expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+
+  // A definition can enter by create as well as by save, so create holds it to the
+  // same Salesforce write option rule (#2170), and inserts nothing when it fails.
+  it('POST refuses a definition carrying a malformed Salesforce write option, naming the step, and inserts nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'inquiry_apex', type: 'salesforce', config: { operation: 'apex', apex_path: '/x', omit_fields: ['a'] } }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('inquiry_apex: omit_fields applies only to create, update and upsert')
+    expect(activeFlagsInserted(sb)).toEqual([])
   })
 
   it('POST ignores an is_active true sent in the body', async () => {

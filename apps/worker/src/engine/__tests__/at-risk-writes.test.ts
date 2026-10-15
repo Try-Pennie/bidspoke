@@ -16,6 +16,7 @@ import {
   outcomeOfFailedWrite,
   startWatchSafely,
   runWatched,
+  heldUntilOf,
   AT_RISK_WRITE_PREFIX,
   AT_RISK_AFTER_MS,
   AT_RISK_WRITE_TTL_SECONDS,
@@ -222,5 +223,81 @@ describe('runWatched', () => {
   // a later refusal cannot speak for it, and the record stays for the read-back.
   it('keeps the record on a refusal after a retry, since an earlier attempt may have landed', async () => {
     expect(await settledRecord(1)).toBe(1)
+  })
+})
+
+/**
+ * #2163: a timed out update failed with withTimeout's own error, which carries no
+ * request, so the step logged no input and the capture called it uncapturable
+ * while the watch held the very request in KV. The request the node noted now
+ * travels on the failure, read from the watch (its one home), with when the held
+ * record expires when the watch kept one.
+ */
+describe('a failed write carries the request the node noted (#2163)', () => {
+  const timeout = () => new Error('Step timed out after 1500ms (in-flight upstream call canceled via abort signal)')
+
+  async function failWith(err: () => unknown, opts: { outAfterMs?: number; note?: boolean } = {}) {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    let thrown: unknown
+    const done = runWatched(w, () => {}, async () => {
+      if (opts.note !== false) w.note(REQ)
+      await clock.delay(opts.outAfterMs ?? AT_RISK_AFTER_MS + 1)
+      throw err()
+    }, () => 0).catch((e) => { thrown = e })
+    await clock.run()
+    await done
+    return { thrown: thrown as Record<string, unknown>, store }
+  }
+
+  it('attaches the noted request to a timeout, in the shape a failed step logs as its input', async () => {
+    const { thrown } = await failWith(timeout)
+    expect(thrown.message).toMatch(/Step timed out/)
+    expect(thrown.resolvedInput).toEqual({
+      template: null,
+      resolved: { operation: 'update', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body: REQ.body },
+    })
+  })
+
+  it('says until when the held record lasts: its last write plus the 24 hour expiry', async () => {
+    const { thrown, store } = await failWith(timeout)
+    expect(store.store.size).toBe(1)
+    // Written at the 2 s mark of a clock that started at zero.
+    expect(heldUntilOf(thrown)).toBe(new Date(AT_RISK_AFTER_MS + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString())
+  })
+
+  it('says nothing is held when the write failed before it was recorded', async () => {
+    const { thrown, store } = await failWith(timeout, { outAfterMs: AT_RISK_AFTER_MS - 500 })
+    expect(store.store.size).toBe(0)
+    expect(thrown.resolvedInput).toBeDefined()
+    expect(heldUntilOf(thrown)).toBeNull()
+  })
+
+  it('keeps a request the executor attached itself, and marks nothing held for it', async () => {
+    const own = { template: { body: '{{x}}' }, resolved: { operation: 'update', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body: { a: 1 }, method: 'PATCH' } }
+    const { thrown } = await failWith(() => Object.assign(new Error('Salesforce API error (503): unavailable'), { status: 503, resolvedInput: own }))
+    expect(thrown.resolvedInput).toBe(own)
+    expect(heldUntilOf(thrown)).toBeNull()
+  })
+
+  it('leaves a failure with no noted request as it was', async () => {
+    const { thrown } = await failWith(timeout, { note: false })
+    expect(thrown.resolvedInput).toBeUndefined()
+    expect(heldUntilOf(thrown)).toBeNull()
+  })
+
+  it('reports what the watch holds as it settles, and nothing once the record is cleared', async () => {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    w.note(REQ)
+    await clock.run(AT_RISK_AFTER_MS)
+    expect(w.noted()).toEqual(REQ)
+    expect(await w.settle('landed')).toBeNull()
+    const w2 = watch(store, clock)
+    w2.note(REQ)
+    await clock.run(clock.now() + AT_RISK_AFTER_MS)
+    expect(await w2.settle('unknown')).toEqual({ key: atRiskKey('ex-1', 'patch_submission'), expires_at: new Date(clock.now() + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString() })
   })
 })
