@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { assertSameProject, keepJoinStatus, loadConfig, WORKER_ORIGIN } from './live.ts'
+import { EventEmitter } from 'node:events'
+import { assertSameProject, keepJoinStatus, loadConfig, watchConnection, WORKER_ORIGIN } from './live.ts'
+
+describe('watchConnection: a dropped database connection is reported, not a crash before cleanup', () => {
+  it('handles the client\'s error event and logs it', () => {
+    const client = new EventEmitter()
+    const lines: string[] = []
+    watchConnection(client, (line) => lines.push(line))
+    expect(() => client.emit('error', new Error('terminating connection due to administrator command'))).not.toThrow()
+    expect(lines.join('\n')).toMatch(/database connection lost: terminating connection/)
+  })
+})
 
 describe('the Worker probe is reached on this machine only', () => {
   it('is addressed as localhost, so its plain HTTP never leaves the loopback interface', () => {

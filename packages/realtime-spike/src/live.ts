@@ -151,6 +151,16 @@ export function assertSameProject(config: SpikeConfig, env: NodeJS.ProcessEnv): 
   throw new Error(`SUPABASE_URL host ${urlHost} is neither a hosted Supabase project nor local; refusing to guess which database it uses`)
 }
 
+/**
+ * A long lived pg client emits 'error' when its connection drops (the pooler
+ * resets, the server restarts). Unhandled, Node rethrows it and the process dies
+ * before any cleanup; handled, it is logged and the next query rejects, which
+ * the run records and then cleans up after.
+ */
+export function watchConnection(client: Pick<NodeJS.EventEmitter, 'on'>, log: (line: string) => void): void {
+  client.on('error', (err: unknown) => log(`database connection lost: ${errorText(err)}`))
+}
+
 async function connectDb(config: SpikeConfig, env: NodeJS.ProcessEnv): Promise<pg.Client> {
   assertSameProject(config, env)
   const client = new pg.Client({
@@ -309,6 +319,7 @@ export async function liveDeps(
   // Each thing started is registered the moment it exists, so an interrupt
   // during the up to 60 s wrangler takes to answer still stops it (L321).
   const db = await connectDb(config, env)
+  watchConnection(db, log)
   register(async () => {
     await db.end()
   })
