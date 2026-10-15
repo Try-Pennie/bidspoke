@@ -110,6 +110,20 @@ describe('LeadSaleClient', () => {
     expect(await requests[0].json()).toEqual({ generation: 1, outcome: OUTCOME })
   })
 
+  it('amend posts the generation and the new buyer reference, returns the new generation, and maps a refusal (#2139)', async () => {
+    const { ns, requests } = namespace(() => json({ ok: true, generation: 4 }))
+    const client = new LeadSaleClient(ns, { kind: 'click', partner_id: '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70', prospect_id: 'a0B1' })
+    expect(await client.amend(3, 'L1-77')).toBe(4)
+    expect(requests[0].url).toBe('http://do/amend')
+    expect(await requests[0].json()).toEqual({ generation: 3, buyer_reference: 'L1-77' })
+
+    const current = { state: 'sold', partner_id: 'p', outcome: OUTCOME, generation: 5 }
+    const moved = new LeadSaleClient(namespace(() => json({ error: 'generation_moved', current }, 409)).ns, { kind: 'live', population: 'engine', lead_key: 'lead-1' })
+    await expect(moved.amend(3, 'L1-77')).rejects.toBeInstanceOf(GenerationMovedError)
+    const wrong = new LeadSaleClient(namespace(() => json({ error: 'wrong_state', current: { state: 'free', generation: 3 } }, 409)).ns, { kind: 'live', population: 'engine', lead_key: 'lead-1' })
+    await expect(wrong.amend(3, 'L1-77')).rejects.toBeInstanceOf(WrongStateError)
+  })
+
   it('any other failure is an ObjectCallError naming the call and the status, never a silent default', async () => {
     const { ns } = namespace(() => new Response('boom', { status: 500 }))
     const client = new LeadSaleClient(ns, { kind: 'live', population: 'engine', lead_key: 'lead-1' })
