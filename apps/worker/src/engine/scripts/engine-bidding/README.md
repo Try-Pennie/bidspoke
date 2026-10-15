@@ -69,6 +69,13 @@ no other script reads the new field. Dan pasted it on 2026-10-14 (2:25 PM ET), t
 drift check read it as agree, and its baseline was cleared (#2093), so a canvas put
 back to the script before #2089 pages as a drift.
 
+**#2092** made the helper block one text in six scripts (these two, the three RML
+bidding flows' `build_response`, and the Forms flow's `sign_submission_link`). The
+block no longer names its hosts: each script sets `LINK_TOKEN_HOSTS` just above it,
+here `trypennie.com` and `www.trypennie.com`. A missing secret now logs an error rather
+than a warning. Nothing the step sends or outputs changes. Until that paste lands,
+`build_response_body` carries the #2089 canvas script as its drift baseline.
+
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
 `build_response_body`; and both read an older `tripoint_ping` (with or without
@@ -82,8 +89,8 @@ The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
 a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
-on the canvas since version 101, and none of the kept Engine scripts carries a
-baseline now (the #2089 paste of `build_response_body` landed 2026-10-14), so any
+on the canvas since version 101. Apart from `build_response_body` while its #2092
+paste is awaited, none of the kept Engine scripts carries a baseline, so any
 difference from the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
