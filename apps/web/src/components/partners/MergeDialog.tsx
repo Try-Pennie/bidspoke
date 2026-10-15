@@ -70,15 +70,16 @@ function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose
   const lines: Array<[string, unknown]> = [['Was', conflict.base], ['Yours', conflict.mine], ['Theirs', conflict.theirs]]
   return (
     // One question per row: the radio group is its named control (ChoiceGroup),
-    // and the values sit beside it, so no second group repeats its name.
+    // described by the values beside it and any reason, so a screen reader hears
+    // them with the choice and no second group repeats its name.
     <div data-merge-key={conflict.key} className="space-y-1.5 border-t border-gray-100 py-3 first:border-t-0">
-      <ChoiceGroup id={id} label={conflict.label} visibleLabel={visibleLabel(conflict)} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} />
-      <div className="grid gap-0.5 text-sm">
+      <ChoiceGroup id={id} label={conflict.label} visibleLabel={visibleLabel(conflict)} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} describedBy={[`${id}-values`, conflict.reason ? `${id}-reason` : null].filter(Boolean).join(' ')} />
+      <div id={`${id}-values`} className="grid gap-0.5 text-sm">
         {lines.map(([word, value]) => (
           <p key={word} className="grid grid-cols-[3.5rem_1fr] items-baseline"><span className="text-xs font-medium text-gray-600">{word}</span> <span className="break-words">{describeMergeValue(conflict.key, value)}</span></p>
         ))}
       </div>
-      {conflict.reason && <p className="text-xs text-red-700">These cannot be saved together: {conflict.reason}</p>}
+      {conflict.reason && <p id={`${id}-reason`} className="text-xs text-red-700">These cannot be saved together: {conflict.reason}</p>}
     </div>
   )
 }

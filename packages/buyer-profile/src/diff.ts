@@ -79,8 +79,9 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
     doc.click_delivery = {
       success_pattern: (paths.get('click_delivery.success_pattern') as string | undefined) ?? '',
       routes: routeEntries.map(([k, v]) => {
-        const r = v as { url: string; states: string[] }
-        return { name: k.slice('click_delivery.routes['.length, -1), url: r.url, states: [...r.states] }
+        const r = v as { url?: unknown; states?: unknown }
+        if (typeof r?.url !== 'string' || !Array.isArray(r.states)) throw new Error(`unflattenProfileDocument: ${k} is not a route of an address and states`)
+        return { name: k.slice('click_delivery.routes['.length, -1), url: r.url, states: [...(r.states as string[])] }
       }),
     }
   } else {

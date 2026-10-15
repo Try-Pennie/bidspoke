@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension, MatrixProblem } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-react'
@@ -34,6 +34,7 @@ export function BidMatrixViewer(p: Props) {
   const [creating, setCreating] = useState(false)
   /** The delete dialog (#2134): null when closed; otherwise whether it is deleting and why it last failed. */
   const [deleteAsk, setDeleteAsk] = useState<{ deleting: boolean; error: string | null } | null>(null)
+  const deletingRef = useRef(false)
 
   useEffect(() => {
     if (p.selectedConfigId && p.selectedConfigId !== activeId) {
@@ -102,13 +103,26 @@ export function BidMatrixViewer(p: Props) {
   }
 
   async function handleDelete() {
-    if (!activeConfig || deleteAsk?.deleting) return
+    // A ref, not state: two presses in one render both see the state before the
+    // first one's update, and would both send the delete (#495).
+    if (!activeConfig || deletingRef.current) return
+    deletingRef.current = true
     setDeleteAsk({ deleting: true, error: null })
     try {
       await api.partnerBidConfigs.delete(activeConfig.id)
     } catch (err) {
-      setDeleteAsk({ deleting: false, error: `Not deleted: ${errorSentence(err, 'the matrix delete failed')}` })
+      // A refusal the server answered did not delete; a request with no answer
+      // may have, so it says only what is known (L11).
+      const answered = typeof (err as { status?: unknown } | null)?.status === 'number'
+      setDeleteAsk({
+        deleting: false,
+        error: answered
+          ? `Not deleted: ${errorSentence(err, 'the matrix delete failed')}`
+          : `The delete got no answer, so the matrix may or may not be deleted. Reload the page to see which. (${errorSentence(err, 'no answer')})`,
+      })
       return
+    } finally {
+      deletingRef.current = false
     }
     setDeleteAsk(null)
     const remaining = p.configs.filter((c) => c.id !== activeConfig.id)

@@ -118,12 +118,33 @@ describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
-  it('a delete that fails says nothing was deleted, in the dialog, and keeps the matrix', async () => {
-    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValue(new Error('API 500: boom'))
+  it('a delete the server refuses says nothing was deleted, in the dialog, and keeps the matrix', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }))
     const { dialog, onConfigsChange } = await openDelete()
     fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(/^Not deleted:/)
     expect(onConfigsChange).not.toHaveBeenCalled()
+  })
+
+  it('a delete with no answer says it may or may not have happened, never that nothing was deleted (L11)', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValue(new TypeError('Failed to fetch'))
+    const { dialog } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent(/may or may not be deleted/)
+    expect(alert).not.toHaveTextContent(/Not deleted/)
+  })
+
+  it('two presses before the first one renders send one delete', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.delete).mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true }) }))
+    await openDelete()
+    const button = screen.getByRole('button', { name: 'Delete matrix' })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(api.partnerBidConfigs.delete).toHaveBeenCalledTimes(1)
+    finish()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
   })
 
   it('when the rows could not be read, the consequence does not claim a count', async () => {

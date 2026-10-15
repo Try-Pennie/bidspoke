@@ -66,6 +66,11 @@ describe('MergeDialog', () => {
     expect(question('Hours, Monday')).toHaveTextContent('Yours 10:00 to 17:00')
   })
 
+  it('the choice is described by the values it chooses between, and by the reason when there is one', () => {
+    renderDialog()
+    expect(screen.getByRole('radiogroup', { name: 'Leads per day' })).toHaveAccessibleDescription(/Was 500.*Yours 600.*Theirs 250/)
+  })
+
   it('names what only one of you changed, kept with no question', () => {
     renderDialog()
     expect(screen.getByText('Their change to Status is added.')).toBeInTheDocument()

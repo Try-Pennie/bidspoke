@@ -80,7 +80,9 @@ async function main() {
   const profiles = {}
   const bidConfigs = {}
   for (const p of buyers) {
-    profiles[p.id] = await get(base, token, `/api/partners/${p.id}/buyer-profile`)
+    const answer = await get(base, token, `/api/partners/${p.id}/buyer-profile`)
+    if (!answer || typeof answer !== 'object' || !('profile' in answer)) throw new Error(`GET /api/partners/${p.id}/buyer-profile did not answer a profile, so nothing was written`)
+    profiles[p.id] = answer
     bidConfigs[p.id] = await getList(base, token, `/api/partner-bid-configs?partner_id=${p.id}`)
   }
   const uuids = await getList(base, token, '/api/partner-uuids')

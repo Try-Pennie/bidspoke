@@ -60,6 +60,13 @@ describe('unflattenProfileDocument', () => {
     }
   })
 
+  it('refuses a route path whose value is not an address and states, by name', () => {
+    const paths = flattenProfileDocument(fixture.cases[0].document)
+    const key = [...paths.keys()].find((k) => k.startsWith('click_delivery.routes['))!
+    paths.set(key, { url: 'https://x.example' })
+    expect(() => unflattenProfileDocument(paths)).toThrow(/is not a route of an address and states/)
+  })
+
   it('refuses a path it cannot place rather than dropping it', () => {
     const paths = flattenProfileDocument(fixture.cases[1].document)
     paths.set('loan_amount_max', 5)
