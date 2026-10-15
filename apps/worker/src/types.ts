@@ -135,6 +135,14 @@ export interface ExecutionContext {
    */
   runningSteps?: string[]
   /**
+   * True once the walk has handed its answer over (continue after response), so
+   * every step from then on runs after the answer. Set only by the walk, at the
+   * moment it answers, and never cleared. The one post-answer fact: the at-risk
+   * watch (#2022) and the Salesforce post-answer bulkhead share (#2170) both
+   * read it, so they cannot disagree about which side of the answer a step is on.
+   */
+  afterAnswer?: boolean
+  /**
    * Set by the walk around a post-answer Salesforce update (#2022): the node
    * reports the request it is about to send, and again if it changes the body,
    * so a write still out after 2 s can be recorded for the read-back.

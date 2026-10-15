@@ -49,12 +49,19 @@ import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAler
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD, recordOutcomeDeadLetter } from '../durability'
-import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
+import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS, CONTINUATION_WINDOW_MS } from '../../lib/post-response-budget'
+import { executeSalesforceNode } from '../nodes/salesforce'
+import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
+import { stubFetch } from '../../__tests__/helpers/fetch-mock'
+import {
+  SALESFORCE_BULKHEAD_KEY,
+  SALESFORCE_POST_ANSWER_BULKHEAD_KEY,
+  SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT,
+} from '../../lib/bulkhead-client'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { decryptSecret } from '../../lib/secret-crypto'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
-import { executeSalesforceNode } from '../nodes/salesforce'
 import { WRITEBACK_HELD_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../writeback-deadletter'
 
 const WF_ID = 'wf-budget'
@@ -440,9 +447,8 @@ describe('writes that answer after the budget, read back by the sweep (#1880)', 
     expect(summary.landed).toBe(4)
     expect(summary.lost).toBe(0)
     expect(db.steps).toHaveLength(1)
-    // One summary for the slowdown, saying every record landed (#1881).
-    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ runs: 1, records: 4, landed: 4, lost: 0, steps_missing: 0 })
+    // Every record landed, so the slowdown posts nothing at all (#2165).
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect([...idempotency.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toEqual([])
   })
@@ -690,6 +696,101 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       const { idempotency } = await run(test.availability, { SECRET_ENCRYPTION_KEY: KEY }, { input: { isTest: true } })
       expect(test.watched).toEqual([false])
       expect(idempotency.puts.filter((p) => p.key.startsWith('at-risk-write:'))).toEqual([])
+    })
+
+    // #2170: the post-answer bulkhead share is chosen from the same fact the
+    // watch reads, so the two can never disagree about which side of the answer
+    // a step is on.
+    describe('the post-answer bulkhead share (#2170)', () => {
+      const sfNode = (id: string, namespace: string, operation: 'update' | 'query') => ({
+        id,
+        namespace,
+        type: 'salesforce',
+        config: operation === 'update'
+          ? { retries: 0, operation, object: 'Submission__c', record_id: REQ.record_id, body: REQ.body }
+          : { retries: 0, operation, soql: 'SELECT Id FROM Lead' },
+      })
+      const respond = { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } }
+
+      function load(nodes: unknown[]) {
+        const edges = nodes.slice(1).map((n, i) => ({ id: `e${i}`, source: (nodes[i] as { id: string }).id, target: (n as { id: string }).id }))
+        vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+          definition: { trigger: { id: 'trigger', type: 'trigger', config: {} }, nodes, edges } as unknown as WorkflowDefinition,
+          workflow_version_id: 'v1',
+          workflow_name: 'Main Flow',
+          org_id: 'org-1',
+          slack_channel: null,
+          lane: 'money',
+        })
+      }
+
+      it('tells every step after the answer, and none before it, that it runs after the answer', async () => {
+        load([sfNode('b', 'set_completed_submission', 'update'), respond, sfNode('u', 'patch_submission', 'update'), sfNode('q', 'read_lead', 'query')])
+        const seen: Record<string, { afterAnswer: boolean; watched: boolean }> = {}
+        vi.mocked(executeNode).mockImplementation(async (node, ctx) => {
+          if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+          seen[node.namespace] = { afterAnswer: ctx.afterAnswer === true, watched: ctx.noteSalesforceRequest !== undefined }
+          return { output: { status: 204, body: null } }
+        })
+        await run(() => 'up', { SECRET_ENCRYPTION_KEY: KEY })
+        expect(seen).toEqual({
+          set_completed_submission: { afterAnswer: false, watched: false },
+          patch_submission: { afterAnswer: true, watched: true },
+          // Every Salesforce call after the answer takes the share; only updates are watched.
+          read_lead: { afterAnswer: true, watched: false },
+        })
+      })
+
+      it('a post-answer write shed at a full share fails inside the 12 s window and keeps its at-risk record', async () => {
+        load([respond, sfNode('u', 'patch_submission', 'update')])
+        const salesforceCalls: string[] = []
+        const fetchMock = stubFetch()
+        fetchMock.mockImplementation((url: string) => {
+          salesforceCalls.push(url)
+          return Promise.resolve(new Response(null, { status: 204 }))
+        })
+        let shedAt: number | null = null
+        let clockRef: VirtualClock | null = null
+        vi.mocked(executeNode).mockImplementation(async (node, ctx, env, _supabase, signal) => {
+          if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+          try {
+            return await executeSalesforceNode(node, ctx, env, signal)
+          } catch (e) {
+            shedAt = clockRef?.now() ?? null
+            throw e
+          }
+        })
+        const fake = fakeBulkheads({
+          seed: { [SALESFORCE_POST_ANSWER_BULKHEAD_KEY]: SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, [SALESFORCE_BULKHEAD_KEY]: SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT },
+        })
+        try {
+          const { db, result, idempotency } = await run(
+            (c) => { clockRef = c; return 'up' },
+            {
+              SECRET_ENCRYPTION_KEY: KEY,
+              SALESFORCE_CLIENT_ID: 'id',
+              SALESFORCE_CLIENT_SECRET: 'secret',
+              SALESFORCE_INSTANCE_URL: 'https://trypennie.my.salesforce.com',
+              // The production wait; nothing here sets SALESFORCE_BULKHEAD_WAIT_MS.
+              SALESFORCE_BULKHEAD: fake.namespace as unknown as string,
+              WORKFLOW_CACHE: { get: () => Promise.resolve('cached-token'), put: () => Promise.resolve(), delete: () => Promise.resolve() } as unknown as string,
+            },
+          )
+          // Shed on the virtual clock, inside the window, never reaching Salesforce.
+          expect(shedAt).not.toBeNull()
+          expect(shedAt!).toBeLessThan(CONTINUATION_WINDOW_MS)
+          expect(salesforceCalls).toEqual([])
+          const reason = String(db.executions.get(result.executionId)?.error_message)
+          expect(reason).toContain('Salesforce bulkhead: at capacity (salesforce-post-answer')
+          expect(reason).not.toContain('did not finish within')
+          // Unknown, so kept for the read-back, with the body it would have sent.
+          const keys = atRiskKeys(idempotency.store)
+          expect(keys).toHaveLength(1)
+          expect(keys[0]).toMatch(/:patch_submission$/)
+        } finally {
+          vi.unstubAllGlobals()
+        }
+      })
     })
   })
 

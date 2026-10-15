@@ -940,6 +940,30 @@ export type Database = {
           },
         ]
       }
+      cron_guard_fail_opens: {
+        Row: {
+          cron: string | null
+          event_id: string
+          line: string
+          occurred_at: string
+          recorded_at: string
+        }
+        Insert: {
+          cron?: string | null
+          event_id: string
+          line: string
+          occurred_at: string
+          recorded_at?: string
+        }
+        Update: {
+          cron?: string | null
+          event_id?: string
+          line?: string
+          occurred_at?: string
+          recorded_at?: string
+        }
+        Relationships: []
+      }
       env_var_folders: {
         Row: {
           created_at: string
@@ -3137,6 +3161,7 @@ export type Database = {
       }
       prune_orphan_auth_users: { Args: never; Returns: number }
       purge_alert_incidents: { Args: never; Returns: number }
+      purge_cron_guard_fail_opens: { Args: never; Returns: number }
       purge_outcome_writeback_deadletters: { Args: never; Returns: number }
       query_timeout_watch: {
         Args: { p_min_calls?: number }

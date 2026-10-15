@@ -15,7 +15,9 @@
 ## Monorepo
 - `apps/web` — Next.js frontend
 - `apps/worker` — Cloudflare Worker (API + execution engine)
-- `apps/worker-tail`: tail consumer that writes per-execution cost
+- `apps/worker-tail`: tail consumer that writes per-execution cost, and copies each
+  cron guard `FAILED OPEN` log line into `cron_guard_fail_opens` (#2166), the second
+  record the hourly cron guard check counts alongside its own KV record
 - `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
   dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
   every request a script makes, so a shadow run sends nothing. Its own deploy leg.

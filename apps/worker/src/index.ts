@@ -38,7 +38,8 @@ import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
 import { tickTimer, type TickTimer } from './lib/tick-timing'
-import { runCronGuardWatchLive, recordCronGuardEvent } from './lib/cron-guard-watch'
+import { runCronGuardWatchLive } from './lib/cron-guard-watch'
+import { isolateCronGuardRecorder } from './lib/cron-guard-record'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -1130,7 +1131,13 @@ export default {
   // did before the claim, so Cloudflare can retry it, and the claim is released
   // rather than marked done. The waitUntil copy is caught only so the failure
   // is not reported twice.
+  //
+  // A guard event whose KV record failed is held in this isolate and written,
+  // at its own time, by the next invocation that reaches the store (#2166);
+  // each fail-open's log line is also copied by the tail worker, so the hourly
+  // check still counts it if this isolate is gone. lib/cron-guard-record.ts.
   scheduled(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext): Promise<void> {
+    platformCtx.waitUntil(isolateCronGuardRecorder.flush(env.IDEMPOTENCY))
     const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
       const timer = tickTimer()
       const work = scheduledJobs.start(event, env, platformCtx, timer)
@@ -1151,11 +1158,9 @@ export default {
           .catch((e) => console.error('[stored-copy-ledger] flush after the scheduled run failed:', e))
       }
     }, {
-      onGuardEvent: (kind) =>
-        platformCtx.waitUntil(
-          recordCronGuardEvent(env.IDEMPOTENCY, kind, Date.now())
-            .catch((e) => console.error(`[cron-once] could not record ${kind}:`, e)),
-        ),
+      // record() never throws: it retries, then holds the event and says why.
+      onGuardEvent: (kind, e) =>
+        platformCtx.waitUntil(isolateCronGuardRecorder.record(env.IDEMPOTENCY, { kind, id: e.id, atMs: e.atMs })),
     }).then(() => undefined)
     platformCtx.waitUntil(run.catch(() => undefined))
     return run
