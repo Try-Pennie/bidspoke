@@ -2,6 +2,7 @@ import { NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 import { normalizeHandle } from './handles'
 import { filterHasCondition } from './filter-condition'
 import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
+import { salesforceConfigProblem } from './salesforce-write-options'
 
 export interface ValidationError {
   nodeId: string
@@ -185,12 +186,15 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!(POPULATIONS as readonly unknown[]).includes(config.population)) return `${String(config.population)} is not a population Bidspoke knows`
       return null
     }
+    case 'salesforce':
+      // Its required fields have working defaults, but the relay port's write
+      // options (#2170) are refused when malformed, by the rule the executor uses.
+      return salesforceConfigProblem(config)
     case 'response':
     case 'exit':
     case 'branch_end':
     case 'parallel_end':
     case 'constants':
-    case 'salesforce':
     case 'data_store':
       // Always valid at save time: the terminal and structural nodes have no
       // required config, and the others have working defaults.
