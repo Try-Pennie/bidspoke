@@ -433,5 +433,11 @@
     },
     "anon": "denied",
     "note": "Used inside the incident record's transition functions (#2100) to find the row whose start moved earlier. It reads alert_incidents, which is service role only, so anon must be denied; probed with every argument because PostgREST resolves a function by its argument names."
+  },
+  {
+    "name": "purge_cron_guard_fail_opens",
+    "args": {},
+    "anon": "denied",
+    "note": "The cron guard fail-open record's retention (#2166): run daily by the purge-cron-guard-fail-opens pg_cron job, deleting cron_guard_fail_opens rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
   }
 ]

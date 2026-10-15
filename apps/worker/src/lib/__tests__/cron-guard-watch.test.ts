@@ -18,7 +18,10 @@ import {
   CRON_GUARD_THRESHOLDS,
   cronGuardPagedKey,
   cronGuardMessage,
+  TAIL_COPY_LAG_MS,
+  supabaseTailCopyReader,
   type CronGuardKind,
+  type CronGuardSources,
 } from '../cron-guard-watch'
 
 const NOW = Date.parse('2026-10-14T15:00:00.000Z')
@@ -108,24 +111,40 @@ describe('countCronGuardEvents', () => {
   })
 })
 
-describe('runCronGuardWatch', () => {
-  function deps(kv: ReturnType<typeof memoryKv>, delivered = true) {
-    const sent: Array<{ kind: CronGuardKind; count: number; capped: boolean }> = []
-    const lines: string[] = []
-    const errs: string[] = []
-    return {
-      sent,
-      lines,
-      errs,
-      d: {
-        kv,
-        now: () => NOW,
-        send: vi.fn(async (kind: CronGuardKind, count: number, capped: boolean) => { sent.push({ kind, count, capped }); return delivered }),
-        log: (l: string) => { lines.push(l) },
-        error: (l: string) => { errs.push(l) },
-      },
-    }
+/** The tail worker's copy of the FAILED OPEN lines (#2166), as the live reader returns it. */
+function tailCopy(events: Array<{ id: string; atMs: number }> = []) {
+  return vi.fn(async (sinceMs: number, nowMs: number) => ({
+    events: events.filter((e) => e.atMs > sinceMs && e.atMs <= nowMs),
+    capped: false,
+  }))
+}
+
+function deps(kv: ReturnType<typeof memoryKv>, delivered = true, tail = tailCopy()) {
+  const sent: Array<{ kind: CronGuardKind; count: number; capped: boolean }> = []
+  const sources: Array<CronGuardSources | undefined> = []
+  const lines: string[] = []
+  const errs: string[] = []
+  return {
+    sent,
+    sources,
+    lines,
+    errs,
+    d: {
+      kv,
+      now: () => NOW,
+      tailFailOpens: tail,
+      send: vi.fn(async (kind: CronGuardKind, count: number, capped: boolean, s?: CronGuardSources) => {
+        sent.push({ kind, count, capped })
+        sources.push(s)
+        return delivered
+      }),
+      log: (l: string) => { lines.push(l) },
+      error: (l: string) => { errs.push(l) },
+    },
   }
+}
+
+describe('runCronGuardWatch', () => {
 
   it('holds the thresholds Dan approved: 3 fail-opens, 30 duplicates', () => {
     expect(CRON_GUARD_THRESHOLDS).toEqual({ failed_open: 3, skipped_duplicate: 30 })
@@ -188,11 +207,15 @@ describe('runCronGuardWatch', () => {
       if (o.prefix.includes('failed_open')) throw new Error('KV list 503')
       return realList(o)
     })
-    const t = deps(kv)
+    // Both records of a fail-open unreadable: nothing to count from.
+    const tail = tailCopy()
+    tail.mockRejectedValue(new Error('PGRST 503'))
+    const t = deps(kv, true, tail)
     const r = await runCronGuardWatch(t.d)
     expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'unreadable' })
     expect(r.find((x) => x.kind === 'failed_open')).not.toHaveProperty('count')
     expect(t.errs.join('\n')).toMatch(/could not count failed_open.*KV list 503/)
+    expect(t.errs.join('\n')).toMatch(/could not read the tail worker's copy.*PGRST 503/)
     expect(t.sent).toEqual([{ kind: 'skipped_duplicate', count: 30, capped: false }])
   })
 
@@ -218,6 +241,148 @@ describe('runCronGuardWatch', () => {
   })
 })
 
+// #2166: on 2026-10-14 the KV put recording each fail-open failed in the same
+// blip that made the guard fail open, so 9 FAILED OPEN lines were counted as 3.
+// The tail worker copies every FAILED OPEN line into the database by its event
+// id, and the check counts the union of the two records.
+describe('runCronGuardWatch counts a fail-open from either record (#2166)', () => {
+  const recordWithIds = async (kv: ReturnType<typeof memoryKv>, events: Array<{ id: string; atMs: number }>) => {
+    for (const e of events) await recordCronGuardEvent(kv, 'failed_open', e.atMs, e.id)
+  }
+  const nine = Array.from({ length: 9 }, (_, i) => ({ id: `ev-${i}`, atMs: NOW - (i + 1) * H }))
+
+  it('the measured day: 9 fail-opens logged, only 3 recorded in KV, counts 9 and pages', async () => {
+    const kv = memoryKv()
+    await recordWithIds(kv, nine.slice(6))
+    const t = deps(kv, true, tailCopy(nine))
+    const r = await runCronGuardWatch(t.d)
+    expect(t.sent).toEqual([{ kind: 'failed_open', count: 9, capped: false }])
+    expect(t.sources[0]).toEqual({ guardRecord: 3, tailCopy: 9, onlyInTailCopy: 6, missingFromTailCopy: 0 })
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 9, alerted: true })
+  })
+
+  it('pages when every KV record failed and only the tail copy holds them', async () => {
+    const kv = memoryKv()
+    const t = deps(kv, true, tailCopy(nine.slice(0, 3)))
+    await runCronGuardWatch(t.d)
+    expect(t.sent).toEqual([{ kind: 'failed_open', count: 3, capped: false }])
+  })
+
+  it('a fail-open in both records counts once', async () => {
+    const kv = memoryKv()
+    await recordWithIds(kv, nine.slice(0, 2))
+    const t = deps(kv, true, tailCopy(nine.slice(0, 2)))
+    const r = await runCronGuardWatch(t.d)
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'under', count: 2 })
+    expect(t.sent).toEqual([])
+  })
+
+  it('asks the tail copy for the same 24 hour window the KV count uses', async () => {
+    const kv = memoryKv()
+    const tail = tailCopy()
+    await runCronGuardWatch(deps(kv, true, tail).d)
+    expect(tail).toHaveBeenCalledWith(NOW - 24 * H, NOW)
+  })
+
+  it('logs both records on every run, so a copy that stops keeping up is visible on a quiet day', async () => {
+    const kv = memoryKv()
+    await recordWithIds(kv, nine.slice(0, 1))
+    const t = deps(kv, true, tailCopy(nine.slice(1, 2)))
+    await runCronGuardWatch(t.d)
+    expect(t.lines.join('\n')).toMatch(/kind=failed_open count=2 threshold=3 guard_record=1 tail_copy=1 only_in_tail_copy=1 missing_from_tail_copy=1/)
+  })
+
+  it('a tail copy it cannot read leaves the KV count standing, says so, and the page calls it a floor', async () => {
+    const kv = memoryKv()
+    await recordWithIds(kv, nine.slice(0, 3))
+    const tail = tailCopy()
+    tail.mockRejectedValue(new Error('PGRST 503'))
+    const t = deps(kv, true, tail)
+    const r = await runCronGuardWatch(t.d)
+    expect(t.errs.join('\n')).toMatch(/could not read the tail worker's copy of failed_open.*PGRST 503/)
+    expect(t.sent).toEqual([{ kind: 'failed_open', count: 3, capped: true }])
+    expect(t.sources[0]).toMatchObject({ guardRecord: 3, unread: { record: 'tail_copy', why: expect.stringMatching(/PGRST 503/) } })
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 3, capped: true })
+    expect(t.lines.join('\n')).toMatch(/tail_copy=unreadable/)
+  })
+
+  it('a KV record it cannot read leaves the tail copy count standing, rather than the whole count going unreadable', async () => {
+    const kv = memoryKv()
+    kv.list.mockRejectedValue(new Error('KV list 503'))
+    const t = deps(kv, true, tailCopy(nine.slice(0, 4)))
+    const r = await runCronGuardWatch(t.d)
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 4, capped: true })
+    expect(t.sources[0]).toMatchObject({ tailCopy: 4, unread: { record: 'guard_record', why: expect.stringMatching(/KV list 503/) } })
+    expect(t.errs.join('\n')).toMatch(/could not count failed_open.*KV list 503/)
+  })
+
+  it('a KV record younger than the tail worker can have copied it is not reported missing from the copy', async () => {
+    const kv = memoryKv()
+    await recordWithIds(kv, [{ id: 'fresh', atMs: NOW - TAIL_COPY_LAG_MS + 1 }, { id: 'old', atMs: NOW - TAIL_COPY_LAG_MS - 1 }])
+    const t = deps(kv)
+    await runCronGuardWatch(t.d)
+    expect(t.lines.join('\n')).toMatch(/missing_from_tail_copy=1\b/)
+  })
+
+  it('never asks the tail copy about skipped duplicates, which it does not keep', async () => {
+    const kv = memoryKv()
+    await record(kv, 'skipped_duplicate', Array.from({ length: 30 }, () => NOW - H))
+    const tail = tailCopy()
+    const t = deps(kv, true, tail)
+    await runCronGuardWatch(t.d)
+    expect(tail).toHaveBeenCalledTimes(1)
+    expect(t.sources[0]).toBeUndefined()
+  })
+})
+
+describe('supabaseTailCopyReader (#2166)', () => {
+  /** A query builder double that serves `rows` by range, the way PostgREST pages. */
+  function fakeSupabase(rows: Array<{ event_id: string; occurred_at: string }>, error: { message: string } | null = null) {
+    const calls: Array<{ method: string; args: unknown[] }> = []
+    const builder: Record<string, unknown> = {}
+    for (const m of ['select', 'gt', 'lte', 'order']) {
+      builder[m] = (...args: unknown[]) => { calls.push({ method: m, args }); return builder }
+    }
+    builder.range = async (from: number, to: number) => {
+      calls.push({ method: 'range', args: [from, to] })
+      return error ? { data: null, error } : { data: rows.slice(from, to + 1), error: null }
+    }
+    const from = vi.fn(() => builder)
+    return { client: { from } as unknown as Parameters<typeof supabaseTailCopyReader>[0], from, calls }
+  }
+  const row = (i: number) => ({ event_id: `ev-${i}`, occurred_at: new Date(NOW - i * 1000).toISOString() })
+
+  it('reads the window from cron_guard_fail_opens, newest first, by id and time', async () => {
+    const f = fakeSupabase([row(1), row(2)])
+    const r = await supabaseTailCopyReader(f.client)(NOW - 24 * H, NOW)
+    expect(f.from).toHaveBeenCalledWith('cron_guard_fail_opens')
+    expect(r).toEqual({ events: [{ id: 'ev-1', atMs: NOW - 1000 }, { id: 'ev-2', atMs: NOW - 2000 }], capped: false })
+    expect(f.calls).toContainEqual({ method: 'gt', args: ['occurred_at', new Date(NOW - 24 * H).toISOString()] })
+    expect(f.calls).toContainEqual({ method: 'lte', args: ['occurred_at', new Date(NOW).toISOString()] })
+    expect(f.calls).toContainEqual({ method: 'order', args: ['occurred_at', { ascending: false }] })
+  })
+
+  it('pages past the 1,000 row cap rather than stopping at it silently', async () => {
+    const f = fakeSupabase(Array.from({ length: 1500 }, (_, i) => row(i)))
+    const r = await supabaseTailCopyReader(f.client)(NOW - 24 * H, NOW)
+    expect(r.events).toHaveLength(1500)
+    expect(r.capped).toBe(false)
+    expect(f.calls.filter((c) => c.method === 'range').map((c) => c.args)).toEqual([[0, 999], [1000, 1999]])
+  })
+
+  it('stops at its page limit and says the count is a floor', async () => {
+    const f = fakeSupabase(Array.from({ length: 2500 }, (_, i) => row(i)))
+    const r = await supabaseTailCopyReader(f.client, { maxPages: 2 })(NOW - 24 * H, NOW)
+    expect(r).toMatchObject({ capped: true })
+    expect(r.events).toHaveLength(2000)
+  })
+
+  it('throws on a failed read, so it is reported unreadable and never as zero', async () => {
+    const f = fakeSupabase([], { message: 'relation "cron_guard_fail_opens" does not exist' })
+    await expect(supabaseTailCopyReader(f.client)(NOW - 24 * H, NOW)).rejects.toThrow(/cron_guard_fail_opens.*does not exist/)
+  })
+})
+
 describe('cronGuardMessage', () => {
   it('a fail-open page says the ticks ran unguarded, what that risks, and where to look', () => {
     const m = cronGuardMessage('failed_open', 4, false)
@@ -234,6 +399,41 @@ describe('cronGuardMessage', () => {
     expect(m.context).toMatch(/guard skipped every second copy, so no job ran twice/)
     expect(m.context).toMatch(/Nothing here needs fixing/)
     expect(m.fixHint).toBeUndefined()
+  })
+
+  // #2166, L11: the page says what it counted and from where when the records disagree.
+  it('names the fail-opens whose own record failed, and that they were counted from the tail copy', () => {
+    const m = cronGuardMessage('failed_open', 9, false, { guardRecord: 3, tailCopy: 9, onlyInTailCopy: 6, missingFromTailCopy: 0 })
+    expect(m.errors).toEqual([
+      'The cron guard could not reach its claim store 9 times in the last 24 hours, so those ticks ran without it.',
+      'The guard could not write its own record of 6 of them, because its store failed too. They were counted from the copy the tail worker keeps of the guard\'s log lines.',
+    ])
+  })
+
+  it('says the count is the guard record alone, and a floor, when the tail copy could not be read', () => {
+    const m = cronGuardMessage('failed_open', 3, true, { guardRecord: 3, unread: { record: 'tail_copy', why: 'PGRST 503' } })
+    expect(m.errors).toEqual([
+      'The cron guard could not reach its claim store at least 3 times in the last 24 hours, so those ticks ran without it.',
+      'This counts the guard\'s own record alone: the tail worker\'s copy of its log lines could not be read (PGRST 503), so a fail-open whose own record also failed is not in this count.',
+    ])
+  })
+
+  it('says the count is the tail copy alone when the guard record could not be read', () => {
+    const m = cronGuardMessage('failed_open', 4, true, { tailCopy: 4, unread: { record: 'guard_record', why: 'KV list 503' } })
+    expect(m.errors[1]).toBe('This counts the tail worker\'s copy of the guard\'s log lines alone: the guard\'s own record could not be read (KV list 503).')
+  })
+
+  it('says when the tail copy is missing fail-opens the guard recorded, in the singular for one', () => {
+    const m = cronGuardMessage('failed_open', 3, false, { guardRecord: 3, tailCopy: 2, onlyInTailCopy: 0, missingFromTailCopy: 1 })
+    expect(m.errors).toEqual([
+      'The cron guard could not reach its claim store 3 times in the last 24 hours, so those ticks ran without it.',
+      '1 of them is not in the tail worker\'s copy of the guard\'s log lines.',
+    ])
+  })
+
+  it('adds nothing when both records agree', () => {
+    const m = cronGuardMessage('failed_open', 3, false, { guardRecord: 3, tailCopy: 3, onlyInTailCopy: 0, missingFromTailCopy: 0 })
+    expect(m.errors).toHaveLength(1)
   })
 
   it('says "at least" when the count stopped at its page limit, and reads one in the singular', () => {
