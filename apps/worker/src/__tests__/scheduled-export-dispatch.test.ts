@@ -148,13 +148,14 @@ describe('the Worker no longer runs the sightings purge (#541)', () => {
     it(`does nothing on the retired ${cron} cron`, async () => {
       // The handler hands over the tick claim wrapping the jobs (#1899) and,
       // because this env has no ALERT_CLAIM binding and the guard fails open,
-      // the record of that fail-open (#1904). Once both settle, no job has
-      // handed over any work of its own.
+      // the record of that fail-open (#1904), after the write of any guard
+      // record an earlier tick could not make (#2166). Once all three settle, no
+      // job has handed over any work of its own.
       const ctx = fakeCtx()
       void worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
       const handed = vi.mocked(ctx.waitUntil).mock.calls.map((c) => c[0] as Promise<unknown>)
       await Promise.allSettled(handed)
-      expect(ctx.waitUntil).toHaveBeenCalledTimes(2)
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(3)
       expect(runSightingsExport).not.toHaveBeenCalled()
       expect(runAchieveExport).not.toHaveBeenCalled()
     })

@@ -59,9 +59,23 @@ export interface CronTickOptions {
   /**
    * Told of each fail-open and each skipped duplicate, so they can be counted
    * and someone paged (#1904). It must not block: the caller hands any write to
-   * waitUntil. A throw is logged and never stops the jobs.
+   * waitUntil. A throw is logged and never stops the jobs. The event's id is
+   * also in its log line (#2166): the tail worker copies each `FAILED OPEN`
+   * line into the database by that id, a second record written by a different
+   * path, so the count survives this record failing.
    */
-  onGuardEvent?: (kind: 'failed_open' | 'skipped_duplicate') => void
+  onGuardEvent?: (kind: GuardEventKind, event: GuardEventInfo) => void
+  /** Names each guard event; the id seam for tests. Defaults to a random UUID. */
+  eventId?: () => string
+}
+
+export type GuardEventKind = 'failed_open' | 'skipped_duplicate'
+
+export interface GuardEventInfo {
+  /** Named in the event's log line as `event=<id>`, so its two records can be matched. */
+  id: string
+  /** When it happened, by the injected clock. */
+  atMs: number
 }
 
 const MINUTE_MS = 60_000
@@ -94,16 +108,21 @@ async function decide(
   options: CronTickOptions,
 ): Promise<Decision> {
   const label = `cron="${event.cron}" scheduled=${iso(event.scheduledTime)}`
-  const report = (kind: 'failed_open' | 'skipped_duplicate') => {
+  const clock = options.now ?? Date.now
+  const newEvent = (): GuardEventInfo => ({ id: (options.eventId ?? (() => crypto.randomUUID()))(), atMs: clock() })
+  const report = (kind: GuardEventKind, info: GuardEventInfo) => {
     try {
-      options.onGuardEvent?.(kind)
+      options.onGuardEvent?.(kind, info)
     } catch (e) {
-      console.error(`[cron-once] could not record ${kind} ${label}: ${formatErr(e)}`)
+      console.error(`[cron-once] could not record ${kind} event=${info.id} ${label}: ${formatErr(e)}`)
     }
   }
   const failOpen = (why: string): Decision => {
-    console.error(`[cron-once] FAILED OPEN ${label}: ${why}, running without the claim`)
-    report('failed_open')
+    const info = newEvent()
+    // The tail worker parses this exact shape (apps/worker-tail, #2166), so
+    // `event=<id>` stays straight after `FAILED OPEN`.
+    console.error(`[cron-once] FAILED OPEN event=${info.id} ${label}: ${why}, running without the claim`)
+    report('failed_open', info)
     return { run: true, holder: null }
   }
   if (!ns) return failOpen('no ALERT_CLAIM binding')
@@ -111,7 +130,6 @@ async function decide(
 
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
   const holder = (options.holder ?? (() => crypto.randomUUID()))()
-  const clock = options.now ?? Date.now
   const key = cronTickKey(event.cron, event.scheduledTime)
   const ask = (afterWait = false) => raceDeadline(async () => {
     const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-claim', {
@@ -150,11 +168,12 @@ async function decide(
 
   const verdict = outcome.value
   if (!verdict.run) {
+    const info = newEvent()
     console.log(
       `[cron-once] skipped duplicate ${label} holder=${verdict.holder} holder_scheduled=${iso(verdict.holder_scheduled_time)}` +
-        ` holder_status=${verdict.holder_status} holder_age_ms=${verdict.holder_age_ms} duplicates=${verdict.duplicates}`,
+        ` holder_status=${verdict.holder_status} holder_age_ms=${verdict.holder_age_ms} duplicates=${verdict.duplicates} event=${info.id}`,
     )
-    report('skipped_duplicate')
+    report('skipped_duplicate', info)
     return { run: false }
   }
   if (verdict.reason === 'retry') {

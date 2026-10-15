@@ -11,6 +11,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS } from '../../durable-objects/alert-claim'
 import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS } from '../cron-once'
+// The consumer of the FAILED OPEN line (#2166), a separate app, imported to prove the contract.
+import { failOpensIn } from '../../../../worker-tail/src/fail-opens'
 
 /** Storage with the surface the claim object uses, held in a Map. */
 function memoryState(): DurableObjectState {
@@ -323,5 +325,41 @@ describe('runCronTickOnce (#1899)', () => {
     expect(outcome).toBe('ran')
     expect(jobs).toHaveBeenCalledTimes(1)
     expect(errors.join('\n')).toMatch(/could not record failed_open.*kv gone/)
+  })
+
+  // #2166: the FAILED OPEN line is the fail-open's second record (the tail worker
+  // copies it to the database), so the line and the counted record must name the
+  // same event, or the hourly check cannot tell one fail-open seen twice from two.
+  it('names each guard event once, with the same id in its log line and in what onGuardEvent is handed', async () => {
+    const { ns } = claimNamespace()
+    const events: Array<{ kind: string; id: string; atMs: number }> = []
+    const ids = ['ev-skip', 'ev-open']
+    const onGuardEvent = (kind: string, e: { id: string; atMs: number }) => { events.push({ kind, id: e.id, atMs: e.atMs }) }
+    const eventId = () => ids.shift()!
+    const jobs = vi.fn(async () => {})
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 1_000 }, jobs, { now: () => MINUTE + 1_000, holder: () => 'a', onGuardEvent, eventId })
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 37_000 }, jobs, { now: () => MINUTE + 37_000, holder: () => 'b', onGuardEvent, eventId })
+    await runCronTickOnce(undefined, { cron: '0 9 * * *', scheduledTime: MINUTE }, jobs, { now: () => MINUTE + 5, onGuardEvent, eventId })
+    expect(events).toEqual([
+      { kind: 'skipped_duplicate', id: 'ev-skip', atMs: MINUTE + 37_000 },
+      { kind: 'failed_open', id: 'ev-open', atMs: MINUTE + 5 },
+    ])
+    expect(errors.find((e) => e.includes('FAILED OPEN'))).toMatch(/^\[cron-once\] FAILED OPEN event=ev-open cron="0 9 \* \* \*" scheduled=/)
+    expect(logs.find((l) => l.includes('skipped duplicate'))).toMatch(/ event=ev-skip$/)
+  })
+
+  // The line is a contract with another app: the tail worker parses it. So the
+  // real line this guard writes is fed to the tail worker's real parser.
+  it('writes a FAILED OPEN line the tail worker reads back as the same event', async () => {
+    const onGuardEvent = vi.fn()
+    await runCronTickOnce(undefined, { cron: '* * * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), { now: () => MINUTE + 2_118, onGuardEvent })
+    const line = errors.find((e) => e.includes('FAILED OPEN'))!
+    const id = (onGuardEvent.mock.calls[0][1] as { id: string }).id
+    const trace = {
+      scriptName: 'bidspoke-worker',
+      event: { cron: '* * * * *', scheduledTime: MINUTE },
+      logs: [{ timestamp: MINUTE + 2_118, level: 'error', message: [line] }],
+    } as unknown as TraceItem
+    expect(failOpensIn(trace)).toEqual([{ event_id: id, occurred_at: new Date(MINUTE + 2_118).toISOString(), cron: '* * * * *', line }])
   })
 })
