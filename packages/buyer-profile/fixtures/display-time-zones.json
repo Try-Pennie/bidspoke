@@ -1,0 +1,4 @@
+{
+  "about": "DISPLAY_TIME_ZONES from src/clock.ts, carried to the SQL suite (#2143, L41). Not hand edited: display-time-zone.test.ts fails until this list equals the constant, and supabase/tests/buyer_profile_display_time_zone.test.sql fails until the CHECK on buyer_profiles.display_time_zone allows exactly these values.",
+  "zones": ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"]
+}
