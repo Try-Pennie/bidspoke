@@ -148,7 +148,7 @@ function seqOf(r: Received): unknown {
 export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<SpikeResult> {
   const problems: string[] = []
   const { marker, ledger } = deps
-  const log = (line: string) => deps.log(line)
+  const log = deps.log
 
   // 1. Org A, then Org B under the marker, each entry on disk before its create.
   const a = await deps.signIn(deps.orgA.email, deps.orgA.password)
