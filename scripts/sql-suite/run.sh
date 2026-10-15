@@ -28,7 +28,18 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 if ! bash "$HERE/start-db.sh" ${1:-}; then exit 2; fi
-if ! bash "$HERE/replay.sh"; then
+bash "$HERE/replay.sh"
+replay_status=$?
+# 3: the container was built by a different bootstrap file (#2131). It is
+# rebuilt from empty rather than patched, because a bootstrap rerun over a
+# migrated database undoes what the migrations did after it.
+if [ "$replay_status" -eq 3 ]; then
+  echo "rebuilding container $CONTAINER from empty for the changed bootstrap"
+  if ! bash "$HERE/start-db.sh" --reset; then exit 2; fi
+  bash "$HERE/replay.sh"
+  replay_status=$?
+fi
+if [ "$replay_status" -ne 0 ]; then
   echo "SQL SUITE FAILED: the migrations do not replay from empty (see above)." >&2
   exit 1
 fi
