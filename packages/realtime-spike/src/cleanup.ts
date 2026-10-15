@@ -13,9 +13,11 @@ import { keyCarriesMarker, type EntryKind, type Ledger, type LedgerEntry } from 
 export interface CleanupOps {
   /** The users row the signup trigger made has the auth user's id. */
   findUserIdByEmail(email: string): Promise<string | null>
-  deletePublicUser(id: string): Promise<number>
-  deleteAuthUser(id: string): Promise<'removed' | 'absent'>
-  deleteOrganization(id: string): Promise<number>
+  // Each delete by id also names the marker bearing key, and touches only a
+  // row carrying it, so a ledger id pointing at a real row removes nothing.
+  deletePublicUser(id: string, email: string): Promise<number>
+  deleteAuthUser(id: string, email: string): Promise<'removed' | 'absent'>
+  deleteOrganization(id: string, slug: string): Promise<number>
   deleteAllowlist(email: string): Promise<number>
 }
 
@@ -72,10 +74,10 @@ export async function cleanupLedger(ledger: Ledger, ops: CleanupOps): Promise<Cl
             continue
           }
           if (kind === 'public_user') {
-            const n = await ops.deletePublicUser(id)
+            const n = await ops.deletePublicUser(id, entry.key)
             ;(n > 0 ? report.removed : report.absent).push(describe(entry))
           } else {
-            const outcome = await ops.deleteAuthUser(id)
+            const outcome = await ops.deleteAuthUser(id, entry.key)
             ;(outcome === 'removed' ? report.removed : report.absent).push(describe(entry))
           }
         } else if (kind === 'organization') {
@@ -83,7 +85,7 @@ export async function cleanupLedger(ledger: Ledger, ops: CleanupOps): Promise<Cl
             report.failed.push(`${describe(entry)}: the ledger holds no id for it`)
             continue
           }
-          const n = await ops.deleteOrganization(entry.id)
+          const n = await ops.deleteOrganization(entry.id, entry.key)
           ;(n > 0 ? report.removed : report.absent).push(describe(entry))
         } else {
           const n = await ops.deleteAllowlist(entry.key)

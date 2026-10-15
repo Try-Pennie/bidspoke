@@ -18,16 +18,16 @@ function recordingOps(overrides: Partial<CleanupOps> = {}): CleanupOps & { calls
       calls.push(`find ${email}`)
       return 'u-found'
     },
-    deletePublicUser: async (id) => {
-      calls.push(`public_user ${id}`)
+    deletePublicUser: async (id, email) => {
+      calls.push(`public_user ${id} ${email}`)
       return 1
     },
-    deleteAuthUser: async (id) => {
-      calls.push(`auth_user ${id}`)
+    deleteAuthUser: async (id, email) => {
+      calls.push(`auth_user ${id} ${email}`)
       return 'removed'
     },
-    deleteOrganization: async (id) => {
-      calls.push(`organization ${id}`)
+    deleteOrganization: async (id, slug) => {
+      calls.push(`organization ${id} ${slug}`)
       return 1
     },
     deleteAllowlist: async (email) => {
@@ -49,7 +49,7 @@ describe('cleanupLedger', () => {
   it('removes what the ledger names, dependants first', async () => {
     const ops = recordingOps()
     const report = await cleanupLedger(ledgerWith(everything), ops)
-    expect(ops.calls).toEqual(['public_user u-1', 'auth_user u-1', 'organization org-b', `allowlist ${EMAIL}`])
+    expect(ops.calls).toEqual([`public_user u-1 ${EMAIL}`, `auth_user u-1 ${EMAIL}`, `organization org-b ${SLUG}`, `allowlist ${EMAIL}`])
     expect(report.failed).toEqual([])
     expect(report.removed).toHaveLength(4)
   })
@@ -66,7 +66,7 @@ describe('cleanupLedger', () => {
     )
     // The auth user's id was never written, so it is found by email, and the
     // users row the signup trigger made with it is removed as well.
-    expect(ops.calls).toEqual([`find ${EMAIL}`, 'public_user u-found', 'auth_user u-found', 'organization org-b', `allowlist ${EMAIL}`])
+    expect(ops.calls).toEqual([`find ${EMAIL}`, `public_user u-found ${EMAIL}`, `auth_user u-found ${EMAIL}`, `organization org-b ${SLUG}`, `allowlist ${EMAIL}`])
     expect(report.failed).toEqual([])
   })
 

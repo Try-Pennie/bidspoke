@@ -70,10 +70,19 @@ function admin(config: SpikeConfig) {
   return createClient(config.supabaseUrl, config.secretKey, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 
-export function liveCleanupOps(config: SpikeConfig): CleanupOps {
-  const db = admin(config)
-  const deleted = async (table: string, column: string, value: string): Promise<number> => {
-    const { data, error } = await db.from(table).delete().eq(column, value).select(column)
+export type CleanupClient = ReturnType<typeof admin>
+
+/**
+ * Every delete is narrowed by the marker bearing key as well as the id, so a
+ * ledger whose id was edited to point at a real row removes nothing; the auth
+ * user, which cannot be filtered that way, is read first and refused unless its
+ * email is the ledger's.
+ */
+export function liveCleanupOps(config: SpikeConfig, db: CleanupClient = admin(config)): CleanupOps {
+  const deleted = async (table: string, filters: Array<[string, string]>): Promise<number> => {
+    let query = db.from(table).delete()
+    for (const [column, value] of filters) query = query.eq(column, value)
+    const { data, error } = await query.select(filters[0][0])
     if (error) throw new Error(`${table}: ${error.message}`)
     return (data ?? []).length
   }
@@ -83,15 +92,21 @@ export function liveCleanupOps(config: SpikeConfig): CleanupOps {
       if (error) throw new Error(`users: ${error.message}`)
       return data?.id ?? null
     },
-    deletePublicUser: (id) => deleted('users', 'id', id),
-    deleteAuthUser: async (id) => {
+    deletePublicUser: (id, email) => deleted('users', [['id', id], ['email', email]]),
+    deleteAuthUser: async (id, email) => {
+      const found = await db.auth.admin.getUserById(id)
+      if (found.error?.status === 404 || (!found.error && !found.data.user)) return 'absent'
+      if (found.error) throw new Error(`auth user: ${found.error.message}`)
+      if (found.data.user?.email !== email) {
+        throw new Error(`refusing: auth user ${id} is ${found.data.user?.email ?? 'unknown'}, not ${email}`)
+      }
       const { error } = await db.auth.admin.deleteUser(id)
       if (!error) return 'removed'
       if (error.status === 404) return 'absent'
       throw new Error(`auth user: ${error.message}`)
     },
-    deleteOrganization: (id) => deleted('organizations', 'id', id),
-    deleteAllowlist: (email) => deleted('user_allowlist', 'email', email),
+    deleteOrganization: (id, slug) => deleted('organizations', [['id', id], ['slug', slug]]),
+    deleteAllowlist: (email) => deleted('user_allowlist', [['email', email]]),
   }
 }
 
