@@ -10,7 +10,8 @@
 --
 -- Mutations tried: the REVOKE on partner_configs_bump_version() left out of the
 -- migration (case 1 red: PUBLIC keeps EXECUTE, so anon and authenticated have it);
--- the REVOKE on _apply_buyer_profile left out (#2133, case 1 red).
+-- the REVOKE on _apply_buyer_profile left out (#2133, case 1 red); the REVOKE
+-- from service_role on it left out (case 3 red: the default privileges grant it).
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -60,11 +61,26 @@ BEGIN
 END
 $do$;
 
+-- ── 3. An internal function is executable by nobody but its owner ─────────────
+-- The platform's default privileges grant every new function in public to
+-- service_role, so a REVOKE from PUBLIC, anon and authenticated still leaves the
+-- Worker able to call it directly. _apply_buyer_profile skips the locks and the
+-- version comparison its two callers make, so the Worker must reach it only
+-- through them (#2133, found on the production read back of 20261016000000).
+DO $do$
+BEGIN
+  IF has_function_privilege('service_role', 'public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'function grants wrong: service_role can execute public._apply_buyer_profile, which skips the locks and the version check';
+  END IF;
+  INSERT INTO suite_cases(name) VALUES ('internal function not callable by service_role');
+END
+$do$;
+
 DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'partner_page_function_grants.test.sql: expected 2 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 3 THEN RAISE EXCEPTION 'partner_page_function_grants.test.sql: expected 3 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_page_function_grants.test.sql: % cases passed', n;
 END
 $do$;

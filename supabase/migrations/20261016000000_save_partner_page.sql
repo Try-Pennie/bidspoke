@@ -217,7 +217,9 @@ END
 $$;
 COMMENT ON FUNCTION public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb) IS
   'The body of a buyer profile save (#2133): the kind and delivery rules, the rows, tier contiguity, the version bump and one audit row of changed paths plus p_audit_extra. Internal: its caller holds the partner and profile row locks, in that order, and has compared the version. Called by save_buyer_profile and save_partner_page only.';
-REVOKE ALL ON FUNCTION public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb) FROM PUBLIC, anon, authenticated;
+-- service_role too: the platform's default privileges grant every new function
+-- in public to it, and this one skips the locks and the version comparison.
+REVOKE ALL ON FUNCTION public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb) FROM PUBLIC, anon, authenticated, service_role;
 
 -- ── save_buyer_profile ───────────────────────────────────────────────────────
 -- The same signature, refusals and document as before. Two changes: the partner
