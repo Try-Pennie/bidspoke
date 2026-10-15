@@ -149,6 +149,12 @@ export interface ExecutionContext {
    */
   noteSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => void
   /**
+   * This write's marker (#2023), set by the walk around a post-answer Salesforce
+   * update for that step only, and stamped by the node on the objects that have
+   * the field (engine/write-marker.ts). Absent before the answer.
+   */
+  writeMarker?: string
+  /**
    * Starts the watch on one post-answer Salesforce update (#2022). Set by the
    * engine on live runs only (never a test or a shadow run), so its absence is
    * what keeps a test run's writes unrecorded.
@@ -165,6 +171,12 @@ export interface ExecutionContext {
    * cannot reach a path that skips its own backoff.
    */
   retrySleep?: (ms: number) => Promise<void>
+  /**
+   * How the engine watches each step attempt's deadline (#2163). Undefined in
+   * production, which means the real timer. Set from a test's `stepClock`, so a
+   * timed out step runs the real withTimeout without the test waiting for it.
+   */
+  stepDeadline?: (ms: number, signal: AbortSignal) => Promise<void>
   /** Dispatch-namespace bundle name code nodes route to. Set for test runs to an
    *  ephemeral content-hashed bundle so unsaved edits run immediately; unset for
    *  prod runs (code.ts falls back to the stable codeBundleName). */

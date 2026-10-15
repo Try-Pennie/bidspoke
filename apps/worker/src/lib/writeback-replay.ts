@@ -141,6 +141,10 @@ export const REPLAY_LEASE_MS = 2 * 60 * 1000
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 const RECORD_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/
 
+/** The same rules for the Salesforce read-back (#2023), which builds the same URLs. */
+export const isSalesforceApiName = (name: string): boolean => API_NAME.test(name)
+export const isSalesforceRecordId = (id: string): boolean => RECORD_ID.test(id)
+
 function whyNotReplayable(row: HeldWriteRow): string | null {
   if (row.status !== 'pending') return `the write is already ${row.status}`
   if (!row.replayable) return 'the write failed for good, so Salesforce would refuse it again'
@@ -375,7 +379,19 @@ export function supabaseHeldWriteStore(supabase: SupabaseClient): HeldWriteStore
  * same env the engine loads for that workflow, and every call goes through the
  * node's one call path, so the bulkhead and the timeout hold here too.
  */
-export async function salesforcePortFor(env: Env, supabase: SupabaseClient, keys: SecretKeyInput, orgId: string, workflowId: string): Promise<SalesforcePort> {
+export async function salesforcePortFor(
+  env: Env,
+  supabase: SupabaseClient,
+  keys: SecretKeyInput,
+  orgId: string,
+  workflowId: string,
+  /**
+   * How long a call waits for a bulkhead slot. The Salesforce read-back (#2023)
+   * passes 0: a minute job waits for nobody, and a full bulkhead is a reason not
+   * to send at all.
+   */
+  opts: { waitMs?: number } = {},
+): Promise<SalesforcePort> {
   const vars = buildSandboxEnv(env, await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, keys, { workflowId }))
   const instanceUrl = (vars.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
   const clientId = vars.SALESFORCE_CLIENT_ID ?? ''
@@ -383,9 +399,11 @@ export async function salesforcePortFor(env: Env, supabase: SupabaseClient, keys
   if (!instanceUrl || !clientId || !clientSecret) {
     throw new Error('SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET must all be set for this workflow')
   }
-  // A replay runs on its own schedule, outside any run's post-answer window, so it
-  // takes the main bulkhead as it always has, not the post-answer share (#2170).
-  const { gates: bulkheads, waitMs } = salesforceBulkheads(env, false)
+  // A replay, and the read-back that shares this port (#2023), run on their own
+  // schedule, outside any run's post-answer window, so they take the main bulkhead
+  // as they always have, not the post-answer share (#2170).
+  const { gates: bulkheads, waitMs: defaultWaitMs } = salesforceBulkheads(env, false)
+  const waitMs = opts.waitMs ?? defaultWaitMs
   const call = async (method: 'GET' | 'PATCH', path: string, body: string | undefined) => {
     const tokenStart = Date.now()
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)

@@ -21,6 +21,7 @@ import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } f
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
+import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -78,7 +79,8 @@ import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailabl
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
-import { startAtRiskWatch, startWatchSafely, runWatched } from './at-risk-writes'
+import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
+import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -102,6 +104,9 @@ function extractResolvedInput(err: unknown): ResolvedStepInput | null {
 // (#1992): a post-answer Salesforce write that fails is replayed from it (#1993,
 // #471), and nothing else the run keeps can rebuild the exact patch. Same field
 // name as the executors' own errors, so `extractResolvedInput` reads either.
+// `heldUntil` is set when that request came from the at-risk watch because the
+// failure carried none (a timeout), and the watch kept its record (#2163): the
+// write's outcome is unknown and KV holds it until then.
 class StepFailureError extends Error {
   constructor(
     message: string,
@@ -109,6 +114,10 @@ class StepFailureError extends Error {
     public readonly errorType: ErrorType,
     public readonly suppressAlert: boolean = false,
     public readonly resolvedInput: ResolvedStepInput | null = null,
+    public readonly heldUntil: string | null = null,
+    // Salesforce's answer to the failed write (#2054), which the capture judges
+    // refused or replayable by; null when the failure carried none.
+    public readonly salesforceAnswer: SalesforceAnswer | null = null,
   ) {
     super(message)
   }
@@ -177,6 +186,14 @@ export interface EngineRuntime {
    * production, which uses real time; a test passes one it drives.
    */
   clock?: RetryClock
+  /**
+   * The clock each step's per attempt deadline and retry backoff run on (#2163).
+   * Absent in production, which uses real timers. Kept apart from `clock`: the
+   * outage drill answers that clock's waits at once, which would time out every
+   * step it runs. A test passes one it drives, so a timed out step runs the real
+   * withTimeout without the test waiting for it.
+   */
+  stepClock?: Pick<RetryClock, 'sleep' | 'timer'>
   /**
    * Receives each step record as the engine queues it (#1305). The outage drill
    * reads a run's decisions from it, because in a database outage the step rows
@@ -465,6 +482,12 @@ export async function executeWorkflow(
   // along on it. The circuit-breaker trip alert needs it to stay silent on Test
   // Runner runs (#547).
   stampRunReality(ctx, options)
+  // Only a test sets a step clock; production keeps the real timers (#2163).
+  if (runtime.stepClock) {
+    const stepClock = runtime.stepClock
+    ctx.retrySleep = (ms) => stepClock.sleep(ms)
+    ctx.stepDeadline = (ms, signal) => stepClock.timer(ms, signal)
+  }
   // A post-answer Salesforce update still out after 2 s is recorded for the
   // read-back (#2022). Live runs only: a test run is kept out of every record, and
   // a shadow run sends nothing to be at risk.
@@ -847,6 +870,8 @@ export async function executeWorkflow(
                     errorType: continuationError.errorType,
                     error: continuationError,
                     resolvedInput: continuationError.resolvedInput,
+                    heldUntil: continuationError.heldUntil,
+                    salesforceAnswer: continuationError.salesforceAnswer,
                     isTest: reality.isTest,
                   },
                   { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
@@ -2225,12 +2250,16 @@ export async function walkGraph(
 
     try {
       // A Salesforce update after the answer is watched around its whole retry
-      // loop, so one still out after 2 s is recorded however it ends (#2022).
-      const atRisk =
-        ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
-          ? startWatchSafely(ctx.startAtRiskWatch, node.namespace)
-          : null
-      const result = await runWatched(
+      // loop, so one still out after 2 s is recorded however it ends (#2022), and
+      // carries its own write marker for the read-back (#2023). One fact decides
+      // both, the same one the Salesforce bulkhead share reads (#2170):
+      // `ctx.afterAnswer`, set by `answerEarly` together with the answer.
+      const postAnswerUpdate = ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
+      const atRisk = postAnswerUpdate ? startWatchSafely(ctx.startAtRiskWatch, node.namespace) : null
+      const marker = postAnswerUpdate && ctx.execution?.execution_id
+        ? writeMarker(ctx.execution.execution_id, node.namespace, ENGINE_ATTEMPT) ?? undefined
+        : undefined
+      const result = await withWriteMarker(ctx, marker, () => runWatched(
         atRisk,
         (note) => { ctx.noteSalesforceRequest = note },
         () => withRetry(
@@ -2238,10 +2267,11 @@ export async function walkGraph(
           retryConfig,
           classifyStepError,
           retryStats,
-          ctx.retrySleep
+          ctx.retrySleep,
+          ctx.stepDeadline
         ),
         () => retryStats.retries,
-      )
+      ))
       retriesUsed = retryStats.retries
       output = result.output
       stepStatus = 'completed'
@@ -2342,7 +2372,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
-        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput)
+        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err), salesforceAnswerOf(err))
       }
     }
 
@@ -2580,7 +2610,8 @@ export async function runParallelChild(
         retryConfig,
         classifyStepError,
         retryStats,
-        ctx.retrySleep
+        ctx.retrySleep,
+        ctx.stepDeadline
       )
       output = result.output
       stepLogs = result.logs

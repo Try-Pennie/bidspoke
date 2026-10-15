@@ -36,3 +36,44 @@ export function normaliseSqlPath(sqlPath: string): string {
   }
   return sqlPath
 }
+
+/** The partner record rules the validator judges a profile against, by their own keys (#2133). */
+const PARTNER_RULE_PATHS: Readonly<Record<string, string>> = {
+  acceptSignals: 'accept_signals',
+  clickUrl: 'click_url',
+  externalRoutingCode: 'external_routing_code',
+}
+
+/** A whole row list, named by its row pattern: an error about the list is about every row of it. */
+const ROW_LIST_PATHS: Readonly<Record<string, string>> = {
+  windows: 'windows[*]',
+  blackoutDates: 'blackout_dates[*]',
+  tiers: 'tiers[*]',
+  clickDelivery: 'click_delivery.routes[*]',
+  'clickDelivery.routes': 'click_delivery.routes[*]',
+}
+
+const ROUTE_ROW = /^clickDelivery\.routes\[(\d+)\]/
+
+/**
+ * The partners page registry spelling of a path validateProfile names an error
+ * by (#2133), so a page save's refusals say which registry field, and so which
+ * tab, each is about: a profile field under `profile.` in snake case, a partner
+ * rule by its own key, a whole row list by its row pattern, and a click route
+ * by its name when `routeNames` (the routes as sent, in order) gives it one.
+ * The web registry test holds every path the validator can name to exactly one
+ * registry entry.
+ */
+export function registryPathOf(validatorPath: string, routeNames: readonly string[] = []): string {
+  const rule = PARTNER_RULE_PATHS[validatorPath]
+  if (rule) return rule
+  const list = ROW_LIST_PATHS[validatorPath]
+  if (list) return `profile.${list}`
+  if (validatorPath === 'clickDelivery.successPattern') return 'profile.click_delivery.success_pattern'
+  const route = ROUTE_ROW.exec(validatorPath)
+  if (route) {
+    const name = routeNames[Number(route[1])]?.trim() ?? ''
+    return `profile.click_delivery.routes[${name === '' ? '*' : name}]`
+  }
+  return `profile.${validatorPath.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)}`
+}

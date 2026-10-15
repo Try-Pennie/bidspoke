@@ -44,6 +44,7 @@
     { "name": "parameters_no_debt_no_adv", "purpose": "parameters positive, no debt, ADV zero: debt_screening else, the debt not present fallback", "set": { "LEG": 2, "ADV": 0, "BES": 3 }, "stubs": { "equifax_report": "no_trades", "eligibility_scout": "no_estimate" } },
     { "name": "parameters_no_debt_engine_failed", "purpose": "the debt not present fallback when Engine fails", "set": { "LEG": 2, "ADV": 0 }, "stubs": { "equifax_report": "no_trades", "eligibility_scout": "no_estimate", "engine_direct": "failed" } },
     { "name": "achieve_rejects", "purpose": "a Tripoint win with Achieve rejecting the evaluation", "stubs": { "tripoint_create": "accepted", "achieve_evaluations": "rejected" } },
-    { "name": "salesforce_inquiry_post_fails", "purpose": "the Pipedream inquiry post fails inside the parallel", "stubs": { "pipedream": "failed" } }
+    { "name": "trades_with_inquiries", "purpose": "a Tripoint win whose report carries credit inquiries: the inquiry post sends them, through the Pipedream relay today and the credit-inquiries Apex call after the #1680 port", "stubs": { "equifax_report": "match_with_inquiries", "tripoint_create": "accepted" } },
+    { "name": "salesforce_inquiry_post_fails", "purpose": "the inquiry post fails on a report with inquiries: today the Pipedream inquiry relay inside parallel_1, which fails the run; once the relay port moves it (#1680 phase 7), the credit-inquiries Apex call after the outcome write. Drop the pipedream stub when the relays are retired", "stubs": { "equifax_report": "match_with_inquiries", "pipedream": "failed", "salesforce_credit_inquiries": "failed" } }
   ]
 }

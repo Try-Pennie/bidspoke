@@ -12,6 +12,9 @@
 --   C. The browser roles can neither read nor write the table.
 --   D. The retention purge removes only finished rows older than 30 days, and
 --      never a pending one however old.
+--   E. The `replayable` column describes the rule the capture writes it by
+--      (#2054): Salesforce rejecting the write, not any failure classed
+--      permanent, which a login or permission refusal also is.
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom.
@@ -132,6 +135,24 @@ BEGIN
 END
 $do$;
 
+-- ── E. What replayable means (#2054) ─────────────────────────────────────────
+DO $do$
+DECLARE
+  said text := col_description(
+    'public.outcome_writeback_deadletters'::regclass,
+    (SELECT attnum FROM pg_attribute WHERE attrelid = 'public.outcome_writeback_deadletters'::regclass AND attname = 'replayable')
+  );
+BEGIN
+  IF said IS NULL OR said NOT LIKE '%salesforceRejectedTheWrite%' THEN
+    RAISE EXCEPTION 'the replayable column does not name the rule the capture writes it by: %', said;
+  END IF;
+  IF said LIKE '%classed the failure permanent%' THEN
+    RAISE EXCEPTION 'the replayable column still describes the rule before #2054: %', said;
+  END IF;
+  INSERT INTO ow_cases VALUES ('the replayable column describes the rule it is written by');
+END
+$do$;
+
 -- ── Clean up ─────────────────────────────────────────────────────────────────
 DELETE FROM public.outcome_writeback_deadletters WHERE organization_id = '11111111-1111-1111-1111-111111111993';
 
@@ -139,7 +160,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM ow_cases);
 BEGIN
-  IF n <> 4 THEN RAISE EXCEPTION 'expected 4 cases, % ran', n; END IF;
+  IF n <> 5 THEN RAISE EXCEPTION 'expected 5 cases, % ran', n; END IF;
   RAISE NOTICE 'outcome_writeback_deadletters.test.sql: % cases passed', n;
 END
 $do$;

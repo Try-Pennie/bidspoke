@@ -14,6 +14,7 @@ import {
   captureFailedWriteback,
   WRITEBACK_STORE_LABEL,
   WRITEBACK_UNCAPTURABLE_LABEL,
+  WRITEBACK_HELD_LABEL,
 } from '../writeback-deadletter'
 import type { ResolvedStepInput } from '../../types'
 
@@ -56,6 +57,8 @@ const run = {
 }
 
 beforeEach(() => vi.mocked(recordOutcomeDeadLetter).mockClear())
+
+const FIELD_ERROR = '[{"message":"Bid status: bad value for restricted picklist field: Maybe","errorCode":"INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST","fields":["BidStatus__c"]}]'
 
 describe('which failures can be stored for replay', () => {
   it('stores a Salesforce update with its record and body', () => {
@@ -109,10 +112,10 @@ describe('captureFailedWriteback', () => {
     expect(await decryptSecret(row.error_encrypted as string, KEY)).toContain('unavailable for p@example.com')
   })
 
-  it('stores a permanent failure as already refused and finished, so the replay leaves it and retention reaches it', async () => {
+  it('stores a write Salesforce rejected as already refused and finished, so the replay leaves it and retention reaches it', async () => {
     const db = fakeSupabase()
     await captureFailedWriteback(
-      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): INVALID_FIELD'), resolvedInput: update({}) },
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error(`Salesforce API error (400): ${FIELD_ERROR}`), resolvedInput: update({}), salesforceAnswer: { status: 400, text: FIELD_ERROR } },
       { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
     )
     expect(db.inserts[0]).toMatchObject({ replayable: false, status: 'refused' })
@@ -199,5 +202,185 @@ describe('captureFailedWriteback', () => {
 
   it('names its store label for the durable path', () => {
     expect(WRITEBACK_STORE_LABEL).toBe('outcome_writeback_deadletters.insert')
+  })
+})
+
+/**
+ * #2054: the capture decides refused by the replay tool's own rule
+ * (salesforceRejectedTheWrite, #471), applied to Salesforce's answer to the write.
+ * A login refused even after a fresh one, or a permission refusal, is a fault on
+ * our side that fixing the credentials clears, so the write is kept to replay.
+ */
+describe('a login or permission refusal is kept to replay (#2054)', () => {
+  const capture = (errorType: 'permanent' | 'transient', status: number | null, text: string) => {
+    const db = fakeSupabase()
+    return captureFailedWriteback(
+      {
+        ...run,
+        nodeType: 'salesforce',
+        errorType,
+        error: new Error(status === null ? 'Salesforce token fetch failed (400): {"error":"invalid_grant"}' : `Salesforce API error (${status}): ${text}`),
+        resolvedInput: update({}),
+        ...(status === null ? {} : { salesforceAnswer: { status, text } }),
+      },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    ).then((result) => ({ result, row: db.inserts[0] }))
+  }
+
+  it('stores a 401 that survived the fresh login as replayable and pending', async () => {
+    const { result, row } = await capture('permanent', 401, '[{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]')
+    expect(result).toEqual({ kind: 'stored' })
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null, error_type: 'permanent' })
+  })
+
+  it('stores a 403 as replayable and pending', async () => {
+    const { row } = await capture('permanent', 403, '[{"message":"insufficient access rights on object id","errorCode":"INSUFFICIENT_ACCESS_OR_READONLY"}]')
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null })
+  })
+
+  it('still stores a 400 with a field error as refused', async () => {
+    const { row } = await capture('permanent', 400, FIELD_ERROR)
+    expect(row).toMatchObject({ replayable: false, status: 'refused' })
+    expect(typeof row.finished_at).toBe('string')
+  })
+
+  // A fresh login the token endpoint itself refused never reached the write, so
+  // Salesforce gave the write no answer; as in the replay tool, no answer is not
+  // a refusal. The token endpoint's own 400 is not the write's status.
+  it('stores a write whose fresh login failed, which Salesforce never answered, as replayable and pending', async () => {
+    const { row } = await capture('permanent', null, '')
+    expect(row).toMatchObject({ replayable: true, status: 'pending', finished_at: null })
+  })
+
+  // A node can name a Salesforce error code worth retrying (transient_errors),
+  // which the replay tool does not know about: the engine classed it transient,
+  // so it is not stored as refused.
+  it('keeps a failure the node classed transient pending, even with a 400 answer', async () => {
+    const { row } = await capture('transient', 400, '[{"errorCode":"UNABLE_TO_LOCK_ROW"}]')
+    expect(row).toMatchObject({ replayable: true, status: 'pending' })
+  })
+})
+
+/**
+ * #2163: a timed out update is an unknown outcome, held in KV by the at-risk
+ * watch, not a refusal for the replay store and never "cannot be replayed". The
+ * request the failure carries came from the watch, with the held record's expiry.
+ */
+describe('a timed out update the at-risk record holds (#2163)', () => {
+  const UNTIL = '2026-10-16T00:29:54.000Z'
+  const timedOut = new Error('Step timed out after 1500ms (in-flight upstream call canceled via abort signal)')
+  const noted = (object: string, recordId: string, body: Record<string, unknown>): ResolvedStepInput => ({
+    template: null,
+    resolved: { operation: 'update', object, record_id: recordId, body },
+  })
+  const prospect = noted('Prospect__c', 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+
+  it('stores no row and is not dead-lettered as uncapturable, but as held, naming the record, the fields and the expiry', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: prospect, heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'held', until: UNTIL })
+    expect(db.inserts).toHaveLength(0)
+    const labels = vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])
+    expect(labels).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+    expect(labels).toEqual([WRITEBACK_HELD_LABEL])
+    const [, error, , details] = vi.mocked(recordOutcomeDeadLetter).mock.calls[0]
+    expect(error).toBe(timedOut)
+    expect(details).toMatchObject({
+      execution_id: run.executionId,
+      held: {
+        step: 'patch_prospect_reject',
+        sf_object: 'Prospect__c',
+        sf_record_id: 'a06Ui00002sLkNuIAK',
+        fields: ['BidStatus__c', 'RejectionReason__c'],
+        until: UNTIL,
+      },
+    })
+    // Field names only: no value of the write reaches the alert.
+    expect(JSON.stringify(details)).not.toMatch(/Rejected|unqualified_lead/)
+  })
+
+  // #2023: an update carrying this step's own engine stamp is the read-back's.
+  // It reads the record back, resends a write that did not land, and alerts on
+  // what it cannot settle, so the held alert would only repeat it.
+  it('leaves a stamped Prospect, Applicant or Lead update to the read-back, with no held alert', async () => {
+    for (const object of ['Prospect__c', 'Applicant__c', 'Lead']) {
+      vi.mocked(recordOutcomeDeadLetter).mockClear()
+      const db = fakeSupabase()
+      const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const stamped = noted(object, 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', Bidspoke_Write__c: `${run.executionId}:patch_prospect_reject:0` })
+        const result = await captureFailedWriteback(
+          { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: stamped, heldUntil: UNTIL },
+          { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+        )
+        expect(result).toEqual({ kind: 'held', until: UNTIL })
+        expect(logged.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('a06Ui00002sLkNuIAK')
+      } finally {
+        logged.mockRestore()
+      }
+      expect(db.inserts).toHaveLength(0)
+      expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+    }
+  })
+
+  it('still announces an update stamped for another step, and never names the marker as a field it set', async () => {
+    const other = noted('Prospect__c', 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', Bidspoke_Write__c: `${run.executionId}:patch_prospect:0` })
+    await captureFailedWriteback(
+      { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: other, heldUntil: UNTIL },
+      { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][3]).toMatchObject({ held: { fields: ['BidStatus__c'] } })
+  })
+
+  it('announces an unstamped Applicant or Lead update (held from before the stamp shipped) the same way', async () => {
+    for (const object of ['Applicant__c', 'Lead']) {
+      vi.mocked(recordOutcomeDeadLetter).mockClear()
+      await captureFailedWriteback(
+        { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted(object, '00QUi000001', { Status: 'Open' }), heldUntil: UNTIL },
+        { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+      expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    }
+  })
+
+  // A Submission has no marker field, so the read-back (#2023) cannot judge its
+  // updates, and a held one is announced like any other: a wrong alert swapped
+  // for no alert would be the worse failure.
+  it('announces a held Submission write too, and stores no row', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'held', until: UNTIL })
+    expect(db.inserts).toHaveLength(0)
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][3]).toMatchObject({
+      held: { sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['PDFlow_1__c'], until: UNTIL },
+    })
+  })
+
+  it('still stores a refusal, which the watch does not hold', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): FIELD_CUSTOM_VALIDATION_EXCEPTION'), resolvedInput: update({}), heldUntil: null, salesforceAnswer: { status: 400, text: '[{"errorCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION"}]' } },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'stored' })
+    expect(db.inserts[0]).toMatchObject({ status: 'refused' })
+  })
+
+  it('stores nothing and announces nothing for a test run, held or not', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, isTest: true, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: prospect, heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'skipped', reason: 'test run' })
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
   })
 })

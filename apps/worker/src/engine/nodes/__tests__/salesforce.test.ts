@@ -4,7 +4,7 @@
  * merge, 401 evicts cache, non-2xx throws Response, 204 No Content handling.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeSalesforceNode, SF_QUERY_PAGE_CAP } from '../salesforce'
+import { executeSalesforceNode, SF_QUERY_PAGE_CAP, salesforceAnswerOf } from '../salesforce'
 import { classifyStepError } from '../../error-classifier'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import { SALESFORCE_EDGE_ERROR_PAGE } from '../../../lib/__tests__/fixtures/salesforce-edge-error-page'
@@ -655,6 +655,29 @@ describe('executeSalesforceNode', () => {
       expect(store.has('sf-token-org-1')).toBe(false)
     })
 
+    // #2054: the held write capture judges the failure by Salesforce's own answer
+    // to the write, so the failure carries it: the second 401, raw.
+    it('carries Salesforce\'s answer to the write on the failure, for the held write capture', async () => {
+      const { env } = kvEnv()
+      fetchMock.mockImplementation((url: string) =>
+        Promise.resolve(isTokenCall(url) ? mockResponse(200, JSON.stringify({ access_token: 'fresh-token' })) : mockResponse(401, SESSION_EXPIRED)),
+      )
+      const err = await executeSalesforceNode(makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-1', body: { A: 1 } }), makeCtx(), env).catch((e) => e)
+      expect(salesforceAnswerOf(err)).toEqual({ status: 401, text: SESSION_EXPIRED })
+    })
+
+    // A fresh login the token endpoint refused never reached the write: its 400
+    // is the token endpoint's, so the failure carries no answer to the write.
+    it('carries no answer to the write when the fresh login itself is refused', async () => {
+      const { env } = kvEnv()
+      fetchMock.mockImplementation((url: string) =>
+        Promise.resolve(isTokenCall(url) ? mockResponse(400, '{"error":"invalid_grant","error_description":"authentication failure"}') : mockResponse(401, SESSION_EXPIRED)),
+      )
+      const err = await executeSalesforceNode(makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-1', body: { A: 1 } }), makeCtx(), env).catch((e) => e)
+      expect((err as Error).message).toContain('token fetch failed (400)')
+      expect(salesforceAnswerOf(err)).toBeNull()
+    })
+
     it('does not retry a non-401 refusal', async () => {
       const { env } = kvEnv()
       fetchMock.mockResolvedValue(mockResponse(400, '[{"message":"bad","errorCode":"INVALID_FIELD"}]'))
@@ -681,6 +704,19 @@ describe('executeSalesforceNode', () => {
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toContain('400')
     expect((err as Error).message).toContain('Bad request')
+    expect(salesforceAnswerOf(err)).toEqual({ status: 400, text: '{"message":"Bad request"}' })
+  })
+
+  // An edge error page is summarised in the message, so the answer keeps the
+  // page itself: the rule reads an HTML document as never processed (#694).
+  it('carries the raw page as the answer\'s text when the message summarises it (#2054)', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    const page = '<!DOCTYPE html><html><body>Salesforce Edge: connection reset</body></html>'
+    fetchMock.mockResolvedValue(mockResponse(400, page))
+    const err = await executeSalesforceNode(makeNode({ operation: 'create', object: 'Prospect__c', body: {} }), makeCtx(), env).catch((e) => e)
+    expect((err as Error).message).not.toContain('<!DOCTYPE')
+    expect(salesforceAnswerOf(err)).toEqual({ status: 400, text: page })
   })
 
   it('throws an Error on 5xx with the response body included', async () => {

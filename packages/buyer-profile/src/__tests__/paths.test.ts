@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { flattenProfileDocument } from '../diff'
-import { normaliseSqlPath } from '../paths'
+import { normaliseSqlPath, registryPathOf } from '../paths'
 import type { BuyerProfileDocument } from '../document'
 
 interface FlattenCase { name: string; document: BuyerProfileDocument; paths: { ts: string[]; sql: string[] } }
@@ -47,5 +47,32 @@ describe('normaliseSqlPath', () => {
   it('refuses a path it cannot place, rather than passing it through as a new field', () => {
     expect(() => normaliseSqlPath('windows.1')).toThrow(/windows\.1/)
     expect(() => normaliseSqlPath('tiers.engine.10000.price')).toThrow(/tiers\.engine\.10000\.price/)
+  })
+})
+
+describe('registryPathOf (#2133)', () => {
+  it('names a profile field in the partners page registry spelling, under profile.', () => {
+    expect(registryPathOf('debtMin')).toBe('profile.debt_min')
+    expect(registryPathOf('hourlySpendCapCents')).toBe('profile.hourly_spend_cap_cents')
+    expect(registryPathOf('allowedStates')).toBe('profile.allowed_states')
+    expect(registryPathOf('soldOn')).toBe('profile.sold_on')
+  })
+
+  it('names the partner record rules the validator reads by their own keys', () => {
+    expect(registryPathOf('acceptSignals')).toBe('accept_signals')
+    expect(registryPathOf('clickUrl')).toBe('click_url')
+    expect(registryPathOf('externalRoutingCode')).toBe('external_routing_code')
+  })
+
+  it('names a whole row list by its row pattern, and a click route by its name when it has one', () => {
+    expect(registryPathOf('windows')).toBe('profile.windows[*]')
+    expect(registryPathOf('blackoutDates')).toBe('profile.blackout_dates[*]')
+    expect(registryPathOf('tiers')).toBe('profile.tiers[*]')
+    expect(registryPathOf('clickDelivery')).toBe('profile.click_delivery.routes[*]')
+    expect(registryPathOf('clickDelivery.routes')).toBe('profile.click_delivery.routes[*]')
+    expect(registryPathOf('clickDelivery.successPattern')).toBe('profile.click_delivery.success_pattern')
+    expect(registryPathOf('clickDelivery.routes[1].url', ['DV1', ' DI4 '])).toBe('profile.click_delivery.routes[DI4]')
+    expect(registryPathOf('clickDelivery.routes[2].url', ['DV1'])).toBe('profile.click_delivery.routes[*]')
+    expect(registryPathOf('clickDelivery.routes[0].name', [''])).toBe('profile.click_delivery.routes[*]')
   })
 })
