@@ -7,9 +7,10 @@ import { loadPartnerConstants, type PartnerConstants } from '../../lib/partner-c
  * The partner values the Constants node emits under a name built from the
  * partner's slug (#2142): `<Cap>ClickUrl`, `<Cap>SellOffOfferTitle`,
  * `<Cap>SellOffOfferDetails` and the per slug map `<Cap>SubAccountMinBids`.
- * One list, read by the executor, the partners page's workflow values tab and
- * the workflow values scanner (lib/partner-workflow-values.ts), so the names a
- * workflow reads and the names the page searches for cannot drift apart.
+ * The executor builds every name through `partnerConstantName`, whose `kind`
+ * is typed by this list, and the workflow values scanner
+ * (lib/partner-workflow-values.ts) searches for every kind in it. A test fails
+ * when the executor emits a partner key the scanner does not search for.
  */
 export const PARTNER_CONSTANT_KINDS = ['ClickUrl', 'SellOffOfferTitle', 'SellOffOfferDetails', 'SubAccountMinBids'] as const
 export type PartnerConstantKind = (typeof PARTNER_CONSTANT_KINDS)[number]

@@ -41,7 +41,7 @@ The output object is the merge of your `config.data` and the derived partner fie
 
 The `<Slug>` prefix is the partner slug with its first letter capitalized. For example a partner with slug `sofi` and a click URL produces `SofiClickUrl`. The names are built in one place, `partnerConstantName` in `apps/worker/src/engine/nodes/constants.ts`, and `partnerConstantOutputKeys` lists every partner key a run emits (the step log records that list as `partner_constants_keys`).
 
-A key of your own with the same name as a partner key is replaced by the partner value, because the partner fields are merged after `config.data`. The partners page's workflow values tab flags such a key.
+A key of your own with the same name as a partner key is replaced by the partner value, because the partner fields are merged after `config.data`. The workflow values route below reports such a key as `shadowed_data_keys`.
 
 **Which workflows read a partner's values.** `GET /api/partners/:id/workflow-values` (#2142) answers it for one partner, from the scanner in `apps/worker/src/lib/partner-workflow-values.ts`, which the partner delete check (#2140, not built yet) is to call as well. It counts a read only as an access to this node's output (`steps.constants.output.<key>`, a local name a script assigns that output to, such as `const constants = steps.constants.output`, or a destructure from it), never the bare word. A literal entry of `activeBidding` or `subAccountIdsMap` is a read of that one partner's entry; a computed one (`activeBidding[sourceName]`) reads the value for every partner.
 
