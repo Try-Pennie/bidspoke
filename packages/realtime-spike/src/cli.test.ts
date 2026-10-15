@@ -12,6 +12,10 @@ function wiring(overrides: Partial<Wiring> = {}) {
   const lines: string[] = []
   const files = new Map<string, string>()
   const emitter = new EventEmitter()
+  let markExited: (code: number) => void = () => {}
+  const exited = new Promise<number>((resolve) => {
+    markExited = resolve
+  })
   const io: LedgerIo = {
     exists: (p) => files.has(p),
     read: (p) => {
@@ -40,7 +44,10 @@ function wiring(overrides: Partial<Wiring> = {}) {
     proc: {
       on: (s, h) => emitter.on(s, h),
       off: (s, h) => emitter.off(s, h),
-      exit: (code) => calls.push(`exit ${code}`),
+      exit: (code) => {
+        calls.push(`exit ${code}`)
+        markExited(code)
+      },
     },
     now: () => new Date('2026-10-15T15:30:12Z'),
     loadConfig: () => {
@@ -61,7 +68,7 @@ function wiring(overrides: Partial<Wiring> = {}) {
     },
     ...overrides,
   }
-  return { w, calls, lines, files, emitter }
+  return { w, calls, lines, files, emitter, exited }
 }
 
 describe('main', () => {
@@ -143,9 +150,45 @@ describe('main', () => {
       },
     })
     void main(['--i-have-approval', '--ledger', '/l.json'], h.w)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(await h.exited).toBe(130)
     expect(h.calls).toContain('cleanupOps')
     expect(h.calls).toContain('exit 130')
+  })
+
+  it('keeps the signal handlers until the normal path cleanup has finished, so a signal during it waits rather than killing it', async () => {
+    let release: () => void = () => {}
+    let deletes = 0
+    const h = wiring({
+      cleanupOps: () => ({
+        findUserIdByEmail: async () => null,
+        deletePublicUser: async () => 0,
+        deleteAuthUser: async () => 'absent',
+        deleteOrganization: async () => {
+          deletes += 1
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          return 1
+        },
+        deleteAllowlist: async () => 0,
+      }),
+      spike: async (deps) => {
+        void deps
+        // The spike ran and Org B is in the ledger by the time cleanup starts.
+        const ledger = JSON.parse(h.files.get('/l.json') ?? '{}') as { entries: unknown[] }
+        ledger.entries.push({ kind: 'organization', key: `${MARKER}-example-com`, id: 'org-b', state: 'created' })
+        h.files.set('/l.json', JSON.stringify(ledger))
+        return { orgBEmpty: true } as SpikeResult
+      },
+      now: () => new Date('2026-10-15T15:30:12Z'),
+    })
+    const run = main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    await expect.poll(() => deletes).toBe(1)
+    h.emitter.emit('SIGTERM')
+    release()
+    expect(await h.exited).toBe(143)
+    await run
+    expect(deletes).toBe(1)
   })
 
   it('refuses a ledger path that already exists, before creating anything', async () => {

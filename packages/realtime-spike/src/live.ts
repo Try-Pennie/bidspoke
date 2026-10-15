@@ -94,13 +94,29 @@ export function liveCleanupOps(config: SpikeConfig): CleanupOps {
   }
 }
 
-/** The PG* environment must point at the same project as SUPABASE_URL, or sends would go to another database. */
-function assertSameProject(config: SpikeConfig, env: NodeJS.ProcessEnv): void {
+const LOCAL_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1'])
+
+/**
+ * The PG* environment must be the database behind SUPABASE_URL, or the sends
+ * would go to one database while the subscribers listen on another. Every kind
+ * of URL is checked: hosted, local, and anything else is refused rather than
+ * waved through.
+ */
+export function assertSameProject(config: SpikeConfig, env: NodeJS.ProcessEnv): void {
   if (!env.PGHOST) throw new Error('PGHOST is not set: export the temporary login from `supabase db dump --dry-run --linked` first')
-  const hosted = /\.supabase\.co$/.test(new URL(config.supabaseUrl).hostname)
-  if (hosted && !`${env.PGHOST} ${env.PGUSER ?? ''}`.includes(config.project)) {
-    throw new Error(`PGHOST/PGUSER do not name project ${config.project}; refusing to send from a different database`)
+  const urlHost = new URL(config.supabaseUrl).hostname
+  const pgLocal = LOCAL_HOSTS.has(env.PGHOST)
+  if (LOCAL_HOSTS.has(urlHost)) {
+    if (!pgLocal) throw new Error(`SUPABASE_URL is local but PGHOST ${env.PGHOST} is not; refusing to send from a different database`)
+    return
   }
+  if (/\.supabase\.co$/.test(urlHost)) {
+    if (pgLocal || !`${env.PGHOST} ${env.PGUSER ?? ''}`.includes(config.project)) {
+      throw new Error(`PGHOST/PGUSER do not name project ${config.project}; refusing to send from a different database`)
+    }
+    return
+  }
+  throw new Error(`SUPABASE_URL host ${urlHost} is neither a hosted Supabase project nor local; refusing to guess which database it uses`)
 }
 
 async function connectDb(config: SpikeConfig, env: NodeJS.ProcessEnv): Promise<pg.Client> {
@@ -202,6 +218,7 @@ async function workerSubscribe(
   let status: JoinStatus = 'TIMED_OUT'
   let detail: string | null = null
   let sentAt: number | null = null
+  let sendError: string | null = null
   let sending: Promise<void> = Promise.resolve()
   for (;;) {
     const { value, done } = await reader.read()
@@ -216,7 +233,11 @@ async function workerSubscribe(
         detail = line.detail ?? null
         if (status === 'SUBSCRIBED' && sentAt === null) {
           sentAt = Date.now()
-          sending = whenReady()
+          // Handled here, before the next await: a send that rejects while this
+          // loop waits on the network would otherwise end the process (L749).
+          sending = whenReady().catch((err: unknown) => {
+            sendError = `the send to the Worker's subscriber failed: ${errorText(err)}`
+          })
         }
       } else if (line.event === 'message' && sentAt !== null) {
         const after = Date.now() - sentAt
@@ -228,7 +249,7 @@ async function workerSubscribe(
     }
   }
   await sending
-  return { status, detail, receivedAfterMs: null }
+  return { status, detail: sendError ?? detail, receivedAfterMs: null }
 }
 
 export async function liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker: string, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<{ deps: SpikeDeps; close(): Promise<void> }> {
@@ -314,7 +335,14 @@ export async function liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker
         `SELECT realtime.send(${db.escapeLiteral(JSON.stringify(payload))}::jsonb, ${db.escapeLiteral(event)}, ${db.escapeLiteral(topic)}, true)`,
         'COMMIT',
       ].join('; ')
-      await db.query(sql)
+      try {
+        await db.query(sql)
+      } catch (err) {
+        // A failed statement leaves the long lived connection inside an aborted
+        // transaction, so every later read on it would fail too: end it here.
+        await db.query('ROLLBACK').catch(() => {})
+        throw new Error(`send on ${topic} failed: ${errorText(err)}`, { cause: err })
+      }
       return { warnings: [...notices] }
     },
     restSend: async (topic, event, payload) => {

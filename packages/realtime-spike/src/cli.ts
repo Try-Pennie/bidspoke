@@ -80,12 +80,30 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   }
   wiring.log(`marker ${marker}; ledger ${parsed.ledgerPath}`)
 
+  // One cleanup, shared by the normal path and the signal handlers: a signal
+  // that arrives while the normal path is cleaning up waits for that same
+  // cleanup, then exits, instead of killing it with rows still present.
   let close: () => Promise<void> = async () => {}
-  const cleanupOnce = async () => {
-    await close().catch((err: unknown) => wiring.log(`closing connections: ${errorText(err)}`))
-    await cleanupAndReport(parsed.ledgerPath, wiring, config)
+  let cleaning: Promise<boolean> | null = null
+  const cleanupOnce = (): Promise<boolean> => {
+    cleaning ??= (async () => {
+      await close().catch((err: unknown) => wiring.log(`closing connections: ${errorText(err)}`))
+      try {
+        return await cleanupAndReport(parsed.ledgerPath, wiring, config)
+      } catch (err) {
+        wiring.log(`cleanup failed: ${errorText(err)}; rerun with --cleanup ${parsed.ledgerPath}`)
+        return false
+      }
+    })()
+    return cleaning
   }
-  const uninstall = installInterruptCleanup(wiring.proc, cleanupOnce, (line) => wiring.log(line))
+  const uninstall = installInterruptCleanup(
+    wiring.proc,
+    async () => {
+      await cleanupOnce()
+    },
+    (line) => wiring.log(line),
+  )
 
   let exitCode = 0
   try {
@@ -106,18 +124,9 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
     wiring.log(`spike failed: ${errorText(err)}`)
     exitCode = 1
   } finally {
+    // The handlers stay installed until cleanup has finished (see cleanupOnce).
+    if (!(await cleanupOnce())) exitCode = 1
     uninstall()
-    try {
-      await close()
-    } catch (err) {
-      wiring.log(`closing connections: ${errorText(err)}`)
-    }
-    try {
-      if (!(await cleanupAndReport(parsed.ledgerPath, wiring, config))) exitCode = 1
-    } catch (err) {
-      wiring.log(`cleanup failed: ${errorText(err)}; rerun with --cleanup ${parsed.ledgerPath}`)
-      exitCode = 1
-    }
   }
   return exitCode
 }

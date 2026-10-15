@@ -45,14 +45,32 @@ fi
 # statement in both bootstrap files is idempotent, so a rerun over a database the
 # migrations have already reached changes only what the file newly adds.
 bootstrap_sha="$(shasum -a 256 "$SUITE_BOOTSTRAP" | awk '{print $1}')"
-applied_sha="$(psql_as postgres -Atc "SELECT CASE WHEN to_regclass('sql_suite.bootstrap_applied') IS NULL THEN '' ELSE (SELECT coalesce(max(sha), '') FROM sql_suite.bootstrap_applied) END" 2>/dev/null || true)"
+# The read and the record both fail the replay by name: a read swallowed into
+# an empty answer, or a record that silently did not land, would rerun the
+# bootstrap on every replay with nothing ever saying why.
+# Two statements, because a CASE cannot guard a relation that does not exist:
+# the reference fails when the query is parsed, before any branch is chosen.
+if ! recorded="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.bootstrap_applied') IS NOT NULL" 2>&1)"; then
+  echo "REPLAY FAILED: could not read which bootstrap this container last ran: $recorded" >&2
+  exit 1
+fi
+applied_sha=""
+if [ "$recorded" = "t" ]; then
+  if ! applied_sha="$(psql_as postgres -Atc "SELECT coalesce(max(sha), '') FROM sql_suite.bootstrap_applied" 2>&1)"; then
+    echo "REPLAY FAILED: could not read which bootstrap this container last ran: $applied_sha" >&2
+    exit 1
+  fi
+fi
 if [ "$applied_sha" != "$bootstrap_sha" ]; then
   if ! out="$(psql_as supabase_admin -f - < "$SUITE_BOOTSTRAP" 2>&1)"; then
     echo "REPLAY FAILED in ${SUITE_BOOTSTRAP#"$ROOT"/}:" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
     exit 1
   fi
-  psql_as postgres -Atc "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS sql_suite.bootstrap_applied (sha text NOT NULL); DELETE FROM sql_suite.bootstrap_applied; INSERT INTO sql_suite.bootstrap_applied (sha) VALUES ('$bootstrap_sha')" >/dev/null
+  if ! out="$(psql_as postgres -Atc "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS sql_suite.bootstrap_applied (sha text NOT NULL); DELETE FROM sql_suite.bootstrap_applied; INSERT INTO sql_suite.bootstrap_applied (sha) VALUES ('$bootstrap_sha')" 2>&1)"; then
+    echo "REPLAY FAILED: the bootstrap ran but recording it did not: $out" >&2
+    exit 1
+  fi
   echo "bootstrap applied: ${SUITE_BOOTSTRAP#"$ROOT"/} (${bootstrap_sha:0:12})"
 fi
 

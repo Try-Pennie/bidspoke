@@ -59,8 +59,8 @@ A dry run of the whole script against a **local** Supabase stack (CLI 2.117.0, R
 | Check | Local result |
 |---|---|
 | Joins | A on A and B on B admitted; B on A and A on B refused: `Unauthorized: You do not have permissions to read from this Channel topic: partners:<id>` |
-| Database sender, 5 samples | all received, p50 4 ms, max 23 ms, no `WARNING` |
-| Worker REST sender, 5 samples | all `202`, all received, p50 12 ms |
+| Database sender, 20 samples | 20 received, p50 4 ms, p90 6 ms, max 31 ms, no `WARNING` |
+| Worker REST sender, 20 samples | all `202`, 20 received, p50 11 ms, p90 18 ms, max 44 ms |
 | Subscriber in workerd | admitted, received 4 ms after the send |
 | Org B rows | 0 partners, 0 buyer profiles, 0 workflows |
 | Normal path cleanup | users row, auth user, organization and allowlist row removed |
