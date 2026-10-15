@@ -4,7 +4,8 @@
 -- partners:<organization id> per partner per statement, from the database, so a
 -- hand run SQL edit is heard as well as a save (ADR 0012). This proves, against
 -- the realtime stub in scripts/sql-suite/bootstrap.sql:
---  - each page table carries its three notice triggers and its version trigger,
+--  - each page table carries its three notice triggers, and each versioned one
+--    (all but partner_uuid_map, which has no version) its version trigger,
 --    and every other table keyed to a partner is on the written exclusion list
 --    below, found by state (foreign key, column name, and the columns a
 --    production sample found holding a partner id or slug), not by one spelling
