@@ -13,5 +13,5 @@ script to, with `LINK_TOKEN_HOSTS` set to `trypennie.com` and `www.trypennie.com
 `apps/worker/src/engine/__tests__/forms-engine-workflow.test.ts` walks the whole
 definition through the engine and reads the link out of the body Slack receives.
 
-The node is new on the canvas, so the drift check awaits it (`newNodeSince`) rather
-than paging it as missing. Remove that in the change after the paste reads as agree.
+The node was saved to the canvas on 2026-10-15 (10:16:59 AM ET) and the hourly check
+read it as agree, so a canvas without it pages as missing.

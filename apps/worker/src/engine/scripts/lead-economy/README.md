@@ -21,5 +21,6 @@ names no host: `LINK_TOKEN_HOSTS`, set just above it, is `trypennie.com` and
 
 Dan pasted the #2089 script on 2026-10-14 (2:27 PM ET) and the drift check read it as
 `agree` (#2093). #2092 changed the block here first (the host list moved out of it,
-and a missing secret logs an error), with nothing the step sends changing, so the
-#2089 canvas script is its baseline until that paste reads as `agree`; then clear it.
+and a missing secret logs an error), with nothing the step sends changing. That was
+saved to the canvas on 2026-10-15 (10:16 AM ET) and read as `agree`, so it carries no
+baseline: any difference from the canvas pages as a drift.
