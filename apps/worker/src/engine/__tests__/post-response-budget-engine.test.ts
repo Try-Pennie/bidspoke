@@ -751,8 +751,10 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
         })
         let shedAt: number | null = null
         let clockRef: VirtualClock | null = null
+        let stepCtx: { noteSalesforceRequest?: unknown } | null = null
         vi.mocked(executeNode).mockImplementation(async (node, ctx, env, _supabase, signal) => {
           if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+          stepCtx = ctx
           try {
             return await executeSalesforceNode(node, ctx, env, signal)
           } catch (e) {
@@ -775,6 +777,13 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
               SALESFORCE_BULKHEAD: fake.namespace as unknown as string,
               WORKFLOW_CACHE: { get: () => Promise.resolve('cached-token'), put: () => Promise.resolve(), delete: () => Promise.resolve() } as unknown as string,
             },
+            // The slot wait reads real Response bodies from the fake bulkhead, and
+            // settling the step awaits the watch's WebCrypto record from the 2 s
+            // mark: real asynchronous work with no virtual timer pending, during
+            // which running the clock to the end fires the 12 s cut-off first. On a
+            // slow runner that made this case fail with the cut-off's reason. The
+            // walk is past the step once the watch takes its request hook back.
+            { walkDone: () => stepCtx !== null && stepCtx.noteSalesforceRequest === undefined },
           )
           // Shed on the virtual clock, inside the window, never reaching Salesforce.
           expect(shedAt).not.toBeNull()
