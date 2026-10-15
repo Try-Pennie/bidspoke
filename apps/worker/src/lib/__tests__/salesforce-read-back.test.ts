@@ -568,6 +568,19 @@ describe('Salesforce not answering', () => {
     expect(r.alerts[0]).toMatchObject({ kind: 'unread', count: 1, reason: 'salesforce_not_answering', oldest_at: new Date(T0 - (UNREAD_ALERT_AFTER_MS - 60_000)).toISOString() })
   })
 
+  it('counts as waiting only the writes it owns and has not settled', async () => {
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } })
+    r.sf.state.down = true
+    const ago = UNREAD_ALERT_AFTER_MS / 60_000 + 1
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT, ago })
+    await hold(r.kv, { exec: EXEC_B, step: 'patch_prospect_reject', body: REJECT, ago })
+    r.kv.store.set(`sf-read-back:state:${EXEC_B}:patch_prospect_reject`, JSON.stringify({ v: 1, attempts: 2, done: { kind: 'unknown', at: new Date(T0).toISOString(), fields: ['BidStatus__c'] }, alerted: { done: new Date(T0).toISOString() } }))
+    await hold(r.kv, { exec: '01a13cf7-0191-7dc3-aada-59ceeacc1618', step: 'patch_prospect_reject', body: REJECT, ago, unstamped: true })
+    await runSalesforceReadBack(r.deps)
+    expect(r.alerts).toHaveLength(1)
+    expect(r.alerts[0]).toMatchObject({ kind: 'unread', count: 1 })
+  })
+
   it('sends nothing while the Salesforce limiter is full', async () => {
     const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { busy: async () => 'bulkhead_busy' })
     await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
@@ -700,7 +713,7 @@ describe('the read-back\'s own liveness', () => {
     const r = rig()
     await waiting(r.kv)
     r.kv.store.set(completedKey(SF_READ_BACK_JOB), new Date(T0 - 11 * 60_000).toISOString())
-    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
+    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, keys: KEY, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
     expect(res.alerted).toBe(true)
     expect(r.alerts).toHaveLength(1)
     expect(r.alerts[0]).toMatchObject({ kind: 'not_running', count: 1, last_finished_at: new Date(T0 - 11 * 60_000).toISOString() })
@@ -710,21 +723,38 @@ describe('the read-back\'s own liveness', () => {
     const r = rig()
     await waiting(r.kv)
     r.kv.store.set(completedKey(SF_READ_BACK_JOB), new Date(T0 - 60_000).toISOString())
-    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
+    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, keys: KEY, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
     expect(res.alerted).toBe(false)
     expect(r.alerts).toEqual([])
   })
 
   it('stays quiet when nothing is waiting, however long the read-back has been dark', async () => {
     const r = rig()
-    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
+    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, keys: KEY, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
     expect(res.alerted).toBe(false)
+  })
+
+  // A settled write waits only for KV to expire it, and an unstamped one is the
+  // held alert's: neither is waiting for the read-back (merge review, #2201).
+  it('counts only writes the read-back owns and has not settled', async () => {
+    const r = rig()
+    r.kv.store.set(completedKey(SF_READ_BACK_JOB), new Date(T0 - 11 * 60_000).toISOString())
+    const deps = { kv: r.kv, keys: KEY, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' }
+    await hold(r.kv, { exec: EXEC_B, step: 'patch_prospect_reject', body: REJECT, ago: 30 })
+    r.kv.store.set(`sf-read-back:state:${EXEC_B}:patch_prospect_reject`, JSON.stringify({ v: 1, attempts: 2, done: { kind: 'unknown', at: new Date(T0).toISOString(), fields: ['BidStatus__c'] } }))
+    await hold(r.kv, { exec: '01a13cf7-0191-7dc3-aada-59ceeacc1618', step: 'patch_prospect_reject', body: REJECT, ago: 30, unstamped: true })
+    expect((await checkSalesforceReadBackLiveness(deps)).waiting).toBe(0)
+    expect(r.alerts).toEqual([])
+    await waiting(r.kv)
+    const res = await checkSalesforceReadBackLiveness(deps)
+    expect(res).toMatchObject({ waiting: 1, alerted: true })
+    expect(r.alerts[0]).toMatchObject({ kind: 'not_running', count: 1 })
   })
 
   it('gives a read-back that has never finished a run the same grace before it accuses it', async () => {
     const r = rig()
     await waiting(r.kv)
-    const deps = { kv: r.kv, now: () => r.clock.now, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' }
+    const deps = { kv: r.kv, keys: KEY, now: () => r.clock.now, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' }
     expect((await checkSalesforceReadBackLiveness(deps)).alerted).toBe(false)
     r.clock.now += 11 * 60_000
     expect((await checkSalesforceReadBackLiveness(deps)).alerted).toBe(true)

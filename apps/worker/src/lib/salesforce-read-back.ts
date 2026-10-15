@@ -257,6 +257,41 @@ interface Held {
   expiresAtMs: number
 }
 
+/**
+ * What one held write is to the read-back: gone, not its own (a Submission, or
+ * held without its own marker, which keeps the held alert), settled (waiting
+ * only for KV to expire it), unopenable with the keys, or owned and unsettled.
+ * The one classifier the tick and the liveness check both use, so "waiting for
+ * the read-back" means the same thing in both (merge review, #2201).
+ */
+type HeldRead =
+  | { kind: 'gone' }
+  | { kind: 'not_ours' }
+  | { kind: 'settled'; held: Held }
+  | { kind: 'unopenable'; held: Held }
+  | { kind: 'owned'; held: Held }
+
+async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string): Promise<HeldRead> {
+  const id = name.slice(AT_RISK_WRITE_PREFIX.length)
+  const entry = parseAtRiskEntry(await kv.get(name))
+  if (!entry) return { kind: 'gone' }
+  if (!stampsWrites(entry.sf_object)) return { kind: 'not_ours' }
+  const state = parseState(await kv.get(`${STATE_PREFIX}${id}`))
+  const base = { id, key: name, entry, state, firstAttemptMs: Date.parse(entry.first_attempt_at), expiresAtMs: Date.parse(entry.recorded_at) + AT_RISK_WRITE_TTL_SECONDS * 1000 }
+  if (state.done) return { kind: 'settled', held: { ...base, body: {} } }
+  let body: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(entry.body_encrypted, keys))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the held body is not an object')
+    body = parsed as Record<string, unknown>
+  } catch (e) {
+    console.error(`[${SF_READ_BACK_JOB}] could not open the held write ${id}:`, formatErr(e))
+    return { kind: 'unopenable', held: { ...base, body: {} } }
+  }
+  if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) return { kind: 'not_ours' }
+  return { kind: 'owned', held: { ...base, body } }
+}
+
 const fieldsOf = (body: Record<string, unknown>) => Object.keys(body).filter((f) => f !== WRITE_MARKER_FIELD)
 const isBlank = (v: unknown) => v === null || v === undefined || v === ''
 
@@ -427,44 +462,22 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   // Held writes on the marker objects whose body the keys could not open.
   const unopenable: Held[] = []
   for (const { name } of listing.keys) {
-    const id = name.slice(AT_RISK_WRITE_PREFIX.length)
-    const entry = parseAtRiskEntry(await deps.kv.get(name))
-    if (!entry) {
-      s.skipped++
-      continue
-    }
-    if (!stampsWrites(entry.sf_object)) {
-      s.not_ours++
-      continue
-    }
-    const expiresAtMs = Date.parse(entry.recorded_at) + AT_RISK_WRITE_TTL_SECONDS * 1000
-    const state = parseState(await deps.kv.get(stateKey(id)))
-    if (state.done) {
+    const r = await readHeldWrite(deps.kv, deps.keys, name)
+    if (r.kind === 'gone') s.skipped++
+    else if (r.kind === 'not_ours') s.not_ours++
+    else if (r.kind === 'settled') {
       // Settled; its alert is sent again only if it never reached Slack.
       s.finished++
-      if (!state.alerted?.done) {
-        findings.push({ kind: state.done.kind, flag: 'done', held: { id, entry, expiresAtMs, state }, fields: state.done.fields, detail: state.done.detail, conflict_fields: state.done.conflict_fields, resent: state.done.resent, still_trying: false })
+      const { state } = r.held
+      if (state.done && !state.alerted?.done) {
+        findings.push({ kind: state.done.kind, flag: 'done', held: r.held, fields: state.done.fields, detail: state.done.detail, conflict_fields: state.done.conflict_fields, resent: state.done.resent, still_trying: false })
       }
-      continue
-    }
-    let body: Record<string, unknown>
-    try {
-      const parsed: unknown = JSON.parse(await decryptSecret(entry.body_encrypted, deps.keys))
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the held body is not an object')
-      body = parsed as Record<string, unknown>
-    } catch (e) {
-      console.error(`[${SF_READ_BACK_JOB}] could not open the held write ${id}:`, formatErr(e))
+    } else if (r.kind === 'unopenable') {
       s.unreadable_entries++
       // The capture left it to the read-back, so nothing else will say it: it is
       // reported with the unread writes, under its own reason (L13).
-      unopenable.push({ id, key: name, entry, body: {}, state, firstAttemptMs: Date.parse(entry.first_attempt_at), expiresAtMs })
-      continue
-    }
-    if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) {
-      s.not_ours++
-      continue
-    }
-    held.push({ id, key: name, entry, body, state, firstAttemptMs: Date.parse(entry.first_attempt_at), expiresAtMs })
+      unopenable.push(r.held)
+    } else held.push(r.held)
   }
 
   // ── Group by record, oldest write first, and keep the records due ─────────
@@ -848,6 +861,8 @@ async function reportUnread(deps: SalesforceReadBackDeps, unread: Held[], reason
 
 export interface LivenessDeps {
   kv: ReadBackKv
+  /** Opens the held bodies, whose stamp says whether the read-back owns them. */
+  keys: SecretKeyInput
   now?: () => number
   slackFor: (orgId: string) => Promise<SweepSlack | null>
   sendAlert?: (slack: SweepSlack, payload: SalesforceReadBackAlert, appUrl: string) => Promise<boolean>
@@ -869,10 +884,10 @@ const LIVENESS_SCAN_LIMIT = 50
  * Run by a different minute job than the read-back (L71), so the read-back's own
  * failure cannot silence it. One KV read a minute while the read-back is healthy.
  *
- * Counts held writes on the objects the read-back covers that are older than its
- * minimum age, without opening their bodies (the stamp is inside them), so a
- * write held from before the stamp shipped counts too; it would only matter when
- * the read-back is already not running.
+ * Counts only the held writes the read-back owns and has not settled (and any it
+ * cannot open) that are older than its minimum age, read through the classifier
+ * the tick uses. It opens their bodies to see the stamp, but only once the
+ * read-back has gone 10 minutes without finishing a run.
  */
 export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promise<LivenessResult> {
   const now = deps.now ?? Date.now
@@ -897,8 +912,12 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
   const { keys } = await deps.kv.list({ prefix: AT_RISK_WRITE_PREFIX, limit: LIVENESS_SCAN_LIMIT })
   const byOrg = new Map<string, AtRiskEntry[]>()
   for (const { name } of keys) {
-    const entry = parseAtRiskEntry(await deps.kv.get(name))
-    if (!entry || !stampsWrites(entry.sf_object)) continue
+    const r = await readHeldWrite(deps.kv, deps.keys, name)
+    // Waiting for the read-back: one it owns and has not settled, or one it
+    // cannot open, which nothing else will report while it is not running. A
+    // settled write waits only for KV, and one it does not own keeps the held alert.
+    if (r.kind !== 'owned' && r.kind !== 'unopenable') continue
+    const { entry } = r.held
     if (nowMs - Date.parse(entry.first_attempt_at) < SF_READ_BACK_MIN_AGE_MS) continue
     byOrg.set(entry.org_id, [...(byOrg.get(entry.org_id) ?? []), entry])
   }
@@ -981,6 +1000,7 @@ export async function runSalesforceReadBackForEnv(supabase: SupabaseClient, env:
 export async function checkSalesforceReadBackLivenessForEnv(supabase: SupabaseClient, env: Env): Promise<LivenessResult> {
   return checkSalesforceReadBackLiveness({
     kv: env.IDEMPOTENCY,
+    keys: secretKeys(env),
     slackFor: slackForEnv(supabase, env),
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
     appUrl: env.APP_URL,
