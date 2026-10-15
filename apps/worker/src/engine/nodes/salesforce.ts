@@ -229,20 +229,22 @@ export async function executeSalesforceNode(
   let resolvedExternalIdValue: string | undefined
   let resolvedSoql: string | undefined
   let skipReason: SalesforceSkipReason | undefined
+  // Warnings from shaping the body (a rename that replaced a key the body held).
+  const shapeLogs: StepLogEntry[] = []
 
   const baseUrl = `${instanceUrl}/services/data/v60.0/sobjects/${object}`
 
   if (operation === 'create') {
     url = baseUrl
     method = 'POST'
-    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template), config, enrichedCtx)
+    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template, shapeLogs), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'update') {
     resolvedRecordId = coerceString(resolveValue(config.record_id ?? '', enrichedCtx))
     if (!resolvedRecordId && !config.skip_when_empty) throw new Error('Salesforce update requires record_id')
     url = `${baseUrl}/${resolvedRecordId}`
     method = 'PATCH'
-    const recordBody = resolveRecordBody(config, enrichedCtx, template)
+    const recordBody = resolveRecordBody(config, enrichedCtx, template, shapeLogs)
     // The relay's filter (#2170): nothing to write, or no record to write it to,
     // is a skip, not a send. Judged before injected_fields, which only stamp a
     // write that is happening anyway.
@@ -258,7 +260,7 @@ export async function executeSalesforceNode(
     if (!extField || !resolvedExternalIdValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
     url = `${baseUrl}/${extField}/${resolvedExternalIdValue}`
     method = 'PATCH'
-    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template), config, enrichedCtx)
+    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template, shapeLogs), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'query') {
     resolvedSoql = coerceString(resolveValue(config.soql ?? '', enrichedCtx))
@@ -291,14 +293,16 @@ export async function executeSalesforceNode(
 
   // Warn if any body field resolved to undefined (would be silently dropped on
   // serialization). Relevant to create/update/upsert/apex; query/GET has no body.
-  const warnLogs: StepLogEntry[] =
-    resolvedBodyForInput !== undefined
+  const warnLogs: StepLogEntry[] = [
+    ...shapeLogs,
+    ...(resolvedBodyForInput !== undefined
       ? warnDroppedBodyFields(resolvedBodyForInput, {
           nodeNamespace: node.namespace,
           nodeLabel: node.label,
           traceId: ctx.trigger.trace_id,
         })
-      : []
+      : []),
+  ]
 
   // Built after URL/method so we can include the actual outbound URL the
   // request went to (helpful for upsert / update which embed the record id).
@@ -930,9 +934,18 @@ function jsonKind(v: unknown): string {
  * and permanently: sending it would write something nobody configured.
  *
  * Then omit_fields drops keys and rename_fields moves keys to the field they are
- * sent as, in that order, so a rename never resurrects an omitted key.
+ * sent as, in that order, so a rename never resurrects an omitted key. A rename
+ * onto a key the body already holds (one it does not itself rename) sends the
+ * renamed value, as the relay wrote its renamed fields whatever else the body
+ * carried, and a warning naming the replaced field goes on the step through
+ * `logs`, so the replaced value is never lost in silence.
  */
-function resolveRecordBody(config: SalesforceConfig, ctx: ExecutionContext, template: Record<string, unknown>): unknown {
+function resolveRecordBody(
+  config: SalesforceConfig,
+  ctx: ExecutionContext,
+  template: Record<string, unknown>,
+  logs: StepLogEntry[],
+): unknown {
   let body = resolveValue(config.body, ctx)
   if (typeof config.body === 'string' && typeof body === 'string') {
     const rendered = body
@@ -954,7 +967,17 @@ function resolveRecordBody(config: SalesforceConfig, ctx: ExecutionContext, temp
   const renames = Object.entries(config.rename_fields ?? {})
   const moved = renames.filter(([from]) => from in shaped).map(([from, to]) => [to, shaped[from]] as const)
   for (const [from] of renames) delete shaped[from]
-  for (const [to, value] of moved) shaped[to] = value
+  for (const [to, value] of moved) {
+    if (to in shaped) {
+      const from = renames.find(([, target]) => target === to)?.[0] ?? to
+      logs.push({
+        level: 'warn',
+        message: `rename_fields wrote ${from} onto ${to}, replacing the value the body already held for ${to}.`,
+        ts: new Date().toISOString(),
+      })
+    }
+    shaped[to] = value
+  }
   return shaped
 }
 

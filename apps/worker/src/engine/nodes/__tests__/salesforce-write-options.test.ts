@@ -195,6 +195,27 @@ describe('omit_fields and rename_fields shape what is sent (#2170)', () => {
     expect(sentBody(fetchMock)).toEqual({ ADV_SO__c: 5 })
   })
 
+  it('a rename onto a key the body already holds sends the renamed value, as the relay did, and says so on the step', async () => {
+    const result = await executeSalesforceNode(
+      update({ body: { UUID: 'u-1', Engine_UUID_SO__c: 'stale', ADV_SO__c: 5 }, rename_fields: { UUID: 'Engine_UUID_SO__c' } }),
+      makeCtx(),
+      makeEnv(),
+    )
+    expect(sentBody(fetchMock)).toEqual({ Engine_UUID_SO__c: 'u-1', ADV_SO__c: 5 })
+    expect(result.logs?.filter((l) => l.level === 'warn').map((l) => l.message)).toEqual([
+      'rename_fields wrote UUID onto Engine_UUID_SO__c, replacing the value the body already held for Engine_UUID_SO__c.',
+    ])
+  })
+
+  it('a rename that collides with nothing adds no warning (control)', async () => {
+    const result = await executeSalesforceNode(
+      update({ body: { UUID: 'u-1' }, rename_fields: { UUID: 'Engine_UUID_SO__c' } }),
+      makeCtx(),
+      makeEnv(),
+    )
+    expect(result.logs ?? []).toEqual([])
+  })
+
   it('injected_fields still win over a renamed key on collision', async () => {
     await executeSalesforceNode(
       update({
