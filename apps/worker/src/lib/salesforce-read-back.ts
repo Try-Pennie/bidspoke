@@ -881,7 +881,10 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
   if (Number.isFinite(lastMs) && nowMs - lastMs < LIVENESS_AFTER_MS) return quiet(0)
   if (!Number.isFinite(lastMs)) {
     // Never finished a run: the same grace from when this check first looked, as
-    // the cron heartbeat gives a fresh deploy.
+    // the cron heartbeat gives a fresh deploy. The marker is kept for good, with
+    // no expiry, exactly like the heartbeat's first-seen marker: the grace is for
+    // the first deploy only, and a read-back that has still never finished a run
+    // long after it is exactly what this check exists to say. It holds one time.
     const firstSeen = await deps.kv.get(LIVENESS_FIRST_SEEN_KEY)
     if (!firstSeen) {
       await deps.kv.put(LIVENESS_FIRST_SEEN_KEY, new Date(nowMs).toISOString())
