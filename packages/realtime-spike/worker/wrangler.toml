@@ -1,0 +1,12 @@
+# The realtime spike's Worker probe (#2131). Run ONLY by `wrangler dev` from
+# packages/realtime-spike/src/live.ts, on this machine, and never deployed: no
+# route, no workers.dev subdomain, and no deploy workflow names it.
+#
+# The compatibility date and flags are the production Worker's
+# (apps/worker/wrangler.toml), so the subscriber proved here is proved under the
+# runtime settings the PR4 delivery monitor would run with (decision 2).
+name = "realtime-spike-probe"
+main = "index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
