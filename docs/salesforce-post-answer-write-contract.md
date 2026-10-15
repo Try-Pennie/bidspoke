@@ -627,7 +627,7 @@ with `PDFlow_1__c != null`, comparing `LastModifiedDate` with
 
 What changes when a relay post moves to a native step is only the writing user
 recorded on the record (`LastModifiedById` becomes Bidspoke Integration instead
-of Brian Nelms). Question 5 found nothing that reads it.
+of Brian Nelms). Question 5 found nothing readable that reads it; the managed `regal_voice.LeadTrigger` could not be read.
 
 ## Salesforce automation side-effects (open question 5, answered 2026-10-15)
 
