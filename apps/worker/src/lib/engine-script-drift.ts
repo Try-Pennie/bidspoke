@@ -141,14 +141,19 @@ export interface KeptWorkflow {
  * missing secret now logs an error. Nothing it sends changes. Its baseline is the
  * #2089 canvas script, read from the mirror on 2026-10-15; clear it once the paste
  * reads as agree.
+ *
+ * tripoint_ping was edited here first on 2026-10-15: it applies Tripoint's 2,000
+ * minimum loan amount, refusing a smaller or unreadable loan before anything is
+ * sent. Its baseline is the canvas script as it stood, read from the live
+ * definition on 2026-10-15; clear it once the paste reads as agree.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
     namespace: 'tripoint_ping',
     file: 'tripoint_ping.js',
     script: TRIPOINT_PING,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    canvasBaselineSha256: 'd2e52b089e89e546ded01fd67bfdbda22147b8945134db2c0be4cae4273a5afb',
+    baselineReadOn: '2026-10-15',
   },
   {
     namespace: 'build_response_body',
