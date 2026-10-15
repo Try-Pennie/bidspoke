@@ -119,6 +119,20 @@ describe('Partners page: a change whose stored copy was not cleared says so', ()
     expect(screen.getAllByText(WARNING)).toHaveLength(1)
   })
 
+  // #2132: a press whose answer was lost but whose save landed comes back as a
+  // 409 carrying its own save id. The page takes the stored row as the saved one,
+  // so its list and selection show it, and hands the form a success.
+  it('a 409 carrying this press\'s own save id updates the list with the stored row', async () => {
+    vi.mocked(api.partners.update).mockRejectedValue(Object.assign(new Error('stale_version'), {
+      status: 409,
+      body: { error: 'stale_version', current: { ...partnerA, name: 'SoFi Renamed', is_active: false }, last_save_id: 'save-1', changed_by_name: 'Dan', changed_at: '2026-10-15T18:02:00Z' },
+    }))
+    render(<PartnersPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /SoFi/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('button', { name: /SoFi Renamed/ })).toBeInTheDocument()
+  })
+
   it('after a delete', async () => {
     vi.mocked(api.partners.delete).mockResolvedValue({ ok: true, stored_copy_warning: WARNING } as never)
     fireEvent.click(await selectAndConfirm())
