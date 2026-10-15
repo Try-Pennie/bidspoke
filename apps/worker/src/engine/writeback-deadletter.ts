@@ -20,6 +20,12 @@
  * database is retried and an unanswered insert is read back by the minute sweep
  * rather than lost (#1880). A failure classed permanent is stored not replayable,
  * so the replay refuses to resend a write Salesforce will refuse again.
+ *
+ * An update that timed out or was cut off is none of these (#2163): its outcome
+ * is unknown and the at-risk record (#2022) holds its request in KV. It is not
+ * stored here and never called uncapturable. Until the read-back (#2023) ships
+ * it is announced with the record, the field names and the expiry, on every
+ * object.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
@@ -27,10 +33,23 @@ import { encryptSecret, type SecretKeyInput } from '../lib/secret-crypto'
 import { formatErr } from '../lib/format-error'
 import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
-import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL } from './dead-letter-labels'
+import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from './dead-letter-labels'
 
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
+
+/** A timed out or cut off update whose request the at-risk watch holds, on any object, declared in the leaf label module (#2163). */
+export { WRITEBACK_HELD_LABEL }
+
+/**
+ * The objects whose held updates the read-back (#2023) is built to confirm by
+ * their write marker. Until it ships, nothing reads any held update back, so
+ * every one is announced (#2163), these included: a wrong alert swapped for no
+ * alert would be the worse failure. These also get a log line naming the record.
+ * When #2023 ships it takes these entries over, and this announcement goes for
+ * the objects it covers.
+ */
+const READ_BACK_OBJECTS: ReadonlySet<string> = new Set(['Submission__c'])
 
 /**
  * A Salesforce step's failure the store could not hold, counted and alerted on.
@@ -76,6 +95,12 @@ export interface FailedWriteback {
   errorType: ErrorType | null
   error: unknown
   resolvedInput: ResolvedStepInput | null | undefined
+  /**
+   * When the at-risk record holding this request expires (#2163), set only when
+   * the request came from the watch because the failure carried none of its own
+   * (a timeout, an abort, a dropped connection) and the watch kept the record.
+   */
+  heldUntil?: string | null
   isTest: boolean
 }
 
@@ -86,14 +111,56 @@ export type CaptureDeps = Pick<OutcomeAlertDeps, 'kv' | 'orgId' | 'appUrl' | 'ti
 
 export type CaptureResult =
   | { kind: 'stored' }
+  | { kind: 'held'; until: string }
   | { kind: 'skipped'; reason: string }
   | { kind: 'uncapturable'; reason: string }
   | { kind: 'store_failed'; error: string }
+
+/**
+ * A held update expires unread, so it is announced with what a person needs to
+ * check it: the record, the field names (never the values), and when the held
+ * request is deleted. A Submission__c one, which the read-back (#2023) will take
+ * over, is also logged.
+ */
+async function announceHeld(
+  f: FailedWriteback,
+  w: Extract<WritebackRow, { ok: true }>,
+  until: string,
+  deps: CaptureDeps,
+): Promise<CaptureResult> {
+  if (READ_BACK_OBJECTS.has(w.sf_object)) {
+    console.warn(`[writeback-deadletter] held for the read-back: execution ${f.executionId}, step ${f.stepNamespace}, ${w.sf_object} ${w.sf_record_id}, until ${until}`)
+  }
+  await recordOutcomeDeadLetter(WRITEBACK_HELD_LABEL, f.error, deps, {
+    workflow_id: f.workflowId,
+    workflow_name: f.workflowName,
+    execution_id: f.executionId,
+    at: new Date().toISOString(),
+    held: {
+      step: f.stepNamespace,
+      sf_object: w.sf_object,
+      sf_record_id: w.sf_record_id,
+      fields: Object.keys(w.body),
+      until,
+    },
+  }).catch((e) =>
+    console.error(
+      `[writeback-deadletter] ${WRITEBACK_HELD_LABEL} dead letter failed for execution ${f.executionId}, step ${f.stepNamespace}, ${w.sf_object} ${w.sf_record_id}:`,
+      formatErr(e),
+    ),
+  )
+  return { kind: 'held', until }
+}
 
 /** Stores a failed post-answer Salesforce write, or says why it did not. Never throws. */
 export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDeps): Promise<CaptureResult> {
   if (f.isTest) return { kind: 'skipped', reason: 'test run' }
   const w = writebackFromFailure(f.nodeType, f.resolvedInput)
+  // An update that timed out or was cut off has an unknown outcome, and the
+  // at-risk record already holds its request (#2163). It is neither a refusal
+  // for this store nor unreplayable, and storing it here would keep a second
+  // copy of a request that has one home.
+  if (w.ok && f.heldUntil) return announceHeld(f, w, f.heldUntil, deps)
   if (!w.ok) {
     if (w.reason === 'not_salesforce') return { kind: 'skipped', reason: w.reason }
     await recordOutcomeDeadLetter(WRITEBACK_UNCAPTURABLE_LABEL, new Error(`${f.stepNamespace}: ${w.reason}`), deps, {

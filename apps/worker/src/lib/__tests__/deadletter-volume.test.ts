@@ -252,6 +252,8 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     const kv = fakeKv()
     await recordDeadLetterVolume(kv, 'sf_writeback', NOW)
     await recordDeadLetterVolume(kv, 'outcome_writeback_deadletters.uncapturable', NOW)
+    // A held update (#2163) is a Salesforce update with an unknown outcome, not a database loss.
+    await recordDeadLetterVolume(kv, 'sf_writeback.held', NOW)
     expect(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)).toBeUndefined()
     await recordDeadLetterVolume(kv, 'outcome_writeback_deadletters.insert', NOW)
     expect(JSON.parse(kv.store.get(`outcome-deadletter-daily:${utcDay(NOW)}`)!)).toEqual({ total: 1, unrecoverable: 0, labels: { 'outcome_writeback_deadletters.insert': 1 } })

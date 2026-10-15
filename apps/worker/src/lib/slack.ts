@@ -17,7 +17,7 @@ import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import { cloudflareEdgeCodeIn } from './html-error-summary'
 import { listSteps } from '../engine/running-step'
-import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
+import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_HELD_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import { describeDuration, measureIncidentSpan } from './incident-span'
@@ -976,6 +976,19 @@ export interface OutcomeDeadLetterAlert {
      * Bidspoke stopped waiting, by label and namespace. Absent when not known.
      */
     still_running?: string[]
+    /**
+     * A timed out post-answer update whose request the at-risk record holds, on
+     * any object, until the read-back (#2023) takes over the objects it covers
+     * (#2163). Field names only, never values.
+     */
+    held?: {
+      step: string
+      sf_object: string
+      sf_record_id: string
+      fields: string[]
+      /** ISO: when the held request is deleted. */
+      until: string
+    }
   }
 }
 
@@ -1218,6 +1231,88 @@ async function sendUncapturableWritebackAlert(
 }
 
 /**
+ * The held label without the record it was holding. The capture always sends the
+ * record, so this is a defensive branch: the label alone still means unknown and
+ * held, so it keeps that wording rather than falling into the generic "failed
+ * after all retries" alert, which would claim a loss nobody measured (#2163).
+ */
+async function sendHeldWithoutRecordAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const n = payload.window_loss_count
+  const title = 'Salesforce update not confirmed'
+  const run = payload.run
+  const summary = [
+    'A Salesforce update after the answer was cut off before Salesforce replied, so it is not known whether it landed. This alert did not carry which record it was updating.',
+    n > 1 ? `This happened about ${n} times recently.` : '',
+  ].filter(Boolean).join(' ')
+  const fix = run
+    ? 'Fix: open the run below, find the Salesforce step that timed out, and check its record in Salesforce. If the update did not land, set it by hand.'
+    : 'Fix: find the run on the dashboard, open the Salesforce step that timed out, and check its record in Salesforce. If the update did not land, set it by hand.'
+  const link = run
+    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|View the run →>`
+    : `<${appUrl}/dashboard|Open dashboard →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+}
+
+/**
+ * A Salesforce update after the answer was cut off before Salesforce replied (a
+ * timeout, an abort, a dropped connection), and the at-risk record holds its
+ * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
+ * until the read-back (#2023) ships nothing will look at it before KV deletes
+ * it. The alert says that, names the record and the fields it was setting (never
+ * the values, which are lead data, but it says the run shows them), and when the
+ * request is deleted, in ET.
+ *
+ * The dead letter posts once per window, so the count says the record named is
+ * the latest of several rather than claiming it is the only one.
+ */
+async function sendHeldWritebackAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  run: NonNullable<OutcomeDeadLetterAlert['run']>,
+  held: NonNullable<NonNullable<OutcomeDeadLetterAlert['run']>['held']>,
+  appUrl: string,
+): Promise<boolean> {
+  const n = payload.window_loss_count
+  const title = 'Salesforce update not confirmed'
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))
+  const untilTime = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(held.until))
+  const untilDay = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(new Date(held.until))
+  const until = `${untilTime} ET on ${untilDay}`
+  // Prospect__c reads as Prospect, the way the record is named in Salesforce's own pages.
+  const object = slackText(held.sf_object.replace(/__c$/, '').replace(/_/g, ' '))
+  const fields = held.fields.map(slackText)
+  const setting = fields.length === 0 ? '' : `, setting ${listSteps(fields)}`
+  // The failed step logs the request as its input (#2163), so the run is where
+  // the values are; the values themselves stay out of Slack.
+  const summary =
+    `${slackText(run.workflow_name)} answered a lead at ${when} ET, and a Salesforce update after the answer was cut off before Salesforce replied, so it is not known whether it landed. ` +
+    `It was updating ${object} ${slackText(held.sf_record_id)}${setting}. The run below shows the values it was sending.`
+  const kept =
+    `Bidspoke holds the request until ${until}. Nothing checks it before then, and it is deleted at that time.` +
+    (n > 1 ? ` This happened about ${n} times ${deadLetterPeriod(n, payload.window_minutes)}, and this alert names the latest.` : '')
+  const fix = `Fix: before ${until}, open that ${object} in Salesforce and check ${fields.length === 1 ? 'that field' : 'those fields'}. If the update did not land, set ${fields.length === 1 ? 'it' : 'them'} by hand.`
+  const link = `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: kept } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`)) !== null
+}
+
+/**
  * Work after the answer still running when finalize stopped waiting for it
  * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
  * for a check rather than a repair. It names the step the run was still on
@@ -1283,6 +1378,11 @@ export async function sendOutcomeDeadLetterAlert(
   appUrl: string
 ): Promise<boolean> {
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
+  // Unknown and held, never lost or unreplayable (#2163).
+  if (payload.label === WRITEBACK_HELD_LABEL) {
+    if (payload.run?.held) return sendHeldWritebackAlert(connection, payload, payload.run, payload.run.held, appUrl)
+    return sendHeldWithoutRecordAlert(connection, payload, appUrl)
+  }
   // Always its own wording: an unfinished walk is never a lost record (#1860).
   if (payload.label === CONTINUATION_UNFINISHED_LABEL) return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
   // Never retried and never a billing record: the capture found nothing a replay
