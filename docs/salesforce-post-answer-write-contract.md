@@ -425,7 +425,8 @@ Consequences:
 - Porting it (#1680) moves two Salesforce calls onto the pre-answer critical
   path, inside the 20 s parallel. The native node treats `apex` as not safe to
   repeat, and `InquiryParserRest` attaches a new file to the Lead on every
-  successful call (question 5), so how that step retries is a decision, not a
+  successful call that carries inquiries (question 5; a call without them
+  writes nothing, see "Port measurements"), so how that step retries is a decision, not a
   copy of the relay's settings.
 - A 63 ms median for a relay that makes two Salesforce calls, one of them an
   Apex insert, fits Pipedream's default HTTP response acknowledging on receipt,
@@ -702,7 +703,7 @@ fields these writes set.
   date (or **nulls them** when the Submission has no `Engine_Offers_Date_SO__c`,
   which is the 2026-10-13 repair's blank Engine fields), `Submission_Object_ID__c`,
   the Prospect link, and many copied fields including `PDFlow_1__c` to
-  `PDFlow_5__c`, `PD_Completed_Timestamp__c`, `External_Exchange_Status__c`,
+  `PDFlow_8__c` (each when not null), `PD_Completed_Timestamp__c`, `External_Exchange_Status__c`,
   `InternalDebtRouting__c`, `CreditFreeze__c`; then, with a Prospect, clones its
   files to the Lead and starts `TradeParserBatch` (async Apex). **Without** a
   completion flip, if the Submission has a Lead, it still updates the Lead with
@@ -791,8 +792,9 @@ nothing.
   rule not to overwrite a different non-blank value is what stops this.
 - A first write that never landed fires everything once when the resend lands,
   as the original would have.
-- An Inquiries resend replaces the inquiry rows (safe) but attaches one more
-  file to the Lead each time (not idempotent). It is pre-answer, so #2023 does
+- An Inquiries resend that carries inquiries replaces the inquiry rows (safe)
+  but attaches one more file to the Lead each time (not idempotent); one
+  without inquiries writes nothing. It is pre-answer, so #2023 does
   not resend it.
 - On Prospect, a resent `BidStatus__c` that would move backward is reverted
   without error, so the PATCH answers 204 and the field does not hold the
