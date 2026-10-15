@@ -285,6 +285,27 @@ describe('held update: says it is unknown and held, and until when', () => {
     expect(text).not.toMatch(/Rejected|unqualified_lead/)
   })
 
+  // The label alone means unknown and held, so a payload that lost its record
+  // details still must not fall into the generic "failed after all retries,
+  // feeds billing" wording, which claims a loss nobody measured.
+  it('keeps the held wording when the record details are missing, and never claims a loss', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_HELD_LABEL,
+        window_loss_count: 2,
+        window_minutes: 30,
+        error_message: 'Step timed out after 1500ms',
+      },
+      'https://app.test',
+    )
+    const text = lastText()
+    expect(text).toContain('Salesforce update not confirmed')
+    expect(text).not.toMatch(/after all retries|feeds billing|cannot be replayed|lost/)
+    expect(text).toMatch(/Fix:/)
+    expectHouseStyle(text)
+  })
+
   it('names a held Submission by its id the same way', async () => {
     await sendOutcomeDeadLetterAlert(
       conn,

@@ -1231,6 +1231,39 @@ async function sendUncapturableWritebackAlert(
 }
 
 /**
+ * The held label without the record it was holding. The capture always sends the
+ * record, so this is a defensive branch: the label alone still means unknown and
+ * held, so it keeps that wording rather than falling into the generic "failed
+ * after all retries" alert, which would claim a loss nobody measured (#2163).
+ */
+async function sendHeldWithoutRecordAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const n = payload.window_loss_count
+  const title = 'Salesforce update not confirmed'
+  const run = payload.run
+  const summary = [
+    'A Salesforce update after the answer was cut off before Salesforce replied, so it is not known whether it landed. This alert did not carry which record it was updating.',
+    n > 1 ? `This happened about ${n} times recently.` : '',
+  ].filter(Boolean).join(' ')
+  const fix = run
+    ? 'Fix: open the run below, find the Salesforce step that timed out, and check its record in Salesforce. If the update did not land, set it by hand.'
+    : 'Fix: find the run on the dashboard, open the Salesforce step that timed out, and check its record in Salesforce. If the update did not land, set it by hand.'
+  const link = run
+    ? `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|View the run →>`
+    : `<${appUrl}/dashboard|Open dashboard →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+}
+
+/**
  * A Salesforce update after the answer was cut off before Salesforce replied (a
  * timeout, an abort, a dropped connection), and the at-risk record holds its
  * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
@@ -1346,8 +1379,9 @@ export async function sendOutcomeDeadLetterAlert(
 ): Promise<boolean> {
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
   // Unknown and held, never lost or unreplayable (#2163).
-  if (payload.label === WRITEBACK_HELD_LABEL && payload.run?.held) {
-    return sendHeldWritebackAlert(connection, payload, payload.run, payload.run.held, appUrl)
+  if (payload.label === WRITEBACK_HELD_LABEL) {
+    if (payload.run?.held) return sendHeldWritebackAlert(connection, payload, payload.run, payload.run.held, appUrl)
+    return sendHeldWithoutRecordAlert(connection, payload, appUrl)
   }
   // Always its own wording: an unfinished walk is never a lost record (#1860).
   if (payload.label === CONTINUATION_UNFINISHED_LABEL) return sendUnfinishedWorkAlert(connection, payload, payload.run, appUrl)
