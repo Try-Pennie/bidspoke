@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted: the database sender is proved on production** (#2131, PR0 of the partners page redesign #2114). Live run 2026-10-15 at 16:51 UTC against project `xvrmivmpfykwwtriqwpg`, after the migration was applied. PR4 sends the notice from a trigger with `realtime.send`.
+**Accepted: the database sender is proved on production** (#2131, PR0 of the partners page redesign #2114). Live run 2026-10-15 at 16:51 UTC against project `xvrmivmpfykwwtriqwpg`, after the migration was applied. PR4 sends the notice from a trigger with `realtime.send`, under the condition the Decision rule states: a day can start with no partition, so the subscriber retries a join refused as `MissingPartition`, and a notice sent before the day's first join can be lost.
 
 ## Context
 
@@ -91,7 +91,7 @@ Measured on production 2026-10-15, 16:51 UTC (measured run, marker `realtime-spi
 
 ## Decision rule
 
-- **Database sender proved**: PR4 sends the notice from a trigger with `realtime.send`.
+- **Database sender proved**: PR4 sends the notice from a trigger with `realtime.send`, on the condition the Results record: a day can start with no `realtime.messages` partition, so the subscriber retries a join refused as `MissingPartition`, and a notice sent before the day's first join can be lost with only a `WARNING` (nobody is subscribed then).
 - **Ruled out under the controls**: PR4 sends from the Worker after each save. The fallback may be chosen only once all of these are recorded above: the same subscribers received the Worker REST broadcast on the same private topic; the `WARNING` text `realtime.send` raised was captured, not inferred; the partition for the send date was shown to exist at send time (if it did not, the run is repeated once the platform has made it rather than concluded from); and the failing step is named.
 - **What the fallback gets wrong (L93)**: it cannot see a hand run SQL edit, so no live notice is sent for one. Measured above: 1 such edit in 24 days. Bidding's pickup of such an edit does not depend on either sender (PR1).
 - **Both senders fail**: PR4 escalates to a Durable Object WebSocket, as a new decision for Dan.
