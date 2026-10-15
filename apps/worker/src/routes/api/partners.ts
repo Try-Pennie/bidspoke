@@ -597,7 +597,7 @@ function pageChange(row: AuditRow | undefined): PartnerPageChange | null {
  * GET /partners/:id/versions: the page's delivery probe, every 60 seconds
  * while a draft is dirty, and its read of the newest change of each half on
  * open and on every refetch. Who may call: any allowlisted member of the org
- * (jwtAuth). Whose rows: this org's only; every read carries orgId. Five small
+ * (jwtAuth). Whose rows: this org's only; every read carries orgId. Four small
  * reads by key, each answered by an index (audit_log by idx_audit_entity).
  */
 partners.get('/:id/versions', async (c) => {
