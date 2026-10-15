@@ -20,7 +20,8 @@ export const WRITEBACK_UNCAPTURABLE_LABEL = 'outcome_writeback_deadletters.uncap
 export const WRITEBACK_STORE_LABEL = 'outcome_writeback_deadletters.insert'
 
 // A post-answer Salesforce update that timed out or was cut off, whose request
-// the at-risk watch holds in KV, on an object no read-back covers yet (#2163):
+// the at-risk watch holds in KV, on any object, until the read-back (#2023)
+// takes over the objects it covers (#2163):
 // unknown, not lost and not unreplayable, so the alert copy routes on it to its
 // own wording. Set in engine/writeback-deadletter.ts.
 export const WRITEBACK_HELD_LABEL = 'sf_writeback.held'

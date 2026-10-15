@@ -234,9 +234,10 @@ describe('replay store failure: the uncapturable wording, not the generic one', 
 // #2163: a timed out Prospect update was announced as "cannot be replayed", its
 // request "could not be kept", and the reader sent to a run page that showed no
 // request, while the at-risk record held it in KV until it expired unread. A held
-// update now says what is true: it may not have landed, here is the record and the
-// fields to check, and the request is held until a stated time in ET.
-describe('held update on an object no read-back covers: says it is unknown and held, and until when', () => {
+// update, on any object, now says what is true: it may not have landed, here is
+// the record and the fields to check, the run shows the values, and the request is
+// held until a stated time in ET.
+describe('held update: says it is unknown and held, and until when', () => {
   const send = (n = 1) =>
     sendOutcomeDeadLetterAlert(
       conn,
@@ -275,9 +276,37 @@ describe('held update on an object no read-back covers: says it is unknown and h
     expectHouseStyle(text)
   })
 
-  it('does not send the reader to the run to see the request', async () => {
+  // The failed step logs its input now (#2163), so the run is where the values
+  // are; the alert names that place and keeps the values themselves out of Slack.
+  it('points at the run for the values it was sending, after the field names, and shows no value', async () => {
     await send()
-    expect(lastText()).not.toMatch(/open the run|run below shows|see the request/i)
+    const text = lastText()
+    expect(text).toContain('BidStatus__c and RejectionReason__c. The run below shows the values it was sending.')
+    expect(text).not.toMatch(/Rejected|unqualified_lead/)
+  })
+
+  it('names a held Submission by its id the same way', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_HELD_LABEL,
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'Step timed out after 10000ms',
+        run: {
+          workflow_id: 'wf-8',
+          workflow_name: 'Liberty1 Click',
+          execution_id: 'ex-8',
+          at: '2026-10-15T14:00:00Z',
+          held: { step: 'update_submission', sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['External_Exchange_Status__c'], until: '2026-10-16T14:00:00.000Z' },
+        },
+      },
+      'https://app.test',
+    )
+    const text = lastText()
+    expect(text).toContain('Submission a04Ui00000NkhG1IAJ, setting External_Exchange_Status__c.')
+    expect(text).toContain('until 10:00 AM ET on Oct 16')
+    expectHouseStyle(text)
   })
 
   it('says it names the latest when the window holds more than one', async () => {

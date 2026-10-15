@@ -23,8 +23,9 @@
  *
  * An update that timed out or was cut off is none of these (#2163): its outcome
  * is unknown and the at-risk record (#2022) holds its request in KV. It is not
- * stored here and never called uncapturable. On an object no read-back covers,
- * it is announced with the record, the field names and the expiry.
+ * stored here and never called uncapturable. Until the read-back (#2023) ships
+ * it is announced with the record, the field names and the expiry, on every
+ * object.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
@@ -37,14 +38,16 @@ import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LAB
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
 
-/** A held update on an object no read-back covers, declared in the leaf label module (#2163). */
+/** A held update no read-back covers yet, declared in the leaf label module (#2163). */
 export { WRITEBACK_HELD_LABEL }
 
 /**
- * The objects whose held updates a read-back is built to confirm by their write
- * marker (#2023). Only Submission__c carries one; Prospect__c, Applicant__c and
- * Lead wait on #2020. A held update on any other object expires unread, so it is
- * announced (#2163).
+ * The objects whose held updates the read-back (#2023) is built to confirm by
+ * their write marker. Until it ships, nothing reads any held update back, so
+ * every one is announced (#2163), these included: a wrong alert swapped for no
+ * alert would be the worse failure. These also get a log line naming the record.
+ * When #2023 ships it takes these entries over, and this announcement goes for
+ * the objects it covers.
  */
 const READ_BACK_OBJECTS: ReadonlySet<string> = new Set(['Submission__c'])
 
@@ -114,10 +117,10 @@ export type CaptureResult =
   | { kind: 'store_failed'; error: string }
 
 /**
- * A held update the read-back will find (Submission__c) stays on that path. One
- * on any other object expires unread, so it is announced with what a person needs
- * to check it: the record, the field names (never the values), and when the held
- * request is deleted.
+ * A held update expires unread, so it is announced with what a person needs to
+ * check it: the record, the field names (never the values), and when the held
+ * request is deleted. A Submission__c one, which the read-back (#2023) will take
+ * over, is also logged.
  */
 async function announceHeld(
   f: FailedWriteback,
@@ -127,7 +130,6 @@ async function announceHeld(
 ): Promise<CaptureResult> {
   if (READ_BACK_OBJECTS.has(w.sf_object)) {
     console.warn(`[writeback-deadletter] held for the read-back: execution ${f.executionId}, step ${f.stepNamespace}, ${w.sf_object} ${w.sf_record_id}, until ${until}`)
-    return { kind: 'held', until }
   }
   await recordOutcomeDeadLetter(WRITEBACK_HELD_LABEL, f.error, deps, {
     workflow_id: f.workflowId,

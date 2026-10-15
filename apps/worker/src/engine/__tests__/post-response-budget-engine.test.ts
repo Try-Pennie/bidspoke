@@ -801,11 +801,14 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
     })
 
-    it('leaves a held Submission update for its read-back, announced nowhere and stored nowhere', async () => {
+    // Until the Submission read-back (#2023) is live, a held Submission update
+    // is announced like the others rather than left silent.
+    it('announces a held Submission update as held too, and stores no replay row', async () => {
       const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' })))
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
-      expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
+      const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
+      expect(held?.[3]?.held).toMatchObject({ sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['External_Exchange_Status__c'] })
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
       expect(stepRow(db)?.input).toMatchObject({ resolved: { record_id: 'a04Ui00000NkhG1IAJ' } })
     })

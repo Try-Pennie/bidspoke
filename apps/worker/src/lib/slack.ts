@@ -978,7 +978,8 @@ export interface OutcomeDeadLetterAlert {
     still_running?: string[]
     /**
      * A timed out post-answer update whose request the at-risk record holds, on
-     * an object no read-back covers (#2163). Field names only, never values.
+     * any object, until the read-back (#2023) takes over the objects it covers
+     * (#2163). Field names only, never values.
      */
     held?: {
       step: string
@@ -1232,10 +1233,11 @@ async function sendUncapturableWritebackAlert(
 /**
  * A Salesforce update after the answer was cut off before Salesforce replied (a
  * timeout, an abort, a dropped connection), and the at-risk record holds its
- * request in KV, on an object no read-back covers yet (#2163). So it is unknown,
- * not lost and not unreplayable, and nothing will look at it before KV deletes
+ * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
+ * until the read-back (#2023) ships nothing will look at it before KV deletes
  * it. The alert says that, names the record and the fields it was setting (never
- * the values, which are lead data), and when the request is deleted, in ET.
+ * the values, which are lead data, but it says the run shows them), and when the
+ * request is deleted, in ET.
  *
  * The dead letter posts once per window, so the count says the record named is
  * the latest of several rather than claiming it is the only one.
@@ -1257,9 +1259,11 @@ async function sendHeldWritebackAlert(
   const object = slackText(held.sf_object.replace(/__c$/, '').replace(/_/g, ' '))
   const fields = held.fields.map(slackText)
   const setting = fields.length === 0 ? '' : `, setting ${listSteps(fields)}`
+  // The failed step logs the request as its input (#2163), so the run is where
+  // the values are; the values themselves stay out of Slack.
   const summary =
     `${slackText(run.workflow_name)} answered a lead at ${when} ET, and a Salesforce update after the answer was cut off before Salesforce replied, so it is not known whether it landed. ` +
-    `It was updating ${object} ${slackText(held.sf_record_id)}${setting}.`
+    `It was updating ${object} ${slackText(held.sf_record_id)}${setting}. The run below shows the values it was sending.`
   const kept =
     `Bidspoke holds the request until ${until}. Nothing checks it before then, and it is deleted at that time.` +
     (n > 1 ? ` This happened about ${n} times ${deadLetterPeriod(n, payload.window_minutes)}, and this alert names the latest.` : '')

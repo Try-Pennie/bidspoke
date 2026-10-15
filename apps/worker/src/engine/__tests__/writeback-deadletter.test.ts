@@ -255,17 +255,27 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     }
   })
 
-  // A held Submission entry is the one the Submission read-back (#2023) is built
-  // to find by its marker, so it is left on that path and not announced here.
-  it('leaves a held Submission write for its read-back: no row, no dead letter', async () => {
+  // The Submission read-back (#2023) is not live yet, so a held Submission
+  // update is announced like any other: a wrong alert swapped for no alert
+  // would be the worse failure. #2023 takes these over when it ships.
+  it('announces a held Submission write too, and stores no row', async () => {
     const db = fakeSupabase()
-    const result = await captureFailedWriteback(
-      { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
-      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
-    )
-    expect(result).toEqual({ kind: 'held', until: UNTIL })
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await captureFailedWriteback(
+        { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
+        { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+      expect(result).toEqual({ kind: 'held', until: UNTIL })
+      expect(warned.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('a04Ui00000NkhG1IAJ')
+    } finally {
+      warned.mockRestore()
+    }
     expect(db.inserts).toHaveLength(0)
-    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][3]).toMatchObject({
+      held: { sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['PDFlow_1__c'], until: UNTIL },
+    })
   })
 
   it('still stores a refusal, which the watch does not hold', async () => {
