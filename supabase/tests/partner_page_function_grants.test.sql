@@ -8,8 +8,9 @@
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds.
 --
--- Mutation tried: the REVOKE on partner_configs_bump_version() left out of the
--- migration (case 1 red: PUBLIC keeps EXECUTE, so anon and authenticated have it).
+-- Mutations tried: the REVOKE on partner_configs_bump_version() left out of the
+-- migration (case 1 red: PUBLIC keeps EXECUTE, so anon and authenticated have it);
+-- the REVOKE on _apply_buyer_profile left out (#2133, case 1 red).
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -27,7 +28,11 @@ BEGIN
     'public.partner_configs_audit()',
     'public.buyer_profile_tables_direct_sql_audit()',
     'public.buyer_profile_tables_bump_version()',
-    'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)'
+    'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
+    -- PR2 (#2133)
+    'public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb)',
+    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -44,7 +49,9 @@ DECLARE
   bad text[] := '{}';
 BEGIN
   FOREACH fn IN ARRAY ARRAY[
-    'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)'
+    'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
+    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)'
   ] LOOP
     IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
   END LOOP;
