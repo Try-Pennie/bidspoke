@@ -603,6 +603,34 @@ describe('Salesforce not answering', () => {
   })
 })
 
+describe('a held write it cannot open', () => {
+  // The capture left it to the read-back, so no held alert went out for it: if
+  // the read-back only logged it, the write would be lost in silence (L13).
+  it('says so once it has waited too long, rather than only logging it', async () => {
+    const r = rig({ [PROSPECT]: {} })
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT, ago: UNREAD_ALERT_AFTER_MS / 60_000 + 1 })
+    const key = atRiskKeys(r.kv)[0]
+    const entry = JSON.parse(r.kv.store.get(key)!) as AtRiskEntry
+    r.kv.store.set(key, JSON.stringify({ ...entry, body_encrypted: await encryptSecret('{}', Buffer.from(new Uint8Array(32).fill(9)).toString('base64')) }))
+    const s = await runSalesforceReadBack(r.deps)
+    expect(s.unreadable_entries).toBe(1)
+    expect(r.sf.calls).toEqual([])
+    expect(r.alerts).toHaveLength(1)
+    expect(r.alerts[0]).toMatchObject({ kind: 'unread', count: 1, reason: 'held_unreadable' })
+  })
+})
+
+describe('a record of its own it cannot read', () => {
+  it('treats an unreadable resend time as just sent, the side that sends nothing early', async () => {
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } })
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
+    r.kv.store.set(`sf-read-back:state:${EXEC_A}:patch_prospect_reject`, JSON.stringify({ v: 1, attempts: 1, last_attempt_at: 'not a time' }))
+    const s = await runSalesforceReadBack(r.deps)
+    expect(s.young).toBe(1)
+    expect(r.sf.calls).toEqual([])
+  })
+})
+
 describe('what the read-back leaves alone', () => {
   it('does not read a Submission update, or one held from before the stamp shipped', async () => {
     const r = rig({ [PROSPECT]: {}, a04Ui00000NkhG1IAJ: {} })

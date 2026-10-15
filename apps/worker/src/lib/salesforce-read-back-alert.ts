@@ -18,6 +18,8 @@ export type UnreadReason =
   | 'bulkhead_unknown'
   | 'credentials'
   | 'tick_full'
+  /** The held request itself could not be opened with the encryption key. */
+  | 'held_unreadable'
 
 export interface ReadBackAlertWrite {
   workflow_id: string
@@ -210,6 +212,10 @@ const UNREAD_BECAUSE: Record<UnreadReason, { why: string; fix: string }> = {
   bulkhead_unknown: { why: "Bidspoke's limit on calls to Salesforce could not be asked", fix: 'check the worker logs for errors from the Salesforce limiter' },
   credentials: { why: 'the Salesforce settings for the workflow could not be loaded', fix: "check the workflow's Salesforce settings and that the database is answering" },
   tick_full: { why: 'there were more to read than fit in one minute', fix: 'nothing yet, since they are read oldest first, but if this repeats, check how many Salesforce writes are timing out' },
+  held_unreadable: {
+    why: 'its encryption key would not open what it holds, so nothing can check or resend it',
+    fix: 'check whether the encryption key was changed without following its rotation steps',
+  },
 }
 
 function unread(p: SalesforceReadBackAlert): ComposedAlert {

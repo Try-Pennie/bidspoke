@@ -76,6 +76,12 @@ describe('composeSalesforceReadBackAlert', () => {
     expect(t).toContain('the oldest at 8:29 PM ET on Oct 15')
   })
 
+  it('a held write the key will not open says so, and points at the key', () => {
+    const t = text({ kind: 'unread', writes: [], count: 1, oldest_at: '2026-10-15T00:29:54.000Z', oldest_expires_at: '2026-10-16T00:29:56.000Z', reason: 'held_unreadable' })
+    expect(t).toContain('Bidspoke could not read it this minute because its encryption key would not open what it holds, so nothing can check or resend it.')
+    expect(t).toContain('Fix: check whether the encryption key was changed without following its rotation steps.')
+  })
+
   it('the read-back not running says since when, or that it never has', () => {
     expect(text({ kind: 'not_running', writes: [], count: 1, oldest_at: '2026-10-15T00:29:54.000Z', oldest_expires_at: '2026-10-16T00:29:56.000Z', last_finished_at: '2026-10-15T00:10:00.000Z' }))
       .toContain('and the job that reads them back has not finished a run since 8:10 PM ET on Oct 14.')

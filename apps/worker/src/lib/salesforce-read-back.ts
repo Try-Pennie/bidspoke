@@ -422,6 +422,8 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   s.listed = listing.keys.length
   s.truncated = listing.list_complete === false
   const held: Held[] = []
+  // Held writes on the marker objects whose body the keys could not open.
+  const unopenable: Held[] = []
   for (const { name } of listing.keys) {
     const id = name.slice(AT_RISK_WRITE_PREFIX.length)
     const entry = parseAtRiskEntry(await deps.kv.get(name))
@@ -451,6 +453,9 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     } catch (e) {
       console.error(`[${SF_READ_BACK_JOB}] could not open the held write ${id}:`, formatErr(e))
       s.unreadable_entries++
+      // The capture left it to the read-back, so nothing else will say it: it is
+      // reported with the unread writes, under its own reason (L13).
+      unopenable.push({ id, key: name, entry, body: {}, state, firstAttemptMs: Date.parse(entry.first_attempt_at), expiresAtMs })
       continue
     }
     if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) {
@@ -466,7 +471,12 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     const k = `${h.entry.org_id}|${h.entry.sf_object}|${h.entry.sf_record_id}`
     byRecord.set(k, [...(byRecord.get(k) ?? []), h])
   }
-  const lastSendMs = (h: Held) => Math.max(h.firstAttemptMs, h.state.last_attempt_at ? Date.parse(h.state.last_attempt_at) : 0)
+  // An unreadable resend time reads as just sent: the side that sends nothing early (L50).
+  const lastSendMs = (h: Held) => {
+    if (!h.state.last_attempt_at) return h.firstAttemptMs
+    const sent = Date.parse(h.state.last_attempt_at)
+    return Number.isFinite(sent) ? Math.max(h.firstAttemptMs, sent) : startedAt
+  }
   const due: Held[][] = []
   for (const group of byRecord.values()) {
     group.sort((a, b) => a.firstAttemptMs - b.firstAttemptMs || a.entry.recorded_at.localeCompare(b.entry.recorded_at) || a.id.localeCompare(b.id))
@@ -680,6 +690,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   s.alerts += await deliverFindings(deps, findings, dayCounts, putState, now)
   const reason = stopped ?? unreadReason
   if (unread.length > 0 && reason) s.alerts += await reportUnread(deps, unread, reason, startedAt)
+  if (unopenable.length > 0) s.alerts += await reportUnread(deps, unopenable, 'held_unreadable', startedAt)
 
   if (deps.recordRun && (s.reads > 0 || s.unread > 0 || s.alerts > 0)) {
     await deps.recordRun(startedAt, {
@@ -807,7 +818,7 @@ async function reportUnread(deps: SalesforceReadBackDeps, unread: Held[], reason
   for (const [orgId, list] of byOrg) {
     const oldest = list.reduce((a, b) => (b.firstAttemptMs < a.firstAttemptMs ? b : a))
     if (nowMs - oldest.firstAttemptMs < UNREAD_ALERT_AFTER_MS) continue
-    const claimKey = `${ALERT_CLAIM_PREFIX}unread:${orgId}`
+    const claimKey = `${ALERT_CLAIM_PREFIX}unread:${reason}:${orgId}`
     if (deps.alertClaims && !(await deps.alertClaims.claim(claimKey, UNREAD_CLAIM_TTL_SECONDS))) continue
     let ok = false
     try {
