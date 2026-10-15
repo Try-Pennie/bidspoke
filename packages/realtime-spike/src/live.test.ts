@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { assertSameProject } from './live.ts'
+import { assertSameProject, keepJoinStatus } from './live.ts'
+
+describe('keepJoinStatus: the Worker subscriber reports how its join went, not how it ended', () => {
+  it('keeps SUBSCRIBED when the channel is closed afterwards', () => {
+    expect(keepJoinStatus('SUBSCRIBED', 'CLOSED')).toBe('SUBSCRIBED')
+  })
+
+  it('takes the first answer to the join', () => {
+    expect(keepJoinStatus(null, 'SUBSCRIBED')).toBe('SUBSCRIBED')
+    expect(keepJoinStatus(null, 'CHANNEL_ERROR')).toBe('CHANNEL_ERROR')
+  })
+})
 import type { SpikeConfig } from './cli.ts'
 
 const hosted = { supabaseUrl: 'https://xvrmivmpfykwwtriqwpg.supabase.co', project: 'xvrmivmpfykwwtriqwpg' } as SpikeConfig

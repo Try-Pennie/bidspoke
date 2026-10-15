@@ -235,7 +235,7 @@ async function workerSubscribe(
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let status: JoinStatus = 'TIMED_OUT'
+  let joined: JoinStatus | null = null
   let detail: string | null = null
   let sentAt: number | null = null
   let sendError: string | null = null
@@ -249,9 +249,9 @@ async function workerSubscribe(
       const line = JSON.parse(buffer.slice(0, nl)) as { event: string; status?: JoinStatus; detail?: string | null }
       buffer = buffer.slice(nl + 1)
       if (line.event === 'status' && line.status) {
-        status = line.status
-        detail = line.detail ?? null
-        if (status === 'SUBSCRIBED' && sentAt === null) {
+        if (joined === null) detail = line.detail ?? null
+        joined = keepJoinStatus(joined, line.status)
+        if (joined === 'SUBSCRIBED' && sentAt === null) {
           sentAt = Date.now()
           // Handled here, before the next await: a send that rejects while this
           // loop waits on the network would otherwise end the process (L749).
@@ -262,14 +262,23 @@ async function workerSubscribe(
       } else if (line.event === 'message' && sentAt !== null) {
         const after = Date.now() - sentAt
         await sending
-        return { status, detail, receivedAfterMs: after }
+        return { status: joined ?? 'TIMED_OUT', detail, receivedAfterMs: after }
       } else if (line.event === 'timeout') {
-        detail = 'subscribed but nothing arrived within 20 s'
+        detail = joined === 'SUBSCRIBED' ? 'subscribed but nothing arrived within 20 s' : 'no answer to the join within 20 s'
       }
     }
   }
   await sending
-  return { status, detail: sendError ?? detail, receivedAfterMs: null }
+  return { status: joined ?? 'TIMED_OUT', detail: sendError ?? detail, receivedAfterMs: null }
+}
+
+/**
+ * The status the Worker subscriber reports is the answer to its JOIN: the first
+ * status line. The Worker closes its channel when it is done, which emits a
+ * trailing CLOSED, and that must not overwrite a join that succeeded.
+ */
+export function keepJoinStatus(current: JoinStatus | null, incoming: JoinStatus): JoinStatus {
+  return current ?? incoming
 }
 
 export async function liveDeps(
