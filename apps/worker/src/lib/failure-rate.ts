@@ -286,10 +286,11 @@ export async function runFailureRateCheck(
       )
 
       if (sent) {
-        const ttl = cooldownMinutes * 60
-        await kv.put(cooldownKey, '1', { expirationTtl: ttl })
+        // The marker before the cooldown (#2058): a cut or a refused write
+        // between them then costs at worst a repeated page, never a lost all-clear.
         await markAlerted(kv, 'failure-rate', recoveryId, incident, now)
         await recordPaged(kv, 'failure-rate', recoveryId, incident, now)
+        await kv.put(cooldownKey, '1', { expirationTtl: cooldownMinutes * 60 })
       }
     }
   }

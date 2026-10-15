@@ -67,6 +67,20 @@ describe('tickTimer', () => {
     expect(timer.report('* * * * *')).toMatch(/jobs=heartbeat-checks:20005 unfinished/)
   })
 
+  // A job the minute stopped waiting for (#2058) is named as timed out, not as
+  // merely unfinished, so the line says the deadline cut it off.
+  it('names a job the minute gave up on as timed out', async () => {
+    const c = clock()
+    const timer = tickTimer(c.now)
+    void timer.track('stored-copy-sweep', new Promise(() => {}))
+    const quick = deferred()
+    const done = timer.track('volume-cliff', quick.p)
+    quick.resolve(); await done
+    c.advance(50_000)
+    timer.timedOut('stored-copy-sweep')
+    expect(timer.report('* * * * *')).toBe('[tick-timing] cron="* * * * *" total_ms=50000 jobs=stored-copy-sweep:50000 timed out,volume-cliff:0')
+  })
+
   // A line naming no job says nothing about where the time went.
   it('says nothing for a slow tick that timed no job', () => {
     const c = clock()

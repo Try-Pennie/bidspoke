@@ -49,8 +49,8 @@ const realDelay = (ms: number): Promise<void> => new Promise((resolve) => setTim
 export type Raced<T> = { kind: 'ok'; value: T } | { kind: 'threw'; error: unknown } | { kind: 'timed_out' }
 
 /**
- * Races a call to a Durable Object against a deadline, the one implementation
- * the alert claim and the cron tick claim (#1899) both use.
+ * Races a call against a deadline, the one implementation the alert claim, the
+ * cron tick claim (#1899) and the minute job deadline (#2058, index.ts) use.
  *
  * Takes the work as a THUNK, not a promise, and calls it inside this async
  * arrow. Looking the object up can throw OUTRIGHT rather than returning a

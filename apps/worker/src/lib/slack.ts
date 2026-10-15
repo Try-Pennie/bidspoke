@@ -15,6 +15,7 @@ import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError, READ_BACK_MI
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
+import { cloudflareEdgeCodeIn } from './html-error-summary'
 import { listSteps } from '../engine/running-step'
 import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
@@ -2772,6 +2773,12 @@ export async function sendDatabaseUnreachableAlert(
   channel: string,
   payload: { what: string; error: string; appUrl: string; repeat?: string },
 ): Promise<string | null> {
+  // A Cloudflare error page in place of the answer (#2058, #2117) means the
+  // worker could not reach the database through Cloudflare, which is all that
+  // was measured: on 2026-10-14 the reads got `error code: 1016` while Supabase
+  // served no errors. So it gets its own title, quote and fix (L11).
+  const edgeCode = cloudflareEdgeCodeIn(payload.error)
+  if (edgeCode !== null) return sendDatabaseUnreachableThroughCloudflare(slack, channel, payload, edgeCode)
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `Bidspoke cannot read its database${payload.repeat ? ' (still)' : ''}`, emoji: false } },
     {
@@ -2801,6 +2808,41 @@ export async function sendDatabaseUnreachableAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
   return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
+}
+
+/** The same alert when the read got a Cloudflare error page instead of an answer. */
+function sendDatabaseUnreachableThroughCloudflare(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { what: string; appUrl: string; repeat?: string },
+  code: number,
+): Promise<string | null> {
+  const title = 'Bidspoke cannot reach its database through Cloudflare'
+  const meaning = code === 1016 ? ' Code 1016 means Cloudflare could not look up the database\'s address.' : ''
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: `${title}${payload.repeat ? ' (still)' : ''}`, emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `<!here> The minute volume check could not read *${payload.what}*. Cloudflare answered in place of the database, with \`error code: ${code}\`.${meaning} ` +
+          'That answer comes from Cloudflare, so it does not show that the database itself is down. ' +
+          'While this lasts the check cannot count executions, so it cannot see a drop in volume. ' +
+          'The volume cliff alerts will only fire once the database is readable again, and they will then report the outage as a caller stopping, which it is not.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* check <https://www.cloudflarestatus.com|cloudflarestatus.com> for an incident affecting Workers. Nothing on the worker or the database needs changing; this check recovers on its own when Cloudflare reaches the database again. An all-clear follows here once it can read again.',
+      },
+    },
+    ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, title)
 }
 
 /**

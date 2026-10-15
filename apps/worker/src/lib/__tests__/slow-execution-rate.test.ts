@@ -11,7 +11,7 @@ vi.mock('../slack', () => ({
   sendRecoveryAlert: vi.fn(),
 }))
 import { detectSlowSpike, buildSlowDurations, runSlowExecutionCheck, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
-import { getSlackConnection, sendRecoveryAlert } from '../slack'
+import { getSlackConnection, sendRecoveryAlert, sendSlowSpikeAlert } from '../slack'
 import { transitions, withTickingClock } from './_incident-events'
 
 const THRESHOLD = 5000 // 5s
@@ -237,6 +237,34 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     // page sorts first.
     await withTickingClock(() => runSlowExecutionCheck(spiking() as never, kv as never, 'https://app.example.com'))
     expect(transitions(kv.store)).toEqual(['opened wf-1', 'paged wf-1'])
+  })
+
+  // #2058: a cut, or a cooldown write KV refuses, right after the page must
+  // leave the recovery marker in place, so the all-clear is still owed and the
+  // next tick pages again rather than staying silent.
+  it('keeps the all-clear owed, records opened before paged, and pages again when the cooldown write fails (#2058, #2115)', async () => {
+    const kv = makeKv()
+    const put = kv.put.getMockImplementation()!
+    kv.put.mockImplementation(async (k: string, v: string) => {
+      if (k === 'slow-spike-cooldown:wf-1') throw new Error('KV PUT failed: 500 Internal Server Error')
+      return put(k, v)
+    })
+    const ORG_ID = '77777777-7777-4777-8777-777777777777'
+    const spiking = () =>
+      makeSupabase({
+        service_connections: [{ organization_id: ORG_ID }],
+        workflows: [{ ...wf, organization_id: ORG_ID }],
+        workflow_executions: new Array(MIN_SLOW_COUNT + 3)
+          .fill(0)
+          .map(() => ({ workflow_id: 'wf-1', duration_ms: THRESHOLD * 4, started_at: new Date(Date.now() - 1000).toISOString() })),
+      })
+    await withTickingClock(() => runSlowExecutionCheck(spiking() as never, kv as never, 'https://app.example.com').catch(() => undefined))
+    expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(true)
+    expect(kv.store.has('slow-spike-cooldown:wf-1')).toBe(false)
+    expect(transitions(kv.store)).toEqual(['opened wf-1', 'paged wf-1'])
+    await runSlowExecutionCheck(spiking() as never, kv as never, 'https://app.example.com').catch(() => undefined)
+    expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(2)
   })
 
   it('announces the all-clear once the workflow is back under threshold', async () => {
