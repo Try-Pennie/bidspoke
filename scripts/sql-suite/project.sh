@@ -20,6 +20,9 @@ case "$SQL_SUITE_PROJECT" in
     SUITE_BOOTSTRAP="$HERE/bootstrap.sql"
     SUITE_CONTAINER_DEFAULT="bidspoke-sql-suite"
     SUITE_PORT_DEFAULT="54329"
+    # Fixture folders a test reads with pg_read_file (#2132): copied into the
+    # container at /sql-suite-fixtures/<the folder's package name>/.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"
@@ -27,6 +30,7 @@ case "$SQL_SUITE_PROJECT" in
     SUITE_BOOTSTRAP="$HERE/bootstrap-ops.sql"
     SUITE_CONTAINER_DEFAULT="bidspoke-sql-suite-ops"
     SUITE_PORT_DEFAULT="54330"
+    SUITE_FIXTURES=()
     ;;
   *)
     echo "SQL SUITE DID NOT RUN: SQL_SUITE_PROJECT is '$SQL_SUITE_PROJECT'; it must be main or ops" >&2

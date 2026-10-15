@@ -220,6 +220,21 @@
     "note": "The only writer of a buyer profile (#1409). A WRITE: anon reaching it could enable a buyer or reprice one. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing."
   },
   {
+    "name": "save_partner_config",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_version": 0,
+      "p_patch": {},
+      "p_save_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_actor_name": "probe"
+    },
+    "anon": "denied",
+    "note": "The partner save (#2132), the Worker's only partner UPDATE. A WRITE: anon reaching it could switch a partner on or change where leads are posted. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing."
+  },
+  {
     "name": "buyer_profile_document",
     "args": {
       "p_partner": "00000000-0000-0000-0000-000000000000"

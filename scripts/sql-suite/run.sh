@@ -55,6 +55,35 @@ else
   echo "WARN  could not read the address of container $CONTAINER; a test needing a second session will refuse" >&2
 fi
 
+# Shared fixtures (#2132, A6). Each test reaches psql over stdin, so it cannot
+# open a repository file: the fixture folders are copied into the container,
+# the test role may read files there (in this throwaway container only), and
+# every fixture a test names must be present, or the suite refuses by name.
+docker exec "$CONTAINER" rm -rf /sql-suite-fixtures
+docker exec "$CONTAINER" mkdir -p /sql-suite-fixtures
+for d in ${SUITE_FIXTURES[@]+"${SUITE_FIXTURES[@]}"}; do
+  if ! docker cp "$d/." "$CONTAINER:/sql-suite-fixtures/$(basename "$(dirname "$d")")/" >/dev/null; then
+    echo "SQL SUITE DID NOT RUN: could not copy the fixtures in $d" >&2
+    exit 2
+  fi
+done
+docker exec "$CONTAINER" chmod -R a+rX /sql-suite-fixtures
+docker exec "$CONTAINER" psql -U supabase_admin -h 127.0.0.1 -d postgres -q -v ON_ERROR_STOP=1 \
+  -c 'SET client_min_messages = warning' -c 'GRANT pg_read_server_files TO postgres' -c 'GRANT EXECUTE ON FUNCTION pg_read_file(text) TO postgres' >/dev/null
+missing=0
+for t in "${tests[@]}"; do
+  for f in $(grep -o "/sql-suite-fixtures/[A-Za-z0-9._/-]*" "$t" | sort -u); do
+    if ! docker exec "$CONTAINER" test -f "$f"; then
+      echo "MISSING FIXTURE  $(basename "$t") reads $f, which is not in the container" >&2
+      missing=1
+    fi
+  done
+done
+if [ "$missing" -ne 0 ]; then
+  echo "SQL SUITE FAILED ($SQL_SUITE_PROJECT): a test names a fixture the harness did not copy" >&2
+  exit 1
+fi
+
 status=0
 for t in "${tests[@]}"; do
   name="$(basename "$t")"
