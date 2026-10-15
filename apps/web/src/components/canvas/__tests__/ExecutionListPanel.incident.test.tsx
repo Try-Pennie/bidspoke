@@ -122,6 +122,17 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
     expect(screen.queryByText(/99/)).not.toBeInTheDocument()
   })
 
+  it('never shows the runs of an incident other than the one it is narrowed to', async () => {
+    // Moving from one incident's list to another (Back to an earlier ?incident=)
+    // keeps the earlier body in state until the new read starts; the panel must
+    // not title or list it under the new incident meanwhile.
+    const other = body({ incident: { ...body().incident, id: 'inc-other' } })
+    narrowed(vi.fn().mockResolvedValue(other))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.queryByText('2 failed runs in this incident')).not.toBeInTheDocument()
+    expect(screen.queryByText(/upstream returned 502/)).not.toBeInTheDocument()
+  })
+
   it('says runs before the cutoff are no longer kept, only when the span reaches before it', async () => {
     narrowed(vi.fn().mockResolvedValue(body({ clipped: true, kept_since: '2026-10-08T14:00:00.000Z' })))
     expect(await screen.findByText('Runs before Oct 8, 10:00 AM are no longer kept.')).toBeInTheDocument()

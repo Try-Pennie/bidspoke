@@ -38,7 +38,7 @@ type ExecRow = ExecutionListRow
 
 type IncidentRuns =
   | { kind: 'loading' }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; incidentId: string; message: string }
   | { kind: 'loaded'; body: IncidentFailedRuns }
 
 // The single left pointing angle quote, built from its code point.
@@ -163,7 +163,13 @@ export default function ExecutionListPanel({
   // An empty id narrows to nothing, so it is no narrowing rather than a list
   // that waits for a read it will never start.
   const narrowed = Boolean(incidentId)
-  const [incidentRuns, setIncidentRuns] = useState<IncidentRuns>({ kind: 'loading' })
+  const [storedIncidentRuns, setIncidentRuns] = useState<IncidentRuns>({ kind: 'loading' })
+  // What is stored can belong to the incident narrowed to before (Back to an
+  // earlier ?incident=) until the new read starts, so only an answer for THIS
+  // incident is shown; anything else reads as loading.
+  const storedFor = storedIncidentRuns.kind === 'loaded' ? storedIncidentRuns.body.incident.id
+    : storedIncidentRuns.kind === 'failed' ? storedIncidentRuns.incidentId : incidentId
+  const incidentRuns: IncidentRuns = storedFor === incidentId ? storedIncidentRuns : { kind: 'loading' }
   // Each read of an incident's runs starts a generation; an answer from an older
   // one (the narrowing changed or was retried mid flight) is dropped.
   const incidentGen = useRef(0)
@@ -175,7 +181,7 @@ export default function ExecutionListPanel({
       (body) => { if (incidentGen.current === mine) setIncidentRuns({ kind: 'loaded', body }) },
       (e: unknown) => {
         if (incidentGen.current !== mine) return
-        setIncidentRuns({ kind: 'failed', message: e instanceof Error && e.message ? e.message : 'The request failed.' })
+        setIncidentRuns({ kind: 'failed', incidentId, message: e instanceof Error && e.message ? e.message : 'The request failed.' })
       },
     )
   }, [incidentId, loadIncidentRuns])
