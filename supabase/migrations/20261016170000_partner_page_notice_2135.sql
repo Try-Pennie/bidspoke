@@ -40,8 +40,11 @@
 --    (#2135 ships no threshold; the activating issue is filed with it, L65).
 --
 -- Expand only (docs/adr/0007): one defaulted column, one table, new functions
--- and triggers, one new overload, and three functions replaced with their
--- signatures and behaviour kept (save_partner_page, partner_configs_capture_actor).
+-- and triggers, one new overload, and two functions replaced with their
+-- signatures kept: the ten argument save_partner_page, now a SQL wrapper that
+-- calls the eleven argument overload with p_client_id NULL (the same save, plus
+-- the one notice), and partner_configs_capture_actor, which also keeps a copy of
+-- the statement's editor for the notice trigger.
 
 -- ── 1. The synthetic organization predicate ─────────────────────────────────
 

@@ -229,13 +229,18 @@ CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate tex
     ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
     ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
     ('workflow_executions', 'source', 'the run''s recorded source, history kept by design')
+  ),
+  -- A column excluded by its name on whatever table holds it, with its reason.
+  excluded_column_names(col, reason) AS (VALUES
+    ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
+    ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner')
   )
   SELECT c.t || coalesce('.' || c.col, ' (foreign key)')
   FROM candidates c
   WHERE c.t <> ALL (public.partner_page_notice_tables())
     AND NOT EXISTS (SELECT 1 FROM excluded_tables e WHERE e.t = c.t)
     AND NOT EXISTS (SELECT 1 FROM excluded_columns e WHERE e.t = c.t AND e.col = c.col)
-    AND c.col IS DISTINCT FROM 'buyer_reference'
+    AND NOT EXISTS (SELECT 1 FROM excluded_column_names e WHERE e.col = c.col)
   ORDER BY 1;
 $$;
 
@@ -524,8 +529,6 @@ $do$;
 
 -- ── 13. change_partner_uuid refuses another organization ─────────────────────
 DO $do$
-DECLARE
-  v_state text;
 BEGIN
   PERFORM pg_temp.clear_notices();
   BEGIN
