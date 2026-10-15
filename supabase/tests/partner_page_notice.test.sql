@@ -29,8 +29,10 @@
 -- builds. Everything runs in one transaction that is rolled back, because the
 -- realtime auth test after it needs today's partition to be absent.
 --
--- Mutations tried (each turned its case red, then the migration was put back;
--- the script that applies them is described in the #2135 pull request):
+-- Mutations tried. Each was applied by running the migration file, with that
+-- one passage changed, over a suite container already built by run.sh, then
+-- running this file against it (each turned its case red), then running the
+-- unchanged migration again to put it back (it is idempotent):
 -- - partner_configs_page_notice_upd dropped: case 1 red (0 UPDATE triggers);
 -- - the notice_updated_by copy left out of partner_configs_capture_actor, and
 --   the copy never cleared: case 4 red both ways;

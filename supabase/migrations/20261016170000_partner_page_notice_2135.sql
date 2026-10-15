@@ -325,9 +325,10 @@ BEGIN
   FOR r IN
     SELECT DISTINCT p.organization_id, p.id
     FROM (
-      SELECT org_id, partner_slug FROM new_rows WHERE TG_OP IN ('INSERT', 'UPDATE')
+      -- The UPDATE trigger's: a mapping moved between partners tells both.
+      SELECT org_id, partner_slug FROM new_rows
       UNION
-      SELECT org_id, partner_slug FROM old_rows WHERE TG_OP IN ('UPDATE', 'DELETE')
+      SELECT org_id, partner_slug FROM old_rows
     ) m
     JOIN partner_configs p ON p.organization_id = m.org_id AND p.slug = m.partner_slug
   LOOP
