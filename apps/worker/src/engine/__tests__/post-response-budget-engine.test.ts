@@ -91,6 +91,9 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   const executions = new Map<string, Record<string, unknown>>()
   const sightings = new Map<string, Record<string, unknown>>()
   const steps: Record<string, unknown>[] = []
+  // The held write store's rows as inserted, so a case can read the status a
+  // failed write was stored with (#2054).
+  const writebacks: Record<string, unknown>[] = []
 
   function answer(table: string, op: string, payload: unknown, filters: Record<string, unknown>) {
     const state = availability(table, op)
@@ -118,6 +121,10 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
         Object.assign(row, payload as object)
         return Promise.resolve({ data: [{ id: row.id }], error: null })
       }
+    }
+    if (table === 'outcome_writeback_deadletters' && op === 'insert') {
+      writebacks.push(...rowsOf(payload))
+      return Promise.resolve({ data: null, error: null, status: 201 })
     }
     if (table === 'execution_steps' && op === 'insert') {
       const rows = rowsOf(payload)
@@ -179,7 +186,7 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
     return chain
   }
 
-  return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps }
+  return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps, writebacks }
 }
 
 function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false) {
@@ -710,7 +717,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     })
     const REJECT = { BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' }
 
-    type Salesforce = 'never answers' | 'refuses' | 'token never answers'
+    type Salesforce = 'never answers' | 'refuses' | 'token never answers' | 'refuses the login twice' | 'forbids' | 'refuses the fresh login'
     const aborted = (signal: AbortSignal | null | undefined) =>
       new Promise<Response>((_, reject) => {
         signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
@@ -730,6 +737,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
         lane: 'money',
       })
       let stepCtx: { noteSalesforceRequest?: unknown } | null = null
+      let logins = 0
       vi.mocked(executeNode).mockImplementation(async (n, ctx, env, _db, signal) => {
         if (n.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
         stepCtx = ctx
@@ -738,7 +746,17 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
         if (String(url).includes('/services/oauth2/token')) {
           if (behaviour === 'token never answers') return aborted(init?.signal)
+          // The first login works; the fresh one after the write's 401 is refused.
+          if (behaviour === 'refuses the fresh login' && ++logins > 1) {
+            return new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'authentication failure' }), { status: 400 })
+          }
           return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 })
+        }
+        if (behaviour === 'refuses the login twice' || behaviour === 'refuses the fresh login') {
+          return new Response(JSON.stringify([{ message: 'Session expired or invalid', errorCode: 'INVALID_SESSION_ID' }]), { status: 401 })
+        }
+        if (behaviour === 'forbids') {
+          return new Response(JSON.stringify([{ message: 'insufficient access rights on object id', errorCode: 'INSUFFICIENT_ACCESS_OR_READONLY' }]), { status: 403 })
         }
         if (behaviour === 'refuses') {
           return new Response(JSON.stringify([{ errorCode: 'FIELD_CUSTOM_VALIDATION_EXCEPTION', message: 'Bid status cannot move back' }]), { status: 400 })
@@ -788,8 +806,28 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     it('still sends a refused update to the replay store, already refused', async () => {
       const { db } = await run(() => 'up', SF_ENV, salesforce('refuses'))
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
+      expect(db.writebacks).toEqual([expect.objectContaining({ status: 'refused', replayable: false })])
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+    })
+
+    // #2054: a login refused even after the fresh one, and a permission refusal,
+    // are faults on our side that fixing the credentials clears. The replay tool
+    // keeps such a write pending, so the store keeps it pending too.
+    for (const [behaviour, status] of [['refuses the login twice', 401], ['forbids', 403]] as const) {
+      it(`stores an update Salesforce answered ${status} as replayable and pending, not refused`, async () => {
+        const { db } = await run(() => 'up', SF_ENV, salesforce(behaviour))
+        expect(stepRow(db)?.status).toBe('failed')
+        expect(db.writebacks).toHaveLength(1)
+        expect(db.writebacks[0]).toMatchObject({ status: 'pending', replayable: true, finished_at: null, error_type: 'permanent', sf_record_id: 'a06Ui00002sLkNuIAK' })
+        expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+      })
+    }
+
+    it('stores an update whose fresh login was refused as replayable and pending, since Salesforce never answered the write again', async () => {
+      const { db } = await run(() => 'up', SF_ENV, salesforce('refuses the fresh login'))
+      expect(String(stepRow(db)?.error_message)).toMatch(/token fetch failed \(400\)/)
+      expect(db.writebacks).toEqual([expect.objectContaining({ status: 'pending', replayable: true, finished_at: null })])
     })
 
     it('still takes the uncapturable path when it timed out before it had a request to send', async () => {
