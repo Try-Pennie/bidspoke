@@ -207,6 +207,18 @@ describe('omit_fields and rename_fields shape what is sent (#2170)', () => {
     ])
   })
 
+  it('a rename from or onto a name every object inherits is judged on the body\'s own keys only', async () => {
+    const result = await executeSalesforceNode(
+      update({ body: { ADV_SO__c: 5, UUID: 'u-1' }, rename_fields: { toString: 'Engine_X__c', UUID: 'constructor' } }),
+      makeCtx(),
+      makeEnv(),
+    )
+    // toString is not in the body, so nothing is sent under Engine_X__c, and the
+    // body held no constructor of its own, so no replacement is reported.
+    expect(sentBody(fetchMock)).toEqual({ ADV_SO__c: 5, constructor: 'u-1' })
+    expect(result.logs ?? []).toEqual([])
+  })
+
   it('a rename that collides with nothing adds no warning (control)', async () => {
     const result = await executeSalesforceNode(
       update({ body: { UUID: 'u-1' }, rename_fields: { UUID: 'Engine_UUID_SO__c' } }),

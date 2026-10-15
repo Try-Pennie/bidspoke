@@ -64,6 +64,20 @@ function sanitizeDefinition<T>(definition: T): T {
   return sanitizeCodeNodeScripts(definition as T & { nodes?: unknown })
 }
 
+/**
+ * The refusal for a definition whose Salesforce write options are malformed
+ * (#2170), naming the step, or null. One function for create and save, the two
+ * routes a caller's definition enters by. Restore replays a version that was
+ * itself saved, and duplicate copies a saved definition, so both carry only
+ * definitions this check already passed or that predate the options.
+ */
+function salesforceOptionRefusal(definition: unknown): string | null {
+  const nodes = (definition as { nodes?: unknown } | null | undefined)?.nodes
+  if (!Array.isArray(nodes)) return null
+  const problem = findSalesforceConfigProblems(nodes as WorkflowDefinition['nodes'])[0]
+  return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
 // POST /api/workflows
 workflows.post('/', async (c) => {
   const { orgId, userId } = c.get('user')
@@ -71,6 +85,11 @@ workflows.post('/', async (c) => {
   const body = await c.req.json<{ name: string; description?: string; definition?: unknown; folder_id?: string | null }>()
 
   if (!body.name) return c.json({ error: 'name is required' }, 400)
+
+  // A definition can enter here as well as by save, so it meets the same
+  // Salesforce write option rule the save route applies (#2170).
+  const sfProblem = salesforceOptionRefusal(body.definition)
+  if (sfProblem) return c.json({ error: sfProblem }, 400)
 
   if (body.folder_id) {
     const { data: folder, error: folderError } = await supabase
@@ -361,8 +380,8 @@ workflows.put('/:id', async (c) => {
     }
     // A Salesforce step's write options (#2170), judged by the rule its executor
     // applies, so a definition PUT from a file is held to what the canvas is.
-    const sfProblem = findSalesforceConfigProblems(def.nodes ?? [])[0]
-    if (sfProblem) return c.json({ error: `${sfProblem.namespace}: ${sfProblem.message}` }, 400)
+    const sfProblem = salesforceOptionRefusal(def)
+    if (sfProblem) return c.json({ error: sfProblem }, 400)
   }
 
   // #569: short-circuit a no-op save. If the incoming definition is structurally

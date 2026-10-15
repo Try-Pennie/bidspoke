@@ -1842,6 +1842,25 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     expect(activeFlagsInserted(sb)).toEqual([false])
   })
 
+  // A definition can enter by create as well as by save, so create holds it to the
+  // same Salesforce write option rule (#2170), and inserts nothing when it fails.
+  it('POST refuses a definition carrying a malformed Salesforce write option, naming the step, and inserts nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'inquiry_apex', type: 'salesforce', config: { operation: 'apex', apex_path: '/x', omit_fields: ['a'] } }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('inquiry_apex: omit_fields applies only to create, update and upsert')
+    expect(activeFlagsInserted(sb)).toEqual([])
+  })
+
   it('POST ignores an is_active true sent in the body', async () => {
     const sb = makeSupabase({
       users: { single: testUser },

@@ -965,10 +965,11 @@ function resolveRecordBody(
   const shaped: Record<string, unknown> = { ...body }
   for (const field of config.omit_fields ?? []) delete shaped[field]
   const renames = Object.entries(config.rename_fields ?? {})
-  const moved = renames.filter(([from]) => from in shaped).map(([from, to]) => [to, shaped[from]] as const)
+  // Own keys only: `in` would also find inherited names like toString or constructor.
+  const moved = renames.filter(([from]) => Object.hasOwn(shaped, from)).map(([from, to]) => [to, shaped[from]] as const)
   for (const [from] of renames) delete shaped[from]
   for (const [to, value] of moved) {
-    if (to in shaped) {
+    if (Object.hasOwn(shaped, to)) {
       const from = renames.find(([, target]) => target === to)?.[0] ?? to
       logs.push({
         level: 'warn',
