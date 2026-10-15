@@ -198,16 +198,18 @@ if (!filteredAccountId && sellOff === false && testOfferLanguage === true) {
   offer = defaultOffer;
 }
 
+// The hosts that get the link token (#2092): the block below signs a link to these only.
+const LINK_TOKEN_HOSTS = ['trypennie.com', 'www.trypennie.com'];
 // BEGIN link token (#2089)
 // trypennie.com refuses a link to a Salesforce record created after its cutoff unless the
 // link carries ?t=<token>: HMAC-SHA256 of the first 15 characters of the record id, keyed
-// with LINK_TOKEN_SECRET, base64url with no padding. Salesforce's LinkToken class and the
-// Pipedream helper sign exactly the same way. Only our own site gets the token, never a
-// partner's domain. With no secret the link goes out unsigned and `link_token` on this
-// step's output says why; the bid is never failed for it. This block is identical in
-// Engine Bidding's build_response_body and Lead Economy's return_response, and
-// link-token.test.ts holds the two to one text.
-const LINK_TOKEN_HOSTS = ['trypennie.com', 'www.trypennie.com'];
+// with LINK_TOKEN_SECRET, base64url with no padding, and reservemyloan.com is to check the
+// same token. Salesforce's LinkToken class and the Pipedream helpers sign exactly the same
+// way. Only a host in LINK_TOKEN_HOSTS, which each script sets just above this block, gets
+// the token, never a partner's domain. With no secret the link goes out unsigned, an error
+// is logged and `link_token` on this step's output says why; the run is never failed for
+// it. This block is identical in every script that signs a link, and link-token.test.ts
+// holds them all to one text (#2092).
 const SALESFORCE_ID = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
 const withLinkToken = async (url, recordId) => {
   let host = null;
@@ -216,7 +218,7 @@ const withLinkToken = async (url, recordId) => {
   if (typeof recordId !== 'string' || !SALESFORCE_ID.test(recordId)) return { url, link_token: 'no_record_id' };
   const secret = env.LINK_TOKEN_SECRET;
   if (typeof secret !== 'string' || !secret) {
-    console.warn('LINK_TOKEN_SECRET is not set, so the offer link went out without its token (#2089)');
+    console.error('LINK_TOKEN_SECRET is not set, so the link went out without its token (#2089)');
     return { url, link_token: 'missing_secret' };
   }
   try {
@@ -228,7 +230,7 @@ const withLinkToken = async (url, recordId) => {
     const token = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     return { url: `${url}${url.includes('?') ? '&' : '?'}t=${token}`, link_token: 'signed' };
   } catch (err) {
-    console.error(`signing the offer link failed, so it went out without its token (#2089): ${err && err.message}`);
+    console.error(`signing the link failed, so it went out without its token (#2089): ${err && err.message}`);
     return { url, link_token: 'sign_failed' };
   }
 };
