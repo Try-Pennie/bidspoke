@@ -83,12 +83,13 @@ export function accessTokenFromCookies(cookie: string): string | null {
     for (let i = 0; jar.has(`${key}.${i}`); i++) chunks.push(jar.get(`${key}.${i}`) as string)
     value = chunks.join('')
   }
-  if (value.startsWith('base64-')) {
-    const b64 = value.slice('base64-'.length).replace(/-/g, '+').replace(/_/g, '/')
-    const bytes = Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0))
-    value = new TextDecoder().decode(bytes)
-  }
   try {
+    // Inside the try: a truncated chunk or bad base64 is no session, not a throw.
+    if (value.startsWith('base64-')) {
+      const b64 = value.slice('base64-'.length).replace(/-/g, '+').replace(/_/g, '/')
+      const bytes = Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0))
+      value = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes)
+    }
     const session = JSON.parse(value) as { access_token?: unknown } | null
     return typeof session?.access_token === 'string' ? session.access_token : null
   } catch {
@@ -117,23 +118,39 @@ export type ApplyResult =
   | { outcome: 'nothing_to_do'; stage: PortStage; live_version: VersionRef }
   | { outcome: 'refused_live_changed'; stage: PortStage; read: VersionRef; reason: string }
   | {
-      outcome: 'applied' | 'applied_with_deploy_errors' | 'stored_differs'
+      outcome: 'applied' | 'applied_with_deploy_errors'
       stage: PortStage
       /** The version read before the change: what a rollback restores. */
       before: VersionRef
-      /** The version this PUT made. */
+      /** The version this PUT made: with `before`, the rollback record. */
       after: VersionRef
       deploy_errors?: Array<{ namespace: string; error: string }>
-      /** For stored_differs: what is live instead. */
-      found?: string
+      status: ReturnType<typeof portStatus>
+    }
+  | {
+      outcome: 'stored_differs'
+      stage: PortStage
+      before: VersionRef
+      /**
+       * The version this PUT made, or null when the save's answer named no version
+       * that is listed, so it cannot be told from a canvas save landing at the same
+       * moment; then there is no rollback record to trust.
+       */
+      after: VersionRef | null
+      /** What is live instead. */
+      found: string
       status: ReturnType<typeof portStatus>
     }
 
-const versionAfterPut = async (api: WorkflowApi, versionId: string | undefined): Promise<VersionRef> => {
-  const versions = await api.listVersions(MAIN_FLOW_WORKFLOW_ID)
-  const made = versions.find((v) => v.id === versionId) ?? versions[0]
-  return { version_id: made.id, version_number: made.version_number }
+/** The version the PUT's answer names, or null: never the newest one in its place, which may be a canvas save. */
+const versionAfterPut = async (api: WorkflowApi, versionId: string | undefined): Promise<VersionRef | null> => {
+  if (!versionId) return null
+  const made = (await api.listVersions(MAIN_FLOW_WORKFLOW_ID)).find((v) => v.id === versionId)
+  return made ? { version_id: made.id, version_number: made.version_number } : null
 }
+
+const unpinned = (versionId: string | undefined) =>
+  versionId ? `the save answered version id ${versionId}, which the version list does not hold` : 'the save answered no version id'
 
 export async function applyPort(api: WorkflowApi, stage: PortStage): Promise<ApplyResult> {
   const read = await readLive(api)
@@ -150,16 +167,20 @@ export async function applyPort(api: WorkflowApi, stage: PortStage): Promise<App
   const stored = await readLive(api)
   const status = portStatus(stored.definition as Definition)
   const base = { stage, before: read.version, after, status }
+  if (after === null) {
+    return { ...base, outcome: 'stored_differs', found: `${unpinned(put.version_id)}, so the version it made is unknown; the newest is ${stored.version.version_number} and the live definition is ${sameJson(stored.definition, ported) ? '' : 'not '}the one sent` }
+  }
   if (stored.version.version_id !== after.version_id || !sameJson(stored.definition, ported)) {
     return { ...base, outcome: 'stored_differs', found: `the newest version is ${stored.version.version_number}; the live definition is ${sameJson(stored.definition, ported) ? '' : 'not '}the one sent` }
   }
-  if (put.deploy_errors && put.deploy_errors.length > 0) return { ...base, outcome: 'applied_with_deploy_errors', deploy_errors: put.deploy_errors }
-  return { ...base, outcome: 'applied' }
+  if (put.deploy_errors && put.deploy_errors.length > 0) return { ...base, after, outcome: 'applied_with_deploy_errors', deploy_errors: put.deploy_errors }
+  return { ...base, after, outcome: 'applied' }
 }
 
 export type RollbackResult =
   | { outcome: 'refused_live_changed'; reason: string }
-  | { outcome: 'rolled_back' | 'rolled_back_with_deploy_errors' | 'stored_differs'; restored_from: VersionRef; after: VersionRef; deploy_errors?: Array<{ namespace: string; error: string }> }
+  | { outcome: 'rolled_back' | 'rolled_back_with_deploy_errors'; restored_from: VersionRef; after: VersionRef; deploy_errors?: Array<{ namespace: string; error: string }> }
+  | { outcome: 'stored_differs'; restored_from: VersionRef; after: VersionRef | null; found: string }
 
 export async function rollbackPort(api: WorkflowApi, record: { before: VersionRef; after: VersionRef }): Promise<RollbackResult> {
   const read = await readLive(api)
@@ -179,8 +200,11 @@ export async function rollbackPort(api: WorkflowApi, record: { before: VersionRe
   const put = await api.putDefinition(MAIN_FLOW_WORKFLOW_ID, restore.definition, `#1680 relay port rollback to version ${record.before.version_number}`)
   const after = await versionAfterPut(api, put.version_id)
   const stored = await readLive(api)
+  if (after === null) {
+    return { outcome: 'stored_differs', restored_from: record.before, after, found: `${unpinned(put.version_id)}, so the version it made is unknown; the newest is ${stored.version.version_number}` }
+  }
   if (stored.version.version_id !== after.version_id || !sameJson(stored.definition, restore.definition)) {
-    return { outcome: 'stored_differs', restored_from: record.before, after }
+    return { outcome: 'stored_differs', restored_from: record.before, after, found: `the newest version is ${stored.version.version_number}; the live definition is ${sameJson(stored.definition, restore.definition) ? '' : 'not '}the one restored` }
   }
   if (put.deploy_errors && put.deploy_errors.length > 0) return { outcome: 'rolled_back_with_deploy_errors', restored_from: record.before, after, deploy_errors: put.deploy_errors }
   return { outcome: 'rolled_back', restored_from: record.before, after }

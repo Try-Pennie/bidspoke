@@ -43,7 +43,7 @@ class FakeApi implements WorkflowApi {
     if (!v) throw new Error(`no version ${versionId}`)
     return { definition: structuredClone(v.definition), version_number: v.version_number }
   }
-  async putDefinition(_id: string, definition: unknown, message: string) {
+  async putDefinition(_id: string, definition: unknown, message: string): ReturnType<WorkflowApi['putDefinition']> {
     this.puts.push({ definition, message })
     this.save(definition)
     return { version_id: this.versions.at(-1)!.id, deploy_errors: this.deployErrors }
@@ -127,6 +127,32 @@ describe('applyPort', () => {
       return r
     }
     expect(await applyPort(api, stage)).toMatchObject({ outcome: 'stored_differs', before: { version_id: 'v-1' } })
+  })
+})
+
+describe('a save the apply cannot pin to its own version', () => {
+  it('when the PUT answers no version id, the apply never names the newest version as its own', async () => {
+    const api = new FakeApi(productionMainFlow())
+    const put = api.putDefinition.bind(api)
+    api.putDefinition = async (...args) => {
+      await put(...args)
+      // A canvas save lands straight after, and the PUT's answer names no version.
+      api.save(productionMainFlow())
+      return {}
+    }
+    const result = await applyPort(api, stage)
+    expect(result).toMatchObject({ outcome: 'stored_differs', after: null })
+    expect(JSON.stringify(result)).not.toContain('v-3')
+  })
+
+  it('a rollback over such an answer is likewise not pinned to someone else\'s version', async () => {
+    const api = new FakeApi(productionMainFlow())
+    const applied = await applyPort(api, stage)
+    if (applied.outcome !== 'applied') throw new Error(applied.outcome)
+    const put = api.putDefinition.bind(api)
+    api.putDefinition = async (...args) => { await put(...args); return { version_id: 'v-unlisted' } }
+    const result = await rollbackPort(api, { before: applied.before, after: applied.after })
+    expect(result).toMatchObject({ outcome: 'stored_differs', after: null })
   })
 })
 
@@ -219,5 +245,10 @@ describe('accessTokenFromCookies', () => {
     expect(accessTokenFromCookies('theme=dark')).toBeNull()
     expect(accessTokenFromCookies('sb-ref-auth-token-code-verifier=abc')).toBeNull()
     expect(accessTokenFromCookies('sb-ref-auth-token=not-json')).toBeNull()
+  })
+
+  it('is null, never a throw, for a malformed base64 session such as a lost chunk', () => {
+    expect(accessTokenFromCookies('sb-ref-auth-token=base64-%25%25not%20base64')).toBeNull()
+    expect(accessTokenFromCookies(`sb-ref-auth-token.0=${encodeURIComponent(b64.slice(0, 11))}`)).toBeNull()
   })
 })
