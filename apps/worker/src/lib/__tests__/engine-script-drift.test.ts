@@ -79,6 +79,8 @@ import RML_GIGFI_RAW from '../../engine/scripts/rml-gigfi/build_response.js?raw'
 import BIDDING_LENDSWIFT_RAW from '../../engine/scripts/bidding-lendswift/build_response.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import SIGN_SUBMISSION_LINK_RAW from '../../engine/scripts/forms-engine/sign_submission_link.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import TRIPOINT_PING_BEFORE_LOAN_FLOOR_RAW from './fixtures/tripoint_ping.canvas-before-loan-floor.txt?raw'
 /** The canvas scripts the #2089 edits were derived from, read from the mirror on 2026-10-14. */
 const BEFORE_2089_BUILD_RESPONSE_BODY = (BUILD_RESPONSE_BODY_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
 const BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE = (LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
@@ -144,12 +146,24 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance, build_response_body apart: the canvas holds the other three, so any difference is a drift or a missing node', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'build_response_body')) {
+  it('carry no canvas baseline and no new node allowance, build_response_body and tripoint_ping apart: the canvas holds the other two, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'build_response_body' && k.namespace !== 'tripoint_ping')) {
       expect(kept.newNodeSince, kept.file).toBeUndefined()
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
     }
+  })
+
+  it('tripoint_ping awaits its loan minimum paste: the canvas script it was derived from reads as awaiting, not drift', async () => {
+    // The canvas script as the live definition held it on 2026-10-15, exactly (its hash is the baseline).
+    const before = TRIPOINT_PING_BEFORE_LOAN_FLOOR_RAW as string
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'tripoint_ping')!
+    expect(kept.newNodeSince).toBeUndefined()
+    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(before))
+    expect(kept.baselineReadOn).toBe('2026-10-15')
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'tripoint_ping', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
   })
 
   it('build_response_body awaits its #2092 paste: the canvas script it was derived from reads as awaiting, not drift', async () => {

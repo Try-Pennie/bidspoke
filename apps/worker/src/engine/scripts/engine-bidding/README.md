@@ -90,8 +90,9 @@ a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
 on the canvas since version 101. Apart from `build_response_body` while its #2092
-paste is awaited, none of the kept Engine scripts carries a baseline, so any
-difference from the canvas is a drift.
+paste is awaited and `tripoint_ping` while its loan minimum paste (2026-10-15) is
+awaited, none of the kept Engine scripts carries a baseline, so any difference from
+the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce
@@ -124,3 +125,14 @@ Measured on 2026-09-22 (issue #1414): a declined sell off lead is rejected by
 `build_response_body` and never reaches `patch_prospect_body`, so the four
 External fields are written only on an accepted sale, and the Duplicate mapping
 has no live path to it. Both are preserved as they are.
+
+**Tripoint's minimum loan amount (2026-10-15)** changed `tripoint_ping` only: a sell off
+lead whose `loanInformation.loanAmount` is under 2,000 is not sent to Tripoint
+(`skip_reason: loan_amount_below_min`), and one whose loan amount is not a positive number
+is not sent either (`skip_reason: missing_lead_field`), the node's own refusals for the
+minimum on Tripoint's buyer profile, which Sam asked for on 2026-10-13. This script never
+reads the profile, so it carries its own 2,000 until buyer_select takes every lead; a
+change to the profile's minimum must be made here too. `skip_reason` is added only on these
+two returns, so every other output is unchanged. The same day `loan_amount` was added to
+the buyer_select node's settings in `docs/workflows/engine-bidding/buyer-select.json`,
+because without it the node could not read the loan amount and refused every live lead.
