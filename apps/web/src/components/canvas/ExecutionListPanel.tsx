@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer, defaultRangeExtractor } from '@tanstack/react-virtual'
 import { api } from '@/lib/api'
+import type { ExecutionListRow, IncidentFailedRuns } from '@/lib/api'
 import * as execCache from '@/lib/execution-cache'
-import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw, AlertTriangle } from 'lucide-react'
+import { AlertCircle, CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw, AlertTriangle } from 'lucide-react'
 
 const PAGE_SIZE = 100
 
@@ -29,20 +30,19 @@ function mergeExecs(a: ExecRow[], b: ExecRow[], cap: number): ExecRow[] {
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { OUTCOME_LABELS } from '@/lib/execution-status'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { Button } from '@/components/ui/form'
+import { incidentRunsRetentionLine, incidentRunsSpanLine, incidentRunsTitle } from '@/lib/incidents'
 import type { WorkflowVersion } from '@/types/workflow'
 
-type ExecRow = {
-  id: string
-  status: string
-  outcome: 'successful' | 'completed' | 'failed' | null
-  final_node_namespace: string | null
-  source: string
-  started_at: string
-  duration_ms: number | null
-  error_message: string | null
-  parent_execution_id: string | null
-  has_children: boolean
-}
+type ExecRow = ExecutionListRow
+
+type IncidentRuns =
+  | { kind: 'loading' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'loaded'; body: IncidentFailedRuns }
+
+// The single left pointing angle quote, built from its code point.
+const BACK_ARROW = String.fromCharCode(0x2039)
 
 type ListItem =
   | { type: 'date-header'; label: string }
@@ -101,6 +101,17 @@ interface Props {
   selectedId?: string
   onSelect: (id: string) => void
   refreshSignal?: number
+  /**
+   * The failure rate incident (alert_incidents id) to narrow the list to (#2102),
+   * from the page's `?incident=` parameter. While set, the list holds only that
+   * incident's failed runs, read once by the worker from the incident itself,
+   * and the outcome tabs are hidden: they would contradict the narrowing.
+   */
+  incidentId?: string
+  /** Leaves the narrowing, back to every run. */
+  onClearIncident?: () => void
+  loadIncidentRuns?: (incidentId: string) => Promise<IncidentFailedRuns>
+  now?: () => number
 }
 
 type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed' | 'degraded'
@@ -139,7 +150,38 @@ export function listParamsForFilter(
   return { outcome: filter }
 }
 
-export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
+export default function ExecutionListPanel({
+  workflowId,
+  selectedId,
+  onSelect,
+  refreshSignal,
+  incidentId,
+  onClearIncident,
+  loadIncidentRuns = api.incidents.failedRuns,
+  now = Date.now,
+}: Props) {
+  const narrowed = incidentId !== undefined
+  const [incidentRuns, setIncidentRuns] = useState<IncidentRuns>({ kind: 'loading' })
+  // Each read of an incident's runs starts a generation; an answer from an older
+  // one (the narrowing changed or was retried mid flight) is dropped.
+  const incidentGen = useRef(0)
+  const loadIncident = useCallback(() => {
+    if (!incidentId) return
+    const mine = ++incidentGen.current
+    setIncidentRuns({ kind: 'loading' })
+    loadIncidentRuns(incidentId).then(
+      (body) => { if (incidentGen.current === mine) setIncidentRuns({ kind: 'loaded', body }) },
+      (e: unknown) => {
+        if (incidentGen.current !== mine) return
+        setIncidentRuns({ kind: 'failed', message: e instanceof Error && e.message ? e.message : 'The request failed.' })
+      },
+    )
+  }, [incidentId, loadIncidentRuns])
+  useEffect(() => {
+    loadIncident()
+    return () => { incidentGen.current += 1 }
+  }, [loadIncident])
+
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -206,7 +248,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   }, [workflowId, filter])
 
   const loadMore = useCallback(() => {
-    if (loadingMoreRef.current || !hasMoreRef.current) return
+    // The narrowed list arrives whole, so there is nothing older to page in.
+    if (narrowed || loadingMoreRef.current || !hasMoreRef.current) return
     const oldest = execsRef.current[execsRef.current.length - 1]
     if (!oldest) return
     setLoadingMore(true)
@@ -231,7 +274,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .finally(() => {
         if (gen === genRef.current) setLoadingMore(false)
       })
-  }, [workflowId, filter])
+  }, [workflowId, filter, narrowed])
 
   const loadVersions = useCallback(() => {
     api.versions.list(workflowId).then(setVersions).catch(() => {})
@@ -246,8 +289,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   // Initial load + 1s polling for executions; versions load once (refresh on save signal)
   useEffect(() => {
-    loadFirstPage()
     loadVersions()
+    // The narrowed list is one incident's runs, read once; the newest page of
+    // every run is not polled underneath it.
+    if (narrowed) return
+    loadFirstPage()
     const tick = setInterval(() => { if (!document.hidden) loadFirstPage(true) }, 1000)
     const onVisible = () => { if (!document.hidden) loadFirstPage(true) }
     document.addEventListener('visibilitychange', onVisible)
@@ -255,14 +301,14 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       clearInterval(tick)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [loadFirstPage, loadVersions])
+  }, [loadFirstPage, loadVersions, narrowed])
 
   useEffect(() => {
     if (refreshSignal) {
-      loadFirstPage(true)
+      if (!narrowed) loadFirstPage(true)
       loadVersions()
     }
-  }, [refreshSignal, loadFirstPage, loadVersions])
+  }, [refreshSignal, loadFirstPage, loadVersions, narrowed])
 
   // Hover prefetch: 150ms debounce keeps a quick mouse-pass over the list
   // from firing 20+ requests. The cache itself dedupes against an in-flight
@@ -317,7 +363,12 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     }
   }, [])
 
-  const filtered = executions
+  const filtered: ExecRow[] = useMemo(
+    () => (narrowed ? (incidentRuns.kind === 'loaded' ? incidentRuns.body.runs : []) : executions),
+    [narrowed, incidentRuns, executions],
+  )
+  const listLoading = narrowed ? incidentRuns.kind === 'loading' : loading
+  const listHasMore = narrowed ? false : hasMore
   const items = useMemo(() => buildItems(filtered, versions), [filtered, versions])
 
   // Virtualized list: only the rows in (and near) the viewport are mounted, so
@@ -376,23 +427,61 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   return (
     <aside className="flex w-72 flex-col border-r border-gray-200 bg-white">
-      <div className="border-b border-gray-100 px-3 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Executions</p>
-      </div>
-      <div className="flex justify-around border-b border-gray-100">
-        {FILTER_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setFilter(tab.key)}
-            className={tabClass(filter === tab.key)}
+      {narrowed ? (
+        <div className="flex flex-col gap-1 border-b border-gray-100 px-3 py-3">
+          <a
+            href={`/workflows/${workflowId}`}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              e.preventDefault()
+              onClearIncident?.()
+            }}
+            className="self-start text-xs text-p-blue-dark underline underline-offset-2 hover:text-p-blue-dark/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark"
           >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+            {`${BACK_ARROW} All runs`}
+          </a>
+          {incidentRuns.kind === 'loaded' && (
+            <>
+              <h2 className="text-sm font-semibold text-graphite">{incidentRunsTitle(incidentRuns.body.runs.length)}</h2>
+              <p className="text-xs text-gray-600">{incidentRunsSpanLine(incidentRuns.body, now())}</p>
+              {incidentRunsRetentionLine(incidentRuns.body) && (
+                <p className="text-xs text-gray-600">{incidentRunsRetentionLine(incidentRuns.body)}</p>
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="border-b border-gray-100 px-3 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Executions</p>
+          </div>
+          <div className="flex justify-around border-b border-gray-100">
+            {FILTER_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setFilter(tab.key)}
+                className={tabClass(filter === tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       <div ref={scrollRootRef} className="flex-1 overflow-y-auto">
-        {loading ? (
+        {narrowed && incidentRuns.kind === 'failed' ? (
+          <div role="alert" className="flex flex-col items-start gap-2 px-3 py-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" aria-hidden="true" />
+              <div className="min-w-0 text-xs">
+                <p className="font-medium text-red-700">The incident&apos;s runs could not be loaded</p>
+                <p className="mt-0.5 text-gray-600">{incidentRuns.message}</p>
+              </div>
+            </div>
+            <Button variant="secondary" onClick={loadIncident}>Retry</Button>
+          </div>
+        ) : listLoading ? (
           <div>
             {[...Array(5)].map((_, i) => (
               <div key={i} className="border-b border-gray-50 px-3 py-2.5">
@@ -405,6 +494,9 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
               </div>
             ))}
           </div>
+        ) : filtered.length === 0 && narrowed ? (
+          // The title already says 0; a second sentence would repeat it.
+          null
         ) : filtered.length === 0 ? (
           <div className="px-3 py-6 text-center">
             {filter === 'all' ? (
@@ -520,11 +612,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
               )
             })}
             </div>
-            {hasMore ? (
+            {listHasMore ? (
               <div className="flex justify-center px-3 py-3">
                 {loadingMore && <Loader2 className="h-4 w-4 animate-spin text-gray-500" />}
               </div>
-            ) : filtered.length > 0 ? (
+            ) : filtered.length > 0 && !narrowed ? (
               <p className="px-3 py-3 text-center text-[10px] text-gray-300">End of history</p>
             ) : null}
           </>

@@ -23,12 +23,21 @@
  * (incident-span.ts). None of the bookkeeping (event ids, moved starts, the
  * lapse check's stamp) leaves this module.
  *
+ * FAILED RUNS (#2102). A failure rate row on the card carries how many of its
+ * failed runs are still kept (incident-failed-runs.ts), and one failure rate
+ * incident's runs can be listed for the workflow page's run panel. Both read the
+ * incident through the same scope as everything else here.
+ *
  * FAILURE. Any read that fails throws. An empty list would read as "no
- * incidents", which is the one thing this record must never claim falsely.
+ * incidents", which is the one thing this record must never claim falsely. The
+ * one exception is a card row's failed run count, which is marked unreadable
+ * rather than failing the card.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
 import { INCIDENT_SIGNALS, incidentSignal, incidentSignalLabel, isIncidentSignal } from './incident-signals'
 import { incidentDurationText, incidentSoFarText, measureIncidentSpan } from './incident-span'
+import { failureRateSubject, listFailedRuns, summarizeFailedRuns, type FailedRun, type FailedRunsSummary } from './incident-failed-runs'
 
 export const INCIDENTS_DEFAULT_LIMIT = 50
 export const INCIDENTS_MAX_LIMIT = 100
@@ -59,7 +68,26 @@ export interface IncidentView extends IncidentBase {
   ended_at: string | null
   state: 'ended' | 'end_not_recorded'
   duration: string | null
+  /** A failure rate incident's failed runs still kept (#2102); null for every other signal. */
+  failed_runs: FailedRunsSummary | null
 }
+
+/** One failure rate incident's failed runs, for the workflow page's run panel (#2102). */
+export interface IncidentFailedRuns {
+  incident: { id: string; workflow_id: string; match: string; started_at: string; ended_at: string | null }
+  /** The oldest moment whose runs are still kept. */
+  kept_since: string
+  /** The incident started before kept_since, so its earliest runs are gone. */
+  clipped: boolean
+  /** How many runs are in `runs`: the title over the list says this, so the two agree. */
+  count: number
+  runs: FailedRun[]
+}
+
+export type IncidentFailedRunsResult =
+  | { kind: 'found'; body: IncidentFailedRuns }
+  | { kind: 'not_found' }
+  | { kind: 'not_failure_rate' }
 
 /** One open incident, as the line under the page header shows it. */
 export interface OngoingIncidentView extends IncidentBase {
@@ -241,18 +269,90 @@ export async function readClosedIncidents(
   const rows = all.slice(0, limit)
   assertScoped(rows, orgId)
   const workflows = await workflowNames(supabase, orgId, rows)
+  const failedRuns = await Promise.all(rows.map((row) => failedRunsSummary(supabase, row, workflows, now)))
   const hasMore = all.length > limit
   return {
-    incidents: rows.map((row) => {
+    incidents: rows.map((row, idx) => {
       const ended = row.ended_at !== null
       return {
         ...baseView(row, workflows),
         ended_at: row.ended_at,
         state: ended ? 'ended' : 'end_not_recorded',
         duration: ended ? incidentDurationText(measureIncidentSpan(row.started_at, row.ended_at, row.window_minutes, now)) : null,
+        failed_runs: failedRuns[idx],
       }
     }),
     has_more: hasMore,
     next_offset: hasMore ? offset + rows.length : null,
+  }
+}
+
+/**
+ * The workflow and match of a failure rate incident whose workflow belongs to
+ * the caller's organization, or null: another signal, an unreadable subject, or
+ * a workflow the caller cannot open (whose runs are not theirs to count).
+ */
+function failureRateTarget(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName>): { workflowId: string; match: string } | null {
+  if (row.signal !== 'failure-rate') return null
+  const target = failureRateSubject(row.subject)
+  if (!target || !workflows.has(target.workflowId)) return null
+  return target
+}
+
+/** A card row's failed run count (#2102): null for any signal but failure rate. Never throws. */
+async function failedRunsSummary(
+  supabase: SupabaseClient,
+  row: StoredIncident,
+  workflows: ReadonlyMap<string, WorkflowName>,
+  now: number,
+): Promise<FailedRunsSummary | null> {
+  const target = failureRateTarget(row, workflows)
+  if (!target) return null
+  return summarizeFailedRuns(supabase, target, { startedAt: row.started_at, endedAt: row.ended_at }, now)
+}
+
+/**
+ * One failure rate incident's failed runs (#2102), read by id inside the
+ * caller's scope. An incident of another organization is not found, exactly as
+ * one that does not exist; a row of another organization the database handed
+ * back anyway is refused as an error. Throws IncidentReadError on any failed read.
+ */
+export async function readIncidentFailedRuns(
+  supabase: SupabaseClient,
+  orgId: string,
+  incidentId: string,
+  opts: { now: number },
+): Promise<IncidentFailedRunsResult> {
+  const scope = scopeFilter(orgId)
+  const res = await supabase
+    .from('alert_incidents')
+    .select(COLUMNS)
+    .eq('id', incidentId)
+    .or(scope)
+    .limit(1)
+  if (res.error || !res.data) throw failed('The incident', res.error)
+  const rows = res.data as unknown as StoredIncident[]
+  assertScoped(rows, orgId)
+  const row = rows[0]
+  if (!row) return { kind: 'not_found' }
+  if (row.signal !== 'failure-rate') return { kind: 'not_failure_rate' }
+  const workflows = await workflowNames(supabase, orgId, rows)
+  const target = failureRateTarget(row, workflows)
+  if (!target) return { kind: 'not_found' }
+  let list
+  try {
+    list = await listFailedRuns(supabase, target, { startedAt: row.started_at, endedAt: row.ended_at }, opts.now)
+  } catch (err) {
+    throw new IncidentReadError(`The incident's failed runs could not be read: ${formatErr(err)}`, { cause: err })
+  }
+  return {
+    kind: 'found',
+    body: {
+      incident: { id: row.id, workflow_id: target.workflowId, match: target.match, started_at: row.started_at, ended_at: row.ended_at },
+      kept_since: list.window.keptSince,
+      clipped: list.window.clipped,
+      count: list.runs.length,
+      runs: list.runs,
+    },
   }
 }

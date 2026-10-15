@@ -8,6 +8,8 @@ import { dashboardLaneRefusal } from '../lane-refusal'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
+import { readReplayedIds } from '../../lib/replayed-executions'
+import { formatErr } from '../../lib/format-error'
 import {
   findArchivedStep,
   readArchivedChildren,
@@ -99,12 +101,12 @@ executions.get('/', async (c) => {
   // so the IN list stays small. This makes the "replayed" marker accurate
   // even when the replay row scrolled off the visible page.
   const pageIds = data.map((r) => r.id)
-  // paginate-ok: bounded to one page (<=100) of parent ids; few children each
-  const { data: parents } = await supabase
-    .from('workflow_executions')
-    .select('parent_execution_id')
-    .in('parent_execution_id', pageIds)
-  const replayedIds = new Set((parents ?? []).map((p) => p.parent_execution_id))
+  // A failed read leaves the page unmarked rather than failing the whole list,
+  // as it always has; the failure is logged rather than dropped.
+  const replayedIds = await readReplayedIds(supabase, pageIds).catch((err: unknown) => {
+    console.error(JSON.stringify({ event: 'replayed_read_failed', path: c.req.path, message: formatErr(err) }))
+    return new Set<string>()
+  })
 
   const enriched = data.map((row) => ({ ...row, has_children: replayedIds.has(row.id) }))
   return c.json(enriched)

@@ -19,12 +19,29 @@ function WorkflowEditorInner() {
   const urlExecutionId = searchParams.get('execution') ?? undefined
   const urlMode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
   const urlFocusNodeId = searchParams.get('node') ?? undefined
+  // The failure rate incident the run list is narrowed to (#2102), from the
+  // Incidents card's "12 failed runs" link. It lives in the URL so the link can
+  // be shared and Back returns to it; the worker resolves it, scoped to the
+  // caller, so nothing about the incident is taken from the URL but its id.
+  const urlIncidentId = searchParams.get('incident') ?? undefined
 
   // Mirror the URL into local state so Clear can drop the execution view
   // synchronously instead of waiting on the App Router transition. router.replace
   // happens in the background and will re-sync via the effect below.
   const [executionId, setExecutionId] = useState<string | undefined>(urlExecutionId)
   useEffect(() => { setExecutionId(urlExecutionId) }, [urlExecutionId])
+
+  // Mirrored the same way, so "All runs" drops the narrowing on the click.
+  const [incidentId, setIncidentId] = useState<string | undefined>(urlIncidentId)
+  useEffect(() => { setIncidentId(urlIncidentId) }, [urlIncidentId])
+  const clearIncident = useCallback(() => {
+    setIncidentId(undefined)
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('incident')
+      window.history.pushState(null, '', url.toString())
+    }
+  }, [])
 
   // Same pattern for mode — switching view↔edit through the App Router
   // transition was noticeably laggy on big workflows. Flip local state
@@ -251,6 +268,8 @@ function WorkflowEditorInner() {
         onClearExecution={clearExecution}
         onSelectExecution={selectExecution}
         focusNodeId={urlFocusNodeId}
+        incidentId={incidentId}
+        onClearIncident={clearIncident}
       />
       {executionMissing && executionId && (
         <div className="fixed left-1/2 top-16 z-50 w-full max-w-lg -translate-x-1/2 px-4">

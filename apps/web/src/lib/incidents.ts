@@ -5,7 +5,7 @@
  * page header. Every field comes resolved from the worker; this only composes
  * the sentences, so the card and the line say a thing one way.
  */
-import type { Incident, OngoingIncident } from './api'
+import type { Incident, IncidentFailedRuns, OngoingIncident } from './api'
 import { etDayHeading, etDayKey, formatEtClock, formatEtDayTime } from './dates'
 
 /**
@@ -84,4 +84,50 @@ export function emptyIncidentsText(days: number, now: number, hasOngoing: boolea
   const since = now - days * 24 * 60 * 60 * 1000
   if (since < Date.parse(INCIDENT_RECORDING_BEGAN)) return `No ${other}incidents since recording began on ${recordingBeganWords}`
   return `No ${other}incidents in the last ${days} days`
+}
+
+/** "12 failed runs", "1 failed run". */
+export function failedRunsText(n: number): string {
+  return n === 1 ? '1 failed run' : `${n} failed runs`
+}
+
+/**
+ * What a card row says about its failed runs after its Slack pages (#2102,
+ * settled with Dan on 2026-10-15): a link into the workflow page narrowed to
+ * them, plain text for 0, and nothing at all when none of the span is still kept
+ * (nothing to open) or the count could not be read (never shown as 0).
+ */
+export function failedRunsCell(i: Incident): { text: string; href: string | null } | null {
+  const f = i.failed_runs
+  if (!f || f.state !== 'counted') return null
+  const text = failedRunsText(f.count)
+  if (f.count === 0) return { text, href: null }
+  return { text, href: `/workflows/${f.workflow_id}?incident=${encodeURIComponent(i.id)}` }
+}
+
+/** The narrowed run list's title, counted from its own rows so the two never disagree. */
+export function incidentRunsTitle(count: number): string {
+  return `${failedRunsText(count)} in this incident`
+}
+
+/**
+ * '"ACRO_GATEWAY", Today 2:34 PM to 4:06 PM ET': the match and the incident's
+ * span. An end on another day carries its day; with no recorded end it is since
+ * the start.
+ */
+export function incidentRunsSpanLine(body: IncidentFailedRuns, now: number): string {
+  const { match, started_at, ended_at } = body.incident
+  const day = etDayHeading(started_at, now)
+  const start = formatEtClock(started_at)
+  if (!ended_at) return `"${match}", ${day} since ${start} ET`
+  const end = etDayKey(ended_at) === etDayKey(started_at) ? formatEtClock(ended_at) : formatEtDayTime(ended_at)
+  return `"${match}", ${day} ${start} to ${end} ET`
+}
+
+const keptSinceWords = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' })
+
+/** "Runs before Oct 8 are no longer kept.", only when the incident reaches back before that. */
+export function incidentRunsRetentionLine(body: IncidentFailedRuns): string | null {
+  if (!body.clipped) return null
+  return `Runs before ${keptSinceWords.format(new Date(body.kept_since))} are no longer kept.`
 }

@@ -7,14 +7,19 @@ import { describe, it, expect } from 'vitest'
 import {
   INCIDENT_RECORDING_BEGAN,
   emptyIncidentsText,
+  failedRunsCell,
+  failedRunsText,
   groupIncidentsByDay,
+  incidentRunsRetentionLine,
+  incidentRunsSpanLine,
+  incidentRunsTitle,
   durationColumnText,
   incidentTimeRange,
   ongoingIncidentSentence,
   signalText,
   slackPagesText,
 } from '../incidents'
-import type { Incident, OngoingIncident } from '../api'
+import type { Incident, IncidentFailedRuns, OngoingIncident } from '../api'
 
 // 6:12 PM ET on Wednesday 14 October 2026.
 const NOW = Date.parse('2026-10-14T22:12:00.000Z')
@@ -32,6 +37,7 @@ function closed(over: Partial<Incident>): Incident {
     state: 'ended',
     duration: '1 hour 32 minutes',
     pages_sent: 2,
+    failed_runs: null,
     ...over,
   }
 }
@@ -142,5 +148,72 @@ describe('emptyIncidentsText', () => {
 
   it('keeps the day recording began as one named constant', () => {
     expect(new Date(INCIDENT_RECORDING_BEGAN).toISOString()).toBe('2026-10-14T04:00:00.000Z')
+  })
+})
+
+describe('the failed runs of a failure rate incident (#2102)', () => {
+  const WF = 'aaaaaaaa-0000-4000-8000-000000000001'
+
+  it('counts failed runs in words', () => {
+    expect(failedRunsText(1)).toBe('1 failed run')
+    expect(failedRunsText(12)).toBe('12 failed runs')
+    expect(failedRunsText(0)).toBe('0 failed runs')
+  })
+
+  describe('the card cell', () => {
+    it('links a counted incident to the workflow page narrowed to it', () => {
+      const i = closed({ id: 'inc-1', signal: 'failure-rate', failed_runs: { workflow_id: WF, state: 'counted', count: 12 } })
+      expect(failedRunsCell(i)).toEqual({ text: '12 failed runs', href: `/workflows/${WF}?incident=inc-1` })
+    })
+
+    it('says 0 as plain text, with nothing to open', () => {
+      const i = closed({ signal: 'failure-rate', failed_runs: { workflow_id: WF, state: 'counted', count: 0 } })
+      expect(failedRunsCell(i)).toEqual({ text: '0 failed runs', href: null })
+    })
+
+    it('shows nothing when none of the span is still kept, or the count could not be read', () => {
+      expect(failedRunsCell(closed({ signal: 'failure-rate', failed_runs: { workflow_id: WF, state: 'not_kept' } }))).toBeNull()
+      expect(failedRunsCell(closed({ signal: 'failure-rate', failed_runs: { workflow_id: WF, state: 'unreadable' } }))).toBeNull()
+    })
+
+    it('shows nothing for any other signal', () => {
+      expect(failedRunsCell(closed({}))).toBeNull()
+    })
+  })
+
+  describe('the narrowed run list', () => {
+    function body(over: Partial<IncidentFailedRuns['incident']> = {}, rest: Partial<IncidentFailedRuns> = {}): IncidentFailedRuns {
+      return {
+        incident: { id: 'inc-1', workflow_id: WF, match: 'ACRO_GATEWAY', started_at: '2026-10-14T18:34:00.000Z', ended_at: '2026-10-14T20:06:00.000Z', ...over },
+        kept_since: '2026-10-07T22:12:00.000Z',
+        clipped: false,
+        count: 0,
+        runs: [],
+        ...rest,
+      }
+    }
+
+    it('titles the list with the count of its own rows', () => {
+      expect(incidentRunsTitle(12)).toBe('12 failed runs in this incident')
+      expect(incidentRunsTitle(1)).toBe('1 failed run in this incident')
+    })
+
+    it('names the match and the span in ET', () => {
+      expect(incidentRunsSpanLine(body(), NOW)).toBe('"ACRO_GATEWAY", Today 2:34 PM to 4:06 PM ET')
+    })
+
+    it('gives an end on another day its day', () => {
+      expect(incidentRunsSpanLine(body({ started_at: '2026-10-13T23:50:00.000Z', ended_at: '2026-10-14T05:10:00.000Z' }), NOW))
+        .toBe('"ACRO_GATEWAY", Yesterday 7:50 PM to Oct 14, 1:10 AM ET')
+    })
+
+    it('reads an incident with no recorded end as since its start', () => {
+      expect(incidentRunsSpanLine(body({ ended_at: null }), NOW)).toBe('"ACRO_GATEWAY", Today since 2:34 PM ET')
+    })
+
+    it('says runs before the cutoff are gone only when the span reaches before it', () => {
+      expect(incidentRunsRetentionLine(body({}, { clipped: true, kept_since: '2026-10-08T14:00:00.000Z' }))).toBe('Runs before Oct 8 are no longer kept.')
+      expect(incidentRunsRetentionLine(body())).toBeNull()
+    })
   })
 })

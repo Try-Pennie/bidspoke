@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Failed runs link</title>
+<style>
+body { margin: 0; padding: 32px; background: #F4F1EC; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #1F2430; }
+.rec { max-width: 760px; margin: 0 0 24px; line-height: 1.5; }
+.rec h1 { font-size: 22px; margin: 0 0 8px; }
+.rec h2 { font-size: 15px; margin: 18px 0 4px; }
+.rec p, .rec li { font-size: 14px; }
+.cap { font-size: 13px; color: #6E6259; margin: 24px 0 8px; }
+.shot { border: 1px solid #DAD1C8; border-radius: 10px; overflow: hidden; background: #E9E4DE; max-width: 100%; }
+.shot-inner { overflow-x: auto; }
+.scale-note { font-size: 13px; color: #6E6259; margin: 8px 0 0; }
+.stage { transform-origin: top left; }
+/* ---------- round 1, option 2: the drawn Incidents card (the product's own styles) ---------- */
+.stage .card-wrap { width: 1008px; padding: 16px; box-sizing: border-box; font-size: 14px; color: #343434; line-height: 1.45; }
+.stage .c { background: #fff; border: 1px solid #E5E7EB; border-radius: 12px; overflow: hidden; }
+.stage .c-hd { border-bottom: 1px solid #F3F4F6; padding: 12px 20px; }
+.stage .c-title { margin: 0; font-size: 16px; font-weight: 600; color: #343434; }
+.stage .d-day { padding: 8px 20px; font-size: 12px; font-weight: 600; color: #4B5563; background: #F9F6F0; border-top: 1px solid #F3F4F6; }
+.stage .d-day:first-child { border-top: 0; }
+.stage .d-row { display: grid; grid-template-columns: 110px 160px 1fr 190px 120px; gap: 12px; padding: 9px 20px; border-top: 1px solid #F3F4F6; align-items: baseline; }
+.stage .d-day + .d-row { border-top: 0; }
+.stage .d-row .range { font-variant-numeric: tabular-nums; color: #4B5563; }
+.stage .d-row .sig { font-weight: 500; color: #343434; }
+.stage .d-row .subj, .stage .d-row .dur { color: #4B5563; }
+.stage .d-row .pg { color: #6B7280; font-size: 13px; text-align: right; }
+.stage .d-row a { color: #1B72BA; text-decoration: underline; text-underline-offset: 2px; }
+/* ---------- round 2, option 3: the run list's own title (ExecutionListPanel, 288px) ---------- */
+.stage .page { width: 1100px; height: 860px; display: flex; flex-direction: column; background: #F9F6F0;
+  color: #343434; font-size: 14px; border: 1px solid #E5E7EB; border-radius: 8px; overflow: hidden; }
+.stage .topbar { height: 48px; flex: none; display: flex; align-items: center; padding: 0 16px; background: #fff; border-bottom: 1px solid #E5E7EB; }
+.stage .wf-name { font-weight: 600; font-size: 15px; }
+.stage .body { flex: 1; display: flex; min-height: 0; }
+.stage .panel { width: 288px; flex: none; display: flex; flex-direction: column; background: #fff; border-right: 1px solid #E5E7EB; }
+.stage .p-hd { border-bottom: 1px solid #F3F4F6; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.stage .back { align-self: flex-start; font-size: 12px; color: #1B72BA; text-decoration: underline; text-underline-offset: 2px; }
+.stage .p-title { margin: 0; font-size: 14px; font-weight: 600; color: #343434; }
+.stage .p-sub { margin: 0; font-size: 12px; color: #4B5563; }
+.stage .list { flex: 1; overflow: hidden; }
+.stage .group { background: #F9F6F0; padding: 6px 12px; border-bottom: 1px solid #F3F4F6; font-size: 12px; font-weight: 500; color: #6B7280; }
+.stage .run { padding: 10px 12px; border-bottom: 1px solid #F9FAFB; border-left: 2px solid #F87171; }
+.stage .run-top { display: flex; align-items: center; gap: 6px; }
+.stage .x { color: #EF4444; font-size: 12px; }
+.stage .src { border-radius: 4px; background: #F3F4F6; padding: 2px 6px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 600; color: #1F2937; }
+.stage .time { margin-left: auto; font-size: 12px; color: #6B7280; }
+.stage .dur { margin: 2px 0 0; font-size: 12px; color: #6B7280; }
+.stage .err { margin: 2px 0 0; font-size: 12px; color: #EF4444; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage .canvas { flex: 1; position: relative; background-image: radial-gradient(#E5E1D8 1px, transparent 1px); background-size: 16px 16px; }
+.stage .node { position: absolute; width: 170px; padding: 10px 12px; background: #fff; border: 1px solid #E5E7EB; border-radius: 10px; font-size: 13px; font-weight: 500; }
+</style></head><body>
+<div class="rec">
+<h1>Failed runs link: the settled design (#2102)</h1>
+<p>Settled with Dan in two rendered design rounds on 2026-10-15, one question a round: round 1 option 2, "A failed run count that links", and round 2 option 3, "The list's own title". Built in <code>apps/web/src/components/dashboard/IncidentsSection.tsx</code> (the card), <code>apps/web/src/components/canvas/ExecutionListPanel.tsx</code> (the run list), <code>apps/web/src/lib/incidents.ts</code> (their words), and the worker route <code>GET /api/incidents/:id/failed-runs</code> with <code>apps/worker/src/lib/incident-failed-runs.ts</code>.</p>
+<h2>Decision 1: a failure rate row says how many failed runs, and the count is the link (round 1)</h2>
+<p>On the Incidents card, only a failure rate row's pages column reads "2 Slack pages, 12 failed runs", with "12 failed runs" a link in the product's blue, underlined. The count says how many there are before anyone clicks. It is the failed runs matching that incident, inside its time span, among the runs still kept. When none of the span is still kept there is nothing to open, so the row shows no count and no link. A kept span with no matching run shows "0 failed runs" as plain text. A count that could not be read is left out rather than shown as 0, and the row is otherwise intact. Making the subject the link, and making the whole row clickable with an arrow, were rendered and set aside.</p>
+<h2>Decision 2: the link opens the workflow page with its run list narrowed, under the list's own title (round 2)</h2>
+<p>The link opens <code>/workflows/&lt;workflow id&gt;?incident=&lt;incident id&gt;</code>. While narrowed, the run list's header replaces the EXECUTIONS label: a "&#8249; All runs" link back to every run, the title "12 failed runs in this incident", and a grey line naming the match and the span in ET ("ACRO_GATEWAY", Today 2:34 PM to 4:06 PM ET; an end on another day carries its day; an incident with no recorded end reads since its start). The outcome tabs are hidden: the title keeps the narrowing on screen, and a tab row would contradict it. A banner above the tabs, and a removable filter tag under them, were rendered and set aside.</p>
+<h2>Decision 3: one more grey line, only when it applies</h2>
+<p>When the incident started before the runs still kept, the header carries "Runs before Oct 8 are no longer kept." It appears only then, so it never repeats a fact that is not true of the incident on screen.</p>
+<h2>Decision 4: one rule, one read</h2>
+<p>The runs are the ones failure rate's own rule matches (the shared predicate the alert itself uses, never a copy), windowed on completed_at between the incident's start and end, clipped to the 7 days runs are kept. The card's count and the list's title come from the same read as the list, so the number on the card, the title and the rows cannot disagree. The narrowing lives in the URL so the link can be shared and Back works; the worker resolves the incident by id inside the caller's organization, and takes nothing else about it from the URL.</p>
+<h2>States the drawing does not show</h2>
+<p>The narrowed list shows a loading skeleton while it reads, and a failed read as an error with a Retry, never as an empty list. A narrowed list of 0 runs says so in its title alone.</p>
+<h2>Where the build departs from the drawing</h2>
+<p>The drawing narrowed the card's columns so the pages column could take the extra words, which wraps the time range and the pages text onto two lines. The build keeps the card's own widths for time and signal (170 and 190px), trims duration from 210 to 200px, widens the pages column to 170px so "2 Slack pages, 12 failed runs" stays on one line, and lets the subject column give up the width; the card's minimum width before it scrolls sideways grew from 860 to 940px so the subject keeps room. The pages text keeps the built card's own 12px gray 600 rather than the drawing's 13px gray 500.</p>
+<h2>What is the rendering, not the design</h2>
+<p>The card is drawn at its laptop width (1008px) and the workflow page at 1100px with the run list at its real 288px, each scaled to fit this page. The canvas beside the list is a drawn slice standing in for the real canvas, the incidents and the twelve runs are invented samples, and the system font stack stands in for the app's Geist. None of these were decided.</p>
+</div>
+<p class="cap">Round 1, option 2: the Incidents card.</p>
+<div class="shot"><div class="shot-inner"><div class="stage" id="card-stage"></div></div></div>
+<p class="cap">Round 2, option 3: the run list opened from "12 failed runs".</p>
+<div class="shot"><div class="shot-inner"><div class="stage" id="panel-stage"></div></div></div>
+<p class="scale-note" id="scale-note">Each drawing is shown at its own width.</p>
+<script>
+// The settled design of #2102: round 1 option 2 and round 2 option 3. The
+// incidents and the runs are invented for the drawing.
+
+var CROSS = String.fromCharCode(0x2715)
+var BACK = String.fromCharCode(0x2039)
+
+var ROWS = [
+  { day: 'Today (times ET)' },
+  { range: '2:34 PM to 4:06 PM', sig: 'Failure rate', subj: 'Engine Bidding: "ACRO_GATEWAY"', dur: '1 hour 32 minutes', pages: '2 Slack pages', runs: 12 },
+  { range: '9:12 AM to 9:41 AM', sig: 'Volume cliff', subj: 'Main Flow', dur: '29 minutes', pages: '1 Slack page' },
+  { day: 'Yesterday' },
+  { range: '6:02 AM to 6:09 AM', sig: 'Database unreachable', subj: 'This organization', dur: '7 minutes', pages: '3 Slack pages' },
+  { range: '3:00 PM', sig: 'Output field stopped', subj: 'Main Flow scout.final', dur: 'End not recorded', pages: '1 Slack page' },
+  { day: 'Mon, Oct 12' },
+  { range: '5:15 PM to 5:31 PM', sig: 'Failure rate', subj: 'Tripoint Submission: "502"', dur: '16 minutes', pages: '1 Slack page', runs: 4 },
+  { range: '11:20 AM to 11:24 AM', sig: 'Slow execution', subj: 'Engine Bidding Workflow', dur: 'Within one 5 minute window', pages: '1 Slack page' }
+]
+
+var RUNS = [
+  ['4:05 PM', '1.2s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['3:58 PM', '1.1s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['3:41 PM', '0.9s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['3:30 PM', '1.4s', 'ACRO_GATEWAY: connection reset by peer'],
+  ['3:22 PM', '1.0s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['3:12 PM', '1.3s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['3:05 PM', '1.1s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['2:59 PM', '0.8s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['2:51 PM', '1.2s', 'ACRO_GATEWAY: connection reset by peer'],
+  ['2:44 PM', '1.0s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['2:39 PM', '1.1s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway'],
+  ['2:34 PM', '1.2s', 'ACRO_GATEWAY: upstream returned 502 Bad Gateway']
+]
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag)
+  if (cls) n.className = cls
+  if (text !== undefined && text !== null) n.textContent = text
+  return n
+}
+
+function card() {
+  var wrap = el('div', 'card-wrap')
+  var c = el('div', 'c')
+  var hd = el('div', 'c-hd')
+  hd.append(el('p', 'c-title', 'Incidents'))
+  c.append(hd)
+  ROWS.forEach(function (r) {
+    if (r.day) { c.append(el('div', 'd-day', r.day)); return }
+    var row = el('div', 'd-row')
+    row.append(el('span', 'range', r.range))
+    row.append(el('span', 'sig', r.sig))
+    row.append(el('span', 'subj', r.subj))
+    row.append(el('span', 'dur', r.dur))
+    var pg = el('span', 'pg', r.pages)
+    if (r.runs) {
+      pg.append(document.createTextNode(', '))
+      var a = el('a', '', r.runs + ' failed runs')
+      a.href = '#'
+      pg.append(a)
+    }
+    row.append(pg)
+    c.append(row)
+  })
+  wrap.append(c)
+  return wrap
+}
+
+function runRow(r) {
+  var a = el('div', 'run')
+  var top = el('div', 'run-top')
+  top.append(el('span', 'x', CROSS))
+  top.append(el('span', 'src', 'engine'))
+  top.append(el('span', 'time', r[0]))
+  a.append(top)
+  a.append(el('p', 'dur', r[1]))
+  a.append(el('p', 'err', r[2]))
+  return a
+}
+
+function panel() {
+  var p = el('aside', 'panel')
+  var hd = el('div', 'p-hd')
+  hd.append(el('a', 'back', BACK + ' All runs'))
+  hd.append(el('p', 'p-title', '12 failed runs in this incident'))
+  hd.append(el('p', 'p-sub', '"ACRO_GATEWAY", Today 2:34 PM to 4:06 PM ET'))
+  p.append(hd)
+  var list = el('div', 'list')
+  list.append(el('div', 'group', 'Today'))
+  RUNS.forEach(function (r) { list.append(runRow(r)) })
+  p.append(list)
+  return p
+}
+
+function canvas() {
+  var c = el('div', 'canvas')
+  ;[['Webhook', 60, 60], ['Validate lead', 60, 170], ['Buyer select', 60, 280], ['ACRO gateway', 300, 280], ['Respond', 60, 390]].forEach(function (n) {
+    var box = el('div', 'node', n[0])
+    box.style.left = n[1] + 'px'
+    box.style.top = n[2] + 'px'
+    c.append(box)
+  })
+  return c
+}
+
+function workflowPage() {
+  var page = el('div', 'page')
+  var top = el('div', 'topbar')
+  top.append(el('span', 'wf-name', 'Engine Bidding Workflow'))
+  page.append(top)
+  var body = el('div', 'body')
+  body.append(panel())
+  body.append(canvas())
+  page.append(body)
+  return page
+}
+
+document.getElementById('card-stage').append(card())
+document.getElementById('panel-stage').append(workflowPage())
+
+function fit() {
+  var pcts = []
+  document.querySelectorAll('.shot-inner').forEach(function (box) {
+    var stage = box.firstElementChild
+    var drawn = stage.firstElementChild
+    var s = Math.min(1, box.clientWidth / drawn.offsetWidth)
+    stage.style.transform = 'scale(' + s + ')'
+    box.style.height = Math.ceil(drawn.offsetHeight * s) + 'px'
+    box.style.overflowX = s < 1 ? 'hidden' : 'auto'
+    pcts.push(Math.round(s * 100))
+  })
+  var n = document.getElementById('scale-note')
+  if (n) n.textContent = 'The card is drawn at 1008px and shown at ' + pcts[0] + '%; the workflow page at 1100px, shown at ' + pcts[1] + '%.'
+}
+fit()
+window.addEventListener('resize', fit)
+</script>
+</body></html>
