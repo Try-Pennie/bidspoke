@@ -14,6 +14,7 @@ import {
   captureFailedWriteback,
   WRITEBACK_STORE_LABEL,
   WRITEBACK_UNCAPTURABLE_LABEL,
+  WRITEBACK_HELD_LABEL,
 } from '../writeback-deadletter'
 import type { ResolvedStepInput } from '../../types'
 
@@ -199,5 +200,91 @@ describe('captureFailedWriteback', () => {
 
   it('names its store label for the durable path', () => {
     expect(WRITEBACK_STORE_LABEL).toBe('outcome_writeback_deadletters.insert')
+  })
+})
+
+/**
+ * #2163: a timed out update is an unknown outcome, held in KV by the at-risk
+ * watch, not a refusal for the replay store and never "cannot be replayed". The
+ * request the failure carries came from the watch, with the held record's expiry.
+ */
+describe('a timed out update the at-risk record holds (#2163)', () => {
+  const UNTIL = '2026-10-16T00:29:54.000Z'
+  const timedOut = new Error('Step timed out after 1500ms (in-flight upstream call canceled via abort signal)')
+  const noted = (object: string, recordId: string, body: Record<string, unknown>): ResolvedStepInput => ({
+    template: null,
+    resolved: { operation: 'update', object, record_id: recordId, body },
+  })
+  const prospect = noted('Prospect__c', 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+
+  it('stores no row and is not dead-lettered as uncapturable, but as held, naming the record, the fields and the expiry', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: prospect, heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'held', until: UNTIL })
+    expect(db.inserts).toHaveLength(0)
+    const labels = vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])
+    expect(labels).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+    expect(labels).toEqual([WRITEBACK_HELD_LABEL])
+    const [, error, , details] = vi.mocked(recordOutcomeDeadLetter).mock.calls[0]
+    expect(error).toBe(timedOut)
+    expect(details).toMatchObject({
+      execution_id: run.executionId,
+      held: {
+        step: 'patch_prospect_reject',
+        sf_object: 'Prospect__c',
+        sf_record_id: 'a06Ui00002sLkNuIAK',
+        fields: ['BidStatus__c', 'RejectionReason__c'],
+        until: UNTIL,
+      },
+    })
+    // Field names only: no value of the write reaches the alert.
+    expect(JSON.stringify(details)).not.toMatch(/Rejected|unqualified_lead/)
+  })
+
+  it('treats Applicant and Lead the same way, since no read-back covers them either', async () => {
+    for (const object of ['Applicant__c', 'Lead']) {
+      vi.mocked(recordOutcomeDeadLetter).mockClear()
+      await captureFailedWriteback(
+        { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted(object, '00QUi000001', { Status: 'Open' }), heldUntil: UNTIL },
+        { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+      expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    }
+  })
+
+  // A held Submission entry is the one the Submission read-back (#2023) is built
+  // to find by its marker, so it is left on that path and not announced here.
+  it('leaves a held Submission write for its read-back: no row, no dead letter', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'held', until: UNTIL })
+    expect(db.inserts).toHaveLength(0)
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+  })
+
+  it('still stores a refusal, which the watch does not hold', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (400): FIELD_CUSTOM_VALIDATION_EXCEPTION'), resolvedInput: update({}), heldUntil: null },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'stored' })
+    expect(db.inserts[0]).toMatchObject({ status: 'refused' })
+  })
+
+  it('stores nothing and announces nothing for a test run, held or not', async () => {
+    const db = fakeSupabase()
+    const result = await captureFailedWriteback(
+      { ...run, isTest: true, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: prospect, heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'skipped', reason: 'test run' })
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
   })
 })

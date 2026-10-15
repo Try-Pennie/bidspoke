@@ -18,3 +18,9 @@ export const WRITEBACK_UNCAPTURABLE_LABEL = 'outcome_writeback_deadletters.uncap
 
 /** The durable path's label for the writeback replay store's insert (#2084: moved here so the alert copy can route on it). */
 export const WRITEBACK_STORE_LABEL = 'outcome_writeback_deadletters.insert'
+
+// A post-answer Salesforce update that timed out or was cut off, whose request
+// the at-risk watch holds in KV, on an object no read-back covers yet (#2163):
+// unknown, not lost and not unreplayable, so the alert copy routes on it to its
+// own wording. Set in engine/writeback-deadletter.ts.
+export const WRITEBACK_HELD_LABEL = 'sf_writeback.held'

@@ -29,6 +29,17 @@ export interface RetryStats {
  */
 export type Sleep = (ms: number) => Promise<void>
 
+/**
+ * How withTimeout watches each attempt's deadline (#2163): resolves after `ms`,
+ * or at once when `signal` aborts, which withTimeout does as soon as the attempt
+ * answers. The same shape as `RetryClock.timer`.
+ *
+ * The same seam as `Sleep`, for the same reason: a test drives a timed out
+ * retry ladder on a clock it controls instead of living through it. Omitting it
+ * means the real timer, and nothing in the Worker sets it.
+ */
+export type Deadline = (ms: number, signal: AbortSignal) => Promise<void>
+
 // Abort `controller` whenever `parent` aborts, so an executor's own fetch (which
 // already has a local timeout controller) is ALSO canceled when the step-level
 // timeout fires (#66). No-op when there's no parent signal.
@@ -48,7 +59,8 @@ export async function withRetry<T>(
   config: RetryConfig,
   classifyError: (err: unknown) => ErrorType,
   stats?: RetryStats,
-  sleepFn: Sleep = sleep
+  sleepFn: Sleep = sleep,
+  deadline: Deadline = realDeadline
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt <= config.retries; attempt++) {
@@ -57,7 +69,7 @@ export async function withRetry<T>(
     // returns (success) or throws (permanent error / retries exhausted).
     if (stats) stats.retries = attempt
     try {
-      return await withTimeout(fn, config.timeout_ms)
+      return await withTimeout(fn, config.timeout_ms, deadline)
     } catch (err) {
       lastError = err
       const errorType = classifyError(err)
@@ -78,20 +90,38 @@ export async function withRetry<T>(
   throw lastError
 }
 
-function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, ms: number, deadline: Deadline): Promise<T> {
   // Own the deadline: on timeout we both reject (so withRetry can react) AND
   // abort the signal handed to fn, so the in-flight outbound call is actually
-  // canceled before any retry — no orphaned request, no double-fire (#66).
+  // canceled before any retry, with no orphaned request and no double fire (#66).
   const controller = new AbortController()
-  let timer: ReturnType<typeof setTimeout>
+  // Aborted once the attempt answers, which stops the deadline watch, so a timer
+  // never outlives the attempt it watched.
+  const answered = new AbortController()
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    void deadline(ms, answered.signal).then(() => {
+      if (answered.signal.aborted) return
       controller.abort()
       reject(new Error(`Step timed out after ${ms}ms (in-flight upstream call canceled via abort signal)`))
-    }, ms)
+    })
   })
-  return Promise.race([fn(controller.signal), timeout]).finally(() => clearTimeout(timer))
+  return Promise.race([fn(controller.signal), timeout]).finally(() => answered.abort())
 }
+
+/** The real per attempt deadline: a timer cleared the moment the attempt answers. */
+const realDeadline: Deadline = (ms, signal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve()
+    const onAbort = () => {
+      clearTimeout(handle)
+      resolve()
+    }
+    const handle = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 
 function backoffMs(attempt: number, strategy: 'linear' | 'exponential'): number {
   const base = 500

@@ -13,7 +13,7 @@ import {
   sendDatabaseUnreachableAlert,
   DRAIN_STALL_SCHEDULES,
 } from '../slack'
-import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL } from '../../engine/writeback-deadletter'
+import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from '../../engine/writeback-deadletter'
 import type { SlackConnection } from '../slack-connection'
 
 /**
@@ -227,6 +227,64 @@ describe('replay store failure: the uncapturable wording, not the generic one', 
     expect(text).toContain('Salesforce update cannot be replayed')
     expect(text).toContain('key ring empty')
     expect(text).toContain('https://app.test/workflows/wf-3?execution=ex-3')
+    expectHouseStyle(text)
+  })
+})
+
+// #2163: a timed out Prospect update was announced as "cannot be replayed", its
+// request "could not be kept", and the reader sent to a run page that showed no
+// request, while the at-risk record held it in KV until it expired unread. A held
+// update now says what is true: it may not have landed, here is the record and the
+// fields to check, and the request is held until a stated time in ET.
+describe('held update on an object no read-back covers: says it is unknown and held, and until when', () => {
+  const send = (n = 1) =>
+    sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_HELD_LABEL,
+        window_loss_count: n,
+        window_minutes: 30,
+        error_message: 'Step timed out after 1500ms (in-flight upstream call canceled via abort signal)',
+        run: {
+          workflow_id: 'wf-7',
+          workflow_name: 'Engine Bidding Workflow',
+          execution_id: '01a13cf7-0191-7dc3-aada-59ceeacc1616',
+          at: '2026-10-15T00:29:54Z',
+          held: {
+            step: 'patch_prospect_reject',
+            sf_object: 'Prospect__c',
+            sf_record_id: 'a06Ui00002sLkNuIAK',
+            fields: ['BidStatus__c', 'RejectionReason__c'],
+            until: '2026-10-16T00:29:54.000Z',
+          },
+        },
+      },
+      'https://app.test',
+    )
+
+  it('names the record, the fields and the ET expiry, and never says it cannot be replayed or was lost', async () => {
+    await send()
+    const text = lastText()
+    expect(text).toContain('Salesforce update not confirmed')
+    expect(text).toContain('Prospect a06Ui00002sLkNuIAK')
+    expect(text).toContain('BidStatus__c and RejectionReason__c')
+    // 00:29:54 UTC on Oct 16 is 8:29 PM EDT on Oct 15.
+    expect(text).toContain('until 8:29 PM ET on Oct 15')
+    expect(text).not.toMatch(/cannot be replayed|could not be kept|lost|UTC/)
+    expect(text).toMatch(/Fix:/)
+    expectHouseStyle(text)
+  })
+
+  it('does not send the reader to the run to see the request', async () => {
+    await send()
+    expect(lastText()).not.toMatch(/open the run|run below shows|see the request/i)
+  })
+
+  it('says it names the latest when the window holds more than one', async () => {
+    await send(4)
+    const text = lastText()
+    expect(text).toContain('about 4 times')
+    expect(text).toContain('names the latest')
     expectHouseStyle(text)
   })
 })
