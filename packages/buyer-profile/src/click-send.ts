@@ -150,6 +150,12 @@ export interface SaleWrites {
   /** Where the record ids were read: the live step log, the execution archive, or neither. */
   records_from: 'step_log' | 'archive' | null
   writes: SaleWrite[]
+  /**
+   * The buyer's lead id these updates were written with, null when the sale has
+   * none (#2139). Absent from a record made before it was recorded, when a sale's
+   * lead id could not yet change after Mark sent.
+   */
+  buyer_lead_id?: string | null
 }
 
 /** A sold held click's last Salesforce updates, as the list reports them; null on an entry still held. */
@@ -157,3 +163,47 @@ export type SalesforceWritesView =
   | { status: 'none' }
   | { status: 'recorded'; at: string; writes: SaleWrites }
   | { status: 'unreadable'; message: string }
+
+/** The longest buyer lead id a person may enter. */
+export const BUYER_LEAD_ID_MAX = 200
+
+/**
+ * The one reading of a buyer lead id a person types on a held click (#2139),
+ * shared by the Worker routes and the page so the two cannot accept different
+ * ids (L370). Trimmed; nothing typed is no lead id, which Mark sent allows
+ * (PM-7); a space inside or more than BUYER_LEAD_ID_MAX characters is refused.
+ */
+export function buyerLeadIdOf(input: unknown): { ok: true; id: string | null } | { ok: false } {
+  if (input === undefined || input === null) return { ok: true, id: null }
+  if (typeof input !== 'string') return { ok: false }
+  const id = input.trim()
+  if (id === '') return { ok: true, id: null }
+  return /^\S+$/.test(id) && id.length <= BUYER_LEAD_ID_MAX ? { ok: true, id } : { ok: false }
+}
+
+/**
+ * Where a sold held click stands in Salesforce (#2139), the one reading the
+ * list and the page share (L342):
+ *
+ *   written              the last updates all landed, with the lead id the claim holds
+ *   incomplete           at least one update did not land; Salesforce's words are on each record
+ *   lead_id_not_written  the last updates landed with another lead id than the claim now holds,
+ *                        which is what a lead id added or corrected looks like when its
+ *                        Salesforce updates never ran (the claim is changed first)
+ *   not_recorded         no update was ever recorded, as after a Mark sent that stopped
+ *                        between selling the claim and writing Salesforce
+ *   unreadable           the record could not be read, so where it stands is not known
+ *
+ * Every state but written offers Retry Salesforce, which writes the claim's own
+ * lead id and is safe to repeat.
+ */
+export type SalesforceStanding = 'written' | 'incomplete' | 'lead_id_not_written' | 'not_recorded' | 'unreadable'
+
+export function salesforceStandingOf(view: SalesforceWritesView, claimLeadId: string | null): SalesforceStanding {
+  if (view.status === 'unreadable') return 'unreadable'
+  if (view.status === 'none') return 'not_recorded'
+  if (!view.writes.complete) return 'incomplete'
+  // A record without the field predates #2139, when the lead id could not change after it was written.
+  if (view.writes.buyer_lead_id !== undefined && view.writes.buyer_lead_id !== claimLeadId) return 'lead_id_not_written'
+  return 'written'
+}

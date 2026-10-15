@@ -1,4 +1,41 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": []
+  "entries": [
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    },
+    {
+      "workflow": "Lead Economy - Bidding Workflow",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    },
+    {
+      "workflow": "Main Flow",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "do_state",
+      "field": "do_state.SALESFORCE_BULKHEAD.1a3dc96be98389df7851ff5c763c0c5cd572f5cdc97a919526fcb353cb45af18",
+      "reason": "A Salesforce call after the answer now also takes a slot of the new salesforce-post-answer bulkhead key (#2170), so that key's object appears beside the main salesforce one. It holds no lease after the run. Nothing sent or decided changes."
+    }
+  ]
 }

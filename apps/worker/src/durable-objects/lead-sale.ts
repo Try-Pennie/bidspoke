@@ -91,6 +91,7 @@ export class LeadSaleObject implements DurableObject {
       case '/sold': return this.handleMutation(request, 'sold')
       case '/free': return this.handleMutation(request, 'free')
       case '/heal': return this.handleMutation(request, 'heal')
+      case '/amend': return this.handleAmend(request)
       case '/read': return jsonResponse<SaleState>(publicState(this.load()))
       default: return jsonResponse({ error: 'not_found', path: url.pathname }, 404)
     }
@@ -166,6 +167,35 @@ export class LeadSaleObject implements DurableObject {
     const next: Stored = op === 'free'
       ? { ...FREE, generation: current.generation + 1 }
       : { state: 'sold', partner_id: current.partner_id, execution_id: null, since: null, deadline_ms: null, generation: current.generation + 1, outcome }
+    this.save(next)
+    return jsonResponse({ ok: true, generation: next.generation })
+  }
+
+  /**
+   * amend: a sold claim's buyer reference set or replaced, by generation (#2139).
+   * A held click a person marked sent may carry no lead id, or a mistyped one,
+   * and the claim is the authority the page and Salesforce read it from, so a
+   * person adds or corrects it here. Only the reference changes: the result
+   * code, status and payout the sale was recorded with stay as they are, and
+   * the claim stays sold. Which sales a person may amend is the caller's rule
+   * (the held click route allows only its own marked_sent sales); the object
+   * guarantees the compare and set and that nothing else moves.
+   */
+  private async handleAmend(request: Request): Promise<Response> {
+    const body = await readJsonObject(request)
+    if (!body) return jsonResponse({ error: 'bad_body' }, 400)
+    const { generation, buyer_reference } = body
+    if (typeof generation !== 'number' || !Number.isInteger(generation) || generation < 0) return jsonResponse({ error: 'bad_generation' }, 400)
+    if (typeof buyer_reference !== 'string' || buyer_reference === '') return jsonResponse({ error: 'bad_buyer_reference' }, 400)
+
+    const current = this.load()
+    if (current.generation !== generation) {
+      return jsonResponse({ error: 'generation_moved', current: publicState(current) }, 409)
+    }
+    if (current.state !== 'sold' || !current.outcome) {
+      return jsonResponse({ error: 'wrong_state', current: publicState(current) }, 409)
+    }
+    const next: Stored = { ...current, generation: current.generation + 1, outcome: { ...current.outcome, buyer_reference } }
     this.save(next)
     return jsonResponse({ ok: true, generation: next.generation })
   }

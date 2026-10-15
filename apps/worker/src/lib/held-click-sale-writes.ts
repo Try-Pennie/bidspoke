@@ -9,7 +9,7 @@
  *
  *   bodies    buildClickSaleUpdates (the one builder, held byte for byte to the
  *             kept click_patch script by its test), Completed, with the lead id
- *             the person entered, the time the click was HELD (when the buyer
+ *             the person entered (or none, #2139), the time the click was HELD (when the buyer
  *             received it, not when the person got round to it), and PDFlow_3__c
  *             as the held run's Bidspoke link.
  *   terms     the partner name and routing code from the buyer's partner record,
@@ -139,13 +139,28 @@ async function termsFor(supabase: SupabaseClient, orgId: string, row: HeldClickF
   return { ok: true, terms: { partnerName: loaded.partner.name, routingCode: loaded.partner.external_routing_code, ...read.terms } }
 }
 
+/**
+ * `buyerLeadId` is null when the person marked the click sent without one
+ * (PM-7, #2139): the sale is still Completed on every record, and the lead id
+ * fields are left out rather than blanked. The result names the lead id it was
+ * written with, so the list can tell when the claim's id has since changed.
+ */
 export async function writeHeldClickSale(
   env: Env,
   supabase: SupabaseClient,
-  input: { orgId: string; userId: string; row: HeldClickForSale; buyerLeadId: string },
+  input: { orgId: string; userId: string; row: HeldClickForSale; buyerLeadId: string | null },
   deps: Partial<HeldClickSaleDeps> = {},
 ): Promise<SaleWrites> {
-  const d: HeldClickSaleDeps = { ...defaultDeps, ...deps }
+  const result = await writeSaleRecords(env, supabase, input, { ...defaultDeps, ...deps })
+  return { ...result, buyer_lead_id: input.buyerLeadId }
+}
+
+async function writeSaleRecords(
+  env: Env,
+  supabase: SupabaseClient,
+  input: { orgId: string; userId: string; row: HeldClickForSale; buyerLeadId: string | null },
+  d: HeldClickSaleDeps,
+): Promise<SaleWrites> {
   const { row } = input
 
   const heldMs = Date.parse(row.held_at)
