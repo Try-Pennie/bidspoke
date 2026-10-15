@@ -1,0 +1,153 @@
+{
+  "about": "Inputs for the relay parity test (#2171): for each outcome post, the step outputs its body template reads. Every value is synthetic; what is real is each case's KEY SET and each value's JSON TYPE and string form, measured from production so no case is shaped for the rule to fire (L48). Measured 2026-10-15 over the 24 hours before about 18:40 UTC: every completed, non test Main Flow outcome post step in execution_steps, its resolved body (input.resolved.body, parsed when it was JSON text), reduced in SQL to key, JSON type and a masked form (digits to 9, letters to a, enumerated values such as EQXCreditPullStatus__c kept as they are), so no real value left the database. A key absent from a case was absent from the measured body. Counts are posts in that window.",
+  "measured": {
+    "tripoint_sf_post": "395 posts, one key set; Credit_Pull_Result_ES__c on 2 only, Monthly_Creditor_Payment_ES__c and Unsecured_Debt_Verified_ES__c null on 393",
+    "amone_sf_post": "69 posts, one key set; Monthly_Creditor_Payment_ES__c and Unsecured_Debt_Verified_ES__c null on all",
+    "engine_no_bids_sf_post": "272 posts; Tripoint_Response__c Duplicate 219, Fail 42, null 11; Credit_Pull_Result_ES__c on 2",
+    "under_10000_sf_post": "1,508 posts; EnrolledPennieDebt__c absent on 13, Monthly and Unsecured present on 15, VantageScore__c null on 6",
+    "invalid_state_sf_post": "18 posts, one key set",
+    "debt_missing_sf_post": "92 posts; VantageScore__c null on 80, a number on 12",
+    "send_salesforce": "1,473 posts, JSON text; Credit_Pull_Result_ES__c, Monthly and Unsecured empty strings on 1,469, VantageScore__c the string null on 1, CreditFreeze__c false on all",
+    "send_fallback_salesforce": "90 posts, JSON text; VantageScore__c the string null on 78, CreditFreeze__c true on 60, Monthly and Unsecured empty strings on all",
+    "send_fallback_salesforce_1": "0 posts in 7 days (contract doc, volume), so its case is synthetic, built from its template and the path that reaches it"
+  },
+  "payload": { "Submission__c": "a0XGATE00000000001", "LEG": 0 },
+  "cases": [
+    {
+      "post": "tripoint_sf_post", "name": "a Tripoint win",
+      "steps": { "tripoint_win_body": { "sfBody": {
+        "ADV_SO__c": 2, "XBC_SO__c": "230", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0001", "executionId": "1760000000000gate", "submissionId": "a0XGATE00000000001",
+        "VantageScore__c": 700, "EQXCreditPullStatus__c": "Success", "Monthly_Creditor_Payment_ES__c": null, "Unsecured_Debt_Verified_ES__c": null,
+        "External_Partner_Name__c": "Tripoint", "External_Routing_Code__c": 2, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Form", "EnrolledPennieDebt__c": 24000, "ExternalDebtAmount__c": 25000,
+        "TripointLeadID__c": "tp-gate-0000-0001", "Tripoint_Response__c": "Success", "Tripoint_Create_Result_Code__c": 1001, "Tripoint_Create_Timestamp__c": "2026-10-15T12:00:03"
+      } } }
+    },
+    {
+      "post": "amone_sf_post", "name": "an AmOne win",
+      "steps": { "amone_win_body": { "sfBody": {
+        "ADV_SO__c": 2, "XBC_SO__c": "230", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0002", "executionId": "1760000000000gate", "submissionId": "a0XGATE00000000001",
+        "VantageScore__c": 690, "EQXCreditPullStatus__c": "Success", "Monthly_Creditor_Payment_ES__c": null, "Unsecured_Debt_Verified_ES__c": null,
+        "External_Partner_Name__c": "AmOne", "External_Routing_Code__c": 3, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Form", "EnrolledPennieDebt__c": 24000, "ExternalDebtAmount__c": 25000,
+        "AmOneBid__c": 500, "AmOneClickURL__c": "https://example.com/amone-click?sub=gate", "Tripoint_Response__c": "Duplicate"
+      } } }
+    },
+    {
+      "post": "engine_no_bids_sf_post", "name": "the Engine fallback after no winner",
+      "steps": { "engine_no_bids_call": { "sfBody": {
+        "ADV_SO__c": 2, "XBC_SO__c": "230", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0003", "executionId": "1760000000000gate", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0001", "leadUUID": "engine-gate-lead-0001",
+        "VantageScore__c": 680, "EQXCreditPullStatus__c": "Success", "Monthly_Creditor_Payment_ES__c": null, "Unsecured_Debt_Verified_ES__c": null,
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall", "EnrolledPennieDebt__c": 24000, "ExternalDebtAmount__c": 25000,
+        "TripointLeadID__c": "tp-gate-0000-0002", "Tripoint_Response__c": "Duplicate"
+      } } }
+    },
+    {
+      "post": "engine_no_bids_sf_post", "name": "the Engine first for a high score, body from the fallback code node, Tripoint never asked",
+      "steps": { "engine_no_bids_call_1": { "sfBody": {
+        "ADV_SO__c": 2, "XBC_SO__c": "230", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0004", "executionId": "1760000000000gate", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0002", "leadUUID": "engine-gate-lead-0002",
+        "VantageScore__c": 760, "EQXCreditPullStatus__c": "Success", "Monthly_Creditor_Payment_ES__c": null, "Unsecured_Debt_Verified_ES__c": null,
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall", "EnrolledPennieDebt__c": 24000, "ExternalDebtAmount__c": 25000,
+        "TripointLeadID__c": null, "Tripoint_Response__c": null
+      } } }
+    },
+    {
+      "post": "under_10000_sf_post", "name": "under 10k, the common shape",
+      "steps": { "fallback_engine_under_10000": { "sfBody": {
+        "ADV_SO__c": 1, "XBC_SO__c": "130", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0005", "executionId": "00000000-0000-4000-8000-0000000000e5", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0003", "leadUUID": "engine-gate-lead-0003",
+        "VantageScore__c": 610, "EQXCreditPullStatus__c": "Success", "Credit_Pull_Result_ES__c": "Fail",
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00.000Z",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall", "EnrolledPennieDebt__c": 5000, "ExternalDebtAmount__c": 5000
+      } } }
+    },
+    {
+      "post": "under_10000_sf_post", "name": "under 10k with no enrolled debt and no score, keys absent and null",
+      "steps": { "fallback_engine_under_10000": { "sfBody": {
+        "ADV_SO__c": 1, "XBC_SO__c": "130", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0006", "executionId": "00000000-0000-4000-8000-0000000000e6", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0004", "leadUUID": "engine-gate-lead-0004",
+        "VantageScore__c": null, "EQXCreditPullStatus__c": "Fail", "Credit_Pull_Result_ES__c": "Fail",
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00.000Z",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall", "ExternalDebtAmount__c": 0
+      } } }
+    },
+    {
+      "post": "invalid_state_sf_post", "name": "a state Pennie does not serve",
+      "steps": { "fallback_invalid_state": { "sfBody": {
+        "ADV_SO__c": 2, "XBC_SO__c": "230", "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0007", "executionId": "00000000-0000-4000-8000-0000000000e7", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0005", "leadUUID": "engine-gate-lead-0005",
+        "VantageScore__c": 650, "EQXCreditPullStatus__c": "Success", "Credit_Pull_Result_ES__c": "Success",
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00.000Z",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall"
+      } } }
+    },
+    {
+      "post": "invalid_state_sf_post", "name": "the Engine failed, so the body is null and the relay's filter wrote nothing", "relay_writes": false,
+      "steps": { "fallback_invalid_state": { "sfBody": null } }
+    },
+    {
+      "post": "debt_missing_sf_post", "name": "no debt and no score models: the credit pull failed",
+      "steps": { "fallback_engine_debt_missing": { "sfBody": {
+        "PDFlow_1__c": "https://app.example.test/workflows/wf-gate?execution=exec-gate-0008", "executionId": "00000000-0000-4000-8000-0000000000e8", "submissionId": "a0XGATE00000000001",
+        "UUID": "engine-gate-uuid-0006", "leadUUID": "engine-gate-lead-0006",
+        "VantageScore__c": null, "EQXCreditPullStatus__c": "Fail", "Credit_Pull_Result_ES__c": "Fail",
+        "External_Partner_Name__c": "Engine", "External_Routing_Code__c": 1, "External_Exchange_Status__c": "Pending", "External_Timestamp__c": "2026-10-15T12:00:00.000Z",
+        "PD_Completed_Timestamp__c": "2026-10-15T12:00:05", "LeadSaleType__c": "Offer Wall"
+      } } }
+    },
+    {
+      "post": "send_salesforce", "name": "internal routing, the common shape: no eligibility data, so three fields render empty",
+      "steps": {
+        "mutate_adv": 2, "mutate_bes": 3, "gen_vantage_score": 702,
+        "calculate_pull_result_no_debt": { "equifaxPull": "Success", "creditFreeze": false },
+        "calculate_internal_debt": 25000,
+        "timestamps": { "completedDate": "2026-10-15T12:00:05", "submissionDate": "2026-10-15T12:00:00" },
+        "pennie_or_eligibility": {}
+      }
+    },
+    {
+      "post": "send_salesforce", "name": "internal routing with no score models: VantageScore__c renders as the string null",
+      "steps": {
+        "mutate_adv": 2, "mutate_bes": 3, "gen_vantage_score": null,
+        "calculate_pull_result_no_debt": { "equifaxPull": "Fail", "eligibilityPull": "Success", "creditFreeze": false },
+        "calculate_internal_debt": 30000,
+        "timestamps": { "completedDate": "2026-10-15T12:00:05", "submissionDate": "2026-10-15T12:00:00" },
+        "pennie_or_eligibility": { "eligibilityData": { "estimated_total_debt": 30000, "estimated_monthly_creditor_payment": 600 } }
+      }
+    },
+    {
+      "post": "send_fallback_salesforce", "name": "a credit freeze with no score models: the fallback ADV answer",
+      "steps": {
+        "mutate_adv": 2, "mutate_bes": 3, "gen_vantage_score": null,
+        "return_fallback_adv": { "body": { "ADV": 2, "XBC": "232" } },
+        "calculate_pull_result_no_debt": { "equifaxPull": "Fail", "eligibilityPull": "Fail", "creditFreeze": true },
+        "timestamps": { "completedDate": "2026-10-15T12:00:05", "submissionDate": "2026-10-15T12:00:00" },
+        "pennie_or_eligibility": {}
+      }
+    },
+    {
+      "post": "send_fallback_salesforce", "name": "the fallback ADV answer with a score and no freeze",
+      "steps": {
+        "mutate_adv": 2, "mutate_bes": 3, "gen_vantage_score": 640,
+        "return_fallback_adv": { "body": { "ADV": 2, "XBC": "232" } },
+        "calculate_pull_result_no_debt": { "equifaxPull": "Fail", "eligibilityPull": "Fail", "creditFreeze": false },
+        "timestamps": { "completedDate": "2026-10-15T12:00:05", "submissionDate": "2026-10-15T12:00:00" },
+        "pennie_or_eligibility": {}
+      }
+    },
+    {
+      "post": "send_fallback_salesforce_1", "name": "debt not present, the Engine fallback: return_fallback_adv never ran on this path, so ADV and XBC render empty",
+      "steps": {
+        "mutate_adv": 0, "mutate_bes": 3, "gen_vantage_score": 640,
+        "fallback_engine_debt_not_present": { "engineData": { "uuid": "engine-gate-uuid-0007", "leadUuid": "engine-gate-lead-0007" } },
+        "calculate_pull_result_no_debt": { "equifaxPull": "Success", "eligibilityPull": "Fail", "creditFreeze": false },
+        "timestamps": { "completedDate": "2026-10-15T12:00:05", "submissionDate": "2026-10-15T12:00:00" },
+        "pennie_or_eligibility": { "eligibilityData": { "estimated_total_debt": null } }
+      }
+    }
+  ]
+}
