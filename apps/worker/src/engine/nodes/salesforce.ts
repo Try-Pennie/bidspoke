@@ -447,10 +447,12 @@ export async function executeSalesforceNode(
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
     // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
     // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
-    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; status?: number; mayHaveLanded?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    const answer: SalesforceAnswer = { status: res.status, text: responseText }
+    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; status?: number; mayHaveLanded?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] } & AnsweredFailure
     err.resolvedInput = resolvedInput
     // The answer's status, typed, so a caller judges the failure without reading the message (#2022).
     err.status = res.status
+    err.salesforceAnswer = answer
     if (warnLogs.length > 0) err.logs = warnLogs
     const transientErrors = config.transient_errors ?? []
     let matchesTransient = false
@@ -491,6 +493,7 @@ export async function executeSalesforceNode(
       callOpts,
       warnLogs,
       resolvedInput,
+      answer,
       noteBody: noteUpdate,
       // The original error still throws, but the resend may have landed, so it
       // must not read as a clean refusal to the at-risk watch.
@@ -556,6 +559,29 @@ export function salesforceFailureIsTransient(status: number, responseText: strin
  */
 export function salesforceRejectedTheWrite(status: number, responseText: string): boolean {
   return status >= 400 && status !== 401 && status !== 403 && !salesforceFailureIsTransient(status, responseText)
+}
+
+/**
+ * Salesforce's own answer to a write that failed: its status and its raw text,
+ * the page itself where the message only summarises one. A failure carries it
+ * only where Salesforce answered the WRITE, never a failed login, whose status
+ * is the token endpoint's. The held write capture (#2054) judges it by
+ * `salesforceRejectedTheWrite`, as the replay tool (#471) judges its own answer.
+ */
+export interface SalesforceAnswer {
+  status: number
+  text: string
+}
+
+interface AnsweredFailure {
+  salesforceAnswer?: SalesforceAnswer
+}
+
+/** The answer a failure carries, or null when Salesforce gave the write none. */
+export function salesforceAnswerOf(err: unknown): SalesforceAnswer | null {
+  if (!err || typeof err !== 'object') return null
+  const a = (err as AnsweredFailure).salesforceAnswer
+  return a && typeof a.status === 'number' && typeof a.text === 'string' ? { status: a.status, text: a.text } : null
 }
 
 /**
@@ -667,6 +693,8 @@ async function recoverFromRejectedField(args: {
   callOpts: SalesforceCallOptions
   warnLogs: StepLogEntry[]
   resolvedInput: ResolvedStepInput
+  /** Salesforce's answer to the write, which the no contact rejection still carries (#2054). */
+  answer: SalesforceAnswer
   /** Reports the body the retry will send instead (#2022). */
   noteBody: (body: unknown) => void
   /** Called when the retry got a transient answer, so it may have landed (#2022). */
@@ -700,9 +728,10 @@ async function recoverFromRejectedField(args: {
     console.log(`[salesforce] event=salesforce_lead_unreachable code=${errorCode} trace=${callOpts.traceId}`)
     const err = new Error(
       `Lead rejected: no usable contact method. Salesforce rejected ${dropped} (${errorCode}) and the record has no phone number with at least 10 digits, so there is no way to reach this person.`,
-    ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] } & AnsweredFailure
     err.permanent = true
     err.resolvedInput = resolvedInput
+    err.salesforceAnswer = args.answer
     if (warnLogs.length > 0) err.logs = warnLogs
     throw err
   }

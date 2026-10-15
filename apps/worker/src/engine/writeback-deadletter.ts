@@ -18,8 +18,11 @@
  *
  * The row is written through `writeOutcome`, the durable outcome path, so a slow
  * database is retried and an unanswered insert is read back by the minute sweep
- * rather than lost (#1880). A failure classed permanent is stored not replayable,
- * so the replay refuses to resend a write Salesforce will refuse again.
+ * rather than lost (#1880). A write Salesforce rejected is stored not replayable,
+ * so the replay refuses to resend a write Salesforce will refuse again. Rejected
+ * is decided by the replay tool's own rule, imported (#2054): a login refused even
+ * after a fresh one, or a permission refusal, is a fault on our side that fixing
+ * the credentials clears, so it is kept pending to replay, as the replay keeps it.
  *
  * An update that timed out or was cut off is none of these (#2163): its outcome
  * is unknown and the at-risk record (#2022) holds its request in KV. It is not
@@ -34,6 +37,7 @@ import { formatErr } from '../lib/format-error'
 import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from './dead-letter-labels'
+import { salesforceRejectedTheWrite, type SalesforceAnswer } from './nodes/salesforce'
 
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
@@ -101,7 +105,25 @@ export interface FailedWriteback {
    * (a timeout, an abort, a dropped connection) and the watch kept the record.
    */
   heldUntil?: string | null
+  /**
+   * Salesforce's answer to the write (#2054), absent when it gave none: a timeout,
+   * a dropped connection, or a fresh login the token endpoint refused.
+   */
+  salesforceAnswer?: SalesforceAnswer | null
   isTest: boolean
+}
+
+/**
+ * Whether the failed write is stored already refused (#2054): only when Salesforce
+ * answered the write and rejected it, by the rule the replay tool (#471) closes a
+ * held write on, imported so the two cannot disagree. No answer is not a refusal,
+ * there as here. A failure the engine classed transient is not refused either: a
+ * node can name an error code worth retrying (`transient_errors`) that the shared
+ * rule does not know about.
+ */
+function storedRefused(f: FailedWriteback): boolean {
+  const answer = f.salesforceAnswer
+  return f.errorType === 'permanent' && answer != null && salesforceRejectedTheWrite(answer.status, answer.text)
 }
 
 export type CaptureDeps = Pick<OutcomeAlertDeps, 'kv' | 'orgId' | 'appUrl' | 'timing' | 'run' | 'claims'> & {
@@ -177,6 +199,7 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
     return { kind: 'uncapturable', reason: w.reason }
   }
   try {
+    const refused = storedRefused(f)
     const row = {
       organization_id: f.orgId,
       workflow_id: f.workflowId,
@@ -188,12 +211,12 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
       body_encrypted: await encryptSecret(JSON.stringify(w.body), deps.encryptionKeys),
       error_encrypted: await encryptSecret(formatErr(f.error), deps.encryptionKeys),
       error_type: f.errorType,
-      // A failure the engine classed permanent is stored already refused and
-      // finished: the replay leaves it, a person can still read it, and the 30 day
-      // retention reaches it rather than keeping its lead fields for ever.
-      replayable: f.errorType !== 'permanent',
-      status: f.errorType === 'permanent' ? 'refused' : 'pending',
-      finished_at: f.errorType === 'permanent' ? new Date().toISOString() : null,
+      // A write Salesforce rejected is stored already refused and finished: the
+      // replay leaves it, a person can still read it, and the 30 day retention
+      // reaches it rather than keeping its lead fields for ever.
+      replayable: !refused,
+      status: refused ? 'refused' : 'pending',
+      finished_at: refused ? new Date().toISOString() : null,
     }
     const { error } = await writeOutcome(
       WRITEBACK_STORE_LABEL,

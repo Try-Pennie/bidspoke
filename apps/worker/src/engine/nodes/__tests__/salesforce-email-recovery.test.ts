@@ -13,7 +13,7 @@
  *   and the retry is narrow, so it cannot make any other failure worse.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeSalesforceNode } from '../salesforce'
+import { executeSalesforceNode, salesforceAnswerOf } from '../salesforce'
 import { classifyStepError } from '../../error-classifier'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
@@ -243,6 +243,9 @@ describe('Salesforce node malformed-email recovery (#723)', () => {
     expect(caught?.message).toContain(ACCENTED_EMAIL)
     expect(caught?.permanent).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(2) // no pointless retry
+    // Salesforce did answer the write, rejecting it, so the held write capture
+    // stores it refused like any other rejection (#2054).
+    expect(salesforceAnswerOf(caught)).toEqual({ status: 400, text: INVALID_EMAIL_400 })
   })
 
   it('throws the ORIGINAL Salesforce error when the retry also fails', async () => {

@@ -61,6 +61,7 @@ So the tier-3 tier gets the one store this ADR otherwise avoids, scoped as narro
   - It is an erasure target, by run id.
   - Its columns are re-locked by the key rotation route.
   - The restore drill restores it as structure only.
+- **Refused or pending (#2054):** a row is stored already `refused` and finished only when Salesforce answered the write and rejected it, judged by `salesforceRejectedTheWrite` in `engine/nodes/salesforce.ts`, the rule the replay closes a row on, imported rather than copied so the two cannot disagree. A login refused even after the fresh one (401), a permission refusal (403), a fresh login the token endpoint refused, and a failure the node classed transient are stored `pending` and replayable: fixing the credentials clears them. The `replayable` column's database comment says the same (migration `20261015140000`).
 - **Retention:** a finished row is purged 30 days after it finishes. A pending row is never purged.
 - **Write path:** through `writeOutcome`, so it is retried and read back like any tier-2 record. It is captured outside every alert gate, since a classified Salesforce outage is when these writes fail.
 
