@@ -31,12 +31,7 @@ vi.mock('../lib/stored-copy-ledger', async (importOriginal) => ({
   flushStoredCopyLedger: (...a: unknown[]) => flushStoredCopyLedger(...a),
 }))
 
-// The guard event recorder's backoff waits are injected away, so no real time passes (L524).
-vi.mock('../lib/cron-guard-record', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../lib/cron-guard-record')>()
-  return { ...real, isolateCronGuardRecorder: real.createCronGuardRecorder({ sleep: async () => {} }) }
-})
-
+// The guard recorder's backoff takes no real time here: src/test-setup/guard-recorder.ts.
 const worker = (await import('../index')).default
 const { countCronGuardEvents } = await import('../lib/cron-guard-watch')
 
@@ -112,6 +107,12 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
+  // The real jobs run, and the five minute tick's partner reachability probe
+  // fetched oauth.prd.ffngcp.com, fdrapis-gateway.prd.fdrgcp.com and
+  // api.freedomfinancialnet.com for real: 3.7 to 10 s a run against a 5 s test
+  // timeout. This file proves the claim, not the jobs, so nothing leaves the
+  // machine (L291).
+  vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response(null, { status: 503 })))
 })
 
 describe('the scheduled handler runs each tick once (#1899)', () => {
