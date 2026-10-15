@@ -3,7 +3,7 @@
  *
  * The Commit and Ping only control is gone and no save the page makes carries
  * bid_mode, for an existing partner or a new one. The column, the Worker's
- * acceptance of it and the engine's read of it stay until the contract step,
+ * acceptance of it, and the engine's and the money gate's reads of it stay until the contract step,
  * so a partner stored as ping_only keeps that value: PR1's Worker test proves
  * an omitted bid_mode is left as stored, and this file proves the page omits it.
  *
