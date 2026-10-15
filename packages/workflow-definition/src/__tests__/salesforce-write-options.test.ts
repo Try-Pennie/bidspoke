@@ -40,6 +40,14 @@ describe('salesforceConfigProblem', () => {
     expect(salesforceConfigProblem(update({ rename_fields: value }))).toBe('rename_fields must map each field name to a new field name')
   })
 
+  it.each(['__proto__', 'constructor x', 'Engine-UUID', '9Field__c', '_Field'])(
+    'refuses a rename onto %s, which is not a Salesforce field name',
+    (target) => {
+      expect(salesforceConfigProblem(update({ rename_fields: { UUID: target } })))
+        .toBe(`rename_fields target ${target} is not a Salesforce field name`)
+    },
+  )
+
   it('refuses two fields renamed to one name, since one value would be lost', () => {
     expect(salesforceConfigProblem(update({ rename_fields: { UUID: 'X__c', leadUUID: 'X__c' } })))
       .toBe('rename_fields renames two fields to X__c, so one value would be lost')

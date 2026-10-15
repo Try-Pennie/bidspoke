@@ -20,6 +20,9 @@ const BODY_OPERATIONS = new Set(['create', 'update', 'upsert'])
 
 const fieldName = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 
+/** A Salesforce field API name: a letter, then letters, digits and underscores (custom ones end __c). */
+const SALESFORCE_FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]*$/
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** Null when the options are absent or well formed, else what is wrong, naming the option. */
@@ -36,6 +39,12 @@ export function salesforceConfigProblem(config: Record<string, unknown>): string
     const renames = config.rename_fields
     if (!isPlainObject(renames) || !Object.entries(renames).every(([from, to]) => fieldName(from) && fieldName(to))) {
       return 'rename_fields must map each field name to a new field name'
+    }
+    // A target is a Salesforce field, so it has a field's shape: a letter, then
+    // letters, digits and underscores. That also refuses __proto__, which as a
+    // key would set the body's prototype instead of a field.
+    for (const to of Object.values(renames) as string[]) {
+      if (!SALESFORCE_FIELD_NAME.test(to)) return `rename_fields target ${to} is not a Salesforce field name`
     }
     const seen = new Set<string>()
     for (const to of Object.values(renames) as string[]) {
