@@ -367,7 +367,7 @@ BEGIN
   -- Each value is typed by the column through jsonb_populate_record, so a JSON
   -- null clears a column and a value of the wrong type is refused by Postgres.
   EXECUTE format(
-    'UPDATE public.partner_configs p SET %s updated_by = $3, updated_by_email = $4, updated_by_name = $5, last_save_id = $6
+    'UPDATE public.partner_configs p SET %s updated_by = $3, updated_by_email = $4, updated_by_name = nullif($5, ''''), last_save_id = $6
        FROM jsonb_populate_record(NULL::public.partner_configs, $1) r
       WHERE p.id = $2 AND p.organization_id = $7
       RETURNING to_jsonb(p.*)',
