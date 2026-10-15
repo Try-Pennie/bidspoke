@@ -74,6 +74,10 @@ export function salesforceConfigProblem(config: Record<string, unknown>): string
 export function findSalesforceConfigProblems(nodes: readonly NodeDefLike[]): ValidationError[] {
   const problems: ValidationError[] = []
   for (const node of nodes) {
+    // A caller's definition is unchecked JSON, so an entry may not be an object at
+    // all. That is not a Salesforce step, and not this rule's to refuse: skipping
+    // it keeps each route answering exactly as it did before this rule existed.
+    if (typeof node !== 'object' || node === null) continue
     if (node.type !== 'salesforce') continue
     const message = salesforceConfigProblem(node.config ?? {})
     if (message) problems.push({ nodeId: node.id, namespace: node.namespace, label: node.label, message })

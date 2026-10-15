@@ -98,6 +98,11 @@ describe('the options at save', () => {
     expect(validateWorkflowDef(others, edges)).toEqual([])
   })
 
+  it('findSalesforceConfigProblems skips node entries that are not objects, leaving them to the checks that own node shape', () => {
+    const entries = [null, undefined, 5, 'x', node(update({ omit_fields: 'x' }))] as unknown as NodeDefLike[]
+    expect(findSalesforceConfigProblems(entries).map((e) => [e.namespace, e.message])).toEqual([['post', 'omit_fields must be a list of field names']])
+  })
+
   it('findSalesforceConfigProblems names every malformed Salesforce step, attached or not', () => {
     const problems = findSalesforceConfigProblems([
       node(update({ rename_fields: ['x'] })),
