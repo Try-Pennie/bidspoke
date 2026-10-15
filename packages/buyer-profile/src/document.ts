@@ -11,6 +11,7 @@
  * from JSON without this would fail far away from the cause.
  */
 import { clickDeliveryFromDocument, type ClickDeliveryDocument, type ClickRoute } from './click-delivery'
+import { DISPLAY_TIME_ZONES, isDisplayTimeZone, type DisplayTimeZone } from './clock'
 import type { BuyerProfile } from './eligibility'
 import { SOLD_ON, type SoldOn } from './vocab'
 
@@ -62,6 +63,14 @@ export interface BuyerProfileDocument {
    * save_buyer_profile keeps what is stored, so it is never blanked by omission.
    */
   click_delivery?: ClickDeliveryDocument | null
+  /**
+   * The zone the page shows this buyer's hours and reset times in (#2143). The
+   * hours are stored and judged in Eastern whatever it says. Null means never
+   * chosen, shown in Eastern. ABSENT means the sender did not speak about it,
+   * and the save keeps what is stored, so a sender from before the column
+   * cannot blank it by omission.
+   */
+  display_time_zone?: DisplayTimeZone | null
 }
 
 export interface DocumentFieldError {
@@ -184,6 +193,14 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     click_delivery = parseClickDelivery(raw.click_delivery, err)
   }
 
+  let display_time_zone: DisplayTimeZone | null | undefined
+  if (raw.display_time_zone === null) {
+    display_time_zone = null
+  } else if (raw.display_time_zone !== undefined) {
+    if (isDisplayTimeZone(raw.display_time_zone)) display_time_zone = raw.display_time_zone
+    else err('display_time_zone', `display_time_zone must be one of ${DISPLAY_TIME_ZONES.join(', ')}.`)
+  }
+
   if (raw.partner_id !== undefined && typeof raw.partner_id !== 'string') err('partner_id', 'partner_id must be a string.')
   if (raw.version !== undefined && integer(raw.version) === undefined) err('version', 'version must be a whole number.')
 
@@ -205,6 +222,7 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     tiers,
   }
   if (click_delivery !== undefined) document.click_delivery = click_delivery
+  if (display_time_zone !== undefined) document.display_time_zone = display_time_zone
   if (typeof raw.partner_id === 'string') document.partner_id = raw.partner_id
   if (raw.version !== undefined) document.version = integer(raw.version) as number
   return { ok: true, document }
@@ -265,5 +283,7 @@ export function documentToProfile(doc: BuyerProfileDocument): BuyerProfile {
     tiers: doc.tiers.map((t) => ({ population: t.population, debtFrom: n(t.debt_from) ?? 0, debtTo: n(t.debt_to), multiplier: n(t.multiplier) ?? 0 })),
     // Only when the document speaks about it, so a document from before #1639 maps as it always did.
     ...(doc.click_delivery === undefined ? {} : { clickDelivery: doc.click_delivery === null ? null : clickDeliveryFromDocument(doc.click_delivery) }),
+    // Shown only, never judged; carried so validateProfile can refuse a value outside the list.
+    ...(doc.display_time_zone === undefined ? {} : { displayTimeZone: doc.display_time_zone }),
   }
 }

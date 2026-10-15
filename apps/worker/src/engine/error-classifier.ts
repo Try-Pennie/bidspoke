@@ -1,7 +1,23 @@
 import type { ErrorType } from '../types'
 import { PartnerApiError } from './partner-bid-error'
 import { containsHtmlDocument } from '../lib/html-error-summary'
-import { getBodyField, looseEquals, matchSignal, type Signal } from '@bidspoke/buyer-profile'
+import { DEFAULT_ERROR_RULES, defaultErrorRule, getBodyField, looseEquals, matchSignal, statusDecision, type Signal } from '@bidspoke/buyer-profile'
+
+/**
+ * Every default below reads its decision, statuses, markers and names from
+ * DEFAULT_ERROR_RULES (#2143, PM-11), the one list the partners page shows as
+ * Default rows, so the page cannot describe a default this file does not apply.
+ */
+export { DEFAULT_ERROR_RULES }
+
+const HTML_ERROR_PAGE = defaultErrorRule('html_error_page', 'html_error_page')
+const MARKED_PERMANENT = defaultErrorRule('marked_permanent', 'marked_permanent')
+const CODE_PROGRAMMING_ERROR = defaultErrorRule('code_programming_error', 'code_error')
+const SATURATED = defaultErrorRule('saturated', 'saturated')
+const NO_RESPONSE = defaultErrorRule('no_response', 'no_response')
+
+/** The decision for a failure with no answer at all (a network failure or a timeout), for a thrower that classifies one itself. */
+export const NO_RESPONSE_DECISION: ErrorType = NO_RESPONSE.decision
 
 // Unified classification for an error thrown by a step executor. A
 // PartnerApiError already carries an authoritative errorType (set by the
@@ -35,18 +51,13 @@ export function formatCodeErrorMessage(status: number, body: unknown): string {
   return `${base} — ${text}`
 }
 
-// PRD Section 11.1 — default classification by HTTP status
+// PRD Section 11.1: default classification by HTTP status. The listed
+// statuses (rate_limited, gateway_unavailable) are transient, likely to
+// succeed on retry; every other error status is permanent (error_status), and
+// so is an unrecognized one below it (unrecognized_status), so no retries are
+// spent on unknowns.
 export function classifyHttpError(status: number): ErrorType {
-  // Transient: likely to succeed on retry
-  if (status === 429 || status === 502 || status === 503 || status === 504) {
-    return 'transient'
-  }
-  // Permanent: 4xx (except 429) and unrecognized errors
-  if (status >= 400) {
-    return 'permanent'
-  }
-  // Default safe fallback — don't waste retries on unknowns
-  return 'permanent'
+  return statusDecision(status)
 }
 
 /**
@@ -78,7 +89,7 @@ export function classifyHttpErrorWithBody(
   bodyText: string | null | undefined,
 ): ErrorType {
   if (typeof bodyText === 'string' && bodyText.length > 0 && containsHtmlDocument(bodyText)) {
-    return 'transient'
+    return HTML_ERROR_PAGE.decision
   }
   return classifyHttpError(status)
 }
@@ -86,7 +97,7 @@ export function classifyHttpErrorWithBody(
 export function classifyTransportError(err: unknown): ErrorType {
   // Caller-marked permanent errors (e.g. Branch node's else=error case) skip retry
   if (err && typeof err === 'object' && (err as { permanent?: boolean }).permanent === true) {
-    return 'permanent'
+    return MARKED_PERMANENT.decision
   }
   // A deterministic programming error thrown inside a code-node sandbox
   // (TypeError reading an undefined step, ReferenceError, etc.) can never
@@ -97,27 +108,18 @@ export function classifyTransportError(err: unknown): ErrorType {
   if (err && typeof err === 'object') {
     const codeErrorName = (err as { codeErrorName?: string }).codeErrorName
     const message = err instanceof Error ? err.message : ''
-    if (isDeterministicCodeError(codeErrorName, message)) return 'permanent'
+    if (isDeterministicCodeError(codeErrorName, message)) return CODE_PROGRAMMING_ERROR.decision
   }
-  // Network failures, timeouts, DNS errors are always transient
-  return 'transient'
+  // Network failures, timeouts, DNS errors (no_response)
+  return NO_RESPONSE.decision
 }
 
-// Native error constructors that signal a deterministic bug in a code-node
-// script. These never resolve on retry.
-const DETERMINISTIC_CODE_ERROR_NAMES = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError']
-
+// The native error constructors that signal a deterministic bug in a code-node
+// script, which never resolves on retry, are code_programming_error's names.
 // fetch() network failures in Workers also reject with a TypeError, so a
-// TypeError carrying one of these messages is a transient network blip, not a
-// programming bug — keep retrying those. Matched case-insensitively.
-const NETWORK_FAILURE_MARKERS = [
-  'fetch failed',
-  'failed to fetch',
-  'network connection lost',
-  'the network connection was lost',
-  'connection was closed',
-  'connection lost',
-]
+// TypeError carrying one of its unlessMessageContains markers is a transient
+// network blip, not a programming bug, and keeps retrying. Matched
+// case-insensitively.
 
 /**
  * True when a code-node sandbox error is a deterministic programming error that
@@ -126,10 +128,10 @@ const NETWORK_FAILURE_MARKERS = [
  * excluded — those stay transient so genuine network blips still retry.
  */
 export function isDeterministicCodeError(errorName: string | undefined, message: string): boolean {
-  if (!errorName || !DETERMINISTIC_CODE_ERROR_NAMES.includes(errorName)) return false
-  if (errorName === 'TypeError') {
+  if (!errorName || !CODE_PROGRAMMING_ERROR.match.names.includes(errorName)) return false
+  if (errorName === CODE_PROGRAMMING_ERROR.match.networkFailureName) {
     const lower = message.toLowerCase()
-    if (NETWORK_FAILURE_MARKERS.some((m) => lower.includes(m))) return false
+    if (CODE_PROGRAMMING_ERROR.match.unlessMessageContains.some((m) => lower.includes(m))) return false
   }
   return true
 }
@@ -287,11 +289,10 @@ export function shouldSuppressAlert(
 // re-enters the gate and adds zero SF load, the opposite of REQUEST_LIMIT_EXCEEDED
 // (whose retry hits SF). It must stay retryable so a lead rides out a brief SF
 // slowdown; do not add it as a saturation marker.
-const SATURATION_MARKERS = ['REQUEST_LIMIT_EXCEEDED']
-
+// The markers are the saturated rule's.
 export function isSaturationError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   if ((err as { saturated?: boolean }).saturated === true) return true
   const message = err instanceof Error ? err.message : ''
-  return SATURATION_MARKERS.some((m) => message.includes(m))
+  return SATURATED.match.markers.some((m) => message.includes(m))
 }
