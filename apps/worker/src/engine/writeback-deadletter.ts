@@ -38,7 +38,7 @@ import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LAB
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
 
-/** A held update no read-back covers yet, declared in the leaf label module (#2163). */
+/** A timed out or cut off update whose request the at-risk watch holds, on any object, declared in the leaf label module (#2163). */
 export { WRITEBACK_HELD_LABEL }
 
 /**
