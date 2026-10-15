@@ -84,7 +84,7 @@ A POST to `/services/apexrest/credit-inquiries` attaches a new file to the Lead 
 - the engine never retries it (`retries` is read as 0);
 - a body whose `inquiriesJson` holds an empty `inquiries` list, or none, is skipped with `nothing_to_write`, flag or not: the endpoint writes nothing for the first and answers 500 for the second;
 - a body the endpoint cannot read (no Submission id, or `inquiriesJson` that is not the JSON text of `{ inquiries: [...] }`) fails the step before any call, including a null body without `skip_when_empty`;
-- on a live run, the post is recorded in KV before it is sent and cleared on a confirmed answer; one whose outcome is unknown is read back by the Lead's `Inquiries_<leadId>` file and resent at most once ([the write contract](../salesforce-post-answer-write-contract.md), "The credit inquiry post's read-back").
+- on a live run, the post is recorded in KV before it is sent and cleared on a confirmed answer; one whose outcome is unknown is read back by the Lead's `Inquiries_<leadId>` file and resent at most once (the repository's `docs/salesforce-post-answer-write-contract.md`, "The credit inquiry post's read-back").
 
 ### Expected errors
 
