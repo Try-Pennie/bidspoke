@@ -29,6 +29,7 @@ function incident(over: Partial<Incident>): Incident {
     state: 'ended',
     duration: '1 hour 32 minutes',
     pages_sent: 2,
+    failed_runs: null,
     ...over,
   }
 }
@@ -202,5 +203,42 @@ describe('IncidentsSection', () => {
     rerender(<IncidentsSection days={7} load={load} now={clock(NOW)} refreshKey={2} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Timed out after 30s.')
     expect(screen.queryByText(/No incidents/)).not.toBeInTheDocument()
+  })
+
+  describe("a failure rate row's failed runs (#2102)", () => {
+    const WF = 'aaaaaaaa-0000-4000-8000-000000000001'
+
+    async function pagesCell(failed_runs: Incident['failed_runs']) {
+      render(<IncidentsSection days={7} load={vi.fn().mockResolvedValue(page([incident({ id: 'inc-1', failed_runs })]))} now={clock(NOW)} />)
+      const row = (await screen.findByText('Engine Bidding: "ACRO_GATEWAY"')).closest('li') as HTMLElement
+      return row
+    }
+
+    it('reads "2 Slack pages, 12 failed runs", the count a link into the workflow narrowed to them', async () => {
+      const row = await pagesCell({ workflow_id: WF, state: 'counted', count: 12 })
+      expect(row).toHaveTextContent('2 Slack pages, 12 failed runs')
+      const link = within(row).getByRole('link', { name: '12 failed runs' })
+      expect(link).toHaveAttribute('href', `/workflows/${WF}?incident=inc-1`)
+    })
+
+    it('says 0 failed runs as plain text, with no link', async () => {
+      const row = await pagesCell({ workflow_id: WF, state: 'counted', count: 0 })
+      expect(row).toHaveTextContent('2 Slack pages, 0 failed runs')
+      expect(within(row).queryByRole('link')).not.toBeInTheDocument()
+    })
+
+    it('shows no count and no link when none of the span is still kept', async () => {
+      const row = await pagesCell({ workflow_id: WF, state: 'not_kept' })
+      expect(row).toHaveTextContent(/2 Slack pages$/)
+      expect(row).not.toHaveTextContent(/failed run/)
+      expect(within(row).queryByRole('link')).not.toBeInTheDocument()
+    })
+
+    it('leaves out a count that could not be read, rather than showing 0, and keeps the row', async () => {
+      const row = await pagesCell({ workflow_id: WF, state: 'unreadable' })
+      expect(row).toHaveTextContent('2:34 PM to 4:06 PM')
+      expect(row).toHaveTextContent(/2 Slack pages$/)
+      expect(row).not.toHaveTextContent(/failed run/)
+    })
   })
 })

@@ -830,7 +830,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution, focusNodeId }: {
+function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution, focusNodeId, incidentId, onClearIncident }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   onModeChange?: (mode: 'edit' | 'view') => void
@@ -846,6 +846,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   onClearExecution?: () => void
   onSelectExecution?: (execId: string) => void
   focusNodeId?: string
+  incidentId?: string
+  onClearIncident?: () => void
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow()
@@ -3132,6 +3134,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             selectedId={executionId}
             onSelect={selectExecution}
             refreshSignal={refreshSignal}
+            incidentId={incidentId}
+            onClearIncident={onClearIncident}
           />
         )}
 
@@ -3908,6 +3912,8 @@ export default function WorkflowCanvas({
   onClearExecution,
   onSelectExecution,
   focusNodeId,
+  incidentId,
+  onClearIncident,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -3925,6 +3931,9 @@ export default function WorkflowCanvas({
   onSelectExecution?: (execId: string) => void
   /** Node to select and center on load (e.g. from a config-warning deep link `?node=`). */
   focusNodeId?: string
+  /** The failure rate incident the run list is narrowed to (`?incident=`, #2102). */
+  incidentId?: string
+  onClearIncident?: () => void
 }) {
   return (
     <ReactFlowProvider>
@@ -3945,6 +3954,8 @@ export default function WorkflowCanvas({
         onClearExecution={onClearExecution}
         onSelectExecution={onSelectExecution}
         focusNodeId={focusNodeId}
+        incidentId={incidentId}
+        onClearIncident={onClearIncident}
       />
       </TimeoutSuggestionsProvider>
     </ReactFlowProvider>

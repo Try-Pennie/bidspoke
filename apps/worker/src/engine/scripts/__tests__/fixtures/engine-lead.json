@@ -1,10 +1,11 @@
 {
-  "_source": "A synthetic Engine sell off lead shaped like the live Engine Bidding Workflow's inputs (payload from Engine, constants node output, prospect_trades and create_prospect Salesforce answers), read from the bidspoke-workflows backup on 2026-09-22. No real person: every value is invented. The same inputs feed the recorded live outputs beside this file and the tests over the kept scripts.",
+  "_source": "A synthetic Engine sell off lead shaped like the live Engine Bidding Workflow's inputs (payload from Engine, constants node output, prospect_trades and create_prospect Salesforce answers), read from the bidspoke-workflows backup on 2026-09-22. No real person: every value is invented. The same inputs feed the recorded live outputs beside this file and the tests over the kept scripts. loanInformation was added on 2026-10-15 for Tripoint's loan minimum: every live Engine lead measured on 2026-10-14 and 15 carried it, loanAmount as a number and purpose from Engine's list; the values here are invented.",
   "payload": {
     "leadUuid": "a3f9c2e1-7b44-4c1d-9e2a-0f1b2c3d4e5f",
     "subAccountUuid": "9c1e2d3f-0000-4000-8000-000000000001",
     "personalInformation": { "firstName": "jordan", "lastName": "Example", "ssn": "123-45-6789", "state": "TX", "email": "masked@masked" },
-    "financialInformation": { "annualIncome": 68500 }
+    "financialInformation": { "annualIncome": 68500 },
+    "loanInformation": { "loanAmount": 5000, "purpose": "debt_consolidation" }
   },
   "execution": { "trace_id": "trace-9f1e-example", "execution_id": "exec-example", "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840" },
   "env": { "TRIPOINT_PROXY_SECRET": "test-proxy-secret" },

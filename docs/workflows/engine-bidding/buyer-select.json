@@ -13,6 +13,7 @@
         "state": "{{trigger.payload.personalInformation.state}}",
         "retries": 0,
         "lead_key": "{{trigger.payload.leadUuid}}",
+        "loan_amount": "{{trigger.payload.loanInformation.loanAmount}}",
         "population": "engine",
         "sale_payload": {
           "set": [

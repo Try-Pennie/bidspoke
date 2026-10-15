@@ -1,0 +1,424 @@
+{
+  "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+  "name": "Forms <> Engine <> Data Store (Loan only)",
+  "definition": {
+    "trigger": {
+      "type": "http_webhook",
+      "config": {
+        "method": "POST",
+        "auth_method": "none"
+      }
+    },
+    "nodes": [
+      {
+        "id": "4328911c-57fa-4f30-8ad2-c9b9afb8887c",
+        "namespace": "send_request_to_engine",
+        "label": "Send Request to Engine",
+        "type": "code",
+        "position": {
+          "x": 364,
+          "y": 197
+        },
+        "config": {
+          "retries": 2,
+          "script": "// Fields allowed in the request body\nconst ALLOWED_FIELDS = [\n  'productTypes',\n  'personalInformation',\n  'loanInformation',\n  'mortgageInformation',\n  'creditInformation',\n  'financialInformation',\n  'educationInformation',\n  'legalInformation',\n  'sessionInformation'\n];\n\n// Format the date of birth to YYYY-MM-DD with zero-padded month/day\nfunction formatDateOfBirth(dateString) {\n  if (!dateString) return dateString;\n\n  // Split the date string by hyphens\n  const parts = dateString.split('-');\n\n  // Check if we have exactly 3 parts (year, month, day)\n  if (parts.length !== 3) return dateString;\n\n  const [year, month, day] = parts;\n\n  // Pad month and day with leading zeros if needed\n  const paddedMonth = month.padStart(2, '0');\n  const paddedDay = day.padStart(2, '0');\n\n  return `${year}-${paddedMonth}-${paddedDay}`;\n}\n\n// Remove fields that are not in the allowed list\nfunction sanitizeRequestBody(body) {\n  const sanitizedBody = {};\n\n  for (const field of ALLOWED_FIELDS) {\n    if (field in body) {\n      sanitizedBody[field] = body[field];\n    }\n  }\n\n  return sanitizedBody;\n}\n\n// Apply hardcoded defaults and override values in the request body\nfunction applyBusinessDefaults(body) {\n  const result = {\n    ...body,\n    // Override product types to loans only\n    productTypes: ['loan'],\n\n    // Ensure legal information structure and set TCPA consent\n    legalInformation: {\n      ...body.legalInformation,\n      consentsToTcpa: false\n    },\n\n    // Ensure credit information structure and set default rating\n    creditInformation: {\n      ...body.creditInformation,\n      providedCreditRating: body.creditInformation?.providedCreditRating || 'fair'\n    }\n  };\n\n  // Format date of birth if present\n  if (result.personalInformation?.dateOfBirth) {\n    result.personalInformation = {\n      ...result.personalInformation,\n      dateOfBirth: formatDateOfBirth(result.personalInformation.dateOfBirth)\n    };\n  }\n\n  return result;\n}\n\n// Single request attempt, no retry logic here\nasync function makeRequest(body) {\n  const url = 'https://integrations.evenfinancial.com/blocking/leads/rateTables';\n  const headers = {\n    'Content-Type': 'application/json',\n    'Authorization': `Bearer ${env.ENGINE_API_PRODUCTION_TOKEN}`,\n  };\n\n  console.log(body);\n\n  try {\n    const response = await fetch(url, {\n      method: 'POST',\n      headers,\n      body: JSON.stringify(body)\n    });\n\n    // Parse the response body: JSON when possible, raw text otherwise\n    const text = await response.text();\n    let data;\n    try {\n      data = JSON.parse(text);\n    } catch {\n      data = text;\n    }\n\n    // For successful responses (200 or 201), return the response body as is\n    if (response.status === 200 || response.status === 201) {\n      return {\n        error: false,\n        statusCode: response.status,\n        data: data,\n      };\n    }\n\n    // Other 2xx statuses (axios resolved these without throwing)\n    if (response.status >= 200 && response.status < 300) {\n      return {\n        error: true,\n        statusCode: response.status,\n        message: data?.message,\n      };\n    }\n\n    // Non-2xx: the server responded with an error status.\n    // Mirrors axios: message is the full response body, or the\n    // axios-style fallback when the body is empty.\n    return {\n      error: true,\n      statusCode: response.status,\n      message: data || `Request failed with status code ${response.status}`\n    };\n  } catch (error) {\n    console.log(error);\n\n    // fetch threw, so no response was received\n    return {\n      error: true,\n      statusCode: 503,\n      message: 'No response received from the server'\n    };\n  }\n}\n\n// Wrapper function that handles retry logic\nasync function makeRequestWithRetry(body) {\n  // First attempt\n  console.log(\"Making initial request to Engine...\");\n  let result = await makeRequest(body);\n\n  // If first attempt failed with 5xx error, retry once after 150ms\n  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {\n    console.log(`First request failed with ${result.statusCode}, retrying after 150ms...`);\n\n    // Wait 150ms\n    // await new Promise(resolve => setTimeout(resolve, 150));\n\n    // Retry the request\n    console.log(\"Making retry request to Engine...\");\n    result = await makeRequest(body);\n\n    if (result.error) {\n      console.log(`Retry also failed with status ${result.statusCode}`);\n    } else {\n      console.log(\"Retry request succeeded!\");\n    }\n  }\n\n  return result;\n}\n\n// Ported from Pipedream send_request_to_engine (submission id added 7-10-26)\nconst body = { ...trigger.payload };\nconst sanitizedBody = sanitizeRequestBody(body);\nconst processedBody = applyBusinessDefaults(sanitizedBody);\n\n// Add clientTags\nif (body.Submission__c) {\n  processedBody.clientTags = {\n    clientId: [body.Submission__c],\n  };\n}\n\nconsole.log('Processed request body:', processedBody);\n\nreturn await makeRequestWithRetry(processedBody);"
+        },
+        "variables": {}
+      },
+      {
+        "id": "c10d25c7-66d3-4361-afca-cbd7f770a04a",
+        "namespace": "outcome",
+        "label": "Outcome",
+        "type": "branch",
+        "position": {
+          "x": 60,
+          "y": 350
+        },
+        "config": {
+          "retries": 2,
+          "branches": [
+            {
+              "label": "success",
+              "condition": {
+                "groups": [
+                  {
+                    "conditions": [
+                      {
+                        "field": "steps.send_request_to_engine.output.error",
+                        "operator": "is_false",
+                        "value": ""
+                      }
+                    ],
+                    "logic": "AND"
+                  }
+                ],
+                "logic": "AND"
+              }
+            }
+          ],
+          "use_else": true,
+          "else_behavior": "output",
+          "else_label": "failure"
+        },
+        "variables": {}
+      },
+      {
+        "id": "6b73b365-b7bd-4c6d-8333-fc92fe98683b",
+        "namespace": "branch_end_1",
+        "type": "branch_end",
+        "position": {
+          "x": 364,
+          "y": 1590.5
+        },
+        "config": {},
+        "variables": {}
+      },
+      {
+        "id": "ed841087-daa5-443c-9a06-434073319f41",
+        "namespace": "return_failure_response",
+        "label": "Return Failure Response",
+        "type": "response",
+        "position": {
+          "x": 516,
+          "y": 531
+        },
+        "config": {
+          "retries": 2,
+          "status_code": "{{steps.send_request_to_engine.output.statusCode}}",
+          "body": "{{steps.send_request_to_engine.output.message}}",
+          "headers": {},
+          "continue_after_response": true
+        },
+        "variables": {}
+      },
+      {
+        "id": "368b5d57-c820-4b48-adca-dec5f7190237",
+        "namespace": "get_lead_id",
+        "label": "Get Lead ID",
+        "type": "salesforce",
+        "position": {
+          "x": 516,
+          "y": 698
+        },
+        "config": {
+          "retries": 2,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ],
+          "operation": "query",
+          "soql": "SELECT Lead__c FROM Submission__c WHERE Submission_Object_ID_SO__c = '{{trigger.payload.Submission__c}}'"
+        },
+        "variables": {}
+      },
+      {
+        "id": "93e48625-ef4d-47f6-acd0-49276538c2c0",
+        "namespace": "get_lead_info",
+        "label": "Get Lead Info",
+        "type": "salesforce",
+        "position": {
+          "x": 516,
+          "y": 865
+        },
+        "config": {
+          "retries": 2,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ],
+          "operation": "query",
+          "soql": "select Regal_Assigned_Agent__c, Record_Id__c from lead where Record_Id__c = '{{steps.get_lead_id.output.body.records[0].Lead__c}}'"
+        },
+        "variables": {}
+      },
+      {
+        "id": "7a72f0af-8395-4e3e-955a-3ab098fc1ca1",
+        "namespace": "send_to_slack_geoff",
+        "label": "Send to Slack Geoff",
+        "type": "webhook",
+        "position": {
+          "x": 516,
+          "y": 1018
+        },
+        "config": {
+          "retries": 2,
+          "service_label": "Slack",
+          "url": "https://hooks.slack.com/triggers/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",
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "pd_link": "{{execution.bidspoke_link}}",
+            "user_email": "{{trigger.payload.personalInformation.email}}",
+            "sfdc_link": "https://trypennie.lightning.force.com/lightning/r/Lead/{{steps.get_lead_info.output.body.records[0].Record_Id__c}}/view",
+            "error_reason": "{{steps.return_failure_response.output.body[0].message}}",
+            "owner_email": "{{steps.get_lead_info.output.body.records[0].Regal_Assigned_Agent__c}}"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "e80aea27-fe52-44d0-938f-9c313619d503",
+        "type": "code",
+        "label": "Sign Submission Link",
+        "config": {
+          "script": "// Builds the submit link the agent's Slack message carries (#2092). trypennie.com refuses\n// it for a submission created after its cutoff unless it carries the link token, and a\n// webhook node cannot sign, so this node signs it and send_to_slack_agent sends\n// steps.sign_submission_link.output.url.\n// The hosts that get the link token (#2092): the block below signs a link to these only.\nconst LINK_TOKEN_HOSTS = ['trypennie.com', 'www.trypennie.com'];\n// BEGIN link token (#2089)\n// trypennie.com refuses a link to a Salesforce record created after its cutoff unless the\n// link carries ?t=<token>: HMAC-SHA256 of the first 15 characters of the record id, keyed\n// with LINK_TOKEN_SECRET, base64url with no padding, and reservemyloan.com is to check the\n// same token. Salesforce's LinkToken class and the Pipedream helpers sign exactly the same\n// way. Only a host in LINK_TOKEN_HOSTS, which each script sets just above this block, gets\n// the token, never a partner's domain. With no secret the link goes out unsigned, an error\n// is logged and `link_token` on this step's output says why; the run is never failed for\n// it. This block is identical in every script that signs a link, and link-token.test.ts\n// holds them all to one text (#2092).\nconst SALESFORCE_ID = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;\nconst withLinkToken = async (url, recordId) => {\n  let host = null;\n  try { host = new URL(url).hostname; } catch {}\n  if (!LINK_TOKEN_HOSTS.includes(host)) return { url, link_token: 'not_our_host' };\n  if (typeof recordId !== 'string' || !SALESFORCE_ID.test(recordId)) return { url, link_token: 'no_record_id' };\n  const secret = env.LINK_TOKEN_SECRET;\n  if (typeof secret !== 'string' || !secret) {\n    console.error('LINK_TOKEN_SECRET is not set, so the link went out without its token (#2089)');\n    return { url, link_token: 'missing_secret' };\n  }\n  try {\n    const enc = new TextEncoder();\n    const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);\n    const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(recordId.slice(0, 15))));\n    let binary = '';\n    for (const byte of signature) binary += String.fromCharCode(byte);\n    const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');\n    return { url: `${url}${url.includes('?') ? '&' : '?'}t=${token}`, link_token: 'signed' };\n  } catch (err) {\n    console.error(`signing the link failed, so it went out without its token (#2089): ${err && err.message}`);\n    return { url, link_token: 'sign_failed' };\n  }\n};\n// END link token (#2089)\n\nconst submissionId = trigger.payload.Submission__c ?? '';\nconst submissionLink = await withLinkToken(`https://trypennie.com/submit?submission_id=${submissionId}`, submissionId);\nreturn { url: submissionLink.url, link_token: submissionLink.link_token };",
+          "retries": 2
+        },
+        "position": {
+          "x": 516,
+          "y": 1189
+        },
+        "namespace": "sign_submission_link",
+        "variables": {}
+      },
+      {
+        "id": "b8066042-e0b0-4fb5-9808-1fe4631c71e3",
+        "namespace": "send_to_slack_agent",
+        "label": "Send to Slack Agent",
+        "type": "webhook",
+        "position": {
+          "x": 516,
+          "y": 1359
+        },
+        "config": {
+          "retries": 2,
+          "service_label": "Slack",
+          "url": "https://hooks.slack.com/triggers/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",
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "pd_link": "{{execution.bidspoke_link}}",
+            "user_email": "{{trigger.payload.personalInformation.email}}",
+            "error_reason": "{{steps.return_failure_response.output.body[0].message}}",
+            "owner_email": "{{steps.get_lead_info.output.body.records[0].Regal_Assigned_Agent__c}}",
+            "submission_link": "{{steps.sign_submission_link.output.url}}"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "307b81cc-ad5b-4a32-91bd-ee9cfd010898",
+        "namespace": "end_workflow",
+        "label": "End Workflow",
+        "type": "exit",
+        "position": {
+          "x": 516,
+          "y": 1559.5
+        },
+        "config": {
+          "retries": 2
+        },
+        "variables": {}
+      },
+      {
+        "id": "36e37895-5092-4a0c-829a-6d7a90273511",
+        "namespace": "store_engine_uuid",
+        "label": "Store Engine UUID",
+        "type": "data_store",
+        "position": {
+          "x": 364,
+          "y": 1664.5
+        },
+        "config": {
+          "retries": 2,
+          "store": "submissions",
+          "operation": "set",
+          "key": "{{trigger.payload.Submission__c}}",
+          "value": "{{steps.send_request_to_engine.output.data.uuid}}"
+        },
+        "variables": {}
+      },
+      {
+        "id": "36cb4544-b4bf-4d91-8b42-4448c4b02d04",
+        "namespace": "return_success_response",
+        "label": "Return Success Response",
+        "type": "response",
+        "position": {
+          "x": 364,
+          "y": 1845.5
+        },
+        "config": {
+          "retries": 2,
+          "status_code": 200,
+          "body": "{{steps.send_request_to_engine.output.data}}",
+          "headers": {},
+          "continue_after_response": true
+        },
+        "variables": {}
+      },
+      {
+        "id": "d690eeb9-50e4-49bb-ac7e-a999cbcb646d",
+        "namespace": "soql_search",
+        "label": "SOQL Search",
+        "type": "salesforce",
+        "position": {
+          "x": 364,
+          "y": 2000.5
+        },
+        "config": {
+          "retries": 2,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ],
+          "operation": "query",
+          "soql": "SELECT Submission_Object_ID_SO__c FROM Submission__c where (Lead_Object_ID_SO__c = '{{trigger.payload.Submission__c}}' OR Submission_Object_ID_SO__c = '{{trigger.payload.Submission__c}}')"
+        },
+        "variables": {}
+      },
+      {
+        "id": "63ef5ecc-8672-4f46-bbf5-cdc5c14192f3",
+        "namespace": "submission_found_filter",
+        "label": "Submission Found Filter",
+        "type": "filter",
+        "position": {
+          "x": 364,
+          "y": 2155.5
+        },
+        "config": {
+          "retries": 2,
+          "condition": {
+            "operator": "exists",
+            "field": "steps.soql_search.output.body.records[0].Submission_Object_ID_SO__c"
+          }
+        },
+        "variables": {}
+      },
+      {
+        "id": "848bac1a-f66f-488a-a9b5-eaec1082979c",
+        "namespace": "update_submission_record",
+        "label": "Update Submission Record",
+        "type": "salesforce",
+        "position": {
+          "x": 820,
+          "y": 2340.5
+        },
+        "config": {
+          "retries": 2,
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ],
+          "operation": "update",
+          "object": "Submission__c",
+          "record_id": "{{steps.soql_search.output.body.records[0].Submission_Object_ID_SO__c}}",
+          "body": {
+            "Engine_Lead_UUID_SO__c": "{{steps.send_request_to_engine.output.data.leadUuid}}",
+            "Engine_UUID_SO__c": "{{steps.send_request_to_engine.output.data.uuid}}",
+            "PDFlow_2__c": "{{execution.bidspoke_link}}"
+          }
+        },
+        "variables": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "d7d649cf-d7c3-4d0b-9f31-e58a4c576b02",
+        "source": "trigger",
+        "target": "4328911c-57fa-4f30-8ad2-c9b9afb8887c",
+        "source_handle": "output"
+      },
+      {
+        "id": "5f6c546d-15a2-4b58-85b8-b419c07100a1",
+        "source": "c10d25c7-66d3-4361-afca-cbd7f770a04a",
+        "target": "6b73b365-b7bd-4c6d-8333-fc92fe98683b",
+        "source_handle": "output",
+        "hidden": true
+      },
+      {
+        "id": "3f1fdf87-1b84-4b3f-91b1-c0c23745ca3b",
+        "source": "4328911c-57fa-4f30-8ad2-c9b9afb8887c",
+        "target": "c10d25c7-66d3-4361-afca-cbd7f770a04a",
+        "source_handle": "output"
+      },
+      {
+        "id": "74351522-6d74-4c74-83b3-6c6180729149",
+        "source": "c10d25c7-66d3-4361-afca-cbd7f770a04a",
+        "target": "6b73b365-b7bd-4c6d-8333-fc92fe98683b",
+        "source_handle": "success"
+      },
+      {
+        "id": "2b0882dd-878f-4e5c-9664-3f7e683129fc",
+        "source": "c10d25c7-66d3-4361-afca-cbd7f770a04a",
+        "target": "ed841087-daa5-443c-9a06-434073319f41",
+        "source_handle": "else"
+      },
+      {
+        "id": "643ed902-4506-4bc2-a374-d704c12e0922",
+        "source": "ed841087-daa5-443c-9a06-434073319f41",
+        "target": "368b5d57-c820-4b48-adca-dec5f7190237",
+        "source_handle": "output"
+      },
+      {
+        "id": "fb4b119a-6b93-4de3-a2c1-456ea5954cdd",
+        "source": "368b5d57-c820-4b48-adca-dec5f7190237",
+        "target": "93e48625-ef4d-47f6-acd0-49276538c2c0",
+        "source_handle": "output"
+      },
+      {
+        "id": "c4ec83be-7718-4600-ba8c-b4b9f6386710",
+        "source": "93e48625-ef4d-47f6-acd0-49276538c2c0",
+        "target": "7a72f0af-8395-4e3e-955a-3ab098fc1ca1",
+        "source_handle": "output"
+      },
+      {
+        "id": "ec9d63e7-db97-49b0-9e4b-86e97281312b",
+        "source": "7a72f0af-8395-4e3e-955a-3ab098fc1ca1",
+        "target": "e80aea27-fe52-44d0-938f-9c313619d503",
+        "source_handle": "output"
+      },
+      {
+        "id": "ef0099d5-1980-4fc5-b51d-f1786de57582",
+        "source": "e80aea27-fe52-44d0-938f-9c313619d503",
+        "target": "b8066042-e0b0-4fb5-9808-1fe4631c71e3",
+        "source_handle": "output"
+      },
+      {
+        "id": "df28fa88-25d4-4b57-9839-5dc7f4596549",
+        "source": "b8066042-e0b0-4fb5-9808-1fe4631c71e3",
+        "target": "307b81cc-ad5b-4a32-91bd-ee9cfd010898",
+        "source_handle": "output"
+      },
+      {
+        "id": "ab15c3ae-678f-45df-b14d-65d7b2731722",
+        "source": "6b73b365-b7bd-4c6d-8333-fc92fe98683b",
+        "target": "36e37895-5092-4a0c-829a-6d7a90273511",
+        "source_handle": "output"
+      },
+      {
+        "id": "aaab231d-02e2-488e-b84c-6073860a9e9b",
+        "source": "36e37895-5092-4a0c-829a-6d7a90273511",
+        "target": "36cb4544-b4bf-4d91-8b42-4448c4b02d04",
+        "source_handle": "output"
+      },
+      {
+        "id": "e974a672-d6d5-4038-947e-007e144fb06c",
+        "source": "36cb4544-b4bf-4d91-8b42-4448c4b02d04",
+        "target": "d690eeb9-50e4-49bb-ac7e-a999cbcb646d",
+        "source_handle": "output"
+      },
+      {
+        "id": "8ded53f0-b7a0-4192-976b-bbbb566bb49a",
+        "source": "d690eeb9-50e4-49bb-ac7e-a999cbcb646d",
+        "target": "63ef5ecc-8672-4f46-bbf5-cdc5c14192f3",
+        "source_handle": "output"
+      },
+      {
+        "id": "341a7090-deea-4063-ac87-ae10b7c87c15",
+        "source": "63ef5ecc-8672-4f46-bbf5-cdc5c14192f3",
+        "target": "848bac1a-f66f-488a-a9b5-eaec1082979c",
+        "source_handle": "pass"
+      }
+    ]
+  }
+}

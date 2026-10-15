@@ -61,9 +61,55 @@ import BUILD_RESPONSE_BODY_BEFORE_2089_RAW from './fixtures/build_response_body.
 import LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW from './fixtures/lead_economy_return_response.canvas-before-2089.txt?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import LEAD_ECONOMY_RETURN_RESPONSE_RAW from '../../engine/scripts/lead-economy/return_response.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_RESPONSE_BODY_BEFORE_2092_RAW from './fixtures/build_response_body.canvas-before-2092.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2092_RAW from './fixtures/lead_economy_return_response.canvas-before-2092.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import RML_LENDSWIFT_BEFORE_2092_RAW from './fixtures/rml_lendswift_build_response.canvas-before-2092.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import RML_GIGFI_BEFORE_2092_RAW from './fixtures/rml_gigfi_build_response.canvas-before-2092.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BIDDING_LENDSWIFT_BEFORE_2092_RAW from './fixtures/bidding_lendswift_build_response.canvas-before-2092.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import RML_LENDSWIFT_RAW from '../../engine/scripts/rml-lendswift/build_response.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import RML_GIGFI_RAW from '../../engine/scripts/rml-gigfi/build_response.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BIDDING_LENDSWIFT_RAW from '../../engine/scripts/bidding-lendswift/build_response.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import SIGN_SUBMISSION_LINK_RAW from '../../engine/scripts/forms-engine/sign_submission_link.js?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import TRIPOINT_PING_BEFORE_LOAN_FLOOR_RAW from './fixtures/tripoint_ping.canvas-before-loan-floor.txt?raw'
 /** The canvas scripts the #2089 edits were derived from, read from the mirror on 2026-10-14. */
 const BEFORE_2089_BUILD_RESPONSE_BODY = (BUILD_RESPONSE_BODY_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
 const BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE = (LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
+/**
+ * The canvas scripts the #2092 edits were derived from, exactly as the mirror held
+ * them on 2026-10-15 (no newline trimmed: their hashes are the baselines).
+ */
+const BEFORE_2092 = {
+  build_response_body: BUILD_RESPONSE_BODY_BEFORE_2092_RAW as string,
+  lead_economy_return_response: LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2092_RAW as string,
+  rml_lendswift: RML_LENDSWIFT_BEFORE_2092_RAW as string,
+  rml_gigfi: RML_GIGFI_BEFORE_2092_RAW as string,
+  bidding_lendswift: BIDDING_LENDSWIFT_BEFORE_2092_RAW as string,
+}
+
+/**
+ * A script with its link signing taken out: the host list and the helper block
+ * (from the host list's comment, or the BEGIN marker where there is no list, to the
+ * END marker line). What is left is everything a #2092 paste must not change.
+ */
+function withoutSigningBlock(script: string): string {
+  const begin = script.indexOf('// BEGIN link token (#2089)')
+  const hosts = script.indexOf('// The hosts that get the link token')
+  const start = hosts >= 0 && hosts < begin ? hosts : begin
+  const endMarker = '// END link token (#2089)\n'
+  const end = script.indexOf(endMarker)
+  if (begin < 0 || end < 0) throw new Error('no link token block')
+  return script.slice(0, start) + script.slice(end + endMarker.length)
+}
 const LIBERTY1_ON_DISK: Record<string, string> = {
   'resolve_click_input.js': RESOLVE_CLICK_INPUT_RAW as string,
   'pick_click_record.js': PICK_CLICK_RECORD_RAW as string,
@@ -100,15 +146,34 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance: the canvas holds all four, the #2089 paste of build_response_body (2026-10-14 2:25 PM ET) included, so any difference is a drift or a missing node', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS) {
+  it('carry no canvas baseline and no new node allowance, tripoint_ping apart: the canvas holds the other three, the #2092 save of build_response_body included, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'tripoint_ping')) {
       expect(kept.newNodeSince, kept.file).toBeUndefined()
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
     }
   })
 
-  it('build_response_body pages a canvas put back to its pre #2089 script as a drift, now that the paste has landed (#2093)', async () => {
+  it('tripoint_ping awaits its loan minimum paste: the canvas script it was derived from reads as awaiting, not drift', async () => {
+    // The canvas script as the live definition held it on 2026-10-15, exactly (its hash is the baseline).
+    const before = TRIPOINT_PING_BEFORE_LOAN_FLOOR_RAW as string
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'tripoint_ping')!
+    expect(kept.newNodeSince).toBeUndefined()
+    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(before))
+    expect(kept.baselineReadOn).toBe('2026-10-15')
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'tripoint_ping', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
+  })
+
+  it('build_response_body pages a canvas put back to its #2089 script as a drift, now that the #2092 save landed (2026-10-15 10:16 AM ET)', async () => {
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.build_response_body), 'Engine Bidding Workflow'))[0].state).toBe('drift')
+    expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
+  })
+
+  it('build_response_body still pages a canvas put back to its pre #2089 script as a drift (#2093)', async () => {
     // A restore of the old script would send every offer link out unsigned, and
     // trypennie.com refuses those for records created after its cutoff.
     const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
@@ -116,19 +181,20 @@ describe('the kept scripts the check compares', () => {
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
     const [restored] = await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow')
     expect(restored.state).toBe('drift')
-    const [agree] = await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow')
-    expect(agree.state).toBe('agree')
     const [drift] = await judgeKeptScripts([kept], definition(before + '\n// edited'), 'Engine Bidding Workflow')
     expect(drift.state).toBe('drift')
   })
 
-  it('build_response_body differs from the canvas script it was derived from only by the #2089 link token', () => {
+  it('build_response_body differs from its #2092 baseline only inside the link token block and its host list, so the paste changes no offer', () => {
     const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script
-    const end = '// END link token (#2089)\n'
-    const block = kept.slice(kept.indexOf('// BEGIN link token (#2089)'), kept.indexOf(end) + end.length)
+    expect(withoutSigningBlock(kept).replace(/[\r\n]+$/, '')).toBe(withoutSigningBlock(BEFORE_2092.build_response_body).replace(/[\r\n]+$/, ''))
+  })
+
+  it('build_response_body differs from the canvas script before #2089 only by the link token', () => {
+    const kept = withoutSigningBlock(KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script)
     const wiring = "\nconst prospectId = steps.create_prospect.output.body.id;\n// A click sale's landing page already carries the prospect id (#1544).\nconst offerLink = await withLinkToken(clickSale ? redirectUrl : redirectUrl + `/${prospectId}`, prospectId);\n\n"
     const undone = kept
-      .replace(block + wiring, '')
+      .replace(wiring, '')
       .replace('        click_url:    offerLink.url,', "        // A click sale's landing page already carries the prospect id (#1544).\n        click_url:    clickSale ? redirectUrl : redirectUrl + `/${steps.create_prospect.output.body.id}`,")
       .replace('  link_token: offerLink.link_token,\n', '')
       .replace(/[\r\n]+$/, '')
@@ -393,7 +459,7 @@ describe('endingOf', () => {
 describe('Lead Economy (#2089)', () => {
   const leadEconomy = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'lead-economy')
 
-  it('is watched on its live workflow with return_response, the file on disk, with no baseline now its #2089 paste has landed (#2093)', async () => {
+  it('is watched on its live workflow with return_response, the file on disk, with no baseline now its #2092 save has landed', async () => {
     expect(leadEconomy?.workflowId).toBe('89b1a6af-7e0f-43de-bc66-1e888184551f')
     expect(leadEconomy?.configSources).toEqual([])
     expect(leadEconomy?.scripts.map((k) => k.namespace)).toEqual(['return_response'])
@@ -404,23 +470,89 @@ describe('Lead Economy (#2089)', () => {
     expect(kept.canvasBaselineSha256).toBeNull()
     expect(kept.baselineReadOn).toBeNull()
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'return_response', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.lead_economy_return_response), 'Lead Economy'))[0].state).toBe('drift')
     // Put back to the script before #2089, every offer link goes out unsigned, so it pages.
     expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE), 'Lead Economy'))[0].state).toBe('drift')
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Lead Economy'))[0].state).toBe('agree')
     expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE + '\n// edited'), 'Lead Economy'))[0].state).toBe('drift')
   })
 
-  it('differs from the canvas script it was derived from only by the #2089 link token', () => {
+  it('differs from its #2092 baseline only inside the link token block and its host list', () => {
+    const kept = leadEconomy!.scripts[0].script
+    expect(withoutSigningBlock(kept).replace(/[\r\n]+$/, '')).toBe(withoutSigningBlock(BEFORE_2092.lead_economy_return_response).replace(/[\r\n]+$/, ''))
+  })
+
+  it('differs from the canvas script before #2089 only by the link token', () => {
     // Everything else in the kept file is the live script byte for byte, so the paste
     // changes nothing but the offer link.
-    const kept = leadEconomy!.scripts[0].script
-    const block = kept.slice(kept.indexOf('// BEGIN link token (#2089)'), kept.indexOf('// END link token (#2089)\n') + '// END link token (#2089)\n'.length)
+    const kept = withoutSigningBlock(leadEconomy!.scripts[0].script)
     const undone = kept
-      .replace(block + '\nconst prospectId = steps.create_prospect.output.body.id;\nconst offerLink = await withLinkToken(`${redirectUrl}/${prospectId}`, prospectId);\n\n', '')
+      .replace('\nconst prospectId = steps.create_prospect.output.body.id;\nconst offerLink = await withLinkToken(`${redirectUrl}/${prospectId}`, prospectId);\n\n', '')
       .replace('    click_url: offerLink.url,', '    click_url: `${redirectUrl}/${steps.create_prospect.output.body.id}`,')
       .replace(', respondedAt, link_token: offerLink.link_token };', ', respondedAt };')
       .replace(/[\r\n]+$/, '')
     expect(undone).toBe(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE)
+  })
+})
+
+describe('the RML bidding flows (#2092)', () => {
+  const RML = [
+    { folder: 'rml-lendswift', name: 'RML - Bidding Workflow (LendSwift)', id: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914', onDisk: RML_LENDSWIFT_RAW as string, before: BEFORE_2092.rml_lendswift },
+    { folder: 'rml-gigfi', name: 'RML - Bidding Workflow (GigFi)', id: '6624acd0-bf61-4d21-85fc-4371ca7ed77d', onDisk: RML_GIGFI_RAW as string, before: BEFORE_2092.rml_gigfi },
+    { folder: 'bidding-lendswift', name: 'Bidding - LendSwift', id: '0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5', onDisk: BIDDING_LENDSWIFT_RAW as string, before: BEFORE_2092.bidding_lendswift },
+  ]
+
+  for (const flow of RML) {
+    const watched = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === flow.folder)
+
+    it(`${flow.name} is watched on its live workflow with build_response, the file on disk, with no baseline now its save has landed`, async () => {
+      expect(watched?.name).toBe(flow.name)
+      expect(watched?.workflowId).toBe(flow.id)
+      expect(watched?.configSources).toEqual([])
+      expect(watched?.scripts.map((k) => k.namespace)).toEqual(['build_response'])
+      const kept = watched!.scripts[0]
+      expect(kept.script).toBe(flow.onDisk)
+      expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
+      expect(kept.newNodeSince).toBeUndefined()
+      expect(kept.canvasBaselineSha256).toBeNull()
+      expect(kept.baselineReadOn).toBeNull()
+      const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response', config: { script } }] })
+      // Put back to the unsigned script, every reservemyloan link goes out without its token, so it pages.
+      expect((await judgeKeptScripts([kept], definition(flow.before), flow.name))[0].state).toBe('drift')
+      expect((await judgeKeptScripts([kept], definition(kept.script), flow.name))[0].state).toBe('agree')
+      expect((await judgeKeptScripts([kept], definition(flow.before + '\n// edited'), flow.name))[0].state).toBe('drift')
+    })
+
+    it(`${flow.name}: the kept script is the canvas script with only the link signing added`, () => {
+      // The bid, the rejections and the Salesforce patch values are the live script
+      // byte for byte; only the offer's click_url and the link_token output change.
+      const kept = withoutSigningBlock(watched!.scripts[0].script)
+      const undone = kept
+        // The signing sits between the bid and the return, set off by blank lines.
+        .replace('\n\n\nconst applicantId = steps.create_applicant.output.body.id;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n', '\n')
+        .replace('        click_url: offerLink.url,', '        click_url: constants.pennieClickUrl + `/${steps.create_applicant.output.body.id}`,')
+        .replace('  bidAmount,\n  link_token: offerLink.link_token,\n};', '  bidAmount,\n};')
+        .replace(/[\r\n]+$/, '')
+      expect(undone).toBe(flow.before.replace(/[\r\n]+$/, ''))
+    })
+  }
+})
+
+describe('the Forms flow (#2092)', () => {
+  const forms = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'forms-engine')
+
+  it('is watched on its live workflow with the sign_submission_link node, which pages as missing now its first save has landed', async () => {
+    expect(forms?.name).toBe('Forms <> Engine <> Data Store (Loan only)')
+    expect(forms?.workflowId).toBe('ff1a9f52-7346-452a-bab7-af9f95d36dda')
+    expect(forms?.scripts.map((k) => k.namespace)).toEqual(['sign_submission_link'])
+    const kept = forms!.scripts[0]
+    expect(kept.script).toBe(SIGN_SUBMISSION_LINK_RAW as string)
+    expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
+    expect(kept.newNodeSince).toBeUndefined()
+    expect(kept.canvasBaselineSha256).toBeNull()
+    // Saved 2026-10-15 10:16:59 AM ET: a canvas without the node would send the agent an unsigned link.
+    expect((await judgeKeptScripts([kept], { nodes: [] }, 'Forms'))[0].state).toBe('missing_node')
+    expect((await judgeKeptScripts([kept], { nodes: [{ type: 'code', namespace: 'sign_submission_link', config: { script: kept.script } }] }, 'Forms'))[0].state).toBe('agree')
   })
 })
 
