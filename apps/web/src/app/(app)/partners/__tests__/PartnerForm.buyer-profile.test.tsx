@@ -104,14 +104,78 @@ describe('the Buyer profile section', () => {
 
   it('saves the partner record first (the rules live there) and the profile second, and says both landed', async () => {
     const onSave = await renderBuyer()
+    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalled())
     expect(onSave).toHaveBeenCalledTimes(1)
     expect(onSave.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.buyerProfiles.save).mock.invocationCallOrder[0])
-    expect(onSave.mock.calls[0][0]).toMatchObject({ accept_signals: [{ field: 'ok', equals: true }] })
+    // Only the changed partner field is sent (#2132): the accept rules were not edited, so they are not written.
+    expect(onSave.mock.calls[0][0]).toEqual({ priority: 3 })
     expect(api.buyerProfiles.save).toHaveBeenCalledWith('p1', { expected_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }) })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
+  })
+
+  it('the button says Saved only once the profile has saved too, never while it is in flight or after it fails', async () => {
+    let fail!: (e: unknown) => void
+    vi.mocked(api.buyerProfiles.save).mockImplementation(() => new Promise((_res, rej) => { fail = rej }))
+    await renderBuyer(vi.fn().mockResolvedValue({ partner: { ...partner, priority: 3, version: 1 }, copyWarning: null }))
+    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalled())
+    const submit = document.querySelector('button[type="submit"]')!
+    expect(submit).not.toHaveTextContent('Saved')
+    fail(Object.assign(new Error('boom'), { status: 500, body: { error: 'boom', message: 'The database did not answer.' } }))
+    await screen.findByText(/The buyer profile was not saved/)
+    expect(submit).not.toHaveTextContent('Saved')
+  })
+
+  it('a profile only save with a partner edit that stores nothing (a blank floor row) leaves nothing reading as unsaved', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Buyer profile saved, version 4\./))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
+  })
+
+  it('a profile only change saves the profile alone and never writes the unchanged partner record (#2132)', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalled())
+    expect(onSave).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Buyer profile saved, version 4\./))
+  })
+
+  // L574: Undo saves the inverse of the PARTNER patch only. The profile is a
+  // second request in PR1, so when one press saved both, Undo says it does not
+  // reverse the profile, and the copy is checked against the state after Undo.
+  it('Undo after saving a partner field and a tier price together names the buyer profile as not covered, and the price stays new', async () => {
+    const onSave = vi.fn().mockResolvedValue({ partner: { ...partner, priority: 3, version: 8 }, copyWarning: null })
+    vi.mocked(api.buyerProfiles.save).mockImplementation(async (_id, body) => ({ profile: { ...body.profile, partner_id: 'p1', version: 4 } }))
+    render(<PartnerForm partner={{ ...partner, version: 7 }} onSave={onSave} onCancel={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText('Leads per day')).toHaveValue(500))
+    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    const price = screen.getAllByRole('spinbutton').find((el) => (el as HTMLInputElement).value === '0.0012') as HTMLInputElement
+    fireEvent.change(price, { target: { value: '0.002' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.buyerProfiles.save).mock.calls[0][1].profile.tiers[0].multiplier).toBe(0.002)
+
+    const undo = await screen.findByRole('button', { name: /^Undo/ })
+    expect(screen.getByText('Undo does not reverse the buyer profile changes.')).toBeInTheDocument()
+    // The save bar never claims the price is reversed.
+    expect(screen.getByText('Undo does not reverse the buyer profile changes.').parentElement!.textContent).not.toMatch(/price|tier|pricing/i)
+    fireEvent.click(undo)
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(onSave.mock.calls[1][0]).toEqual({ priority: 2 })
+    expect(onSave.mock.calls[1][3].expected_version).toBe(8)
+    // The profile is not re-saved, and the price on screen is still the new one, as the copy said.
+    expect(api.buyerProfiles.save).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByRole('spinbutton').some((el) => (el as HTMLInputElement).value === '0.002')).toBe(true)
   })
 
   // #1416: the two facts the Engine scripts read from the winner live on the partner
@@ -125,7 +189,8 @@ describe('the Buyer profile section', () => {
     expect(within(duplicateRows[0]).getByLabelText(/value/i)).toHaveValue('1003,1004,1020')
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
-    expect(onSave.mock.calls[0][0]).toMatchObject({ external_routing_code: 4, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] })
+    // Only the edited field is sent (#2132); the duplicate rules shown above are left as stored.
+    expect(onSave.mock.calls[0][0]).toEqual({ external_routing_code: 4 })
   })
 
   it('an enabled profile whose partner has no routing code is refused by the field name, and nothing is saved', async () => {
@@ -327,6 +392,8 @@ describe('how the buyer is sold', () => {
 
   it('the same click buyer with the placeholder in its click URL saves, and the field carries no error', async () => {
     const onSave = await renderWith(clickDoc, { click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}' })
+    // A partner field changes, so the partner record is written (#2132 sends only what changed).
+    fireEvent.change(screen.getByLabelText('Click URL'), { target: { value: 'https://trypennie.com/portal/libertyone/v2/{prospect_id}' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(screen.getByLabelText('Click URL').getAttribute('aria-describedby') ?? '').not.toMatch(/error/)
@@ -622,7 +689,8 @@ describe('click delivery', () => {
       expected_version: 3,
       profile: expect.objectContaining({ click_delivery: { ...delivery, routes: [{ ...delivery.routes[0], url: `${LC}/dv1-new` }, delivery.routes[1]] } }),
     }))
-    expect(onSave).toHaveBeenCalledTimes(1)
+    // The partner record did not change, so it is not written (#2132).
+    expect(onSave).not.toHaveBeenCalled()
   })
 
   it('an edit made while the confirmation shows withdraws it, so what is saved is always what was confirmed', async () => {

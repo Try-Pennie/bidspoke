@@ -23,12 +23,22 @@
  * (incident-span.ts). None of the bookkeeping (event ids, moved starts, the
  * lapse check's stamp) leaves this module.
  *
+ * FAILED RUNS (#2102). A failure rate row on the card carries how many of its
+ * failed runs are still kept (incident-failed-runs.ts), and one failure rate
+ * incident's runs can be listed for the workflow page's run panel. Both read the
+ * incident through the same scope as everything else here.
+ *
  * FAILURE. Any read that fails throws. An empty list would read as "no
- * incidents", which is the one thing this record must never claim falsely.
+ * incidents", which is the one thing this record must never claim falsely. The
+ * one exception is a card row's failed run count, which is marked unreadable
+ * rather than failing the card.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
 import { INCIDENT_SIGNALS, incidentSignal, incidentSignalLabel, isIncidentSignal } from './incident-signals'
 import { incidentDurationText, incidentSoFarText, measureIncidentSpan } from './incident-span'
+import { failureRateSubject, listFailedRuns, summarizeFailedRuns, type FailedRun, type FailedRunsSummary } from './incident-failed-runs'
+import { mapWithConcurrency } from './timeout-audit'
 
 export const INCIDENTS_DEFAULT_LIMIT = 50
 export const INCIDENTS_MAX_LIMIT = 100
@@ -37,6 +47,14 @@ export const INCIDENT_WINDOW_DAYS = [7, 14, 30] as const
 export type IncidentWindowDays = (typeof INCIDENT_WINDOW_DAYS)[number]
 /** Open incidents are a handful at a time (#2098: about 27 a month); a list longer than this says so. */
 export const ONGOING_LIMIT = 100
+
+/**
+ * How many card rows' failed run counts are read at once (#2102). Each is a
+ * paged read of workflow_executions, and a page can hold up to 100 rows; a
+ * dozen reads started in one instant slowed lead requests on 2026-10-08
+ * (#1884), so they queue two at a time, as the timeout audit's do.
+ */
+export const FAILED_RUNS_READ_CONCURRENCY = 2
 
 export const UNNAMED_SUBJECT = 'Unnamed subject'
 export const MISSING_WORKFLOW_SUBJECT = 'A workflow no longer on record'
@@ -59,7 +77,34 @@ export interface IncidentView extends IncidentBase {
   ended_at: string | null
   state: 'ended' | 'end_not_recorded'
   duration: string | null
+  /** A failure rate incident's failed runs still kept (#2102); null for every other signal. */
+  failed_runs: FailedRunsSummary | null
 }
+
+/** One failure rate incident's failed runs, for the workflow page's run panel (#2102). */
+export interface IncidentFailedRuns {
+  incident: {
+    id: string
+    workflow_id: string
+    match: string
+    started_at: string
+    ended_at: string | null
+    /** Still open; closed with its end recorded; or closed without one (lapsed), which is never said as still running. */
+    state: 'ongoing' | 'ended' | 'end_not_recorded'
+  }
+  /** The oldest moment whose runs are still kept. */
+  kept_since: string
+  /** The incident started before kept_since, so its earliest runs are gone. */
+  clipped: boolean
+  /** How many runs are in `runs`: the title over the list says this, so the two agree. */
+  count: number
+  runs: FailedRun[]
+}
+
+export type IncidentFailedRunsResult =
+  | { kind: 'found'; body: IncidentFailedRuns }
+  | { kind: 'not_found' }
+  | { kind: 'not_failure_rate' }
 
 /** One open incident, as the line under the page header shows it. */
 export interface OngoingIncidentView extends IncidentBase {
@@ -82,7 +127,7 @@ export interface OngoingIncidents {
 /** Thrown for a read that failed or returned a row outside the caller's scope. */
 export class IncidentReadError extends Error {}
 
-const COLUMNS = 'id, signal, subject, subject_label, scope, organization_id, started_at, ended_at, ended_reason, pages_sent, window_minutes'
+const COLUMNS = 'id, signal, subject, subject_label, scope, organization_id, started_at, ended_at, ended_reason, closed_at, pages_sent, window_minutes'
 
 interface StoredIncident {
   id: string
@@ -94,6 +139,7 @@ interface StoredIncident {
   started_at: string
   ended_at: string | null
   ended_reason: string | null
+  closed_at: string | null
   pages_sent: number
   window_minutes: number | null
 }
@@ -241,18 +287,108 @@ export async function readClosedIncidents(
   const rows = all.slice(0, limit)
   assertScoped(rows, orgId)
   const workflows = await workflowNames(supabase, orgId, rows)
+  const failedRuns = await mapWithConcurrency(rows, FAILED_RUNS_READ_CONCURRENCY, (row) => failedRunsSummary(supabase, row, workflows, now))
   const hasMore = all.length > limit
   return {
-    incidents: rows.map((row) => {
+    incidents: rows.map((row, idx) => {
       const ended = row.ended_at !== null
       return {
         ...baseView(row, workflows),
         ended_at: row.ended_at,
         state: ended ? 'ended' : 'end_not_recorded',
         duration: ended ? incidentDurationText(measureIncidentSpan(row.started_at, row.ended_at, row.window_minutes, now)) : null,
+        failed_runs: failedRuns[idx],
       }
     }),
     has_more: hasMore,
     next_offset: hasMore ? offset + rows.length : null,
+  }
+}
+
+/**
+ * The workflow and match of a failure rate incident whose workflow belongs to
+ * the caller's organization, or null: another signal, an unreadable subject, or
+ * a workflow the caller cannot open (whose runs are not theirs to count).
+ */
+function failureRateTarget(row: StoredIncident, workflows: ReadonlyMap<string, WorkflowName>): { workflowId: string; match: string } | null {
+  if (row.signal !== 'failure-rate') return null
+  const target = failureRateSubject(row.subject)
+  if (!target || !workflows.has(target.workflowId)) return null
+  return target
+}
+
+/** A card row's failed run count (#2102): null for any signal but failure rate. Never throws. */
+async function failedRunsSummary(
+  supabase: SupabaseClient,
+  row: StoredIncident,
+  workflows: ReadonlyMap<string, WorkflowName>,
+  now: number,
+): Promise<FailedRunsSummary | null> {
+  const target = failureRateTarget(row, workflows)
+  if (!target) return null
+  return summarizeFailedRuns(supabase, target, failureRateSpan(row), now)
+}
+
+/**
+ * The span whose runs belong to the incident. An incident still open runs to
+ * now. One that closed without a recorded end (lapsed) stops at the moment the
+ * record learned it closed: by then its check no longer held it open, so a later
+ * failure of the same match is not this incident's, and its count must not keep
+ * growing for the 7 days runs are kept.
+ */
+function failureRateSpan(row: StoredIncident): { startedAt: string; endedAt: string | null } {
+  return { startedAt: row.started_at, endedAt: row.ended_at ?? row.closed_at }
+}
+
+/**
+ * One failure rate incident's failed runs (#2102), read by id inside the
+ * caller's scope. An incident of another organization is not found, exactly as
+ * one that does not exist; a row of another organization the database handed
+ * back anyway is refused as an error. Throws IncidentReadError on any failed read.
+ */
+export async function readIncidentFailedRuns(
+  supabase: SupabaseClient,
+  orgId: string,
+  incidentId: string,
+  opts: { now: number },
+): Promise<IncidentFailedRunsResult> {
+  const scope = scopeFilter(orgId)
+  const res = await supabase
+    .from('alert_incidents')
+    .select(COLUMNS)
+    .eq('id', incidentId)
+    .or(scope)
+    .limit(1)
+  if (res.error || !res.data) throw failed('The incident', res.error)
+  const rows = res.data as unknown as StoredIncident[]
+  assertScoped(rows, orgId)
+  const row = rows[0]
+  if (!row) return { kind: 'not_found' }
+  if (row.signal !== 'failure-rate') return { kind: 'not_failure_rate' }
+  const workflows = await workflowNames(supabase, orgId, rows)
+  const target = failureRateTarget(row, workflows)
+  if (!target) return { kind: 'not_found' }
+  let list
+  try {
+    list = await listFailedRuns(supabase, target, failureRateSpan(row), opts.now)
+  } catch (err) {
+    throw new IncidentReadError(`The incident's failed runs could not be read: ${formatErr(err)}`, { cause: err })
+  }
+  return {
+    kind: 'found',
+    body: {
+      incident: {
+        id: row.id,
+        workflow_id: target.workflowId,
+        match: target.match,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        state: row.ended_reason === null ? 'ongoing' : row.ended_at !== null ? 'ended' : 'end_not_recorded',
+      },
+      kept_since: list.window.keptSince,
+      clipped: list.window.clipped,
+      count: list.runs.length,
+      runs: list.runs,
+    },
   }
 }

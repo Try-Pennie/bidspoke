@@ -35,7 +35,7 @@ the vitest plugin in `vitest.config.ts`); nothing runs them at runtime.
 | `tripoint_ping.js` | Tripoint Ping | Two fields added, nothing removed: `sale` (the outcome in the buyer_select node's shape, carrying Tripoint's own name, click URL, routing code 2 and Success, Duplicate or Fail class, because this script IS Tripoint, #1416) and `sent_body_sha256` (the hash of exactly what was sent, as the node computes `would_send_body_sha256`; null when nothing was sent or the sandbox has no Web Crypto). Two more added last on every return by #1540: `tripoint_answer` (accepted, declined, in_progress for 1009, invalid_data and null_id_fault for the two known 502 answers, skipped, or unknown) and `unknown_reason`. Unknown is anything not positively recognised (any other 5xx, any 4xx, a 2xx that does not parse, is not ok or has no result code, a fetch that throws, and a call aborted after 15 s); it no longer throws, it returns a no sale that `build_response_body` rejects normally. |
 | `build_response_body.js` | Build Response Body | Reads the sale from `tripoint_ping` if it ran, else from `buyer_select`, completes an older Tripoint Ping's sale with Tripoint's values (transitional, removed at Stage C), and publishes the normalised sale on its output. A sold lead lands on the sale's click URL, never on a constant (#1416); a sell off lead nobody bought takes the Pennie pages. The zero bid early return is untouched. Every rejection also carries `reject_patch` (#1471): `BidStatus__c` and `RejectionReason__c` as the Salesforce node writes them today, plus `Tripoint_Response__c` with the sale's class when Tripoint declined with one; a rejection with no class carries the two fields alone. |
 | `patch_prospect_body.js` | Patch Prospect Body | Reads the sale from `build_response_body`'s output. The four External fields (partner name, debt, routing code, exchange status) come from the sale on every accepted sale, whichever buyer; `TripointLeadID__c` and `Tripoint_Response__c` are written only when Tripoint is the buyer, because Salesforce has no field for another buyer's reference or class yet. |
-| `known_no_gate.js` | Known No Gate (new, #1544) | Written here first, for a node the canvas did not have; on the canvas since version 101 (2026-09-29). Says whether the node that decided the lead gave a KNOWN no (tripoint_ping's `tripoint_answer` declined, invalid_data or null_id_fault; buyer_select no_sale declined_by_buyer that can be told from Tripoint's 1009, #1653), read by the same precedence `build_response_body` reads its sale by; both nodes' answers are judged by one list in tripoint_ping's words. The Branch after it sends a known no to the buyer_click_check node. #1653 edited it here first, so it carries the version 103 canvas script's hash as its baseline until that paste. |
+| `known_no_gate.js` | Known No Gate (new, #1544) | Written here first, for a node the canvas did not have; on the canvas since version 101 (2026-09-29). Says whether the node that decided the lead gave a KNOWN no (tripoint_ping's `tripoint_answer` declined, invalid_data or null_id_fault; buyer_select no_sale declined_by_buyer that can be told from Tripoint's 1009, #1653), read by the same precedence `build_response_body` reads its sale by; both nodes' answers are judged by one list in tripoint_ping's words. The Branch after it sends a known no to the buyer_click_check node. #1653 edited it here first; that was pasted as version 106 on 2026-10-02, so it carries no baseline. |
 
 **#1544 (a click sold buyer on a known Tripoint no)** changed `build_response_body` (a
 known no the buyer_click_check node found eligible is offered to that buyer: the
@@ -73,8 +73,9 @@ back to the script before #2089 pages as a drift.
 bidding flows' `build_response`, and the Forms flow's `sign_submission_link`). The
 block no longer names its hosts: each script sets `LINK_TOKEN_HOSTS` just above it,
 here `trypennie.com` and `www.trypennie.com`. A missing secret now logs an error rather
-than a warning. Nothing the step sends or outputs changes. Until that paste lands,
-`build_response_body` carries the #2089 canvas script as its drift baseline.
+than a warning. Nothing the step sends or outputs changes. It was saved to the canvas
+on 2026-10-15 (10:16 AM ET), the drift check read it as agree, and its baseline was
+cleared, so a canvas put back to the #2089 script pages as a drift.
 
 **Paste all three in one canvas save.** `patch_prospect_body` reads the sale
 from `build_response_body`, so it must never sit beside the older
@@ -89,9 +90,9 @@ The #1540 `tripoint_ping` could be pasted on its own, once the Worker carrying
 a sale with no class, which both already reject), and with it on the canvas a
 Tripoint outage no longer fails runs: the aggregated Tripoint outage page counts
 `tripoint_ping` steps answered `unknown` (`lib/upstream-outage.ts`). It has been
-on the canvas since version 101. Apart from `build_response_body` while its #2092
-paste is awaited, none of the kept Engine scripts carries a baseline, so any
-difference from the canvas is a drift.
+on the canvas since version 101. Apart from `tripoint_ping` while its loan minimum
+paste (2026-10-15) is awaited, none of the kept Engine scripts carries a baseline, so any difference from
+the canvas is a drift.
 
 One canvas change is not a paste and has an order (#1471): AFTER
 `build_response_body` is pasted, set the `patch_prospect_reject` Salesforce
@@ -124,3 +125,14 @@ Measured on 2026-09-22 (issue #1414): a declined sell off lead is rejected by
 `build_response_body` and never reaches `patch_prospect_body`, so the four
 External fields are written only on an accepted sale, and the Duplicate mapping
 has no live path to it. Both are preserved as they are.
+
+**Tripoint's minimum loan amount (2026-10-15)** changed `tripoint_ping` only: a sell off
+lead whose `loanInformation.loanAmount` is under 2,000 is not sent to Tripoint
+(`skip_reason: loan_amount_below_min`), and one whose loan amount is not a positive number
+is not sent either (`skip_reason: missing_lead_field`), the node's own refusals for the
+minimum on Tripoint's buyer profile, which Sam asked for on 2026-10-13. This script never
+reads the profile, so it carries its own 2,000 until buyer_select takes every lead; a
+change to the profile's minimum must be made here too. `skip_reason` is added only on these
+two returns, so every other output is unchanged. The same day `loan_amount` was added to
+the buyer_select node's settings in `docs/workflows/engine-bidding/buyer-select.json`,
+because without it the node could not read the loan amount and refused every live lead.

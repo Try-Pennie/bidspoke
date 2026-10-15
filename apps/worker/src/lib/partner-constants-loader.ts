@@ -29,6 +29,8 @@ export const partnerConstantsLastGoodKey = lastGoodKey
 // long a warm isolate can serve a pre-edit copy of bidding-critical data
 // (activeBidding, sub_account_min_bids). It only needs to outlast a traffic burst.
 const MEMORY_TTL_MS = 15_000
+/** Part of the bidding pickup bound (BIDDING_PICKUP in apps/web, #2132). */
+export const PARTNER_CONSTANTS_MEMORY_TTL_MS = MEMORY_TTL_MS
 const memoryCache = new Map<string, { value: PartnerConstants; expiresAt: number }>()
 const inflight = new Map<string, Promise<PartnerConstants>>()
 

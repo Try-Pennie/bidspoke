@@ -1,12 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Incident, IncidentsResponse } from '@/lib/api'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Button, Outcome } from '@/components/ui/form'
-import { emptyIncidentsText, groupIncidentsByDay, durationColumnText, incidentTimeRange, signalText, slackPagesText } from '@/lib/incidents'
+import { emptyIncidentsText, failedRunsCell, groupIncidentsByDay, durationColumnText, incidentTimeRange, signalText, slackPagesText } from '@/lib/incidents'
 
 type Days = 7 | 14 | 30
 
@@ -19,14 +20,33 @@ type More = { kind: 'idle' } | { kind: 'loading' } | { kind: 'failed'; message: 
 
 const messageOf = (e: unknown) => (e instanceof Error && e.message ? e.message : 'The request failed.')
 
+// The pages column is wider than its "2 Slack pages" alone needed (#2102), so a
+// failure rate row's "2 Slack pages, 12 failed runs" fits on one line; the
+// subject column gives up the width, and the card's minimum width grew with it
+// so the subject keeps room when the card scrolls sideways.
 function IncidentRow({ incident }: { incident: Incident }) {
+  const runs = failedRunsCell(incident)
   return (
-    <li className="grid grid-cols-[170px_190px_1fr_210px_110px] items-baseline gap-3 border-t border-gray-100 px-5 py-2.5 text-sm first:border-t-0">
+    <li className="grid grid-cols-[170px_190px_1fr_200px_170px] items-baseline gap-3 border-t border-gray-100 px-5 py-2.5 text-sm first:border-t-0">
       <span className="tabular-nums text-gray-600">{incidentTimeRange(incident)}</span>
       <span className="font-medium text-graphite">{signalText(incident)}</span>
       <span className="min-w-0 text-gray-600">{incident.subject_name}</span>
       <span className="text-gray-600">{durationColumnText(incident)}</span>
-      <span className="text-right text-xs text-gray-600">{slackPagesText(incident.pages_sent)}</span>
+      <span className="text-right text-xs text-gray-600">
+        {slackPagesText(incident.pages_sent)}
+        {runs && (
+          <>
+            {', '}
+            {runs.href ? (
+              <Link href={runs.href} className="text-p-blue-dark underline underline-offset-2 hover:text-p-blue-dark/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark">
+                {runs.text}
+              </Link>
+            ) : (
+              runs.text
+            )}
+          </>
+        )}
+      </span>
     </li>
   )
 }
@@ -150,7 +170,7 @@ export function IncidentsSection({
       {first.kind === 'loaded' && first.incidents.length > 0 && (
         <>
           <div className="overflow-x-auto">
-            <div className="min-w-[860px]">
+            <div className="min-w-[940px]">
               {groupIncidentsByDay(first.incidents, now()).map((day, idx) => (
                 <div key={day.key}>
                   <h3 className={`bg-beige px-5 py-2 text-xs font-semibold text-gray-600 ${idx > 0 ? 'border-t border-gray-100' : ''}`}>

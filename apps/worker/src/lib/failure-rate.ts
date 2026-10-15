@@ -26,13 +26,13 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal, WorkflowDefinition } from '../types'
 import { sendFailureSpikeAlert } from './slack'
 import { fetchAllPaged } from './paginate'
+import { onlyFailureRateCandidates, signalMatches } from './failure-rate-match'
 export type { MutedFailureSignal }
 
-/** True when `match` (non-blank) appears, case-insensitively, in errorMessage. */
-export function signalMatches(errorMessage: string | null | undefined, match: string): boolean {
-  if (!errorMessage || !match || !match.trim()) return false
-  return errorMessage.toLowerCase().includes(match.toLowerCase())
-}
+// Which runs a signal counts lives in failure-rate-match.ts (#2102), shared with
+// the incident record's list of an incident's failed runs; re-exported here for
+// the engine's alert gate and the existing callers.
+export { signalMatches }
 
 /**
  * The first configured signal whose match is present in errorMessage, or null.
@@ -171,18 +171,15 @@ export async function runFailureRateCheck(
   const lookbackStart = new Date(now - LOOKBACK_MINUTES * 60 * 1000).toISOString()
 
   const failed = await fetchAllPaged<FailedRow>(
-    (from, to) => supabase
+    (from, to) => onlyFailureRateCandidates(supabase
       .from('workflow_executions')
       .select('workflow_id, error_message, completed_at')
       .in('workflow_id', monitoredIds)
       .gte('started_at', lookbackStart)
       .gte('completed_at', windowStart)
-      .eq('is_test', false)
-      .eq('status', 'failed')
-      .not('error_message', 'is', null)
       .order('completed_at', { ascending: true })
       .order('id', { ascending: true })
-      .range(from, to),
+      .range(from, to)),
     'failure-rate failed query',
   )
 

@@ -64,9 +64,33 @@ export interface Partner {
   updated_at: string
   updated_by_email: string | null
   updated_by_name: string | null
+  /**
+   * Moved by the database on every change (#2132). A save names the version it
+   * was edited from, and a newer one refuses it. Absent only on a row read from
+   * a Worker older than the versioned save.
+   */
+  version?: number
+  /** The save press that last wrote the row (#2132). */
+  last_save_id?: string | null
 }
 
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
+/** The fields a partner save may name: the row less its identity, its bookkeeping and what the Worker derives. */
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
+
+/** A versioned partner save (#2132): the version edited from and this press's id. */
+export interface PartnerSaveVersioning {
+  expected_version: number
+  save_id: string
+}
+
+/** What a stale partner save is answered with (#2132): the row as stored now and who last changed it. */
+export interface PartnerStaleVersion {
+  error: 'stale_version'
+  current: Partner | null
+  last_save_id: string | null
+  changed_by_name: string | null
+  changed_at: string | null
+}
 
 // ── Partner Bid Configs (matrix definitions) ──────────────────────────────────
 
@@ -208,6 +232,52 @@ export interface Incident extends IncidentBase {
   ended_at: string | null
   state: 'ended' | 'end_not_recorded'
   duration: string | null
+  /** A failure rate incident's failed runs still kept (#2102); null for every other signal. */
+  failed_runs: IncidentFailedRunsSummary | null
+}
+
+/**
+ * What the card can say about a failure rate incident's runs (#2102): a count, or
+ * that none of its span is still kept, or that the count could not be read (never
+ * shown as 0).
+ */
+export type IncidentFailedRunsSummary =
+  | { workflow_id: string; state: 'counted'; count: number }
+  | { workflow_id: string; state: 'not_kept' }
+  | { workflow_id: string; state: 'unreadable' }
+
+/** One run in the workflow page's run list, as GET /api/executions and the incident runs route return it. */
+export interface ExecutionListRow {
+  id: string
+  status: string
+  outcome: 'successful' | 'completed' | 'failed' | null
+  final_node_namespace: string | null
+  source: string
+  started_at: string
+  duration_ms: number | null
+  error_message: string | null
+  parent_execution_id: string | null
+  has_children: boolean
+}
+
+/** GET /api/incidents/:id/failed-runs (#2102): one failure rate incident's failed runs still kept. */
+export interface IncidentFailedRuns {
+  incident: {
+    id: string
+    workflow_id: string
+    match: string
+    started_at: string
+    ended_at: string | null
+    /** Still open; closed with its end recorded; or closed without one, which is never said as still running. */
+    state: 'ongoing' | 'ended' | 'end_not_recorded'
+  }
+  /** The oldest moment whose runs are still kept. */
+  kept_since: string
+  /** The incident started before kept_since, so its earliest runs are gone. */
+  clipped: boolean
+  /** The length of `runs`. */
+  count: number
+  runs: ExecutionListRow[]
 }
 
 /** An open incident, as GET /api/incidents/ongoing returns it for the line under the page header. */
@@ -692,18 +762,7 @@ export const api = {
       if (opts?.status) params.set('status', opts.status)
       if (opts?.before) params.set('before', opts.before)
       if (opts?.beforeId) params.set('before_id', opts.beforeId)
-      return req<Array<{
-        id: string
-        status: string
-        outcome: 'successful' | 'completed' | 'failed' | null
-        final_node_namespace: string | null
-        source: string
-        started_at: string
-        duration_ms: number | null
-        error_message: string | null
-        parent_execution_id: string | null
-        has_children: boolean
-      }>>(`/api/executions?${params.toString()}`)
+      return req<ExecutionListRow[]>(`/api/executions?${params.toString()}`)
     },
     get: (id: string, opts?: { summary?: boolean }) => {
       const qs = opts?.summary ? '?summary=1' : ''
@@ -876,8 +935,8 @@ export const api = {
     get: (id: string) => req<Partner>(`/api/partners/${id}`),
     create: (body: PartnerBody) =>
       req<Partner>('/api/partners', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: Partial<PartnerBody>) =>
-      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<PartnerBody>, versioning: PartnerSaveVersioning) =>
+      req<Partner & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify({ ...body, ...versioning }) }),
     delete: (id: string) =>
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
@@ -1003,6 +1062,7 @@ export const api = {
   incidents: {
     list: (days: 7 | 14 | 30, offset = 0) => req<IncidentsResponse>(`/api/incidents?days=${days}&offset=${offset}`),
     ongoing: () => req<OngoingIncidentsResponse>('/api/incidents/ongoing'),
+    failedRuns: (id: string) => req<IncidentFailedRuns>(`/api/incidents/${encodeURIComponent(id)}/failed-runs`),
   },
 
   servicePresets: {
