@@ -30,6 +30,12 @@ const PACKAGE_DIR = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(PACKAGE_DIR, '..', '..')
 const WRANGLER = path.join(REPO_ROOT, 'apps', 'worker', 'node_modules', '.bin', 'wrangler')
 const WORKER_PORT = 8799
+/**
+ * The local Worker probe. wrangler binds it to 127.0.0.1 only, and it is
+ * addressed as localhost, so its plain HTTP never leaves this machine; Node's
+ * fetch tries both loopback families for localhost, so the IPv4 bind is found.
+ */
+export const WORKER_ORIGIN = `http://localhost:${WORKER_PORT}`
 const JOIN_TIMEOUT_MS = 20_000
 
 function errorText(err: unknown): string {
@@ -175,7 +181,7 @@ async function startWorker(log: (line: string) => void, register: (closer: () =>
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`wrangler dev exited ${child.exitCode}: ${output.slice(-500)}`)
     try {
-      const res = await fetch(`http://127.0.0.1:${WORKER_PORT}/health`)
+      const res = await fetch(`${WORKER_ORIGIN}/health`)
       if (res.ok) {
         log(`worker probe up under wrangler dev (pid ${child.pid})`)
         return child
@@ -234,7 +240,7 @@ async function workerSubscribe(
 ): Promise<{ status: JoinStatus; detail: string | null; receivedAfterMs: number | null }> {
   let res: Response
   try {
-    res = await fetch(`http://127.0.0.1:${WORKER_PORT}/subscribe`, {
+    res = await fetch(`${WORKER_ORIGIN}/subscribe`, {
       method: 'POST',
       body: JSON.stringify({ supabaseUrl: config.supabaseUrl, publishableKey: config.publishableKey, jwt, topic, event: 'spike-worker', timeoutMs: 20_000 }),
     })
@@ -387,7 +393,7 @@ export async function liveDeps(
       return { warnings: [...notices] }
     },
     restSend: async (topic, event, payload) => {
-      const res = await fetch(`http://127.0.0.1:${WORKER_PORT}/rest-broadcast`, {
+      const res = await fetch(`${WORKER_ORIGIN}/rest-broadcast`, {
         method: 'POST',
         body: JSON.stringify({ supabaseUrl: config.supabaseUrl, secretKey: config.secretKey, topic, event, payload }),
       })

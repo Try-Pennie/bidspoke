@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { assertSameProject, keepJoinStatus, loadConfig } from './live.ts'
+import { assertSameProject, keepJoinStatus, loadConfig, WORKER_ORIGIN } from './live.ts'
+
+describe('the Worker probe is reached on this machine only', () => {
+  it('is addressed as localhost, so its plain HTTP never leaves the loopback interface', () => {
+    expect(new URL(WORKER_ORIGIN).hostname).toBe('localhost')
+  })
+})
 
 describe('loadConfig: a cleanup needs only what a cleanup uses', () => {
   const noFiles = () => ({})
