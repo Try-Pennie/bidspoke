@@ -117,10 +117,37 @@ interface SaveBody {
   profile?: unknown
 }
 
+/** The KV key a day's calls of the legacy profile save are counted under (#2133), by UTC date. */
+export function legacyBuyerProfileCallsKey(now: number): string {
+  return `legacy-buyer-profile-calls:${new Date(now).toISOString().slice(0, 10)}`
+}
+/** Long enough to read back well past the seven clear days the route's removal waits for. */
+const LEGACY_CALLS_TTL_SECONDS = 60 * 86400
+
+/**
+ * One more call of this route today (#2133). The page saves through PUT
+ * /partners/:id/page now; this route is kept one release for pages opened
+ * before, and is removed after seven consecutive days with no key here, never
+ * on a log search, because Cloudflare log searches over 7 days miss lines on
+ * this project (L171). A get then put can lose a count to a concurrent call,
+ * which cannot turn a day with calls into a day without. A failed write is
+ * logged and never fails the save; the call's audit row carries _route too.
+ */
+async function countLegacyCall(kv: KVNamespace): Promise<void> {
+  const key = legacyBuyerProfileCallsKey(Date.now())
+  try {
+    const current = Number(await kv.get(key)) || 0
+    await kv.put(key, String(current + 1), { expirationTtl: LEGACY_CALLS_TTL_SECONDS })
+  } catch (err) {
+    console.error(`[buyer-profile] could not count a legacy call in ${key}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+  }
+}
+
 buyerProfiles.put('/:id/buyer-profile', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
+  await countLegacyCall(c.env.WORKFLOW_CACHE)
 
   const loaded = await loadPartner(c, supabase, id, orgId)
   if ('response' in loaded) return loaded.response
@@ -183,7 +210,7 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
  * way its profile is sold. The stored kind is read first, and the workflows only
  * when the kind is actually leaving the click, so an ordinary save pays one read.
  */
-async function refuseSwitchAwayFromClick(
+export async function refuseSwitchAwayFromClick(
   c: Context<{ Bindings: Env; Variables: AuthVariables }>,
   supabase: ReturnType<typeof createSupabaseClient>,
   orgId: string,
@@ -371,11 +398,11 @@ export async function refuseClickUrlWithoutProspectId(
   } catch (err) {
     console.error(`[partner-save] buyer profile unreadable for partner ${partnerId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     const message = 'Whether this buyer is sold on the click could not be read, so the new click URL was not saved and nothing else was either. Try again.'
-    return c.json({ error: 'click_url_unverifiable', message, errors: [{ code: 'click_url_unverifiable', path: 'clickUrl', message }] }, 503)
+    return c.json({ error: 'click_url_unverifiable', message, errors: [{ code: 'click_url_unverifiable', path: 'clickUrl', field: 'click_url', message }] }, 503)
   }
   if (sale?.soldOn !== 'click' || !sale.isEnabled) return null
   const code = 'click_url_has_no_prospect_id' satisfies ProfileErrorCode
-  return c.json({ error: code, message: CLICK_URL_NO_PROSPECT_ID_MESSAGE, errors: [{ code, path: 'clickUrl', message: CLICK_URL_NO_PROSPECT_ID_MESSAGE }] }, 422)
+  return c.json({ error: code, message: CLICK_URL_NO_PROSPECT_ID_MESSAGE, errors: [{ code, path: 'clickUrl', field: 'click_url', message: CLICK_URL_NO_PROSPECT_ID_MESSAGE }] }, 422)
 }
 
 function nextIsoDate(day: string): string {

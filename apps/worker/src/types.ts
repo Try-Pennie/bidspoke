@@ -157,6 +157,12 @@ export interface ExecutionContext {
    * cannot reach a path that skips its own backoff.
    */
   retrySleep?: (ms: number) => Promise<void>
+  /**
+   * How the engine watches each step attempt's deadline (#2163). Undefined in
+   * production, which means the real timer. Set from a test's `stepClock`, so a
+   * timed out step runs the real withTimeout without the test waiting for it.
+   */
+  stepDeadline?: (ms: number, signal: AbortSignal) => Promise<void>
   /** Dispatch-namespace bundle name code nodes route to. Set for test runs to an
    *  ephemeral content-hashed bundle so unsaved edits run immediately; unset for
    *  prod runs (code.ts falls back to the stable codeBundleName). */

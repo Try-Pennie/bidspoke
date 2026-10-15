@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useReducer, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRules, parseRoutingCode,
@@ -41,9 +41,14 @@ function uid() { return Math.random().toString(36).slice(2) }
 
 // ── Form field primitives ─────────────────────────────────────────────────────
 
-/** What the page hands back for a saved partner (#2132): the row as stored, and the stored copy warning when there was one. */
+/**
+ * What the page hands back for a saved partner (#2132, #2133): the row and the
+ * buyer profile as stored after the save, and the stored copy warning when
+ * there was one.
+ */
 export interface PartnerSaveResult {
   partner: Partner
+  profile: BuyerProfileDocument | null
   copyWarning: string | null
 }
 
@@ -52,7 +57,7 @@ export interface PartnerSaveResult {
  * It names who and when (in ET, through dates.ts), or says the change came from
  * outside the page when no editor is on record. The edits are kept.
  */
-export function staleSaveSentence(stale: Pick<PartnerStaleVersion, 'changed_by_name' | 'changed_at'>): string {
+export function staleSaveSentence(stale: Pick<PartnerPageStale, 'changed_by_name' | 'changed_at'>): string {
   const when = stale.changed_at ? `${formatEtDayTime(stale.changed_at)} ET` : 'an unknown time'
   return stale.changed_by_name
     ? `Not saved. ${stale.changed_by_name} saved this partner at ${when}. Your changes are still here.`
@@ -60,7 +65,7 @@ export function staleSaveSentence(stale: Pick<PartnerStaleVersion, 'changed_by_n
 }
 
 /** The same refusal for an Undo, which has no edits of its own to keep: the form still shows what is stored. */
-export function staleUndoSentence(stale: Pick<PartnerStaleVersion, 'changed_by_name' | 'changed_at'>): string {
+export function staleUndoSentence(stale: Pick<PartnerPageStale, 'changed_by_name' | 'changed_at'>): string {
   const when = stale.changed_at ? `${formatEtDayTime(stale.changed_at)} ET` : 'an unknown time'
   return stale.changed_by_name
     ? `Undo not made. ${stale.changed_by_name} saved this partner at ${when}.`
@@ -75,11 +80,13 @@ function mintSaveId(): string {
 interface Props {
   partner?: Partner
   /**
-   * Saves the partner record. An existing partner's save is versioned (#2132):
-   * the body is only the changed fields, with the version edited from and this
-   * press's save id. Answers the saved row and any stored copy warning.
+   * Saves the partner. An existing partner's save is the whole page in one
+   * request (#2133): the body is only the changed partner fields (#2132), and
+   * the request carries the profile when it changed, the pair of versions the
+   * page was edited from, and this press's save id. Answers both halves as
+   * stored and any stored copy warning.
    */
-  onSave: (body: PartnerBody, id?: string, pendingUuids?: string[], versioning?: PartnerSaveVersioning) => Promise<PartnerSaveResult | void>
+  onSave: (body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest) => Promise<PartnerSaveResult | void>
   onCancel: () => void
   onDelete?: (id: string) => void
   confirmingDelete?: boolean
@@ -190,12 +197,13 @@ export default function PartnerForm({
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
   /**
-   * What Undo would do (#2132): restore the form to `snapshot` and save `patch`,
-   * the inverse of the save just made, at the version that save produced. It
-   * covers the partner record only, so `savedProfile` says the same press also
-   * saved the buyer profile, which Undo does not reverse (L574).
+   * What Undo would do (#2132, #2133, L574): restore the form to `snapshot` and
+   * make one page save of the inverse of the save just made, at the pair of
+   * versions it produced: `patch` puts each partner field back, and
+   * `profileBefore` is the profile document as it was, or null when the save
+   * did not write the profile.
    */
-  const [undo, setUndo] = useState<{ snapshot: FormSnapshot; patch: Partial<PartnerBody>; savedProfile: boolean } | null>(null)
+  const [undo, setUndo] = useState<{ snapshot: FormSnapshot; patch: Partial<PartnerBody>; profileBefore: BuyerProfileDocument | null } | null>(null)
   const [undoSecondsLeft, setUndoSecondsLeft] = useState(0)
   /** The stored copy warning of the last save, shown beside Saved, never as an error (#1846, #2132). */
   const [copyWarningText, setCopyWarningText] = useState<string | null>(null)
@@ -429,27 +437,36 @@ export default function PartnerForm({
   }
 
   /**
-   * One versioned save of the partner record (#2132): mints a save id for this
-   * press (reusing it only when retrying a press that got no answer), sends
-   * `patch` at the version the page last saw, and answers what happened. A 409
-   * carrying this press's own save id is its own save that landed before the
-   * answer was lost; any other 409 is someone else's newer save, reported with
+   * One save of the whole page (#2133): the partner `patch` and, when it is
+   * not null, the profile document `profileDoc`, written together or not at
+   * all at the pair of versions the page last saw. The profile version is
+   * named whenever the page has read the profile, so a save is refused when
+   * either half changed underneath it; `profileVersion` overrides it when the
+   * person chose to save over their profile. Mints a save id for this press,
+   * reusing it only when retrying a press that got no answer. A 409 carrying
+   * this press's own save id is its own save that landed before the answer
+   * was lost (L747); any other 409 is someone else's newer save, reported with
    * who and when, and nothing is overwritten. Every outcome but 'saved' has
    * already said so on the page.
    */
-  async function savePartnerRecord(patch: Partial<PartnerBody>, opts: { undo?: boolean } = {}): Promise<{ kind: 'saved'; partner: Partner | null; copyWarning: string | null } | { kind: 'refused' }> {
+  async function savePage(
+    patch: Partial<PartnerBody>,
+    profileDoc: BuyerProfileDocument | null,
+    opts: { undo?: boolean; profileVersion?: number } = {},
+  ): Promise<{ kind: 'saved'; partner: Partner | null; profile: BuyerProfileDocument | null; copyWarning: string | null } | { kind: 'refused' }> {
     if (!partner) return { kind: 'refused' }
     const version = versionRef.current
-    const key = JSON.stringify({ patch, version })
+    const profileVersion = opts.profileVersion ?? (profile !== null ? profile.version ?? 0 : null)
+    const key = JSON.stringify({ patch, profileDoc, version, profileVersion })
     const saveId = pendingSaveRef.current?.key === key ? pendingSaveRef.current.saveId : mintSaveId()
     pendingSaveRef.current = null
     try {
-      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_version: version, save_id: saveId })
+      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_partner_version: version, expected_profile_version: profileVersion, profile: profileDoc, save_id: saveId })
       const saved = result ? result.partner : null
       versionRef.current = saved?.version ?? version + 1
-      return { kind: 'saved', partner: saved, copyWarning: result ? result.copyWarning : null }
+      return { kind: 'saved', partner: saved, profile: result ? result.profile : null, copyWarning: result ? result.copyWarning : null }
     } catch (err) {
-      const e = err as Error & { status?: number; body?: Partial<PartnerStaleVersion> & { error?: string } }
+      const e = err as Error & { status?: number; body?: Partial<PartnerPageStale> & { error?: string; message?: string } }
       if (e.status === undefined) {
         // No answer: the save may or may not have landed, so a retry of this
         // press sends the same id and can recognise its own save.
@@ -457,41 +474,73 @@ export default function PartnerForm({
       }
       if (e.status === 409 && e.body?.error === 'stale_version') {
         if (e.body.last_save_id === saveId) {
-          const current = e.body.current ?? null
-          versionRef.current = current?.version ?? version + 1
-          return { kind: 'saved', partner: current, copyWarning: null }
+          const current = e.body.partner ?? null
+          versionRef.current = e.body.partner_version ?? current?.version ?? version + 1
+          return { kind: 'saved', partner: current, profile: e.body.profile ?? null, copyWarning: null }
         }
         const stale = { changed_by_name: e.body.changed_by_name ?? null, changed_at: e.body.changed_at ?? null }
-        setSaveOutcome({ kind: 'failed', message: opts.undo ? staleUndoSentence(stale) : staleSaveSentence(stale) })
+        const partnerStale = e.body.partner_version !== undefined && e.body.partner_version !== null && e.body.partner_version !== version
+        const profileStale = profileVersion !== null && e.body.profile_version !== undefined && e.body.profile_version !== profileVersion
+        // Their profile beside the person's edits, which stay in the form (L717).
+        if (profileStale && e.body.profile && !opts.undo) setConflict({ theirs: e.body.profile, changedBy: e.body.changed_by_name ?? null })
+        const message = opts.undo
+          ? staleUndoSentence(stale)
+          : profileStale && !partnerStale
+            // Never a direction word: the Save button sits under the section (#1464, L111).
+            ? `Nothing saved. ${e.body.changed_by_name ?? 'Someone else'} saved the buyer profile while you were editing it. Compare the two at the top of the Buyer profile section.`
+            : staleSaveSentence(stale)
+        setSaveOutcome({ kind: 'failed', message })
         return { kind: 'refused' }
       }
       // The route's sentence, never its code, and a refusal naming a field lands
       // on that field: the click URL an enabled click buyer is offered on (#1561).
-      const sentence = errorSentence(err, 'the partner save failed')
-      setProfileErrors(fieldErrorsOf(err))
-      setSaveOutcome({ kind: 'failed', message: `${opts.undo ? 'Undo not made' : 'Nothing saved'}: ${sentence}` })
+      const errors = fieldErrorsOf(err)
+      setProfileErrors(errors)
+      const lead = opts.undo ? 'Undo not made' : 'Nothing saved'
+      const hasSentence = typeof e.body?.message === 'string' && e.body.message.trim() !== ''
+      // The server's profile refusal carries field errors and no sentence of
+      // its own: named by label with the validator's reason, as the form's own
+      // check names them (#1464).
+      const message = !hasSentence && errors.length > 0
+        ? `${lead}. Fix the buyer profile first: ${describeProfileErrors(errors, profileDoc?.sold_on ?? profile?.sold_on ?? null)}`
+        : `${lead}: ${errorSentence(err, 'the partner save failed')}`
+      setSaveOutcome({ kind: 'failed', message })
       return { kind: 'refused' }
     }
   }
 
+  /** The outcome sentence for a landed save: which halves it wrote, and when bidding picks them up. */
+  function savedSentence(partnerWritten: boolean, savedProfile: BuyerProfileDocument | null): string {
+    const parts = [partnerWritten ? 'Partner saved.' : null, savedProfile ? `Buyer profile saved, version ${savedProfile.version ?? '?'}.` : null].filter((p): p is string => p !== null)
+    return `${parts.join(' ')} ${pickupSentence()}`
+  }
+
+  /** The profile as the save stored it becomes the clean baseline. */
+  function adoptSavedProfile(saved: BuyerProfileDocument) {
+    profileBaseline.current = JSON.stringify(saved)
+    setProfile(saved)
+    setConflict(null)
+  }
+
   async function handleUndo() {
     if (!undo) return
-    const { snapshot: snap, patch } = undo
+    const { snapshot: snap, patch, profileBefore } = undo
     setUndo(null)
     setUndoSecondsLeft(0)
     setError(null)
     setCopyWarningText(null)
     setSaveState('saving')
     setSaveOutcome({ kind: 'working', label: 'Undoing the save', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-    // The inverse of the save just made, at the version it produced, so an Undo
-    // can never put back over a newer save someone else made (#98, #2132). The
-    // form keeps showing what is stored until the Undo lands, so a refused Undo
-    // leaves nothing reading as an unsaved edit.
-    const result = await savePartnerRecord(patch, { undo: true })
+    // The inverse of the whole save just made, at the pair of versions it
+    // produced, so an Undo can never put back over a newer save someone else
+    // made (#98, #2132, #2133). The form keeps showing what is stored until the
+    // Undo lands, so a refused Undo leaves nothing reading as an unsaved edit.
+    const result = await savePage(patch, profileBefore, { undo: true })
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
     }
+    if (profileBefore && result.profile) adoptSavedProfile(result.profile)
     restoreSnapshot(snap)
     baselineDirtyKey.current = JSON.stringify({ ...snap, slug })
     baselineSnapshot.current = snap
@@ -502,42 +551,17 @@ export default function PartnerForm({
     setTimeout(() => setSaveState('idle'), 1500)
   }
 
-  /**
-   * Save the buyer profile document through its versioned route (#1412). A
-   * stale version comes back as the side by side; the person's edits stay in
-   * the form whichever way they resolve it (L717).
-   */
-  async function saveProfile(expectedVersion: number, partnerSaved = true): Promise<'saved' | 'conflict' | 'failed'> {
-    if (!partner || !profile) return 'saved'
-    // Says the partner record was saved only when this press saved it (#2132).
-    const lead = partnerSaved ? 'Partner saved. ' : ''
-    try {
-      const saved = await api.buyerProfiles.save(partner.id, { expected_version: expectedVersion, profile })
-      profileBaseline.current = JSON.stringify(saved.profile)
-      setProfile(saved.profile)
-      setConflict(null)
-      setSaveOutcome({ kind: 'done', message: `${lead}Buyer profile saved, version ${saved.profile.version ?? '?'}. ${pickupSentence()}` })
-      return 'saved'
-    } catch (err) {
-      const e = err as Error & { status?: number; body?: { error?: string; current?: BuyerProfileDocument } }
-      if (e.status === 409 && e.body?.current) {
-        setConflict({ theirs: e.body.current, changedBy: null })
-        setSaveOutcome({ kind: 'failed', message: `${lead}The buyer profile was not saved: it changed underneath you. Compare below.` })
-        return 'conflict'
-      }
-      // The route's sentence, never the code req() puts in the message (#1557): a sold_on_in_use refusal names the live workflows.
-      setSaveOutcome({ kind: 'failed', message: `${lead}The buyer profile was not saved: ${errorSentence(e, 'the save failed')}` })
-      return 'failed'
-    }
-  }
-
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     void submit(false)
   }
 
-  /** confirmed: the person has read what the click delivery change does and said save. */
-  async function submit(confirmed: boolean) {
+  /**
+   * confirmed: the person has read what the click delivery change does and said
+   * save. profileVersion: the version of THEIR profile, when the person chose
+   * to save over it from the side by side.
+   */
+  async function submit(confirmed: boolean, profileVersion?: number) {
     setDeliveryConfirm(null)
     setError(null)
     setProfileErrors([])
@@ -613,39 +637,36 @@ export default function PartnerForm({
       return
     }
 
+    // The profile as stored before this save, which Undo puts back (L574). A
+    // profile this save creates has none, and a save cannot delete one, so it
+    // offers no Undo.
+    const profileBefore = saveProfileToo && profileBaseline.current !== null ? (JSON.parse(profileBaseline.current) as BuyerProfileDocument) : null
+    const undoable = !saveProfileToo || (profileBefore !== null && (profileBefore.version ?? 0) > 0)
+
     setSaveState('saving')
-    if (partnerChanged) {
-      setSaveOutcome({ kind: 'working', label: 'Saving the partner', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-      const result = await savePartnerRecord(patch)
-      if (result.kind !== 'saved') {
-        setSaveState('idle')
-        return
-      }
-      setCopyWarningText(result.copyWarning)
-      // Undo restores the PRE-edit values by saving the inverse of this patch at
-      // the version this save produced. It covers the partner record only.
-      if (preEdit) {
-        setUndo({ snapshot: preEdit, patch: inversePatch(patch, buildPartnerBody(preEdit, bodyCtx)), savedProfile: saveProfileToo })
-        setUndoSecondsLeft(5)
-      }
+    setSaveOutcome({ kind: 'working', label: 'Saving', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
+    // One request for the whole page (#2133): both halves land or neither does,
+    // so the button says Saved only when everything this press saves has saved.
+    const result = await savePage(patch, saveProfileToo ? profile : null, { profileVersion })
+    if (result.kind !== 'saved') {
+      setSaveState('idle')
+      return
+    }
+    setCopyWarningText(result.copyWarning)
+    if (saveProfileToo && result.profile) adoptSavedProfile(result.profile)
+    // Undo restores the PRE-edit values of both halves by saving the inverse of
+    // this save at the versions it produced.
+    if (preEdit && undoable) {
+      setUndo({ snapshot: preEdit, patch: inversePatch(patch, buildPartnerBody(preEdit, bodyCtx)), profileBefore })
+      setUndoSecondsLeft(5)
     }
     // The partner record as on screen is now what is stored (saved just now, or
     // storing exactly as loaded), so it is the clean baseline whether or not this
-    // press wrote it; the profile keeps its own baseline below.
+    // press wrote it.
     baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
     baselineSnapshot.current = snapshot
     dispatchDraft({ type: 'rebase', base: built })
-    if (saveProfileToo && profile) {
-      setSaveOutcome({ kind: 'working', label: 'Saving the buyer profile', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-      // The button says Saved only when everything this press saves has saved.
-      const profileResult = await saveProfile(profile.version ?? 0, partnerChanged)
-      if (profileResult !== 'saved') {
-        setSaveState('idle')
-        return
-      }
-    } else {
-      setSaveOutcome({ kind: 'done', message: `Partner saved. ${pickupSentence()}` })
-    }
+    setSaveOutcome({ kind: 'done', message: savedSentence(partnerChanged, saveProfileToo ? result.profile ?? profile : null) })
     setSaveState('saved')
     setTimeout(() => setSaveState('idle'), 1500)
   }
@@ -796,7 +817,7 @@ export default function PartnerForm({
             onSignalRulesChange={setSignalRules}
             otherSellers={otherSellers}
             conflict={conflict}
-            onSaveOverTheirs={(theirVersion) => { void saveProfile(theirVersion) }}
+            onSaveOverTheirs={(theirVersion) => { void submit(true, theirVersion) }}
             soldOnLock={soldOnLock}
             onTakeTheirs={(theirs) => { profileBaseline.current = JSON.stringify(theirs); setProfile(theirs); setConflict(null); setSaveOutcome({ kind: 'done', message: 'Took the saved profile. Your edits to it were replaced.' }) }}
           />
@@ -1158,10 +1179,6 @@ export default function PartnerForm({
             >
               Undo · {undoSecondsLeft}s
             </button>
-          )}
-          {/* Undo saves the partner record only; when this press also saved the profile, say so (L574). */}
-          {undo?.savedProfile && (
-            <span className="text-xs text-gray-600">Undo does not reverse the buyer profile changes.</span>
           )}
           {dirty && saveState !== 'saving' && (
             <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">

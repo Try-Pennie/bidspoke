@@ -2874,6 +2874,17 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      _apply_buyer_profile: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_audit_extra: Json
+          p_org: string
+          p_partner: string
+          p_profile: Json
+        }
+        Returns: Json
+      }
       alert_incident_moved_from: {
         Args: { p_signal: string; p_started_at: string; p_subject: string }
         Returns: string
@@ -3182,6 +3193,21 @@ export type Database = {
           p_id: string
           p_org: string
           p_patch: Json
+          p_save_id: string
+        }
+        Returns: Json
+      }
+      save_partner_page: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_actor_name: string
+          p_expected_partner_version: number
+          p_expected_profile_version: number
+          p_org: string
+          p_partner_id: string
+          p_patch: Json
+          p_profile: Json
           p_save_id: string
         }
         Returns: Json

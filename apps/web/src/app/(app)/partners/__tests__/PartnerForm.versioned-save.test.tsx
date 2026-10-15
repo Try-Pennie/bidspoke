@@ -15,7 +15,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), save: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
   },
 }))
@@ -48,7 +48,7 @@ beforeEach(() => {
 })
 
 function saved(over: Partial<Partner> = {}, copyWarning: string | null = null) {
-  return { partner: { ...partner, version: 4, ...over }, copyWarning }
+  return { partner: { ...partner, version: 4, ...over }, profile: null, copyWarning }
 }
 
 function renderForm(onSave = vi.fn().mockResolvedValue(saved())) {
@@ -61,7 +61,7 @@ const rename = (value = 'M1 renamed') => fireEvent.change(screen.getByDisplayVal
 const save = () => fireEvent.click(document.querySelector('button[type="submit"]')!)
 const stale = (over: Record<string, unknown>) => Object.assign(new Error('stale_version'), {
   status: 409,
-  body: { error: 'stale_version', current: { ...partner, name: 'M1 (theirs)', version: 5 }, last_save_id: 'f0f0f0f0-0000-4000-8000-000000000001', changed_by_name: 'Brian Nelms', changed_at: '2026-10-15T18:02:00Z', ...over },
+  body: { error: 'stale_version', partner: { ...partner, name: 'M1 (theirs)', version: 5 }, profile: null, partner_version: 5, profile_version: 0, last_save_id: 'f0f0f0f0-0000-4000-8000-000000000001', changed_by_name: 'Brian Nelms', changed_at: '2026-10-15T18:02:00Z', ...over },
 })
 
 describe('a versioned save of only what changed (#2132)', () => {
@@ -74,8 +74,11 @@ describe('a versioned save of only what changed (#2132)', () => {
     expect(body).toEqual({ name: 'M1 renamed' })
     expect(id).toBe('p1')
     expect(pending).toBeUndefined()
-    expect(versioning.expected_version).toBe(3)
+    expect(versioning.expected_partner_version).toBe(3)
     expect(versioning.save_id).toMatch(UUID_RE)
+    // A source partner never reads a profile, so this save neither writes one nor is compared on one (#2133).
+    expect(versioning.profile).toBeNull()
+    expect(versioning.expected_profile_version).toBeNull()
   })
 
   it('never sends a field the person did not touch, so a stored ping_only bid mode is left alone', async () => {
@@ -95,7 +98,7 @@ describe('a versioned save of only what changed (#2132)', () => {
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     expect(onSave.mock.calls[1][0]).toEqual({ name: 'M1 b' })
-    expect(onSave.mock.calls[1][3].expected_version).toBe(4)
+    expect(onSave.mock.calls[1][3].expected_partner_version).toBe(4)
     expect(onSave.mock.calls[1][3].save_id).not.toBe(onSave.mock.calls[0][3].save_id)
   })
 
@@ -117,7 +120,7 @@ describe('a versioned save of only what changed (#2132)', () => {
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     const id = () => onSave.mock.calls[0][3].save_id
-    onSave.mockImplementationOnce(async () => { throw stale({ last_save_id: id(), current: { ...partner, name: 'M1 renamed', version: 4 } }) })
+    onSave.mockImplementationOnce(async () => { throw stale({ last_save_id: id(), partner: { ...partner, name: 'M1 renamed', version: 4 }, partner_version: 4 }) })
     save()
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Partner saved\./))
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
@@ -190,7 +193,7 @@ describe('a versioned save of only what changed (#2132)', () => {
 })
 
 describe('Undo is a versioned save of the inverse (#2132)', () => {
-  it('sends each saved field back to its value before, at the version the save produced, with no profile caveat when no profile was saved', async () => {
+  it('sends each saved field back to its value before, at the version the save produced, and says nothing about a profile when none was saved', async () => {
     const onSave = renderForm()
     rename()
     save()
@@ -199,7 +202,7 @@ describe('Undo is a versioned save of the inverse (#2132)', () => {
     fireEvent.click(undo)
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     expect(onSave.mock.calls[1][0]).toEqual({ name: 'M1' })
-    expect(onSave.mock.calls[1][3].expected_version).toBe(4)
+    expect(onSave.mock.calls[1][3].expected_partner_version).toBe(4)
   })
 
   it('an Undo refused as stale names who saved, overwrites nothing, and leaves the screen showing what is stored', async () => {

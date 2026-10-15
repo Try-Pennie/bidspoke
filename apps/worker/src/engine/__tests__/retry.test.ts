@@ -3,6 +3,7 @@ import { withRetry, linkAbort } from '../retry'
 import { classifyStepError } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
 import type { ErrorType } from '../../types'
+import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 
 const permanent = (): ErrorType => 'permanent'
 const transient = (): ErrorType => 'transient'
@@ -346,5 +347,44 @@ describe('withRetry: injectable backoff (#1063)', () => {
     // exact figure, because a wall-clock assertion is otherwise a check on what
     // else the machine is running (L224).
     expect(Date.now() - started).toBeGreaterThanOrEqual(400)
+  })
+})
+
+/**
+ * The per attempt deadline runs on a clock the caller can hand in (#2163), the
+ * way the backoff already does (#1063), so a test can drive a whole timed out
+ * retry ladder through the real withTimeout without waiting for it. Omitted, it
+ * is the real timer, which the timeout tests above cover.
+ */
+describe('withRetry: injectable per attempt deadline (#2163)', () => {
+  it('times each attempt out on the clock it is given, aborting the attempt and never waiting real time', async () => {
+    const clock = new VirtualClock()
+    const aborted: number[] = []
+    const fn = vi.fn((signal: AbortSignal) => new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted.push(clock.now())
+        // A real call's abort reaches the step through its own await chain, a
+        // tick or more after the deadline has already rejected.
+        void Promise.resolve().then(() => reject(new DOMException('The operation was aborted.', 'AbortError')))
+      })
+    }))
+    const p = withRetry(fn, { retries: 2, backoff: 'exponential', timeout_ms: 1500 }, transient, undefined,
+      (ms) => clock.sleep(ms), (ms, signal) => clock.timer(ms, signal))
+    const outcome = expect(p).rejects.toThrow(/Step timed out after 1500ms/)
+    await clock.run()
+    await outcome
+    expect(fn).toHaveBeenCalledTimes(3)
+    // 1500, then a 500 backoff, 1500, a 1000 backoff, 1500: all on the virtual clock.
+    expect(aborted).toEqual([1500, 3500, 6000])
+    expect(clock.sleeps).toEqual([500, 1000])
+  })
+
+  it('stops the deadline once the attempt answers, so it never fires afterwards', async () => {
+    const clock = new VirtualClock()
+    const result = withRetry(async () => 'ok', { retries: 0, backoff: 'linear', timeout_ms: 1500 }, transient, undefined,
+      (ms) => clock.sleep(ms), (ms, signal) => clock.timer(ms, signal))
+    await expect(result).resolves.toBe('ok')
+    // A deadline left running would still be waiting on the clock.
+    expect(await clock.run()).toBe(0)
   })
 })

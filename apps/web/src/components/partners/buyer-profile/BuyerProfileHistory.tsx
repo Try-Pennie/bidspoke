@@ -28,7 +28,9 @@ export function BuyerProfileHistory({ entries }: { entries: readonly HistoryEntr
             <span className="font-medium">{entry.action}</span> by {entry.changed_by ?? 'the system'} on {when(entry.changed_at)}
           </p>
           <div className="mt-1 space-y-0.5 pl-3">
-            {Object.entries(entry.changes ?? {}).map(([path, change]) => (
+            {/* A key starting with an underscore is bookkeeping beside the paths
+                (_actor, _route, #2133), never a field that changed. */}
+            {Object.entries(entry.changes ?? {}).filter(([path]) => !path.startsWith('_')).map(([path, change]) => (
               <p key={path}>{profileFieldLabel(path)}: {formatProfileValue(path, change.old)} to {formatProfileValue(path, change.new)}</p>
             ))}
           </div>

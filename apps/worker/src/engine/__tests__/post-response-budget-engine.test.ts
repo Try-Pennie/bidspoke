@@ -12,7 +12,7 @@
  * clock, so a 25 second outage runs in milliseconds and every write and every
  * dead letter is stamped with the virtual time it happened at.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -54,6 +54,8 @@ import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { decryptSecret } from '../../lib/secret-crypto'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
+import { executeSalesforceNode } from '../nodes/salesforce'
+import { WRITEBACK_HELD_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../writeback-deadletter'
 
 const WF_ID = 'wf-budget'
 const RESPONSE = { status: 200, headers: {}, body: { accepted: true } }
@@ -222,6 +224,15 @@ async function run(
     seedWindows?: Record<string, number>
     // Laid over the run's input, so a case can mark it a test run (#2022).
     input?: Record<string, unknown>
+    // Runs each step's per attempt deadline and retry backoff on the virtual
+    // clock too (#2163), so a timed out step runs the real withTimeout in no time.
+    stepClock?: boolean
+    // True once the walk's work after the answer has settled. A step that does
+    // real asynchronous work (WebCrypto, a Response body) can be mid await with no
+    // virtual timer pending, and running the clock to the end then fires the
+    // cut-off first. With this, the clock moves in small steps until the walk is
+    // done, and only then runs out (#2163).
+    walkDone?: () => boolean
   } = {},
 ) {
   const clock = new VirtualClock()
@@ -243,10 +254,16 @@ async function run(
   const result = await executeWorkflow(
     { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
     env,
-    { ...moneyRuntime(db.client), clock },
+    { ...moneyRuntime(db.client), clock, ...(options.stepClock ? { stepClock: clock } : {}) },
     executionCtx,
   )
   // The response is out at virtual time zero. Let the post-response work run.
+  if (options.walkDone) {
+    while (!options.walkDone()) {
+      if (clock.now() >= CUTOFF) throw new Error('the walk after the answer did not settle before the cut-off')
+      await clock.run(clock.now() + 10)
+    }
+  }
   await clock.run()
   for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
 
@@ -666,6 +683,134 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       const { idempotency } = await run(test.availability, { SECRET_ENCRYPTION_KEY: KEY }, { input: { isTest: true } })
       expect(test.watched).toEqual([false])
       expect(idempotency.puts.filter((p) => p.key.startsWith('at-risk-write:'))).toEqual([])
+    })
+  })
+
+  /**
+   * #2163, measured 2026-10-15: 60 failed live Salesforce steps in 7 days, every
+   * one a timeout with no logged input, each alerted "cannot be replayed" while
+   * the at-risk record held its request. These run the REAL Salesforce node
+   * through the real withRetry and withTimeout, with each attempt's deadline and
+   * backoff on the run's virtual clock, against a Salesforce that never answers.
+   */
+  describe('a post-answer Salesforce update that times out (#2163)', () => {
+    const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 63)).toString('base64')
+    const SF_ENV = {
+      SECRET_ENCRYPTION_KEY: KEY,
+      SALESFORCE_INSTANCE_URL: 'https://pennie.my.salesforce.test',
+      SALESFORCE_CLIENT_ID: 'id',
+      SALESFORCE_CLIENT_SECRET: 'secret',
+    }
+    // The live patch_prospect_reject: 1,500 ms an attempt, the default two retries.
+    const update = (object: string, recordId: string, body: Record<string, unknown>) => ({
+      id: 'p',
+      namespace: 'patch_prospect_reject',
+      type: 'salesforce',
+      config: { operation: 'update', object, record_id: recordId, body, timeout_ms: 1500 },
+    })
+    const REJECT = { BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' }
+
+    type Salesforce = 'never answers' | 'refuses' | 'token never answers'
+    const aborted = (signal: AbortSignal | null | undefined) =>
+      new Promise<Response>((_, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+      })
+
+    function salesforce(behaviour: Salesforce, node = update('Prospect__c', 'a06Ui00002sLkNuIAK', REJECT)) {
+      vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+        definition: {
+          trigger: { id: 'trigger', type: 'trigger', config: {} },
+          nodes: [{ id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } }, node],
+          edges: [{ id: 'e0', source: 'r', target: 'p' }],
+        } as unknown as WorkflowDefinition,
+        workflow_version_id: 'v1',
+        workflow_name: 'Engine Bidding Workflow',
+        org_id: 'org-1',
+        slack_channel: null,
+        lane: 'money',
+      })
+      let stepCtx: { noteSalesforceRequest?: unknown } | null = null
+      vi.mocked(executeNode).mockImplementation(async (n, ctx, env, _db, signal) => {
+        if (n.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+        stepCtx = ctx
+        return executeSalesforceNode(n, ctx, env as Env, signal)
+      })
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (String(url).includes('/services/oauth2/token')) {
+          if (behaviour === 'token never answers') return aborted(init?.signal)
+          return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 })
+        }
+        if (behaviour === 'refuses') {
+          return new Response(JSON.stringify([{ errorCode: 'FIELD_CUSTOM_VALIDATION_EXCEPTION', message: 'Bid status cannot move back' }]), { status: 400 })
+        }
+        return aborted(init?.signal)
+      }))
+      // The watch hands the node its request hook for the whole retry loop and
+      // takes it back once the step has settled, so the walk is past the step.
+      return { stepClock: true, walkDone: () => stepCtx !== null && stepCtx.noteSalesforceRequest === undefined }
+    }
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    const deadLetterLabels = () => vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])
+    const stepRow = (db: { steps: Record<string, unknown>[] }) => db.steps.find((s) => s.step_namespace === 'patch_prospect_reject')
+
+    it('logs the request it was sending as the failed step\'s input', async () => {
+      const { db } = await run(() => 'up', SF_ENV, salesforce('never answers'))
+      const row = stepRow(db)
+      expect(row?.status).toBe('failed')
+      expect(String(row?.error_message)).toMatch(/Step timed out after 1500ms/)
+      expect(row?.retries_used).toBe(2)
+      expect(row?.input).toMatchObject({ resolved: { operation: 'update', object: 'Prospect__c', record_id: 'a06Ui00002sLkNuIAK', body: REJECT } })
+    })
+
+    it('is not dead-lettered as uncapturable, stores no replay row, and is announced as held until the record expires', async () => {
+      const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers'))
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+      expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
+      const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
+      expect(held, 'the held update was not announced').toBeDefined()
+      // The at-risk record is still in KV, and the alert's expiry is its last write plus 24 hours.
+      const keys = [...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))
+      expect(keys).toHaveLength(1)
+      const entry = JSON.parse(idempotency.store.get(keys[0])!) as { recorded_at: string }
+      expect(held![3]?.held).toEqual({
+        step: 'patch_prospect_reject',
+        sf_object: 'Prospect__c',
+        sf_record_id: 'a06Ui00002sLkNuIAK',
+        fields: ['BidStatus__c', 'RejectionReason__c'],
+        until: new Date(Date.parse(entry.recorded_at) + 24 * 60 * 60 * 1000).toISOString(),
+      })
+      // Nothing posted says it cannot be replayed.
+      expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+    })
+
+    it('still sends a refused update to the replay store, already refused', async () => {
+      const { db } = await run(() => 'up', SF_ENV, salesforce('refuses'))
+      expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+    })
+
+    it('still takes the uncapturable path when it timed out before it had a request to send', async () => {
+      const { db } = await run(() => 'up', SF_ENV, salesforce('token never answers'))
+      // The step row must be there, or a missing input proves nothing.
+      expect(stepRow(db)?.status).toBe('failed')
+      expect(stepRow(db)?.input ?? null).toBeNull()
+      expect(deadLetterLabels()).toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
+    })
+
+    // Until the Submission read-back (#2023) is live, a held Submission update
+    // is announced like the others rather than left silent.
+    it('announces a held Submission update as held too, and stores no replay row', async () => {
+      const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' })))
+      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+      const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
+      expect(held?.[3]?.held).toMatchObject({ sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['External_Exchange_Status__c'] })
+      expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
+      expect(stepRow(db)?.input).toMatchObject({ resolved: { record_id: 'a04Ui00000NkhG1IAJ' } })
     })
   })
 

@@ -26,7 +26,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { rateLimitedOrgAlert } from './alert-fanout'
-import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
+import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_HELD_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -102,7 +102,7 @@ export function isUnrecoverableOutcomeLoss(label: string): boolean {
  * replay store (outcome_writeback_deadletters.insert) is a database write and
  * still counts.
  */
-const SALESFORCE_UPDATE_LABELS: ReadonlySet<string> = new Set(['sf_writeback', WRITEBACK_UNCAPTURABLE_LABEL])
+const SALESFORCE_UPDATE_LABELS: ReadonlySet<string> = new Set(['sf_writeback', WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_HELD_LABEL])
 
 /**
  * Whether a dead-letter label is a CONFIRMED database loss that should count
