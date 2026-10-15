@@ -24,7 +24,7 @@ vi.mock('../../../lib/held-click-sale-writes', async () => {
   const actual = await vi.importActual<typeof import('../../../lib/held-click-sale-writes')>('../../../lib/held-click-sale-writes')
   return { ...actual, writeHeldClickSale: vi.fn() }
 })
-const saleStub = { read: vi.fn(), heal: vi.fn(), free: vi.fn() }
+const saleStub = { read: vi.fn(), heal: vi.fn(), free: vi.fn(), amend: vi.fn() }
 const counterStub = { addMember: vi.fn(), date: '2027-09-20' }
 vi.mock('../../../lib/buyer-object-clients', async () => {
   const actual = await vi.importActual<typeof import('../../../lib/buyer-object-clients')>('../../../lib/buyer-object-clients')
@@ -63,6 +63,9 @@ const heldRow = {
   detail: 'no answer from the buyer: The operation was aborted', partner_lead_id: null, workflow_id: '44444444-4444-4444-8444-444444444444',
   execution_id: 'exec-1', trace_id: 'trace-1', held_at: HELD_AT, last_execution_id: 'exec-1', last_seen_at: HELD_AT,
 }
+
+/** Who released it, carried on every held click audit row as PR1's partner rows carry it (#2139). */
+const ACTOR = { name: null, email: 'dan@pennie.com' }
 
 const inDoubt: SaleState = { state: 'in_doubt', partner_id: PARTNER, generation: 2 }
 const soldAs = (ref: string | null, generation = 3): SaleState => ({ state: 'sold', partner_id: PARTNER, outcome: { buyer_reference: ref, result_code: 'marked_sent', http_status: null, payout_cents: 0 }, generation })
@@ -118,6 +121,7 @@ beforeEach(async () => {
   saleStub.read.mockResolvedValue(inDoubt)
   saleStub.heal.mockResolvedValue(3)
   saleStub.free.mockResolvedValue(3)
+  saleStub.amend.mockResolvedValue(4)
   counterStub.addMember.mockResolvedValue({ added: true, count: 12 })
   vi.mocked(writeHeldClickSale).mockResolvedValue(allWritten)
   app = await makeApp()
@@ -201,6 +205,7 @@ describe('POST /held-clicks/:id/mark-sent', () => {
       buyer_lead_id: { old: null, new: LEAD_ID },
       salesforce_writes: { old: null, new: allWritten },
       subject: { partner_id: PARTNER, prospect_id: PROSPECT, reason: 'outcome_unknown', held_at: HELD_AT },
+      _actor: ACTOR,
     })
   })
 
@@ -355,9 +360,9 @@ describe('POST /held-clicks/:id/mark-sent', () => {
     expect(await res.json()).toMatchObject({ list_cleared: false })
   })
 
-  it('refuses a missing lead id, a lead id with spaces inside, and a generation that is not a whole number', async () => {
+  it('refuses a lead id with spaces inside or not text, and a generation that is not a whole number', async () => {
     supabaseWith({ held_click_claims: { single: heldRow } })
-    for (const body of [{ generation: 2 }, { generation: 2, buyer_lead_id: '  ' }, { generation: 2, buyer_lead_id: 'a0B 5f' }, { generation: 'two', buyer_lead_id: LEAD_ID }, { generation: 1.5, buyer_lead_id: LEAD_ID }]) {
+    for (const body of [{ generation: 2, buyer_lead_id: 'a0B 5f' }, { generation: 2, buyer_lead_id: 7 }, { generation: 2, buyer_lead_id: 'x'.repeat(201) }, { generation: 'two', buyer_lead_id: LEAD_ID }, { generation: 1.5, buyer_lead_id: LEAD_ID }]) {
       const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, body)
       expect(res.status, JSON.stringify(body)).toBe(400)
     }
@@ -405,6 +410,7 @@ describe('POST /held-clicks/:id/free', () => {
       claim_state: { old: 'in_doubt', new: 'free' },
       claim_generation: { old: 2, new: 3 },
       subject: { partner_id: PARTNER, prospect_id: PROSPECT, reason: 'outcome_unknown', held_at: HELD_AT },
+      _actor: ACTOR,
     })
   })
 
@@ -457,6 +463,7 @@ describe('POST /held-clicks/:id/clear', () => {
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'deleted', testUser.id, {
       held_click: { old: { partner_id: PARTNER, prospect_id: PROSPECT, reason: 'outcome_unknown', held_at: HELD_AT }, new: null },
       claim_state: { old: 'free', new: 'free' },
+      _actor: ACTOR,
     })
   })
 
@@ -483,6 +490,7 @@ describe('POST /held-clicks/:id/salesforce (retry the Salesforce updates)', () =
     expect(vi.mocked(recordAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, {
       salesforce_writes: { old: null, new: allWritten },
       subject: { partner_id: PARTNER, prospect_id: PROSPECT, reason: 'outcome_unknown', held_at: HELD_AT },
+      _actor: ACTOR,
     })
   })
 
@@ -506,13 +514,24 @@ describe('POST /held-clicks/:id/salesforce (retry the Salesforce updates)', () =
     expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
   })
 
-  it('a sale with no lead id on the claim is refused rather than written without one', async () => {
-    supabaseWith({ held_click_claims: { single: heldRow } })
+  it('a sale marked without a lead id is written without one (PM-7), and stays listed so a lead id can still be added (#2139)', async () => {
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
     saleStub.read.mockResolvedValue(soldAs(null))
     const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/salesforce`, {})
-    expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ error: 'no_lead_id' })
-    expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ outcome: 'written', salesforce: allWritten, audit_recorded: true, list_cleared: false })
+    expect(vi.mocked(writeHeldClickSale)).toHaveBeenCalledWith(testEnv, expect.anything(), { orgId: 'org-abc', userId: testUser.id, row: heldRow, buyerLeadId: null })
+  })
+
+  it('a retry with no lead id that Salesforce refuses is incomplete, with Salesforce\'s own words on the record it refused', async () => {
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+    saleStub.read.mockResolvedValue(soldAs(null))
+    vi.mocked(writeHeldClickSale).mockResolvedValue(submissionFailed)
+    const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/salesforce`, {})
+    const body = await res.json() as { outcome: string; salesforce: SaleWrites; list_cleared: boolean }
+    expect(body.outcome).toBe('incomplete')
+    expect(body.salesforce.writes[1]).toEqual(expect.objectContaining({ outcome: 'failed', message: expect.stringMatching(/FIELD_CUSTOM_VALIDATION_EXCEPTION/) }))
+    expect(body.list_cleared).toBe(false)
   })
 
   it('a claim that does not answer is 503; another org\'s entry is 404; unauthenticated is 401', async () => {
@@ -615,5 +634,281 @@ describe('POST /held-clicks/:id/salesforce: the audit carries what it replaced (
     vi.mocked(recordAuditLog).mockResolvedValue(false)
     const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/salesforce`, {})
     expect(await res.json()).toMatchObject({ outcome: 'written', audit_recorded: false })
+  })
+})
+
+describe('POST /held-clicks/:id/mark-sent without a lead id (PM-7, #2139)', () => {
+  it('counts the click, sells the claim with no lead id, marks the sale Completed in Salesforce with none, and keeps the entry listed so one can be added (L1008)', async () => {
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+    const noId: SaleWrites = { ...allWritten, buyer_lead_id: null }
+    vi.mocked(writeHeldClickSale).mockResolvedValue(noId)
+    const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2 })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: noId, audit_recorded: true, list_cleared: false })
+    expect(saleStub.heal).toHaveBeenCalledWith(2, { buyer_reference: null, result_code: 'marked_sent', http_status: null, payout_cents: 0 })
+    expect(counterStub.addMember).toHaveBeenCalledWith(PROSPECT)
+    expect(vi.mocked(writeHeldClickSale)).toHaveBeenCalledWith(testEnv, expect.anything(), { orgId: 'org-abc', userId: testUser.id, row: heldRow, buyerLeadId: null })
+    expect(vi.mocked(recordAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, expect.objectContaining({
+      buyer_lead_id: { old: null, new: null },
+      salesforce_writes: { old: null, new: noId },
+      _actor: ACTOR,
+    }))
+  })
+
+  it('an empty or blank lead id is no lead id, never an empty string on the claim', async () => {
+    for (const buyer_lead_id of ['', '   ', null]) {
+      supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+      saleStub.heal.mockClear()
+      expect((await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2, buyer_lead_id })).status).toBe(200)
+      expect(saleStub.heal).toHaveBeenCalledWith(2, expect.objectContaining({ buyer_reference: null }))
+    }
+  })
+
+  it('a Salesforce update that fails with no lead id is incomplete, with Salesforce\'s own words on each record, and the sale stands', async () => {
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+    const failedNoId: SaleWrites = { ...submissionFailed, buyer_lead_id: null }
+    vi.mocked(writeHeldClickSale).mockResolvedValue(failedNoId)
+    const res = await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2 })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { outcome: string; salesforce: SaleWrites; list_cleared: boolean }
+    expect(body.outcome).toBe('sent')
+    expect(body.salesforce.complete).toBe(false)
+    expect(body.salesforce.writes.map((w) => [w.record, w.outcome, 'message' in w ? w.message : null])).toEqual([
+      ['prospect', 'written', null],
+      ['submission', 'failed', 'Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION'],
+      ['lead', 'written', null],
+    ])
+    expect(body.list_cleared).toBe(false)
+    expect(saleStub.free).not.toHaveBeenCalled()
+  })
+
+  it('writes no buyer ledger entry and calls no sale recording function, so the daily sale check, which judges only the ledger, counts nothing new (A4)', async () => {
+    const ledger = { idFromName: vi.fn(), get: vi.fn() }
+    const rpc = vi.fn(async () => ({ data: null, error: null }))
+    const sb = makeSupabase({ users: { single: testUser }, held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } }, { rpc })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await app.request(`/held-clicks/${ROW_ID}/mark-sent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify({ generation: 2 }),
+    }, { ...testEnv, BUYER_LEDGER: ledger } as unknown as Env, mockCtx)
+    expect(res.status).toBe(200)
+    expect(ledger.idFromName).not.toHaveBeenCalled()
+    expect(ledger.get).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(Object.keys(sb.calls).filter((t) => t !== 'users').sort()).toEqual(['held_click_claims'])
+  })
+
+  it('a double press is gated by the generation: the second is refused and nothing is counted or written twice', async () => {
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+    expect((await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2 })).status).toBe(200)
+    saleStub.read.mockResolvedValue(soldAs(null, 3))
+    const second = await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2 })
+    expect(second.status).toBe(409)
+    expect(await second.json()).toMatchObject({ error: 'claim_changed' })
+    expect(saleStub.heal).toHaveBeenCalledTimes(1)
+    expect(counterStub.addMember).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(writeHeldClickSale)).toHaveBeenCalledTimes(1)
+  })
+
+  it('the person\'s name is carried on the audit row when the token has one', async () => {
+    vi.mocked(verifyJwt).mockResolvedValue({ ...validPayload, user_metadata: { full_name: 'Dan Wright' } } as unknown as Awaited<ReturnType<typeof verifyJwt>>)
+    supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] } })
+    await request(app, 'POST', `/held-clicks/${ROW_ID}/mark-sent`, { generation: 2 })
+    expect(vi.mocked(recordAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, expect.objectContaining({
+      _actor: { name: 'Dan Wright', email: 'dan@pennie.com' },
+    }))
+  })
+})
+
+describe('GET /held-clicks: a sold entry with no lead id (#2139)', () => {
+  it('returns null for the lead id, never an empty string, and stands written when Salesforce took the sale without one', async () => {
+    supabaseWith({
+      held_click_claims: { list: [heldRow], count: 1 },
+      audit_log: { list: [{ changed_at: '2027-09-22T18:01:00Z', changes: { salesforce_writes: { old: null, new: { ...allWritten, buyer_lead_id: null } } } }] },
+    })
+    saleStub.read.mockResolvedValue(soldAs(null))
+    const body = await (await request(app, 'GET', `/held-clicks?partner_id=${PARTNER}`)).json() as { entries: Array<Record<string, unknown>> }
+    expect(body.entries[0].claim).toEqual({ status: 'sold', generation: 3, partner_lead_id: null })
+    expect(body.entries[0].salesforce_standing).toBe('written')
+  })
+})
+
+describe('GET /held-clicks: where each sold entry stands in Salesforce (PM-8, #2139)', () => {
+  const listWith = (claim: SaleState, auditRows: Array<Record<string, unknown>>) => {
+    supabaseWith({ held_click_claims: { list: [heldRow], count: 1 }, audit_log: { list: auditRows } })
+    saleStub.read.mockResolvedValue(claim)
+  }
+  const standing = async () => {
+    const body = await (await request(app, 'GET', `/held-clicks?partner_id=${PARTNER}`)).json() as { entries: Array<Record<string, unknown>> }
+    return body.entries[0].salesforce_standing
+  }
+
+  it('incomplete when the last updates did not all land', async () => {
+    listWith(soldAs(LEAD_ID), [{ changed_at: '2027-09-22T18:01:00Z', changes: { salesforce_writes: { old: null, new: { ...submissionFailed, buyer_lead_id: LEAD_ID } } } }])
+    expect(await standing()).toBe('incomplete')
+  })
+
+  it('lead_id_not_written when the claim now holds a lead id the last updates did not carry, as after an amend that stopped before Salesforce', async () => {
+    listWith(soldAs('L1-NEW'), [{ changed_at: '2027-09-22T18:01:00Z', changes: { salesforce_writes: { old: null, new: { ...allWritten, buyer_lead_id: LEAD_ID } } } }])
+    expect(await standing()).toBe('lead_id_not_written')
+  })
+
+  it('reads the lead id of a record made before it was carried on the writes from the same audit row\'s buyer_lead_id', async () => {
+    listWith(soldAs('L1-NEW'), [{ changed_at: '2027-09-22T18:01:00Z', changes: { buyer_lead_id: { old: null, new: LEAD_ID }, salesforce_writes: { old: null, new: allWritten } } }])
+    expect(await standing()).toBe('lead_id_not_written')
+  })
+
+  it('not_recorded when a sold entry has no recorded update, as after a Mark sent that stopped before Salesforce', async () => {
+    listWith(soldAs(LEAD_ID), [])
+    expect(await standing()).toBe('not_recorded')
+  })
+
+  it('unreadable when the record cannot be read, never written', async () => {
+    supabaseWith({ held_click_claims: { list: [heldRow], count: 1 }, audit_log: { listError: { message: 'timeout', code: '57014' } } })
+    saleStub.read.mockResolvedValue(soldAs(LEAD_ID))
+    expect(await standing()).toBe('unreadable')
+  })
+
+  it('null on an entry that is not sold', async () => {
+    listWith(inDoubt, [])
+    expect(await standing()).toBeNull()
+  })
+})
+
+describe('POST /held-clicks/:id/lead-id: add or correct the lead id of a sale marked sent (decision 3, L1008, #2139)', () => {
+  const amendRow = (claim: SaleState, auditRows: Array<Record<string, unknown>> = []) => {
+    const sb = supabaseWith({ held_click_claims: { single: heldRow, writeRows: [{ id: ROW_ID }] }, audit_log: { list: auditRows } })
+    saleStub.read.mockResolvedValue(claim)
+    return sb
+  }
+  const post = (body: unknown) => request(app, 'POST', `/held-clicks/${ROW_ID}/lead-id`, body)
+
+  it('adds a lead id to a sale marked without one: amends the claim at the generation read, writes Salesforce with it, clears the entry, and audits old and new', async () => {
+    const before: SaleWrites = { ...allWritten, buyer_lead_id: null }
+    const sb = amendRow(soldAs(null, 3), [{ changed_at: '2027-09-22T18:01:00Z', changes: { salesforce_writes: { old: null, new: before } } }])
+    const after: SaleWrites = { ...allWritten, buyer_lead_id: LEAD_ID }
+    vi.mocked(writeHeldClickSale).mockResolvedValue(after)
+    const res = await post({ generation: 3, buyer_lead_id: ` ${LEAD_ID} ` })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ outcome: 'amended', generation: 4, salesforce: after, audit_recorded: true, list_cleared: true })
+    // Only the reference is sent: the object keeps every other outcome field as the sale recorded it.
+    expect(saleStub.amend).toHaveBeenCalledWith(3, LEAD_ID)
+    expect(saleStub.heal).not.toHaveBeenCalled()
+    expect(counterStub.addMember).not.toHaveBeenCalled()
+    expect(vi.mocked(writeHeldClickSale)).toHaveBeenCalledWith(testEnv, expect.anything(), { orgId: 'org-abc', userId: testUser.id, row: heldRow, buyerLeadId: LEAD_ID })
+    expect(saleStub.amend.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(writeHeldClickSale).mock.invocationCallOrder[0])
+    expect(vi.mocked(recordAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, {
+      buyer_lead_id: { old: null, new: LEAD_ID },
+      claim_generation: { old: 3, new: 4 },
+      salesforce_writes: { old: before, new: after },
+      subject: { partner_id: PARTNER, prospect_id: PROSPECT, reason: 'outcome_unknown', held_at: HELD_AT },
+      _actor: ACTOR,
+    })
+    expect(sb.eqCalls.held_click_claims).toEqual(expect.arrayContaining([['id', ROW_ID], ['organization_id', 'org-abc'], ['last_execution_id', 'exec-1']]))
+  })
+
+  it('corrects a lead id: the old one is the audit row\'s old value', async () => {
+    amendRow(soldAs('L1-TYPO', 3))
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(200)
+    expect(saleStub.amend).toHaveBeenCalledWith(3, LEAD_ID)
+    expect(vi.mocked(recordAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'held_click', ROW_ID, 'updated', testUser.id, expect.objectContaining({
+      buyer_lead_id: { old: 'L1-TYPO', new: LEAD_ID },
+    }))
+  })
+
+  it('a stale generation is refused by name and nothing is amended or written', async () => {
+    amendRow(soldAs(null, 4))
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'claim_changed', message: expect.stringMatching(/changed since/) })
+    expect(saleStub.amend).not.toHaveBeenCalled()
+    expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('a claim that moves between the read and the amend is refused the same way (the compare and set)', async () => {
+    amendRow(soldAs(null, 3))
+    saleStub.amend.mockRejectedValue(new GenerationMovedError(soldAs('L1-OTHER', 4)))
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'claim_changed' })
+    expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
+  })
+
+  it('a Salesforce retry that fails shows Salesforce\'s own words, keeps the entry listed, and the new lead id stands', async () => {
+    amendRow(soldAs(null, 3))
+    vi.mocked(writeHeldClickSale).mockResolvedValue({ ...submissionFailed, buyer_lead_id: LEAD_ID })
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { outcome: string; generation: number; salesforce: SaleWrites; list_cleared: boolean }
+    expect(body).toMatchObject({ outcome: 'amended', generation: 4, list_cleared: false })
+    expect(body.salesforce.writes[1]).toEqual(expect.objectContaining({ outcome: 'failed', message: 'Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION' }))
+  })
+
+  it('Salesforce writes that throw are reported as not attempted on every record, and the amend stands', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    amendRow(soldAs(null, 3))
+    vi.mocked(writeHeldClickSale).mockRejectedValue(new Error('boom'))
+    const body = await (await post({ generation: 3, buyer_lead_id: LEAD_ID })).json() as { salesforce: SaleWrites; list_cleared: boolean }
+    expect(body.salesforce).toMatchObject({ complete: false, buyer_lead_id: LEAD_ID })
+    expect(body.salesforce.writes.every((w) => w.outcome === 'not_attempted' && /boom/.test(w.message))).toBe(true)
+    expect(body.list_cleared).toBe(false)
+  })
+
+  it('a click not marked sent has no sale whose lead id could change', async () => {
+    for (const claim of [inDoubt, { state: 'free', generation: 2 } as SaleState]) {
+      amendRow(claim)
+      const res = await post({ generation: 2, buyer_lead_id: LEAD_ID })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ error: 'not_sold' })
+    }
+    expect(saleStub.amend).not.toHaveBeenCalled()
+  })
+
+  it('a sale the buyer itself confirmed keeps the buyer\'s own reference: only a sale a person marked sent is amended here', async () => {
+    amendRow({ state: 'sold', partner_id: PARTNER, outcome: { buyer_reference: 'B-REF', result_code: 'created', http_status: 200, payout_cents: 0 }, generation: 3 })
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'not_marked_sent' })
+    expect(saleStub.amend).not.toHaveBeenCalled()
+  })
+
+  it('the lead id the claim already holds changes nothing and is refused by name', async () => {
+    amendRow(soldAs(LEAD_ID, 3))
+    const res = await post({ generation: 3, buyer_lead_id: LEAD_ID })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'lead_id_unchanged' })
+    expect(saleStub.amend).not.toHaveBeenCalled()
+    expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
+  })
+
+  it('refuses a missing or blank lead id, one with spaces inside, and a generation that is not a whole number', async () => {
+    amendRow(soldAs(null, 3))
+    for (const body of [{ generation: 3 }, { generation: 3, buyer_lead_id: '  ' }, { generation: 3, buyer_lead_id: 'a0B 5f' }, { generation: 'three', buyer_lead_id: LEAD_ID }]) {
+      expect((await post(body)).status, JSON.stringify(body)).toBe(400)
+    }
+    expect(saleStub.read).not.toHaveBeenCalled()
+    expect(saleStub.amend).not.toHaveBeenCalled()
+  })
+
+  it('an audit entry that fails to land is reported', async () => {
+    amendRow(soldAs(null, 3))
+    vi.mocked(recordAuditLog).mockResolvedValue(false)
+    expect(await (await post({ generation: 3, buyer_lead_id: LEAD_ID })).json()).toMatchObject({ outcome: 'amended', audit_recorded: false })
+  })
+
+  it('a claim that does not answer is 503 and nothing is written; another org\'s entry is 404; unauthenticated is 401', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    amendRow(soldAs(null, 3))
+    saleStub.read.mockRejectedValue(new Error('did not answer'))
+    expect((await post({ generation: 3, buyer_lead_id: LEAD_ID })).status).toBe(503)
+    saleStub.read.mockResolvedValue(soldAs(null, 3))
+    saleStub.amend.mockRejectedValue(new Error('lead sale amend did not answer within 5000 ms'))
+    expect((await post({ generation: 3, buyer_lead_id: LEAD_ID })).status).toBe(503)
+    supabaseWith({ held_click_claims: { single: null } })
+    expect((await post({ generation: 3, buyer_lead_id: LEAD_ID })).status).toBe(404)
+    expect((await request(app, 'POST', `/held-clicks/${ROW_ID}/lead-id`, { generation: 3, buyer_lead_id: LEAD_ID }, false)).status).toBe(401)
+    expect(vi.mocked(writeHeldClickSale)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordAuditLog)).not.toHaveBeenCalled()
   })
 })
