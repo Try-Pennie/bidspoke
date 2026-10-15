@@ -49,6 +49,18 @@
  * unswept. A row read that fails leaves every copy of that kind alone rather
  * than reading absence as deletion (L211). A clear KV refuses is named and
  * retried on the next run.
+ *
+ * It stops at a deadline (#2058). A KV call has no time limit and cannot be
+ * aborted, and in the 2026-10-14 Cloudflare incident each read took long
+ * enough that this sweep held the minute for up to 5.8 minutes. So it takes
+ * ONE absolute deadline for the whole run and checks it before every KV or
+ * database call it starts; past it, it starts nothing more and says how far it
+ * got. The next run picks up the rest because every run holds no cursor: it
+ * lists every key of every kind again and judges each against its row afresh,
+ * so a copy this run did not reach is judged by the next run that does. A
+ * stopped run counts as a failed one in its result, so the stretch of failing
+ * sweeps (stored-copy-signals.ts) goes on until a run finishes, and a sweep
+ * that never reaches its later kinds pages rather than reading as clean.
  */
 import { endpointCopyOf, endpointLastGoodKey, retireEndpointCopies, sameEndpointCopy } from './endpoint-copies'
 import { confirmedAt, isDueForReconfirm, readConfirmedCopy } from './stored-copy-age'
@@ -95,7 +107,20 @@ export interface SweepResult {
   reconfirmed: string[]
   /** What could not be swept, and why. */
   failed: string[]
+  /** Set when the run stopped at its deadline before finishing (#2058). */
+  stopped?: 'deadline'
+  /** Copies listed in the kind it stopped in but not checked. */
+  left?: number
+  /** The kinds it stopped before listing at all. */
+  notReached?: string[]
 }
+
+/**
+ * How long one sweep may keep starting reads (#2058). The sweep shares its
+ * minute job's 50 s deadline (MINUTE_JOB_DEADLINE_MS in index.ts) with the
+ * stored copy checks that run after it, so it stops at 30 s and leaves them 20.
+ */
+export const STORED_COPY_SWEEP_BUDGET_MS = 30_000
 
 /** `ep-lastgood:`, taken from the key builder so the two cannot drift. */
 export const ENDPOINT_PREFIX = endpointLastGoodKey('', '').slice(0, -1)
@@ -144,9 +169,25 @@ async function readJsonConfirmed(kv: KVNamespace, key: string): Promise<{ copy: 
   return { copy, raw: held.value, confirmedAt: held.confirmedAt }
 }
 
-export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, options: { now?: () => number } = {}): Promise<SweepResult> {
+export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, options: { now?: () => number; deadlineAt?: number } = {}): Promise<SweepResult> {
   const now = options.now ?? Date.now
   const result: SweepResult = { checked: 0, repaired: [], reconfirmed: [], failed: [] }
+  const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY
+  // A holder, not a let: the closures below set it, which narrowing cannot see.
+  const stop: { in: string | null } = { in: null }
+  const notReached: string[] = []
+  // Asked before each call the sweep starts. Once true it stays true. Inside a
+  // kind it records that kind and how many of its copies were left unchecked;
+  // asked before a kind starts (kindName null), it records no kind, so that
+  // kind and every later one are named as not reached.
+  const outOfTime = (kindName: string | null, left: number): boolean => {
+    if (result.stopped) return true
+    if (now() < deadlineAt) return false
+    result.stopped = 'deadline'
+    result.left = left
+    stop.in = kindName
+    return true
+  }
 
   const reconfirm = async (key: string, value: string) => {
     try {
@@ -167,6 +208,10 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
   }
 
   const kind = async (name: string, sweep: () => Promise<void>) => {
+    if (outOfTime(null, 0)) {
+      notReached.push(name)
+      return
+    }
     try {
       await sweep()
     } catch (e) {
@@ -177,9 +222,11 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
   await kind('endpoint copies', async () => {
     const keys = await listKeys(kv, ENDPOINT_PREFIX)
     if (keys.length === 0) return
+    if (outOfTime('endpoint copies', keys.length)) return
     const rows = await sources.endpoints()
     const byAddress = new Map(rows.map((r) => [endpointLastGoodKey(r.subdomain, r.path), r]))
-    for (const key of keys) {
+    for (const [i, key] of keys.entries()) {
+      if (outOfTime('endpoint copies', keys.length - i)) return
       result.checked++
       // The subdomain holds no colon; the path after it may.
       const rest = key.slice(ENDPOINT_PREFIX.length)
@@ -207,8 +254,10 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
     const keys = await listKeys(kv, PARTNER_PREFIX)
     if (keys.length === 0) return
     const ids = keys.map((k) => k.slice(PARTNER_PREFIX.length)).sort()
+    if (outOfTime('partner copies', ids.length)) return
     const stamps = new Map((await sources.partners(ids)).map((r) => [r.id, r.updated_at]))
-    for (const id of ids) {
+    for (const [i, id] of ids.entries()) {
+      if (outOfTime('partner copies', ids.length - i)) return
       result.checked++
       const key = partnerLastGoodKey(id)
       const held = await readJsonConfirmed(kv, key)
@@ -226,8 +275,10 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
     const keys = await listKeys(kv, WORKFLOW_PREFIX)
     if (keys.length === 0) return
     const ids = keys.map((k) => k.slice(WORKFLOW_PREFIX.length)).sort()
+    if (outOfTime('workflow definition copies', ids.length)) return
     const stamps = new Map((await sources.workflows(ids)).map((r) => [r.id, postgresTimeMicros(r.updated_at)]))
-    for (const id of ids) {
+    for (const [i, id] of ids.entries()) {
+      if (outOfTime('workflow definition copies', ids.length - i)) return
       result.checked++
       const key = workflowCopyKey(id)
       const copy = await readJson(kv, key)
@@ -243,7 +294,8 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
 
   await kind('bid matrix copies', async () => {
     const keys = await listKeys(kv, MATRIX_PREFIX)
-    for (const key of keys) {
+    for (const [i, key] of keys.entries()) {
+      if (outOfTime('bid matrix copies', keys.length - i)) return
       result.checked++
       const subject = matrixCopyOf(key)
       if (subject === null) {
@@ -274,6 +326,13 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
     }
   })
 
+  if (result.stopped) {
+    result.notReached = notReached
+    const where = stop.in !== null && (result.left ?? 0) > 0 ? ` with ${result.left} ${stop.in} left` : ''
+    const kinds = notReached.join(' or ')
+    const rest = notReached.length === 0 ? '' : where ? `, and did not reach ${kinds}` : ` before reaching ${kinds}`
+    result.failed.push(`the sweep: it stopped at its deadline${where}${rest}`)
+  }
   return result
 }
 

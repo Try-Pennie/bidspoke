@@ -425,6 +425,33 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
     expect(text).toMatch(/recovers on its own/)
   })
 
+  // #2058, #2117: on 2026-10-14 the reads failed with Cloudflare's own page
+  // ("error code: 1016", it could not resolve the origin) while Supabase served
+  // no errors at all. What was measured is that Cloudflare answered, not that
+  // the database is down, so the page says that and quotes the code.
+  it('a Cloudflare error page says the worker could not reach the database through Cloudflare, and quotes the code', async () => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'slack connections', error: 'error code: 1016', appUrl: 'https://app.test' })
+    const text = lastText()
+    expect(text).toMatch(/Bidspoke cannot reach its database through Cloudflare/)
+    expect(text).toContain('`error code: 1016`')
+    expect(text).toMatch(/cloudflarestatus\.com/)
+    expect(text).not.toMatch(/status\.supabase\.com/)
+    expect(text).not.toMatch(/Bidspoke cannot read its database/)
+  })
+
+  it.each(['error code: 522', 'Supabase read failed: error code: 1101'])('reads %s as a Cloudflare page too', async (error) => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error, appUrl: 'https://app.test' })
+    expect(lastText()).toMatch(/through Cloudflare/)
+  })
+
+  it('an ordinary database error keeps the database wording', async () => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'Supabase error: canceling statement due to statement timeout (57014)', appUrl: 'https://app.test' })
+    const text = lastText()
+    expect(text).toMatch(/Bidspoke cannot read its database/)
+    expect(text).toMatch(/status\.supabase\.com/)
+    expect(text).not.toMatch(/Cloudflare/)
+  })
+
   it('a missing function does not recover on its own, so the alert does not say it will', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', {
       what: 'execution counts',

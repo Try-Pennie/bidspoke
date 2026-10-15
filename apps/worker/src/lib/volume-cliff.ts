@@ -184,9 +184,11 @@ async function reportDatabaseUnreachable(
     const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
     const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl, repeat })
     if (ts) {
-      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
+      // The marker before the cooldown (#2058): a cut or a refused write between
+      // them then costs at worst a repeated page, never a lost all-clear.
       await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId), nowMs)
       await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableIncident(orgId), nowMs)
+      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
     } else if (claims) {
       await claims.release(claimKey)
     }
@@ -508,11 +510,13 @@ export async function runVolumeCliffCheck(
     // delivered, so a kicked bot (Slack ok:false) does not suppress retries while
     // the outage goes unannounced.
     if (sent) {
-      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
       // Separate marker, longer TTL: a cliff lasting past the cooldown would
-      // otherwise leave nothing to say it had ever been broken (#253).
+      // otherwise leave nothing to say it had ever been broken (#253). Written
+      // before the cooldown (#2058): a cut or a refused write between them then
+      // costs at worst a repeated page, never a lost all-clear.
       await markAlerted(kv, 'volume-cliff', wfId, incident, nowMs)
       await recordPaged(kv, 'volume-cliff', wfId, incident, nowMs)
+      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
     } else if (claims) {
       // Slack refused: free the claim so the next tick can retry, the same way
       // the cooldown is only written on delivery.

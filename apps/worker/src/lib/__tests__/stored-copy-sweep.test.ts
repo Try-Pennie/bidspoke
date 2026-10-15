@@ -349,6 +349,61 @@ function fakeDb(tables: Record<string, Array<Record<string, unknown>>>, failing:
   return { db, calls }
 }
 
+/**
+ * One deadline for the whole sweep (#2058). A KV call cannot be aborted, so
+ * the sweep checks the clock between copies and issues no further call once
+ * past it. Each KV read here moves an injected clock on 10 s (L524).
+ */
+describe('sweepStoredCopies: its deadline (#2058)', () => {
+  const START = Date.parse('2026-10-14T21:40:00Z')
+  const fresh = { confirmed_at: new Date(START).toISOString() }
+  function slowKv(keys: string[]) {
+    let t = START
+    const { kv, meta } = memoryKv(Object.fromEntries(keys.map((k) => [k, JSON.stringify({ updated_at: 'u1' })])))
+    for (const k of keys) meta.set(k, fresh)
+    const reads: string[] = []
+    const inner = kv as unknown as { getWithMetadata: (k: string) => Promise<unknown> }
+    const read = inner.getWithMetadata.bind(inner)
+    inner.getWithMetadata = async (k: string) => { reads.push(k); t += 10_000; return read(k) }
+    return { kv, reads, now: () => t }
+  }
+  const partnerKeys = ['p-1', 'p-2', 'p-3', 'p-4', 'p-5'].map((id) => partnerLastGoodKey(id))
+  const partnersAgree = sources({ partners: async (ids) => ids.map((id) => ({ id, updated_at: 'u1' })) })
+
+  it('stops starting reads once past its deadline, and says how far it got', async () => {
+    const { kv, reads, now } = slowKv([...partnerKeys, workflowCopyKey('wf-1')])
+    const r = await sweepStoredCopies(kv, partnersAgree, { now, deadlineAt: START + 25_000 })
+    // Reads at 10, 20 and 30 s: the third began before the deadline, none after it.
+    expect(reads).toEqual(partnerKeys.slice(0, 3))
+    expect(r.stopped).toBe('deadline')
+    expect(r.checked).toBe(3)
+    expect(r.left).toBe(2)
+    expect(r.notReached).toEqual(['workflow definition copies', 'bid matrix copies'])
+    // Not a clean run: the stretch of failed sweeps goes on until one finishes.
+    expect(r.failed).toEqual([expect.stringMatching(/stopped at its deadline with 2 partner copies left, and did not reach workflow definition copies or bid matrix copies/)])
+  })
+
+  // Lessons review: a deadline that passes BETWEEN kinds must still name the
+  // next kind as not reached, never drop it from the report.
+  it('names the next kind as not reached when the deadline passes between kinds', async () => {
+    const { kv, reads, now } = slowKv([...partnerKeys.slice(0, 2), workflowCopyKey('wf-1')])
+    const r = await sweepStoredCopies(kv, partnersAgree, { now, deadlineAt: START + 20_000 })
+    expect(reads).toEqual(partnerKeys.slice(0, 2))
+    expect(r.stopped).toBe('deadline')
+    expect(r.left).toBe(0)
+    expect(r.notReached).toEqual(['workflow definition copies', 'bid matrix copies'])
+    expect(r.failed).toEqual(['the sweep: it stopped at its deadline before reaching workflow definition copies or bid matrix copies'])
+  })
+
+  it('sweeps everything, and reports no stop, when the deadline is not reached', async () => {
+    const { kv, reads, now } = slowKv(partnerKeys)
+    const r = await sweepStoredCopies(kv, partnersAgree, { now, deadlineAt: START + 10 * 60_000 })
+    expect(reads).toEqual(partnerKeys)
+    expect(r.stopped).toBeUndefined()
+    expect(r.failed).toEqual([])
+  })
+})
+
 describe('sweepSources', () => {
   it('pages the endpoint read past the 1,000 row answer limit', async () => {
     const rows = Array.from({ length: 1001 }, (_, i) => ({ id: `ep-${String(i).padStart(4, '0')}`, subdomain: 's', path: `/${i}`, workflow_id: 'wf', source_name: 'x', is_active: true, workflows: { auth_method: null } }))
