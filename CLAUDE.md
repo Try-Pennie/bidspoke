@@ -85,6 +85,23 @@
   marker (the cron heartbeat, #2103) names that key as its registry entry's `marker`,
   which is where the drain's lapse check reads it, and gives that key an expiry the
   check renews while the incident stands, so it can never keep an incident open for ever.
+- Partner saves are versioned (#2132). The partner edit route (`PUT /api/partners/:id`)
+  writes through the `save_partner_config` function, which writes just the fields a save
+  names and refuses one made from a version that is no longer stored (409 `stale_version`,
+  carrying the current row and who last changed it). Other writers (a step rename's
+  `rename_partner_step_namespace`, hand run SQL) do not go through it, which is why the
+  `partner_configs_bump_version` trigger, not the function, moves `version`: every writer
+  moves it. The columns it ignores are the ones `partner_configs_unversioned_columns()`
+  lists, which the audit trigger reads too. A 428 `reload_required` means the page was
+  opened before versioned saves shipped, so it must be reloaded.
+- How soon bidding sees a partner change, from ANY writer, is `BIDDING_PICKUP`
+  (`apps/web/src/lib/bidding-pickup.ts`), whose doc comment holds the method and the
+  measured figures, and which `__guards__/worker/bidding-pickup-bound.test.ts` re-derives
+  from the Worker's own constants. It holds while the partner constants reconfirm
+  (`lib/partner-constants-reconfirm.ts`) succeeds; an API save also clears the copy at
+  once. A failing reconfirm pages as `export-alert:partner-constants-reconfirm`, except
+  during its observe window after the job first runs, when it only records (its log line
+  says until when). When the reconfirm keeps failing, the stale copy alert is the ceiling.
 
 ## Code Standards
 - Prefer TypeScript over JavaScript for all new code
