@@ -15,6 +15,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { Env } from '../../index'
 import type { ClaimBody, ClaimResult, LeadSaleObject, SaleState } from '../lead-sale'
+import type { SaleOutcomeRecord } from '../sale-outcome'
 
 const bindings = env as unknown as Pick<Env, 'LEAD_SALE'>
 
@@ -193,6 +194,66 @@ describe('LeadSaleObject in_doubt resolution', () => {
     const res = await post(stub, '/free', { generation: 2 })
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ error: 'wrong_state', current: { state: 'sold' } })
+  })
+})
+
+describe('LeadSaleObject amend (#2139: a lead id added or corrected after Mark sent)', () => {
+  const MARKED: SaleOutcomeRecord = { buyer_reference: null, result_code: 'marked_sent', http_status: null, payout_cents: 0 }
+
+  async function markedSent(): Promise<DurableObjectStub> {
+    const stub = sale()
+    await setClock(stub, NOW)
+    await claim(stub, 'exec-1')
+    await setClock(stub, NOW + DEADLINE_MS)
+    const healed = await post(stub, '/heal', { generation: 1, outcome: MARKED })
+    expect(healed.status).toBe(200)
+    return stub
+  }
+
+  it('sets the buyer reference of a sold claim at the generation read, moves the generation, and changes no other outcome field', async () => {
+    const stub = await markedSent()
+    const res = await post(stub, '/amend', { generation: 2, buyer_reference: 'L1-77' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, generation: 3 })
+    expect(await read(stub)).toEqual({ state: 'sold', partner_id: 'partner-1', outcome: { ...MARKED, buyer_reference: 'L1-77' }, generation: 3 })
+    // A correction is the same operation on the claim as it now stands.
+    const corrected = await post(stub, '/amend', { generation: 3, buyer_reference: 'L1-78' })
+    expect(corrected.status).toBe(200)
+    expect(await read(stub)).toEqual({ state: 'sold', partner_id: 'partner-1', outcome: { ...MARKED, buyer_reference: 'L1-78' }, generation: 4 })
+  })
+
+  it('a stale generation is refused with the current state and nothing changes, so a double press amends once', async () => {
+    const stub = await markedSent()
+    const [a, b] = await Promise.all([
+      post(stub, '/amend', { generation: 2, buyer_reference: 'L1-77' }),
+      post(stub, '/amend', { generation: 2, buyer_reference: 'L1-99' }),
+    ])
+    const statuses = [a.status, b.status].sort()
+    expect(statuses).toEqual([200, 409])
+    const refused = a.status === 409 ? a : b
+    expect(await refused.json()).toMatchObject({ error: 'generation_moved', current: { state: 'sold', generation: 3 } })
+    expect(await read(stub)).toMatchObject({ state: 'sold', generation: 3 })
+  })
+
+  it('a claim that is not sold is refused by state: there is no sale whose lead id could change', async () => {
+    const stub = sale()
+    await setClock(stub, NOW)
+    expect((await post(stub, '/amend', { generation: 0, buyer_reference: 'L1-77' })).status).toBe(409)
+    await claim(stub, 'exec-1')
+    const inFlight = await post(stub, '/amend', { generation: 1, buyer_reference: 'L1-77' })
+    expect(inFlight.status).toBe(409)
+    expect(await inFlight.json()).toMatchObject({ error: 'wrong_state', current: { state: 'in_flight', generation: 1 } })
+    expect(await read(stub)).toMatchObject({ state: 'in_flight', generation: 1 })
+  })
+
+  it('refuses a missing, empty or non text reference by name', async () => {
+    const stub = await markedSent()
+    for (const buyer_reference of [undefined, '', 7, null]) {
+      const res = await post(stub, '/amend', { generation: 2, buyer_reference })
+      expect(res.status, JSON.stringify(buyer_reference)).toBe(400)
+      expect(await res.json()).toEqual({ error: 'bad_buyer_reference' })
+    }
+    expect(await read(stub)).toMatchObject({ state: 'sold', generation: 2, outcome: MARKED })
   })
 })
 

@@ -58,6 +58,7 @@ describe('writeHeldClickSale', () => {
         { record: 'submission', object: 'Submission__c', id: SUBMISSION, outcome: 'written' },
         { record: 'lead', object: 'Lead', id: LEAD, outcome: 'written' },
       ],
+      buyer_lead_id: BUYER_LEAD,
     })
     const calls = vi.mocked(d.update).mock.calls
     expect(calls.map((c) => [c[3], c[4]])).toEqual([['Prospect__c', PROSPECT], ['Submission__c', SUBMISSION], ['Lead', LEAD]])
@@ -76,6 +77,26 @@ describe('writeHeldClickSale', () => {
     expect(calls[1][5]).toMatchObject({ External_Partner_Lead_Id__c: BUYER_LEAD, External_Routing_Code__c: '4', External_Timestamp__c: '2026-09-30T14:03:02.123Z' })
     expect(calls[2][5]).toMatchObject({ ExternalPartnerLeadId__c: BUYER_LEAD, External_Exchange_Status__c: 'Completed' })
     expect(calls[2][5]).not.toHaveProperty('PDFlow_3__c')
+  })
+
+  it('with no lead id (PM-7), marks the sale Completed on every record and writes no lead id field, and says it carried none (#2139)', async () => {
+    const d = deps()
+    const out = await writeHeldClickSale(env, supabase, { orgId: 'org-1', userId: 'u-1', row, buyerLeadId: null }, d)
+    expect(out).toMatchObject({ complete: true, buyer_lead_id: null })
+    const calls = vi.mocked(d.update).mock.calls
+    expect(calls).toHaveLength(3)
+    expect(calls[0][5]).toMatchObject({ ExternalExchangeStatus__c: 'Completed', ExternalPartnerName__c: 'Liberty1' })
+    expect(calls[1][5]).toMatchObject({ External_Exchange_Status__c: 'Completed' })
+    expect(calls[2][5]).toMatchObject({ External_Exchange_Status__c: 'Completed' })
+    // Left out, never blanked: a field Salesforce already holds is not overwritten with nothing.
+    expect(calls[0][5]).not.toHaveProperty('ExternalPartnerLeadId__c')
+    expect(calls[1][5]).not.toHaveProperty('External_Partner_Lead_Id__c')
+    expect(calls[2][5]).not.toHaveProperty('ExternalPartnerLeadId__c')
+  })
+
+  it('an attempt that writes nothing still says which lead id it was for, so the list can tell it from a written one', async () => {
+    const out = await run(deps({ loadSteps: vi.fn(async () => ({ ok: false as const, message: 'timeout' })) }))
+    expect(out).toMatchObject({ complete: false, buyer_lead_id: BUYER_LEAD })
   })
 
   it('one write of three failing is reported on that record alone, and the other two still land', async () => {
