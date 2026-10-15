@@ -131,6 +131,16 @@ describe('the Buyer profile section', () => {
     expect(submit).not.toHaveTextContent('Saved')
   })
 
+  it('a profile only save with a partner edit that stores nothing (a blank floor row) leaves nothing reading as unsaved', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Buyer profile saved, version 4\./))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
+  })
+
   it('a profile only change saves the profile alone and never writes the unchanged partner record (#2132)', async () => {
     const onSave = await renderBuyer()
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })

@@ -611,10 +611,6 @@ export default function PartnerForm({
         setSaveState('idle')
         return
       }
-      // The saved values are now the clean baseline, which clears the dirty flag.
-      baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
-      baselineSnapshot.current = snapshot
-      dispatchDraft({ type: 'rebase', base: built })
       setCopyWarningText(result.copyWarning)
       // Undo restores the PRE-edit values by saving the inverse of this patch at
       // the version this save produced. It covers the partner record only.
@@ -623,6 +619,12 @@ export default function PartnerForm({
         setUndoSecondsLeft(5)
       }
     }
+    // The partner record as on screen is now what is stored (saved just now, or
+    // storing exactly as loaded), so it is the clean baseline whether or not this
+    // press wrote it; the profile keeps its own baseline below.
+    baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
+    baselineSnapshot.current = snapshot
+    dispatchDraft({ type: 'rebase', base: built })
     if (saveProfileToo && profile) {
       setSaveOutcome({ kind: 'working', label: 'Saving the buyer profile', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
       // The button says Saved only when everything this press saves has saved.
