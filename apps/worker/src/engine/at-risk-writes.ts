@@ -109,7 +109,10 @@ export function parseAtRiskEntry(raw: string | null): AtRiskEntry | null {
   } catch {
     return null
   }
-  const text = (k: string) => (typeof v[k] === 'string' && v[k] !== '' ? (v[k] as string) : null)
+  const text = (k: string): string | null => {
+    const value = v[k]
+    return typeof value === 'string' && value !== '' ? value : null
+  }
   const keys = ['org_id', 'workflow_id', 'execution_id', 'step_namespace', 'sf_object', 'sf_record_id', 'body_encrypted', 'first_attempt_at', 'recorded_at'] as const
   if (v.v !== 1 || v.sf_operation !== 'update' || keys.some((k) => text(k) === null)) return null
   if (!Number.isFinite(Date.parse(v.first_attempt_at as string)) || !Number.isFinite(Date.parse(v.recorded_at as string))) return null
