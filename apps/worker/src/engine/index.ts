@@ -21,6 +21,7 @@ import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } f
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
+import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -113,6 +114,9 @@ class StepFailureError extends Error {
     public readonly suppressAlert: boolean = false,
     public readonly resolvedInput: ResolvedStepInput | null = null,
     public readonly heldUntil: string | null = null,
+    // Salesforce's answer to the failed write (#2054), which the capture judges
+    // refused or replayable by; null when the failure carried none.
+    public readonly salesforceAnswer: SalesforceAnswer | null = null,
   ) {
     super(message)
   }
@@ -866,6 +870,7 @@ export async function executeWorkflow(
                     error: continuationError,
                     resolvedInput: continuationError.resolvedInput,
                     heldUntil: continuationError.heldUntil,
+                    salesforceAnswer: continuationError.salesforceAnswer,
                     isTest: reality.isTest,
                   },
                   { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
@@ -2355,7 +2360,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
-        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err))
+        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err), salesforceAnswerOf(err))
       }
     }
 
