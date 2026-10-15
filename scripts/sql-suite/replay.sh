@@ -37,13 +37,51 @@ if ! docker exec "$CONTAINER" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&
   exit 2
 fi
 
-bootstrapped="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.replayed') IS NOT NULL")"
-if [ "$bootstrapped" != "t" ]; then
+# The bootstrap runs on an empty container only, and is recorded by its hash
+# (#2131). A container built by a different bootstrap is NOT patched in place:
+# rerunning the bootstrap over a database the migrations have already reached
+# undoes what they did after it (bootstrap-ops.sql grants USAGE on public that
+# an ops migration then revokes; measured 2026-10-15, the ops suite failed). So
+# a changed bootstrap exits 3, and run.sh rebuilds the container from empty.
+# Without this, a container built before a bootstrap change kept the old shape
+# for ever, and the first migration needing the new part (the realtime stub)
+# failed on every machine that already had one, while a fresh one passed.
+bootstrap_sha="$(shasum -a 256 "$SUITE_BOOTSTRAP" | awk '{print $1}')"
+if ! replayed_any="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.replayed') IS NOT NULL" 2>&1)"; then
+  echo "REPLAY FAILED: could not read whether this container was bootstrapped: $replayed_any" >&2
+  exit 1
+fi
+# The read and the record both fail the replay by name: a read swallowed into
+# an empty answer, or a record that silently did not land, would rerun the
+# bootstrap on every replay with nothing ever saying why.
+# Two statements, because a CASE cannot guard a relation that does not exist:
+# the reference fails when the query is parsed, before any branch is chosen.
+if ! recorded="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.bootstrap_applied') IS NOT NULL" 2>&1)"; then
+  echo "REPLAY FAILED: could not read which bootstrap this container last ran: $recorded" >&2
+  exit 1
+fi
+applied_sha=""
+if [ "$recorded" = "t" ]; then
+  if ! applied_sha="$(psql_as postgres -Atc "SELECT coalesce(max(sha), '') FROM sql_suite.bootstrap_applied" 2>&1)"; then
+    echo "REPLAY FAILED: could not read which bootstrap this container last ran: $applied_sha" >&2
+    exit 1
+  fi
+fi
+if [ "$replayed_any" = "t" ] && [ "$applied_sha" != "$bootstrap_sha" ]; then
+  echo "BOOTSTRAP CHANGED: ${SUITE_BOOTSTRAP#"$ROOT"/} is not the one container $CONTAINER was built with; it must be rebuilt from empty (run.sh does that; by hand: bash scripts/sql-suite/start-db.sh --reset)" >&2
+  exit 3
+fi
+if [ "$replayed_any" != "t" ]; then
   if ! out="$(psql_as supabase_admin -f - < "$SUITE_BOOTSTRAP" 2>&1)"; then
     echo "REPLAY FAILED in ${SUITE_BOOTSTRAP#"$ROOT"/}:" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
     exit 1
   fi
+  if ! out="$(psql_as postgres -Atc "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS sql_suite.bootstrap_applied (sha text NOT NULL); DELETE FROM sql_suite.bootstrap_applied; INSERT INTO sql_suite.bootstrap_applied (sha) VALUES ('$bootstrap_sha')" 2>&1)"; then
+    echo "REPLAY FAILED: the bootstrap ran but recording it did not: $out" >&2
+    exit 1
+  fi
+  echo "bootstrap applied: ${SUITE_BOOTSTRAP#"$ROOT"/} (${bootstrap_sha:0:12})"
 fi
 
 files=()
