@@ -51,8 +51,9 @@ export { WRITEBACK_STORE_LABEL }
 
 /**
  * A timed out or cut off update whose request the at-risk watch holds (#2163),
- * and that the Salesforce read-back (#2023) does not own: every Submission__c
- * one, and any other without its own write marker. Declared in the leaf label module.
+ * and that the Salesforce read-back (#2023) does not own: one held without its
+ * own write marker (from before the stamp shipped for its object, Submission__c's
+ * included, #2203). Declared in the leaf label module.
  */
 export { WRITEBACK_HELD_LABEL }
 
