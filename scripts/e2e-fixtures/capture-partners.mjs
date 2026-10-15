@@ -48,7 +48,8 @@ export function writeFixtures({ partners, profiles, uuids, bidConfigs }, outDir 
     if (profiles[p.id]) profileOut[p.id] = { ...profiles[p.id], profile: redact.profile(profiles[p.id].profile) }
   }
   writeFileSync(path.join(outDir, 'buyer-profiles.json'), json(profileOut))
-  writeFileSync(path.join(outDir, 'partner-uuids.json'), json(uuids))
+  const byCodePoint = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
+  writeFileSync(path.join(outDir, 'partner-uuids.json'), json([...uuids].sort((a, b) => byCodePoint(a.partner_slug, b.partner_slug) || byCodePoint(a.id, b.id))))
   const configsOut = {}
   for (const p of bySlug) if (bidConfigs[p.id]) configsOut[p.id] = bidConfigs[p.id].map((c) => redact.partner(c))
   writeFileSync(path.join(outDir, 'partner-bid-configs.json'), json(configsOut))

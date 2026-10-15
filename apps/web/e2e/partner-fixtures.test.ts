@@ -9,7 +9,11 @@
  */
 import { describe, expect, it } from 'vitest'
 import { parseProfileDocument, type BuyerProfileDocument } from '@bidspoke/buyer-profile'
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { createRedactor, stringsIn } from '../../../scripts/e2e-fixtures/redact.mjs'
+import { writeFixtures } from '../../../scripts/e2e-fixtures/capture-partners.mjs'
 import { answerFor, loadPartnerFixtures } from './partner-fixtures'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
@@ -83,6 +87,23 @@ describe('the redaction', () => {
   it('replaces a click route address and keeps the route name and states', () => {
     const doc = { click_delivery: { success_pattern: 'x', routes: [{ name: 'DV1', url: 'https://hooks.real/secret', states: ['WA'] }] } }
     expect(createRedactor().profile(doc).click_delivery.routes).toEqual([{ name: 'DV1', url: 'https://hooks.example.com/redacted/DV1', states: ['WA'] }])
+  })
+})
+
+describe('writeFixtures', () => {
+  it('writes the same bytes whatever order the Worker answered in', () => {
+    const write = (reverse: boolean) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'partner-fixtures-'))
+      const order = <T,>(xs: T[]) => (reverse ? [...xs].reverse() : xs)
+      writeFixtures({
+        partners: order(fx.partners),
+        profiles: fx.buyerProfiles as unknown as Record<string, Record<string, unknown> & { profile: unknown }>,
+        uuids: order(fx.uuids as Array<Record<string, unknown> & { partner_slug: string; id: string }>),
+        bidConfigs: fx.bidConfigs as Record<string, Array<Record<string, unknown>>>,
+      }, dir)
+      return Object.fromEntries(readdirSync(dir).map((f) => [f, readFileSync(path.join(dir, f), 'utf8')]))
+    }
+    expect(write(true)).toEqual(write(false))
   })
 })
 

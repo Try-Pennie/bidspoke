@@ -28,8 +28,8 @@ import { Button as UiButton, Field as UiField, NumberInput, Outcome, describedBy
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
-// Re-exported for the parent page's partner-switch / New guards, and the
-// canvas's own away-click guard (#478), so the prompt copy stays identical.
+// Re-exported for the parent page's partner-switch / New guards, so the prompt
+// copy stays identical until PR7 (#2138) replaces all three with a dialog.
 export { UNSAVED_CHANGES_MESSAGE }
 
 function uid() { return Math.random().toString(36).slice(2) }

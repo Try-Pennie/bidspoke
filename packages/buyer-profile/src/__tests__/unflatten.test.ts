@@ -52,6 +52,14 @@ describe('unflattenProfileDocument', () => {
     expect(unflattenProfileDocument(paths).click_delivery).toBeNull()
   })
 
+  it('refuses a document missing a scalar or the state list rather than rebuilding it empty', () => {
+    for (const key of ['daily_lead_cap', 'allowed_states']) {
+      const paths = flattenProfileDocument(fixture.cases[1].document)
+      paths.delete(key)
+      expect(() => unflattenProfileDocument(paths), key).toThrow(new RegExp(key))
+    }
+  })
+
   it('refuses a path it cannot place rather than dropping it', () => {
     const paths = flattenProfileDocument(fixture.cases[1].document)
     paths.set('loan_amount_max', 5)

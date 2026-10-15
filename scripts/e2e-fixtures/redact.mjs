@@ -16,6 +16,11 @@
  *   answer, so every text value in it becomes "redacted"; its keys, numbers and
  *   true or false stay, because they are the shape the extraction rules read.
  *
+ * A buyer profile document has no other field that names a person or works as
+ * a credential (parseProfileDocument lists them all: caps, bounds, states,
+ * windows, blackout dates, tiers, and click routes of a name, an address and
+ * states), so its route addresses are all it rewrites.
+ *
  * What stays is configuration the page shows and a person needs to recognise:
  * partner names and slugs, proxy endpoints on Pennie's own domain, the NAME of a
  * Worker secret (cf_secret_key holds the name, never the value), rules, caps and

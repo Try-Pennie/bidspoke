@@ -53,12 +53,16 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
     if (!paths.has(key)) throw new Error(`unflattenProfileDocument: ${key} is missing`)
     return paths.get(key)
   }
+  // The state list is always written by flatten, like a scalar; rebuilding a
+  // missing one as empty would save a profile offered in no state.
+  if (!paths.has('allowed_states')) throw new Error('unflattenProfileDocument: allowed_states is missing')
+  const states = paths.get('allowed_states')
   const rows = <T>(prefix: string): T[] => [...paths.entries()].filter(([k]) => k.startsWith(`${prefix}[`)).map(([, v]) => ({ ...(v as object) }) as T)
   const doc: BuyerProfileDocument = {
     sold_on: scalar('sold_on') as BuyerProfileDocument['sold_on'],
     is_enabled: scalar('is_enabled') as boolean,
     priority: scalar('priority') as number | null,
-    allowed_states: [...((paths.get('allowed_states') as string[] | undefined) ?? [])],
+    allowed_states: [...(states as string[])],
     debt_min: scalar('debt_min') as number | null,
     debt_max: scalar('debt_max') as number | null,
     loan_amount_min: scalar('loan_amount_min') as number | null,
