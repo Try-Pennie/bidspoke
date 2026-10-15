@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { useState } from 'react'
+import { StrictMode, useState } from 'react'
 import { Dialog } from '../Dialog'
 import { Button } from '../ui/form'
 
@@ -87,6 +87,31 @@ describe('Dialog', () => {
     last.focus()
     fireEvent.keyDown(last, { key: 'Tab' })
     expect(screen.getByRole('button', { name: 'Keep it' })).toHaveFocus()
+  })
+
+  it('a warning must say what answering it does: an alert dialog is announced by its description', () => {
+    // @ts-expect-error a warning with no description does not compile
+    const noDescription = <Dialog warning title="Delete?" onDismiss={() => {}} actions={null} />
+    expect(noDescription).toBeTruthy()
+  })
+
+  it('gives focus back to what had it under strict mode, which runs renders twice', async () => {
+    function Host() {
+      const [open, setOpen] = useState(false)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open</button>
+          {open && <Dialog title="T" onDismiss={() => setOpen(false)} actions={<Button variant="secondary" onClick={() => setOpen(false)}>Close</Button>} />}
+        </>
+      )
+    }
+    render(<StrictMode><Host /></StrictMode>)
+    const opener = screen.getByRole('button', { name: 'Open' })
+    opener.focus()
+    fireEvent.click(opener)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(opener).toHaveFocus())
   })
 
   it('gives focus back to what had it when it closes', async () => {

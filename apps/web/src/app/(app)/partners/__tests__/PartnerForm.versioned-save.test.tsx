@@ -9,7 +9,7 @@
  * never as an error, and the pickup sentence reads BIDDING_PICKUP.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -169,6 +169,58 @@ describe('a versioned save of only what changed (#2132)', () => {
     save()
     expect(await screen.findByText('Brian Nelms saved the same changes, so nothing is left to save.')).toBeInTheDocument()
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
+  })
+
+  describe('saving a merge (#2134)', () => {
+    // They renamed it and switched it off; I renamed it too. Name is the question.
+    const theirs = () => stale({ partner: { ...partner, name: 'M1 (theirs)', is_active: false, version: 5 } })
+    const keepMineAndSave = async () => {
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
+    }
+
+    it('sends only what is still mine, measured against their save, at their version', async () => {
+      const onSave = vi.fn().mockRejectedValueOnce(theirs()).mockResolvedValueOnce(saved({ name: 'M1 renamed', is_active: false, version: 6 }))
+      renderForm(onSave)
+      rename()
+      save()
+      await keepMineAndSave()
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+      // Their switch off is the base now, so it is not sent back as a change of mine.
+      expect(onSave.mock.calls[1][0]).toEqual({ name: 'M1 renamed' })
+      expect(onSave.mock.calls[1][3].expected_partner_version).toBe(5)
+    })
+
+    it('a merged save that got no answer is resent under the same save id, so it can recognise itself', async () => {
+      const onSave = vi.fn().mockRejectedValueOnce(theirs()).mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce(saved({ name: 'M1 renamed', is_active: false, version: 6 }))
+      renderForm(onSave)
+      rename()
+      save()
+      await keepMineAndSave()
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+      await screen.findByText(/Nothing saved/)
+      save()
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(3))
+      expect(onSave.mock.calls[2][3].save_id).toBe(onSave.mock.calls[1][3].save_id)
+      expect(onSave.mock.calls[1][3].save_id).not.toBe(onSave.mock.calls[0][3].save_id)
+    })
+
+    it('an answer given to a value the person has since changed is asked again', async () => {
+      const onSave = vi.fn().mockRejectedValue(theirs())
+      renderForm(onSave)
+      rename()
+      save()
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      rename('M1 renamed again')
+      save()
+      const again = await screen.findByRole('dialog')
+      expect(within(again).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'false')
+      expect(within(again).getByRole('button', { name: 'Save both' })).toBeDisabled()
+    })
   })
 
   it('a 409 with no named editor says the change came from outside the page', async () => {

@@ -86,6 +86,11 @@ function canon(value: unknown): string {
   return JSON.stringify(norm(value))
 }
 
+/** Whether two merge values are the same, whatever order the database left an object's keys in. */
+export function sameMergeValue(a: unknown, b: unknown): boolean {
+  return canon(a) === canon(b)
+}
+
 interface Unit {
   entry: FieldEntry
   /** The flattened profile paths this unit holds, in the document's own order; empty for a partner field. */

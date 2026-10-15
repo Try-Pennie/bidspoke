@@ -73,7 +73,12 @@ test.describe('Accessibility (axe-core)', () => {
     await openTripoint(page)
     await page.getByLabel('Leads per day', { exact: true }).fill('300')
     await page.getByRole('button', { name: /Save changes/ }).click()
-    await expect(page.getByRole('dialog', { name: /saved this partner while you were editing/ })).toBeVisible()
+    // The recorded 409 must conflict with this exact edit; partner-fixtures.test.ts
+    // holds that, and a dialog that does not open says which fixture to look at.
+    await expect(
+      page.getByRole('dialog', { name: /saved this partner while you were editing/ }),
+      'the merge dialog did not open: synthetic/page-save-409.tripoint.json must change Leads per day (daily_lead_cap) away from 300',
+    ).toBeVisible()
     await expectDialogs(page)
     await expectNoSeriousA11yViolations(page, [], '/partners', '[role="dialog"]')
     expect(unmatched).toEqual([])

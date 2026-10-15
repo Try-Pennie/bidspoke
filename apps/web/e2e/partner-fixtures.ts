@@ -8,8 +8,8 @@
  * fixtures/partners/: the captured reads (capture-partners.mjs) and, under
  * synthetic/, the hand made answers for what cannot be read (a stale save's 409,
  * a matrix to delete, the usage panels a Durable Object answers in production).
- * Nothing is forwarded: a call with no answer here is recorded as unmatched and
- * answered 599, and the spec fails on any unmatched call (the guard the plan
+ * Nothing is forwarded: a Worker API call with no answer here is recorded as
+ * unmatched and answered 599, and the spec fails on any unmatched call (the guard the plan
  * asks for), so a new Worker route on this page cannot go unscanned.
  */
 import { readFileSync } from 'node:fs'
@@ -88,14 +88,22 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
 }
 
 /**
+ * A request the fixtures answer: one to the Worker's API. Only `/api/` paths are
+ * taken, so if the Worker were ever served from the web app's own origin the
+ * page's own documents and scripts would still load.
+ */
+export function isWorkerApiRequest(url: URL, workerOrigin: string): boolean {
+  return url.origin === new URL(workerOrigin).origin && url.pathname.startsWith('/api/')
+}
+
+/**
  * Answer every request to the Worker from the fixtures. Returns the requests
  * that had no answer; the caller asserts it is empty.
  */
 export async function routePartnerFixtures(page: Page, workerUrl: string, opts: FixtureOptions = {}): Promise<{ unmatched: string[] }> {
   const fx = loadPartnerFixtures()
   const unmatched: string[] = []
-  const origin = new URL(workerUrl).origin
-  await page.route((url) => url.origin === origin, async (route) => {
+  await page.route((url) => isWorkerApiRequest(url, workerUrl), async (route) => {
     const req = route.request()
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' }
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })

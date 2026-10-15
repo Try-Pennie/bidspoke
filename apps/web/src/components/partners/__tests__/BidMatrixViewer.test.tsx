@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -8,6 +8,7 @@ vi.mock('@/lib/api', () => ({
       sync: vi.fn(),
       create: vi.fn(),
       delete: vi.fn(),
+      list: vi.fn(),
     },
   },
 }))
@@ -126,13 +127,46 @@ describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
     expect(onConfigsChange).not.toHaveBeenCalled()
   })
 
-  it('a delete with no answer says it may or may not have happened, never that nothing was deleted (L11)', async () => {
-    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValue(new TypeError('Failed to fetch'))
+  it('a delete with no answer re-reads the matrices: still there, it says so and offers the delete again', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([config])
+    const { dialog, onConfigsChange } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The delete got no answer, and the matrix is still there. Delete it again, or keep it.')
+    expect(api.partnerBidConfigs.list).toHaveBeenCalledWith('p-1')
+    expect(onConfigsChange).not.toHaveBeenCalled()
+    expect(within(dialog).getByRole('button', { name: 'Delete matrix' })).toBeEnabled()
+  })
+
+  it('a delete with no answer whose matrix is gone on the re-read counts as deleted', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
+    const { onConfigsChange } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    await waitFor(() => expect(onConfigsChange).toHaveBeenCalledWith([]))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('a delete with no answer and a re-read that fails says it may or may not be deleted, never that nothing was (L11)', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    vi.mocked(api.partnerBidConfigs.list).mockRejectedValue(new TypeError('Failed to fetch'))
     const { dialog } = await openDelete()
     fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
     const alert = await within(dialog).findByRole('alert')
     expect(alert).toHaveTextContent(/may or may not be deleted/)
     expect(alert).not.toHaveTextContent(/Not deleted/)
+  })
+
+  it('a back gesture while the delete is in flight keeps the dialog until the delete answers, so its outcome is never hidden', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.delete).mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true }) }))
+    const { onConfigsChange } = await openDelete()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete matrix' }))
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate')) })
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+    finish()
+    await waitFor(() => expect(onConfigsChange).toHaveBeenCalledWith([]))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('two presses before the first one renders send one delete', async () => {

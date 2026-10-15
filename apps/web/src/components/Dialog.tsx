@@ -22,31 +22,44 @@
  * rendering it to close it.
  */
 import * as RadixDialog from '@radix-ui/react-dialog'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 
-export interface DialogProps {
+interface DialogBase {
   /** The question or the thing the dialog is about; the dialog's accessible name. */
   title: ReactNode
-  /** One sentence under the title, read as the dialog's description. */
-  description?: ReactNode
   /** The safe action. Escape, a click outside and a back gesture call it; it must never commit or destroy. */
   onDismiss: () => void
   /** The buttons, safe one first, so it is the one that has focus when the dialog opens. */
   actions: ReactNode
-  /** A warning whose answer can destroy or discard something: read to a screen reader as an alert dialog. */
-  warning?: boolean
   /** sm for a question, md for a short list, lg for a comparison such as the merge dialog. */
   size?: 'sm' | 'md' | 'lg'
   children?: ReactNode
 }
 
-export function Dialog({ title, description, onDismiss, actions, warning = false, size = 'sm', children }: DialogProps) {
+/**
+ * A warning (an answer that can destroy or discard something) is read to a
+ * screen reader as an alert dialog, which is announced by its description, so
+ * a warning must carry one; any other dialog may.
+ */
+export type DialogProps = DialogBase & (
+  | { warning?: false; /** One sentence under the title, read as the dialog's description. */ description?: ReactNode }
+  | { warning: true; /** What answering does, read as the alert dialog's description. */ description: ReactNode }
+)
+
+export function Dialog(props: DialogProps) {
+  const { title, description, onDismiss, actions, warning = false, size = 'sm', children } = props
   const onDismissRef = useRef(onDismiss)
   onDismissRef.current = onDismiss
   // What had focus before the dialog took it. Radix gives focus back to a
   // Dialog.Trigger, and these dialogs open from code rather than a trigger, so
   // the shell remembers the element itself and returns focus to it on close.
-  const [returnFocusTo] = useState<HTMLElement | null>(() => (typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)))
+  // Read once the dialog is committed, never during a render React may repeat
+  // or throw away; Radix moves focus in a later, passive effect.
+  const returnFocusTo = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    // Kept across strict mode's rerun of effects, by which time focus is inside the dialog.
+    if (returnFocusTo.current === null) returnFocusTo.current = document.activeElement as HTMLElement | null
+  }, [])
 
   // A back gesture is incidental too: it lands on the safe action, and the
   // navigation it makes goes ahead.
@@ -64,7 +77,7 @@ export function Dialog({ title, description, onDismiss, actions, warning = false
           role={warning ? 'alertdialog' : 'dialog'}
           aria-modal="true"
           className={`dialog dialog-${size}`}
-          onCloseAutoFocus={(e) => { e.preventDefault(); if (returnFocusTo?.isConnected) returnFocusTo.focus() }}
+          onCloseAutoFocus={(e) => { e.preventDefault(); if (returnFocusTo.current?.isConnected) returnFocusTo.current.focus() }}
           {...(description ? {} : { 'aria-describedby': undefined })}
         >
           <RadixDialog.Title className="dialog-title">{title}</RadixDialog.Title>

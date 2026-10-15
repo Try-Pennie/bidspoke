@@ -63,7 +63,7 @@ function pageSaver(profileVersion = 4, partnerVersion = 1) {
 const profileSent = (onSave: Mock) => onSave.mock.calls.map((c) => (c[3] as PartnerPageSaveRequest | undefined)?.profile ?? null)
 
 /** A save refused because someone else saved first, answered with both halves as stored now (#2133). */
-const stalePage = (over: Record<string, unknown>) => Object.assign(new Error('stale_version'), {
+const staleSaveAnswer = (over: Record<string, unknown>) => Object.assign(new Error('stale_version'), {
   status: 409,
   body: { error: 'stale_version', partner: { ...partner, version: 0 }, profile: doc, partner_version: 0, profile_version: 3, last_save_id: 'f0f0f0f0-0000-4000-8000-000000000001', changed_by_name: 'Brian Nelms', changed_at: '2027-09-20T18:02:00Z', ...over },
 })
@@ -256,7 +256,7 @@ describe('the Buyer profile section', () => {
   // #2134 (PM-3): the 409 side by side, Save over theirs and Take theirs are
   // gone. A save someone else beat is merged field by field: only what both
   // changed asks, in the merge dialog; the rest of theirs is kept.
-  const theirsAt = (over: Partial<BuyerProfileDocument>, version = 5) => stalePage({ profile: { ...doc, version, ...over }, profile_version: version })
+  const theirsAt = (over: Partial<BuyerProfileDocument>, version = 5) => staleSaveAnswer({ profile: { ...doc, version, ...over }, profile_version: version })
   // The merge dialog's own question is labelled by the field too, so the form's input is picked out by kind.
   const inputLabelled = (label: string) => screen.getAllByLabelText(label).find((el) => el.tagName === 'INPUT')!
   const dailyCapInput = () => inputLabelled('Leads per day')

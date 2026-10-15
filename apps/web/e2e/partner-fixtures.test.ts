@@ -14,12 +14,14 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRedactor, stringsIn } from '../../../scripts/e2e-fixtures/redact.mjs'
 import { writeFixtures } from '../../../scripts/e2e-fixtures/capture-partners.mjs'
-import { answerFor, loadPartnerFixtures } from './partner-fixtures'
+import { answerFor, isWorkerApiRequest, loadPartnerFixtures } from './partner-fixtures'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
 import type { Partner } from '../src/lib/api'
 
 const fx = loadPartnerFixtures()
+/** A captured buyer profile document with every field the redaction keeps. */
+const fixtureProfile = () => ({ ...(Object.values(fx.buyerProfiles).find((a) => a.profile)!.profile as Record<string, unknown>) })
 const W = 'https://worker.example'
 
 describe('the captured partners', () => {
@@ -79,9 +81,23 @@ describe('the redaction', () => {
     expect(out.last_probe_response).toEqual({ ok: true, data: { id: 'redacted', bid: 17.5, names: ['redacted'] } })
   })
 
-  it('passes a delivery with no route list through rather than failing the capture', () => {
-    const doc = { click_delivery: { success_pattern: 'x' } }
-    expect(createRedactor().profile(doc)).toBe(doc)
+  it('refuses a delivery with no route list, rather than committing whatever it holds', () => {
+    expect(() => createRedactor().profile({ click_delivery: { success_pattern: 'x' } })).toThrow(/click_delivery\.routes/)
+  })
+
+  it('keeps only the profile fields it knows, and refuses any other', () => {
+    const profile = fixtureProfile()
+    expect(() => createRedactor().profile({ ...profile, contact_email: 'someone@example.com' })).toThrow(/contact_email/)
+  })
+
+  it('replaces a blackout date\'s note, typed by a person, and keeps the date', () => {
+    const profile = { ...fixtureProfile(), blackout_dates: [{ date: '2026-12-25', note: 'Off for Ann\'s wedding' }, { date: '2026-12-26', note: null }] }
+    expect(createRedactor().profile(profile).blackout_dates).toEqual([{ date: '2026-12-25', note: 'redacted' }, { date: '2026-12-26', note: null }])
+  })
+
+  it('rewrites only an editor field that has a value of its own', () => {
+    const out = createRedactor().partner({ updated_by: null, updated_by_email: 'a@x.com', updated_by_name: null })
+    expect(out).toEqual({ updated_by: null, updated_by_email: 'editor-a@example.com', updated_by_name: null })
   })
 
   it('replaces a click route address and keeps the route name and states', () => {
@@ -104,6 +120,15 @@ describe('writeFixtures', () => {
       return Object.fromEntries(readdirSync(dir).map((f) => [f, readFileSync(path.join(dir, f), 'utf8')]))
     }
     expect(write(true)).toEqual(write(false))
+  })
+})
+
+describe('isWorkerApiRequest', () => {
+  it('takes only the Worker\'s /api/ routes, so a page served from the same origin keeps its own requests', () => {
+    expect(isWorkerApiRequest(new URL('https://worker.example/api/partners'), 'https://worker.example')).toBe(true)
+    expect(isWorkerApiRequest(new URL('https://worker.example/partners?selected=tripoint'), 'https://worker.example')).toBe(false)
+    expect(isWorkerApiRequest(new URL('https://worker.example/_next/static/chunk.js'), 'https://worker.example')).toBe(false)
+    expect(isWorkerApiRequest(new URL('https://other.example/api/partners'), 'https://worker.example')).toBe(false)
   })
 })
 

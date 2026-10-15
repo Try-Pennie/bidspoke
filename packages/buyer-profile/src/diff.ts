@@ -10,7 +10,7 @@
  * fields); normaliseSqlPath (paths.ts) converts, and fixtures/flatten-cases.json
  * pins both (#2132).
  */
-import type { BuyerProfileDocument } from './document'
+import { parseProfileDocument, type BuyerProfileDocument } from './document'
 
 const SCALARS = [
   'sold_on', 'is_enabled', 'priority', 'debt_min', 'debt_max', 'loan_amount_min',
@@ -58,8 +58,16 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
   if (!paths.has('allowed_states')) throw new Error('unflattenProfileDocument: allowed_states is missing')
   const states = paths.get('allowed_states')
   if (!Array.isArray(states)) throw new Error('unflattenProfileDocument: allowed_states is not a list')
+  // A row's key is written from its own fields, so a row that does not match
+  // its key was put together wrong and is refused rather than saved (#2134).
+  const KEY_OF: Record<string, (row: Record<string, unknown>) => string> = {
+    windows: (r) => `windows[${String(r.day_of_week)}:${String(r.opens_minute)}]`,
+    blackout_dates: (r) => `blackout_dates[${String(r.date)}]`,
+    tiers: (r) => `tiers[${String(r.population)}:${Number(r.debt_from)}]`,
+  }
   const rows = <T>(prefix: string): T[] => [...paths.entries()].filter(([k]) => k.startsWith(`${prefix}[`)).map(([k, v]) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error(`unflattenProfileDocument: ${k} is not a row`)
+    if (KEY_OF[prefix](v as Record<string, unknown>) !== k) throw new Error(`unflattenProfileDocument: ${k} does not match its row`)
     return { ...v } as T
   })
   const doc: BuyerProfileDocument = {
@@ -80,8 +88,10 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
   }
   const routeEntries = [...paths.entries()].filter(([k]) => k.startsWith('click_delivery.routes['))
   if (paths.has('click_delivery.success_pattern') || routeEntries.length > 0) {
+    // flatten writes the success line whenever there is a delivery, so routes without one were put together wrong.
+    if (!paths.has('click_delivery.success_pattern')) throw new Error('unflattenProfileDocument: click_delivery.success_pattern is missing')
     doc.click_delivery = {
-      success_pattern: (paths.get('click_delivery.success_pattern') as string | undefined) ?? '',
+      success_pattern: paths.get('click_delivery.success_pattern') as string,
       routes: routeEntries.map(([k, v]) => {
         const r = v as { url?: unknown; states?: unknown }
         if (typeof r?.url !== 'string' || !Array.isArray(r.states)) throw new Error(`unflattenProfileDocument: ${k} is not a route of an address and states`)
@@ -91,5 +101,8 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
   } else {
     doc.click_delivery = null
   }
+  // Every field of the rebuilt document is the kind the save takes, named when not.
+  const parsed = parseProfileDocument(doc)
+  if (!parsed.ok) throw new Error(`unflattenProfileDocument: ${parsed.errors.map((e) => `${e.path}: ${e.message}`).join(' ')}`)
   return doc
 }

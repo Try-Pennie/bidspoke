@@ -69,7 +69,7 @@ const camelToSnake = (path: string): string => path.replace(/[A-Z]/g, (c) => `_$
 /**
  * The on screen words for a path the shared validator emits (#1464). The
  * validator speaks the profile's camelCase field names; the labels are keyed by
- * the snake_case paths the diff and history use, so the two are joined here
+ * the snake_case paths flattenProfileDocument and the history use, so the two are joined here
  * rather than kept as a second list (L118, L41). An unknown path comes back as
  * itself, visibly unlabelled rather than silently blank. A click buyer's cap is
  * named as its form names it.
@@ -128,7 +128,7 @@ export function minutesToTime(minutes: number): string {
 }
 
 /**
- * The two spellings of a row path (#1672). The package's flatten (diff.ts)
+ * The two spellings of a row path (#1672). flattenProfileDocument (diff.ts)
  * keys a row in brackets and values it by the whole row: `windows[1:660]`,
  * `blackout_dates[2026-12-25]`, `tiers[engine:10000]`. The history reads
  * audit_log, which save_buyer_profile fills through buyer_profile_flatten, and
@@ -157,7 +157,7 @@ function parseRowPath(path: string): RowPath | null {
   return null
 }
 
-/** A human label for a diff or history path. */
+/** A human label for a flattened profile path or a history path. */
 export function profileFieldLabel(path: string): string {
   if (FIELD_LABELS[path]) return FIELD_LABELS[path]
   if (path === 'click_delivery.success_pattern') return SUCCESS_REPLY
@@ -187,7 +187,7 @@ function formatDottedRowValue(row: RowPath, value: unknown): string | null {
   return null
 }
 
-/** A human value for a diff or history value at a path. */
+/** A human value at a flattened profile path or a history path. */
 export function formatProfileValue(path: string, value: unknown): string {
   if (value === null || value === undefined) return 'none'
   if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]

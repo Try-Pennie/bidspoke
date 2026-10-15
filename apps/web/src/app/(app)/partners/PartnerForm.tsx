@@ -21,7 +21,7 @@ import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
-import { mergeThreeWay, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
+import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
 import { Button as UiButton, Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
@@ -268,7 +268,7 @@ export default function PartnerForm({
   const [pendingMerge, setPendingMerge] = useState<{
     base: PageHalves; mine: PageHalves; theirs: PageHalves
     theirPartner: Partner; theirName: string | null
-    partnerVersion: number; versions: string; choices: Record<string, MergeSide>
+    partnerVersion: number; choices: Record<string, MergeSide>
   } | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
   /** Set by the merge dialog's Save both: submit once the merged values are on screen. */
@@ -546,11 +546,19 @@ export default function PartnerForm({
   function startMerge(body: PartnerPageStale & { partner: Partner }, stale: Pick<PartnerPageStale, 'changed_by_name' | 'changed_at'>) {
     const halves = mergeHalves(body)
     const partnerVersion = body.partner_version ?? body.partner.version ?? versionRef.current
-    // The answers belong to the questions against one saved pair of versions.
-    const versions = `${partnerVersion}:${body.profile_version ?? ''}`
-    const choices = pendingMerge && pendingMerge.versions === versions ? pendingMerge.choices : {}
-    const result = mergeThreeWay(halves.base, halves.mine, halves.theirs, PARTNER_FIELD_REGISTRY, choices)
-    const next = { ...halves, theirPartner: body.partner, theirName: stale.changed_by_name, partnerVersion, versions, choices }
+    // An answer is kept only for the same question: the same field with the
+    // same yours and theirs it was given to. A value either side has changed
+    // since is asked again.
+    const fresh = mergeThreeWay(halves.base, halves.mine, halves.theirs, PARTNER_FIELD_REGISTRY)
+    const asked = new Map((mergeResult?.conflicts ?? []).flatMap((sec) => sec.conflicts).map((c) => [c.key, c]))
+    const choices: Record<string, MergeSide> = {}
+    for (const c of fresh.conflicts.flatMap((sec) => sec.conflicts)) {
+      const before = asked.get(c.key)
+      const answer = pendingMerge?.choices[c.key]
+      if (answer && before && sameMergeValue(before.mine, c.mine) && sameMergeValue(before.theirs, c.theirs)) choices[c.key] = answer
+    }
+    const result = Object.keys(choices).length > 0 ? mergeThreeWay(halves.base, halves.mine, halves.theirs, PARTNER_FIELD_REGISTRY, choices) : fresh
+    const next = { ...halves, theirPartner: body.partner, theirName: stale.changed_by_name, partnerVersion, choices }
     if (result.conflicts.length > 0) {
       setPendingMerge(next)
       setMergeOpen(true)

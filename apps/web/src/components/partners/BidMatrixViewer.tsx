@@ -111,19 +111,30 @@ export function BidMatrixViewer(p: Props) {
     try {
       await api.partnerBidConfigs.delete(activeConfig.id)
     } catch (err) {
-      // A refusal the server answered did not delete; a request with no answer
-      // may have, so it says only what is known (L11).
+      // A refusal the server answered did not delete. A request with no answer
+      // may have, so the matrices are read again to find out before anything is
+      // said or offered (L11, L766).
       const answered = typeof (err as { status?: unknown } | null)?.status === 'number'
-      setDeleteAsk({
-        deleting: false,
-        error: answered
-          ? `Not deleted: ${errorSentence(err, 'the matrix delete failed')}`
-          : `The delete got no answer, so the matrix may or may not be deleted. Reload the page to see which. (${errorSentence(err, 'no answer')})`,
-      })
-      return
-    } finally {
-      deletingRef.current = false
+      if (answered) {
+        setDeleteAsk({ deleting: false, error: `Not deleted: ${errorSentence(err, 'the matrix delete failed')}` })
+        deletingRef.current = false
+        return
+      }
+      let stillThere: boolean
+      try {
+        stillThere = (await api.partnerBidConfigs.list(p.partnerId)).some((c) => c.id === activeConfig.id)
+      } catch {
+        setDeleteAsk({ deleting: false, error: `The delete got no answer, so the matrix may or may not be deleted. Reload the page to see which. (${errorSentence(err, 'no answer')})` })
+        deletingRef.current = false
+        return
+      }
+      if (stillThere) {
+        setDeleteAsk({ deleting: false, error: 'The delete got no answer, and the matrix is still there. Delete it again, or keep it.' })
+        deletingRef.current = false
+        return
+      }
     }
+    deletingRef.current = false
     setDeleteAsk(null)
     const remaining = p.configs.filter((c) => c.id !== activeConfig.id)
     p.onConfigsChange(remaining)

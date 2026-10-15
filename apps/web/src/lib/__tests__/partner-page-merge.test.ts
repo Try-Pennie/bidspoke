@@ -143,6 +143,19 @@ describe('mergeThreeWay', () => {
     expect(r.mineKept).toEqual([])
   })
 
+  it('judges a change of kind against what their save stored, which is the version this save is made against', () => {
+    // Nothing stored that locks the kind when I switched to click; they then
+    // stored a tier. The merged save is made at their version, where that tier
+    // locks the kind, so the switch is a question, not a clean merge.
+    const offer = { ...profile, is_enabled: false, tiers: [] }
+    const bare: PageHalves = { partner: { ...partner, accept_signals: [] }, profile: offer }
+    const mine: PageHalves = { partner: { ...partner, accept_signals: [] }, profile: { ...offer, sold_on: 'click', priority: null } }
+    const theirs: PageHalves = { partner: { ...partner, accept_signals: [] }, profile: { ...offer, version: 4, tiers: [{ population: 'engine', debt_from: 15000, debt_to: null, multiplier: 0.001 }] } }
+    const r = mergeThreeWay(bare, mine, theirs, PARTNER_FIELD_REGISTRY)
+    const soldOn = r.conflicts.flatMap((sec) => sec.conflicts).find((c) => c.key === 'profile.sold_on')
+    expect(soldOn?.reason).toMatch(/Remove the stored pricing/)
+  })
+
   it('two edits to different tier populations rebuild one document that parses', () => {
     const r = mergeThreeWay(
       base,
