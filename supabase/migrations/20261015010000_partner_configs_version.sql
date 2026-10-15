@@ -140,10 +140,10 @@ BEGIN
     -- The name and address of THIS write's actor, as they are now (L37). Never
     -- NEW.updated_by_name, which a rename leaves holding the previous editor.
     SELECT u.display_name, u.email INTO v_actor_name, v_actor_email FROM public.users u WHERE u.id = v_actor;
-    IF NOT FOUND THEN
-      v_actor_name := nullif(current_setting('bidspoke.actor_name', true), '');
-      v_actor_email := nullif(current_setting('bidspoke.actor_email', true), '');
-    END IF;
+    -- A missing users row, or one with no name or address, falls back to what
+    -- the writing function carried in for this actor.
+    v_actor_name := coalesce(nullif(v_actor_name, ''), nullif(current_setting('bidspoke.actor_name', true), ''));
+    v_actor_email := coalesce(nullif(v_actor_email, ''), nullif(current_setting('bidspoke.actor_email', true), ''));
     v_changes := v_changes || jsonb_build_object('_actor', jsonb_build_object('name', v_actor_name, 'email', v_actor_email));
   END IF;
 

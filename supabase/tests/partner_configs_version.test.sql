@@ -330,11 +330,27 @@ BEGIN
 END
 $do$;
 
+-- ── 17. A users row with no display name falls back to the name the save carried ──
+DO $do$
+DECLARE v integer; v_actor jsonb;
+BEGIN
+  INSERT INTO public.users (id, organization_id, email, display_name) VALUES ('22222222-2222-2222-2222-22222222213c', '11111111-1111-1111-1111-111111112132', 'carol@example.test', NULL)
+  ON CONFLICT (id) DO UPDATE SET display_name = NULL;
+  SELECT version INTO v FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-333333332132';
+  PERFORM public.save_partner_config('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332132', v,
+    '{"min_bid":8}'::jsonb, NULL, '22222222-2222-2222-2222-22222222213c', 'carol@example.test', 'Carol From Token');
+  SELECT changes -> '_actor' INTO v_actor FROM public.audit_log
+  WHERE entity_id = '33333333-3333-3333-3333-333333332132' AND changes ? 'min_bid' ORDER BY changed_at DESC, id DESC LIMIT 1;
+  IF v_actor ->> 'name' IS DISTINCT FROM 'Carol From Token' THEN RAISE EXCEPTION 'a users row with no display name stamped _actor %', v_actor; END IF;
+  INSERT INTO suite_cases(name) VALUES ('blank display name falls back');
+END
+$do$;
+
 DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 16 THEN RAISE EXCEPTION 'partner_configs_version.test.sql: expected 16 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 17 THEN RAISE EXCEPTION 'partner_configs_version.test.sql: expected 17 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_configs_version.test.sql: % cases passed', n;
 END
 $do$;
