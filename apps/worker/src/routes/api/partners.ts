@@ -366,9 +366,10 @@ const isVersion = (v: unknown): v is number => typeof v === 'number' && Number.i
 const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
- * The validator path, if any, a database refusal of the page save is about, so
- * the form can put it beside its control and the registry can name its field.
- * A refusal that names no one field (the click cap rule covers three) has none.
+ * Each database refusal of the page save that is about one field, keyed by its
+ * code, to that field's validator path, so the form can put it beside its
+ * control and registryPathOf can name its registry field. A code missing here
+ * (the click cap rule covers three fields) is answered with no field error.
  */
 const REFUSAL_PATHS: Readonly<Record<string, string>> = {
   tiers_gap: 'tiers',
