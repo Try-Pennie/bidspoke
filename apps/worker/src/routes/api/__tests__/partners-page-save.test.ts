@@ -117,6 +117,7 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
       p_expected_profile_version: 2,
       p_profile: profileToSave,
       p_save_id: SAVE_ID,
+      p_client_id: null,
       p_actor: 'user-1',
       p_actor_email: 'dan@pennie.com',
       p_actor_name: 'Dan Wright',
@@ -124,6 +125,23 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     const body = await res.json() as Record<string, unknown>
     expect(body).toMatchObject({ partner: { ...ROW, credential_warning: null }, profile: { ...doc, version: 3 }, partner_version: 5, profile_version: 3 })
     expect('stored_copy_warning' in body).toBe(false)
+  })
+
+  // #2135: the notice the save sends carries the tab that pressed it, so that
+  // tab can tell its own echo from another person's save by client_id plus save_id.
+  it('carries the tab that pressed it as p_client_id, and refuses one that is not a UUID before anything is called', async () => {
+    const CLIENT = '6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e'
+    const rpc = saved()
+    supabaseWith(rpc)
+    expect((await put(page({ client_id: CLIENT }))).status).toBe(200)
+    expect(pageCalls(rpc)[0][1]).toMatchObject({ p_save_id: SAVE_ID, p_client_id: CLIENT })
+
+    const refused = saved()
+    supabaseWith(refused)
+    const res = await put(page({ client_id: 'tab-1' }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: 'client_id_invalid' })
+    expect(pageCalls(refused)).toHaveLength(0)
   })
 
   it('a save of the partner alone sends no profile and no profile version', async () => {

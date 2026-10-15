@@ -35,7 +35,18 @@ BEGIN
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
     -- #2151
-    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
+    -- PR4 (#2135)
+    'public.partner_page_notice_tables()',
+    'public.notify_partner_page(uuid, uuid, text, text[], boolean, uuid, uuid)',
+    'public.partner_configs_capture_actor()',
+    'public.partner_configs_page_notice()',
+    'public.buyer_profile_tables_page_notice()',
+    'public.partner_uuid_map_page_notice()',
+    'public.partner_uuid_map_page_notice_one_side()',
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, uuid, text, text)',
+    'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
+    'public.monitor_partner_page_ping(uuid, uuid)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -55,7 +66,11 @@ BEGIN
     'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
-    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
+    -- PR4 (#2135)
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, uuid, text, text)',
+    'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
+    'public.monitor_partner_page_ping(uuid, uuid)'
   ] LOOP
     IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
   END LOOP;
@@ -71,10 +86,26 @@ $do$;
 -- version comparison its two callers make, so the Worker must reach it only
 -- through them (#2133, found on the production read back of 20261016000000).
 DO $do$
+DECLARE
+  fn text;
 BEGIN
   IF has_function_privilege('service_role', 'public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb)', 'EXECUTE') THEN
     RAISE EXCEPTION 'function grants wrong: service_role can execute public._apply_buyer_profile, which skips the locks and the version check';
   END IF;
+  -- PR4 (#2135): the sender and the trigger functions. A Worker calling
+  -- notify_partner_page directly could send to any organization's topic.
+  FOREACH fn IN ARRAY ARRAY[
+    'public.partner_page_notice_tables()',
+    'public.notify_partner_page(uuid, uuid, text, text[], boolean, uuid, uuid)',
+    'public.partner_configs_page_notice()',
+    'public.buyer_profile_tables_page_notice()',
+    'public.partner_uuid_map_page_notice()',
+    'public.partner_uuid_map_page_notice_one_side()'
+  ] LOOP
+    IF has_function_privilege('service_role', fn, 'EXECUTE') THEN
+      RAISE EXCEPTION 'function grants wrong: service_role can execute %, which is internal', fn;
+    END IF;
+  END LOOP;
   INSERT INTO suite_cases(name) VALUES ('internal function not callable by service_role');
 END
 $do$;

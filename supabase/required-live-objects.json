@@ -252,6 +252,24 @@
     "note": "The partners page save (#2133): the partner record and the buyer profile in one transaction, behind the Worker's PUT /partners/:id/page. A WRITE: anon reaching it could switch a partner or a buyer on, or reprice one. Probed with the all zero org and partner, which no row carries, so even a successful probe refuses partner_not_found and writes nothing. The page calls this route, so the function must exist before the Worker that serves it deploys."
   },
   {
+    "name": "save_partner_page",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_partner_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_partner_version": 0,
+      "p_patch": {},
+      "p_expected_profile_version": null,
+      "p_profile": null,
+      "p_save_id": "00000000-0000-0000-0000-000000000000",
+      "p_client_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_actor_name": "probe"
+    },
+    "anon": "denied",
+    "note": "The partners page save with the press's tab (#2135), the eleven argument overload the Worker's PUT /partners/:id/page calls from this release, so the notice it sends carries client_id. A WRITE. Probed with the all zero org and partner, so even a successful probe refuses partner_not_found and writes nothing. The ten argument entry above stays for the release before."
+  },
+  {
     "name": "_apply_buyer_profile",
     "args": {
       "p_org": "00000000-0000-0000-0000-000000000000",
@@ -324,6 +342,29 @@
     },
     "anon": "denied",
     "note": "Rewrites a partner's formula columns for a step id rename (#1409). A WRITE. Probed with the all zero partner and no columns, which matches no row."
+  },
+  {
+    "name": "change_partner_uuid",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_slug": "probe",
+      "p_uuid": "probe",
+      "p_action": "add",
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_actor_name": "probe"
+    },
+    "anon": "denied",
+    "note": "Adds or removes a sub-account ID with the actor set for the partner_uuid_map triggers (#2135), behind POST and DELETE /api/partner-uuids. A WRITE. Probed with the all zero org, which holds no partner, so even a successful probe refuses partner_not_found and writes nothing. The Worker routes call it, so it must exist before that Worker deploys."
+  },
+  {
+    "name": "monitor_partner_page_ping",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_save_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The partners page delivery monitor's send (#2135), called by the Worker's five minute cron. Sends a broadcast and writes no table row. Probed with the all zero org, which does not exist, so even a successful probe refuses organization_not_found and sends nothing."
   },
   {
     "name": "record_held_click",

@@ -14,7 +14,7 @@ import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-s
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
-import { getSlackConnection, sendTitledAlert } from './lib/slack'
+import { getSlackConnection, sendGroupedRecoveryAlert, sendPartnerPageLiveAlert, sendTitledAlert } from './lib/slack'
 import { makeAlertClaims, raceDeadline } from './lib/alert-claim'
 import { runCronTickOnce } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -32,6 +32,8 @@ import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/part
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
 import { runDatabaseMemoryCheck, fetchMemoryReading, metricsUrl, liveDatabaseMemorySenders, DATABASE_MEMORY_JOB } from './lib/database-memory'
+import { runPartnerPageMonitor, PARTNER_PAGE_MONITOR_JOB } from './lib/partner-page-monitor'
+import { livePartnerPageMonitorDeps } from './lib/partner-page-monitor-live'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
@@ -825,6 +827,35 @@ const scheduledJobs = {
             })
             .catch((e) => console.error('[database-memory] check failed:', e)),
           DATABASE_MEMORY_JOB,
+        ),
+      )
+      // The partners page delivery monitor (#2135, decision 2): signs in as the
+      // synthetic monitor organization's user, joins its private topic, pings
+      // through the database sender and pages when its own notice does not
+      // arrive. Its own heartbeat, both stamps (L514), beside the other checks so
+      // a slow join cannot hold them up.
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, PARTNER_PAGE_MONITOR_JOB)
+            .catch((e) => console.error('[partner-page-monitor] heartbeat write failed:', e))
+            .then(() => runPartnerPageMonitor(livePartnerPageMonitorDeps(env, supabase, {
+              kv: env.IDEMPOTENCY,
+              claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+              resolveSlack: () => resolveSlackForEveryOrg({
+                supabase,
+                getConnection: getSlackConnection,
+                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                log: (line) => console.error(line),
+                logPrefix: '[partner-page-monitor]',
+              }),
+              senders: { live: sendPartnerPageLiveAlert, recovery: sendGroupedRecoveryAlert },
+            })))
+            .then((s) => {
+              console.log(`[partner-page-monitor] mode=${s.mode} outcome=${s.outcome ?? '-'} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
+              if (s.errors.length) console.error(`[partner-page-monitor] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error('[partner-page-monitor] check failed:', e)),
+          PARTNER_PAGE_MONITOR_JOB,
         ),
       )
       // The incident record drain (#2100): moves the incident outbox's events from

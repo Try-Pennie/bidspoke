@@ -1795,18 +1795,21 @@ export type Database = {
         Row: {
           created_at: string
           id: string
+          is_synthetic: boolean
           name: string
           slug: string
         }
         Insert: {
           created_at?: string
           id?: string
+          is_synthetic?: boolean
           name: string
           slug: string
         }
         Update: {
           created_at?: string
           id?: string
+          is_synthetic?: boolean
           name?: string
           slug?: string
         }
@@ -2136,6 +2139,56 @@ export type Database = {
             columns: ["partner_id"]
             isOneToOne: false
             referencedRelation: "partner_configs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      partner_page_live_misses: {
+        Row: {
+          cause: string
+          id: string
+          noticed_partner_version: number | null
+          noticed_profile_version: number | null
+          observed_at: string
+          observed_partner_version: number | null
+          observed_profile_version: number | null
+          organization_id: string
+          partner_id: string
+          reported_by: string | null
+          since_last_notice_ms: number | null
+        }
+        Insert: {
+          cause: string
+          id?: string
+          noticed_partner_version?: number | null
+          noticed_profile_version?: number | null
+          observed_at?: string
+          observed_partner_version?: number | null
+          observed_profile_version?: number | null
+          organization_id: string
+          partner_id: string
+          reported_by?: string | null
+          since_last_notice_ms?: number | null
+        }
+        Update: {
+          cause?: string
+          id?: string
+          noticed_partner_version?: number | null
+          noticed_profile_version?: number | null
+          observed_at?: string
+          observed_partner_version?: number | null
+          observed_profile_version?: number | null
+          organization_id?: string
+          partner_id?: string
+          reported_by?: string | null
+          since_last_notice_ms?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "partner_page_live_misses_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -2963,6 +3016,18 @@ export type Database = {
         }[]
       }
       buyer_sale_status_rank: { Args: { p_status: string }; Returns: number }
+      change_partner_uuid: {
+        Args: {
+          p_action: string
+          p_actor: string
+          p_actor_email: string
+          p_actor_name: string
+          p_org: string
+          p_slug: string
+          p_uuid: string
+        }
+        Returns: Json
+      }
       click_delivery_problem: { Args: { p_delivery: Json }; Returns: string }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
@@ -3039,7 +3104,24 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      monitor_partner_page_ping: {
+        Args: { p_org: string; p_save_id: string }
+        Returns: Json
+      }
+      notify_partner_page: {
+        Args: {
+          p_changed_columns: string[]
+          p_client_id: string
+          p_direct: boolean
+          p_kind: string
+          p_org: string
+          p_partner_id: string
+          p_save_id: string
+        }
+        Returns: undefined
+      }
       partner_configs_unversioned_columns: { Args: never; Returns: string[] }
+      partner_page_notice_tables: { Args: never; Returns: string[] }
       pg_cron_health: {
         Args: { window_hours?: number }
         Returns: {
@@ -3197,21 +3279,38 @@ export type Database = {
         }
         Returns: Json
       }
-      save_partner_page: {
-        Args: {
-          p_actor: string
-          p_actor_email: string
-          p_actor_name: string
-          p_expected_partner_version: number
-          p_expected_profile_version: number
-          p_org: string
-          p_partner_id: string
-          p_patch: Json
-          p_profile: Json
-          p_save_id: string
-        }
-        Returns: Json
-      }
+      save_partner_page:
+        | {
+            Args: {
+              p_actor: string
+              p_actor_email: string
+              p_actor_name: string
+              p_expected_partner_version: number
+              p_expected_profile_version: number
+              p_org: string
+              p_partner_id: string
+              p_patch: Json
+              p_profile: Json
+              p_save_id: string
+            }
+            Returns: Json
+          }
+        | {
+            Args: {
+              p_actor: string
+              p_actor_email: string
+              p_actor_name: string
+              p_client_id: string
+              p_expected_partner_version: number
+              p_expected_profile_version: number
+              p_org: string
+              p_partner_id: string
+              p_patch: Json
+              p_profile: Json
+              p_save_id: string
+            }
+            Returns: Json
+          }
       sightings_buffer_lag: {
         Args: {
           p_cap?: number

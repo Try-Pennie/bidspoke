@@ -21,7 +21,7 @@ import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the fourteen signals in use, each once', () => {
+  it('names the fifteen signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -32,6 +32,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-dead',
       'field-presence-drought',
       'field-presence-wrong-path',
+      'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',
       'slow-spike',
@@ -52,6 +53,9 @@ describe('INCIDENT_SIGNALS', () => {
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule'] as const) {
       expect(scope(s), s).toBe('platform')
     }
+    // #2135: the partners page channel is every organization's, and the monitor
+    // measures it through a synthetic organization no reader belongs to.
+    expect(scope('partner-page-live')).toBe('platform')
     // #2103: the heartbeat watches the worker's own crons and the export alerter
     // pages for jobs and checks that run once for every organization (one
     // Snowflake account, one database); both send every Slack organization the
@@ -71,7 +75,7 @@ describe('INCIDENT_SIGNALS', () => {
     // Each failure-rate signal carries its own window, so the call supplies it.
     expect(incidentSignal('failure-rate').windowMinutes).toBe('per_call')
     // A check that judges a state rather than a trailing window has none.
-    for (const s of ['db-unreachable', 'partner-reachability', 'supabase-memory', 'pg-cron-watch', 'workflow-schedule', 'cron-heartbeat', 'export-alert'] as const) {
+    for (const s of ['db-unreachable', 'partner-reachability', 'supabase-memory', 'pg-cron-watch', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {
       expect(incidentSignal(s).windowMinutes, s).toBeNull()
     }
   })
@@ -100,6 +104,7 @@ describe('INCIDENT_SIGNALS', () => {
   it('lists the partner kinds and the two database memory subjects', () => {
     expect(incidentSignal('partner-reachability').kinds).toEqual(['blocked', 'unreachable', 'control-failing', 'probe-broken'])
     expect(incidentSignal('supabase-memory').kinds).toEqual(['memory', 'feed'])
+    expect(incidentSignal('partner-page-live').kinds).toEqual(['channel', 'monitor'])
   })
 
   it('says which signals key their subject on a workflow id (#2101)', () => {
@@ -111,7 +116,7 @@ describe('INCIDENT_SIGNALS', () => {
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
     expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
-    for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert'] as const) {
+    for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {
       expect(incidentSignal(s).subject, s).toBe('name')
     }
   })
