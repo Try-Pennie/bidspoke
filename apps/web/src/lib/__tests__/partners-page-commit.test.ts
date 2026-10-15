@@ -77,6 +77,14 @@ describe('partners-page-commit: the outcomes', () => {
     expect(r.message).toMatch(/no commit stamp/)
   })
 
+  it('an error answer mid deploy is not read as an unstamped page: it keeps looking, and names the status if the budget runs out on one', async () => {
+    const flips = await run([{ status: 502, html: '<html>Bad gateway</html>' }, { html: page(SHA) }])
+    expect(flips.outcome).toBe('flipped')
+    const never = await run([{ status: 500, html: '<html>error</html>' }], { budget: 30 })
+    expect(never.outcome).toBe('not-followed')
+    expect(never.message).toMatch(/answered 500/)
+  })
+
   it('keeps looking through a failed fetch, and names it if the budget runs out on one', async () => {
     const flips = await run([{ error: 'fetch failed' }, { html: page(SHA) }])
     expect(flips.outcome).toBe('flipped')

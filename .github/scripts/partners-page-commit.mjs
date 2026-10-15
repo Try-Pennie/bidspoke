@@ -61,7 +61,14 @@ export async function followPartnersPage(deps) {
       if ((gate && gate !== 'allow') || (res.status >= 300 && res.status < 400)) {
         return { outcome: 'not-signed-in', seconds: elapsed(), message: `The check could not sign in, so it measured nothing (the site answered ${res.status} with ${GATE_HEADER}: ${gate ?? 'none'}).` }
       }
-      last = read(await res.text())
+      // An error answer mid deploy carries no stamp, and reading it would report
+      // an unstamped page that measured nothing about the stamp: say what it was.
+      if (res.status >= 400) {
+        last = `answered ${res.status}`
+        console.error(`partners-page-follows: look ${look} answered ${res.status}`)
+      } else {
+        last = read(await res.text())
+      }
       if (last === deps.expectedSha) {
         return { outcome: 'flipped', seconds: elapsed(), message: `The partners page serves ${deps.expectedSha.slice(0, 7)}, ${elapsed()} s after Deploy Pages finished.` }
       }
@@ -76,7 +83,7 @@ export async function followPartnersPage(deps) {
   if (last === 'unstamped') {
     return { outcome: 'unstamped', seconds: elapsed(), message: 'The partners page carries no commit stamp, so whether it follows the Worker was not measured.' }
   }
-  const shown = last === 'unreachable' ? 'was unreachable' : `still serves ${last.slice(0, 7)}`
+  const shown = last === 'unreachable' ? 'was unreachable' : last.startsWith('answered ') ? last : `still serves ${last.slice(0, 7)}`
   return { outcome: 'not-followed', seconds: elapsed(), message: `${NOT_FOLLOWED} After ${deps.budgetSeconds} s, /partners ${shown}, not ${deps.expectedSha.slice(0, 7)}.` }
 }
 
