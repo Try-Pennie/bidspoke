@@ -262,10 +262,3 @@ export function scanPartnerValueReaders(workflows: readonly ScannableWorkflow[],
   }
   return result
 }
-
-/** The workflows reading any of the partner's values, once each: what the delete check (#2140) is to list. */
-export function workflowsReadingPartnerValues(scan: readonly PartnerValueReaders[]): Array<{ id: string; name: string; is_active: boolean }> {
-  const seen = new Map<string, { id: string; name: string; is_active: boolean }>()
-  for (const v of scan) for (const r of v.readers) if (!seen.has(r.workflow_id)) seen.set(r.workflow_id, { id: r.workflow_id, name: r.workflow_name, is_active: r.is_active })
-  return [...seen.values()]
-}

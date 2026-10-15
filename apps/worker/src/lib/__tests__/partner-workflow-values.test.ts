@@ -11,7 +11,6 @@ import LIVE_FIXTURE_RAW from './fixtures/workflow-values-live.json?raw'
 import {
   partnerValueNames,
   scanPartnerValueReaders,
-  workflowsReadingPartnerValues,
   type PartnerValueReaders,
   type ScannableWorkflow,
   type ScanPartner,
@@ -211,14 +210,6 @@ describe('scanPartnerValueReaders: workflows', () => {
   it('a definition with no nodes or a malformed one reads nothing rather than throwing', () => {
     const scan = scanPartnerValueReaders([{ id: 'x', name: 'x', is_active: true, definition: null }, { id: 'y', name: 'y', is_active: true, definition: { nodes: 'no' } }], TRIPOINT)
     expect(scan.flatMap((v) => v.readers)).toEqual([])
-  })
-
-  it('workflowsReadingPartnerValues lists each reading workflow once', () => {
-    const scan = scanPartnerValueReaders(
-      [wf('a', [constantsNode(), code('r', 'constants.TripointClickUrl\nconstants.activeBidding[x]')]), wf('b', [constantsNode(), code('r', 'nothing')])],
-      TRIPOINT
-    )
-    expect(workflowsReadingPartnerValues(scan)).toEqual([{ id: 'a', name: 'Workflow a', is_active: true }])
   })
 })
 
