@@ -216,7 +216,7 @@ describe('the failed runs of a failure rate incident (#2102)', () => {
     })
 
     it('says runs before the cutoff are gone only when the span reaches before it', () => {
-      expect(incidentRunsRetentionLine(body({}, { clipped: true, kept_since: '2026-10-08T14:00:00.000Z' }))).toBe('Runs before Oct 8 are no longer kept.')
+      expect(incidentRunsRetentionLine(body({}, { clipped: true, kept_since: '2026-10-08T14:00:00.000Z' }))).toBe('Runs before Oct 8, 10:00 AM are no longer kept.')
       expect(incidentRunsRetentionLine(body())).toBeNull()
     })
   })

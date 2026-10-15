@@ -128,8 +128,12 @@ export function incidentRunsSpanLine(body: IncidentFailedRuns, now: number): str
 
 const keptSinceWords = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' })
 
-/** "Runs before Oct 8 are no longer kept.", only when the incident reaches back before that. */
+/**
+ * "Runs before Oct 8, 10:00 AM are no longer kept.", only when the incident
+ * reaches back before that. The cutoff is a moment, not a midnight, so it carries
+ * its time: a date alone would read as the whole of Oct 8 still being kept.
+ */
 export function incidentRunsRetentionLine(body: IncidentFailedRuns): string | null {
   if (!body.clipped) return null
-  return `Runs before ${keptSinceWords.format(new Date(body.kept_since))} are no longer kept.`
+  return `Runs before ${keptSinceWords.format(new Date(body.kept_since))}, ${formatEtClock(body.kept_since)} are no longer kept.`
 }

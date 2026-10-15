@@ -124,7 +124,7 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
 
   it('says runs before the cutoff are no longer kept, only when the span reaches before it', async () => {
     narrowed(vi.fn().mockResolvedValue(body({ clipped: true, kept_since: '2026-10-08T14:00:00.000Z' })))
-    expect(await screen.findByText('Runs before Oct 8 are no longer kept.')).toBeInTheDocument()
+    expect(await screen.findByText('Runs before Oct 8, 10:00 AM are no longer kept.')).toBeInTheDocument()
   })
 
   it('shows a failed read as an error with a Retry, never as an empty list', async () => {
