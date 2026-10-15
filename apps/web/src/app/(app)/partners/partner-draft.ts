@@ -24,15 +24,28 @@ export interface FieldEntry {
   tab: PartnerTab
   section: string
   label: string
-  /** A row list's rows merge as whole rows, keyed within this group (PR3). */
-  mergeGroup?: string
+  /** A row list's rows merge as row groups, never one flattened row at a time (#2134). */
+  mergeGroup?: MergeGroup
+}
+
+/**
+ * How a row list merges (#2134). A flattened row's key holds an editable value
+ * (a window's opening minute, a tier's lower bound), so moving it would read as
+ * a delete plus an add. Rows therefore merge as groups: one group per value of
+ * `by` (a day, a population), or the whole list as one group when there is no
+ * `by`. A group changed by one side is taken whole from that side; a group both
+ * changed to different contents is one question.
+ */
+export interface MergeGroup {
+  name: 'windows' | 'tiers' | 'blackout_dates' | 'click_delivery.routes'
+  by?: 'day_of_week' | 'population'
 }
 
 /** Buyer profile paths are namespaced: `priority` is both a partner field and a profile field. */
 export const PROFILE_PREFIX = 'profile.'
 
 const partnerField = (pattern: keyof PartnerBody, section: string, label: string, tab: PartnerTab = 'partner'): FieldEntry => ({ pattern, tab, section, label })
-const profileField = (path: string, section: string, label: string, mergeGroup?: string): FieldEntry => ({ pattern: `${PROFILE_PREFIX}${path}`, tab: 'buyer_profile', section, label, ...(mergeGroup ? { mergeGroup } : {}) })
+const profileField = (path: string, section: string, label: string, mergeGroup?: MergeGroup): FieldEntry => ({ pattern: `${PROFILE_PREFIX}${path}`, tab: 'buyer_profile', section, label, ...(mergeGroup ? { mergeGroup } : {}) })
 
 /**
  * Every path the page edits, each exactly once (partner-field-registry.test.ts,
@@ -82,19 +95,21 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('daily_lead_cap', 'Caps', FIELD_LABELS.daily_lead_cap),
   profileField('hourly_spend_cap_cents', 'Caps', FIELD_LABELS.hourly_spend_cap_cents),
   profileField('daily_spend_cap_cents', 'Caps', FIELD_LABELS.daily_spend_cap_cents),
-  profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, 'windows'),
-  profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, 'blackout_dates'),
-  profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, 'tiers'),
+  profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, { name: 'windows', by: 'day_of_week' }),
+  profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, { name: 'blackout_dates' }),
+  profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, { name: 'tiers', by: 'population' }),
   profileField('click_delivery.success_pattern', 'Click delivery', 'Success reply'),
-  profileField('click_delivery.routes[*]', 'Click delivery', 'Routes', 'click_delivery.routes'),
+  profileField('click_delivery.routes[*]', 'Click delivery', 'Routes', { name: 'click_delivery.routes' }),
 ]
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const PATTERN_RES = new Map(PARTNER_FIELD_REGISTRY.map((e) => [e.pattern, new RegExp(`^${escapeRe(e.pattern).replace(/\\\[\\\*\\\]/g, '\\[[^\\]]+\\]')}$`)]))
+const toRe = (pattern: string): RegExp => new RegExp(`^${escapeRe(pattern).replace(/\\\[\\\*\\\]/g, '\\[[^\\]]+\\]')}$`)
+const PATTERN_RES = new Map(PARTNER_FIELD_REGISTRY.map((e) => [e.pattern, toRe(e.pattern)]))
+const patternRe = (pattern: string): RegExp => PATTERN_RES.get(pattern) ?? toRe(pattern)
 
 /** The registry entries a path matches; exactly one for every path the page edits. */
-export function registryEntriesFor(path: string): FieldEntry[] {
-  return PARTNER_FIELD_REGISTRY.filter((e) => PATTERN_RES.get(e.pattern)!.test(path))
+export function registryEntriesFor(path: string, registry: readonly FieldEntry[] = PARTNER_FIELD_REGISTRY): FieldEntry[] {
+  return registry.filter((e) => patternRe(e.pattern).test(path))
 }
 
 /**

@@ -38,6 +38,57 @@ export function flattenProfileDocument(doc: BuyerProfileDocument): Map<string, u
   return out
 }
 
+const ROW_PATH = /^(windows|blackout_dates|tiers|click_delivery\.routes)\[.+\]$/
+
+/**
+ * The inverse of flattenProfileDocument (#2134): the document a set of paths
+ * describes, rows in the order the paths give them, so whoever chose the paths
+ * (the partners page merge) also chose the order. Every scalar must be present,
+ * as flatten always writes them; a path it cannot place is refused rather than
+ * dropped. No delivery paths at all is no delivery (null), which is what the
+ * flatten of both an absent and a null delivery reads as.
+ */
+export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): BuyerProfileDocument {
+  for (const key of paths.keys()) {
+    const known = (SCALARS as readonly string[]).includes(key) || key === 'allowed_states' || key === 'click_delivery.success_pattern' || ROW_PATH.test(key)
+    if (!known) throw new Error(`unflattenProfileDocument: ${key} is not a profile path`)
+  }
+  const scalar = (key: (typeof SCALARS)[number]): unknown => {
+    if (!paths.has(key)) throw new Error(`unflattenProfileDocument: ${key} is missing`)
+    return paths.get(key)
+  }
+  const rows = <T>(prefix: string): T[] => [...paths.entries()].filter(([k]) => k.startsWith(`${prefix}[`)).map(([, v]) => ({ ...(v as object) }) as T)
+  const doc: BuyerProfileDocument = {
+    sold_on: scalar('sold_on') as BuyerProfileDocument['sold_on'],
+    is_enabled: scalar('is_enabled') as boolean,
+    priority: scalar('priority') as number | null,
+    allowed_states: [...((paths.get('allowed_states') as string[] | undefined) ?? [])],
+    debt_min: scalar('debt_min') as number | null,
+    debt_max: scalar('debt_max') as number | null,
+    loan_amount_min: scalar('loan_amount_min') as number | null,
+    hourly_lead_cap: scalar('hourly_lead_cap') as number | null,
+    daily_lead_cap: scalar('daily_lead_cap') as number | null,
+    hourly_spend_cap_cents: scalar('hourly_spend_cap_cents') as number | null,
+    daily_spend_cap_cents: scalar('daily_spend_cap_cents') as number | null,
+    windows: rows<BuyerProfileDocument['windows'][number]>('windows'),
+    blackout_dates: rows<BuyerProfileDocument['blackout_dates'][number]>('blackout_dates'),
+    tiers: rows<BuyerProfileDocument['tiers'][number]>('tiers'),
+  }
+  const routeEntries = [...paths.entries()].filter(([k]) => k.startsWith('click_delivery.routes['))
+  if (paths.has('click_delivery.success_pattern') || routeEntries.length > 0) {
+    doc.click_delivery = {
+      success_pattern: (paths.get('click_delivery.success_pattern') as string | undefined) ?? '',
+      routes: routeEntries.map(([k, v]) => {
+        const r = v as { url: string; states: string[] }
+        return { name: k.slice('click_delivery.routes['.length, -1), url: r.url, states: [...r.states] }
+      }),
+    }
+  } else {
+    doc.click_delivery = null
+  }
+  return doc
+}
+
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 export function diffProfileDocuments(mine: BuyerProfileDocument, theirs: BuyerProfileDocument): ProfileFieldDiff[] {
