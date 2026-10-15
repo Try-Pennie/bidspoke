@@ -425,7 +425,8 @@ Consequences:
 - Porting it (#1680) moves two Salesforce calls onto the pre-answer critical
   path, inside the 20 s parallel. The native node treats `apex` as not safe to
   repeat, and `InquiryParserRest` attaches a new file to the Lead on every
-  successful call (question 5), so how that step retries is a decision, not a
+  successful call that carries inquiries (question 5; a call without them
+  writes nothing, see "Port measurements"), so how that step retries is a decision, not a
   copy of the relay's settings.
 - A 63 ms median for a relay that makes two Salesforce calls, one of them an
   Apex insert, fits Pipedream's default HTTP response acknowledging on receipt,
@@ -702,7 +703,7 @@ fields these writes set.
   date (or **nulls them** when the Submission has no `Engine_Offers_Date_SO__c`,
   which is the 2026-10-13 repair's blank Engine fields), `Submission_Object_ID__c`,
   the Prospect link, and many copied fields including `PDFlow_1__c` to
-  `PDFlow_5__c`, `PD_Completed_Timestamp__c`, `External_Exchange_Status__c`,
+  `PDFlow_8__c` (each when not null), `PD_Completed_Timestamp__c`, `External_Exchange_Status__c`,
   `InternalDebtRouting__c`, `CreditFreeze__c`; then, with a Prospect, clones its
   files to the Lead and starts `TradeParserBatch` (async Apex). **Without** a
   completion flip, if the Submission has a Lead, it still updates the Lead with
@@ -753,10 +754,12 @@ count update).**
   `Update_Lead_Fields`, `Update_Lead_Tags`.
 
 **Inquiries relay's Apex REST (`InquiryParserRest`, `/credit-inquiries`).**
-Finds the Submission's Lead (404 if none), **deletes** the Lead's existing
-`Inquiry__c` rows and inserts the parsed ones, updates the Lead's four inquiry
-counts, and attaches the raw JSON to the Lead as a **new file**
-(`ContentVersion` and `ContentDocumentLink`) on every call. The class declares no
+Finds the Submission's Lead (404 if none) and, only when the parsed inquiry
+list is non-empty, **deletes** the Lead's existing `Inquiry__c` rows and
+inserts the parsed ones, updates the Lead's four inquiry counts, and attaches
+the raw JSON to the Lead as a **new file** (`ContentVersion` and
+`ContentDocumentLink`). An empty or missing list writes nothing (corrected by
+#2169, see "Port measurements"). The class declares no
 sharing keyword. No trigger exists on `Inquiry__c`, `ContentVersion` or
 `ContentDocumentLink`.
 
@@ -789,8 +792,9 @@ nothing.
   rule not to overwrite a different non-blank value is what stops this.
 - A first write that never landed fires everything once when the resend lands,
   as the original would have.
-- An Inquiries resend replaces the inquiry rows (safe) but attaches one more
-  file to the Lead each time (not idempotent). It is pre-answer, so #2023 does
+- An Inquiries resend that carries inquiries replaces the inquiry rows (safe)
+  but attaches one more file to the Lead each time (not idempotent); one
+  without inquiries writes nothing. It is pre-answer, so #2023 does
   not resend it.
 - On Prospect, a resent `BidStatus__c` that would move backward is reverted
   without error, so the PATCH answers 204 and the field does not hold the
@@ -864,6 +868,301 @@ measured.
 ADR 0002's figures still stand: about 5% of finalized leads a day lose their
 post-response database finalize to Worker eviction, and the 2026-10-13 incident
 measured 8 of 18 flagged writes (44%) not landing under an upstream slowdown.
+
+## Port measurements (#2169)
+
+Phase 0 of the #1680 plan (approved 2026-10-15): read only measurements the
+port rests on, all taken on 2026-10-15 from the production database
+(`execution_steps`, filtered on `started_at`, its partition key), the Salesforce
+org (`sf data query`, standard and Tooling API) and Workers Logs. Nothing was
+written anywhere. The Pipedream auto retry count is measured separately and is
+not in this section. Times are UTC.
+
+### What these change in the #1680 plan
+
+"Plan point N", "R1", "R2" and "D5" below are the numbered items of the
+approved #1680 plan comment, not this document's own numbered lists.
+
+1. **R1 does not happen: a `"null"` VantageScore lands.** `VantageScore__c` is
+   a `Text(255)` field on both Submission and Lead, so the string `"null"` is
+   stored as text, not refused. All 210 Submissions posted with it in 3 days
+   show the write landed (209 carry that run's link, the 210th a later run's
+   link from the same post). Keeping the text body keeps today's behaviour
+   exactly (the literal text `null` on about 70 Submissions a day); it breaks
+   nothing in the write.
+2. **Plan point 15 is wrong about the empty case: the Apex call writes nothing at
+   all when there are no inquiries.** `InquiryParserRest` only deletes, inserts,
+   updates the Lead's counts and attaches the file when the parsed list is
+   non-empty. Live posts never carry an empty list: 11.7% carry no `inquiries`
+   key at all (2,562 of 21,848 in 7 days), and for those no marker of any kind
+   appears in Salesforce. The marker for every successful call that carries
+   inquiries is the `Inquiries_<leadId>` file on the Lead (150 of 150). So the
+   port should skip the Apex call, with a recorded reason, when the inquiry
+   list is absent or empty (it cannot do anything), and the D5 read-back
+   covers only posts that carry inquiries. The Lead's old `Inquiry__c` rows
+   are not deleted in that case (12 of 150 sampled Leads keep rows from an
+   earlier pull).
+3. **The bulkhead reached its cap once in 7 days and never shed, but it failed
+   open 50 times.** Peak in flight 20 of 20 on 2026-10-11 at about 17:14,
+   with waits up to 21.5 s (the runs that logged waits started between
+   17:14:31 and 17:14:56; the slowdown's own length was not measured). 46 of the 50 fail-opens
+   came on the evening of 2026-10-12 and during the 2026-10-13 incident: the
+   bulkhead Durable Object itself errored and calls went ahead without a slot,
+   so the cap did not hold when it mattered most. Plan point 7's separate
+   post-answer bulkhead key stands; its test should also cover the fail-open
+   path.
+4. **The timeout budget is tight.** Work after the answer gets 12 s: a run
+   waits at most 12 s after its response for the rest of its walk
+   (`apps/worker/src/lib/post-response-budget.ts`, #1882; plan point 5).
+   `set_completed_submission` (a Submission PATCH that does not complete the
+   Submission) has p99.9 4,474 ms and max 14,540 ms per attempt. The
+   completing outcome PATCH runs more Salesforce automation synchronously
+   (the completion flip, the Lead sync, the Lead flows), so it is probably at
+   least as slow (inferred, not measured). Two attempts at the p99.9 already
+   take about 9 s before the Apex call starts, and one attempt at the
+   measured maximum takes more than the whole 12 s. Plan point 5's budget test
+   will have to choose between one attempt and a shorter per-attempt timeout.
+5. **R2: moving the Apex call after the completion flip changes no final field
+   value**, and sends the inquiry counts to the right Submission in the one case
+   where today they go to an older one.
+
+### 1. `VantageScore__c` as the string `"null"` (risk R1)
+
+**Which posts.** In the live Main Flow definition (money gate fixture), three
+outcome posts are JSON text bodies with `"VantageScore__c":
+"{{steps.gen_vantage_score.output}}"`: `send_salesforce`,
+`send_fallback_salesforce` and `send_fallback_salesforce_1`. The other six send
+a code node's `sfBody`, where `VantageScore__c` is a real JSON value.
+
+**What it renders to.** `gen_vantage_score` returns `null` when the Equifax
+report or its `models` is missing. Inline interpolation in `resolveTemplate`
+(`engine/context.ts`) turns `null` into the text `null` and `undefined` into
+an empty string, so inside the quotes the body carries `"VantageScore__c":
+"null"` (a string), or `""` when the step did not run. In the code node bodies
+the same case is a JSON `null`, which clears the field.
+
+**How often.** Last day before about 16:20: `gen_vantage_score` completed 3,901
+times, 164 with a null output. Those 164 runs posted through
+`debt_missing_sf_post` 85 (code body, JSON null), `send_fallback_salesforce` 71
+(text, `"null"`), `under_10000_sf_post` 6 (code body) and `send_salesforce` 2
+(text, `"null"`). Query: `execution_steps` where `step_namespace =
+'gen_vantage_score'` and `output is null`, joined on `execution_id` to the
+outcome post steps, reading `input->'resolved'->'body'`.
+
+**Whether such writes land.** All 213 text-body posts carrying
+`"VantageScore__c": "null"` in the 3 days before about 16:20 (209
+`send_fallback_salesforce`, 4 `send_salesforce`, all answered 200 by the relay)
+cover 210 Submissions. Read back from `Submission__c` by id:
+
+- 209 of 210 hold `PDFlow_1__c` equal to that run's Bidspoke link, so the relay
+  PATCH landed. The 210th holds the link of a later Main Flow run on the same
+  Submission (13:02 the same day, also `send_fallback_salesforce`), so it landed
+  and was then superseded. None failed.
+- 186 still hold `VantageScore__c = 'null'`; 21 hold a score written later by
+  another writer, 3 are blank (210 in all).
+- Field type (Tooling `FieldDefinition`): `VantageScore__c` is `Text(255)` on
+  Submission and on Lead, so Salesforce accepts the string. The completion
+  flip copies a non-null `VantageScore__c` to the Lead, so the text reaches the
+  Lead too: 391 Submissions and 319 Leads created in the 7 days to 2026-10-15
+  hold `VantageScore__c = 'null'`.
+
+### 2. The inquiry call's always-present marker
+
+**What `InquiryParserRest` writes** (Tooling `ApexClass` body of the class with
+`@RestResource(urlMapping='/credit-inquiries')`, and its `InquiryParser` and
+`InquiryQuery`): it looks up the Submission's Lead (404 when there is none),
+parses the inquiries, and **only if the parsed list is non-empty** deletes the
+Lead's `Inquiry__c` rows, inserts the new ones, updates the Lead's
+`InquiriesAmount__c`, `Num_of_Inquiries_12M__c`, `Num_of_Inquiries_24M__c` and
+`Num_of_Inquires_2Y__c`, and last inserts a `ContentVersion` titled
+`Inquiries_<leadId>` linked to the Lead. An empty list writes nothing and still
+answers 200. A body whose `inquiries` key is missing makes `wrapper.inquiries`
+null, and iterating it throws, which the class catches and answers 500, again
+before any write. The catch does not roll back, so a failure inside the file
+insert would leave the rows and counts written and the file missing.
+
+**What live posts carry.** Over 7 days (2026-10-08 to 2026-10-14), of 21,848
+`send_salesforce_inquiry` posts, 19,286 carried a non-empty `inquiries` array,
+2,562 (11.7%) carried no `inquiries` key at all, and **0** carried an empty
+array. The relay builds the Apex body from that key; whether it sends `{}` or
+`{"inquiries":[]}` when the key is missing is not visible, and either way the
+Apex writes nothing.
+
+**Read back.** The 150 most recent posts of each kind between 2 and 24 hours
+before the query (the 2 hour gap lets the relay finish), compared with each
+Lead, timestamps truncated to the second as Salesforce stores them:
+
+| Marker on the Lead, created after the post started | Non-empty list (150) | No `inquiries` key (150) |
+|---|---|---|
+| `Inquiries_<leadId>` file (`ContentDocumentLink`) | 150 | 0 |
+| `Inquiry__c` rows | 150 | 0 |
+| `InquiriesAmount__c` equal to the posted count | 149 | not written |
+| Submission `PDFlow_4__c` set (the relay's own PATCH, not the Apex) | 150 | 150 |
+| Lead created after the post started | 0 | 0 |
+
+**The marker:** the `Inquiries_<leadId>` file linked to the Lead with a
+`CreatedDate` at or after the call, present on every successful call that
+carries inquiries. It is the last write in the method, so its presence means the
+rows and counts were written too. **No marker exists for a post with no
+inquiries**, because the call writes nothing; `PDFlow_4__c` is written by the
+relay's separate Submission PATCH, which the plan folds into the outcome write.
+12 of the 150 Leads in that group keep `Inquiry__c` rows and counts from an
+earlier pull, which the call does not clear.
+
+### 3. Bulkhead peak in flight
+
+**What is recorded.** `BulkheadObject` stores only the current leases, no
+history or counters. The Salesforce node logs `salesforce_bulkhead_shed` (with
+`inflight`) on a shed and `salesforce_bulkhead_waited` (with `inflight` at the
+moment of the grant) only when getting a slot took over 1 s. A grant without a
+wait is not logged, so the logs give the peak only when it coincided with a
+wait. When the call to the Durable Object itself throws, the client fails open
+(`allowed: true`, no lease) and the waited line reads `inflight=undefined`.
+
+**Workers Logs**, `bidspoke-worker`, queried in windows of 24 hours or less
+grouped by message (7 day searches miss lines), covering 2026-10-08 16:00 to
+2026-10-15 16:00:
+
+| Window | Shed lines | Waited lines | Highest `inflight` on a waited line | Fail-open lines |
+|---|---|---|---|---|
+| 10-08 16:00 to 10-09 16:00 | 0 | 28 | 11 | 0 |
+| 10-09 16:00 to 10-10 16:00 | 0 | 13 | 11 | 0 |
+| 10-10 16:00 to 10-11 16:00 | 0 | 23 | 11 | 4 |
+| 10-11 16:00 to 10-12 16:00 | 0 | 27 | **20** (10-11 about 17:14) | 0 |
+| 10-12 16:00 to 10-13 00:00 | 0 | 35 | 13 | 26 |
+| 10-13 00:00 to 10-14 00:00 | 0 | 130 | 11 | 20 |
+| 10-14 00:00 to 10-15 00:00 | 0 | 8 | 6 | 0 |
+| 10-15 00:00 to 10-15 16:00 | 0 | 4 | 4 | 0 |
+
+- **Sheds: 0 in 7 days.** Control: the same filter mechanism returned the
+  waited lines in every window, and `execution_steps` holds no step whose
+  error starts `Salesforce bulkhead` in the same days.
+- **Peak: 20 of 20, once**, on 2026-10-11 at about 17:14 (the sampled traces
+  are Engine Bidding and LendSwift runs started between 17:14:31 and
+  17:14:56), with waits up to 21,507 ms. Nothing shed because slots freed within the wait.
+- Most waited lines show a low `inflight` (1 to 4) with a multi second wait: the
+  wait was the Durable Object round trip itself, not a full bulkhead.
+- **Fail open 50 times**, with waits up to 29,341 ms: 4 in the 10-10 to 10-11
+  window and 46 during the 10-12 evening and the 10-13 incident. Those calls
+  went to Salesforce with no slot, so the true in flight then is unknown and
+  the cap did not apply.
+
+**Step overlap, as a cross check.** Counting every native Salesforce step's
+whole duration (`step_type = 'salesforce'`, non-test, all workflows) as one
+slot, the running maximum per UTC day: 10-08 13, 10-09 16, 10-10 16, 10-11 23
+(at 17:14:56, the same spike), 10-12 15, 10-13 21 (at 03:16), 10-14 15, over
+142,559 to 190,777 steps a day. A step spans retries, backoff and the
+bulkhead wait, so this overstates the slots held, and it misses steps whose
+log row was lost, so it is a cross check rather than a bound. Porting the Main
+Flow relays adds about 9,500 calls a day, about 5% of these steps.
+
+### 4. Timeout samples
+
+7 days, 2026-10-08 16:00 to 2026-10-15 16:00, non-test, from
+`execution_steps.duration_ms`. A step with `retries_used = 0` is one attempt,
+and its duration includes the bulkhead acquire and any token fetch.
+
+**Main Flow `set_completed_submission`** (update `Submission__c`
+`Completed_Submission_Flag__c`, `retries: 2`, no `timeout_ms`, so each attempt
+is bounded by the node's 15 s call abort):
+
+| | Count | p50 | p99 | p99.9 | Max |
+|---|---|---|---|---|---|
+| One attempt, completed | 23,318 | 696 ms | 1,685 ms | 4,474 ms | 14,540 ms |
+| Completed after a retry | 1 | | | | 16,341 ms in total |
+| Failed | 0 | | | | |
+
+This PATCH changes none of the four completion conditions, so it runs the
+Submission trigger and the else branch Lead update (`CreditFreeze__c`) but not
+the completion flip, the Lead copy or the Lead flows that the completing outcome
+PATCH fires synchronously. It is the right object and user but a lighter write.
+The relay's own Salesforce step durations for the completing PATCH live only in
+Pipedream's inspector and were not read (no browser in this pass).
+
+**Engine Bidding `patch_prospect_reject`** (update `Prospect__c`, `retries: 2`,
+`timeout_ms: 1500`):
+
+| | Count | p50 | p99 | p99.9 | Max |
+|---|---|---|---|---|---|
+| All steps | 212,197 | 245 ms | 818 ms | 1,357 ms | 8,300 ms |
+| One attempt, completed | 212,021 | 245 ms | 757 ms | 1,185 ms | 1,498 ms |
+| Completed after a retry | 134 | 2,579 ms | 5,660 ms | 5,827 ms | 5,848 ms |
+| Failed | 42 | 6,000 ms | 7,357 ms | 8,206 ms | 8,300 ms |
+
+The one attempt maximum sits just under the 1,500 ms limit, so that
+distribution is cut off by the timeout: 1,231 single attempts took over
+1,000 ms and 182 over 1,200 ms. 176 steps (0.08%) had at least one attempt
+fail (134 then succeeded on a retry, 42 failed). The failures read in the busiest day (40 of the 42, 2026-10-12 16:00
+to 2026-10-13 16:00) were all `Step timed out after 1500ms`, 33 of them between
+03:00 and 05:00 on 10-13. A timed out PATCH may still have landed. Durations
+were pulled per day as raw values and the percentiles computed over the whole
+week, because one 7 day percentile query timed out.
+
+### 5. What `syncSubmissionsFromLead` writes (risk R2)
+
+Read from the Tooling `ApexClass` and `ApexTrigger` bodies.
+
+**`SubmissionService.updateRelatedLeadForSubmission`** (Submission after
+update). On the completion flip (`Completed_Submission_SO__c` changing to Yes,
+with a Lead) it updates the Lead with `Completed_Submission__c`,
+`ActiveCompletedSubmission__c`, the Engine UUIDs and offer date (or nulls),
+**`Submission_Object_ID__c` = this Submission**, `Submission_Timestamp__c`,
+`Prospect__c`, and `populateLeadBySub`: identity and contact fields, debt and
+loan fields, ADV, BES, LEG, XBC, RLA, attribution and click ids,
+`Credit_Pull_Result_ES__c`, `PDFlow_1__c` to `PDFlow_8__c`, the external
+exchange fields, `EQXCreditPullStatus__c`, `CreditFreeze__c`,
+`VantageScore__c` (when not null), `InternalDebtRouting__c`, `LeadSaleType__c`,
+`PD_Completed_Timestamp__c`, `AmOneBid__c`, `AmOneClickURL__c`,
+`Minimum_EQX_Unsecured_Pmt__c` and others; then with a Prospect it clones files
+and starts `TradeParserBatch`. Without a completion flip it updates only the
+Lead's `CreditFreeze__c`. **It writes none of the four inquiry count fields.**
+
+**`LeadTriggerHandler.syncSubmissionsFromLead`** (Lead after update) collects,
+for the Lead's active Submission (`Lead.Submission_Object_ID__c`), the fields
+that changed in this Lead update from these lists in `LeadConstants`: lead
+score (9 fields), call booking (15), credit (`Credit_Status__c`,
+`Estimated_Credit_Score__c`, `Verified_Debt_Range__c`), general
+(`EngineDebt__c`, `ExternalPartnerName__c`), sales activity tracker (33) and
+calculator (about 80, **including `Num_of_Inquiries_12M__c`,
+`Num_of_Inquiries_24M__c` and `Num_of_Inquires_2Y__c`**, not
+`InquiriesAmount__c`); the 27 Regal fields when any changed; the debt
+resolution fields (26) to the enrollment Submission when the enrollment or
+first draft date changed; and `Active_Submission_Date__c` and
+`ReplacementDate__c` when the active Submission changed. It writes them in a
+`LeadSubmissionSyncQueueable`, so after commit and asynchronously, not in the
+caller's transaction.
+
+**Where the active Submission points before the flip.** `populateSubmissionLead`
+(Submission after insert) already sets `Lead.Submission_Object_ID__c` to the new
+Submission unless the Lead has an active submission (`Active_Submission__c =
+Yes`), in which case it stays on the older one until the completion flip moves
+it.
+
+**What changes if the Apex call runs after the completion flip.**
+
+- No field is written by both: the flip's Lead update and the Apex's Lead update
+  touch disjoint fields, so the final Lead values are the same in either order.
+- The three inquiry counts are synced to whichever Submission the Lead points
+  at when the Apex runs. Today that is this Submission in most cases, but the
+  older active one for a returning Lead with an active submission. After the
+  move it is always this Submission. Measured on the 150 non-empty posts above:
+  142 Leads now point at the posting Submission, 8 at another; 130 of the 150
+  Submissions carry `Num_of_Inquiries_12M__c` and 124 match their Lead. The
+  move corrects the minority case rather than breaking the common one. (The
+  remaining nulls are probably counts unchanged since the Lead's earlier pull,
+  which the sync skips; that part is inferred, not measured.)
+- Nothing else keyed on these four fields was found: they are not lead score
+  inputs (`LEAD_SCORE_INPUT_FIELDS`), and none of the Lead flow entry
+  conditions recorded under question 5 names them.
+- New, unmeasured: the Apex call's Lead update will now run while the flip's own
+  async work (`TradeParserBatch`, the sync queueable) may be updating the same
+  Lead, so a row lock error (`UNABLE_TO_LOCK_ROW`) becomes possible where today
+  the Apex call finishes first. The class answers any exception with a 500, so
+  the canary should count Apex 500s by message.
+
+The canary in #1680 should therefore check, per Submission, that the three
+inquiry counts equal the Lead's (and expect them on this Submission, not the
+older one).
 
 ## Open questions (consolidated)
 
