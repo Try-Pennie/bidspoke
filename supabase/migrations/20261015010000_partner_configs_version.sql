@@ -58,8 +58,8 @@ $$;
 COMMENT ON FUNCTION public.partner_configs_unversioned_columns() IS
   'The partner_configs columns that are bookkeeping about a change rather than the change (#2132): neither audited nor versioned. Every other column is both, by default.';
 REVOKE ALL ON FUNCTION public.partner_configs_unversioned_columns() FROM PUBLIC, anon, authenticated;
--- The audit and version triggers call it as whoever wrote the row, and the
--- Worker writes as service_role.
+-- The audit and version triggers are SECURITY DEFINER, so they call it as its
+-- owner whoever wrote the row; service_role may read it directly.
 GRANT EXECUTE ON FUNCTION public.partner_configs_unversioned_columns() TO service_role;
 
 -- ── The version trigger ──────────────────────────────────────────────────────
@@ -67,6 +67,7 @@ GRANT EXECUTE ON FUNCTION public.partner_configs_unversioned_columns() TO servic
 CREATE OR REPLACE FUNCTION public.partner_configs_bump_version()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path TO 'public', 'pg_temp'
 AS $$
 DECLARE
@@ -95,6 +96,8 @@ CREATE TRIGGER partner_configs_bump_version
 CREATE OR REPLACE FUNCTION public.partner_configs_audit()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public', 'pg_temp'
 AS $$
 DECLARE
   v_excluded text[] := public.partner_configs_unversioned_columns();

@@ -594,6 +594,11 @@ export default function PartnerForm({
     const patch = changedPatch(draftReducer(draftState, { type: 'observe', draft: built }))
     const partnerChanged = Object.keys(patch).length > 0
     if (!partnerChanged && !saveProfileToo) {
+      // What is on screen stores exactly as what was loaded (a blank floor row,
+      // say), so it is the clean baseline now, or the page would say Unsaved
+      // changes for ever with nothing a save could write.
+      baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
+      baselineSnapshot.current = snapshot
       setSaveOutcome({ kind: 'done', message: 'Nothing to save.' })
       return
     }

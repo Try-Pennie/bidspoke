@@ -170,6 +170,17 @@ describe('a versioned save of only what changed (#2132)', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(`Partner saved. ${pickupSentence()}`))
   })
 
+  it('an edit that changes nothing stored (a blank floor row) saves nothing and no longer reads as unsaved', async () => {
+    const onSave = vi.fn()
+    render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={onSave} onCancel={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    expect(await screen.findByText('Unsaved changes')).toBeInTheDocument()
+    save()
+    await screen.findByText('Nothing to save.')
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
+  })
+
   it('a save with nothing changed on the partner record writes nothing', async () => {
     const onSave = renderForm()
     save()
