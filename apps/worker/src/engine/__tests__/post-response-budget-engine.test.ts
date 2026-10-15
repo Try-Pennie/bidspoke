@@ -227,6 +227,12 @@ async function run(
     // Runs each step's per attempt deadline and retry backoff on the virtual
     // clock too (#2163), so a timed out step runs the real withTimeout in no time.
     stepClock?: boolean
+    // True once the walk's work after the answer has settled. A step that does
+    // real asynchronous work (WebCrypto, a Response body) can be mid await with no
+    // virtual timer pending, and running the clock to the end then fires the
+    // cut-off first. With this, the clock moves in small steps until the walk is
+    // done, and only then runs out (#2163).
+    walkDone?: () => boolean
   } = {},
 ) {
   const clock = new VirtualClock()
@@ -252,6 +258,12 @@ async function run(
     executionCtx,
   )
   // The response is out at virtual time zero. Let the post-response work run.
+  if (options.walkDone) {
+    while (!options.walkDone()) {
+      if (clock.now() >= CUTOFF) throw new Error('the walk after the answer did not settle before the cut-off')
+      await clock.run(clock.now() + 10)
+    }
+  }
   await clock.run()
   for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
 
@@ -717,8 +729,10 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
         slack_channel: null,
         lane: 'money',
       })
+      let stepCtx: { noteSalesforceRequest?: unknown } | null = null
       vi.mocked(executeNode).mockImplementation(async (n, ctx, env, _db, signal) => {
         if (n.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+        stepCtx = ctx
         return executeSalesforceNode(n, ctx, env as Env, signal)
       })
       vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -731,6 +745,9 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
         }
         return aborted(init?.signal)
       }))
+      // The watch hands the node its request hook for the whole retry loop and
+      // takes it back once the step has settled, so the walk is past the step.
+      return { stepClock: true, walkDone: () => stepCtx !== null && stepCtx.noteSalesforceRequest === undefined }
     }
 
     afterEach(() => vi.unstubAllGlobals())
@@ -739,8 +756,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     const stepRow = (db: { steps: Record<string, unknown>[] }) => db.steps.find((s) => s.step_namespace === 'patch_prospect_reject')
 
     it('logs the request it was sending as the failed step\'s input', async () => {
-      salesforce('never answers')
-      const { db } = await run(() => 'up', SF_ENV, { stepClock: true })
+      const { db } = await run(() => 'up', SF_ENV, salesforce('never answers'))
       const row = stepRow(db)
       expect(row?.status).toBe('failed')
       expect(String(row?.error_message)).toMatch(/Step timed out after 1500ms/)
@@ -749,8 +765,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     })
 
     it('is not dead-lettered as uncapturable, stores no replay row, and is announced as held until the record expires', async () => {
-      salesforce('never answers')
-      const { db, idempotency } = await run(() => 'up', SF_ENV, { stepClock: true })
+      const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers'))
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
       const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
@@ -771,24 +786,23 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     })
 
     it('still sends a refused update to the replay store, already refused', async () => {
-      salesforce('refuses')
-      const { db } = await run(() => 'up', SF_ENV, { stepClock: true })
+      const { db } = await run(() => 'up', SF_ENV, salesforce('refuses'))
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters' && c.op === 'insert')).toHaveLength(1)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
     })
 
     it('still takes the uncapturable path when it timed out before it had a request to send', async () => {
-      salesforce('token never answers')
-      const { db } = await run(() => 'up', SF_ENV, { stepClock: true })
+      const { db } = await run(() => 'up', SF_ENV, salesforce('token never answers'))
+      // The step row must be there, or a missing input proves nothing.
+      expect(stepRow(db)?.status).toBe('failed')
       expect(stepRow(db)?.input ?? null).toBeNull()
       expect(deadLetterLabels()).toContain(WRITEBACK_UNCAPTURABLE_LABEL)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
     })
 
     it('leaves a held Submission update for its read-back, announced nowhere and stored nowhere', async () => {
-      salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' }))
-      const { db, idempotency } = await run(() => 'up', SF_ENV, { stepClock: true })
+      const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' })))
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
