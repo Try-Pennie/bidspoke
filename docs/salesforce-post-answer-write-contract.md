@@ -642,7 +642,7 @@ fields these writes set.
 
 ### Does anything key on the writing user? Nothing readable does; one managed trigger cannot be read.
 
-- **Apex.** All 202 active unmanaged classes and the 7 active triggers were
+- **Apex.** All 202 active unmanaged classes and the 6 active unmanaged triggers (`LeadTrigger`, `LeadLinkTokenTrigger`, `ProspectTrigger`, `ProspectLinkTokenTrigger`, `SubmissionTrigger`, `SubmissionLinkTokenTrigger`; the managed `regal_voice.LeadTrigger` is the one active trigger on these objects that could not be read) were
   scanned for `UserInfo.`, `LastModifiedById`, `CreatedById`, `$User`,
   `Profile.Name`, `Username`, permission checks and hard coded user ids. The
   only hits are off every write path: `TradeController.isSalesUser` (an
