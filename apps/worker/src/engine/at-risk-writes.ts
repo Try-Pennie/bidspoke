@@ -207,7 +207,7 @@ export async function runWatched<T>(
   }
 }
 
-/** What a failure carries when the request it lost came from the watch (#2163). */
+/** What a failure carries when the request it lost came from the watch (#2163), or when it is a held credit inquiry post (#2172). */
 interface NotedFailure {
   resolvedInput?: ResolvedStepInput
   /** ISO: when the held record of this request expires. Absent when none is held. */
@@ -223,11 +223,16 @@ interface NotedFailure {
  *
  * Read from the watch, which is the request's one home: nothing keeps a second
  * copy beside the record. A failure that already carries its executor's request
- * (a Salesforce answer, which says more: the url and the template) keeps it and
- * is marked held by nothing here, so a refusal still reaches the replay store.
+ * (a Salesforce answer, which says more: the url and the template) keeps it.
+ * For an update it is then marked held by nothing here, so a refusal still
+ * reaches the replay store. A credit inquiry post (#2172) is the exception: the
+ * replay store takes updates only, so when the watch kept its record, the
+ * failure is marked held whoever built its request (a 500 included), and the
+ * capture leaves it to the read-back rather than calling it uncapturable.
  *
  * Every watched step settles through runWatched, so this is the one place a
- * timed out update gets its request back, for every node and every workflow.
+ * timed out update or credit inquiry post gets its request back, for every node
+ * and every workflow.
  */
 function carryNotedRequest(err: unknown, noted: SalesforceRequestNote | null, held: HeldWrite | null): unknown {
   if (!noted || !err || typeof err !== 'object') return err
@@ -255,8 +260,9 @@ function carryNotedRequest(err: unknown, noted: SalesforceRequestNote | null, he
 }
 
 /**
- * When the at-risk record of a failed write expires, if this failure's request
- * came from the watch and the watch kept the record; null otherwise.
+ * When the at-risk record of a failed write expires, if the watch kept the
+ * record and either this failure's request came from the watch or it is a
+ * credit inquiry post (#2172); null otherwise.
  */
 export function heldUntilOf(err: unknown): string | null {
   if (!err || typeof err !== 'object') return null
