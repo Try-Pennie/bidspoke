@@ -701,7 +701,7 @@ body.doc { margin: 0; background: #f4f1ea; color: #1d212f; font-family: Mori, -a
 <li><b>Live merge of another person&#x27;s save</b> While you edit, a save by someone else updates every field you have not touched, live. Today a save made by someone else first is a conflict for the whole form.</li>
 <li><b>Field level merge</b> Only a field you both changed asks a question, grouped by section, with Keep yours or Use theirs for each. Saving keeps your choices and adds the rest of theirs. Today &quot;Take theirs&quot; discards every edit you made.</li>
 <li><b>Mark sent without a lead id</b> The partner&#x27;s lead id becomes optional when marking a held click sent. Without it the click is still counted and Salesforce still marks the sale Completed, with no partner lead id. Today the route refuses an empty id.</li>
-<li><b>Bid mode removed</b> The Commit and Ping only setting is removed from the page: no code reads it.</li>
+<li><b>Bid mode removed</b> The Commit and Ping only setting is removed from the page: nothing acts on it (the Partner Bid step copies it into its resolved input and the money gate records it in its snapshot; neither changes what is sent).</li>
 <li><b>Display time zone, stored per buyer</b> A buyer profile gains a time zone used only to show hours and reset times. Hours stay stored and judged in Eastern; the click count resets at midnight Pacific, shown as 3:00 AM Eastern.</li>
 <li><b>Default error rules shown as fixed rows</b> The built in retry and never retry answers are listed as rows marked Default that cannot be edited; your own rules are checked first, and each list carries its own Alert switch.</li>
 <li><b>A partner opens where its problem is</b> A partner with an issue (a missing credential, a refused field) opens on the tab holding it, with red dots on the list row and the tab.</li>
@@ -956,14 +956,14 @@ function states(on, label) {
 // The two partners this round can show. Real values, read 2026-10-14.
 var CUR = "tripoint";
 var P = {
-  liberty1: { name: "Liberty1", slug: "liberty1", profile: true, sold: "Click", code: "4", inBidGroup: false, endpoint: "", secret: "", bidPath: "", mode: "Commit", extract: null, click: "https://trypennie.com/portal/liberty/{prospect_id}", modified: "Modified Oct 14, 2026 by Brian Nelms",
+  liberty1: { name: "Liberty1", slug: "liberty1", profile: true, sold: "Click", code: "4", inBidGroup: false, endpoint: "", secret: "", bidPath: "", extract: null, click: "https://trypennie.com/portal/liberty/{prospect_id}", modified: "Modified Oct 14, 2026 by Brian Nelms",
     note: "No workflow's Bid Group names Liberty1, so nothing on this tab is used. Main Flow's Bid Group names AmOne and Tripoint." },
-  amone: { name: "AmOne", slug: "amone", profile: false, inBidGroup: true, endpoint: "https://am-one-proxy.trypennie.dev/leads/ping", secret: "AMONE_PROXY_SECRET", bidPath: "data.bid", mode: "Ping only", extract: ["clickUrl", "data.ClickThrough_url"], click: "", modified: "Modified Jun 8, 2026 by Brian Nelms",
+  amone: { name: "AmOne", slug: "amone", profile: false, inBidGroup: true, endpoint: "https://am-one-proxy.trypennie.dev/leads/ping", secret: "AMONE_PROXY_SECRET", bidPath: "data.bid", extract: ["clickUrl", "data.ClickThrough_url"], click: "", modified: "Modified Jun 8, 2026 by Brian Nelms",
     note: "Main Flow's Bid Group offers leads to AmOne, alongside Tripoint." },
-  lendswift: { name: "LendSwift", slug: "lendswift", profile: false, inBidGroup: true, endpoint: "", secret: "", bidPath: "", mode: "Commit", extract: null, click: "", minBid: "$3.08", modified: "Modified Jun 9, 2026 by Dan Hankins-Wright",
+  lendswift: { name: "LendSwift", slug: "lendswift", profile: false, inBidGroup: true, endpoint: "", secret: "", bidPath: "", extract: null, click: "", minBid: "$3.08", modified: "Modified Jun 9, 2026 by Dan Hankins-Wright",
     note: "No workflow's Bid Group names LendSwift, so nothing on this tab is used. It shows because a minimum bid is set." },
-  sofi: { name: "Sofi", slug: "sofi", source: true, profile: false, inBidGroup: false, endpoint: "", secret: "", bidPath: "", mode: "Commit", extract: null, click: "", modified: "Modified Apr 21, 2026 by Dan Hankins-Wright", note: "" },
-  tripoint: { name: "Tripoint", slug: "tripoint", profile: true, sold: "Offer", inBidGroup: true, endpoint: "https://tripoint-proxy.trypennie.dev/leads/create", secret: "TRIPOINT_PROXY_SECRET", bidPath: "", mode: "Commit", extract: null, click: "https://trypennie.com/portal/tpl", code: "2", modified: "Modified Oct 13, 2026 by Brian Nelms",
+  sofi: { name: "Sofi", slug: "sofi", source: true, profile: false, inBidGroup: false, endpoint: "", secret: "", bidPath: "", extract: null, click: "", modified: "Modified Apr 21, 2026 by Dan Hankins-Wright", note: "" },
+  tripoint: { name: "Tripoint", slug: "tripoint", profile: true, sold: "Offer", inBidGroup: true, endpoint: "https://tripoint-proxy.trypennie.dev/leads/create", secret: "TRIPOINT_PROXY_SECRET", bidPath: "", extract: null, click: "https://trypennie.com/portal/tpl", code: "2", modified: "Modified Oct 13, 2026 by Brian Nelms",
     note: "Main Flow's Bid Group offers leads to Tripoint, alongside AmOne." }
 };
 function cur() { return P[CUR]; }
@@ -1295,7 +1295,6 @@ var LIMITS = { title: "Limits", body: function () {
     h("p", "fld-h", ["The cap counts every bid a Bid Group asks this partner for in a day. A bid under the minimum is treated as a decline."])];
 } };
 var DEDUP_WHY = "Before each bid, Bidspoke asks this address whether the lead was already sold to the partner, and skips the bid if it was.";
-var MODE_WHY = { "Commit": "The call creates a lead with the partner.", "Ping only": "The call asks for a bid quote and creates nothing." };
 function requestResponseSections() {
   var ex = cur().extract;
   if (RRSTYLE === "today") return [{ title: "Request and response", body: function () { return [
@@ -1426,7 +1425,7 @@ var GROUPS = [
     ]; } },
     { title: "Blackout dates", body: function () { return blackoutEditor(); } }
   ] },
-  { id: "bidding", title: "Bidding", summary: ["Partner API", "No endpoint set", "Commit"], sections: [
+  { id: "bidding", title: "Bidding", summary: ["Partner API", "No endpoint set"], sections: [
     { title: "Bid resolution", body: function () { return [
       field("Resolver", seg(["Partner API", "Matrix lookup", "Formula"], "Partner API")),
       field("API endpoint", input(cur().endpoint, { placeholder: "https://api.partner.com/bid", mono: true })),
@@ -1440,7 +1439,6 @@ var GROUPS = [
     ]; } },
     { title: "Request and response", body: function () { return [
       sub("Outbound field mapping", [none("Payload sent unchanged."), addBtn("Add field")]),
-      field("Bid mode", seg(["Commit", "Ping only"], cur().mode)),
       sub("Extra extraction", [cur().extract ? row(field("Name", input(cur().extract[0], { mono: true })), field("Path in the response", input(cur().extract[1], { mono: true }))) : none("Nothing extracted."), addBtn("Add extraction")])
     ]; } },
     { title: "Limits", body: function () { return [
