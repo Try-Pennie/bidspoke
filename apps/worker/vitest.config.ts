@@ -34,6 +34,8 @@ export default defineConfig({
     // the two transcripts they need.
     exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts', 'money-gate/**/*.workers.test.ts', 'money-gate/**/*.gate.test.ts'],
     environment: 'node',
+    // The cron guard recorder's backoff takes no real time in any file (#2166).
+    setupFiles: ['src/test-setup/guard-recorder.ts'],
     // Worker threads rather than forked child processes (#973). Measured on this
     // suite: 4.14 to 5.45s on forks, 3.16 to 3.36s on threads, over three runs
     // each, with identical results (236 files, 3338 tests). A thread starts far

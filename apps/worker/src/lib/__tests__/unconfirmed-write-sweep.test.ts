@@ -22,9 +22,10 @@ vi.mock('../slack', async (importOriginal) => ({
   sendOutcomeDeadLetterAlert: vi.fn(),
   sendUnconfirmedWritesAlert: vi.fn(),
   sendSlowdownSummaryAlert: vi.fn(),
+  sendRepeatedSlowdownAlert: vi.fn(),
 }))
 
-import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert, sendSlowdownSummaryAlert } from '../slack'
+import { getSlackConnection, sendOutcomeDeadLetterAlert, sendUnconfirmedWritesAlert, sendSlowdownSummaryAlert, sendRepeatedSlowdownAlert } from '../slack'
 import {
   runUnconfirmedWriteSweep,
   READ_BACK_MIN_AGE_MS,
@@ -32,6 +33,9 @@ import {
   SWEEP_LIMIT,
   READ_PHASE_BUDGET_MS,
   SUMMARY_QUIET_MS,
+  ALL_SAVED_REPEAT_COUNT,
+  ALL_SAVED_REPEAT_WINDOW_MS,
+  ALL_SAVED_KEY_PREFIX,
   boundedSlackFor,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
@@ -179,6 +183,7 @@ beforeEach(() => {
   vi.mocked(sendOutcomeDeadLetterAlert).mockResolvedValue(true)
   vi.mocked(sendUnconfirmedWritesAlert).mockResolvedValue(true)
   vi.mocked(sendSlowdownSummaryAlert).mockResolvedValue(true)
+  vi.mocked(sendRepeatedSlowdownAlert).mockResolvedValue(true)
 })
 
 describe('an entry younger than the read back age', () => {
@@ -513,25 +518,38 @@ describe('the sweep is bounded and safe to run twice', () => {
     expect(remaining(kv)).toEqual([])
   })
 
-  it('records the tick in job_runs only when it had entries to look at', async () => {
+  it('records a tick in job_runs only when it had entries to look at or settled a slowdown', async () => {
     const kv = makeKv()
     const db = makeDb()
     const recordRun = vi.fn(async (_startedAtMs: number, _ending: JobRunEnding) => {})
+    // Nothing listed and nothing to settle: no row.
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).not.toHaveBeenCalled()
 
+    // An entry to read back: a row.
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).toHaveBeenCalledTimes(1)
     expect(recordRun.mock.calls[0][1]).toMatchObject({ outcome: 'resolved', summary: expect.objectContaining({ landed: 1, lost: 0 }) })
+
+    // No entries left, but this tick settles the slowdown: a row, carrying it (#2165).
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { recordRun }))
+    expect(recordRun).toHaveBeenCalledTimes(2)
+    expect(recordRun.mock.calls[1][1].summary).toMatchObject({ listed: 0, slowdowns: [expect.objectContaining({ all_saved: true })] })
+
+    // Nothing listed and the slowdown already settled: no row again.
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET + 60_000, { recordRun }))
+    expect(recordRun).toHaveBeenCalledTimes(2)
   })
 })
 
 /**
  * #1881: one database stall produced about 35 Slack messages within a minute.
  * Once the sweep has resolved every entry a slowdown left, it posts ONE summary:
- * how many runs, which workflows, and whether every record landed.
+ * how many runs, which workflows, and which records did not land. A slowdown
+ * that saved every record posts nothing (#2165), so the cases here each leave a
+ * record lost, missing or unconfirmed.
  */
 describe('one summary per slowdown (#1881)', () => {
   const RUN_B = { workflow_id: 'wf-2', workflow_name: 'Lead Economy', execution_id: 'ex-2' }
@@ -549,8 +567,8 @@ describe('one summary per slowdown (#1881)', () => {
     const kv = makeKv()
     const db = makeDb()
     const claims = makeClaims()
+    // s-2 is never written, so the slowdown has a loss and its summary posts.
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
-    db.tables.lead_sightings.push({ id: 's-2', execution_started_at_utc: STARTED, outcome_state: 'in_flight' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0)
     await seed(kv, 'lead_sightings.insert', SIGHT_B, T0 + 50_000, 'org-1', RUN_B)
 
@@ -563,7 +581,7 @@ describe('one summary per slowdown (#1881)', () => {
 
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(sendSlowdownSummaryAlert).mock.calls[0]
-    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 2, lost: 0, steps_missing: 0 })
+    expect(payload).toMatchObject({ runs: 2, records: 2, landed: 1, lost: 1, steps_missing: 0 })
     expect(payload.workflows.map((w) => w.name).sort()).toEqual(['Engine Bidding Workflow', 'Lead Economy'])
     expect(payload.from).toBe(new Date(T0).toISOString())
     expect(payload.to).toBe(new Date(T0 + 50_000).toISOString())
@@ -572,7 +590,7 @@ describe('one summary per slowdown (#1881)', () => {
   it('waits until the slowdown has been quiet past a KV list lag before summarising', async () => {
     const kv = makeKv()
     const db = makeDb()
-    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
+    // Never written, so the summary has a loss to report.
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
@@ -584,7 +602,6 @@ describe('one summary per slowdown (#1881)', () => {
     const kv = makeKv()
     const db = makeDb()
     const claims = makeClaims()
-    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     // Cloudflare delivered each minute's tick twice on 2026-10-08, 24 to 36 s apart.
     for (const at of [OLD_ENOUGH, OLD_ENOUGH + 30_000, QUIET, QUIET + 30_000, QUIET + 60_000, QUIET + 90_000]) {
@@ -620,7 +637,6 @@ describe('one summary per slowdown (#1881)', () => {
     const kv = makeKv()
     const db = makeDb()
     const claims = makeClaims()
-    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await Promise.all([
       runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims })),
@@ -633,13 +649,12 @@ describe('one summary per slowdown (#1881)', () => {
     const kv = makeKv()
     const db = makeDb()
     const claims = makeClaims()
-    db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     vi.mocked(sendSlowdownSummaryAlert).mockResolvedValueOnce(false)
     await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { claims }))
     await runUnconfirmedWriteSweep(deps(kv, db, QUIET + 60_000, { claims }))
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[1][1]).toMatchObject({ landed: 1 })
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[1][1]).toMatchObject({ lost: 1 })
   })
 
   it('reads step rows back by count, and a missing one is told in the summary, not dead-lettered', async () => {
@@ -669,6 +684,226 @@ describe('one summary per slowdown (#1881)', () => {
     await seed(kv, 'execution_steps', STEPS)
     const s = await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH))
     expect(s.landed).toBe(1)
+  })
+})
+
+/**
+ * #2165: at 9:31 AM ET on 2026-10-15 one run's records all landed and the
+ * channel still got "Database slowdown, every record saved", with nothing to do.
+ * A slowdown that saved everything now posts nothing and is recorded in job_runs,
+ * and only a repeat of them pages, once, naming each.
+ */
+describe('a slowdown that saved every record (#2165)', () => {
+  const HOUR = 60 * 60 * 1000
+  const LANDED_ROW = { id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' }
+
+  /** Records the tick summaries the sweep would write to job_runs. */
+  function recorder() {
+    const endings: JobRunEnding[] = []
+    const recordRun = vi.fn(async (_startedAtMs: number, ending: JobRunEnding) => { endings.push(ending) })
+    const slowdowns = () => endings.flatMap((e) => (e.summary?.slowdowns as unknown[] | undefined) ?? [])
+    return { recordRun, slowdowns }
+  }
+
+  /** One slowdown whose one record landed, read back and settled in one tick. */
+  async function allSavedSlowdown(kv: ReturnType<typeof makeKv>, db: ReturnType<typeof makeDb>, atMs: number, extra: Partial<UnconfirmedSweepDeps> = {}, n = 1) {
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, atMs, 'org-1', { ...RUN, execution_id: `ex-at-${atMs}`, workflow_name: n % 2 ? 'RML LendSwift' : 'Engine Bidding Workflow' })
+    return runUnconfirmedWriteSweep(deps(kv, db, atMs + SUMMARY_QUIET_MS, extra))
+  }
+
+  it('one run whose records all landed posts nothing, and is recorded where it can be counted', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const { recordRun, slowdowns } = recorder()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, T0, 'org-1', { ...RUN, workflow_name: 'RML LendSwift' })
+    const s = await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { recordRun, claims: makeClaims() }))
+
+    expect(s.landed).toBe(1)
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+    expect(slowdowns()).toEqual([
+      {
+        org_id: 'org-1',
+        from: new Date(T0).toISOString(),
+        to: new Date(T0).toISOString(),
+        runs: 1,
+        workflows: [{ name: 'RML LendSwift', runs: 1 }],
+        records: 1,
+        all_saved: true,
+      },
+    ])
+  })
+
+  it('is recorded when the tick that settles it had nothing left to read', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const { recordRun, slowdowns } = recorder()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    // Read back while still too recent to summarise, then settled by an empty tick.
+    await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
+    expect(slowdowns()).toEqual([])
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { recordRun }))
+    expect(slowdowns()).toHaveLength(1)
+    expect(recordRun).toHaveBeenCalledTimes(2)
+  })
+
+  it('one record lost still posts the summary, and is recorded as not all saved', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const { recordRun, slowdowns } = recorder()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { recordRun }))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ lost: 1 })
+    expect(slowdowns()).toMatchObject([{ all_saved: false }])
+  })
+
+  it('the third all saved slowdown in a day posts the repeat alert once, naming each', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const starts = [T0, T0 + 2 * HOUR, T0 + 5 * HOUR]
+    expect(starts).toHaveLength(ALL_SAVED_REPEAT_COUNT)
+    for (const [i, at] of starts.entries()) {
+      if (i === starts.length - 1) expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+      await allSavedSlowdown(kv, db, at, { claims }, i)
+    }
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    const [, payload] = vi.mocked(sendRepeatedSlowdownAlert).mock.calls[0]
+    expect(payload.window_hours).toBe(ALL_SAVED_REPEAT_WINDOW_MS / HOUR)
+    expect(payload.slowdowns).toEqual(
+      starts.map((at, i) => ({
+        from: new Date(at).toISOString(),
+        to: new Date(at).toISOString(),
+        runs: 1,
+        workflows: [{ name: i % 2 ? 'RML LendSwift' : 'Engine Bidding Workflow', runs: 1 }],
+      })),
+    )
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
+
+    // The next one in the same day does not post again; it takes a fresh set.
+    await allSavedSlowdown(kv, db, T0 + 6 * HOUR, { claims })
+    await allSavedSlowdown(kv, db, T0 + 7 * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    await allSavedSlowdown(kv, db, T0 + 8 * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendRepeatedSlowdownAlert).mock.calls[1][1].slowdowns.map((s) => s.from)).toEqual(
+      [6, 7, 8].map((h) => new Date(T0 + h * HOUR).toISOString()),
+    )
+  })
+
+  // The window rolls over the whole set: the oldest slowdown still counted must
+  // have ended within ALL_SAVED_REPEAT_WINDOW_MS of the tick that settles the
+  // newest. Pinned from both sides, so neither a wider nor a narrower bound passes.
+  it('three all saved slowdowns each more than a day apart never alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS + HOUR
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+
+  it('three whose neighbours are under a day apart but whose first and third are more than a day apart never alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    // 13 hours between neighbours, 26 hours from the first to the third.
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS / 2 + HOUR
+    expect(gap).toBeLessThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    expect(2 * gap).toBeGreaterThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+
+  it('three whose first and third fall just inside a day do alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    // The third settles SUMMARY_QUIET_MS after it starts; the set still spans under a day then.
+    const gap = ALL_SAVED_REPEAT_WINDOW_MS / 2 - 5 * 60_000
+    expect(2 * gap + SUMMARY_QUIET_MS).toBeLessThan(ALL_SAVED_REPEAT_WINDOW_MS)
+    for (let i = 0; i < ALL_SAVED_REPEAT_COUNT; i++) await allSavedSlowdown(kv, db, T0 + i * gap)
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts each slowdown once when two sweeps settle it at the same moment', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    for (const at of [T0, T0 + HOUR]) {
+      await seed(kv, 'lead_sightings.insert', SIGHT_IN, at)
+      await Promise.all([
+        runUnconfirmedWriteSweep(deps(kv, db, at + SUMMARY_QUIET_MS, { claims })),
+        runUnconfirmedWriteSweep(deps(kv, db, at + SUMMARY_QUIET_MS, { claims })),
+      ])
+    }
+    // Two slowdowns, each settled twice: two, not four.
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+
+  it('two sweeps finishing the slowdown that makes the repeat post it once', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    await allSavedSlowdown(kv, db, T0, { claims })
+    await allSavedSlowdown(kv, db, T0 + HOUR, { claims })
+    const third = T0 + 2 * HOUR
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN, third)
+    await Promise.all([
+      runUnconfirmedWriteSweep(deps(kv, db, third + SUMMARY_QUIET_MS, { claims })),
+      runUnconfirmedWriteSweep(deps(kv, db, third + SUMMARY_QUIET_MS, { claims })),
+    ])
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('tries a repeat alert that did not deliver again next tick, without counting its slowdown twice', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    vi.mocked(sendRepeatedSlowdownAlert).mockResolvedValueOnce(false)
+    await allSavedSlowdown(kv, db, T0, { claims })
+    await allSavedSlowdown(kv, db, T0 + HOUR, { claims })
+    await allSavedSlowdown(kv, db, T0 + 2 * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + 2 * HOUR + SUMMARY_QUIET_MS + 60_000, { claims }))
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendRepeatedSlowdownAlert).mock.calls[1][1].slowdowns).toHaveLength(3)
+  })
+
+  it('does not name the same set again when the list could not be cleared after its alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const del = kv.delete
+    kv.delete = vi.fn(async (k: string) => {
+      if (k.startsWith(ALL_SAVED_KEY_PREFIX)) throw new Error('kv down')
+      await del(k)
+    })
+    for (const h of [0, 1, 2]) await allSavedSlowdown(kv, db, T0 + h * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    await allSavedSlowdown(kv, db, T0 + 3 * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('a slowdown with any loss is not counted toward a repeat', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    await allSavedSlowdown(kv, db, T0)
+    await allSavedSlowdown(kv, db, T0 + HOUR)
+    // A record that never landed: a different sighting id with no row.
+    await seed(kv, 'lead_sightings.insert', { kind: 'sighting_present', sighting_id: 's-gone', execution_started_at_utc: STARTED }, T0 + 2 * HOUR)
+    await runUnconfirmedWriteSweep(deps(kv, db, T0 + 2 * HOUR + SUMMARY_QUIET_MS))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
   })
 })
 

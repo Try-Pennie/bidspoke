@@ -52,6 +52,8 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   job_runs purge_run_log field_presence_daily
   # The incident record (#2100): alert history, not needed to bid
   alert_incidents
+  # The cron guard's fail-open record (#2166): seven days of monitor history
+  cron_guard_fail_opens
   # The field presence rollup watermark (#1150): one timestamp. After a restore
   # the table is empty, the 15 minute incremental pass refuses loudly, and the
   # next reconcile (the hourly recent job, within the hour) upserts the row and
