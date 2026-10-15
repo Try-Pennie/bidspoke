@@ -146,8 +146,8 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance, build_response_body and tripoint_ping apart: the canvas holds the other two, so any difference is a drift or a missing node', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'build_response_body' && k.namespace !== 'tripoint_ping')) {
+  it('carry no canvas baseline and no new node allowance, tripoint_ping apart: the canvas holds the other three, the #2092 save of build_response_body included, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'tripoint_ping')) {
       expect(kept.newNodeSince, kept.file).toBeUndefined()
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
@@ -166,13 +166,10 @@ describe('the kept scripts the check compares', () => {
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
   })
 
-  it('build_response_body awaits its #2092 paste: the canvas script it was derived from reads as awaiting, not drift', async () => {
+  it('build_response_body pages a canvas put back to its #2089 script as a drift, now that the #2092 save landed (2026-10-15 10:16 AM ET)', async () => {
     const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
-    expect(kept.newNodeSince).toBeUndefined()
-    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(BEFORE_2092.build_response_body))
-    expect(kept.baselineReadOn).toBe('2026-10-15')
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
-    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.build_response_body), 'Engine Bidding Workflow'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.build_response_body), 'Engine Bidding Workflow'))[0].state).toBe('drift')
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
   })
 
@@ -462,7 +459,7 @@ describe('endingOf', () => {
 describe('Lead Economy (#2089)', () => {
   const leadEconomy = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'lead-economy')
 
-  it('is watched on its live workflow with return_response, the file on disk, awaiting its #2092 paste', async () => {
+  it('is watched on its live workflow with return_response, the file on disk, with no baseline now its #2092 save has landed', async () => {
     expect(leadEconomy?.workflowId).toBe('89b1a6af-7e0f-43de-bc66-1e888184551f')
     expect(leadEconomy?.configSources).toEqual([])
     expect(leadEconomy?.scripts.map((k) => k.namespace)).toEqual(['return_response'])
@@ -470,10 +467,10 @@ describe('Lead Economy (#2089)', () => {
     expect(kept.script).toBe(LEAD_ECONOMY_RETURN_RESPONSE_RAW as string)
     expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
     expect(kept.newNodeSince).toBeUndefined()
-    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(BEFORE_2092.lead_economy_return_response))
-    expect(kept.baselineReadOn).toBe('2026-10-15')
+    expect(kept.canvasBaselineSha256).toBeNull()
+    expect(kept.baselineReadOn).toBeNull()
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'return_response', config: { script } }] })
-    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.lead_economy_return_response), 'Lead Economy'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(BEFORE_2092.lead_economy_return_response), 'Lead Economy'))[0].state).toBe('drift')
     // Put back to the script before #2089, every offer link goes out unsigned, so it pages.
     expect((await judgeKeptScripts([kept], definition(BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE), 'Lead Economy'))[0].state).toBe('drift')
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Lead Economy'))[0].state).toBe('agree')
@@ -508,7 +505,7 @@ describe('the RML bidding flows (#2092)', () => {
   for (const flow of RML) {
     const watched = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === flow.folder)
 
-    it(`${flow.name} is watched on its live workflow with build_response, the file on disk, awaiting its paste`, async () => {
+    it(`${flow.name} is watched on its live workflow with build_response, the file on disk, with no baseline now its save has landed`, async () => {
       expect(watched?.name).toBe(flow.name)
       expect(watched?.workflowId).toBe(flow.id)
       expect(watched?.configSources).toEqual([])
@@ -517,10 +514,11 @@ describe('the RML bidding flows (#2092)', () => {
       expect(kept.script).toBe(flow.onDisk)
       expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
       expect(kept.newNodeSince).toBeUndefined()
-      expect(kept.canvasBaselineSha256).toBe(await sha256Hex(flow.before))
-      expect(kept.baselineReadOn).toBe('2026-10-15')
+      expect(kept.canvasBaselineSha256).toBeNull()
+      expect(kept.baselineReadOn).toBeNull()
       const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response', config: { script } }] })
-      expect((await judgeKeptScripts([kept], definition(flow.before), flow.name))[0].state).toBe('awaiting_paste')
+      // Put back to the unsigned script, every reservemyloan link goes out without its token, so it pages.
+      expect((await judgeKeptScripts([kept], definition(flow.before), flow.name))[0].state).toBe('drift')
       expect((await judgeKeptScripts([kept], definition(kept.script), flow.name))[0].state).toBe('agree')
       expect((await judgeKeptScripts([kept], definition(flow.before + '\n// edited'), flow.name))[0].state).toBe('drift')
     })
@@ -543,17 +541,18 @@ describe('the RML bidding flows (#2092)', () => {
 describe('the Forms flow (#2092)', () => {
   const forms = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'forms-engine')
 
-  it('is watched on its live workflow with the new sign_submission_link node, awaited as a first paste', async () => {
+  it('is watched on its live workflow with the sign_submission_link node, which pages as missing now its first save has landed', async () => {
     expect(forms?.name).toBe('Forms <> Engine <> Data Store (Loan only)')
     expect(forms?.workflowId).toBe('ff1a9f52-7346-452a-bab7-af9f95d36dda')
     expect(forms?.scripts.map((k) => k.namespace)).toEqual(['sign_submission_link'])
     const kept = forms!.scripts[0]
     expect(kept.script).toBe(SIGN_SUBMISSION_LINK_RAW as string)
     expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
-    expect(kept.newNodeSince).toBe('2026-10-15')
+    expect(kept.newNodeSince).toBeUndefined()
     expect(kept.canvasBaselineSha256).toBeNull()
-    // Before the paste the canvas has no such node: awaited, not missing.
-    expect((await judgeKeptScripts([kept], { nodes: [] }, 'Forms'))[0].state).toBe('awaiting_paste')
+    // Saved 2026-10-15 10:16:59 AM ET: a canvas without the node would send the agent an unsigned link.
+    expect((await judgeKeptScripts([kept], { nodes: [] }, 'Forms'))[0].state).toBe('missing_node')
+    expect((await judgeKeptScripts([kept], { nodes: [{ type: 'code', namespace: 'sign_submission_link', config: { script: kept.script } }] }, 'Forms'))[0].state).toBe('agree')
   })
 })
 

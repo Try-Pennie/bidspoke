@@ -20,6 +20,6 @@ just above it, adds `reservemyloan.com` to `trypennie.com` and `www.trypennie.co
 the RML flows only. reservemyloan.com does not read `?t=` yet (Dan, 2026-10-15), so
 signing cannot break a link.
 
-The file carries the canvas script it was derived from as its drift baseline, so the
-check reads it as awaiting a paste rather than a drift. Clear the baseline once the
-paste reads as agree.
+It was saved to the canvas on 2026-10-15 (between 10:14 and 10:16 AM ET) and the
+hourly check read it as agree, so it carries no drift baseline: a canvas put back to
+the unsigned script pages as a drift.
