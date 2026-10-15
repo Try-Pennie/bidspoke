@@ -343,6 +343,29 @@ describe('runSpike: every control that fails is a problem the exit code carries'
     expect(result.problems.join('\n')).toMatch(/subscriber in workerd .*CHANNEL_ERROR.*socket closed/)
   })
 
+  it('records a Worker subscriber that threw as UNREACHABLE with the error, and still returns the result', async () => {
+    const h = harness(makeWorld())
+    h.deps.workerSubscribe = async () => {
+      throw new SyntaxError('Unexpected token < in JSON at position 0')
+    }
+    const result = await h.run()
+    expect(result.workerSubscriber).toMatchObject({ status: 'UNREACHABLE', receivedAfterMs: null })
+    expect(result.workerSubscriber.detail).toMatch(/Unexpected token/)
+    expect(result.dbSender.verdict).toBe('proved')
+  })
+
+  it('records a join that threw as UNREACHABLE rather than abandoning the run', async () => {
+    const h = harness(makeWorld())
+    const real = h.deps.subscribe
+    h.deps.subscribe = async (label, jwt, topic) => {
+      if (label === 'B on partners:<B>') throw new Error('socket hang up')
+      return real(label, jwt, topic)
+    }
+    const result = await h.run()
+    expect(result.joins.bOnB).toEqual({ status: 'UNREACHABLE', detail: 'socket hang up' })
+    expect(result.problems.join('\n')).toMatch(/B was not admitted to its own topic/)
+  })
+
   it('reports REST broadcasts that were accepted but never arrived', async () => {
     const result = await harness(makeWorld({ undeliveredTopics: ['partners:org-a'] })).run()
     expect(result.problems.join('\n')).toMatch(/REST .*3 of 3 never arrived/)

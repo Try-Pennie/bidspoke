@@ -197,11 +197,20 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
   // platform create its partitions, so a refusal for that reason is waited out
   // and the joins made again, never concluded from (#2131 item 4).
   const beforeConnect = await deps.partitionExists()
+  // A join that throws is recorded as UNREACHABLE with its error, a result
+  // like any other join answer, rather than abandoning the run.
+  const join = async (label: string, jwt: string, topic: string): Promise<Subscription> => {
+    try {
+      return await deps.subscribe(label, jwt, topic)
+    } catch (err) {
+      return { status: 'UNREACHABLE', detail: errorText(err), received: [], close: async () => {} }
+    }
+  }
   const joinAll = async () => ({
-    aOnA: await deps.subscribe('A on partners:<A>', a.jwt, topicA),
-    bOnA: await deps.subscribe('B on partners:<A>', b.jwt, topicA),
-    bOnB: await deps.subscribe('B on partners:<B>', b.jwt, topicB),
-    aOnB: await deps.subscribe('A on partners:<B>', a.jwt, topicB),
+    aOnA: await join('A on partners:<A>', a.jwt, topicA),
+    bOnA: await join('B on partners:<A>', b.jwt, topicA),
+    bOnB: await join('B on partners:<B>', b.jwt, topicB),
+    aOnB: await join('A on partners:<B>', a.jwt, topicB),
   })
   let subs = await joinAll()
   let joinAttempts = 1
@@ -340,10 +349,15 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
 
   // 6. A subscriber in workerd, sent to by whichever sender was proved.
   const sender: 'database' | 'rest' = dbSender.verdict === 'proved' ? 'database' : 'rest'
-  const worker = await deps.workerSubscribe(a.jwt, topicA, async () => {
-    if (sender === 'database') await deps.dbSend(topicA, 'spike-worker', { marker, seq: 'worker' })
-    else await deps.restSend(topicA, 'spike-worker', { marker, seq: 'worker' })
-  })
+  let worker: Awaited<ReturnType<SpikeDeps['workerSubscribe']>>
+  try {
+    worker = await deps.workerSubscribe(a.jwt, topicA, async () => {
+      if (sender === 'database') await deps.dbSend(topicA, 'spike-worker', { marker, seq: 'worker' })
+      else await deps.restSend(topicA, 'spike-worker', { marker, seq: 'worker' })
+    })
+  } catch (err) {
+    worker = { status: 'UNREACHABLE', detail: errorText(err), receivedAfterMs: null }
+  }
   const workerSubscriber = { ...worker, sender }
   if (worker.status !== 'SUBSCRIBED' || worker.receivedAfterMs === null) {
     problems.push(`the subscriber in workerd did not receive (${worker.status}: ${worker.detail ?? 'no detail'}), so decision 2's Worker monitor is not proved`)
