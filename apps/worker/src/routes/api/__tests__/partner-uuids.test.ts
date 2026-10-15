@@ -1,12 +1,16 @@
 /**
  * Partner-UUID routes.
  *
- * #105: create and delete write audit rows with entity_type 'partner_uuid' and
- * the real row id. #2135: both writes go through change_partner_uuid, which sets
+ * #2135: both writes go through change_partner_uuid, which sets
  * bidspoke.actor_* before writing, so the partner_uuid_map triggers that send
  * the partners page notice can tell an editor's change from a hand run SQL one.
  * What the trigger sees is proved in supabase/tests/partner_page_notice.test.sql
  * (case 14); here, that the route sends the actor and keeps to its organization.
+ *
+ * #2141: the audit row (#105) is written by the partner_uuid_map_audit trigger
+ * from that same actor, exactly once (supabase/tests/partner_history_audit.test.sql
+ * case 1), so the route writes none of its own: a route write as well would
+ * record each change twice.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -75,12 +79,11 @@ describe('POST /partner-uuids', () => {
     })
   })
 
-  it('audits create as partner_uuid with the new row id (#105)', async () => {
-    wire({ data: ROW, error: null })
+  it('leaves the audit row to the trigger, so a create is recorded once (#2141)', async () => {
+    const { supabase } = wire({ data: ROW, error: null })
     await request(app, 'POST', '/partner-uuids', { body: { partner_slug: 'tripoint', uuid: 'u-1' } })
-    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
-      expect.anything(), USER_ORG, 'partner_uuid', 'pu-9', 'created', 'user-1', expect.anything()
-    )
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(supabase.calls['audit_log']).toBeUndefined()
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalledWith(USER_ORG, expect.anything())
   })
 
@@ -136,7 +139,9 @@ describe('DELETE /partner-uuids/:id', () => {
       p_org: USER_ORG, p_slug: 'tripoint', p_uuid: 'u-1', p_action: 'remove',
       p_actor: 'user-1', p_actor_email: 'dan@pennie.com', p_actor_name: 'Dan Wright',
     })
-    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), USER_ORG, 'partner_uuid', 'pu-9', 'deleted', 'user-1')
+    // The trigger records the removal, once (#2141).
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(supabase.calls['audit_log']).toBeUndefined()
   })
 
   // #588: a delete of an id that never existed, or another organization's, must

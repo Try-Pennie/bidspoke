@@ -25,6 +25,7 @@
     "@bidspoke/node-types": "workspace:*",
     "@bidspoke/workflow-definition": "workspace:*",
     "@bidspoke/partner-page-live": "workspace:*",
+    "@bidspoke/partner-history": "workspace:*",
     "@radix-ui/react-dialog": "1.1.23",
     "@dagrejs/dagre": "^3.1.1",
     "@dnd-kit/core": "^6.3.1",

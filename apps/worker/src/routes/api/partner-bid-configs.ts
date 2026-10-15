@@ -129,7 +129,9 @@ route.post('/', async (c) => {
     return dbError(c, error)
   }
 
-  await writeAuditLog(supabase, orgId, 'partner_bid_config', data.id, 'created', userId, { slug, name: body.name })
+  // partner_id rides on the row so History (#2141) can still tie it to the
+  // partner after the config is deleted and its id no longer resolves.
+  await writeAuditLog(supabase, orgId, 'partner_bid_config', data.id, 'created', userId, { slug, name: body.name, partner_id: body.partner_id })
   return c.json(data, 201)
 })
 
@@ -187,7 +189,7 @@ route.delete('/:id', async (c) => {
 
   const { data: existing, error: existingErr } = await supabase
     .from('partner_bid_configs')
-    .select('slug, name')
+    .select('slug, name, partner_id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -206,7 +208,7 @@ route.delete('/:id', async (c) => {
 // ── Sync now ──────────────────────────────────────────────────────────────────
 
 route.post('/:id/sync', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
@@ -219,7 +221,8 @@ route.post('/:id/sync', async (c) => {
   if (fetchErr || !existing) return c.json({ error: 'Config not found' }, 404)
 
   try {
-    const result = await syncBidConfig(id, c.env, supabase)
+    // The presser is written to bid_config_history.changed_by (#2141).
+    const result = await syncBidConfig(id, c.env, supabase, userId)
     return c.json(result)
   } catch (err) {
     const message = formatErr(err)

@@ -21,6 +21,7 @@
     "@bidspoke/porting-evidence": "workspace:*",
     "@bidspoke/workflow-definition": "workspace:*",
     "@bidspoke/partner-page-live": "workspace:*",
+    "@bidspoke/partner-history": "workspace:*",
     "@supabase/supabase-js": "^2.117.3",
     "hono": "^4.13.13"
   },
