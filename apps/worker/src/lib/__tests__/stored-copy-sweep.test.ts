@@ -383,6 +383,18 @@ describe('sweepStoredCopies: its deadline (#2058)', () => {
     expect(r.failed).toEqual([expect.stringMatching(/stopped at its deadline with 2 partner copies left, and did not reach workflow definition copies or bid matrix copies/)])
   })
 
+  // Lessons review: a deadline that passes BETWEEN kinds must still name the
+  // next kind as not reached, never drop it from the report.
+  it('names the next kind as not reached when the deadline passes between kinds', async () => {
+    const { kv, reads, now } = slowKv([...partnerKeys.slice(0, 2), workflowCopyKey('wf-1')])
+    const r = await sweepStoredCopies(kv, partnersAgree, { now, deadlineAt: START + 20_000 })
+    expect(reads).toEqual(partnerKeys.slice(0, 2))
+    expect(r.stopped).toBe('deadline')
+    expect(r.left).toBe(0)
+    expect(r.notReached).toEqual(['workflow definition copies', 'bid matrix copies'])
+    expect(r.failed).toEqual(['the sweep: it stopped at its deadline before reaching workflow definition copies or bid matrix copies'])
+  })
+
   it('sweeps everything, and reports no stop, when the deadline is not reached', async () => {
     const { kv, reads, now } = slowKv(partnerKeys)
     const r = await sweepStoredCopies(kv, partnersAgree, { now, deadlineAt: START + 10 * 60_000 })

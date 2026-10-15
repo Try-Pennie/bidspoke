@@ -176,9 +176,11 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
   // A holder, not a let: the closures below set it, which narrowing cannot see.
   const stop: { in: string | null } = { in: null }
   const notReached: string[] = []
-  // Asked before each call the sweep starts. Once true it stays true, and the
-  // first kind to see it records how many of its copies were left unchecked.
-  const outOfTime = (kindName: string, left: number): boolean => {
+  // Asked before each call the sweep starts. Once true it stays true. Inside a
+  // kind it records that kind and how many of its copies were left unchecked;
+  // asked before a kind starts (kindName null), it records no kind, so that
+  // kind and every later one are named as not reached.
+  const outOfTime = (kindName: string | null, left: number): boolean => {
     if (result.stopped) return true
     if (now() < deadlineAt) return false
     result.stopped = 'deadline'
@@ -206,8 +208,8 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
   }
 
   const kind = async (name: string, sweep: () => Promise<void>) => {
-    if (outOfTime(name, 0)) {
-      if (stop.in !== name) notReached.push(name)
+    if (outOfTime(null, 0)) {
+      notReached.push(name)
       return
     }
     try {
@@ -327,7 +329,8 @@ export async function sweepStoredCopies(kv: KVNamespace, sources: SweepSources, 
   if (result.stopped) {
     result.notReached = notReached
     const where = stop.in !== null && (result.left ?? 0) > 0 ? ` with ${result.left} ${stop.in} left` : ''
-    const rest = notReached.length > 0 ? `, and did not reach ${notReached.join(' or ')}` : ''
+    const kinds = notReached.join(' or ')
+    const rest = notReached.length === 0 ? '' : where ? `, and did not reach ${kinds}` : ` before reaching ${kinds}`
     result.failed.push(`the sweep: it stopped at its deadline${where}${rest}`)
   }
   return result
