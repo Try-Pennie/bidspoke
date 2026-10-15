@@ -246,7 +246,7 @@ async function drill(e: GateEnv): Promise<void> {
       const warm = await timed('warm run', () => runOnce(e, def, { id: `${id}#warm`, seed: `${id}#warm`, kind: 'live' }, warmPayload, variant, stubs, shape, {
         // Real timers on every drill run (#1872): the hung shape ends only when the caller's own deadline fires.
         engineTimers: 'real',
-        before: (runEnv, db) => timed('prewarm', () => prewarmKvCaches(db.client as never, runEnv as never)),
+        before: async (runEnv, db) => { await timed('prewarm', () => prewarmKvCaches(db.client as never, runEnv as never)) },
       }))
       const kept = await timed('keep copies', () => keepStoredCopies(e))
       // A positive control on the warming: every run loads its definition, so a
