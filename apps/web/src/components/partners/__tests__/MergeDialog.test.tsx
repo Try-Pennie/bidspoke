@@ -12,7 +12,7 @@ import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import type { PartnerBody } from '@/lib/api'
 import { PARTNER_FIELD_REGISTRY } from '@/app/(app)/partners/partner-draft'
 import { mergeThreeWay, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
-import { MergeDialog } from '../MergeDialog'
+import { describeMergeValue, MergeDialog } from '../MergeDialog'
 
 const partner: PartnerBody = { name: 'Tripoint', is_active: true, accept_signals: [{ field: 'ok', equals: true }], click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2 }
 const profile: BuyerProfileDocument = {
@@ -105,5 +105,14 @@ describe('MergeDialog', () => {
     render(<MergeDialog result={result} theirName={null} onChoose={vi.fn()} onSave={vi.fn()} onKeepEditing={vi.fn()} />)
     expect(screen.getByRole('dialog', { name: 'Someone else saved this partner while you were editing' })).toBeInTheDocument()
     expect(question('Accept when all of')).toHaveTextContent(/cannot be saved together/i)
+  })
+
+  it('a row group side that is not a list reads as none of it, never throwing while the dialog renders', () => {
+    for (const key of ['profile.windows@1', 'profile.tiers@engine', 'profile.blackout_dates', 'profile.click_delivery.routes']) {
+      expect(() => describeMergeValue(key, null), key).not.toThrow()
+      expect(() => describeMergeValue(key, { not: 'a list' }), key).not.toThrow()
+    }
+    expect(describeMergeValue('profile.windows@1', null)).toBe('closed')
+    expect(describeMergeValue('profile.click_delivery.routes', undefined)).toBe('no routes')
   })
 })

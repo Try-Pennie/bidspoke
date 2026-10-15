@@ -25,22 +25,25 @@ const CHOICES: ReadonlyArray<{ value: MergeSide; label: string }> = [
 
 type Rows = Array<Record<string, unknown>>
 
+/** A row group's side as its rows: anything that is not a list of rows reads as none, so the dialog always renders. */
+const rowsOf = (value: unknown): Rows => (Array.isArray(value) ? value.filter((r): r is Record<string, unknown> => r !== null && typeof r === 'object') : [])
+
 /** A merge value in the words the page shows it in. */
 export function describeMergeValue(key: string, value: unknown): string {
   if (key.startsWith(`${PROFILE_PREFIX}windows@`)) {
-    const rows = value as Rows
+    const rows = rowsOf(value)
     return rows.length === 0 ? 'closed' : rows.map((w) => `${minutesToTime(Number(w.opens_minute))} to ${minutesToTime(Number(w.closes_minute))}`).join(', ')
   }
   if (key.startsWith(`${PROFILE_PREFIX}tiers@`)) {
-    const rows = value as Rows
+    const rows = rowsOf(value)
     return rows.length === 0 ? 'no pricing' : rows.map((t) => `from ${formatDollars(Number(t.debt_from))}${t.debt_to === null ? '' : ` to ${formatDollars(Number(t.debt_to))}`} at ${Number(t.multiplier)}`).join('; ')
   }
   if (key === `${PROFILE_PREFIX}blackout_dates`) {
-    const rows = value as Rows
+    const rows = rowsOf(value)
     return rows.length === 0 ? 'none' : rows.map((b) => (b.note ? `${String(b.date)} (${String(b.note)})` : String(b.date))).join(', ')
   }
   if (key === `${PROFILE_PREFIX}click_delivery.routes`) {
-    const rows = value as Rows
+    const rows = rowsOf(value)
     return rows.length === 0 ? 'no routes' : rows.map((r) => {
       const states = Array.isArray(r.states) && r.states.length > 0 ? (r.states as string[]).join(', ') : 'every other state'
       return `${String(r.name)}: ${String(r.url)} for ${states}`

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useState } from 'react'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
@@ -187,5 +188,30 @@ describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
     await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
     expect(await screen.findByRole('alertdialog')).toHaveAccessibleDescription(/^Its rows and its change history are deleted with it\./)
+  })
+
+  it('after a delete the next matrix shows its own rows, never the deleted one\'s, whichever way the delete was confirmed', async () => {
+    const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+    const secondRows = [rows[0], rows[1], { ...rows[1], id: 'r3', row_low: 20000 }]
+    for (const confirmed of ['answered', 'gone on re-read'] as const) {
+      vi.mocked(api.partnerBidConfigs.get).mockImplementation(async (id: string) => ({ config: id === 'cfg-1' ? config : second, rows: id === 'cfg-1' ? rows : secondRows }) as never)
+      if (confirmed === 'answered') vi.mocked(api.partnerBidConfigs.delete).mockResolvedValueOnce({ ok: true })
+      else {
+        vi.mocked(api.partnerBidConfigs.delete).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        vi.mocked(api.partnerBidConfigs.list).mockResolvedValueOnce([second])
+      }
+      function Host() {
+        const [configs, setConfigs] = useState([config, second])
+        return <BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={configs} onConfigsChange={setConfigs} />
+      }
+      const { unmount } = render(<Host />)
+      await screen.findByText('Standard rows (2)')
+      fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
+      expect(await screen.findByText('Standard rows (3)'), confirmed).toBeInTheDocument()
+      expect(screen.queryByText('Standard rows (2)')).toBeNull()
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+      unmount()
+    }
   })
 })
