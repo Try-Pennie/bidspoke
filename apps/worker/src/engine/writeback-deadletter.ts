@@ -149,9 +149,9 @@ export type CaptureResult =
  * Every other held update expires unread, so it is announced (#2163) with what a
  * person needs to check it: the record, the field names (never the values, and
  * never the marker, which is not something it set), and when the held request is
- * deleted. That covers every Submission__c update (no marker field, so no
- * read-back), and a Prospect, Applicant or Lead update held from before the
- * stamp shipped or whose marker would not fit.
+ * deleted. That covers an update on any of the marker's objects (Prospect,
+ * Applicant, Lead, and Submission since #2203) held from before the stamp
+ * shipped for it, or whose marker would not fit.
  */
 async function announceHeld(
   f: FailedWriteback,

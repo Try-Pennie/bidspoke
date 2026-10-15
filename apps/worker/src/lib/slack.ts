@@ -1268,8 +1268,8 @@ async function sendHeldWithoutRecordAlert(
  * A Salesforce update after the answer was cut off before Salesforce replied (a
  * timeout, an abort, a dropped connection), and the at-risk record holds its
  * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
- * since it is one the Salesforce read-back (#2023) does not own (a Submission, or
- * one held without its own write marker), nothing will look at it before KV
+ * since it is one the Salesforce read-back (#2023) does not own (one held
+ * without its own write marker), nothing will look at it before KV
  * deletes it. The alert says that, names the record and the fields it was setting (never
  * the values, which are lead data, but it says the run shows them), and when the
  * request is deleted, in ET.

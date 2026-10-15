@@ -9,12 +9,13 @@
  * job is what reads those records, and it is the only automatic resender of
  * post-answer writes, so #468 is narrowed to writes outside it.
  *
- * WHAT IT JUDGES. Writes to Applicant__c, Prospect__c and Lead carrying their own
- * engine stamp (engine/write-marker.ts). "Landed" means the record holds THIS
- * write's marker, never that its fields look equal. A Submission__c has no
- * marker field, so its held updates, and any update held from before the stamp
- * shipped, are left to the held alert (#2163), which the capture still sends for
- * them. That decision is recorded on #2023.
+ * WHAT IT JUDGES. Writes to Applicant__c, Prospect__c, Lead and, since #2203,
+ * Submission__c carrying their own engine stamp (engine/write-marker.ts, whose
+ * one object list the stamp and this job both read). "Landed" means the record
+ * holds THIS write's marker, never that its fields look equal. An update held
+ * without its own stamp (one recorded before the stamp shipped for its object,
+ * or one whose marker would not fit) is never this job's, and is left to the
+ * held alert (#2163), which the capture still sends for it.
  *
  * EACH TICK, separate from the database read-back (lib/unconfirmed-write-sweep.ts):
  * its own KV prefix, answering flag, read budget and minimum age, so Salesforce
@@ -208,7 +209,7 @@ export interface ReadBackSummary {
   truncated: boolean
   /** Gone between the list and the read, or not a record the watch wrote. */
   skipped: number
-  /** Not the read-back's: a Submission, or an update held from before the stamp. */
+  /** Not the read-back's: an update held without its own stamp (from before the stamp shipped for its object). */
   not_ours: number
   /** A body the keys could not open. */
   unreadable_entries: number
@@ -287,8 +288,8 @@ interface Held {
 }
 
 /**
- * What one held write is to the read-back: gone, not its own (a Submission, or
- * held without its own marker, which keeps the held alert), settled (waiting
+ * What one held write is to the read-back: gone, not its own (held without its
+ * own marker, which keeps the held alert), settled (waiting
  * only for KV to expire it), unopenable with the keys, or owned and unsettled.
  * The one classifier the tick and the liveness check both use, so "waiting for
  * the read-back" means the same thing in both (merge review, #2201).
@@ -337,8 +338,8 @@ export const MAX_KEYS_SCANNED = 1000
  * Lists the held writes oldest first and classifies them, page after page, until
  * `wanted` writes waiting for the read-back (owned and unsettled, or unopenable)
  * are found, the list ends, or MAX_KEYS_SCANNED keys have been looked at. Paging
- * matters because settled writes stay in KV until they expire, and Submission and
- * unstamped ones are never the read-back's: a single first page can be full of
+ * matters because settled writes stay in KV until they expire, and unstamped ones
+ * are never the read-back's: a single first page can be full of
  * them and hide every write still waiting (#2201 review).
  */
 async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: number): Promise<{ reads: HeldRead[]; listed: number; truncated: boolean }> {

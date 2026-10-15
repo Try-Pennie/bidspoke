@@ -42,6 +42,7 @@ const ORG = '11111111-1111-1111-1111-111111112023'
 const WF = '22222222-2222-2222-2222-222222222023'
 const T0 = Date.parse('2026-10-15T20:00:00.000Z')
 const PROSPECT = 'a06Ui00002sLkNuIAK'
+const SUBMISSION = 'a04Ui00000NkhG1IAJ'
 const EXEC_A = '01a13cf7-0191-7dc3-aada-59ceeacc1616'
 const EXEC_B = '01a13cf7-0191-7dc3-aada-59ceeacc1617'
 /** Salesforce's own spelling of a time, whole seconds and +0000. */
@@ -671,14 +672,56 @@ describe('what the read-back leaves alone', () => {
     expect(s.landed).toBe(1)
   })
 
-  it('does not read a Submission update, or one held from before the stamp shipped', async () => {
-    const r = rig({ [PROSPECT]: {}, a04Ui00000NkhG1IAJ: {} })
-    await hold(r.kv, { step: 'update_submission', object: 'Submission__c', record: 'a04Ui00000NkhG1IAJ', body: { PDFlow_3__c: 'x' }, unstamped: true })
+  it('does not read a Submission or Prospect update held from before its stamp shipped, and never claims it', async () => {
+    const r = rig({ [PROSPECT]: {}, [SUBMISSION]: {} })
+    await hold(r.kv, { step: 'update_submission', object: 'Submission__c', record: SUBMISSION, body: { PDFlow_3__c: 'x' }, unstamped: true })
     await hold(r.kv, { exec: EXEC_B, step: 'patch_prospect_reject', body: REJECT, unstamped: true })
+    const claims = makeSendClaimsDouble()
+    r.deps.resendClaims = claims
     const s = await runSalesforceReadBack(r.deps)
     expect(s.not_ours).toBe(2)
     expect(r.sf.calls).toEqual([])
+    expect(claims.held.size).toBe(0)
     expect(atRiskKeys(r.kv)).toHaveLength(2)
+    expect(r.alerts).toEqual([])
+  })
+})
+
+/**
+ * #2203: Submission__c carries Bidspoke_Write__c since 2026-10-15, so a cut off
+ * post-answer Submission update (Liberty1's update_submission today, the Main
+ * Flow's outcome posts once #1680 ports them) is read back by its own stamp,
+ * exactly as a Prospect's is.
+ */
+describe('a cut off Submission update (#2203)', () => {
+  const OUTCOME = { External_Exchange_Status__c: 'Completed', PDFlow_3__c: 'https://app.test/executions/x' }
+
+  it('finds its own stamp on the Submission, sends nothing, and drops it', async () => {
+    const r = rig({ [SUBMISSION]: { ...OUTCOME, [WRITE_MARKER_FIELD]: `${EXEC_A}:update_submission:0` } })
+    await hold(r.kv, { step: 'update_submission', object: 'Submission__c', record: SUBMISSION, body: OUTCOME })
+    const s = await runSalesforceReadBack(r.deps)
+    expect(s.not_ours).toBe(0)
+    expect(s.landed).toBe(1)
+    expect(patches(r)).toEqual([])
+    expect(atRiskKeys(r.kv)).toEqual([])
+    expect(r.alerts).toEqual([])
+    expect(r.sf.calls.map((c) => c.path)).toEqual([`/sobjects/Submission__c/${SUBMISSION}?fields=${WRITE_MARKER_FIELD},LastModifiedDate,External_Exchange_Status__c,PDFlow_3__c`])
+  })
+
+  it('resends it once with attempt 1 when its stamp is absent, and a 2xx confirms it', async () => {
+    const r = rig({ [SUBMISSION]: { External_Exchange_Status__c: null, PDFlow_3__c: null } })
+    await hold(r.kv, { step: 'update_submission', object: 'Submission__c', record: SUBMISSION, body: OUTCOME })
+    const s = await runSalesforceReadBack(r.deps)
+    expect(patches(r)).toEqual([
+      { method: 'PATCH', path: `/sobjects/Submission__c/${SUBMISSION}`, body: { ...OUTCOME, [WRITE_MARKER_FIELD]: `${EXEC_A}:update_submission:1` } },
+    ])
+    expect(s.resent_confirmed).toBe(1)
+    expect(atRiskKeys(r.kv)).toEqual([])
+    expect(r.alerts).toEqual([])
+    // A second tick finds nothing left to send.
+    r.clock.now += SF_READ_BACK_MIN_AGE_MS
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r)).toHaveLength(1)
   })
 })
 
