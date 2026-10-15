@@ -37,13 +37,23 @@ if ! docker exec "$CONTAINER" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&
   exit 2
 fi
 
-bootstrapped="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.replayed') IS NOT NULL")"
-if [ "$bootstrapped" != "t" ]; then
+# The bootstrap runs on an empty container, and again whenever the file has
+# changed since this container last ran it (#2131). Without the second half, a
+# container built before a bootstrap change kept the old shape for ever, and the
+# first migration needing the new part (the realtime stub) failed to replay on
+# every machine that already had a container, while a fresh one passed. Every
+# statement in both bootstrap files is idempotent, so a rerun over a database the
+# migrations have already reached changes only what the file newly adds.
+bootstrap_sha="$(shasum -a 256 "$SUITE_BOOTSTRAP" | awk '{print $1}')"
+applied_sha="$(psql_as postgres -Atc "SELECT CASE WHEN to_regclass('sql_suite.bootstrap_applied') IS NULL THEN '' ELSE (SELECT coalesce(max(sha), '') FROM sql_suite.bootstrap_applied) END" 2>/dev/null || true)"
+if [ "$applied_sha" != "$bootstrap_sha" ]; then
   if ! out="$(psql_as supabase_admin -f - < "$SUITE_BOOTSTRAP" 2>&1)"; then
     echo "REPLAY FAILED in ${SUITE_BOOTSTRAP#"$ROOT"/}:" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
     exit 1
   fi
+  psql_as postgres -Atc "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS sql_suite.bootstrap_applied (sha text NOT NULL); DELETE FROM sql_suite.bootstrap_applied; INSERT INTO sql_suite.bootstrap_applied (sha) VALUES ('$bootstrap_sha')" >/dev/null
+  echo "bootstrap applied: ${SUITE_BOOTSTRAP#"$ROOT"/} (${bootstrap_sha:0:12})"
 fi
 
 files=()
