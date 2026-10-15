@@ -447,9 +447,8 @@ describe('writes that answer after the budget, read back by the sweep (#1880)', 
     expect(summary.landed).toBe(4)
     expect(summary.lost).toBe(0)
     expect(db.steps).toHaveLength(1)
-    // One summary for the slowdown, saying every record landed (#1881).
-    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1]).toMatchObject({ runs: 1, records: 4, landed: 4, lost: 0, steps_missing: 0 })
+    // Every record landed, so the slowdown posts nothing at all (#2165).
+    expect(sendSlowdownSummaryAlert).not.toHaveBeenCalled()
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect([...idempotency.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toEqual([])
   })
