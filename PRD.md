@@ -1005,6 +1005,27 @@ A dedicated page (not on the canvas) for managing partner configurations:
 - View circuit breaker status (closed/open/half-open) with manual override to force-close
 - View partner performance (bids sent, accepted, rejected, revenue)
 
+#### 6.4.1 Partners page redesign (#2114, settled 2026-10-14)
+
+The settled design is [docs/design/partners-page.html](./docs/design/partners-page.html): every state of the page, with each decision and its reason. These are the requirements it carries beyond appearance.
+
+- **PM-1 Layout.** One tab at a time, showing only the tabs that apply: Partner, Buyer profile (always, for a buyer), Bid Group (when a workflow's Bid Group names the partner or any Bid Group setting is set), Workflow values and History. A source partner has Partner, Workflow values and History. The partner list is grouped into Buyers and Sources, alphabetical, name only; list order is removed.
+- **PM-2 Live merge.** While a person edits, a save by someone else updates every field they have not touched, live.
+- **PM-3 Field level merge.** Only a field both people changed asks a question, grouped by section, with Keep yours or Use theirs; saving keeps those choices and adds the rest of the other save. This replaces "Take theirs", which discards every edit.
+- **PM-4 Save bar.** The dark bar appears only when something is edited and names the change; it shows Saving with elapsed seconds, then Saved with Undo, then leaves. A failure stays, says why, and offers Try again. A refused save names the field and tab with Show me, and marks the tab and the field red.
+- **PM-5 Leaving with unsaved changes.** An in page dialog (never the browser's) with Keep editing, Discard and open the other partner, Save and open it, on refresh and on in app navigation.
+- **PM-6 Click delivery changes.** No second confirmation: the save bar states the consequence by route name (for example, clicks from WY will go to DI4 instead of DV1) beside the one Save button.
+- **PM-7 Mark sent without a lead id.** The partner's lead id is optional when marking a held click sent. Without it the click is counted and Salesforce marks the sale Completed with no partner lead id.
+- **PM-8 Salesforce retry.** A held click marked sent whose Salesforce update was incomplete lists every record with its result and Salesforce's own words, with Retry Salesforce and Remove from the list (which asks first).
+- **PM-9 Bid mode removed.** The Commit and Ping only setting leaves the page; no code reads it.
+- **PM-10 Display time zone.** A buyer profile stores a time zone used only for display. Hours stay stored and judged in Eastern.
+- **PM-11 Default error rules shown.** The built in retry and never retry answers appear as fixed rows marked Default; a person's own rules are checked first, and each list has its own Alert switch.
+- **PM-12 Problems open where they are.** A partner with an issue (a missing credential, a refused field) opens on the tab holding it, with red dots on its list row and that tab.
+- **PM-13 Delete.** In a pale red box at the foot of the Partner tab, confirmed by typing DELETE (case sensitive); the consequence names only what the partner has. When sales refer to the partner, the box says why it cannot be deleted, with no field, and that turning off Active stops it. The page knows this before offering Delete.
+- **PM-14 Editors by name.** History groups changes by day with the time and the editor's name resolved from the users table, the old value struck through and the new one in bold.
+- **PM-15 Workflow values tab.** Each value workflows read by name, with that exact name and the workflows that read it. The click URL moves here from the Sale row.
+- **PM-16 Colour.** Navy #1D212F marks a selection; blue #1B72BA is for buttons only; red is reserved for a genuine problem. This is a rule for the whole app (see `.impeccable.md`).
+
 ### 6.5 Test Runner
 
 A panel that lets users execute a workflow with a sample payload and watch it step through in real time.
