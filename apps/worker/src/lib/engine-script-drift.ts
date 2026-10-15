@@ -45,6 +45,10 @@ import BUILD_LIBERTY1_REQUEST from '../engine/scripts/liberty1-click/build_liber
 import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_click_patch.js'
 import PICK_CLICK_RECORD from '../engine/scripts/liberty1-click/pick_click_record.js'
 import LEAD_ECONOMY_RETURN_RESPONSE from '../engine/scripts/lead-economy/return_response.js'
+import RML_LENDSWIFT_BUILD_RESPONSE from '../engine/scripts/rml-lendswift/build_response.js'
+import RML_GIGFI_BUILD_RESPONSE from '../engine/scripts/rml-gigfi/build_response.js'
+import BIDDING_LENDSWIFT_BUILD_RESPONSE from '../engine/scripts/bidding-lendswift/build_response.js'
+import FORMS_SIGN_SUBMISSION_LINK from '../engine/scripts/forms-engine/sign_submission_link.js'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { fetchGitHubFileText } from './github'
@@ -131,6 +135,12 @@ export interface KeptWorkflow {
  * link). Dan pasted it on 2026-10-14 (2:25 PM ET) and the hourly check read it as
  * agree, so its baseline was cleared (#2093): a canvas put back to the script
  * before #2089, which sends every offer link out unsigned, pages as a drift.
+ *
+ * #2092 edited build_response_body here first again: the link token block became
+ * one text shared with five other scripts, its host list moved just above it, and a
+ * missing secret now logs an error. Nothing it sends changes. Its baseline is the
+ * #2089 canvas script, read from the mirror on 2026-10-15; clear it once the paste
+ * reads as agree.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -144,8 +154,8 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    canvasBaselineSha256: 'f94b7262c098c497639d110674158bdbc37056d0ab0ca90144ff1f3ba4710d9c',
+    baselineReadOn: '2026-10-15',
   },
   {
     namespace: 'patch_prospect_body',
@@ -198,8 +208,10 @@ export const KEPT_LIBERTY1_CLICK_SCRIPTS: readonly KeptScript[] = [
  * Engine Bidding Workflow in its return_response code node. Only that script is
  * kept: it was copied from the mirror on 2026-10-14 and the signed link token
  * added here. Dan pasted it the same day (2:27 PM ET) and the hourly check read it
- * as agree, so it carries no baseline (#2093): any difference from the canvas is
- * a drift. No settings are committed for this workflow, so none are judged.
+ * as agree (#2093). #2092 then edited it here first (the shared link token block,
+ * as in build_response_body; nothing it sends changes), so it carries the #2089
+ * canvas script as its baseline until that paste reads as agree. No settings are
+ * committed for this workflow, so none are judged.
  */
 export const LEAD_ECONOMY_WORKFLOW_ID = '89b1a6af-7e0f-43de-bc66-1e888184551f'
 
@@ -208,9 +220,39 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
     namespace: 'return_response',
     file: 'return_response.js',
     script: LEAD_ECONOMY_RETURN_RESPONSE,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    canvasBaselineSha256: '6703c65ac140cf1671ba039da05e6657e3cb9b72dcc3ac7d11ce545650763219',
+    baselineReadOn: '2026-10-15',
   },
+]
+
+/**
+ * The three RML bidding flows (#2092). Each builds the reservemyloan.com offer
+ * link, `<pennieClickUrl>/<Applicant id>`, in its build_response code node and
+ * returns it only in the bid response. Each script was copied from the mirror on
+ * 2026-10-15 and the signed link token added here, so each carries the canvas
+ * script it was derived from as its baseline until its paste reads as agree. No
+ * settings are committed for these workflows, so none are judged.
+ */
+export const KEPT_RML_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
+  { namespace: 'build_response', file: 'build_response.js', script: RML_LENDSWIFT_BUILD_RESPONSE, canvasBaselineSha256: '8819c1c66705cec08f4ac1ae833b30965e0e9551843a9705a469bf7d96c129ef', baselineReadOn: '2026-10-15' },
+]
+export const KEPT_RML_GIGFI_SCRIPTS: readonly KeptScript[] = [
+  { namespace: 'build_response', file: 'build_response.js', script: RML_GIGFI_BUILD_RESPONSE, canvasBaselineSha256: 'b5c6cc8fa7d1321c06fc611402c3408143c282697a45bf60d799cfee60e61947', baselineReadOn: '2026-10-15' },
+]
+export const KEPT_BIDDING_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
+  { namespace: 'build_response', file: 'build_response.js', script: BIDDING_LENDSWIFT_BUILD_RESPONSE, canvasBaselineSha256: '3c8d337855ad9106e10f4fa55639e016dd279ba0d0952eca4ad936a738058ca4', baselineReadOn: '2026-10-15' },
+]
+
+/**
+ * Forms <> Engine <> Data Store (Loan only) (#2092). The agent's Slack message
+ * carries the submit link, which a webhook node cannot sign, so the new code node
+ * sign_submission_link builds it; docs/workflows/forms-engine/definition.json is
+ * the whole workflow with that node in place. It is a node the canvas does not
+ * have yet, so it is awaited rather than missing until the paste; remove
+ * newNodeSince in the change after it reads as agree. No settings are judged.
+ */
+export const KEPT_FORMS_ENGINE_SCRIPTS: readonly KeptScript[] = [
+  { namespace: 'sign_submission_link', file: 'sign_submission_link.js', script: FORMS_SIGN_SUBMISSION_LINK, canvasBaselineSha256: null, baselineReadOn: null, newNodeSince: '2026-10-15' },
 ]
 
 /**
@@ -237,6 +279,10 @@ export const KEPT_CANVAS_WORKFLOWS: readonly KeptWorkflow[] = [
   { name: 'Engine Bidding Workflow', workflowId: ENGINE_BIDDING_WORKFLOW_ID, folder: 'engine-bidding', scripts: KEPT_ENGINE_SCRIPTS, configSources: ENGINE_CONFIG_SOURCES },
   { name: 'Liberty1 click workflow', workflowId: LIBERTY1_CLICK_WORKFLOW_ID, folder: 'liberty1-click', scripts: KEPT_LIBERTY1_CLICK_SCRIPTS, configSources: LIBERTY1_CLICK_CONFIG_SOURCES },
   { name: 'Lead Economy', workflowId: LEAD_ECONOMY_WORKFLOW_ID, folder: 'lead-economy', scripts: KEPT_LEAD_ECONOMY_SCRIPTS, configSources: [] },
+  { name: 'RML - Bidding Workflow (LendSwift)', workflowId: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914', folder: 'rml-lendswift', scripts: KEPT_RML_LENDSWIFT_SCRIPTS, configSources: [] },
+  { name: 'RML - Bidding Workflow (GigFi)', workflowId: '6624acd0-bf61-4d21-85fc-4371ca7ed77d', folder: 'rml-gigfi', scripts: KEPT_RML_GIGFI_SCRIPTS, configSources: [] },
+  { name: 'Bidding - LendSwift', workflowId: '0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5', folder: 'bidding-lendswift', scripts: KEPT_BIDDING_LENDSWIFT_SCRIPTS, configSources: [] },
+  { name: 'Forms <> Engine <> Data Store (Loan only)', workflowId: 'ff1a9f52-7346-452a-bab7-af9f95d36dda', folder: 'forms-engine', scripts: KEPT_FORMS_ENGINE_SCRIPTS, configSources: [] },
 ]
 
 type VerdictBase = { workflow: string; namespace: string; file: string }
