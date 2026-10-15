@@ -12,6 +12,8 @@ import type { Env } from '../../index'
 vi.mock('../env-loader', () => ({ loadEnvVars: vi.fn() }))
 import { loadEnvVars } from '../env-loader'
 import { supabaseHeldWriteStore, salesforcePortFor } from '../writeback-replay'
+import { SALESFORCE_BULKHEAD_KEY } from '../bulkhead-client'
+import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
 
 interface Built { table: string; op: string; columns?: string; patch?: unknown; filters: Array<[string, string, unknown]> }
 
@@ -139,6 +141,25 @@ describe('salesforcePortFor', () => {
       ['https://sf.example/services/apexrest/credit-inquiries', 'POST', 'Bearer fresh-token'],
     ])
     expect(sends[1].body).toBe('{"submissionId":"a"}')
+  })
+
+  // #2170 part B: the replay and the read-back run on their own schedule, outside
+  // any run's post-answer window, so they take the main key only, never the
+  // post-answer share; the read-back waits 0 for it (#2172 resends through here).
+  it('takes only the main bulkhead key for an Apex post, and a full one sheds it at once with a wait of 0', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+    const fetchMock = vi.fn(async () => new Response('{"statusCode":"200"}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const open = fakeBulkheads()
+    const port = await salesforcePortFor({ WORKFLOW_CACHE: kv(), SALESFORCE_BULKHEAD: open.namespace } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1', { waitMs: 0 })
+    expect((await port.postApex('/services/apexrest/credit-inquiries', '{}')).status).toBe(200)
+    expect(open.acquires).toEqual([SALESFORCE_BULKHEAD_KEY])
+
+    const full = fakeBulkheads({ seed: { [SALESFORCE_BULKHEAD_KEY]: 20 } })
+    const shedPort = await salesforcePortFor({ WORKFLOW_CACHE: kv(), SALESFORCE_BULKHEAD: full.namespace } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1', { waitMs: 0 })
+    await expect(shedPort.postApex('/services/apexrest/credit-inquiries', '{}')).rejects.toThrow(/Salesforce bulkhead: at capacity \(salesforce,/)
+    expect(full.acquires).toEqual([SALESFORCE_BULKHEAD_KEY])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('refuses a path that is not a plain Apex REST path, sending nothing', async () => {

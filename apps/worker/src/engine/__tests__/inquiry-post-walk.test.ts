@@ -20,6 +20,8 @@ import type { EdgeDefinition, NodeDefinition } from '../../types'
 import type { StepLogEntry } from '../step-logger'
 import { stubFetch, type FetchMock } from '../../__tests__/helpers/fetch-mock'
 import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
+import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
+import { SALESFORCE_POST_ANSWER_BULKHEAD_KEY } from '../../lib/bulkhead-client'
 
 vi.mock('../step-logger', () => ({
   createExecutionRecord: vi.fn().mockResolvedValue(undefined),
@@ -198,6 +200,32 @@ describe('how the post settles its record', () => {
     await walk(def)
     expect(apexCalls(fetchMock)).toHaveLength(2)
     expect([...kv.store.keys()]).toEqual([])
+  })
+
+  // #2170 part B: after the answer the post takes the post-answer bulkhead share
+  // first. The record is written before any slot is asked for, so a post the
+  // share sheds (never sent) is still held for the read-back, which resends it.
+  it('is recorded before it asks for a bulkhead slot, so a post shed by the post-answer share is held', async () => {
+    const bulkheads = fakeBulkheads({ seed: { [SALESFORCE_POST_ANSWER_BULKHEAD_KEY]: 20 } })
+    const askedWithRecord: boolean[] = []
+    const namespace = bulkheads.namespace as unknown as { get: (id: string) => { fetch: (u: string, i?: RequestInit) => Promise<Response> } }
+    const realGet = namespace.get.bind(namespace)
+    namespace.get = (id: string) => {
+      const stub = realGet(id)
+      return { fetch: (u: string, i?: RequestInit) => { askedWithRecord.push(kv.store.has(HELD)); return stub.fetch(u, i) } }
+    }
+    let t = 0
+    const clock = { now: () => t, sleep: async (ms: number) => { t += ms }, timer: () => new Promise<void>(() => {}) }
+    const shedEnv = { ...env, SALESFORCE_BULKHEAD: bulkheads.namespace } as unknown as Env
+    const ctx = ctxFor({ Submission__c: SUB })
+    ctx.retryTiming = { clock }
+    const err = await walkGraph(ctx, line({ afterAnswer: true }), EXEC, '2027-10-15T12:00:00.000Z', supabase, shedEnv, 'money', 'v1', [])
+      .then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/Salesforce bulkhead: at capacity \(salesforce-post-answer/)
+    expect(apexCalls(fetchMock)).toHaveLength(0)
+    expect(askedWithRecord.length).toBeGreaterThan(0)
+    expect(askedWithRecord.every(Boolean)).toBe(true)
+    expect(parseAtRiskEntry(kv.store.get(HELD) ?? null)).toMatchObject({ sf_operation: 'apex', sf_record_id: SUB })
   })
 
   it('a test run, which has no watch, records nothing and still makes its one call', async () => {

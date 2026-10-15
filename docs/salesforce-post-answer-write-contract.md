@@ -1021,6 +1021,9 @@ moment of the grant) only when getting a slot took over 1 s. A grant without a
 wait is not logged, so the logs give the peak only when it coincided with a
 wait. When the call to the Durable Object itself throws, the client fails open
 (`allowed: true`, no lease) and the waited line reads `inflight=undefined`.
+(Since #2170 each shed and waited line names its `key`, and a fail-open has its
+own line, `salesforce_bulkhead_failed_open key=...`, so a later measurement
+counts fail-opens directly and splits pre-answer from post-answer.)
 
 **Workers Logs**, `bidspoke-worker`, queried in windows of 24 hours or less
 grouped by message (7 day searches miss lines), covering 2026-10-08 16:00 to
