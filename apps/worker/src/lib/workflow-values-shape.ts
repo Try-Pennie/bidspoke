@@ -12,7 +12,7 @@ export type PartnerValueKind = 'ClickUrl' | 'SellOffOfferTitle' | 'SellOffOfferD
 
 export interface PartnerValueName {
   /** The name the Constants node emits the value under. */
-  key: string
+  constant_name: string
   kind: PartnerValueKind
   /** One of the two maps holding every partner's entry; this partner's value is its entry in it. */
   map: boolean

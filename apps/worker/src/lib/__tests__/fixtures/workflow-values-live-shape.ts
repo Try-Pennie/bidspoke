@@ -6,7 +6,7 @@ import type { PartnerValueReaders, ScannableWorkflow, ScanPartner } from '../../
 
 /** One value's answer, reduced to what identifies it: who reads it, where, and how. */
 export interface ValueSummary {
-  key: string
+  constant_name: string
   readers: Array<{ workflow_id: string; reads: string; places: string[] }>
   shadowed_by: string[]
 }
@@ -21,7 +21,7 @@ export interface LiveFixture {
 
 export function summarize(scan: readonly PartnerValueReaders[]): ValueSummary[] {
   return scan.map((v) => ({
-    key: v.key,
+    constant_name: v.constant_name,
     readers: v.readers.map((r) => ({
       workflow_id: r.workflow_id,
       reads: r.reads,

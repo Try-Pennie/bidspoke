@@ -133,7 +133,7 @@ export interface PartnerValueReadingWorkflow {
 
 export interface PartnerWorkflowValue {
   /** The name the Constants node emits it under. */
-  key: string
+  constant_name: string
   kind: PartnerValueKind
   /** One of the two maps holding every partner's entry. */
   map: boolean

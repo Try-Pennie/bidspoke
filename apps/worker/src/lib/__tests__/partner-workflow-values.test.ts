@@ -39,7 +39,7 @@ function scanScript(script: string, partner: ScanPartner = TRIPOINT, extraNodes:
   return scanPartnerValueReaders([wf('w', [constantsNode(), code('reader', script), ...extraNodes])], partner)
 }
 const value = (scan: PartnerValueReaders[], key: string) => {
-  const v = scan.find((s) => s.key === key)
+  const v = scan.find((s) => s.constant_name === key)
   if (!v) throw new Error(`no value ${key} in the scan`)
   return v
 }
@@ -47,7 +47,7 @@ const readsOf = (scan: PartnerValueReaders[], key: string) => value(scan, key).r
 
 describe('partnerValueNames', () => {
   it('names every value the Constants node can emit for the partner, in the form the mirror reads it', () => {
-    expect(partnerValueNames('tripoint').map((v) => [v.key, v.kind, v.map, v.access.template, v.access.code])).toEqual([
+    expect(partnerValueNames('tripoint').map((v) => [v.constant_name, v.kind, v.map, v.access.template, v.access.code])).toEqual([
       ['TripointClickUrl', 'ClickUrl', false, 'steps.constants.output.TripointClickUrl', 'constants.TripointClickUrl'],
       ['TripointSellOffOfferTitle', 'SellOffOfferTitle', false, 'steps.constants.output.TripointSellOffOfferTitle', 'constants.TripointSellOffOfferTitle'],
       ['TripointSellOffOfferDetails', 'SellOffOfferDetails', false, 'steps.constants.output.TripointSellOffOfferDetails', 'constants.TripointSellOffOfferDetails'],
@@ -75,7 +75,7 @@ describe('partnerValueNames', () => {
     const node = { id: 'n', namespace: 'constants', type: 'constants', config: { data: workflowData } } as NodeDefinition
     const ctx = { trigger: { org_id: 'org' }, steps: {}, env: {} } as unknown as ExecutionContext
     const { output } = await executeConstantsNode(node, ctx, {} as Env, {} as never)
-    const searched = new Set(['tripoint', 'sofi'].flatMap((slug) => partnerValueNames(slug).map((v) => v.key)))
+    const searched = new Set(['tripoint', 'sofi'].flatMap((slug) => partnerValueNames(slug).map((v) => v.constant_name)))
     const emitted = Object.keys(output as Record<string, unknown>).filter((k) => !(k in workflowData))
     expect(emitted.filter((k) => !searched.has(k))).toEqual([])
   })
@@ -246,7 +246,7 @@ describe('the live definitions (measured fixture, scripts/measure-workflow-value
   })
 
   it('records the readers the issue names: Engine Bidding reads the maps and Tripoint and Sofi by name, the rate table workflows their floors', () => {
-    const readersOf = (slug: string, key: string) => live.expected[slug].find((v) => v.key === key)?.readers.map((r) => `${r.workflow_id} ${r.reads}`) ?? []
+    const readersOf = (slug: string, key: string) => live.expected[slug].find((v) => v.constant_name === key)?.readers.map((r) => `${r.workflow_id} ${r.reads}`) ?? []
     const engine = 'da82a183-1a4a-417e-b0b8-5f3fe5e14840'
     expect(readersOf('tripoint', 'TripointClickUrl')).toContain(`${engine} by_name`)
     expect(readersOf('sofi', 'SofiSellOffOfferTitle')).toContain(`${engine} by_name`)

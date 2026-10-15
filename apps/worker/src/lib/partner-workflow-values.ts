@@ -82,9 +82,9 @@ function accessOf(key: string): { template: string; code: string } {
 export function partnerValueNames(slug: string): PartnerValueName[] {
   const flat = PARTNER_CONSTANT_KINDS.map((kind) => {
     const key = partnerConstantName(slug, kind)
-    return { key, kind, map: false, access: accessOf(key) }
+    return { constant_name: key, kind, map: false, access: accessOf(key) }
   })
-  const maps = PARTNER_CONSTANT_MAPS.map((kind) => ({ key: kind, kind, map: true, access: accessOf(kind) }))
+  const maps = PARTNER_CONSTANT_MAPS.map((kind) => ({ constant_name: kind, kind, map: true, access: accessOf(kind) }))
   return [...flat, ...maps]
 }
 
@@ -205,7 +205,7 @@ function readsOfKey(text: string, root: string, key: string): KeyRead[] {
  */
 function howTextReads(text: string, root: string, value: PartnerValueName, partner: ScanPartner, wholeOutput: boolean): ReadHow | null {
   let how: ReadHow | null = wholeOutput ? 'every_partner' : null
-  for (const read of readsOfKey(text, root, value.key)) {
+  for (const read of readsOfKey(text, root, value.constant_name)) {
     if (!value.map) return 'by_name'
     const entry = read.rest === null ? null : literalEntry(read.rest)
     if (entry === null) how = 'every_partner'
@@ -234,7 +234,7 @@ export function scanPartnerValueReaders(workflows: readonly ScannableWorkflow[],
       const config = cn.config as { data?: unknown } | null | undefined
       const data = config?.data && typeof config.data === 'object' ? (config.data as Record<string, unknown>) : {}
       for (const r of result) {
-        if (Object.prototype.hasOwnProperty.call(data, r.key)) {
+        if (Object.prototype.hasOwnProperty.call(data, r.constant_name)) {
           r.shadowed_data_keys.push({ workflow_id: w.id, workflow_name: w.name, is_active: w.is_active, node_id: str(cn.id) ?? '', namespace: str(cn.namespace) ?? '' })
         }
       }

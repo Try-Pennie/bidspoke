@@ -89,8 +89,8 @@ workflowValues.get('/:id/workflow-values', async (c) => {
       isEmitted = subAccountIds.length > 0
       value = subAccountIds
     } else {
-      isEmitted = Object.prototype.hasOwnProperty.call(emitted, v.key)
-      value = isEmitted ? emitted[v.key] : null
+      isEmitted = Object.prototype.hasOwnProperty.call(emitted, v.constant_name)
+      value = isEmitted ? emitted[v.constant_name] : null
     }
     return {
       ...v,

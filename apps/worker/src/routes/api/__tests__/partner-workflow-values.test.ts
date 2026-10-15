@@ -57,7 +57,7 @@ async function get(path: string) {
 
 interface Answer {
   partner: { id: string; slug: string }
-  values: Array<{ key: string; kind: string; emitted: boolean; value: unknown; readers: Array<{ workflow_id: string; is_active: boolean; reads: string }>; readers_outside_workflows: Array<{ reader: string }> }>
+  values: Array<{ constant_name: string; kind: string; emitted: boolean; value: unknown; readers: Array<{ workflow_id: string; is_active: boolean; reads: string }>; readers_outside_workflows: Array<{ reader: string }> }>
   searched: { workflows: number; with_constants_node: number }
 }
 
@@ -91,7 +91,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
     const body = (await res.json()) as Answer
     expect(body.partner).toEqual({ id: 'p-1', slug: 'tripoint' })
     expect(body.values.map((v) => v.kind)).toEqual([...PARTNER_CONSTANT_KINDS, ...PARTNER_CONSTANT_MAPS])
-    const byKey = Object.fromEntries(body.values.map((v) => [v.key, v]))
+    const byKey = Object.fromEntries(body.values.map((v) => [v.constant_name, v]))
     expect(byKey.TripointClickUrl).toMatchObject({ emitted: true, value: 'https://trypennie.com/portal/tpl' })
     expect(byKey.TripointSellOffOfferTitle).toMatchObject({ emitted: false, value: null })
     expect(byKey.TripointSubAccountMinBids).toMatchObject({ emitted: true, value: { 'uuid-1': 4 } })
@@ -121,7 +121,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
       },
     })
     const body = (await (await get('/partners/p-1/workflow-values')).json()) as Answer
-    const click = body.values.find((v) => v.key === 'TripointClickUrl')
+    const click = body.values.find((v) => v.constant_name === 'TripointClickUrl')
     expect(click?.readers.map((r) => [r.workflow_id, r.is_active, r.reads])).toEqual([['live', true, 'by_name'], ['draft', false, 'by_name']])
     expect(body.searched).toEqual({ workflows: 3, with_constants_node: 2 })
   })
@@ -153,7 +153,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
     })
     const body = (await (await get('/partners/p-1/workflow-values')).json()) as Answer
     expect(body.searched.workflows).toBe(1001)
-    expect(body.values.find((v) => v.key === 'TripointClickUrl')?.readers.map((r) => r.workflow_id)).toEqual(['last'])
+    expect(body.values.find((v) => v.constant_name === 'TripointClickUrl')?.readers.map((r) => r.workflow_id)).toEqual(['last'])
   })
 
   it('a failed workflows read is a failed answer, never an empty list', async () => {

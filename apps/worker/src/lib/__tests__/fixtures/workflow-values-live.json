@@ -586,27 +586,27 @@
   "expected": {
     "amone": [
       {
-        "key": "AmoneClickUrl",
+        "constant_name": "AmoneClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "AmoneSellOffOfferTitle",
+        "constant_name": "AmoneSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "AmoneSellOffOfferDetails",
+        "constant_name": "AmoneSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "AmoneSubAccountMinBids",
+        "constant_name": "AmoneSubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -628,7 +628,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -650,27 +650,27 @@
     ],
     "brainsome": [
       {
-        "key": "BrainsomeClickUrl",
+        "constant_name": "BrainsomeClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "BrainsomeSellOffOfferTitle",
+        "constant_name": "BrainsomeSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "BrainsomeSellOffOfferDetails",
+        "constant_name": "BrainsomeSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "BrainsomeSubAccountMinBids",
+        "constant_name": "BrainsomeSubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -692,7 +692,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -714,27 +714,27 @@
     ],
     "dot818": [
       {
-        "key": "Dot818ClickUrl",
+        "constant_name": "Dot818ClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Dot818SellOffOfferTitle",
+        "constant_name": "Dot818SellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Dot818SellOffOfferDetails",
+        "constant_name": "Dot818SellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Dot818SubAccountMinBids",
+        "constant_name": "Dot818SubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -756,7 +756,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -778,22 +778,22 @@
     ],
     "gigfi": [
       {
-        "key": "GigfiClickUrl",
+        "constant_name": "GigfiClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "GigfiSellOffOfferTitle",
+        "constant_name": "GigfiSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "GigfiSellOffOfferDetails",
+        "constant_name": "GigfiSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "GigfiSubAccountMinBids",
+        "constant_name": "GigfiSubAccountMinBids",
         "readers": [
           {
             "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
@@ -807,7 +807,7 @@
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -829,7 +829,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -851,22 +851,22 @@
     ],
     "lendswift": [
       {
-        "key": "LendswiftClickUrl",
+        "constant_name": "LendswiftClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "LendswiftSellOffOfferTitle",
+        "constant_name": "LendswiftSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "LendswiftSellOffOfferDetails",
+        "constant_name": "LendswiftSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "LendswiftSubAccountMinBids",
+        "constant_name": "LendswiftSubAccountMinBids",
         "readers": [
           {
             "workflow_id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
@@ -888,7 +888,7 @@
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -910,7 +910,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -932,27 +932,27 @@
     ],
     "liberty1": [
       {
-        "key": "Liberty1ClickUrl",
+        "constant_name": "Liberty1ClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Liberty1SellOffOfferTitle",
+        "constant_name": "Liberty1SellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Liberty1SellOffOfferDetails",
+        "constant_name": "Liberty1SellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "Liberty1SubAccountMinBids",
+        "constant_name": "Liberty1SubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -974,7 +974,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -996,27 +996,27 @@
     ],
     "nerdwallet": [
       {
-        "key": "NerdwalletClickUrl",
+        "constant_name": "NerdwalletClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "NerdwalletSellOffOfferTitle",
+        "constant_name": "NerdwalletSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "NerdwalletSellOffOfferDetails",
+        "constant_name": "NerdwalletSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "NerdwalletSubAccountMinBids",
+        "constant_name": "NerdwalletSubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1038,7 +1038,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1060,12 +1060,12 @@
     ],
     "sofi": [
       {
-        "key": "SofiClickUrl",
+        "constant_name": "SofiClickUrl",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "SofiSellOffOfferTitle",
+        "constant_name": "SofiSellOffOfferTitle",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1085,7 +1085,7 @@
         "shadowed_by": []
       },
       {
-        "key": "SofiSellOffOfferDetails",
+        "constant_name": "SofiSellOffOfferDetails",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1105,12 +1105,12 @@
         "shadowed_by": []
       },
       {
-        "key": "SofiSubAccountMinBids",
+        "constant_name": "SofiSubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1132,7 +1132,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1154,7 +1154,7 @@
     ],
     "tripoint": [
       {
-        "key": "TripointClickUrl",
+        "constant_name": "TripointClickUrl",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1176,22 +1176,22 @@
         "shadowed_by": []
       },
       {
-        "key": "TripointSellOffOfferTitle",
+        "constant_name": "TripointSellOffOfferTitle",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "TripointSellOffOfferDetails",
+        "constant_name": "TripointSellOffOfferDetails",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "TripointSubAccountMinBids",
+        "constant_name": "TripointSubAccountMinBids",
         "readers": [],
         "shadowed_by": []
       },
       {
-        "key": "subAccountIdsMap",
+        "constant_name": "subAccountIdsMap",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
@@ -1213,7 +1213,7 @@
         "shadowed_by": []
       },
       {
-        "key": "activeBidding",
+        "constant_name": "activeBidding",
         "readers": [
           {
             "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
