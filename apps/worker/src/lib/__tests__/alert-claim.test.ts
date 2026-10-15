@@ -15,7 +15,7 @@
  * injected timer so no real time passes (L524).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { makeAlertClaims, CLAIM_DEADLINE_MS } from '../alert-claim'
+import { makeAlertClaims, makeSendClaims, CLAIM_DEADLINE_MS } from '../alert-claim'
 import { CRON_JOBS } from '../cron-heartbeat'
 
 /** A namespace whose object never answers: the failure measured on 2026-09-21. */
@@ -160,5 +160,37 @@ describe('makeAlertClaims deadline (#1401)', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('claim partner-probe-control failed')
     expect(errors[0]).toContain('Invalid Durable Object ID')
+  })
+})
+
+/**
+ * A claim that guards a SEND rather than a post fails CLOSED (#2023). The
+ * Salesforce read-back resends a write only under a claim keyed on the write and
+ * the attempt; a claim that cannot be asked must mean "do not send", because a
+ * duplicate resend can regress a record another writer moved, while a missed one
+ * is retried next minute.
+ */
+describe('makeSendClaims (#2023)', () => {
+  let spy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => { spy = vi.spyOn(console, 'error').mockImplementation(() => {}) })
+  afterEach(() => { spy.mockRestore() })
+
+  // Told apart from a lost race, so the caller sends nothing AND spends nothing:
+  // a claim object down for two minutes must not use up a write's resends.
+  it('answers unanswered when the object never answers', async () => {
+    const claims = makeSendClaims(hangingNamespace(), Date.now, { delay: () => Promise.resolve() })
+    await expect(claims.claim('sf-read-back-resend:x:1', 60)).resolves.toBe('unanswered')
+  })
+
+  it('answers unanswered when looking the object up throws', async () => {
+    const claims = makeSendClaims(throwingLookupNamespace(), Date.now, { delay: () => new Promise<void>(() => {}) })
+    await expect(claims.claim('sf-read-back-resend:x:1', 60)).resolves.toBe('unanswered')
+  })
+
+  it('answers claimed to a won claim and taken to a lost one', async () => {
+    const won = makeSendClaims(answeringNamespace(true), Date.now, { delay: () => new Promise<void>(() => {}) })
+    const lost = makeSendClaims(answeringNamespace(false), Date.now, { delay: () => new Promise<void>(() => {}) })
+    await expect(won.claim('k', 60)).resolves.toBe('claimed')
+    await expect(lost.claim('k', 60)).resolves.toBe('taken')
   })
 })

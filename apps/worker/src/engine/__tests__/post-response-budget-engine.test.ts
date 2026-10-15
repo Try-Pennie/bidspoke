@@ -781,22 +781,20 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(row?.input).toMatchObject({ resolved: { operation: 'update', object: 'Prospect__c', record_id: 'a06Ui00002sLkNuIAK', body: REJECT } })
     })
 
-    it('is not dead-lettered as uncapturable, stores no replay row, and is announced as held until the record expires', async () => {
+    // Since #2023 a stamped Prospect update is the Salesforce read-back's: the
+    // at-risk record holds it, stamped, and no held alert repeats what the
+    // read-back will settle or say.
+    it('is not dead-lettered as uncapturable, stores no replay row, and is held, stamped, for the read-back', async () => {
       const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers'))
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
-      const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
-      expect(held, 'the held update was not announced').toBeDefined()
-      // The at-risk record is still in KV, and the alert's expiry is its last write plus 24 hours.
       const keys = [...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))
       expect(keys).toHaveLength(1)
-      const entry = JSON.parse(idempotency.store.get(keys[0])!) as { recorded_at: string }
-      expect(held![3]?.held).toEqual({
-        step: 'patch_prospect_reject',
-        sf_object: 'Prospect__c',
-        sf_record_id: 'a06Ui00002sLkNuIAK',
-        fields: ['BidStatus__c', 'RejectionReason__c'],
-        until: new Date(Date.parse(entry.recorded_at) + 24 * 60 * 60 * 1000).toISOString(),
+      const entry = JSON.parse(idempotency.store.get(keys[0])!) as { execution_id: string; body_encrypted: string }
+      expect(JSON.parse(await decryptSecret(entry.body_encrypted, KEY))).toEqual({
+        ...REJECT,
+        Bidspoke_Write__c: `${entry.execution_id}:patch_prospect_reject:0`,
       })
       // Nothing posted says it cannot be replayed.
       expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
@@ -838,8 +836,8 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
     })
 
-    // Until the Submission read-back (#2023) is live, a held Submission update
-    // is announced like the others rather than left silent.
+    // A Submission has no marker field, so the read-back (#2023) does not judge
+    // it, and a held Submission update is announced rather than left silent.
     it('announces a held Submission update as held too, and stores no replay row', async () => {
       const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' })))
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
@@ -848,6 +846,71 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(held?.[3]?.held).toMatchObject({ sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['External_Exchange_Status__c'] })
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
       expect(stepRow(db)?.input).toMatchObject({ resolved: { record_id: 'a04Ui00000NkhG1IAJ' } })
+    })
+  })
+
+  /**
+   * #2023: the engine stamps a post-answer update with its own marker, so the
+   * read-back can tell whether THIS write landed. Decided by the walk's one fact
+   * (a response already pending), never a second test, and never by the canvas.
+   * These run the REAL Salesforce node and read the PATCH it sent.
+   */
+  describe('the write marker on a post-answer Salesforce update (#2023)', () => {
+    const SF_ENV = {
+      SECRET_ENCRYPTION_KEY: Buffer.from(new Uint8Array(32).map((_, i) => i + 91)).toString('base64'),
+      SALESFORCE_INSTANCE_URL: 'https://pennie.my.salesforce.test',
+      SALESFORCE_CLIENT_ID: 'id',
+      SALESFORCE_CLIENT_SECRET: 'secret',
+    }
+
+    function sending(object: string, beforeAnswer: boolean) {
+      const sf = { id: 'p', namespace: 'patch_prospect', type: 'salesforce', config: { operation: 'update', object, record_id: 'a06Ui00002rn8xtIAA', body: { BidStatus__c: 'Bid' }, retries: 0 } }
+      const resp = { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } }
+      vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+        definition: {
+          trigger: { id: 'trigger', type: 'trigger', config: {} },
+          nodes: beforeAnswer ? [sf, resp] : [resp, sf],
+          edges: [{ id: 'e0', source: beforeAnswer ? 'p' : 'r', target: beforeAnswer ? 'r' : 'p' }],
+        } as unknown as WorkflowDefinition,
+        workflow_version_id: 'v1',
+        workflow_name: 'Engine Bidding Workflow',
+        org_id: 'org-1',
+        slack_channel: null,
+        lane: 'money',
+      })
+      const sent: { executionId?: string; body?: Record<string, unknown> } = {}
+      vi.mocked(executeNode).mockImplementation(async (n, ctx, env, _db, signal) => {
+        if (n.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+        sent.executionId = ctx.execution?.execution_id
+        return executeSalesforceNode(n, ctx, env as Env, signal)
+      })
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (String(url).includes('/services/oauth2/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 })
+        sent.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(null, { status: 204 })
+      }))
+      return sent
+    }
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('stamps a post-answer update with the run, the step and attempt 0', async () => {
+      const sent = sending('Prospect__c', false)
+      await run(() => 'up', SF_ENV)
+      expect(sent.executionId).toBeTruthy()
+      expect(sent.body).toEqual({ BidStatus__c: 'Bid', Bidspoke_Write__c: `${sent.executionId}:patch_prospect:0` })
+    })
+
+    it('does not stamp the same update made before the answer', async () => {
+      const sent = sending('Prospect__c', true)
+      await run(() => 'up', SF_ENV)
+      expect(sent.body).toEqual({ BidStatus__c: 'Bid' })
+    })
+
+    it('does not stamp a Submission, which has no marker field', async () => {
+      const sent = sending('Submission__c', false)
+      await run(() => 'up', SF_ENV)
+      expect(sent.body).toEqual({ BidStatus__c: 'Bid' })
     })
   })
 

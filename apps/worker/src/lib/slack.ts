@@ -30,6 +30,7 @@ import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver
 
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
+import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -977,9 +978,9 @@ export interface OutcomeDeadLetterAlert {
      */
     still_running?: string[]
     /**
-     * A timed out post-answer update whose request the at-risk record holds, on
-     * any object, until the read-back (#2023) takes over the objects it covers
-     * (#2163). Field names only, never values.
+     * A timed out post-answer update whose request the at-risk record holds
+     * (#2163), on an object or in a shape the Salesforce read-back (#2023) does
+     * not judge. Field names only, never values.
      */
     held?: {
       step: string
@@ -1267,8 +1268,9 @@ async function sendHeldWithoutRecordAlert(
  * A Salesforce update after the answer was cut off before Salesforce replied (a
  * timeout, an abort, a dropped connection), and the at-risk record holds its
  * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
- * until the read-back (#2023) ships nothing will look at it before KV deletes
- * it. The alert says that, names the record and the fields it was setting (never
+ * since it is one the Salesforce read-back (#2023) does not own (a Submission, or
+ * one held without its own write marker), nothing will look at it before KV
+ * deletes it. The alert says that, names the record and the fields it was setting (never
  * the values, which are lead data, but it says the run shows them), and when the
  * request is deleted, in ET.
  *
@@ -3162,6 +3164,24 @@ export async function sendWorkflowScheduleRecoveryAlert(
     },
     now,
   )
+}
+
+/**
+ * The Salesforce read-back's alerts (#2023): a resend that failed, a write still
+ * not confirmed, a field another writer moved, writes waiting unread, and the
+ * read-back not running. Worded in lib/salesforce-read-back-alert.ts; laid out here.
+ */
+export async function sendSalesforceReadBackAlert(
+  connection: { bot_token: string; default_channel: string },
+  payload: SalesforceReadBackAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const { title, sections, fallback } = composeSalesforceReadBackAlert(payload, appUrl)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    ...sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
 }
 
 /** One ET timestamp format, so a new alert does not add another copy of it. */
