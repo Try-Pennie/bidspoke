@@ -119,6 +119,9 @@ export const WATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly FieldRule[]
     { field: 'external_id_value', why: 'the template for the value an upsert matches on' },
     { field: 'expected_errors', why: 'the Salesforce rejections that end a lead as rejected rather than failed, and what the caller is told when they do' },
     { field: 'injected_fields', why: 'fields merged into what is written, overriding the body on a collision' },
+    { field: 'omit_fields', why: 'body keys never sent, so which fields are written at all (#2170)' },
+    { field: 'rename_fields', why: 'the field each body key is written to (#2170)' },
+    { field: 'skip_when_empty', why: 'whether an empty body or a missing record id skips the write or fails the step (#2170)' },
   ],
   response: [
     { field: 'status_code', why: 'the status the caller is answered with' },

@@ -166,6 +166,27 @@ describe('PUT /workflows/:id', () => {
     expect(body.error).toContain('validate')
   })
 
+  // The relay port's write options (#2170) are refused by name at save, by the rule
+  // the executor applies, so a definition PUT from a file cannot carry one the
+  // step would refuse on every run.
+  it('rejects a Salesforce step with a malformed write option with 400 naming the step and the option', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'invalid_state_sf_post', type: 'salesforce', config: { operation: 'update', object: 'Submission__c', rename_fields: ['UUID'] } }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe('invalid_state_sf_post: rename_fields must map each field name to a new field name')
+  })
+
   it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
     // A dropped error here defaulted nextVersion to 1, risking a clobber of the
     // existing version chain. A real (non-PGRST116) error must abort.

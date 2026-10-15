@@ -11,8 +11,9 @@
  *   SALESFORCE_INSTANCE_URL   e.g. https://trypennie.my.salesforce.com
  *
  * Config: { operation, object, body?, record_id?, external_id_field?,
- *           external_id_value?, soql? }
- * Output: { status, body }
+ *           external_id_value?, soql?, omit_fields?, rename_fields?,
+ *           skip_when_empty? }
+ * Output: { status, body }, or { skipped: true, skip_reason } for a skipped update
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
@@ -28,6 +29,7 @@ import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
 import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
+import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -62,7 +64,15 @@ interface SalesforceConfig {
   injected_fields?: Record<string, string>  // create / update / upsert: SF field → template value, merged into body.
                                             // Overrides body on key collision. Resolved per-execution.
                                             // Use {{execution.bidspoke_link}} for the run deeplink.
+  // The Pipedream relay's write options (#2170, phase 1 of #1680). Shape checked by
+  // salesforceConfigProblem, the rule save validation uses too.
+  omit_fields?: string[]                    // create / update / upsert: body keys never sent (the relay sent only its 28).
+  rename_fields?: Record<string, string>    // create / update / upsert: body key → the field it is sent as. Before injected_fields.
+  skip_when_empty?: boolean                 // update: skip, with a recorded reason, when there is nothing to write or no record id.
 }
+
+/** Why a write was skipped rather than sent (#2170), recorded on the step's output. */
+export type SalesforceSkipReason = 'nothing_to_write' | 'no_record_id'
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
@@ -183,16 +193,28 @@ export async function executeSalesforceNode(
     throw new Error('Salesforce node requires SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, and SALESFORCE_CLIENT_SECRET env vars')
   }
 
-  const tokenStart = Date.now()
-  const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })
-  const tokenMs = Date.now() - tokenStart
+  // The write options are judged by the rule save validation uses (#2170), so a
+  // definition that reached the engine without passing save fails by name here.
+  const optionProblem = salesforceConfigProblem(node.config)
+  if (optionProblem) throw permanentError(`Salesforce step misconfigured: ${optionProblem}`)
+
   const operation = config.operation ?? 'create'
   const object = config.object ?? ''
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
-    'X-Trace-Id': ctx.trigger.trace_id,
+  const template = {
+    operation,
+    object: config.object,
+    body: config.body,
+    record_id: config.record_id,
+    external_id_field: config.external_id_field,
+    external_id_value: config.external_id_value,
+    soql: config.soql,
+    apex_path: config.apex_path,
+    apex_method: config.apex_method,
+    injected_fields: config.injected_fields,
+    omit_fields: config.omit_fields,
+    rename_fields: config.rename_fields,
+    skip_when_empty: config.skip_when_empty,
   }
 
   let url: string
@@ -205,22 +227,29 @@ export async function executeSalesforceNode(
   let resolvedRecordId: string | undefined
   let resolvedExternalIdValue: string | undefined
   let resolvedSoql: string | undefined
+  let skipReason: SalesforceSkipReason | undefined
 
   const baseUrl = `${instanceUrl}/services/data/v60.0/sobjects/${object}`
 
   if (operation === 'create') {
     url = baseUrl
     method = 'POST'
-    const resolvedBody = resolveValue(config.body, enrichedCtx)
-    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'update') {
     resolvedRecordId = coerceString(resolveValue(config.record_id ?? '', enrichedCtx))
-    if (!resolvedRecordId) throw new Error('Salesforce update requires record_id')
+    if (!resolvedRecordId && !config.skip_when_empty) throw new Error('Salesforce update requires record_id')
     url = `${baseUrl}/${resolvedRecordId}`
     method = 'PATCH'
-    const resolvedBody = resolveValue(config.body, enrichedCtx)
-    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    const recordBody = resolveRecordBody(config, enrichedCtx, template)
+    // The relay's filter (#2170): nothing to write, or no record to write it to,
+    // is a skip, not a send. Judged before injected_fields, which only stamp a
+    // write that is happening anyway.
+    if (config.skip_when_empty) {
+      if (hasNothingToWrite(recordBody)) skipReason = 'nothing_to_write'
+      else if (!resolvedRecordId) skipReason = 'no_record_id'
+    }
+    resolvedBodyForInput = skipReason ? recordBody : applyInjectedFields(recordBody, config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'upsert') {
     const extField = config.external_id_field ?? ''
@@ -228,8 +257,7 @@ export async function executeSalesforceNode(
     if (!extField || !resolvedExternalIdValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
     url = `${baseUrl}/${extField}/${resolvedExternalIdValue}`
     method = 'PATCH'
-    const resolvedBody = resolveValue(config.body, enrichedCtx)
-    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'query') {
     resolvedSoql = coerceString(resolveValue(config.soql ?? '', enrichedCtx))
@@ -271,18 +299,7 @@ export async function executeSalesforceNode(
   // Built after URL/method so we can include the actual outbound URL the
   // request went to (helpful for upsert / update which embed the record id).
   const resolvedInput: ResolvedStepInput = {
-    template: {
-      operation,
-      object: config.object,
-      body: config.body,
-      record_id: config.record_id,
-      external_id_field: config.external_id_field,
-      external_id_value: config.external_id_value,
-      soql: config.soql,
-      apex_path: config.apex_path,
-      apex_method: config.apex_method,
-      injected_fields: config.injected_fields,
-    },
+    template,
     resolved: {
       operation,
       object,
@@ -292,7 +309,34 @@ export async function executeSalesforceNode(
       record_id: resolvedRecordId,
       external_id_value: resolvedExternalIdValue,
       soql: resolvedSoql,
+      ...(skipReason ? { skip_reason: skipReason } : {}),
     },
+  }
+
+  // A skipped write makes no Salesforce call at all, not even for a token, and
+  // completes the step with its reason, as the relay's filter ended its run
+  // (#2170). The output carries `skipped` and `skip_reason`, the keys a skipped
+  // partner bid records, so one shape means skipped across node types.
+  if (skipReason) {
+    console.log(`[salesforce] event=salesforce_write_skipped reason=${skipReason} target=${object} trace=${ctx.trigger.trace_id}`)
+    return {
+      output: { skipped: true, skip_reason: skipReason },
+      resolvedInput,
+      logs: [
+        ...warnLogs,
+        { level: 'info', message: SKIP_MESSAGES[skipReason], ts: new Date().toISOString() },
+      ],
+    }
+  }
+
+  const tokenStart = Date.now()
+  const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })
+  const tokenMs = Date.now() - tokenStart
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+    'X-Trace-Id': ctx.trigger.trace_id,
   }
 
   // Salesforce bulkhead (ADR 0005 / #312): a self-imposed inflight cap on SF calls.
@@ -849,6 +893,71 @@ async function fetchQueryPage(
   } catch {
     return text
   }
+}
+
+const SKIP_MESSAGES: Record<SalesforceSkipReason, string> = {
+  nothing_to_write: 'Skipped the Salesforce write: the body had nothing to write, so no request was sent.',
+  no_record_id: 'Skipped the Salesforce write: the record id was empty, so there was no record to write to and no request was sent.',
+}
+
+function permanentError(message: string, resolvedInput?: ResolvedStepInput): Error {
+  return Object.assign(new Error(message), { permanent: true, ...(resolvedInput ? { resolvedInput } : {}) })
+}
+
+const isPlainRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** How a parsed text body that is not an object is named in the refusal. */
+function jsonKind(v: unknown): string {
+  if (Array.isArray(v)) return 'an array'
+  if (typeof v === 'string') return 'a string'
+  if (typeof v === 'number') return 'a number'
+  return 'a true or false'
+}
+
+/**
+ * The record body a create, update or upsert writes, before injected_fields.
+ *
+ * A string body is rendered by the engine's own template resolution, exactly as
+ * the webhook node renders a text body, then parsed as JSON (#2170). So inside
+ * quotes a missing reference is `""`, a null is the string `"null"` and a number
+ * is a string, which is byte for byte what the Pipedream relay received. A
+ * single reference that resolves to an object is used as it is, as before.
+ * Rendered text that is not JSON, or JSON that is not an object, fails by name
+ * and permanently: sending it would write something nobody configured.
+ *
+ * Then omit_fields drops keys and rename_fields moves keys to the field they are
+ * sent as, in that order, so a rename never resurrects an omitted key.
+ */
+function resolveRecordBody(config: SalesforceConfig, ctx: ExecutionContext, template: Record<string, unknown>): unknown {
+  let body = resolveValue(config.body, ctx)
+  if (typeof config.body === 'string' && typeof body === 'string') {
+    const rendered = body
+    const failed = (message: string) =>
+      permanentError(message, { template, resolved: { operation: config.operation ?? 'create', object: config.object, body: rendered } })
+    try {
+      body = JSON.parse(rendered)
+    } catch (e) {
+      throw failed(`Salesforce body text is not valid JSON once its references are filled in: ${e instanceof Error ? e.message : 'unparseable'}`)
+    }
+    if (body !== null && !isPlainRecord(body)) {
+      throw failed(`Salesforce body text rendered to JSON that is not an object (${jsonKind(body)}), so there is no record to write`)
+    }
+  }
+
+  if (!isPlainRecord(body) || (!config.omit_fields && !config.rename_fields)) return body
+  const shaped: Record<string, unknown> = { ...body }
+  for (const field of config.omit_fields ?? []) delete shaped[field]
+  const renames = Object.entries(config.rename_fields ?? {})
+  const moved = renames.filter(([from]) => from in shaped).map(([from, to]) => [to, shaped[from]] as const)
+  for (const [from] of renames) delete shaped[from]
+  for (const [to, value] of moved) shaped[to] = value
+  return shaped
+}
+
+/** Nothing would reach Salesforce: no body, or an object whose every key would be dropped in sending. */
+function hasNothingToWrite(body: unknown): boolean {
+  if (body === null || body === undefined) return true
+  return isPlainRecord(body) && Object.values(body).every((v) => v === undefined)
 }
 
 function applyInjectedFields(

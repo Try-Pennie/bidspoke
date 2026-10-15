@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { findWorkflowCycle } from '@bidspoke/workflow-definition'
+import { findWorkflowCycle, findSalesforceConfigProblems } from '@bidspoke/workflow-definition'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -359,6 +359,10 @@ workflows.put('/:id', async (c) => {
         400,
       )
     }
+    // A Salesforce step's write options (#2170), judged by the rule its executor
+    // applies, so a definition PUT from a file is held to what the canvas is.
+    const sfProblem = findSalesforceConfigProblems(def.nodes ?? [])[0]
+    if (sfProblem) return c.json({ error: `${sfProblem.namespace}: ${sfProblem.message}` }, 400)
   }
 
   // #569: short-circuit a no-op save. If the incoming definition is structurally

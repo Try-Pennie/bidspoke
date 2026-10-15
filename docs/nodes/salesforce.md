@@ -28,13 +28,16 @@ The access token is cached for about 58 minutes. On a `401` the cached token is 
 |-------|------|----------|---------|-------------|
 | `operation` | string | Yes | `create` | One of `create`, `update`, `upsert`, `query`, `apex`. |
 | `object` | string | For create/update/upsert | none | SObject API name, for example `Prospect__c`. Not used for `query` or `apex`. |
-| `body` | any | For create/update/upsert/apex | none | Request body. Template-enabled JSON. |
+| `body` | any | For create/update/upsert/apex | none | Request body. Template-enabled JSON. For create/update/upsert a text body is rendered then parsed (see Text bodies below). |
 | `record_id` | string | For `update` | none | Salesforce record ID to update. Template-enabled. |
 | `external_id_field` | string | For `upsert` | none | External ID field API name. |
 | `external_id_value` | string | For `upsert` | none | External ID value. Template-enabled. |
 | `soql` | string | For `query` | none | SOQL query string. Template-enabled. |
 | `apex_path` | string | For `apex` | none | Relative Apex REST path, for example `/services/apexrest/prospect-trades`. |
 | `injected_fields` | object | No | none | Map of SF field name to template value, merged into `body`. Overrides `body` on key collision. Resolved per run. Handy for `{{execution.bidspoke_link}}`. |
+| `omit_fields` | array of strings | No | none | create/update/upsert: body keys never sent. Applied before `rename_fields`. |
+| `rename_fields` | object | No | none | create/update/upsert: map of body key to the field it is sent as. Applied after `omit_fields` and before `injected_fields`, which still win on a collision. Two keys may not be renamed to one field. |
+| `skip_when_empty` | boolean | No | `false` | update only: skip the write, with a recorded reason, when there is nothing to write or the record id is empty (see Skipped writes below). |
 | `expected_errors` | array | No | none | SF rejections to treat as a business outcome, not a failure (see below). |
 | `transient_errors` | array | No | SF concurrency-limit entry | SF errors to retry despite a 4xx status (see below). |
 
@@ -51,6 +54,27 @@ Standard node-config fields (`timeout_ms`, `retries`, `retry_backoff`, `on_error
 | `apex` | POST | `<apex_path>` |
 
 The config panel offers object and field dropdowns sourced from synced Salesforce schema metadata when a connection's schema is cached, so you can pick the SObject and see its fields while building the body.
+
+### Text bodies, omitted and renamed fields (#2170)
+
+These reproduce what the Pipedream Submission relay did with Main Flow's posts, so a post moved off the relay sends the same thing.
+
+- **Text body.** When `body` is a string (the canvas stores the body as text whenever it is not valid JSON before its references are filled in), it is rendered by the same template resolution the Webhook node uses for a text body, then parsed as JSON. Inside quotes a missing reference becomes `""`, a null becomes the string `"null"` and a number stays a string, exactly the text the relay received. A body that is a single reference resolving to an object is used as it is, as before. Rendered text that is not valid JSON, or JSON that is not an object, fails the step permanently with a message naming the problem, and nothing is sent. Apex bodies are not parsed: an Apex endpoint decides its own body shape.
+- **`omit_fields`** drops the listed keys, for example `["submissionId", "executionId"]`, which the relay used only in the URL or never sent.
+- **`rename_fields`** sends a key under another name, for example `{ "UUID": "Engine_UUID_SO__c", "leadUUID": "Engine_Lead_UUID_SO__c" }`. A key absent from the body is sent under neither name.
+
+A malformed option (a non-list `omit_fields`, a `rename_fields` that is not a map of names, a `skip_when_empty` on another operation) is refused when the workflow is saved, by the canvas and by the save API, and the step refuses it by name if it ever runs.
+
+### Skipped writes (#2170)
+
+With `skip_when_empty: true`, an update is skipped rather than sent when:
+
+| Reason | When |
+|--------|------|
+| `nothing_to_write` | The body resolves to null or nothing, or is an object left with no keys after `omit_fields` and `rename_fields`. `injected_fields` do not count: they only stamp a write that is happening anyway. |
+| `no_record_id` | The record id resolves empty. |
+
+A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag an update keeps its old behaviour: a missing record id fails the step and a null body sends `{}`.
 
 ### Expected errors
 
@@ -97,6 +121,8 @@ On success:
 ```
 
 For `update`, Salesforce returns `204 No Content`, so `body` is `null`. For `query`, `body` is the SOQL result envelope (`{ totalSize, done, records }`). Read downstream as `steps.<namespace>.output.body.id`, `steps.<namespace>.output.body.records`, etc.
+
+When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues.
 
 When an `expected_errors` entry matches, the output is `{ status, ok: false, errorCode, message, body }` and the run exits at this node.
 
