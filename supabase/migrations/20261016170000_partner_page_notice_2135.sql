@@ -338,9 +338,9 @@ END
 $$;
 REVOKE ALL ON FUNCTION public.partner_uuid_map_page_notice() FROM PUBLIC, anon, authenticated, service_role;
 
--- A transition table named in the body must exist for every event, so each
--- trigger names both where Postgres allows it, and the INSERT and DELETE
--- triggers get a function of their own that reads only the one they have.
+-- An INSERT trigger has only new_rows and a DELETE trigger only old_rows, so
+-- those two use this function, which reads the one the event has; the UPDATE
+-- trigger names both and uses partner_uuid_map_page_notice above.
 CREATE OR REPLACE FUNCTION public.partner_uuid_map_page_notice_one_side()
 RETURNS trigger
 LANGUAGE plpgsql
