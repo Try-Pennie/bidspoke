@@ -69,7 +69,9 @@ function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose
   const id = useId()
   const lines: Array<[string, unknown]> = [['Was', conflict.base], ['Yours', conflict.mine], ['Theirs', conflict.theirs]]
   return (
-    <div role="group" aria-labelledby={`${id}-label`} className="space-y-1.5 border-t border-gray-100 py-3 first:border-t-0">
+    // One question per row: the radio group is its named control (ChoiceGroup),
+    // and the values sit beside it, so no second group repeats its name.
+    <div data-merge-key={conflict.key} className="space-y-1.5 border-t border-gray-100 py-3 first:border-t-0">
       <ChoiceGroup id={id} label={conflict.label} visibleLabel={visibleLabel(conflict)} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} />
       <div className="grid gap-0.5 text-sm">
         {lines.map(([word, value]) => (

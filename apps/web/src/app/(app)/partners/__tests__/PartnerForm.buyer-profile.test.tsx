@@ -270,7 +270,7 @@ describe('the Buyer profile section', () => {
   it('a profile field both people changed asks in the merge dialog, and Save both saves yours and theirs at their versions under a fresh save id', async () => {
     const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250, loan_amount_min: 3000 })).mockImplementationOnce(pageSaver(6))
     const dialog = await openMerge(onSave)
-    expect(within(dialog).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Theirs 250')
+    expect(within(dialog).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Theirs 250')
     expect(dialog).toHaveTextContent('Their change to Loan amount minimum is added.')
     // Nothing is decided for the person: the form still shows their own edit.
     expect(dailyCapInput()).toHaveValue(600)
@@ -315,8 +315,8 @@ describe('the Buyer profile section', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     const newer = await screen.findByRole('dialog')
-    expect(within(newer).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Was 250')
-    expect(within(newer).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Theirs 700')
+    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Was 250')
+    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Theirs 700')
     // Answers given against the older save do not carry over to a newer one.
     expect(within(newer).getByRole('button', { name: 'Save both' })).toBeDisabled()
   })

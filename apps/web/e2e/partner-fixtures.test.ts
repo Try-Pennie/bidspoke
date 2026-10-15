@@ -56,6 +56,30 @@ describe('the redaction', () => {
     expect(run()).toEqual([a, b, again])
   })
 
+  it('never repeats an alias past 26 editors', () => {
+    const r = createRedactor()
+    const names = Array.from({ length: 30 }, (_, i) => r.partner({ updated_by_name: `Person ${i}` }).updated_by_name)
+    expect(new Set(names).size).toBe(30)
+    expect(names[26]).toBe('Editor A2')
+  })
+
+  it('gives one person one alias whichever of their fields a row carries', () => {
+    const r = createRedactor()
+    const full = r.partner({ updated_by: 'u1', updated_by_email: 'a@x.com', updated_by_name: 'Ann' })
+    r.partner({ updated_by: 'u2', updated_by_email: 'b@x.com', updated_by_name: 'Bo' })
+    expect(r.partner({ updated_by: null, updated_by_email: 'a@x.com', updated_by_name: null }).updated_by_email).toBe(full.updated_by_email)
+  })
+
+  it('keeps a sample response\'s shape and replaces every text in it', () => {
+    const out = createRedactor().partner({ last_probe_response: { ok: true, data: { id: 'lead-123', bid: 17.5, names: ['Jo'] } } })
+    expect(out.last_probe_response).toEqual({ ok: true, data: { id: 'redacted', bid: 17.5, names: ['redacted'] } })
+  })
+
+  it('passes a delivery with no route list through rather than failing the capture', () => {
+    const doc = { click_delivery: { success_pattern: 'x' } }
+    expect(createRedactor().profile(doc)).toBe(doc)
+  })
+
   it('replaces a click route address and keeps the route name and states', () => {
     const doc = { click_delivery: { success_pattern: 'x', routes: [{ name: 'DV1', url: 'https://hooks.real/secret', states: ['WA'] }] } }
     expect(createRedactor().profile(doc).click_delivery.routes).toEqual([{ name: 'DV1', url: 'https://hooks.example.com/redacted/DV1', states: ['WA'] }])

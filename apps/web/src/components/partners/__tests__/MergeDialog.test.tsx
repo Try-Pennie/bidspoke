@@ -25,6 +25,9 @@ const base: PageHalves = { partner, profile }
 const mine: PageHalves = { partner: { ...partner, name: 'Tripoint Lending' }, profile: { ...profile, daily_lead_cap: 600, windows: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }] } }
 const theirs: PageHalves = { partner: { ...partner, name: 'TPL', is_active: false }, profile: { ...profile, version: 4, daily_lead_cap: 250, windows: [{ day_of_week: 1, opens_minute: 480, closes_minute: 1020 }] } }
 
+/** One question's row: its radio group and the values beside it. */
+const question = (name: string) => screen.getByRole('radiogroup', { name }).closest('[data-merge-key]') as HTMLElement
+
 function renderDialog(choices: Record<string, MergeSide> = {}, over: Partial<Parameters<typeof MergeDialog>[0]> = {}) {
   const props = {
     result: mergeThreeWay(base, mine, theirs, PARTNER_FIELD_REGISTRY, choices),
@@ -56,11 +59,11 @@ describe('MergeDialog', () => {
 
   it('shows each field\'s value before, yours and theirs, in the words the page uses', () => {
     renderDialog()
-    const caps = screen.getByRole('group', { name: 'Leads per day' })
+    const caps = question('Leads per day')
     expect(caps).toHaveTextContent('Was 500')
     expect(caps).toHaveTextContent('Yours 600')
     expect(caps).toHaveTextContent('Theirs 250')
-    expect(screen.getByRole('group', { name: 'Hours, Monday' })).toHaveTextContent('Yours 10:00 to 17:00')
+    expect(question('Hours, Monday')).toHaveTextContent('Yours 10:00 to 17:00')
   })
 
   it('names what only one of you changed, kept with no question', () => {
@@ -96,6 +99,6 @@ describe('MergeDialog', () => {
     const result = mergeThreeWay(start, { partner, profile: { ...profile, is_enabled: true } }, { partner: { ...partner, accept_signals: [] }, profile: { ...profile, is_enabled: false, version: 4 } }, PARTNER_FIELD_REGISTRY)
     render(<MergeDialog result={result} theirName={null} onChoose={vi.fn()} onSave={vi.fn()} onKeepEditing={vi.fn()} />)
     expect(screen.getByRole('dialog', { name: 'Someone else saved this partner while you were editing' })).toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'Accept when all of' })).toHaveTextContent(/cannot be saved together/i)
+    expect(question('Accept when all of')).toHaveTextContent(/cannot be saved together/i)
   })
 })

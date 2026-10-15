@@ -40,7 +40,8 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 export function writeFixtures({ partners, profiles, uuids, bidConfigs }, outDir = FIXTURE_DIR) {
   const redact = createRedactor()
   mkdirSync(outDir, { recursive: true })
-  const bySlug = [...partners].sort((a, b) => a.slug.localeCompare(b.slug))
+  // Code point order, not the machine's locale, so every machine writes the same bytes.
+  const bySlug = [...partners].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
   writeFileSync(path.join(outDir, 'partners.json'), json(bySlug.map((p) => redact.partner(p))))
   const profileOut = {}
   for (const p of bySlug) {
@@ -59,6 +60,13 @@ async function get(base, token, route) {
   return res.json()
 }
 
+/** A read whose answer must be a list, refused at the read rather than after every other read. */
+async function getList(base, token, route) {
+  const body = await get(base, token, route)
+  if (!Array.isArray(body)) throw new Error(`GET ${route} did not answer a list, so nothing was written`)
+  return body
+}
+
 async function main() {
   const base = (process.env.BIDSPOKE_WORKER_URL ?? '').replace(/\/$/, '')
   const token = process.env.BIDSPOKE_ACCESS_TOKEN ?? ''
@@ -66,15 +74,15 @@ async function main() {
     console.error('capture-partners: set BIDSPOKE_WORKER_URL and BIDSPOKE_ACCESS_TOKEN; nothing was read or written.')
     process.exit(1)
   }
-  const partners = await get(base, token, '/api/partners')
+  const partners = await getList(base, token, '/api/partners')
   const buyers = partners.filter((p) => p.partner_type === 'buyer' || p.partner_type === 'both')
   const profiles = {}
   const bidConfigs = {}
   for (const p of buyers) {
     profiles[p.id] = await get(base, token, `/api/partners/${p.id}/buyer-profile`)
-    bidConfigs[p.id] = await get(base, token, `/api/partner-bid-configs?partner_id=${p.id}`)
+    bidConfigs[p.id] = await getList(base, token, `/api/partner-bid-configs?partner_id=${p.id}`)
   }
-  const uuids = await get(base, token, '/api/partner-uuids')
+  const uuids = await getList(base, token, '/api/partner-uuids')
   writeFixtures({ partners, profiles, uuids, bidConfigs })
   console.log(`capture-partners: wrote ${partners.length} partners, ${buyers.length} buyers, ${uuids.length} sub-account IDs to ${FIXTURE_DIR}`)
 }

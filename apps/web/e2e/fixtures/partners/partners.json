@@ -43,10 +43,10 @@
     "last_probe_response": {
       "ok": true,
       "data": {
-        "bid": "17.50",
-        "Status": "Success",
-        "bid_id": "9a981c89-5a0c-4754-a17a-e8f16aeedddf",
-        "ClickThrough_url": "https://am-one.example/click/abc123"
+        "bid": "redacted",
+        "Status": "redacted",
+        "bid_id": "redacted",
+        "ClickThrough_url": "redacted"
       }
     },
     "sell_off_offer_title": null,
@@ -524,7 +524,7 @@
       "ok": true,
       "data": {
         "createLead": {
-          "id": "tp-lead-abc123",
+          "id": "redacted",
           "bidValue": 145.5,
           "resultCode": 1013
         }
