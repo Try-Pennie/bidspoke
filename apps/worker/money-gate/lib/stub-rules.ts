@@ -138,6 +138,18 @@ export const RULES: Rule[] = [
       blocked: () => json([{ errorCode: 'FIELD_CUSTOM_VALIDATION_EXCEPTION', message: 'Creation is blocked: a lead with this SSN was seen recently', fields: [] }], 400),
     },
   },
+  // Main Flow's native Submission PATCHes: set_completed_submission today, and the
+  // nine outcome writes once the relay port (#1680, src/lib/main-flow-port) is PUT.
+  // Its own rule so a variant can fail them without failing every other update.
+  {
+    name: 'salesforce_submission_update',
+    match: (r) => r.method === 'PATCH' && SF_OBJECT.exec(path(r))?.[1] === 'Submission__c' && !!SF_OBJECT.exec(path(r))![2],
+    default: 'ok',
+    scenarios: {
+      ok: () => ({ status: 204, body: '' }),
+      failed: () => json([{ errorCode: 'UNABLE_TO_LOCK_ROW', message: 'money gate: submission update refused' }], 400),
+    },
+  },
   {
     name: 'salesforce_update',
     match: (r) => (r.method === 'PATCH' || r.method === 'POST') && SF_OBJECT.test(path(r)) && !!SF_OBJECT.exec(path(r))![2],
@@ -194,6 +206,19 @@ export const RULES: Rule[] = [
       debt_zero_salesforce_high: creditTrades({ EngineDebt__c: 0, BESOverwrite__c: null, EnrolledPennieDebt__c: 15000 }),
       bes_overwrite: creditTrades({ EngineDebt__c: 25000, BESOverwrite__c: 7, EnrolledPennieDebt__c: 24000 }),
       no_calculation: () => json({ pennieLeadCalculations: [] }),
+    },
+  },
+  // The credit-inquiries Apex REST call that follows each Main Flow outcome write
+  // once the inquiry post moves after the answer (#1680 phase 7). The success body
+  // is the one the endpoint answered live on 2026-10-15 (the write contract,
+  // question 1); `InquiryParserRest` answers any exception with a 500.
+  {
+    name: 'salesforce_credit_inquiries',
+    match: (r) => r.method === 'POST' && path(r) === '/services/apexrest/credit-inquiries',
+    default: 'ok',
+    scenarios: {
+      ok: () => json({ message: 'Inquiries inserted successfully', statusCode: 200, leadId: '00QGATE00000000001' }),
+      failed: () => json({ message: 'money gate: UNABLE_TO_LOCK_ROW, unable to obtain exclusive access to this record', statusCode: 500 }, 500),
     },
   },
   {
@@ -293,6 +318,10 @@ export const RULES: Rule[] = [
     scenarios: {
       match: equifaxReport(ONE_TRADE),
       match_high_score: equifaxReport({ ...ONE_TRADE, models: [{ modelNumber: '05402', score: 760 }] }),
+      // A report carrying credit inquiries, as about 88% of live ones do (#2169), so
+      // the inquiry post (the Pipedream relay today, the credit-inquiries Apex call
+      // after the #1680 port) has something to send rather than skipping.
+      match_with_inquiries: equifaxReport({ ...ONE_TRADE, inquiries: [{ industryCode: 'BB', inquiryDate: '2026-09-01', subscriberName: 'GATE BANK', customerNumber: null }] }),
       credit_freeze: equifaxReport({ trades: [], hitCode: { code: 'A' } }),
       no_trades: equifaxReport({ trades: [], models: [{ modelNumber: '05402', score: 640 }] }),
       no_hit: equifaxReport({}, 'no_hit'),
