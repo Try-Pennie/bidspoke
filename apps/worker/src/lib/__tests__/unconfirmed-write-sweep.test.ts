@@ -35,6 +35,7 @@ import {
   SUMMARY_QUIET_MS,
   ALL_SAVED_REPEAT_COUNT,
   ALL_SAVED_REPEAT_WINDOW_MS,
+  ALL_SAVED_KEY_PREFIX,
   boundedSlackFor,
   type UnconfirmedSweepDeps,
 } from '../unconfirmed-write-sweep'
@@ -835,6 +836,22 @@ describe('a slowdown that saved every record (#2165)', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, T0 + 2 * HOUR + SUMMARY_QUIET_MS + 60_000, { claims }))
     expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(2)
     expect(vi.mocked(sendRepeatedSlowdownAlert).mock.calls[1][1].slowdowns).toHaveLength(3)
+  })
+
+  it('does not name the same set again when the list could not be cleared after its alert', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const del = kv.delete
+    kv.delete = vi.fn(async (k: string) => {
+      if (k.startsWith(ALL_SAVED_KEY_PREFIX)) throw new Error('kv down')
+      await del(k)
+    })
+    for (const h of [0, 1, 2]) await allSavedSlowdown(kv, db, T0 + h * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    await allSavedSlowdown(kv, db, T0 + 3 * HOUR, { claims })
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
   })
 
   it('a slowdown with any loss is not counted toward a repeat', async () => {
