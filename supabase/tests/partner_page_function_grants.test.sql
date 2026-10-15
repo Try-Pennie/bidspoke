@@ -33,7 +33,9 @@ BEGIN
     -- PR2 (#2133)
     'public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb)',
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
-    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)'
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
+    -- #2151
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -52,7 +54,8 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
-    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)'
+    'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
+    'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)'
   ] LOOP
     IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
   END LOOP;

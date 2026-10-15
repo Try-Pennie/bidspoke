@@ -876,7 +876,8 @@ port rests on, all taken on 2026-10-15 from the production database
 (`execution_steps`, filtered on `started_at`, its partition key), the Salesforce
 org (`sf data query`, standard and Tooling API) and Workers Logs. Nothing was
 written anywhere. The Pipedream auto retry count is measured separately and is
-not in this section. Times are UTC.
+not in this section. Times are UTC. The port built on them (#2171), its stages
+and how each is applied and rolled back: [main-flow-relay-port.md](./main-flow-relay-port.md).
 
 ### What these change in the #1680 plan
 
