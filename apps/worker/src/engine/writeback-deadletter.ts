@@ -51,8 +51,9 @@ export { WRITEBACK_STORE_LABEL }
 
 /**
  * A timed out or cut off update whose request the at-risk watch holds (#2163),
- * and that the Salesforce read-back (#2023) does not own: every Submission__c
- * one, and any other without its own write marker. Declared in the leaf label module.
+ * and that the Salesforce read-back (#2023) does not own: one held without its
+ * own write marker (from before the stamp shipped for its object, Submission__c's
+ * included, #2203). Declared in the leaf label module.
  */
 export { WRITEBACK_HELD_LABEL }
 
@@ -149,9 +150,9 @@ export type CaptureResult =
  * Every other held update expires unread, so it is announced (#2163) with what a
  * person needs to check it: the record, the field names (never the values, and
  * never the marker, which is not something it set), and when the held request is
- * deleted. That covers every Submission__c update (no marker field, so no
- * read-back), and a Prospect, Applicant or Lead update held from before the
- * stamp shipped or whose marker would not fit.
+ * deleted. That covers an update on any of the marker's objects (Prospect,
+ * Applicant, Lead, and Submission since #2203) held from before the stamp
+ * shipped for it, or whose marker would not fit.
  */
 async function announceHeld(
   f: FailedWriteback,

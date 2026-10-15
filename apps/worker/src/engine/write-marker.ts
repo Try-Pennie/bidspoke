@@ -31,18 +31,21 @@
  * order and decides each by its own stamp (#2020).
  */
 
-/** The field on Applicant__c, Prospect__c and Lead that holds the marker (#2020). */
+/** The field on Applicant__c, Prospect__c, Lead (#2020) and Submission__c (#2203) that holds the marker. */
 export const WRITE_MARKER_FIELD = 'Bidspoke_Write__c'
 
 /** Its length in Salesforce: Text(255). */
 export const WRITE_MARKER_MAX_LENGTH = 255
 
 /**
- * The objects that have the field. Submission__c does not: its read-back would
- * need a marker of its own, which is a decision recorded on #2023, not a field
- * to borrow.
+ * The objects that have the field: the one list the stamp (stampWriteMarker),
+ * the held alert's hand-off (readBackOwns) and the read-back's classifier all
+ * read, so an object is stamped exactly when the read-back can judge it.
+ * Submission__c joined on 2026-10-15 (#2203, Dan's choice): the same Text 255
+ * field, writable by the Bidspoke integration user through the
+ * Bidspoke_Write_Marker permission set.
  */
-export const WRITE_MARKER_OBJECTS: ReadonlySet<string> = new Set(['Applicant__c', 'Prospect__c', 'Lead'])
+export const WRITE_MARKER_OBJECTS: ReadonlySet<string> = new Set(['Applicant__c', 'Prospect__c', 'Lead', 'Submission__c'])
 
 /** The attempt the run's own step stamps, every retry inside it included. */
 export const ENGINE_ATTEMPT = 0

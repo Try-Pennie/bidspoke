@@ -305,8 +305,8 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
   // #2023: an update carrying this step's own engine stamp is the read-back's.
   // It reads the record back, resends a write that did not land, and alerts on
   // what it cannot settle, so the held alert would only repeat it.
-  it('leaves a stamped Prospect, Applicant or Lead update to the read-back, with no held alert', async () => {
-    for (const object of ['Prospect__c', 'Applicant__c', 'Lead']) {
+  it('leaves a stamped Prospect, Applicant, Lead or Submission update to the read-back, with no held alert', async () => {
+    for (const object of ['Prospect__c', 'Applicant__c', 'Lead', 'Submission__c']) {
       vi.mocked(recordOutcomeDeadLetter).mockClear()
       const db = fakeSupabase()
       const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -347,10 +347,10 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     }
   })
 
-  // A Submission has no marker field, so the read-back (#2023) cannot judge its
-  // updates, and a held one is announced like any other: a wrong alert swapped
-  // for no alert would be the worse failure.
-  it('announces a held Submission write too, and stores no row', async () => {
+  // A Submission update held from before its stamp shipped (#2203) carries no
+  // marker, so the read-back cannot judge it, and it is announced like any
+  // other: a wrong alert swapped for no alert would be the worse failure.
+  it('announces an unstamped Submission write (held from before the stamp shipped), and stores no row', async () => {
     const db = fakeSupabase()
     const result = await captureFailedWriteback(
       { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
