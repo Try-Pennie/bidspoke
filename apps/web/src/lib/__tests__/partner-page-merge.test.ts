@@ -131,7 +131,7 @@ describe('mergeThreeWay', () => {
   it('a refused merge whose named field both sides agree on asks about every one sided change instead', () => {
     // A stored profile with two Monday windows that overlap (saved outside the
     // page, or before the rule): the validator names Hours, which neither
-    // person changed, so the changes each made become the questions. PR4's
+    // person changed, so the changes each made become the questions. PR4's (#2135)
     // live merge reaches this with edits still in progress.
     const overlapping = [{ day_of_week: 1, opens_minute: 540, closes_minute: 1020 }, { day_of_week: 1, opens_minute: 600, closes_minute: 700 }]
     const start: PageHalves = { partner, profile: { ...profile, windows: overlapping } }

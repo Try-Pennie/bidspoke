@@ -7,7 +7,7 @@
 
 // The partners page's leave prompts (PartnerForm's link and Cancel guards, the
 // list's partner switch and New), which are still the browser's own confirm
-// until PR7 (#2114) replaces them with the page's own dialog. The canvas asks in
+// until PR7 (#2138) replaces them with the page's own dialog. The canvas asks in
 // its own dialog since #2134 (LeaveCanvasDialog).
 export const UNSAVED_CHANGES_MESSAGE = 'You have unsaved changes. Leave without saving?'
 
