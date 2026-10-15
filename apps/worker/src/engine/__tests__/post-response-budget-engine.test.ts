@@ -944,14 +944,21 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
     })
 
-    // A Submission has no marker field, so the read-back (#2023) does not judge
-    // it, and a held Submission update is announced rather than left silent.
-    it('announces a held Submission update as held too, and stores no replay row', async () => {
+    // #2203: a Submission carries the marker too, so a held post-answer
+    // Submission update is held stamped for the read-back, with no held alert,
+    // exactly as a Prospect update is.
+    it('holds a cut off Submission update stamped for the read-back, with no held alert and no replay row', async () => {
       const { db, idempotency } = await run(() => 'up', SF_ENV, salesforce('never answers', update('Submission__c', 'a04Ui00000NkhG1IAJ', { External_Exchange_Status__c: 'Completed' })))
-      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
+      const keys = [...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))
+      expect(keys).toHaveLength(1)
+      const entry = JSON.parse(idempotency.store.get(keys[0])!) as { execution_id: string; sf_object: string; body_encrypted: string }
+      expect(entry.sf_object).toBe('Submission__c')
+      expect(JSON.parse(await decryptSecret(entry.body_encrypted, KEY))).toEqual({
+        External_Exchange_Status__c: 'Completed',
+        Bidspoke_Write__c: `${entry.execution_id}:patch_prospect_reject:0`,
+      })
       expect(deadLetterLabels()).not.toContain(WRITEBACK_UNCAPTURABLE_LABEL)
-      const held = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_HELD_LABEL)
-      expect(held?.[3]?.held).toMatchObject({ sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', fields: ['External_Exchange_Status__c'] })
+      expect(deadLetterLabels()).not.toContain(WRITEBACK_HELD_LABEL)
       expect(db.calls.filter((c) => c.table === 'outcome_writeback_deadletters')).toEqual([])
       expect(stepRow(db)?.input).toMatchObject({ resolved: { record_id: 'a04Ui00000NkhG1IAJ' } })
     })
@@ -1015,8 +1022,16 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(sent.body).toEqual({ BidStatus__c: 'Bid' })
     })
 
-    it('does not stamp a Submission, which has no marker field', async () => {
+    // #2203: Submission__c has the field since 2026-10-15.
+    it('stamps a post-answer Submission update the same way', async () => {
       const sent = sending('Submission__c', false)
+      await run(() => 'up', SF_ENV)
+      expect(sent.executionId).toBeTruthy()
+      expect(sent.body).toEqual({ BidStatus__c: 'Bid', Bidspoke_Write__c: `${sent.executionId}:patch_prospect:0` })
+    })
+
+    it('does not stamp the same Submission update made before the answer', async () => {
+      const sent = sending('Submission__c', true)
       await run(() => 'up', SF_ENV)
       expect(sent.body).toEqual({ BidStatus__c: 'Bid' })
     })

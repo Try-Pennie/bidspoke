@@ -1267,12 +1267,14 @@ async function sendHeldWithoutRecordAlert(
 /**
  * A Salesforce update after the answer was cut off before Salesforce replied (a
  * timeout, an abort, a dropped connection), and the at-risk record holds its
- * request in KV (#2163). So it is unknown, not lost and not unreplayable, and
- * since it is one the Salesforce read-back (#2023) does not own (a Submission, or
- * one held without its own write marker), nothing will look at it before KV
- * deletes it. The alert says that, names the record and the fields it was setting (never
- * the values, which are lead data, but it says the run shows them), and when the
- * request is deleted, in ET.
+ * request in KV (#2163). So its outcome is unknown: it is not lost, and it can
+ * still be replayed. The Salesforce read-back (#2023) owns only an update held
+ * with its own write marker, so this alert is for one held without it (from
+ * before the stamp shipped for its object, Submission__c's included, #2203, or
+ * one whose marker would not fit), which nothing will look at before KV
+ * deletes it. The alert says that, names the record and the fields the update
+ * was setting, and says when the held request is deleted, in ET. It never
+ * shows the values, which are lead data, but it says the run shows them.
  *
  * The dead letter posts once per window, so the count says the record named is
  * the latest of several rather than claiming it is the only one.
