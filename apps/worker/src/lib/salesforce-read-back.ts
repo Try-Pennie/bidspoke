@@ -29,9 +29,11 @@
  *    one sets is superseded.
  *  - A write whose marker is absent is resent through the node's one call path
  *    (bulkhead slot, timeout, fresh login on a 401), stamped with attempt 1 or
- *    2, at most twice. The attempt count is written BEFORE the send, and the send
- *    goes only under a claim keyed on the write and the attempt that fails CLOSED:
- *    a claim that cannot be asked sends nothing (the alert claim fails open).
+ *    2, at most twice. A resend goes only under a claim keyed on the write and
+ *    the attempt that fails CLOSED (makeSendClaims; the alert claim fails open):
+ *    a claim that cannot be asked sends nothing and spends no attempt, one
+ *    another tick holds is that tick's to send, and a won claim's attempt count
+ *    is written BEFORE the send (its claim freed if that write fails).
  *  - A field that now holds a different non-blank value, set by another writer
  *    since the write began, is not overwritten. It is named, field name only, in
  *    a conflict alert, and conflicts are counted per field against the resends
@@ -75,7 +77,7 @@ import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, parseAtRiskEntry, type
 import { WRITE_MARKER_FIELD, parseWriteMarker, readBackOwns, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
-import { makeAlertClaims, raceDeadline, type AlertClaims } from './alert-claim'
+import { makeAlertClaims, makeSendClaims, raceDeadline, type AlertClaims, type SendClaims } from './alert-claim'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor, type SalesforcePort } from './writeback-replay'
 import { WAIT_UNTIL_LIMIT_MS } from './post-response-budget'
 import { completedKey } from './cron-heartbeat'
@@ -158,8 +160,8 @@ export interface SalesforceReadBackDeps {
   portFor: (orgId: string, workflowId: string) => Promise<SalesforcePort>
   /** Why no Salesforce call should go out this minute, or null. Fails closed. */
   busy: () => Promise<UnreadReason | null>
-  /** The resend claim: true only for the one caller that may send. Must fail closed. */
-  resendClaims: Pick<AlertClaims, 'claim'>
+  /** The resend claim: claimed for the one caller that may send. Must fail closed, and say when it could not be asked. */
+  resendClaims: SendClaims
   /** The alert claim, so overlapping ticks post once. Fails open. */
   alertClaims?: AlertClaims
   slackFor: (orgId: string) => Promise<SweepSlack | null>
@@ -392,6 +394,8 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   const putState = (h: Pick<Held, 'id' | 'expiresAtMs'>, state: ReadBackState) =>
     deps.kv.put(stateKey(h.id), JSON.stringify(state), { expiration: Math.max(Math.floor(h.expiresAtMs / 1000), Math.floor(now() / 1000) + 60) })
   const resolved = new Set<string>()
+  // Read this tick, found not landed, and not resent: the claim said no or the attempt could not be counted.
+  const deferred = new Set<string>()
   const forget = async (h: Held) => {
     resolved.add(h.id)
     await deps.kv.delete(h.key)
@@ -508,20 +512,30 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       s.deferred++
       return null
     }
+    // The claim first: only a won claim spends an attempt. One the object could
+    // not answer sends nothing and spends nothing, so a claim object that is down
+    // cannot use up a write's resends; one another tick holds is that tick's to send.
+    const claimKey = `${RESEND_CLAIM_PREFIX}${h.id}:${attempt}`
+    const claimed = await deps.resendClaims.claim(claimKey, AT_RISK_WRITE_TTL_SECONDS)
+    if (claimed !== 'claimed') {
+      s.deferred++
+      deferred.add(h.id)
+      return null
+    }
+    // Then the attempt is counted, before anything is sent.
     const state: ReadBackState = { ...h.state, attempts: attempt, last_attempt_at: new Date(now()).toISOString(), owned_by_later: d.ownedByLater }
     try {
       await putState(h, state)
     } catch (e) {
-      // An attempt that cannot be counted is not made.
+      // An attempt that cannot be counted is not made, and its claim is freed so
+      // the next tick can make it.
       console.error(`[${SF_READ_BACK_JOB}] could not record attempt ${attempt} of ${h.id}, so it is not sent:`, formatErr(e))
+      await deps.resendClaims.release(claimKey)
       s.deferred++
+      deferred.add(h.id)
       return null
     }
     h.state = state
-    if (!(await deps.resendClaims.claim(`${RESEND_CLAIM_PREFIX}${h.id}:${attempt}`, AT_RISK_WRITE_TTL_SECONDS))) {
-      s.deferred++
-      return null
-    }
     count(h, d.candidates, d.conflicts)
     if (d.conflicts.length > 0) s.conflicts++
     s.resent++
@@ -651,7 +665,9 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
 
   // ── Still not confirmed past its window ───────────────────────────────────
   for (const h of held) {
-    if (resolved.has(h.id) || h.state.done || h.state.attempts < 1 || h.state.alerted?.unknown) continue
+    if (resolved.has(h.id) || h.state.done || h.state.alerted?.unknown) continue
+    // Never read is the unread alert's; read and resent, or read and not resendable, is this one.
+    if (h.state.attempts < 1 && !deferred.has(h.id)) continue
     if (startedAt - h.firstAttemptMs < UNKNOWN_WINDOW_MS) continue
     findings.push({ kind: 'unknown', flag: 'unknown', held: h, fields: fieldsOf(h.body), still_trying: h.state.attempts < MAX_RESENDS })
   }
@@ -931,7 +947,9 @@ export async function runSalesforceReadBackForEnv(supabase: SupabaseClient, env:
     portFor: (orgId, workflowId) => salesforcePortFor(env, supabase, keys, orgId, workflowId, { waitMs: 0 }),
     busy: () => bulkheadBusy(env),
     // No claim object means no resend: the claim fails closed.
-    resendClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM, Date.now, { failClosed: true }) : { claim: () => Promise.resolve(false) },
+    resendClaims: env.ALERT_CLAIM
+      ? makeSendClaims(env.ALERT_CLAIM)
+      : { claim: () => Promise.resolve('unanswered' as const), release: () => Promise.resolve() },
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
     slackFor: slackForEnv(supabase, env),
     workflowNames: async (ids) => {

@@ -16,7 +16,7 @@ import { encryptSecret } from '../secret-crypto'
 import { atRiskKey, type AtRiskEntry } from '../../engine/at-risk-writes'
 import { WRITE_MARKER_FIELD } from '../../engine/write-marker'
 import type { SalesforcePort } from '../writeback-replay'
-import type { AlertClaims } from '../alert-claim'
+import type { AlertClaims, SendClaims } from '../alert-claim'
 import type { SalesforceReadBackAlert } from '../salesforce-read-back-alert'
 import {
   runSalesforceReadBack,
@@ -155,6 +155,23 @@ function makeClaims(): AlertClaims & { held: Set<string> } {
   }
 }
 
+/** The send claim as the Durable Object answers it: one caller per key wins. */
+function makeSendClaimsDouble(): SendClaims & { held: Set<string> } {
+  const held = new Set<string>()
+  return {
+    held,
+    claim(key) {
+      if (held.has(key)) return Promise.resolve('taken' as const)
+      held.add(key)
+      return Promise.resolve('claimed' as const)
+    },
+    release(key) {
+      held.delete(key)
+      return Promise.resolve()
+    },
+  }
+}
+
 interface Rig {
   kv: Kv
   sf: ReturnType<typeof makeSalesforce>
@@ -173,7 +190,7 @@ function rig(records: Record<string, Record<string, unknown>> = {}, overrides: P
     keys: KEY,
     portFor: async () => sf.port,
     busy: async () => null,
-    resendClaims: makeClaims(),
+    resendClaims: makeSendClaimsDouble(),
     alertClaims: makeClaims(),
     slackFor: async () => ({ bot_token: 'x', default_channel: '#alerts', config_alerts_enabled: true }),
     sendAlert: async (_slack, payload) => { alerts.push(payload); return true },
@@ -436,7 +453,7 @@ describe('a field another writer has moved', () => {
 
 describe('the resend claim', () => {
   it('sends nothing when the claim gets no answer, since it fails closed', async () => {
-    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: { claim: async () => false } })
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: { claim: () => Promise.resolve('unanswered' as const), release: async () => {} } })
     await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
     const s = await runSalesforceReadBack(r.deps)
     expect(patches(r)).toEqual([])
@@ -444,8 +461,50 @@ describe('the resend claim', () => {
     expect(atRiskKeys(r.kv)).toHaveLength(1)
   })
 
+  // A claim object down for two minutes used to spend both resends while
+  // sending nothing, then report the write as tried twice (push review, #2023).
+  it('spends no attempt while the claim gets no answer, so the resends are still there once it does', async () => {
+    let answering = false
+    const claims = makeSendClaimsDouble()
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, {
+      resendClaims: { claim: (k, ttl) => (answering ? claims.claim(k, ttl) : Promise.resolve('unanswered' as const)), release: claims.release },
+    })
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
+    for (let i = 0; i < 3; i++) {
+      await runSalesforceReadBack(r.deps)
+      r.clock.now += 60_000
+    }
+    expect(patches(r)).toEqual([])
+    answering = true
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r).map((p) => p.body?.[WRITE_MARKER_FIELD])).toEqual([`${EXEC_A}:patch_prospect_reject:1`])
+    expect(r.alerts.filter((a) => a.kind === 'unknown')).toEqual([])
+  })
+
+  it('still says a write it could not resend is not confirmed once its window has passed', async () => {
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: { claim: () => Promise.resolve('unanswered' as const), release: async () => {} } })
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT, ago: UNKNOWN_WINDOW_MS / 60_000 + 1 })
+    await runSalesforceReadBack(r.deps)
+    expect(r.alerts).toHaveLength(1)
+    expect(r.alerts[0]).toMatchObject({ kind: 'unknown', writes: [{ sf_record_id: PROSPECT, resends: 0 }] })
+  })
+
+  it('frees its claim and sends nothing when it cannot count the attempt', async () => {
+    const claims = makeSendClaimsDouble()
+    const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: claims })
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
+    r.kv.put.mockImplementation(async (k: string, v: string) => {
+      if (k.startsWith('sf-read-back:state:')) throw new Error('KV PUT failed: 429 Too Many Requests')
+      r.kv.store.set(k, v)
+    })
+    const s = await runSalesforceReadBack(r.deps)
+    expect(patches(r)).toEqual([])
+    expect(s.deferred).toBe(1)
+    expect(claims.held.size).toBe(0)
+  })
+
   it('lets two overlapping ticks send one resend between them', async () => {
-    const claims = makeClaims()
+    const claims = makeSendClaimsDouble()
     const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: claims })
     await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
     r.sf.state.patch = 'no answer'

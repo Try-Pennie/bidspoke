@@ -31,7 +31,7 @@ export interface ReadBackAlertWrite {
   first_attempt_at: string
   /** ISO: when the held request is deleted. */
   expires_at: string
-  /** Resends tried so far: counted before each is sent, so one whose claim said no is counted too. */
+  /** Resends sent so far: each counted once its claim is won, just before it is sent. */
   resends: number
   /** resend_failed: what Salesforce said, in words. */
   detail?: string
@@ -143,7 +143,10 @@ function unknown(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
       fallback: `${title}: ${record(w)}`,
       sections: [
         `${plain(w.workflow_name)} answered a lead at ${clock(w.first_attempt_at)} ET, and a Salesforce update after the answer did not land in time. ` +
-          `Bidspoke tried to send it again ${times(w.resends)} without an answer from Salesforce, so it is still not known whether it landed. It was updating ${record(w)}, setting ${fieldList(w.fields)}.`,
+          (w.resends === 0
+            ? 'Bidspoke read the record back and the update was not there, and it has not been able to send it again. '
+            : `Bidspoke sent it again ${times(w.resends)} without an answer from Salesforce, so it is still not known whether it landed. `) +
+          `It was updating ${record(w)}, setting ${fieldList(w.fields)}.`,
         `${w.still_trying ? 'Bidspoke keeps trying, and holds' : 'Bidspoke has stopped trying, and holds'} the request until ${until}. The run below shows the values it was sending, if its step was recorded.`,
         `Fix: before ${until}, open that ${objectName(w.sf_object)} in Salesforce and check ${w.fields.length === 1 ? 'that field' : 'those fields'}. If the update did not land, set ${w.fields.length === 1 ? 'it' : 'them'} by hand.`,
         runLink(appUrl, w, 'View the run →'),
@@ -155,7 +158,7 @@ function unknown(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
     title,
     fallback: `${title}: ${p.writes.length} updates`,
     sections: [
-      `${p.writes.length} Salesforce updates made after leads were answered did not land in time. Bidspoke tried to send each again without an answer from Salesforce, so it is still not known whether they landed.`,
+      `${p.writes.length} Salesforce updates made after leads were answered did not land in time, and Bidspoke has not been able to confirm any of them since, so it is still not known whether they landed.`,
       lines(p.writes, appUrl, (x) => `${plain(x.workflow_name)} at ${clock(x.first_attempt_at)} ET: ${record(x)}, setting ${fieldList(x.fields)}.`),
       `Fix: before ${until}, when the first held request is deleted, open each record in Salesforce and check those fields. If an update did not land, set its fields by hand.`,
     ],

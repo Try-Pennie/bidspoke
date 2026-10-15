@@ -43,9 +43,12 @@ import { readBackOwns, WRITE_MARKER_FIELD } from './write-marker'
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
 
-/** A timed out or cut off update whose request the at-risk watch holds, on any object, declared in the leaf label module (#2163). */
+/**
+ * A timed out or cut off update whose request the at-risk watch holds (#2163),
+ * and that the Salesforce read-back (#2023) does not own: every Submission__c
+ * one, and any other without its own write marker. Declared in the leaf label module.
+ */
 export { WRITEBACK_HELD_LABEL }
-
 
 /**
  * A Salesforce step's failure the store could not hold, counted and alerted on.

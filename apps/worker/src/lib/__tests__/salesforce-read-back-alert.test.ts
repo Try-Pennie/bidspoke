@@ -43,9 +43,15 @@ describe('composeSalesforceReadBackAlert', () => {
 
   it('a write still not confirmed says how often it was tried and when the request is deleted, in ET', () => {
     const t = text({ kind: 'unknown', writes: [write({ resends: 2, still_trying: false })] })
-    expect(t).toContain('Bidspoke tried to send it again twice without an answer from Salesforce, so it is still not known whether it landed.')
+    expect(t).toContain('Bidspoke sent it again twice without an answer from Salesforce, so it is still not known whether it landed.')
     expect(t).toContain('Bidspoke has stopped trying, and holds the request until 8:29 PM ET on Oct 15.')
     expect(t).toContain('Fix: before 8:29 PM ET on Oct 15, open that Prospect in Salesforce and check those fields.')
+  })
+
+  it('a write it could not resend at all does not claim a resend was sent', () => {
+    const t = text({ kind: 'unknown', writes: [write({ resends: 0, still_trying: true })] })
+    expect(t).toContain('Bidspoke read the record back and the update was not there, and it has not been able to send it again.')
+    expect(t).not.toMatch(/sent it again/)
   })
 
   it('a conflict names the fields left out and the rate for each, and says the rest was written', () => {
