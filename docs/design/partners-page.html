@@ -1226,11 +1226,11 @@ function partnerTabSections() {
 var FLOORS = [["bc36a297-28a5-476b-a68b-22a16baa60bf", "$3.08"], ["47430d99-6e9b-465a-b92b-d13be78e2d9e", "$3.85"], ["34c7f980-f343-4348-b85f-562697bd2980", "$4.62"], ["462a8345-3957-4fb2-b3f1-68b63fd4c5f3", "$4.62"],
   ["0d868153-1e04-4425-95f9-ce2320a030b0", "$6.15"], ["b3918028-6417-4a3d-acd7-c0f4ca1f9e28", "$6.15"], ["3714027c-81cf-4ab9-9db3-77f8dc0cbf80", "$9.23"], ["f7d57eb6-4c87-437b-8686-fdf088a29846", "$9.23"]];
 var VALUES = {
-  lendswift: [{ label: "Sub-account minimum bids", key: "LendswiftSubAccountMinBids", readers: ["Bidding - LendSwift", "RML - Bidding Workflow (LendSwift)"], floors: true }],
-  tripoint: [{ label: "Click URL", key: "TripointClickUrl", readers: ["Engine Bidding Workflow", "Buyer selection, on every sale"], url: "https://trypennie.com/portal/tpl" }],
-  sofi: [{ label: "Sell-off offer", key: "SofiSellOffOfferTitle, SofiSellOffOfferDetails", readers: ["Engine Bidding Workflow"], sell: true },
-    { label: "Sub-account IDs", key: "subAccountIdsMap", readers: ["Engine Bidding Workflow"], ids: true }],
-  liberty1: [{ label: "Click URL", key: "Liberty1ClickUrl", readers: ["Liberty1's click check, on every click"], url: "https://trypennie.com/portal/liberty/{prospect_id}" }]
+  lendswift: [{ label: "Sub-account minimum bids", readAs: "LendswiftSubAccountMinBids", readers: ["Bidding - LendSwift", "RML - Bidding Workflow (LendSwift)"], floors: true }],
+  tripoint: [{ label: "Click URL", readAs: "TripointClickUrl", readers: ["Engine Bidding Workflow", "Buyer selection, on every sale"], url: "https://trypennie.com/portal/tpl" }],
+  sofi: [{ label: "Sell-off offer", readAs: "SofiSellOffOfferTitle, SofiSellOffOfferDetails", readers: ["Engine Bidding Workflow"], sell: true },
+    { label: "Sub-account IDs", readAs: "subAccountIdsMap", readers: ["Engine Bidding Workflow"], ids: true }],
+  liberty1: [{ label: "Click URL", readAs: "Liberty1ClickUrl", readers: ["Liberty1's click check, on every click"], url: "https://trypennie.com/portal/liberty/{prospect_id}" }]
 };
 function valueControl(v) {
   if (v.sell) return h("div", "vstack", sellOffControl());
@@ -1257,7 +1257,7 @@ function workflowValuesSections() {
   return vals.map(function (v) {
     return { title: v.label, body: function () {
       var out = [valueControl(v), readersLine(v)];
-      if (WVSTYLE === "keys") out.splice(1, 0, h("p", "fld-h", ["Workflows read it as ", h("span", "mono keyname", [v.key]), "."]));
+      if (WVSTYLE === "keys") out.splice(1, 0, h("p", "fld-h", ["Workflows read it as ", h("span", "mono keyname", [v.readAs]), "."]));
       return out;
     } };
   });
