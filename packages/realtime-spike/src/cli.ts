@@ -43,7 +43,17 @@ export interface Wiring {
     register: (closer: () => Promise<void>) => void,
   ): Promise<{ deps: SpikeDeps }>
   spike(deps: SpikeDeps, options: SpikeOptions): Promise<SpikeResult>
+  /** Injectable so a test never waits the run deadline out (L524). */
+  setTimer?: (fn: () => void, ms: number) => unknown
 }
+
+/**
+ * The whole run, start up included (a 60 s Worker start and up to 3 minutes of
+ * waiting for today's partition), must finish within this. A hung call anywhere
+ * then ends in the normal cleanup rather than a process waiting for ever
+ * (#2157 lessons review).
+ */
+export const RUN_DEADLINE_MS = 15 * 60_000
 
 /** The spike's calls that reach Supabase, the database or the Worker. */
 const REMOTE_CALLS: ReadonlyArray<keyof SpikeDeps> = [
@@ -161,14 +171,24 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   )
 
   let exitCode = 0
+  const setTimer = wiring.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref())
+  const deadline = new Promise<never>((_resolve, reject) => {
+    setTimer(() => reject(new Error(`the run did not finish within ${RUN_DEADLINE_MS / 60_000} minutes; cleaning up`)), RUN_DEADLINE_MS)
+  })
+  deadline.catch(() => {})
   try {
-    const live = await wiring.liveDeps(config, ledger, marker, register)
-    tracked = trackInflight(live.deps, REMOTE_CALLS)
-    const result = await wiring.spike(tracked.deps, {
-      ...DEFAULT_OPTIONS,
-      samples: parsed.samples,
-      selfInterrupt: parsed.selfInterrupt,
-    })
+    const result = await Promise.race([
+      (async () => {
+        const live = await wiring.liveDeps(config, ledger, marker, register)
+        tracked = trackInflight(live.deps, REMOTE_CALLS)
+        return wiring.spike(tracked.deps, {
+          ...DEFAULT_OPTIONS,
+          samples: parsed.samples,
+          selfInterrupt: parsed.selfInterrupt,
+        })
+      })(),
+      deadline,
+    ])
     wiring.io.write(`${parsed.ledgerPath}.result.json`, `${JSON.stringify(result, null, 2)}\n`)
     wiring.log(`result written to ${parsed.ledgerPath}.result.json`)
     if (result.problems?.length) {

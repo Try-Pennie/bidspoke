@@ -147,6 +147,23 @@ describe('main', () => {
     expect(h.lines.join('\n')).toMatch(/realtime unreachable/)
   })
 
+  it('gives up on a run that outlives its deadline, cleans up and exits 1, rather than hanging (#2157 lessons review)', async () => {
+    let fire: () => void = () => {}
+    const h = wiring({
+      spike: () => new Promise<SpikeResult>(() => {}),
+      setTimer: (fn) => {
+        fire = fn
+      },
+    })
+    const run = main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    await new Promise((resolve) => setImmediate(resolve))
+    fire()
+    expect(await run).toBe(1)
+    expect(h.calls).toContain('cleanupOps')
+    expect(h.calls).toContain('close')
+    expect(h.lines.join('\n')).toMatch(/did not finish within 15 minutes/)
+  })
+
   it('cleans up from the ledger when interrupted mid run, then exits 130', async () => {
     const h = wiring({
       spike: async () => {
