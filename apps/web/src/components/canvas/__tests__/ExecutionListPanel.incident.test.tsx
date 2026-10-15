@@ -9,7 +9,7 @@
  * "0 failed runs" title would claim the incident had none.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { IncidentFailedRuns } from '@/lib/api'
 
@@ -127,8 +127,10 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
     // keeps the earlier body in state until the new read starts; the panel must
     // not title or list it under the new incident meanwhile.
     const other = body({ incident: { ...body().incident, id: 'inc-other' } })
-    narrowed(vi.fn().mockResolvedValue(other))
-    await new Promise((r) => setTimeout(r, 0))
+    const load = vi.fn().mockResolvedValue(other)
+    narrowed(load)
+    // Wait on the answer itself having been delivered, not on a time.
+    await act(async () => { await load.mock.results[0].value })
     expect(screen.queryByText('2 failed runs in this incident')).not.toBeInTheDocument()
     expect(screen.queryByText(/upstream returned 502/)).not.toBeInTheDocument()
   })
