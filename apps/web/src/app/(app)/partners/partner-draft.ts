@@ -82,6 +82,8 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('daily_lead_cap', 'Caps', FIELD_LABELS.daily_lead_cap),
   profileField('hourly_spend_cap_cents', 'Caps', FIELD_LABELS.hourly_spend_cap_cents),
   profileField('daily_spend_cap_cents', 'Caps', FIELD_LABELS.daily_spend_cap_cents),
+  // #2143: stored by the server half; the page half adds the control and moves this label into FIELD_LABELS.
+  profileField('display_time_zone', SECTION_LABELS.windows, 'Show times in'),
   profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, 'windows'),
   profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, 'blackout_dates'),
   profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, 'tiers'),

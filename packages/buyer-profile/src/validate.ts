@@ -1,5 +1,6 @@
 import { isHttpsUrl, successPatternOf, type ClickDelivery } from './click-delivery'
 import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, clickUrlCarriesProspectId, isCap } from './click-send'
+import { DISPLAY_TIME_ZONE_LABELS, DISPLAY_TIME_ZONES, isDisplayTimeZone } from './clock'
 import type { BuyerProfile } from './eligibility'
 import type { Signal } from './outcome'
 import type { PricingTier } from './tiers'
@@ -43,6 +44,7 @@ export type ProfileErrorCode =
   | 'success_pattern_unset'
   | 'success_pattern_invalid'
   | 'success_pattern_no_id_group'
+  | 'display_time_zone_invalid'
 
 export interface ProfileError {
   code: ProfileErrorCode
@@ -81,6 +83,8 @@ export function soldOnSwitchBlocked(stored: StoredKind): boolean {
 
 const STATE_SET: ReadonlySet<string> = new Set(US_STATES)
 const WIRED: ReadonlySet<string> = new Set(WIRED_POPULATIONS)
+const DISPLAY_ZONE_NAMES = DISPLAY_TIME_ZONES.map((z) => DISPLAY_TIME_ZONE_LABELS[z])
+const DISPLAY_ZONE_CHOICES = `${DISPLAY_ZONE_NAMES.slice(0, -1).join(', ')} or ${DISPLAY_ZONE_NAMES[DISPLAY_ZONE_NAMES.length - 1]}`
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/
 
 /**
@@ -156,6 +160,12 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
   }
 
   checkWindows(profile, err)
+
+  // Shown only (#2143), but a closed list the server refuses outside of (L611):
+  // the form is never the only writer.
+  if (profile.displayTimeZone !== undefined && profile.displayTimeZone !== null && !isDisplayTimeZone(profile.displayTimeZone)) {
+    err('display_time_zone_invalid', 'displayTimeZone', `Choose ${DISPLAY_ZONE_CHOICES}.`)
+  }
 
   for (const date of profile.blackoutDates) {
     if (!DATE.test(date)) err('blackout_date_invalid', 'blackoutDates', `${date} is not a date written as YYYY-MM-DD.`)
