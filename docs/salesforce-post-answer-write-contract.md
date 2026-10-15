@@ -455,9 +455,10 @@ not a write):
 ## Sibling workflow post-answer writes
 
 These workflows already use native Salesforce nodes, so their post-answer writes
-are already the shape #1680 is moving the Main Flow toward. #2023's read-back
-covers Submission writes first (B of the epic); the others wait on a dedicated
-marker field (#2020).
+are already the shape #1680 is moving the Main Flow toward. Since #2020 and
+#2023 their updates on `Applicant__c`, `Prospect__c` and `Lead` carry a write
+marker and are read back and resent; their `Submission__c` updates are not (see
+"The write marker and the read-back" below).
 
 ### Engine Bidding Workflow (`da82a183`)
 
@@ -1164,6 +1165,38 @@ it.
 The canary in #1680 should therefore check, per Submission, that the three
 inquiry counts equal the Lead's (and expect them on this Submission, not the
 older one).
+
+## The write marker and the read-back (#2023)
+
+**The marker.** Every post-answer `update` on `Applicant__c`, `Prospect__c` and
+`Lead` carries `Bidspoke_Write__c = <execution id>:<step namespace>:<attempt>`
+(Text 255, #2020). The engine adds it, not the canvas, so no workflow is edited
+for it: the walk decides "post-answer" by a response already pending when the
+step starts, the same fact that starts the at-risk watch (#2022), and hands the
+marker to the Salesforce node for that step only. A write before the answer is
+never stamped. Attempt 0 is the run's own step, every retry inside it included
+(they send the identical PATCH); 1 and 2 are the read-back's resends. A marker
+that would not fit 255 characters is not stamped at all, and that write keeps the
+held alert. Code: `apps/worker/src/engine/write-marker.ts`.
+
+**The read-back** (`apps/worker/src/lib/salesforce-read-back.ts`, every minute)
+reads each held write's record once it is 3 minutes old (30 s for the last
+attempt to be sent, plus 91.5 s, the longest Salesforce answer measured, rounded
+up to minutes), judges "landed" by the write's own marker, merges several writes
+to one record in attempt order (newer wins, and a later stamp never stands for an
+earlier write), and resends what did not land, at most twice, under a claim that
+fails closed. A field another writer set since the write began is never
+overwritten and is named in a conflict alert. Its header has the rest.
+
+**Submission is not covered.** `Submission__c` has no marker field. The only
+native post-answer Submission write live today is Liberty1's `update_submission`
+(about 30 a day), and it carries this run's link in `PDFlow_3__c`, not
+`PDFlow_1__c`. The Main Flow's Submission writes are still relay posts (webhook
+nodes, which the at-risk watch does not record) until #1680 ports them. Using
+`PDFlow_3__c` as Liberty1's marker, or adding `Bidspoke_Write__c` to
+`Submission__c`, is a decision recorded on #2023; until it is made, a held
+Submission update keeps the held alert (#2163), as does any update held from
+before the marker shipped.
 
 ## Open questions (consolidated)
 

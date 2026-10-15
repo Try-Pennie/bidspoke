@@ -78,26 +78,84 @@ export async function raceDeadline<T>(
   return Promise.race([settled, expired])
 }
 
-export function makeAlertClaims(
-  ns: DurableObjectNamespace,
-  now: () => number = Date.now,
-  options: AlertClaimOptions = {},
-): AlertClaims {
+/** The claim object's two questions, each raced against the deadline. Shared by both kinds of claim. */
+function claimObject(ns: DurableObjectNamespace, now: () => number, options: AlertClaimOptions) {
   const deadlineMs = options.deadlineMs ?? CLAIM_DEADLINE_MS
   const delay = options.delay ?? realDelay
   const stub = (key: string) => ns.get(ns.idFromName(key))
   const race = <T>(work: () => Promise<T>): Promise<Raced<T>> => raceDeadline(work, deadlineMs, delay)
-
   return {
-    async claim(key, ttlSeconds) {
-      const outcome = await race(async () => {
+    deadlineMs,
+    ask: (key: string, ttlSeconds: number): Promise<Raced<boolean>> =>
+      race(async () => {
         const res = await stub(key).fetch('https://do/claim', {
           method: 'POST',
           body: JSON.stringify({ now: now(), ttl_seconds: ttlSeconds }),
         })
         const body = await res.json<{ claimed?: unknown }>()
         return body.claimed === true
-      })
+      }),
+    async release(key: string): Promise<void> {
+      const outcome = await race(() => stub(key).fetch('https://do/release', { method: 'POST' }))
+      if (outcome.kind === 'timed_out') {
+        console.error(`[alert-claim] release ${key} did not answer inside its ${deadlineMs}ms deadline`)
+        return
+      }
+      if (outcome.kind === 'threw') {
+        console.error(`[alert-claim] release ${key} failed: ${formatErr(outcome.error)}`)
+      }
+    },
+  }
+}
+
+/** A send claim's answer: won, held by another caller, or the object could not be asked. */
+export type SendClaimOutcome = 'claimed' | 'taken' | 'unanswered'
+
+export interface SendClaims {
+  claim(key: string, ttlSeconds: number): Promise<SendClaimOutcome>
+  release(key: string): Promise<void>
+}
+
+/**
+ * The claim for a SEND rather than a post (#2023): the Salesforce read-back
+ * resends a write only once it holds one. It fails CLOSED, a claim that cannot
+ * be asked never sends, because a duplicate resend can regress a record another
+ * writer moved while a missed one is tried again next minute. And it says WHY it
+ * did not claim, since a caller that counts its attempts must not spend one
+ * while the object is down: on 2026-10-15 review, two minutes of an unreachable
+ * object would otherwise have used up both of a write's resends with nothing
+ * sent.
+ */
+export function makeSendClaims(ns: DurableObjectNamespace, now: () => number = Date.now, options: AlertClaimOptions = {}): SendClaims {
+  const o = claimObject(ns, now, options)
+  return {
+    async claim(key, ttlSeconds) {
+      const outcome = await o.ask(key, ttlSeconds)
+      if (outcome.kind === 'timed_out') {
+        console.error(`[alert-claim] send claim ${key} did not answer inside its ${o.deadlineMs}ms deadline, not sending`)
+        return 'unanswered'
+      }
+      if (outcome.kind === 'threw') {
+        console.error(`[alert-claim] send claim ${key} failed, not sending: ${formatErr(outcome.error)}`)
+        return 'unanswered'
+      }
+      return outcome.value ? 'claimed' : 'taken'
+    },
+    release: (key) => o.release(key),
+  }
+}
+
+export function makeAlertClaims(
+  ns: DurableObjectNamespace,
+  now: () => number = Date.now,
+  options: AlertClaimOptions = {},
+): AlertClaims {
+  const o = claimObject(ns, now, options)
+  const deadlineMs = o.deadlineMs
+
+  return {
+    async claim(key, ttlSeconds) {
+      const outcome = await o.ask(key, ttlSeconds)
       // Both failures fail OPEN: a claim that cannot be asked must not silence
       // the alert, since the KV cooldown still stands behind it and the worst
       // case is the duplicate this object exists to prevent, never a missing
@@ -114,15 +172,6 @@ export function makeAlertClaims(
       return outcome.value
     },
 
-    async release(key) {
-      const outcome = await race(() => stub(key).fetch('https://do/release', { method: 'POST' }))
-      if (outcome.kind === 'timed_out') {
-        console.error(`[alert-claim] release ${key} did not answer inside its ${deadlineMs}ms deadline`)
-        return
-      }
-      if (outcome.kind === 'threw') {
-        console.error(`[alert-claim] release ${key} failed: ${formatErr(outcome.error)}`)
-      }
-    },
+    release: (key) => o.release(key),
   }
 }

@@ -136,6 +136,17 @@ seconds after it started, with its body (lead fields) encrypted with
 that expiry is its erasure bound: an erasure request is complete for this store
 24 hours after the subject's last run, with nothing to delete by hand.
 
+The Salesforce read-back (#2023) keeps its own state beside those entries, under
+`sf-read-back:`: per held write, the resend count, the field NAMES it left out or
+settled, and when it alerted; per ET day, a count of conflicts per object and
+field. It holds no value of any field and no record id, so it carries no lead
+data. Each per write record expires with the held write it describes (24 hours),
+the daily counts after 8 days. One key does not expire:
+`sf-read-back:liveness-first-seen`, a single time (when its liveness check first
+looked), kept like the cron heartbeat's own first-seen marker. Its resend claims
+live in the alert claim Durable Object, keyed on the run id, the step and the
+attempt.
+
 ### Salesforce
 
 Prospect records carry the full consumer identity and are the system of record
@@ -188,4 +199,5 @@ the site (Geoff, 2026-09-04), so the node sends no certificate. See #1081.
 | Encrypted identity | `persons` | n/a, table is empty | writer removed (#765) |
 | Consumer identity | Salesforce | not ours | Salesforce |
 | Lead fields of an at-risk Salesforce write, encrypted | KV `at-risk-write:` | 24 hours | KV expiry (#2022) |
+| Read-back state: resend counts and field names, no values | KV `sf-read-back:` | 24 hours, daily counts 8 days, one first-seen time kept | KV expiry (#2023) |
 | Staff email, audit | `users`, `*_by_email` | indefinite | deliberate |

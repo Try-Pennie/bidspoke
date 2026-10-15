@@ -80,6 +80,7 @@ import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
+import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -2241,12 +2242,15 @@ export async function walkGraph(
 
     try {
       // A Salesforce update after the answer is watched around its whole retry
-      // loop, so one still out after 2 s is recorded however it ends (#2022).
-      const atRisk =
-        pendingResponse !== null && node.type === 'salesforce' && node.config.operation === 'update'
-          ? startWatchSafely(ctx.startAtRiskWatch, node.namespace)
-          : null
-      const result = await runWatched(
+      // loop, so one still out after 2 s is recorded however it ends (#2022), and
+      // carries its own write marker for the read-back (#2023). One fact decides
+      // both: a response already pending when the step starts.
+      const postAnswerUpdate = pendingResponse !== null && node.type === 'salesforce' && node.config.operation === 'update'
+      const atRisk = postAnswerUpdate ? startWatchSafely(ctx.startAtRiskWatch, node.namespace) : null
+      const marker = postAnswerUpdate && ctx.execution?.execution_id
+        ? writeMarker(ctx.execution.execution_id, node.namespace, ENGINE_ATTEMPT) ?? undefined
+        : undefined
+      const result = await withWriteMarker(ctx, marker, () => runWatched(
         atRisk,
         (note) => { ctx.noteSalesforceRequest = note },
         () => withRetry(
@@ -2258,7 +2262,7 @@ export async function walkGraph(
           ctx.stepDeadline
         ),
         () => retryStats.retries,
-      )
+      ))
       retriesUsed = retryStats.retries
       output = result.output
       stepStatus = 'completed'
