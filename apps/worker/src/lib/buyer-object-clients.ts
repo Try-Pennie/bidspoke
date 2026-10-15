@@ -227,6 +227,12 @@ export class LeadSaleClient implements SaleApi {
     return r.generation
   }
 
+  /** A sold claim's buyer reference set or replaced at the generation read (#2139); every other outcome field stays. */
+  async amend(generation: number, buyerReference: string): Promise<number> {
+    const r = await call<{ generation: number }>(this.stub, 'lead sale amend', 'http://do/amend', postJson({ generation, buyer_reference: buyerReference }), this.opts, claimRefusal)
+    return r.generation
+  }
+
   read(): Promise<SaleState> {
     return call<SaleState>(this.stub, 'lead sale read', 'http://do/read', undefined, this.opts)
   }
