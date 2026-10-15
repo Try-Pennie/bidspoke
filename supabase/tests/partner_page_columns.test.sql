@@ -12,7 +12,9 @@
 -- builds, which copies the fixture into the container. Reads the catalogue only.
 --
 -- Mutations tried: a scratch column added to buyer_pricing_tiers (case 1 red);
--- version moved from bookkeeping to identity in the file (case 3 red).
+-- version moved from bookkeeping to identity in the file (case 3 red);
+-- bid_mode excluded as retired before this file accepted that kind (case 2
+-- red, #2136).
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -48,7 +50,7 @@ BEGIN
       SELECT 1 FROM information_schema.columns c
       WHERE c.table_schema = 'public' AND c.table_name = p.table_name AND c.column_name = p.column_name)
      OR ((p.entry ? 'path' OR p.entry ? 'paths') = (p.entry ? 'excluded'))
-     OR (p.entry ? 'excluded' AND (p.entry ->> 'excluded' NOT IN ('identity', 'bookkeeping') OR coalesce(p.entry ->> 'reason', '') = ''));
+     OR (p.entry ? 'excluded' AND (p.entry ->> 'excluded' NOT IN ('identity', 'bookkeeping', 'retired') OR coalesce(p.entry ->> 'reason', '') = ''));
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'entries that are not a column, or carry neither or both of a path and an exclusion, or an exclusion without a kind and reason: %', array_to_string(bad, ', ');
   END IF;
