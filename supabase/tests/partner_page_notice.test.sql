@@ -186,6 +186,16 @@ $do$;
 --  (c) the columns a production sample found holding a partner id or slug that
 --      (a) and (b) miss (2026-10-15, TABLESAMPLE over every uuid and text
 --      column of every public parent table, read only), named here.
+-- (c), written once: the guard reads it, and case 2 checks each still exists.
+CREATE TEMP TABLE measured_partner_columns (t text NOT NULL, col text NOT NULL);
+INSERT INTO measured_partner_columns VALUES
+  ('api_sources', 'name'),
+  ('source_workflow_assignments', 'source_name'),
+  ('webhook_endpoints', 'source_name'),
+  ('webhook_endpoints', 'subdomain'),
+  ('workflow_executions', 'source'),
+  ('audit_log', 'entity_id');
+
 CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate text) LANGUAGE sql AS $$
   WITH candidates AS (
     SELECT c.relname::text AS t, NULL::text AS col
@@ -198,14 +208,7 @@ CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate tex
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND a.attname ~ '(partner|slug|buyer)'
     UNION
-    SELECT * FROM (VALUES
-      ('api_sources', 'name'),
-      ('source_workflow_assignments', 'source_name'),
-      ('webhook_endpoints', 'source_name'),
-      ('webhook_endpoints', 'subdomain'),
-      ('workflow_executions', 'source'),
-      ('audit_log', 'entity_id')
-    ) measured(t, col)
+    SELECT t, col FROM measured_partner_columns
   ),
   excluded_tables(t, reason) AS (VALUES
     ('buyer_sales', 'sale records, not settings'),
@@ -251,8 +254,8 @@ DECLARE
 BEGIN
   -- Each measured column must still exist, so a rename is noticed rather than
   -- leaving a name here that guards nothing.
-  FOR m IN SELECT * FROM (VALUES ('api_sources', 'name'), ('source_workflow_assignments', 'source_name'), ('webhook_endpoints', 'source_name'),
-                                 ('webhook_endpoints', 'subdomain'), ('workflow_executions', 'source'), ('audit_log', 'entity_id')) v(t, col) LOOP
+  IF (SELECT count(*) FROM measured_partner_columns) = 0 THEN RAISE EXCEPTION 'case 2: the measured column list is empty'; END IF;
+  FOR m IN SELECT t, col FROM measured_partner_columns LOOP
     PERFORM 1 FROM pg_attribute WHERE attrelid = format('public.%I', m.t)::regclass AND attname = m.col AND NOT attisdropped;
     IF NOT FOUND THEN RAISE EXCEPTION 'case 2: the measured column %.% no longer exists; re-measure and update this list', m.t, m.col; END IF;
   END LOOP;
