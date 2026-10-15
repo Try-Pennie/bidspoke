@@ -222,6 +222,31 @@ describe('runFailureRateCheck (#248)', () => {
     expect(sendFailureSpikeAlert).not.toHaveBeenCalled()
   })
 
+  // #2058: a cut, or a cooldown write KV refuses, right after the page must
+  // leave the recovery marker in place, so the all-clear is still owed and the
+  // next tick pages again rather than staying silent.
+  it('keeps the all-clear owed, records opened before paged, and pages again when the cooldown write fails (#2058, #2115)', async () => {
+    const kv = makeKv()
+    const put = kv.put.getMockImplementation()!
+    kv.put.mockImplementation(async (k: string, v: string) => {
+      if (k === 'failure-rate-cooldown:wf-1:ACRO_GATEWAY') throw new Error('KV PUT failed: 500 Internal Server Error')
+      return put(k, v)
+    })
+    const ORG_ID = '66666666-6666-4666-8666-666666666666'
+    const spiking = () => makeSupabase({
+      service_connections: [{ organization_id: ORG_ID }],
+      workflows: [{ ...wf, organization_id: ORG_ID }],
+      workflow_executions: [failRow('ACRO_GATEWAY'), failRow('ACRO_GATEWAY'), failRow('ACRO_GATEWAY')],
+    })
+    await withTickingClock(() => runFailureRateCheck(spiking() as never, kv as never, 'https://app.example.com').catch(() => undefined))
+    expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(true)
+    expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO_GATEWAY')).toBe(false)
+    expect(transitions(kv.store)).toEqual(['opened wf-1:ACRO_GATEWAY', 'paged wf-1:ACRO_GATEWAY'])
+    await runFailureRateCheck(spiking() as never, kv as never, 'https://app.example.com').catch(() => undefined)
+    expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(2)
+  })
+
   it('suppresses while the per-signal cooldown is active', async () => {
     const kv = makeKv({ 'failure-rate-cooldown:wf-1:ACRO_GATEWAY': '1' })
     const sb = makeSupabase({

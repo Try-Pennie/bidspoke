@@ -597,7 +597,9 @@ describe('the cliff alert reports what the self-check measured (#1297)', () => {
 // arrived twice. The claim is asked between the cooldown and the post, and only
 // the tick it answers yes to may post.
 describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
-  const ORG = 'org-1'
+  // A uuid, because the incident record refuses any other organization id and
+  // the cut tests below (#2058) read the opened and paged events.
+  const ORG = '44444444-4444-4444-8444-444444444444'
   const WF = 'wf-1'
   const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
 
@@ -716,6 +718,52 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
     expect(calls).toEqual(['claim volume-cliff:wf-1', 'release volume-cliff:wf-1'])
     expect(held.size).toBe(0)
     expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(false)
+  })
+
+  // #2058: a cut, or a cooldown write KV refuses, right after the page must
+  // leave the recovery marker in place, so the all-clear is still owed and the
+  // next tick pages again rather than staying silent. The marker is written
+  // before the cooldown, so a refused cooldown write cannot skip it.
+  function cooldownRefusingKv() {
+    const kv = fakeKv()
+    const refuse = { on: true }
+    const put = kv.put
+    kv.put = (k: string, v: string) => (refuse.on && k.endsWith(':cooldown') ? Promise.reject(new Error('KV PUT failed: 500 Internal Server Error')) : put(k, v))
+    return { kv, refuse }
+  }
+
+  it('keeps the all-clear owed, and pages again, when the cliff cooldown write fails after the page (#2058)', async () => {
+    const { kv } = cooldownRefusingKv()
+    await expect(runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)).rejects.toThrow('KV PUT failed')
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+    expect(kv.store.has('volume-cliff:wf-1:cooldown')).toBe(false)
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY).catch(() => undefined)
+    expect(postMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the all-clear owed, and pages again, when the database unreachable cooldown write fails after the page (#2058)', async () => {
+    const { kv } = cooldownRefusingKv()
+    kv.store.set(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify({ [ORG]: CONN }), TEST_KEY))
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY).catch(() => undefined)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has(recoveryKey(DB_UNREACHABLE_PREFIX, ORG))).toBe(true)
+    expect(kv.store.has(`${DB_UNREACHABLE_PREFIX}:${ORG}:cooldown`)).toBe(false)
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY).catch(() => undefined)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('records the opening before the page when the cliff cooldown write fails (#2058, #2115)', async () => {
+    const { kv } = cooldownRefusingKv()
+    await withTickingClock(() => runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY).catch(() => undefined))
+    expect(transitions(kv.store).filter((t) => t.endsWith('wf-1'))).toEqual(['opened wf-1', 'paged wf-1'])
+  })
+
+  it('records the opening before the page when the database unreachable cooldown write fails (#2058, #2115)', async () => {
+    const { kv } = cooldownRefusingKv()
+    kv.store.set(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify({ [ORG]: CONN }), TEST_KEY))
+    await withTickingClock(() => runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY).catch(() => undefined))
+    expect(transitions(kv.store)).toEqual([`opened ${ORG}`, `paged ${ORG}`])
   })
 
   it('posts the database unreachable alert once when two ticks find the database down together', async () => {

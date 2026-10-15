@@ -271,10 +271,12 @@ export async function runSlowExecutionCheck(
 
     // Start the cooldown only once the alert delivered — a kicked bot (Slack
     // ok:false) would otherwise suppress retries while the spike kept going.
+    // The marker goes before the cooldown (#2058): a cut or a refused write
+    // between them then costs at worst a repeated page, never a lost all-clear.
     if (sent) {
-      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
       await markAlerted(kv, 'slow-spike', wfId, incident, now)
       await recordPaged(kv, 'slow-spike', wfId, incident, now)
+      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
     }
   }
 }
