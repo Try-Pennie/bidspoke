@@ -2,7 +2,7 @@
  * An organization's workflows with their definitions (#2142, L613): the one
  * read every route and check asking "which of this organization's workflows
  * ..." makes, instead of a copy per caller. Today: the workflow values scanner
- * (partners page tab, and the delete check after it), the buyer profile routes,
+ * (partners page tab; the delete check, #2140, is to call it next), the buyer profile routes,
  * the step rename impact route, the code worker migration and the timeout audit.
  *
  * The Worker connects as service_role, which bypasses row level security, so
@@ -27,7 +27,7 @@ export interface OrgWorkflow {
   id: string
   name: string
   is_active: boolean
-  /** With the id, what the delete check fingerprints the set of workflows by (#2140). */
+  /** With the id, what the delete check (#2140, not built yet) is to fingerprint the set of workflows by. */
   updated_at: string
   definition: unknown
 }

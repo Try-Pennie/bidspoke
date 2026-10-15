@@ -8,7 +8,7 @@
  * offer, sub-account minimum bids, and its entries in activeBidding and
  * subAccountIdsMap), each with the value as the node would emit it now, how a
  * template and a Code node read it, the workflows that read it (from the one
- * scanner, lib/partner-workflow-values.ts, which the delete check also calls),
+ * scanner, lib/partner-workflow-values.ts, which the delete check, #2140, is to call too),
  * any workflow data key it shadows, and for the click URL the readers outside
  * workflows.
  *

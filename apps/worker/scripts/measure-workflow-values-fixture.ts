@@ -6,9 +6,10 @@
  * canvas save writes). It scans the FULL definitions for every partner slug
  * given and records the answer, then keeps of each definition only what the
  * scanner reads (node identities, and of each string only the lines naming
- * `constants` or a `steps.<namespace>.output` path), with each Constants node's
- * data values dropped and its keys kept. `partner-workflow-values-live.test.ts`
- * scans that reduced copy and must reproduce the recorded answer, so the fixture
+ * `constants`, the only name any Constants node in the mirror has), with each Constants node's
+ * data values dropped and its keys kept. The "live definitions" block of
+ * src/lib/__tests__/partner-workflow-values.test.ts scans that reduced copy and
+ * must reproduce the recorded answer, so the fixture
  * is measured from the definitions rather than shaped to pass (L48), and a
  * reduction that dropped evidence fails.
  *

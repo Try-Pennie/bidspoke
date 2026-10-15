@@ -107,7 +107,7 @@ export interface PartnerPageSaved extends StoredCopyAnswer {
  * The workflow values tab's answer (#2142, GET /api/partners/:id/workflow-values):
  * every value the Constants node emits for the partner, with the workflows that
  * read it. Held to the Worker's own type by
- * __guards__/worker/workflow-values-answer-type.test.ts.
+ * apps/web/src/lib/__tests__/workflow-values-answer-type.test.ts.
  */
 export type PartnerValueKind = 'ClickUrl' | 'SellOffOfferTitle' | 'SellOffOfferDetails' | 'SubAccountMinBids' | 'subAccountIdsMap' | 'activeBidding'
 
