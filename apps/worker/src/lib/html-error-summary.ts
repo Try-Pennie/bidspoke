@@ -92,6 +92,22 @@ export function cloudflareErrorCode(bodyText: string | null | undefined): number
   return m ? Number(m[1]) : null
 }
 
+/**
+ * The Cloudflare edge code named anywhere in a rendered error, or null (#2058,
+ * #2117). Unlike cloudflareErrorCode above, which judges a whole response
+ * body, this reads an error message a caller has already rendered (a PostgREST
+ * error carries the body as its message, sometimes behind a prefix), so it
+ * looks for the `error code: NNNN` phrase wherever it sits. Only Cloudflare's
+ * own ranges count: 1xxx (its 10xx and 11xx pages, 1016 being origin DNS) and
+ * 520 to 530 (the origin did not answer it), never an HTTP status in general.
+ */
+const CLOUDFLARE_CODE_IN_TEXT = /\berror code:?\s*(1\d{3}|52\d|530)\b/i
+
+export function cloudflareEdgeCodeIn(text: string): number | null {
+  const m = CLOUDFLARE_CODE_IN_TEXT.exec(text)
+  return m ? Number(m[1]) : null
+}
+
 function readHeader(headers: HeaderReader | undefined, name: string): string | null {
   if (!headers) return null
   if (typeof (headers as { get?: unknown }).get === 'function') {

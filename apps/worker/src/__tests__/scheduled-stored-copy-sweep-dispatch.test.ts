@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../index'
+import { STORED_COPY_SWEEP_BUDGET_MS } from '../lib/stored-copy-sweep'
 
 /**
  * #1846: the stored copy sweep runs every minute, beside the prewarm, and its
@@ -68,6 +69,22 @@ describe('the stored copy sweep dispatch (#1846)', () => {
     sweepStoredCopies.mockResolvedValueOnce({ checked: 4, repaired: [], reconfirmed: ['ep-lastgood:a:/b', 'partner-lastgood:p-2'], failed: [] })
     await fire('* * * * *')
     expect(log.mock.calls.flat().join(' ')).toMatch(/stored-copy-sweep.*reconfirmed=2/)
+  })
+
+  // One deadline for the whole sweep, set when the minute hands it over (#2058).
+  it('gives the sweep one deadline, its budget from the start of the minute', async () => {
+    const before = Date.now()
+    await fire('* * * * *')
+    const deadlineAt = (sweepStoredCopies.mock.calls[0][2] as { deadlineAt: number }).deadlineAt
+    expect(deadlineAt).toBeGreaterThanOrEqual(before + STORED_COPY_SWEEP_BUDGET_MS)
+    expect(deadlineAt).toBeLessThanOrEqual(Date.now() + STORED_COPY_SWEEP_BUDGET_MS)
+  })
+
+  it('logs a sweep that stopped at its deadline, with how far it got', async () => {
+    sweepStoredCopies.mockResolvedValueOnce({ checked: 7, repaired: [], reconfirmed: [], failed: ['the sweep: it stopped at its deadline with 3 partner copies left'], stopped: 'deadline', left: 3, notReached: ['bid matrix copies'] })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await fire('* * * * *')
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toContain('[stored-copy-sweep] stopped at its deadline: checked=7 left=3 not_reached=bid matrix copies')
   })
 
   it('runs from no other cron', async () => {

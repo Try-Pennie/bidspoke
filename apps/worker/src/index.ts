@@ -15,7 +15,7 @@ import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-pat
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { getSlackConnection, sendTitledAlert } from './lib/slack'
-import { makeAlertClaims } from './lib/alert-claim'
+import { makeAlertClaims, raceDeadline } from './lib/alert-claim'
 import { runCronTickOnce } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
@@ -51,7 +51,7 @@ import { runKillRateDriftCheck } from './archive/kill-rate-drift'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
 import { prewarmKvCaches } from './lib/cache-prewarm'
-import { sweepSources, sweepStoredCopies, type SweepResult } from './lib/stored-copy-sweep'
+import { STORED_COPY_SWEEP_BUDGET_MS, sweepSources, sweepStoredCopies, type SweepResult } from './lib/stored-copy-sweep'
 import { flushStoredCopyLedger } from './lib/stored-copy-ledger'
 import { runStoredCopyChecks } from './lib/stored-copy-signals'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
@@ -136,6 +136,22 @@ app.route('/shadow', shadow)
 // REST API — JWT authenticated
 app.route('/api', api)
 
+/**
+ * How long the minute tick waits for any one of its jobs (#2058).
+ *
+ * A KV call has no time limit and cannot be aborted, so in a Cloudflare
+ * incident (2026-10-14 21:35 to 21:49 UTC, KV answering 500 after a long wait)
+ * one job held the every minute invocation open for up to 5.8 minutes, and the
+ * jobs queued behind its hung calls with it. Past this the minute stops waiting
+ * for the job, the invocation can end, and Cloudflare cancels the calls it left.
+ *
+ * Under the tick timer's 60 s checkpoint (TICK_CHECKPOINT_MS), so the minute
+ * ends and names the job before the checkpoint would. Above the 45 s database
+ * request deadline (SUPABASE_REQUEST_DEADLINE_MS), so a stalled database call
+ * fails by its own message first and this catches only what has no deadline.
+ */
+export const MINUTE_JOB_DEADLINE_MS = 50_000
+
 // The scheduled jobs, dispatched on the cron string (see wrangler.toml [triggers]).
 // Reached only through `scheduled` below, once the tick has been claimed (#1899).
 const scheduledJobs = {
@@ -155,7 +171,28 @@ const scheduledJobs = {
     }
     const ctx: Pick<ExecutionContext, 'waitUntil'> = { waitUntil: (p: Promise<unknown>) => handOver(p) }
     // A minute job carries its name, so a slow minute tick names the job that held it up.
-    const minuteJob = (name: string, p: Promise<unknown>) => handOver(p, name)
+    // It is also given MINUTE_JOB_DEADLINE_MS (#2058): what is waited on, by
+    // waitUntil and by the tick, is the RACE, never the job itself, so once the
+    // deadline passes nothing holds the invocation for it. The job is abandoned,
+    // not cancelled: Cloudflare cuts its calls off at whatever await it is on,
+    // as its own kill of a long run already could. What such a cut leaves behind
+    // is recorded per job on the pull request for #2058. A minute job whose
+    // runs keep being cut reads as vanished on its drought of finished runs
+    // (cron-heartbeat.ts), never on a single minute.
+    const minuteJob = (name: string, p: Promise<unknown>) => {
+      const tracked = timer ? timer.track(name, p) : p
+      const bounded = raceDeadline(() => tracked, MINUTE_JOB_DEADLINE_MS).then((r) => {
+        if (r.kind === 'timed_out') {
+          console.warn(`[minute-job] ${name} passed its ${MINUTE_JOB_DEADLINE_MS} ms deadline, so the minute stopped waiting for it`)
+          timer?.timedOut(name)
+        } else if (r.kind === 'threw') {
+          // Handed on unchanged, as before the deadline.
+          throw r.error
+        }
+      })
+      work.push(bounded)
+      platformCtx.waitUntil(bounded)
+    }
     // Stamps a watched job "completed" once its work has SETTLED, whichever way
     // it settled (#985). The work's own handler owns logging and alerting; this
     // only records that the run reached its end. It is deliberately not chained
@@ -906,8 +943,11 @@ const scheduledJobs = {
       // Then the stored copy alerts (#1848), after the sweep so they judge what it
       // just did, and whatever the sweep did: one that threw counts as failing.
       minuteJob('stored-copy-sweep',
-        sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE))
+        // One deadline for the whole sweep, set here as it starts (#2058), so it
+        // stops starting KV reads and leaves the checks below their time.
+        sweepStoredCopies(env.WORKFLOW_CACHE, sweepSources(supabase, env.WORKFLOW_CACHE), { deadlineAt: Date.now() + STORED_COPY_SWEEP_BUDGET_MS })
           .then((r): SweepResult => {
+            if (r.stopped) console.warn(`[stored-copy-sweep] stopped at its deadline: checked=${r.checked} left=${r.left ?? 0} not_reached=${r.notReached?.length ? r.notReached.join(', ') : '-'}`)
             if (r.repaired.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} repaired=${r.repaired.length} ${r.repaired.join(' ')}`)
             // Copies no lead reached, stamped as confirmed so they do not age out (#1847).
             if (r.reconfirmed.length > 0) console.log(`[stored-copy-sweep] checked=${r.checked} reconfirmed=${r.reconfirmed.length}`)
