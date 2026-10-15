@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed, results pending the live run** (#2131, PR0 of the partners page redesign #2114, 2026-10-15). The migration, the script and the local proof are merged with this ADR; the Results section is filled in from the live run against production, which needs the migration applied first. Nothing below the Results heading is a result until then.
+**Accepted: the database sender is proved on production** (#2131, PR0 of the partners page redesign #2114). Live run 2026-10-15 at 16:51 UTC against project `xvrmivmpfykwwtriqwpg`, after the migration was applied. PR4 sends the notice from a trigger with `realtime.send`.
 
 ## Context
 
@@ -72,22 +72,22 @@ The last row matters for both senders. Realtime authorizes a private join by wri
 
 ## Results
 
-**Pending the live run.** To be filled from `<ledger>.result.json` and the run's output:
+Measured on production 2026-10-15, 16:51 UTC (measured run, marker `realtime-spike-20261015t165145z`; interrupt run `realtime-spike-20261015t165127z`), 20 samples per sender.
 
 | | Result |
 |---|---|
-| Sender chosen | pending |
-| Partition before any connection, after the first joins, appeared after | pending |
-| Join attempts | pending |
-| A on A, B on A, B on B, A on B | pending |
-| Database sender: received of 20, p50, p90, max | pending |
-| Database sender: failing step and `WARNING` text, if any | pending |
-| Worker REST sender: statuses, received of 20, p50, p90, max | pending |
-| Subscriber in workerd: status, sender, receipt | pending |
-| Org B empty before cleanup | pending |
-| Interrupt run: exit code, what was removed | pending |
-| Cleanup of the measured run: removed, not there, could not remove | pending |
-| Failure controls (only if the database sender is not proved) | pending |
+| Sender chosen | **Database** (`realtime.send` from the database), proved |
+| Partition before any connection, after the first joins, appeared after | Absent before connecting; present after the first joins (0 ms after they were refused). The newest partition before the run was `messages_2026_10_02`. One run cannot say what made it (the refused join, or something else at that moment), so PR4 must assume a day can start with no partition: its subscriber retries a join refused as `MissingPartition`, as this script did, and a notice sent before the day's first join may be lost with only a `WARNING` |
+| Join attempts | 2: the first joins were refused for the missing partition, the second succeeded |
+| A on A, B on A, B on B, A on B | SUBSCRIBED; refused ("You do not have permissions to read from this Channel topic"); SUBSCRIBED; refused. The organization boundary held both ways |
+| Database sender: received of 20, p50, p90, max | 20 of 20, 0 lost; p50 90 ms, p90 105 ms, max 114 ms (min 87 ms). The partition existed at every send |
+| Database sender: failing step and `WARNING` text, if any | None; no warning, no send error |
+| Worker REST sender: statuses, received of 20, p50, p90, max | HTTP 202 on all 20; 20 of 20 received, 0 lost; p50 160 ms, p90 212 ms, max 402 ms |
+| Subscriber in workerd: status, sender, receipt | SUBSCRIBED; database sender; received after 106 ms |
+| Org B empty before cleanup | Yes: 0 partner configs, 0 buyer profiles, 0 workflows, and no cross topic leak either way |
+| Interrupt run: exit code, what was removed | Exit 130; removed the users row, the auth user, the organization and the allowlist row |
+| Cleanup of the measured run: removed, not there, could not remove | Removed all four (users row, auth user, organization, allowlist row); nothing not there, nothing failed. A read of production afterwards found no row carrying the marker |
+| Failure controls (only if the database sender is not proved) | Not needed |
 
 ## Decision rule
 
