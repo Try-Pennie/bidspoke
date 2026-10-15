@@ -1,12 +1,12 @@
 /**
  * Issue #98: PartnerForm's post-save Undo re-saves a snapshot via buildPartnerBody,
- * so every field must map faithfully — a dropped field would silently revert a
+ * so every field must map faithfully: a dropped field would silently revert a
  * real-money setting. These tests pin the mapping, especially is_active (the
  * concrete bug: disable, save, Undo must re-enable).
  */
 import { describe, it, expect } from 'vitest'
 import { SIGNAL_OPERATORS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
-import { buildPartnerBody, parseRules, serializeRules, floorsToMap, type FormSnapshot } from '../partner-body'
+import { buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseRules, serializeRules, floorsToMap, type FormSnapshot } from '../partner-draft'
 
 function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
   return {
@@ -131,5 +131,48 @@ describe('parseRules and serializeRules round trip every signal operator (#1463)
     const rules = parseRules({ rejection_signals: SIGNAL_OPERATORS.map((op) => ONE_OF_EACH[op]) })
     expect(rules.rejection.map((r) => (r.kind === 'body' ? r.condition : r.kind))).toEqual([...SIGNAL_OPERATORS])
     expect(rules.rejection.some((r) => r.kind === 'body' && r.condition === 'equals' && r.value === '')).toBe(false)
+  })
+})
+
+// #2132: the draft a save is made from. A save sends only the keys the person
+// touched whose value differs from what the page loaded (base), so a save made
+// on top of someone else's newer save cannot put their change back.
+describe('the partner draft: base, draft and touched (#2132)', () => {
+  const base = buildPartnerBody(snap({ name: 'Acme', bidMode: 'ping_only', dailyCap: '100' }), { slug: 'acme', isExisting: true })
+
+  it('starts with nothing touched and nothing to send', () => {
+    const s = initDraft(base)
+    expect(s.touched.size).toBe(0)
+    expect(changedPatch(s)).toEqual({})
+  })
+
+  it('an edit touches only the keys it changed, and the patch carries only those', () => {
+    const s = draftReducer(initDraft(base), { type: 'observe', draft: { ...base, name: 'Acme 2' } })
+    expect([...s.touched]).toEqual(['name'])
+    expect(changedPatch(s)).toEqual({ name: 'Acme 2' })
+    expect('bid_mode' in changedPatch(s)).toBe(false)
+  })
+
+  it('a key edited back to its base value stays touched but is not sent', () => {
+    let s = draftReducer(initDraft(base), { type: 'observe', draft: { ...base, daily_cap: 200 } })
+    s = draftReducer(s, { type: 'observe', draft: { ...base, daily_cap: 100 } })
+    expect(s.touched.has('daily_cap')).toBe(true)
+    expect(changedPatch(s)).toEqual({})
+  })
+
+  it('compares structured values by content, so a rebuilt but equal object is not a change', () => {
+    const s = draftReducer(initDraft(base), { type: 'observe', draft: { ...base, alert_config: JSON.parse(JSON.stringify(base.alert_config)) } })
+    expect(changedPatch(s)).toEqual({})
+  })
+
+  it('a save rebases: what was saved is the new base and nothing is left to send', () => {
+    let s = draftReducer(initDraft(base), { type: 'observe', draft: { ...base, name: 'Acme 2' } })
+    s = draftReducer(s, { type: 'rebase', base: { ...base, name: 'Acme 2' } })
+    expect(changedPatch(s)).toEqual({})
+    expect(s.base.name).toBe('Acme 2')
+  })
+
+  it('the inverse of a patch restores each sent key to its value before the save', () => {
+    expect(inversePatch({ name: 'Acme 2', daily_cap: null }, base)).toEqual({ name: 'Acme', daily_cap: 100 })
   })
 })

@@ -19,7 +19,7 @@
 import { useEffect, useState } from 'react'
 import { PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
-import type { SignalRules } from '@/app/(app)/partners/partner-body'
+import type { SignalRules } from '@/app/(app)/partners/partner-draft'
 import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
 import { ChoiceGroup, Field, NumberInput, Toggle, describedBy, type OutcomeState } from '@/components/ui/form'

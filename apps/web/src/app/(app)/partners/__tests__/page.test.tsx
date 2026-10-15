@@ -24,11 +24,15 @@ vi.mock('../PartnerForm', () => ({
     confirmingDelete?: boolean
     onDelete?: (id: string) => void
     onConfirmDelete?: () => void
-    onSave?: (body: unknown, id?: string) => Promise<void>
+    onSave?: (body: unknown, id?: string, pending?: string[], versioning?: { expected_version: number; save_id: string }) => Promise<{ copyWarning: string | null } | void>
   }) => (
     <div>
       <span data-testid="deleting">{String(props.deleting)}</span>
-      <button onClick={() => props.onSave?.({ is_active: false }, props.partner?.id)}>Save</button>
+      <button onClick={() => {
+        void props.onSave?.({ is_active: false }, props.partner?.id, undefined, { expected_version: 3, save_id: 'save-1' })
+          .then((r) => { const el = document.getElementById('form-copy-warning'); if (el && r) el.textContent = r.copyWarning ?? '' })
+      }}>Save</button>
+      <span id="form-copy-warning" data-testid="form-copy-warning" />
       {props.confirmingDelete ? (
         <button onClick={props.onConfirmDelete}>Confirm delete</button>
       ) : (
@@ -103,12 +107,16 @@ describe('Partners page — delete in-flight state (#495 / AUD-065)', () => {
 describe('Partners page: a change whose stored copy was not cleared says so', () => {
   const WARNING = 'The change was saved and recorded, but a stored copy of the old version could not be refreshed.'
 
-  it('after an edit', async () => {
+  // #2132: an edit's warning goes back to the form, which shows it beside Saved;
+  // the page no longer puts a saved edit in its red error banner.
+  it('after an edit, handed to the form with the versioned save, and never as the page error', async () => {
     vi.mocked(api.partners.update).mockResolvedValue({ ...partnerA, is_active: false, stored_copy_warning: WARNING } as never)
     render(<PartnersPage />)
     fireEvent.click(await screen.findByRole('button', { name: /SoFi/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText(WARNING)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('form-copy-warning')).toHaveTextContent(WARNING))
+    expect(api.partners.update).toHaveBeenCalledWith('p1', { is_active: false }, { expected_version: 3, save_id: 'save-1' })
+    expect(screen.getAllByText(WARNING)).toHaveLength(1)
   })
 
   it('after a delete', async () => {

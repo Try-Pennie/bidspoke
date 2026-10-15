@@ -1,13 +1,15 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
+import { useState, useEffect, useReducer, useRef } from 'react'
+import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig, PartnerSaveVersioning, PartnerStaleVersion } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
-  buildPartnerBody, parseList, listToString, parseRules, parseRoutingCode,
+  buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRules, parseRoutingCode,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
-} from './partner-body'
+} from './partner-draft'
+import { formatEtDayTime } from '@/lib/dates'
+import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
 import { Save, Trash2, Loader2, Plus, Check, X } from 'lucide-react'
@@ -39,9 +41,37 @@ function uid() { return Math.random().toString(36).slice(2) }
 
 // ── Form field primitives ─────────────────────────────────────────────────────
 
+/** What the page hands back for a saved partner (#2132): the row as stored, and the stored copy warning when there was one. */
+export interface PartnerSaveResult {
+  partner: Partner
+  copyWarning: string | null
+}
+
+/**
+ * The sentence for a save refused because someone else saved first (#2132).
+ * It names who and when (in ET, through dates.ts), or says the change came from
+ * outside the page when no editor is on record. The edits are kept.
+ */
+export function staleSaveSentence(stale: Pick<PartnerStaleVersion, 'changed_by_name' | 'changed_at'>): string {
+  const when = stale.changed_at ? `${formatEtDayTime(stale.changed_at)} ET` : 'an unknown time'
+  return stale.changed_by_name
+    ? `Not saved. ${stale.changed_by_name} saved this partner at ${when}. Your changes are still here.`
+    : `Not saved. This partner was changed at ${when}, outside the partners page. Your changes are still here.`
+}
+
+/** The id of one press of Save (#2132), reused only by a retry of that press. */
+function mintSaveId(): string {
+  return crypto.randomUUID()
+}
+
 interface Props {
   partner?: Partner
-  onSave: (body: PartnerBody, id?: string, pendingUuids?: string[]) => Promise<void>
+  /**
+   * Saves the partner record. An existing partner's save is versioned (#2132):
+   * the body is only the changed fields, with the version edited from and this
+   * press's save id. Answers the saved row and any stored copy warning.
+   */
+  onSave: (body: PartnerBody, id?: string, pendingUuids?: string[], versioning?: PartnerSaveVersioning) => Promise<PartnerSaveResult | void>
   onCancel: () => void
   onDelete?: (id: string) => void
   confirmingDelete?: boolean
@@ -151,8 +181,20 @@ export default function PartnerForm({
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [undoSnapshot, setUndoSnapshot] = useState<FormSnapshot | null>(null)
+  /**
+   * What Undo would do (#2132): restore the form to `snapshot` and save `patch`,
+   * the inverse of the save just made, at the version that save produced. It
+   * covers the partner record only, so `savedProfile` says the same press also
+   * saved the buyer profile, which Undo does not reverse (L574).
+   */
+  const [undo, setUndo] = useState<{ snapshot: FormSnapshot; patch: Partial<PartnerBody>; savedProfile: boolean } | null>(null)
   const [undoSecondsLeft, setUndoSecondsLeft] = useState(0)
+  /** The stored copy warning of the last save, shown beside Saved, never as an error (#1846, #2132). */
+  const [copyWarningText, setCopyWarningText] = useState<string | null>(null)
+  /** The version the page last saw the partner at; a save names it (#2132). */
+  const versionRef = useRef<number>(partner?.version ?? 0)
+  /** A press whose answer never came: its retry reuses the same save id (#2132). */
+  const pendingSaveRef = useRef<{ saveId: string; key: string } | null>(null)
 
   const [name, setName] = useState(partner?.name ?? '')
   const [slug, setSlug] = useState(partner?.slug ?? '')
@@ -237,15 +279,32 @@ export default function PartnerForm({
   const [uuidError, setUuidError] = useState<string | null>(null)
   const [removingUuidId, setRemovingUuidId] = useState<string | null>(null)
 
+  // Each read that fails is its own state with a retry, never an empty list
+  // (L10, #2132): an empty sub-account list reads as "this source has none".
+  const [uuidsLoadError, setUuidsLoadError] = useState(false)
+  const [uuidsAttempt, setUuidsAttempt] = useState(0)
+  const [bidConfigsLoadError, setBidConfigsLoadError] = useState(false)
+  const [bidConfigsAttempt, setBidConfigsAttempt] = useState(0)
+  const partnerId = partner?.id
+  const partnerSlug = partner?.slug
   useEffect(() => {
-    if (!partner) return
+    if (!partnerSlug) return
+    let cancelled = false
+    setUuidsLoadError(false)
     api.partnerUuids.list()
-      .then((all) => setUuids(all.filter((u) => u.partner_slug === partner.slug)))
-      .catch(() => {})
-    api.partnerBidConfigs.list(partner.id)
-      .then(setBidConfigs)
-      .catch(() => {})
-  }, [partner])
+      .then((all) => { if (!cancelled) setUuids(all.filter((u) => u.partner_slug === partnerSlug)) })
+      .catch(() => { if (!cancelled) setUuidsLoadError(true) })
+    return () => { cancelled = true }
+  }, [partnerSlug, uuidsAttempt])
+  useEffect(() => {
+    if (!partnerId) return
+    let cancelled = false
+    setBidConfigsLoadError(false)
+    api.partnerBidConfigs.list(partnerId)
+      .then((configs) => { if (!cancelled) setBidConfigs(configs) })
+      .catch(() => { if (!cancelled) setBidConfigsLoadError(true) })
+    return () => { cancelled = true }
+  }, [partnerId, bidConfigsAttempt])
 
   // The buyer profile is read once the partner is known to be a buyer. A read
   // that fails is its own state on the section, never an empty profile (L10).
@@ -269,7 +328,7 @@ export default function PartnerForm({
     if (undoSecondsLeft <= 0) return
     const t = setTimeout(() => {
       setUndoSecondsLeft((s) => {
-        if (s <= 1) { setUndoSnapshot(null); return 0 }
+        if (s <= 1) { setUndo(null); return 0 }
         return s - 1
       })
     }, 1000)
@@ -292,6 +351,15 @@ export default function PartnerForm({
   // re-saves THIS, not the values that were just saved (#98).
   const baselineSnapshot = useRef<FormSnapshot | null>(null)
   if (baselineSnapshot.current === null) baselineSnapshot.current = captureSnapshot()
+  // The draft a save is made from (#2132): base is the partner as loaded or
+  // last saved, and a save sends only the touched keys that differ from it.
+  const bodyCtx = { slug, isExisting: !!partner }
+  const [draftState, dispatchDraft] = useReducer(draftReducer, undefined, () => initDraft(buildPartnerBody(baselineSnapshot.current!, { slug: partner?.slug ?? '', isExisting: !!partner })))
+  useEffect(() => {
+    dispatchDraft({ type: 'observe', draft: buildPartnerBody(captureSnapshot(), bodyCtx) })
+    // dirtyKey is the whole snapshot as text: it changes exactly when a value does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirtyKey])
   // What is STORED for the profile and the partner record, for the one rule that
   // reads it (#1541): the kind cannot be switched while pricing or accept rules
   // are stored. A profile never saved has nothing stored.
@@ -353,28 +421,75 @@ export default function PartnerForm({
     setExternalRoutingCode(snap.externalRoutingCode); setDuplicateSignals(snap.duplicateSignals as Signal[])
   }
 
+  /**
+   * One versioned save of the partner record (#2132): mints a save id for this
+   * press (reusing it only when retrying a press that got no answer), sends
+   * `patch` at the version the page last saw, and answers what happened. A 409
+   * carrying this press's own save id is its own save that landed before the
+   * answer was lost; any other 409 is someone else's newer save, reported with
+   * who and when, and nothing is overwritten. Every outcome but 'saved' has
+   * already said so on the page.
+   */
+  async function savePartnerRecord(patch: Partial<PartnerBody>): Promise<{ kind: 'saved'; partner: Partner | null; copyWarning: string | null } | { kind: 'refused' }> {
+    if (!partner) return { kind: 'refused' }
+    const version = versionRef.current
+    const key = JSON.stringify({ patch, version })
+    const saveId = pendingSaveRef.current?.key === key ? pendingSaveRef.current.saveId : mintSaveId()
+    pendingSaveRef.current = null
+    try {
+      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_version: version, save_id: saveId })
+      const saved = result ? result.partner : null
+      versionRef.current = saved?.version ?? version + 1
+      return { kind: 'saved', partner: saved, copyWarning: result ? result.copyWarning : null }
+    } catch (err) {
+      const e = err as Error & { status?: number; body?: Partial<PartnerStaleVersion> & { error?: string } }
+      if (e.status === undefined) {
+        // No answer: the save may or may not have landed, so a retry of this
+        // press sends the same id and can recognise its own save.
+        pendingSaveRef.current = { saveId, key }
+      }
+      if (e.status === 409 && e.body?.error === 'stale_version') {
+        if (e.body.last_save_id === saveId) {
+          const current = e.body.current ?? null
+          versionRef.current = current?.version ?? version + 1
+          return { kind: 'saved', partner: current, copyWarning: null }
+        }
+        setSaveOutcome({ kind: 'failed', message: staleSaveSentence({ changed_by_name: e.body.changed_by_name ?? null, changed_at: e.body.changed_at ?? null }) })
+        return { kind: 'refused' }
+      }
+      // The route's sentence, never its code, and a refusal naming a field lands
+      // on that field: the click URL an enabled click buyer is offered on (#1561).
+      const sentence = errorSentence(err, 'the partner save failed')
+      setProfileErrors(fieldErrorsOf(err))
+      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
+      return { kind: 'refused' }
+    }
+  }
+
   async function handleUndo() {
-    if (!undoSnapshot) return
-    const snap = undoSnapshot
-    setUndoSnapshot(null)
+    if (!undo) return
+    const { snapshot: snap, patch } = undo
+    setUndo(null)
     setUndoSecondsLeft(0)
     restoreSnapshot(snap)
     setError(null)
+    setCopyWarningText(null)
     setSaveState('saving')
-    try {
-      // Re-save the pre-edit values so the revert reaches the server, not just the
-      // form — without this the Undo button looked like it worked but the DB kept
-      // the just-saved change (#98).
-      await onSave(buildPartnerBody(snap, { slug, isExisting: !!partner }), partner?.id, undefined)
-      baselineDirtyKey.current = JSON.stringify({ ...snap, slug })
-      baselineSnapshot.current = snap
-      setSaveState('saved')
-      setTimeout(() => setSaveState('idle'), 1500)
-    } catch (err) {
-      setProfileErrors(fieldErrorsOf(err))
-      setError(errorSentence(err, 'Failed to undo'))
+    setSaveOutcome({ kind: 'working', label: 'Undoing the save', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
+    // The inverse of the save just made, at the version it produced, so an Undo
+    // can never put back over a newer save someone else made (#98, #2132).
+    const result = await savePartnerRecord(patch)
+    if (result.kind !== 'saved') {
       setSaveState('idle')
+      return
     }
+    baselineDirtyKey.current = JSON.stringify({ ...snap, slug })
+    baselineSnapshot.current = snap
+    dispatchDraft({ type: 'rebase', base: buildPartnerBody(snap, bodyCtx) })
+    setCopyWarningText(result.copyWarning)
+    setSaveState('saved')
+    setSaveOutcome({ kind: 'done', message: `Undone. ${pickupSentence()}` })
+    setTimeout(() => setSaveState('idle'), 1500)
   }
 
   /**
@@ -382,24 +497,26 @@ export default function PartnerForm({
    * stale version comes back as the side by side; the person's edits stay in
    * the form whichever way they resolve it (L717).
    */
-  async function saveProfile(expectedVersion: number): Promise<'saved' | 'conflict' | 'failed'> {
+  async function saveProfile(expectedVersion: number, partnerSaved = true): Promise<'saved' | 'conflict' | 'failed'> {
     if (!partner || !profile) return 'saved'
+    // Says the partner record was saved only when this press saved it (#2132).
+    const lead = partnerSaved ? 'Partner saved. ' : ''
     try {
       const saved = await api.buyerProfiles.save(partner.id, { expected_version: expectedVersion, profile })
       profileBaseline.current = JSON.stringify(saved.profile)
       setProfile(saved.profile)
       setConflict(null)
-      setSaveOutcome({ kind: 'done', message: `Partner saved. Buyer profile saved, version ${saved.profile.version ?? '?'}.` })
+      setSaveOutcome({ kind: 'done', message: `${lead}Buyer profile saved, version ${saved.profile.version ?? '?'}. ${pickupSentence()}` })
       return 'saved'
     } catch (err) {
       const e = err as Error & { status?: number; body?: { error?: string; current?: BuyerProfileDocument } }
       if (e.status === 409 && e.body?.current) {
         setConflict({ theirs: e.body.current, changedBy: null })
-        setSaveOutcome({ kind: 'failed', message: 'Partner saved. The buyer profile was not saved: it changed underneath you. Compare below.' })
+        setSaveOutcome({ kind: 'failed', message: `${lead}The buyer profile was not saved: it changed underneath you. Compare below.` })
         return 'conflict'
       }
       // The route's sentence, never the code req() puts in the message (#1557): a sold_on_in_use refusal names the live workflows.
-      setSaveOutcome({ kind: 'failed', message: `Partner saved. The buyer profile was not saved: ${errorSentence(e, 'the save failed')}` })
+      setSaveOutcome({ kind: 'failed', message: `${lead}The buyer profile was not saved: ${errorSentence(e, 'the save failed')}` })
       return 'failed'
     }
   }
@@ -447,37 +564,68 @@ export default function PartnerForm({
       }
     }
 
-    setSaveState('saving')
-    setSaveOutcome({ kind: 'working', label: 'Saving the partner', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-    try {
-      await onSave(buildPartnerBody(snapshot, { slug, isExisting: !!partner }), partner?.id, isNew ? pendingUuids : undefined)
-      // The saved values are now the clean baseline — clears the dirty flag.
+    const built = buildPartnerBody(snapshot, bodyCtx)
+    const saveProfileToo = buyer && !!partner && !!profile && profileDirty
+    setCopyWarningText(null)
+
+    if (isNew) {
+      setSaveState('saving')
+      setSaveOutcome({ kind: 'working', label: 'Saving the partner', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
+      try {
+        await onSave(built, undefined, pendingUuids)
+      } catch (err) {
+        const sentence = errorSentence(err, 'the partner save failed')
+        setProfileErrors(fieldErrorsOf(err))
+        setError(sentence)
+        setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
+        setSaveState('idle')
+        return
+      }
       baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
       baselineSnapshot.current = snapshot
       setSaveState('saved')
-      // Offer Undo for an existing partner: restore + re-save the PRE-edit values.
-      // Undo covers the partner record; the profile keeps its own version history.
-      if (!isNew && preEdit) {
-        setUndoSnapshot(preEdit)
-        setUndoSecondsLeft(5)
-      }
+      setSaveOutcome({ kind: 'done', message: `Partner saved. ${pickupSentence()}` })
       setTimeout(() => setSaveState('idle'), 1500)
-    } catch (err) {
-      // The route's sentence, never its code, and a refusal naming a field lands
-      // on that field: the click URL an enabled click buyer is offered on (#1561).
-      const sentence = errorSentence(err, 'the partner save failed')
-      setProfileErrors(fieldErrorsOf(err))
-      setError(sentence)
-      setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
-      setSaveState('idle')
       return
     }
 
-    if (buyer && partner && profile && profileDirty) {
+    // Only the fields the person changed (#2132): a field not sent is left as
+    // stored, so this save cannot put back a newer one someone else made.
+    const patch = changedPatch(draftReducer(draftState, { type: 'observe', draft: built }))
+    const partnerChanged = Object.keys(patch).length > 0
+    if (!partnerChanged && !saveProfileToo) {
+      setSaveOutcome({ kind: 'done', message: 'Nothing to save.' })
+      return
+    }
+
+    setSaveState('saving')
+    if (partnerChanged) {
+      setSaveOutcome({ kind: 'working', label: 'Saving the partner', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
+      const result = await savePartnerRecord(patch)
+      if (result.kind !== 'saved') {
+        setSaveState('idle')
+        return
+      }
+      // The saved values are now the clean baseline, which clears the dirty flag.
+      baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
+      baselineSnapshot.current = snapshot
+      dispatchDraft({ type: 'rebase', base: built })
+      setCopyWarningText(result.copyWarning)
+      // Undo restores the PRE-edit values by saving the inverse of this patch at
+      // the version this save produced. It covers the partner record only.
+      if (preEdit) {
+        setUndo({ snapshot: preEdit, patch: inversePatch(patch, buildPartnerBody(preEdit, bodyCtx)), savedProfile: saveProfileToo })
+        setUndoSecondsLeft(5)
+      }
+    }
+    setSaveState('saved')
+    setTimeout(() => setSaveState('idle'), 1500)
+
+    if (saveProfileToo && profile) {
       setSaveOutcome({ kind: 'working', label: 'Saving the buyer profile', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-      await saveProfile(profile.version ?? 0)
+      await saveProfile(profile.version ?? 0, partnerChanged)
     } else {
-      setSaveOutcome({ kind: 'done', message: 'Partner saved.' })
+      setSaveOutcome({ kind: 'done', message: `Partner saved. ${pickupSentence()}` })
     }
   }
 
@@ -648,7 +796,13 @@ export default function PartnerForm({
             onBidComparisonSourceChange={setBidComparisonSource}
             onConfigChange={setResolverConfig}
           />
-          {resolverType === 'matrix' && partner && (
+          {bidConfigsLoadError && (
+            <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <span className="flex-1">Could not load bid matrices. Try again.</span>
+              <UiButton variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</UiButton>
+            </div>
+          )}
+          {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
             <div className="mt-4 border-t border-gray-100 pt-4">
               <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
               <BidMatrixViewer
@@ -862,6 +1016,11 @@ export default function PartnerForm({
                   </button>
                 </div>
               ))
+            ) : uuidsLoadError ? (
+              <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                <span className="flex-1">Could not load sub-account IDs. Try again.</span>
+                <UiButton variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</UiButton>
+              </div>
             ) : (
               uuids.map((u) => (
                 <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
@@ -978,7 +1137,15 @@ export default function PartnerForm({
             {saveState === 'idle'   && <><Save   className="h-4 w-4" /> {isNew ? 'Create partner' : 'Save changes'}</>}
           </button>
           <Outcome state={saveOutcome} />
-          {undoSnapshot && (
+          {/*
+            Saved, but a stored copy of the old version could not be refreshed
+            (#1846). Beside Saved in the server's shared words, never as an error,
+            because the save did happen (#2132).
+          */}
+          {copyWarningText && (
+            <p role="status" className="text-xs text-amber-800">{copyWarningText}</p>
+          )}
+          {undo && (
             <button
               type="button"
               onClick={handleUndo}
@@ -987,13 +1154,17 @@ export default function PartnerForm({
               Undo · {undoSecondsLeft}s
             </button>
           )}
+          {/* Undo saves the partner record only; when this press also saved the profile, say so (L574). */}
+          {undo?.savedProfile && (
+            <span className="text-xs text-gray-600">Undo does not reverse the buyer profile changes.</span>
+          )}
           {dirty && saveState !== 'saving' && (
             <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
               Unsaved changes
             </span>
           )}
-          {!isNew && !undoSnapshot && !dirty && (
+          {!isNew && !undo && !dirty && (
             <p className="text-xs text-gray-500">
               {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'unknown'}`}
             </p>
