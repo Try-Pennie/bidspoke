@@ -625,6 +625,34 @@ describe('the incident routes', () => {
         expect(body.incidents[1].failed_runs).toBeNull()
       })
 
+      it('reads the counts at most two at a time, however many failure rate rows the page holds', async () => {
+        const rows = Array.from({ length: 6 }, (_, i) => frIncident({ started_at: minutesAgo(120 + i), ended_at: minutesAgo(28 + i) }))
+        const fake = install(rows, {}, seedRuns().all)
+        let inFlight = 0
+        let most = 0
+        const realFrom = fake.from
+        vi.mocked(createSupabaseClient).mockReturnValue({
+          rpc: makeSupabase({ users: { single: testUser } }).rpc,
+          from: (table: string) => {
+            const b = realFrom(table) as Record<string, unknown>
+            if (table !== 'workflow_executions') return b
+            const then = b.then as (r: (v: unknown) => unknown) => Promise<unknown>
+            b.then = (resolve: (v: unknown) => unknown) => {
+              inFlight += 1
+              most = Math.max(most, inFlight)
+              return new Promise((done) => setTimeout(done, 1)).then(() => {
+                inFlight -= 1
+                return then(resolve)
+              })
+            }
+            return b
+          },
+        } as unknown as ReturnType<typeof createSupabaseClient>)
+        const body = await closedPage()
+        expect(body.incidents.map((i) => i.failed_runs?.state)).toEqual(Array(6).fill('counted'))
+        expect(most).toBe(2)
+      })
+
       it('gives no count for a workflow outside the caller organization', async () => {
         install([frIncident({ subject: `${WF_B}:ACRO_GATEWAY` })], {}, seedRuns().all)
         expect((await closedPage()).incidents[0].failed_runs).toBeNull()
@@ -741,14 +769,28 @@ describe('the incident routes', () => {
         expect(fake.sent.some((q) => q.table === 'workflow_executions')).toBe(false)
       })
 
-      it('runs an incident with no recorded end to now', async () => {
-        const fr = frIncident({ ended_reason: 'lapsed', ended_at: null })
+      it('runs an incident still open to now', async () => {
+        const fr = frIncident({ ended_reason: null, ended_at: null })
         const late = run({ started_at: minutesAgo(6), completed_at: minutesAgo(5) })
         install([fr], {}, [...seedRuns().all, late])
         const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null }; count: number }
         expect(body.incident.ended_at).toBeNull()
         // The two owned runs, the one after the recorded end in seedRuns, and the late one.
         expect(body.count).toBe(4)
+      })
+
+      it('stops a closed incident whose end was not recorded at the moment it closed, so it never keeps growing', async () => {
+        // Lapsed 20 minutes ago (closed_at): a later failure of the same match is
+        // not this incident's, on the card or in the list.
+        const fr = frIncident({ ended_reason: 'lapsed', ended_at: null, closed_at: minutesAgo(20) })
+        const late = run({ started_at: minutesAgo(6), completed_at: minutesAgo(5) })
+        install([fr], {}, [...seedRuns().all, late])
+        const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null }; count: number }
+        expect(body.incident.ended_at).toBeNull()
+        // The two owned runs only: seedRuns' run 10 minutes ago and the late one
+        // both came after the close.
+        expect(body.count).toBe(2)
+        expect((await closedPage()).incidents[0].failed_runs).toEqual({ workflow_id: WF_A, state: 'counted', count: 2 })
       })
 
       it('500s with a message, never an empty list, when the runs cannot be read', async () => {

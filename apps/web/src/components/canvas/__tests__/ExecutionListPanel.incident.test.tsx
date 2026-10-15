@@ -159,4 +159,10 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
     expect(api.incidents.failedRuns).not.toHaveBeenCalled()
     expect(api.executions.list).toHaveBeenCalled()
   })
+
+  it('reads an empty incident id as no narrowing', async () => {
+    render(<ExecutionListPanel workflowId={WF} onSelect={vi.fn()} incidentId="" />)
+    expect(screen.getByText('Executions')).toBeInTheDocument()
+    expect(api.incidents.failedRuns).not.toHaveBeenCalled()
+  })
 })

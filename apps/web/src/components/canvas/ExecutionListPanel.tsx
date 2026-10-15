@@ -160,7 +160,9 @@ export default function ExecutionListPanel({
   loadIncidentRuns = api.incidents.failedRuns,
   now = Date.now,
 }: Props) {
-  const narrowed = incidentId !== undefined
+  // An empty id narrows to nothing, so it is no narrowing rather than a list
+  // that waits for a read it will never start.
+  const narrowed = Boolean(incidentId)
   const [incidentRuns, setIncidentRuns] = useState<IncidentRuns>({ kind: 'loading' })
   // Each read of an incident's runs starts a generation; an answer from an older
   // one (the narrowing changed or was retried mid flight) is dropped.

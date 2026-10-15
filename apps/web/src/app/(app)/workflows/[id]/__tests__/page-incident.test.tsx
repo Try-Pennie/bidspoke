@@ -65,4 +65,10 @@ describe('the workflow page and the incident narrowing (#2102)', () => {
     render(<WorkflowEditorPage />)
     expect(await screen.findByTestId('canvas')).toHaveTextContent('all runs')
   })
+
+  it('reads an empty incident parameter as no narrowing, never a list stuck loading', async () => {
+    search = new URLSearchParams('incident=')
+    render(<WorkflowEditorPage />)
+    expect(await screen.findByTestId('canvas')).toHaveTextContent('all runs')
+  })
 })

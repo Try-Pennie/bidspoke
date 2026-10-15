@@ -38,6 +38,7 @@ import { formatErr } from './format-error'
 import { INCIDENT_SIGNALS, incidentSignal, incidentSignalLabel, isIncidentSignal } from './incident-signals'
 import { incidentDurationText, incidentSoFarText, measureIncidentSpan } from './incident-span'
 import { failureRateSubject, listFailedRuns, summarizeFailedRuns, type FailedRun, type FailedRunsSummary } from './incident-failed-runs'
+import { mapWithConcurrency } from './timeout-audit'
 
 export const INCIDENTS_DEFAULT_LIMIT = 50
 export const INCIDENTS_MAX_LIMIT = 100
@@ -46,6 +47,14 @@ export const INCIDENT_WINDOW_DAYS = [7, 14, 30] as const
 export type IncidentWindowDays = (typeof INCIDENT_WINDOW_DAYS)[number]
 /** Open incidents are a handful at a time (#2098: about 27 a month); a list longer than this says so. */
 export const ONGOING_LIMIT = 100
+
+/**
+ * How many card rows' failed run counts are read at once (#2102). Each is a
+ * paged read of workflow_executions, and a page can hold up to 100 rows; a
+ * dozen reads started in one instant slowed lead requests on 2026-10-08
+ * (#1884), so they queue two at a time, as the timeout audit's do.
+ */
+export const FAILED_RUNS_READ_CONCURRENCY = 2
 
 export const UNNAMED_SUBJECT = 'Unnamed subject'
 export const MISSING_WORKFLOW_SUBJECT = 'A workflow no longer on record'
@@ -110,7 +119,7 @@ export interface OngoingIncidents {
 /** Thrown for a read that failed or returned a row outside the caller's scope. */
 export class IncidentReadError extends Error {}
 
-const COLUMNS = 'id, signal, subject, subject_label, scope, organization_id, started_at, ended_at, ended_reason, pages_sent, window_minutes'
+const COLUMNS = 'id, signal, subject, subject_label, scope, organization_id, started_at, ended_at, ended_reason, closed_at, pages_sent, window_minutes'
 
 interface StoredIncident {
   id: string
@@ -122,6 +131,7 @@ interface StoredIncident {
   started_at: string
   ended_at: string | null
   ended_reason: string | null
+  closed_at: string | null
   pages_sent: number
   window_minutes: number | null
 }
@@ -269,7 +279,7 @@ export async function readClosedIncidents(
   const rows = all.slice(0, limit)
   assertScoped(rows, orgId)
   const workflows = await workflowNames(supabase, orgId, rows)
-  const failedRuns = await Promise.all(rows.map((row) => failedRunsSummary(supabase, row, workflows, now)))
+  const failedRuns = await mapWithConcurrency(rows, FAILED_RUNS_READ_CONCURRENCY, (row) => failedRunsSummary(supabase, row, workflows, now))
   const hasMore = all.length > limit
   return {
     incidents: rows.map((row, idx) => {
@@ -308,7 +318,18 @@ async function failedRunsSummary(
 ): Promise<FailedRunsSummary | null> {
   const target = failureRateTarget(row, workflows)
   if (!target) return null
-  return summarizeFailedRuns(supabase, target, { startedAt: row.started_at, endedAt: row.ended_at }, now)
+  return summarizeFailedRuns(supabase, target, failureRateSpan(row), now)
+}
+
+/**
+ * The span whose runs belong to the incident. An incident still open runs to
+ * now. One that closed without a recorded end (lapsed) stops at the moment the
+ * record learned it closed: by then its check no longer held it open, so a later
+ * failure of the same match is not this incident's, and its count must not keep
+ * growing for the 7 days runs are kept.
+ */
+function failureRateSpan(row: StoredIncident): { startedAt: string; endedAt: string | null } {
+  return { startedAt: row.started_at, endedAt: row.ended_at ?? row.closed_at }
 }
 
 /**
@@ -341,7 +362,7 @@ export async function readIncidentFailedRuns(
   if (!target) return { kind: 'not_found' }
   let list
   try {
-    list = await listFailedRuns(supabase, target, { startedAt: row.started_at, endedAt: row.ended_at }, opts.now)
+    list = await listFailedRuns(supabase, target, failureRateSpan(row), opts.now)
   } catch (err) {
     throw new IncidentReadError(`The incident's failed runs could not be read: ${formatErr(err)}`, { cause: err })
   }

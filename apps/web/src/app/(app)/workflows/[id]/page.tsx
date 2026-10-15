@@ -23,7 +23,8 @@ function WorkflowEditorInner() {
   // Incidents card's "12 failed runs" link. It lives in the URL so the link can
   // be shared and Back returns to it; the worker resolves it, scoped to the
   // caller, so nothing about the incident is taken from the URL but its id.
-  const urlIncidentId = searchParams.get('incident') ?? undefined
+  // An empty value is no narrowing at all, never one with nothing to load.
+  const urlIncidentId = searchParams.get('incident') || undefined
 
   // Mirror the URL into local state so Clear can drop the execution view
   // synchronously instead of waiting on the App Router transition. router.replace
