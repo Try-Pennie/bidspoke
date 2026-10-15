@@ -135,6 +135,22 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
     expect(screen.queryByText(/upstream returned 502/)).not.toBeInTheDocument()
   })
 
+  it('shows the answer when the link spells the incident id in capitals', async () => {
+    // The worker accepts a uuid in any case and answers with the stored lowercase id.
+    const id = 'aaaaaaaa-0000-4000-8000-00000000000a'
+    render(
+      <ExecutionListPanel
+        workflowId={WF}
+        onSelect={vi.fn()}
+        incidentId={id.toUpperCase()}
+        onClearIncident={vi.fn()}
+        loadIncidentRuns={vi.fn().mockResolvedValue(body({ incident: { ...body().incident, id } }))}
+        now={clock}
+      />,
+    )
+    expect(await screen.findByText('2 failed runs in this incident')).toBeInTheDocument()
+  })
+
   it('says runs before the cutoff are no longer kept, only when the span reaches before it', async () => {
     narrowed(vi.fn().mockResolvedValue(body({ clipped: true, kept_since: '2026-10-08T14:00:00.000Z' })))
     expect(await screen.findByText('Runs before Oct 8, 10:00 AM are no longer kept.')).toBeInTheDocument()

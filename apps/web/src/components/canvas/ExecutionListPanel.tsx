@@ -169,7 +169,9 @@ export default function ExecutionListPanel({
   // incident is shown; anything else reads as loading.
   const storedFor = storedIncidentRuns.kind === 'loaded' ? storedIncidentRuns.body.incident.id
     : storedIncidentRuns.kind === 'failed' ? storedIncidentRuns.incidentId : incidentId
-  const incidentRuns: IncidentRuns = storedFor === incidentId ? storedIncidentRuns : { kind: 'loading' }
+  // A uuid in any case names the same incident, and the worker answers with the
+  // stored lowercase id, so the two are compared without regard to case.
+  const incidentRuns: IncidentRuns = storedFor?.toLowerCase() === incidentId?.toLowerCase() ? storedIncidentRuns : { kind: 'loading' }
   // Each read of an incident's runs starts a generation; an answer from an older
   // one (the narrowing changed or was retried mid flight) is dropped.
   const incidentGen = useRef(0)
