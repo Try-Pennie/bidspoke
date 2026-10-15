@@ -1485,7 +1485,11 @@ export interface SlowdownSummaryAlert {
  * One message per database slowdown (#1881). On 2026-10-08 a single stall posted
  * about 35 messages inside a minute, every one with the same cause. The minute
  * sweep sends this once it has read back everything the slowdown left: how many
- * runs, which workflows, and whether every record landed.
+ * runs, which workflows, and which records did not land.
+ *
+ * Only for a slowdown that left something to act on or wait for. One that saved
+ * every record posts nothing (#2165): the sweep records it, and
+ * sendRepeatedSlowdownAlert speaks once they repeat.
  */
 export async function sendSlowdownSummaryAlert(
   connection: { bot_token: string; default_channel: string },
@@ -1497,12 +1501,9 @@ export async function sendSlowdownSummaryAlert(
   const to = clock(payload.to)
   const when = from === to ? `At ${from} ET` : `Between ${from} and ${to} ET`
   const unconfirmed = payload.unconfirmed ?? 0
-  const allLanded = payload.lost === 0 && payload.steps_missing === 0 && unconfirmed === 0
-  const title = allLanded
-    ? 'Database slowdown, every record saved'
-    : payload.lost > 0 || payload.steps_missing > 0
-      ? 'Database slowdown, some records not saved'
-      : 'Database slowdown, some records not yet confirmed'
+  const title = payload.lost > 0 || payload.steps_missing > 0
+    ? 'Database slowdown, some records not saved'
+    : 'Database slowdown, some records not yet confirmed'
   const runs = payload.runs === 1 ? '1 run' : `${payload.runs} runs`
   const shown = payload.workflows.slice(0, 5)
   const others = payload.workflows.length - shown.length
@@ -1510,23 +1511,19 @@ export async function sendSlowdownSummaryAlert(
   const what =
     `${when} the database answered too slowly for ${runs} to confirm their records in time: ${workflows}. ` +
     'Every one of them had already answered its lead.'
-  const result = allLanded
-    ? `Bidspoke read every record back afterwards, and all ${payload.records} landed.`
-    : [
-        `Bidspoke read the records back afterwards: ${payload.landed} of ${payload.records} landed.`,
-        payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did.` : '',
-        unconfirmed > 0
-          ? `${unconfirmed === 1 ? '1 record still could not be read back' : `${unconfirmed} records still could not be read back`}, and the Records could not be confirmed alert names ${unconfirmed === 1 ? 'it' : 'them'}.`
-          : '',
-        payload.steps_missing > 0 ? `${payload.steps_missing === 1 ? '1 run is' : `${payload.steps_missing} runs are`} missing some step records, so the step by step view of ${payload.steps_missing === 1 ? 'that run' : 'those runs'} is incomplete.` : '',
-      ].filter(Boolean).join(' ')
-  const fix = allLanded
-    ? '*Fix:* Nothing to do. If this keeps happening, check the database load on Supabase.'
-    : payload.lost > 0
-      ? '*Fix:* Re-derive the lost records from the runs below. Missing step records cannot be recovered and need nothing.'
-      : payload.steps_missing > 0
-        ? '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
-        : '*Fix:* Nothing to redo yet. Bidspoke keeps reading the unconfirmed records back and alerts on any it finds missing.'
+  const result = [
+    `Bidspoke read the records back afterwards: ${payload.landed} of ${payload.records} landed.`,
+    payload.lost > 0 ? `${payload.lost} outcome ${payload.lost === 1 ? 'record' : 'records'} never did.` : '',
+    unconfirmed > 0
+      ? `${unconfirmed === 1 ? '1 record still could not be read back' : `${unconfirmed} records still could not be read back`}, and the Records could not be confirmed alert names ${unconfirmed === 1 ? 'it' : 'them'}.`
+      : '',
+    payload.steps_missing > 0 ? `${payload.steps_missing === 1 ? '1 run is' : `${payload.steps_missing} runs are`} missing some step records, so the step by step view of ${payload.steps_missing === 1 ? 'that run' : 'those runs'} is incomplete.` : '',
+  ].filter(Boolean).join(' ')
+  const fix = payload.lost > 0
+    ? '*Fix:* Re-derive the lost records from the runs below. Missing step records cannot be recovered and need nothing.'
+    : payload.steps_missing > 0
+      ? '*Fix:* Nothing to redo. Missing step records cannot be recovered; the runs and their leads are otherwise complete.'
+      : '*Fix:* Nothing to redo yet. Bidspoke keeps reading the unconfirmed records back and alerts on any it finds missing.'
   const lostRuns = payload.lost_runs ?? []
   const listed = lostRuns.slice(0, 10)
   const lostLinks =
@@ -1541,6 +1538,60 @@ export async function sendSlowdownSummaryAlert(
   if (listed.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lostLinks } })
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`)) !== null
+}
+
+export interface RepeatedSlowdownAlert {
+  /** The slowdowns that saved every record, oldest first. */
+  slowdowns: Array<{
+    /** First seen time of the earliest and latest timed out write, ISO. */
+    from: string
+    to: string
+    runs: number
+    /** Their workflows, with how many runs each, most first. */
+    workflows: Array<{ name: string; runs: number }>
+  }>
+  /** The rolling window they fell in, in hours. */
+  window_hours: number
+}
+
+/**
+ * Slowdowns that each saved every record, repeating (#2165). One such slowdown
+ * posts nothing, because there is nothing to do about it; several in a day mean
+ * the database keeps falling behind, and the next one may not save everything.
+ * The sweep counts them, so nobody has to notice the repetition themselves.
+ */
+export async function sendRepeatedSlowdownAlert(
+  connection: { bot_token: string; default_channel: string },
+  payload: RepeatedSlowdownAlert,
+  appUrl: string,
+): Promise<boolean> {
+  const day = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(new Date(iso))
+  const clock = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso))
+  const title = 'Database slowdowns are repeating'
+  const n = payload.slowdowns.length
+  const listed = payload.slowdowns.slice(0, 10)
+  const lines = listed.map((s) => {
+    const from = clock(s.from)
+    const to = clock(s.to)
+    const when = from === to ? `${day(s.from)} at ${from} ET` : `${day(s.from)} from ${from} to ${to} ET`
+    const runs = s.runs === 1 ? '1 run' : `${s.runs} runs`
+    return `${when}: ${runs}, ${s.workflows.map((w) => `${slackText(w.name)} (${w.runs})`).join(', ')}`
+  })
+  if (n > listed.length) lines.push(`and ${n - listed.length} more`)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `The database answered too slowly for runs to confirm their records ${n} times in the last ${payload.window_hours} hours. Each time, every record was saved, so nothing needs redoing.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Fix:* Check the database load on Supabase. A longer slowdown can lose records.' } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} in ${payload.window_hours} hours`)) !== null
 }
 
 export interface UnconfirmedWritesAlert {
