@@ -47,7 +47,11 @@ export function salesforceConfigProblem(config: Record<string, unknown>): string
 
   if (config.skip_when_empty !== undefined) {
     if (typeof config.skip_when_empty !== 'boolean') return 'skip_when_empty must be true or false'
-    if (operation !== 'update') return 'skip_when_empty applies only to an update'
+    // An update skips on an empty body or record id; an Apex POST on a null body
+    // (#2181: the credit-inquiries endpoint answers 500 without `inquiries`). An
+    // Apex GET sends no body, so the flag would do nothing there.
+    const apexPost = operation === 'apex' && config.apex_method !== 'GET'
+    if (operation !== 'update' && !apexPost) return 'skip_when_empty applies only to an update or an Apex POST'
   }
 
   return null

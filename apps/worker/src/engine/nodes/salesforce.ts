@@ -13,7 +13,7 @@
  * Config: { operation, object, body?, record_id?, external_id_field?,
  *           external_id_value?, soql?, omit_fields?, rename_fields?,
  *           skip_when_empty? }
- * Output: { status, body }, or { skipped: true, skip_reason } for a skipped update
+ * Output: { status, body }, or { skipped: true, skip_reason } for a skipped write
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
@@ -69,6 +69,7 @@ interface SalesforceConfig {
   omit_fields?: string[]                    // create / update / upsert: body keys never sent (the relay sent only its 28).
   rename_fields?: Record<string, string>    // create / update / upsert: body key → the field it is sent as. Before injected_fields.
   skip_when_empty?: boolean                 // update: skip, with a recorded reason, when there is nothing to write or no record id.
+                                            // apex POST: skip when the body resolves to null or nothing (#2181).
 }
 
 /** Why a write was skipped rather than sent (#2170), recorded on the step's output. */
@@ -272,6 +273,9 @@ export async function executeSalesforceNode(
     if (method === 'POST') {
       resolvedBodyForInput = resolveValue(config.body, enrichedCtx)
       bodyStr = JSON.stringify(resolvedBodyForInput)
+      // A body that resolves to nothing is nothing to send (#2181): the inquiry
+      // body node returns null when a lead has no inquiries to post.
+      if (config.skip_when_empty && (resolvedBodyForInput === null || resolvedBodyForInput === undefined)) skipReason = 'nothing_to_write'
     }
   } else {
     throw new Error(`Unknown Salesforce operation: ${operation}`)
@@ -318,7 +322,7 @@ export async function executeSalesforceNode(
   // (#2170). The output carries `skipped` and `skip_reason`, the keys a skipped
   // partner bid records, so one shape means skipped across node types.
   if (skipReason) {
-    console.log(`[salesforce] event=salesforce_write_skipped reason=${skipReason} target=${object} trace=${ctx.trigger.trace_id}`)
+    console.log(`[salesforce] event=salesforce_write_skipped reason=${skipReason} target=${object || (config.apex_path ?? '')} trace=${ctx.trigger.trace_id}`)
     return {
       output: { skipped: true, skip_reason: skipReason },
       resolvedInput,

@@ -37,7 +37,7 @@ The access token is cached for about 58 minutes. On a `401` the cached token is 
 | `injected_fields` | object | No | none | Map of SF field name to template value, merged into `body`. Overrides `body` on key collision. Resolved per run. Handy for `{{execution.bidspoke_link}}`. |
 | `omit_fields` | array of strings | No | none | create/update/upsert: body keys never sent. Applied before `rename_fields`. |
 | `rename_fields` | object | No | none | create/update/upsert: map of body key to the field it is sent as. Applied after `omit_fields` and before `injected_fields`, which still win on a collision. Two keys may not be renamed to one field. |
-| `skip_when_empty` | boolean | No | `false` | update only: skip the write, with a recorded reason, when there is nothing to write or the record id is empty (see Skipped writes below). |
+| `skip_when_empty` | boolean | No | `false` | update and Apex POST only: skip the call, with a recorded reason, when there is nothing to write (or, for an update, the record id is empty). See Skipped writes below. |
 | `expected_errors` | array | No | none | SF rejections to treat as a business outcome, not a failure (see below). |
 | `transient_errors` | array | No | SF concurrency-limit entry | SF errors to retry despite a 4xx status (see below). |
 
@@ -67,14 +67,15 @@ A malformed option (a non-list `omit_fields`, a `rename_fields` that is not a ma
 
 ### Skipped writes (#2170)
 
-With `skip_when_empty: true`, an update is skipped rather than sent when:
+With `skip_when_empty: true`, an update or an Apex POST is skipped rather than sent when:
 
-| Reason | When |
-|--------|------|
-| `nothing_to_write` | The body resolves to null or nothing, or is an object left with no keys after `omit_fields` and `rename_fields`. `injected_fields` do not count: they only stamp a write that is happening anyway. |
-| `no_record_id` | The record id resolves empty. |
+| Reason | Operation | When |
+|--------|-----------|------|
+| `nothing_to_write` | update | The body resolves to null or nothing, or is an object left with no keys after `omit_fields` and `rename_fields`. `injected_fields` do not count: they only stamp a write that is happening anyway. |
+| `nothing_to_write` | apex POST | The body resolves to null or nothing. The `credit-inquiries` endpoint answers 500 when its `inquiries` key is missing (#2181), so its body step returns null when there is nothing to send. An empty object is still sent. |
+| `no_record_id` | update | The record id resolves empty. |
 
-A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag an update keeps its old behaviour: a missing record id fails the step and a null body sends `{}`.
+A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`.
 
 ### Expected errors
 

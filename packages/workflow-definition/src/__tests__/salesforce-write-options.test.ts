@@ -49,9 +49,19 @@ describe('salesforceConfigProblem', () => {
     expect(salesforceConfigProblem(update({ skip_when_empty: 'yes' }))).toBe('skip_when_empty must be true or false')
   })
 
-  it('refuses skip_when_empty on an operation that does not read it', () => {
-    expect(salesforceConfigProblem({ operation: 'create', object: 'Prospect__c', skip_when_empty: true }))
-      .toBe('skip_when_empty applies only to an update')
+  it.each([
+    ['create', { operation: 'create', object: 'Prospect__c' }],
+    ['upsert', { operation: 'upsert', object: 'Prospect__c' }],
+    ['query', { operation: 'query', soql: 'SELECT Id FROM Lead' }],
+    ['an Apex GET', { operation: 'apex', apex_path: '/services/apexrest/x', apex_method: 'GET' }],
+  ])('refuses skip_when_empty on %s, which does not read it', (_what, config) => {
+    expect(salesforceConfigProblem({ ...config, skip_when_empty: true }))
+      .toBe('skip_when_empty applies only to an update or an Apex POST')
+  })
+
+  it('accepts skip_when_empty on an Apex POST, whose body may be null when there is nothing to send', () => {
+    expect(salesforceConfigProblem({ operation: 'apex', apex_path: '/services/apexrest/credit-inquiries', skip_when_empty: true })).toBeNull()
+    expect(salesforceConfigProblem({ operation: 'apex', apex_path: '/services/apexrest/credit-inquiries', apex_method: 'POST', skip_when_empty: true })).toBeNull()
   })
 
   it.each(['query', 'apex'])('refuses omit_fields and rename_fields on %s, which sends no record body', (operation) => {

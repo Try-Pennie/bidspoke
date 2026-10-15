@@ -323,6 +323,53 @@ describe('skip_when_empty: nothing to write, or no record, skips the write as th
     expect(sentBody(fetchMock)).toEqual({ ADV_SO__c: 5 })
   })
 
+  // The credit-inquiries Apex endpoint answers 500 when `inquiries` is missing and
+  // writes nothing on an empty list, so its body code node returns null when there
+  // is nothing to send, and the step must skip rather than post (#2170, #2181).
+  const apex = (config: Record<string, unknown>) =>
+    makeNode({ operation: 'apex', apex_path: '/services/apexrest/credit-inquiries', ...config })
+
+  it('an Apex POST whose body resolves to null skips with nothing_to_write and makes no call', async () => {
+    const env = makeEnv()
+    const result = await executeSalesforceNode(
+      apex({ body: '{{steps.inquiry_body.output}}', skip_when_empty: true }),
+      makeCtx({}, { inquiry_body: null }),
+      env,
+    )
+    expect(result.output).toEqual(skipped('nothing_to_write'))
+    expect(result.resolvedInput?.resolved).toMatchObject({ skip_reason: 'nothing_to_write' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(env.WORKFLOW_CACHE.get).not.toHaveBeenCalled()
+  })
+
+  it('an Apex POST whose body reference is missing altogether skips with nothing_to_write', async () => {
+    const result = await executeSalesforceNode(
+      apex({ body: '{{steps.inquiry_body.output.payload}}', skip_when_empty: true }),
+      makeCtx({}, { inquiry_body: {} }),
+      makeEnv(),
+    )
+    expect(result.output).toEqual(skipped('nothing_to_write'))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('an Apex POST with a body is sent as configured (control)', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('{"statusCode":200}'), headers: new Headers() })
+    const body = { submissionId: 'a0X1', inquiriesJson: '{"inquiries":[]}' }
+    await executeSalesforceNode(
+      apex({ body: '{{steps.inquiry_body.output}}', skip_when_empty: true }),
+      makeCtx({}, { inquiry_body: body }),
+      makeEnv(),
+    )
+    expect(fetchMock.mock.calls[0][0]).toBe(`${INSTANCE}/services/apexrest/credit-inquiries`)
+    expect(sentBody(fetchMock)).toEqual(body)
+  })
+
+  it('without the flag, an Apex POST with a null body still sends it as it always has', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('{}'), headers: new Headers() })
+    await executeSalesforceNode(apex({ body: '{{steps.inquiry_body.output}}' }), makeCtx({}, { inquiry_body: null }), makeEnv())
+    expect(fetchMock.mock.calls[0][1].body).toBe('null')
+  })
+
   it('without the flag, a missing record id still fails as it always has', async () => {
     await expect(
       executeSalesforceNode(update({ record_id: '{{trigger.payload.none}}', body: { A: 1 } }), makeCtx(), makeEnv()),
