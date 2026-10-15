@@ -17,9 +17,12 @@
  *    "could not confirm" alert names them, and never says lost.
  *
  * Once nothing a slowdown left is still waiting, one summary per org says how
- * many runs it touched, on which workflows, and whether every record landed
+ * many runs it touched, on which workflows, and which records did not land
  * (#1881), in place of the per run and per write messages a stall used to send.
  * Step rows (tier 1) are read back for that summary only, never dead-lettered.
+ * A slowdown that saved every record posts nothing (#2165): it is recorded in
+ * the tick's job_runs row, and only ALL_SAVED_REPEAT_COUNT of them inside
+ * ALL_SAVED_REPEAT_WINDOW_MS post, once, naming each.
  *
  * An entry is read only once it is READ_BACK_MIN_AGE_MS old: a request still
  * queued in the database could otherwise land after a read that found nothing.
@@ -39,7 +42,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
 import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from './db-retry'
-import { getSlackConnection, sendSlowdownSummaryAlert, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
+import { getSlackConnection, sendRepeatedSlowdownAlert, sendSlowdownSummaryAlert, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { readLastGoodSlackConnections } from './volume-cliff'
 import { secretKeys } from './secret-crypto'
@@ -135,6 +138,27 @@ export interface UnconfirmedSweepSummary {
   summaries: number
   /** Unreadable entries a could-not-confirm alert has already named. */
   unreadable_named: number
+  /**
+   * Slowdowns this tick settled, posted or not. Written to job_runs with the
+   * tick, so slowdowns that saved every record, which post nothing, can still be
+   * counted (#2165):
+   *   SELECT count(*) FROM job_runs, jsonb_array_elements(summary->'slowdowns') s
+   *   WHERE job = 'unconfirmed-write-sweep' AND (s->>'all_saved')::boolean
+   */
+  slowdowns: SettledSlowdown[]
+}
+
+/** One settled slowdown, as the tick's job_runs row records it (#2165). */
+export interface SettledSlowdown {
+  org_id: string
+  /** First seen time of the earliest and latest timed out write, ISO. */
+  from: string
+  to: string
+  runs: number
+  workflows: Array<{ name: string; runs: number }>
+  records: number
+  /** Nothing lost, no step rows missing, and nothing left unconfirmed. */
+  all_saved: boolean
 }
 
 /**
@@ -178,6 +202,36 @@ const SUMMARY_CLAIM_TTL_SECONDS = 60 * 60
  * the same slowdown from starting a second.
  */
 export const SUMMARY_QUIET_MS = READ_BACK_MIN_AGE_MS + 60_000
+
+/**
+ * Slowdowns that saved every record post nothing alone; this many inside
+ * ALL_SAVED_REPEAT_WINDOW_MS post once (#2165). Measured from job_runs on
+ * 2026-10-15: four slowdowns since the sweep began recording on 2026-10-08, and
+ * one of them (9:31 AM ET on 2026-10-15) saved every record, so about one a
+ * week. At that rate three inside a day is far outside the usual (a Poisson
+ * chance of roughly 1 in 2,000 a day), so it fires on a change, not on noise.
+ * Re-size it against the recorded slowdowns once a few weeks of them exist
+ * (the query is on UnconfirmedSweepSummary.slowdowns), not by guessing (L172).
+ */
+export const ALL_SAVED_REPEAT_COUNT = 3
+export const ALL_SAVED_REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The all saved slowdowns still inside the window, per org: the repeat rule's
+ * working state only. Each is keyed on its first seen time, the same identity
+ * as its summary claim, so a slowdown handled twice (a retry after the repeat
+ * alert failed) is counted once. Cleared once a repeat alert names them, so the
+ * next alert takes a fresh set. The durable history is the job_runs record.
+ */
+export const ALL_SAVED_KEY_PREFIX = 'unconfirmed-write-all-saved:'
+const ALL_SAVED_TTL_SECONDS = ALL_SAVED_REPEAT_WINDOW_MS / 1000 + 60 * 60
+
+interface AllSavedSlowdown {
+  from: string
+  to: string
+  runs: number
+  workflows: Array<{ name: string; runs: number }>
+}
 
 /** A read that never answers is given up on (L110); the timer is cleared once the read wins. */
 async function readWithin(deps: UnconfirmedSweepDeps, entry: UnconfirmedWrite): Promise<ReadBackVerdict> {
@@ -284,7 +338,7 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   const startedAtMs = now()
   const summary: UnconfirmedSweepSummary = {
     listed: 0, young: 0, landed: 0, lost: 0, unreadable: 0, could_not_confirm: 0, skipped: 0, unread: 0, lost_labels: [],
-    steps_missing: 0, deferred: 0, summaries: 0, unreadable_named: 0,
+    steps_missing: 0, deferred: 0, summaries: 0, unreadable_named: 0, slowdowns: [],
   }
 
   const { keys } = await deps.kv.list({ prefix: UNCONFIRMED_WRITE_PREFIX, limit: SWEEP_LIMIT })
@@ -421,9 +475,13 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
   // unreadable, none another sweep holds, and the list was not cut short.
   const settled =
     summary.young === 0 && summary.unreadable - summary.unreadable_named - summary.could_not_confirm === 0 && summary.unread === 0 && summary.deferred === 0 && keys.length < SWEEP_LIMIT
-  summary.summaries = await carrySlowdownTallies(deps, resolved, settled, startedAtMs, stillUnconfirmed)
+  const carried = await carrySlowdownTallies(deps, resolved, settled, startedAtMs, stillUnconfirmed)
+  summary.summaries = carried.posted
+  summary.slowdowns = carried.settled
 
-  if (deps.recordRun && summary.listed > summary.young) {
+  // A tick that only settled a slowdown is recorded too, or a slowdown whose
+  // last entry was read on an earlier tick would leave no trace (#2165).
+  if (deps.recordRun && (summary.listed > summary.young || summary.slowdowns.length > 0)) {
     await deps.recordRun(startedAtMs, {
       outcome: summary.lost > 0 ? 'lost-found' : summary.unreadable > 0 ? 'unreadable' : 'resolved',
       detail: `landed=${summary.landed} lost=${summary.lost} unreadable=${summary.unreadable} unread=${summary.unread} young=${summary.young}`,
@@ -435,9 +493,11 @@ export async function runUnconfirmedWriteSweep(deps: UnconfirmedSweepDeps): Prom
 
 /**
  * Merges this tick's resolved entries into the stored tallies and, once the
- * slowdown is settled, posts one summary per org (#1881). Keyed on the cause:
- * only writes that timed out are in it, so a write that returned an error still
- * pages through the dead letter on its own (L707). Returns summaries posted.
+ * slowdown is settled, posts one summary per org (#1881), or for a slowdown that
+ * saved every record, records it toward the repeat rule and posts nothing
+ * (#2165). Keyed on the cause: only writes that timed out are in it, so a write
+ * that returned an error still pages through the dead letter on its own (L707).
+ * Returns the summaries posted and the slowdowns settled.
  */
 async function carrySlowdownTallies(
   deps: UnconfirmedSweepDeps,
@@ -445,10 +505,11 @@ async function carrySlowdownTallies(
   settled: boolean,
   nowMs: number,
   stillUnconfirmed: Map<string, number> = new Map(),
-): Promise<number> {
+): Promise<{ posted: number; settled: SettledSlowdown[] }> {
+  const done: SettledSlowdown[] = []
   const stored = await readTallies(deps.kv)
   const hadStored = Object.keys(stored).length > 0
-  if (!hadStored && resolved.size === 0) return 0
+  if (!hadStored && resolved.size === 0) return { posted: 0, settled: done }
   for (const [orgId, t] of resolved) stored[orgId] = mergeTally(stored[orgId], t)
 
   let posted = 0
@@ -465,10 +526,21 @@ async function carrySlowdownTallies(
         delete stored[orgId]
         continue
       }
-      const done = await postSummary(deps, orgId, tally, stillUnconfirmed.get(orgId) ?? 0)
-      if (done) {
+      const unconfirmed = stillUnconfirmed.get(orgId) ?? 0
+      const allSaved = tally.lost === 0 && tally.steps_missing === 0 && unconfirmed === 0
+      const handled = allSaved ? await noteAllSaved(deps, orgId, tally, nowMs) : await postSummary(deps, orgId, tally, unconfirmed)
+      if (handled) {
         delete stored[orgId]
-        posted++
+        if (!allSaved) posted++
+        done.push({
+          org_id: orgId,
+          from: tally.from,
+          to: tally.to,
+          runs: Object.keys(tally.runs).length,
+          workflows: workflowsOf(tally),
+          records: tally.records,
+          all_saved: allSaved,
+        })
       } else {
         await deps.claims?.release(claimKey)
       }
@@ -481,7 +553,80 @@ async function carrySlowdownTallies(
   } catch (e) {
     console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] could not store the slowdown tally:`, formatErr(e))
   }
-  return posted
+  return { posted, settled: done }
+}
+
+/** The slowdown's workflows, with how many runs each, most first. */
+function workflowsOf(tally: SlowdownTally): Array<{ name: string; runs: number }> {
+  const byWorkflow = new Map<string, number>()
+  for (const run of Object.values(tally.runs)) byWorkflow.set(run.workflow_name, (byWorkflow.get(run.workflow_name) ?? 0) + 1)
+  return [...byWorkflow.entries()].map(([name, runs]) => ({ name, runs })).sort((a, b) => b.runs - a.runs)
+}
+
+async function readAllSaved(kv: SweepKv, key: string): Promise<AllSavedSlowdown[]> {
+  const raw = await kv.get(key)
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw) as unknown
+    if (Array.isArray(v)) return v as AllSavedSlowdown[]
+  } catch {
+    // Said below.
+  }
+  console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] all saved slowdown list ${key} unreadable, starting again`)
+  return []
+}
+
+/**
+ * A slowdown that saved every record posts nothing (#2165). It is added to the
+ * org's list of such slowdowns inside the window, and once there are
+ * ALL_SAVED_REPEAT_COUNT of them one alert names them all. True once that is
+ * done; false leaves the slowdown's tally for the next tick to try again.
+ */
+async function noteAllSaved(deps: UnconfirmedSweepDeps, orgId: string, tally: SlowdownTally, nowMs: number): Promise<boolean> {
+  const key = `${ALL_SAVED_KEY_PREFIX}${orgId}`
+  let list: AllSavedSlowdown[]
+  try {
+    list = (await readAllSaved(deps.kv, key)).filter((s) => s.from !== tally.from && nowMs - Date.parse(s.to) < ALL_SAVED_REPEAT_WINDOW_MS)
+    list.push({ from: tally.from, to: tally.to, runs: Object.keys(tally.runs).length, workflows: workflowsOf(tally) })
+    list.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0))
+    await deps.kv.put(key, JSON.stringify(list), { expirationTtl: ALL_SAVED_TTL_SECONDS })
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] could not record an all saved slowdown for org ${orgId}, trying again next tick:`, formatErr(e))
+    return false
+  }
+  if (list.length < ALL_SAVED_REPEAT_COUNT) return true
+
+  // Keyed on the set's first slowdown, so two sweeps that both see the set post
+  // once, and a set an alert already named cannot post again inside the window.
+  const claimKey = `unconfirmed-write-slowdown-repeat:${orgId}:${list[0].from}`
+  if (deps.claims && !(await deps.claims.claim(claimKey, ALL_SAVED_REPEAT_WINDOW_MS / 1000))) return true
+  if (!(await postRepeat(deps, orgId, list))) {
+    await deps.claims?.release(claimKey)
+    return false
+  }
+  // Named: the next alert takes a fresh set.
+  try {
+    await deps.kv.delete(key)
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] could not clear the all saved slowdown list for org ${orgId}:`, formatErr(e))
+  }
+  return true
+}
+
+/** True when the repeat alert is delivered, or alerts are switched off for the org. */
+async function postRepeat(deps: UnconfirmedSweepDeps, orgId: string, slowdowns: AllSavedSlowdown[]): Promise<boolean> {
+  try {
+    const slack = await deps.slackFor(orgId)
+    if (!slack) {
+      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] ${slowdowns.length} repeated slowdowns for org ${orgId}, and no Slack connection to say so`)
+      return false
+    }
+    if (!slack.config_alerts_enabled) return true
+    return await sendRepeatedSlowdownAlert(slack, { slowdowns, window_hours: ALL_SAVED_REPEAT_WINDOW_MS / (60 * 60 * 1000) }, deps.appUrl)
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] repeated slowdown alert failed for org ${orgId}:`, formatErr(e))
+    return false
+  }
 }
 
 /** True when the summary is delivered, or there is nobody to deliver it to by choice. */
@@ -493,13 +638,11 @@ async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: Slo
       return false
     }
     if (!slack.config_alerts_enabled) return true
-    const byWorkflow = new Map<string, number>()
-    for (const run of Object.values(tally.runs)) byWorkflow.set(run.workflow_name, (byWorkflow.get(run.workflow_name) ?? 0) + 1)
     return await sendSlowdownSummaryAlert(
       slack,
       {
         runs: Object.keys(tally.runs).length,
-        workflows: [...byWorkflow.entries()].map(([name, runs]) => ({ name, runs })).sort((a, b) => b.runs - a.runs),
+        workflows: workflowsOf(tally),
         records: tally.records,
         landed: tally.landed,
         lost: tally.lost,
