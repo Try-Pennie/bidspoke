@@ -64,3 +64,17 @@ describe('rows as audit_log holds them (#1672)', () => {
     expect(screen.getByText('Engine tier from $10,000 upper bound: none to $12,500.00')).toBeInTheDocument()
   })
 })
+
+describe('bookkeeping keys beside the paths (#2133)', () => {
+  it('shows the changed paths of a page save and of a legacy route save, and never their _actor or _route keys as fields', () => {
+    render(<BuyerProfileHistory entries={[
+      { changed_at: '2027-10-16T15:00:00.000Z', changed_by: 'Dan', action: 'updated', changes: { daily_lead_cap: { old: 250, new: 500 }, _actor: { name: 'Dan Wright', email: 'dan@example.test' } } as unknown as HistoryEntry['changes'] },
+      { changed_at: '2027-10-16T14:00:00.000Z', changed_by: 'Dan', action: 'updated', changes: { daily_lead_cap: { old: 100, new: 250 }, _route: 'legacy_buyer_profile' } as unknown as HistoryEntry['changes'] },
+    ]} />)
+    expect(screen.getByText('Leads per day: 250 to 500')).toBeInTheDocument()
+    expect(screen.getByText('Leads per day: 100 to 250')).toBeInTheDocument()
+    expect(screen.queryByText(/_actor|_route|legacy_buyer_profile/)).toBeNull()
+    // One line for who and when, one for the one changed path.
+    expect(screen.getAllByRole('listitem').map((li) => li.querySelectorAll('p').length)).toEqual([2, 2])
+  })
+})

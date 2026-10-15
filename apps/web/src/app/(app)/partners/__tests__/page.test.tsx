@@ -24,12 +24,12 @@ vi.mock('../PartnerForm', () => ({
     confirmingDelete?: boolean
     onDelete?: (id: string) => void
     onConfirmDelete?: () => void
-    onSave?: (body: unknown, id?: string, pending?: string[], versioning?: { expected_version: number; save_id: string }) => Promise<{ copyWarning: string | null } | void>
+    onSave?: (body: unknown, id?: string, pending?: string[], request?: { expected_partner_version: number; expected_profile_version: number | null; profile: unknown; save_id: string }) => Promise<{ copyWarning: string | null } | void>
   }) => (
     <div>
       <span data-testid="deleting">{String(props.deleting)}</span>
       <button onClick={() => {
-        void props.onSave?.({ is_active: false }, props.partner?.id, undefined, { expected_version: 3, save_id: 'save-1' })
+        void props.onSave?.({ is_active: false }, props.partner?.id, undefined, { expected_partner_version: 3, expected_profile_version: null, profile: null, save_id: 'save-1' })
           .then((r) => { const el = document.getElementById('form-copy-warning'); if (el && r) el.textContent = r.copyWarning ?? '' })
       }}>Save</button>
       <span id="form-copy-warning" data-testid="form-copy-warning" />
@@ -47,7 +47,7 @@ vi.mock('@/lib/api', () => ({
     partners: {
       list: vi.fn(),
       delete: vi.fn(),
-      update: vi.fn(),
+      savePage: vi.fn(),
     },
   },
 }))
@@ -109,13 +109,13 @@ describe('Partners page: a change whose stored copy was not cleared says so', ()
 
   // #2132: an edit's warning goes back to the form, which shows it beside Saved;
   // the page no longer puts a saved edit in its red error banner.
-  it('after an edit, handed to the form with the versioned save, and never as the page error', async () => {
-    vi.mocked(api.partners.update).mockResolvedValue({ ...partnerA, is_active: false, stored_copy_warning: WARNING } as never)
+  it('after an edit, handed to the form with the one page save, and never as the page error', async () => {
+    vi.mocked(api.partners.savePage).mockResolvedValue({ partner: { ...partnerA, is_active: false }, profile: null, partner_version: 4, profile_version: 0, stored_copy_warning: WARNING } as never)
     render(<PartnersPage />)
     fireEvent.click(await screen.findByRole('button', { name: /SoFi/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(screen.getByTestId('form-copy-warning')).toHaveTextContent(WARNING))
-    expect(api.partners.update).toHaveBeenCalledWith('p1', { is_active: false }, { expected_version: 3, save_id: 'save-1' })
+    expect(api.partners.savePage).toHaveBeenCalledWith('p1', { is_active: false }, { expected_partner_version: 3, expected_profile_version: null, profile: null, save_id: 'save-1' })
     expect(screen.getAllByText(WARNING)).toHaveLength(1)
   })
 
@@ -123,9 +123,9 @@ describe('Partners page: a change whose stored copy was not cleared says so', ()
   // 409 carrying its own save id. The page takes the stored row as the saved one,
   // so its list and selection show it, and hands the form a success.
   it('a 409 carrying this press\'s own save id updates the list with the stored row', async () => {
-    vi.mocked(api.partners.update).mockRejectedValue(Object.assign(new Error('stale_version'), {
+    vi.mocked(api.partners.savePage).mockRejectedValue(Object.assign(new Error('stale_version'), {
       status: 409,
-      body: { error: 'stale_version', current: { ...partnerA, name: 'SoFi Renamed', is_active: false }, last_save_id: 'save-1', changed_by_name: 'Dan', changed_at: '2026-10-15T18:02:00Z' },
+      body: { error: 'stale_version', partner: { ...partnerA, name: 'SoFi Renamed', is_active: false }, profile: null, partner_version: 4, profile_version: 0, last_save_id: 'save-1', changed_by_name: 'Dan', changed_at: '2026-10-15T18:02:00Z' },
     }))
     render(<PartnersPage />)
     fireEvent.click(await screen.findByRole('button', { name: /SoFi/ }))
