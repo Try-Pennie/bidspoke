@@ -52,7 +52,11 @@ Achieve step, or `exit_1` to `exit_3`):
   inquiry post ran before) and its credit report carries inquiries (#2169: the
   endpoint writes nothing for an empty list and answers 500 for a missing one);
 - `inquiry_apex_<post>`, the `POST /services/apexrest/credit-inquiries` call,
-  `retries: 0` because each call attaches a new file to the Lead.
+  `retries: 0` because each call attaches a new file to the Lead. The engine
+  also never retries this post whatever its config says, records it before it is
+  sent, and the Salesforce read-back checks the Lead's Inquiries file before
+  resending it at most once (#2172; the contract doc's "The credit inquiry post's
+  read-back").
 
 A failed Apex call ends the walk after the answer, as a failed outcome post does
 today: the branch's Achieve step does not run after it, and the run is recorded

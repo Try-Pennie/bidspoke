@@ -80,6 +80,7 @@ import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
+import { isCreditInquiryPost, stepRetries } from './inquiry-post'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
@@ -2232,8 +2233,9 @@ export async function walkGraph(
     const retryConfig = {
       // Default retries=2 so transient blips (timeouts, 5xx, network) self-heal
       // without manual config. Non-transient errors (business 4xx) still don't
-      // retry — see classifyHttpError / classifyTransportError.
-      retries: (node.config.retries as number) ?? 2,
+      // retry (see classifyHttpError / classifyTransportError). A credit inquiry
+      // post is never retried here, whatever its config says (#2172).
+      retries: stepRetries(node),
       // Exponential backoff (500ms, 1s, 2s) gives downstream services breathing
       // room when they're under stress; linear retries pile on instead.
       backoff: (node.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
@@ -2255,13 +2257,20 @@ export async function walkGraph(
       // both, the same one the Salesforce bulkhead share reads (#2170):
       // `ctx.afterAnswer`, set by `answerEarly` together with the answer.
       const postAnswerUpdate = ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
-      const atRisk = postAnswerUpdate ? startWatchSafely(ctx.startAtRiskWatch, node.namespace) : null
+      // A credit inquiry post is watched before or after the answer (#2172, D5):
+      // it is never resent blind, and its watch records it before it is sent.
+      const inquiryPost = node.type === 'salesforce' && isCreditInquiryPost(node.config)
+      const atRisk = postAnswerUpdate || inquiryPost ? startWatchSafely(ctx.startAtRiskWatch, node.namespace) : null
       const marker = postAnswerUpdate && ctx.execution?.execution_id
         ? writeMarker(ctx.execution.execution_id, node.namespace, ENGINE_ATTEMPT) ?? undefined
         : undefined
       const result = await withWriteMarker(ctx, marker, () => runWatched(
         atRisk,
-        (note) => { ctx.noteSalesforceRequest = note },
+        (note) => {
+          ctx.noteSalesforceRequest = note
+          // The credit inquiry post records at once, through the same watch (#2172).
+          ctx.recordSalesforceRequest = note && atRisk ? (req) => atRisk.recordNow(req) : undefined
+        },
         () => withRetry(
           (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
           retryConfig,
@@ -2588,7 +2597,8 @@ export async function runParallelChild(
     log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
 
     const retryConfig = {
-      retries: (node.config.retries as number) ?? 2,
+      // A credit inquiry post is never retried here either (#2172).
+      retries: stepRetries(node),
       backoff: (node.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
       timeout_ms: (node.config.timeout_ms as number) ?? 30000,
     }

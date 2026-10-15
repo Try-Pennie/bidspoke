@@ -134,7 +134,12 @@ under the `at-risk-write:` prefix: a post-answer Salesforce update still out 2
 seconds after it started, with its body (lead fields) encrypted with
 `SECRET_ENCRYPTION_KEY`. Each entry expires 24 hours after it is written, and
 that expiry is its erasure bound: an erasure request is complete for this store
-24 hours after the subject's last run, with nothing to delete by hand.
+24 hours after the subject's last run, with nothing to delete by hand. The same
+prefix holds each **credit inquiry post** (`/services/apexrest/credit-inquiries`,
+#2172), written before the call rather than after 2 seconds and cleared on a
+confirmed answer: its body is the lead's credit inquiries from the Equifax report
+(lender name, type and date per inquiry) and the Submission id, encrypted the same
+way, with the same 24 hour expiry and erasure bound.
 
 The Salesforce read-back (#2023) keeps its own state beside those entries, under
 `sf-read-back:`: per held write, the resend count, the field NAMES it left out or
@@ -198,6 +203,6 @@ the site (Geoff, 2026-09-04), so the node sends no certificate. See #1081.
 | Full lead payloads | `workflow_executions`, `execution_steps` | 7 days | partition truncation, 03:30 UTC |
 | Encrypted identity | `persons` | n/a, table is empty | writer removed (#765) |
 | Consumer identity | Salesforce | not ours | Salesforce |
-| Lead fields of an at-risk Salesforce write, encrypted | KV `at-risk-write:` | 24 hours | KV expiry (#2022) |
+| Lead fields of an at-risk Salesforce write, or a credit inquiry post's inquiries, encrypted | KV `at-risk-write:` | 24 hours | KV expiry (#2022, #2172) |
 | Read-back state: resend counts and field names, no values | KV `sf-read-back:` | 24 hours, daily counts 8 days, one first-seen time kept | KV expiry (#2023) |
 | Staff email, audit | `users`, `*_by_email` | indefinite | deliberate |
