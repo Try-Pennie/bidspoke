@@ -210,6 +210,15 @@ describe('runSpike: the two organization negative control', () => {
     const result = await harness(makeWorld({ authorize: () => true })).run()
     expect(result.boundaryHeld).toBe(false)
     expect(result.problems.join('\n')).toMatch(/B was admitted to partners:org-a/)
+    expect(result.dbSender.verdict).toBe('not_proved')
+    expect(result.dbSender.failingStep).toBe('policy')
+  })
+
+  it('does not call the sender proved when only A is admitted to B\'s topic', async () => {
+    const result = await harness(makeWorld({ authorize: (org, topic) => topic === `partners:${org}` || org === ORG_A })).run()
+    expect(result.joins.aOnB.status).toBe('SUBSCRIBED')
+    expect(result.dbSender.verdict).toBe('not_proved')
+    expect(result.dbSender.failingStep).toBe('policy')
   })
 })
 

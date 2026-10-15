@@ -48,9 +48,17 @@ function readEnvFile(file: string): Record<string, string> {
   return out
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpikeConfig {
-  const devVars = readEnvFile(path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars'))
-  const envTest = readEnvFile(path.join(REPO_ROOT, 'apps', 'web', '.env.test'))
+/**
+ * A cleanup needs only the URL and the secret key, so a machine without the
+ * e2e credentials can still remove what a ledger names; a run needs them all.
+ */
+export function loadConfig(
+  mode: 'run' | 'cleanup',
+  env: NodeJS.ProcessEnv = process.env,
+  readFile: (file: string) => Record<string, string> = readEnvFile,
+): SpikeConfig {
+  const devVars = readFile(path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars'))
+  const envTest = readFile(path.join(REPO_ROOT, 'apps', 'web', '.env.test'))
   const pick = (name: string, ...files: Array<Record<string, string>>) => env[name] || files.map((f) => f[name]).find(Boolean) || ''
   const supabaseUrl = pick('SUPABASE_URL', devVars).replace(/\/$/, '')
   const config = {
@@ -61,7 +69,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpikeConfig {
     orgAEmail: pick('E2E_EMAIL', envTest),
     orgAPassword: pick('E2E_PASSWORD', envTest),
   }
-  const missing = Object.entries(config).filter(([, v]) => !v).map(([k]) => k)
+  const needed: Array<keyof SpikeConfig> =
+    mode === 'cleanup' ? ['supabaseUrl', 'secretKey'] : ['supabaseUrl', 'secretKey', 'publishableKey', 'orgAEmail', 'orgAPassword']
+  const missing = needed.filter((k) => !config[k])
   if (missing.length) throw new Error(`missing ${missing.join(', ')} (environment, apps/worker/.dev.vars or apps/web/.env.test)`)
   return config
 }

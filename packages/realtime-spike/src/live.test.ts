@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { assertSameProject, keepJoinStatus } from './live.ts'
+import { assertSameProject, keepJoinStatus, loadConfig } from './live.ts'
+
+describe('loadConfig: a cleanup needs only what a cleanup uses', () => {
+  const noFiles = () => ({})
+  const urlAndSecret = { SUPABASE_URL: 'https://xvrmivmpfykwwtriqwpg.supabase.co', SUPABASE_SECRET_KEY: 's' }
+
+  it('loads for a cleanup with only the URL and the secret key, so a ledger can always be cleaned up', () => {
+    expect(loadConfig('cleanup', urlAndSecret, noFiles)).toMatchObject({ project: 'xvrmivmpfykwwtriqwpg', secretKey: 's' })
+  })
+
+  it('refuses a run without the publishable key and Org A\'s sign in, naming each', () => {
+    expect(() => loadConfig('run', urlAndSecret, noFiles)).toThrow(/publishableKey, orgAEmail, orgAPassword/)
+  })
+
+  it('refuses even a cleanup without the URL or the secret key', () => {
+    expect(() => loadConfig('cleanup', { SUPABASE_URL: 'https://x.supabase.co' }, noFiles)).toThrow(/secretKey/)
+  })
+})
 
 describe('keepJoinStatus: the Worker subscriber reports how its join went, not how it ended', () => {
   it('keeps SUBSCRIBED when the channel is closed afterwards', () => {

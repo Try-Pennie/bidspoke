@@ -11,7 +11,7 @@ export function liveWiring(): Wiring {
     log,
     proc: process,
     now: () => new Date(),
-    loadConfig: () => loadConfig(),
+    loadConfig: (mode) => loadConfig(mode),
     cleanupOps: liveCleanupOps,
     liveDeps: (config, ledger, marker, register) => liveDeps(config, ledger, marker, log, register),
     spike: runSpike,

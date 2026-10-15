@@ -29,7 +29,7 @@ export interface Wiring {
   log(line: string): void
   proc: ProcessLike
   now(): Date
-  loadConfig(): SpikeConfig
+  loadConfig(mode: 'run' | 'cleanup'): SpikeConfig
   cleanupOps(config: SpikeConfig): CleanupOps
   /**
    * Builds the real dependencies. Everything it starts (a connection, a child
@@ -87,7 +87,7 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
 
   let config: SpikeConfig
   try {
-    config = wiring.loadConfig()
+    config = wiring.loadConfig(parsed.mode)
   } catch (err) {
     wiring.log(`configuration: ${errorText(err)}`)
     return 2
