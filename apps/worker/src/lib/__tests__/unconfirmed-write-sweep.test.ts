@@ -536,7 +536,9 @@ describe('the sweep is bounded and safe to run twice', () => {
 /**
  * #1881: one database stall produced about 35 Slack messages within a minute.
  * Once the sweep has resolved every entry a slowdown left, it posts ONE summary:
- * how many runs, which workflows, and whether every record landed.
+ * how many runs, which workflows, and which records did not land. A slowdown
+ * that saved every record posts nothing (#2165), so the cases here each leave a
+ * record lost, missing or unconfirmed.
  */
 describe('one summary per slowdown (#1881)', () => {
   const RUN_B = { workflow_id: 'wf-2', workflow_name: 'Lead Economy', execution_id: 'ex-2' }
