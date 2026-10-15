@@ -224,6 +224,20 @@ export const CRON_JOBS: CronJob[] = [
       'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',
   },
   {
+    id: 'salesforce-read-back',
+    label: 'Salesforce read back',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the database read back.
+    staleMs: 10 * MIN,
+    // One KV list of at most 200 held writes, then Salesforce calls only until
+    // SF_PHASE_BUDGET_MS (20 s), each bounded at SF_CALL_DEADLINE_MS (12 s), so
+    // a tick ends at most one call past it, then its alerts: well inside 50 s.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a Salesforce update cut off after a lead was answered is never read back, so one that did not land is never resent and nobody is told it is missing (#2023)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',

@@ -302,7 +302,41 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     expect(JSON.stringify(details)).not.toMatch(/Rejected|unqualified_lead/)
   })
 
-  it('treats Applicant and Lead the same way, since no read-back covers them either', async () => {
+  // #2023: an update carrying this step's own engine stamp is the read-back's.
+  // It reads the record back, resends a write that did not land, and alerts on
+  // what it cannot settle, so the held alert would only repeat it.
+  it('leaves a stamped Prospect, Applicant or Lead update to the read-back, with no held alert', async () => {
+    for (const object of ['Prospect__c', 'Applicant__c', 'Lead']) {
+      vi.mocked(recordOutcomeDeadLetter).mockClear()
+      const db = fakeSupabase()
+      const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const stamped = noted(object, 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', Bidspoke_Write__c: `${run.executionId}:patch_prospect_reject:0` })
+        const result = await captureFailedWriteback(
+          { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: stamped, heldUntil: UNTIL },
+          { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+        )
+        expect(result).toEqual({ kind: 'held', until: UNTIL })
+        expect(logged.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('a06Ui00002sLkNuIAK')
+      } finally {
+        logged.mockRestore()
+      }
+      expect(db.inserts).toHaveLength(0)
+      expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+    }
+  })
+
+  it('still announces an update stamped for another step, and never names the marker as a field it set', async () => {
+    const other = noted('Prospect__c', 'a06Ui00002sLkNuIAK', { BidStatus__c: 'Rejected', Bidspoke_Write__c: `${run.executionId}:patch_prospect:0` })
+    await captureFailedWriteback(
+      { ...run, stepNamespace: 'patch_prospect_reject', nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: other, heldUntil: UNTIL },
+      { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][3]).toMatchObject({ held: { fields: ['BidStatus__c'] } })
+  })
+
+  it('announces an unstamped Applicant or Lead update (held from before the stamp shipped) the same way', async () => {
     for (const object of ['Applicant__c', 'Lead']) {
       vi.mocked(recordOutcomeDeadLetter).mockClear()
       await captureFailedWriteback(
@@ -313,22 +347,16 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     }
   })
 
-  // The Submission read-back (#2023) is not live yet, so a held Submission
-  // update is announced like any other: a wrong alert swapped for no alert
-  // would be the worse failure. #2023 takes these over when it ships.
+  // A Submission has no marker field, so the read-back (#2023) cannot judge its
+  // updates, and a held one is announced like any other: a wrong alert swapped
+  // for no alert would be the worse failure.
   it('announces a held Submission write too, and stores no row', async () => {
     const db = fakeSupabase()
-    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const result = await captureFailedWriteback(
-        { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
-        { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
-      )
-      expect(result).toEqual({ kind: 'held', until: UNTIL })
-      expect(warned.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('a04Ui00000NkhG1IAJ')
-    } finally {
-      warned.mockRestore()
-    }
+    const result = await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
+      { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(result).toEqual({ kind: 'held', until: UNTIL })
     expect(db.inserts).toHaveLength(0)
     expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_HELD_LABEL])
     expect(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][3]).toMatchObject({

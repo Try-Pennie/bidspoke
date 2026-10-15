@@ -95,6 +95,28 @@ export const atRiskKey = (executionId: string, stepNamespace: string): string =>
   `${AT_RISK_WRITE_PREFIX}${executionId}:${stepNamespace}`
 
 /**
+ * A record as the watch wrote it, or null for anything else (gone, or not this
+ * shape). Read by the Salesforce read-back (#2023), which never acts on a record
+ * it cannot fully read.
+ */
+export function parseAtRiskEntry(raw: string | null): AtRiskEntry | null {
+  if (!raw) return null
+  let v: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    v = parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const text = (k: string) => (typeof v[k] === 'string' && v[k] !== '' ? (v[k] as string) : null)
+  const keys = ['org_id', 'workflow_id', 'execution_id', 'step_namespace', 'sf_object', 'sf_record_id', 'body_encrypted', 'first_attempt_at', 'recorded_at'] as const
+  if (v.v !== 1 || v.sf_operation !== 'update' || keys.some((k) => text(k) === null)) return null
+  if (!Number.isFinite(Date.parse(v.first_attempt_at as string)) || !Number.isFinite(Date.parse(v.recorded_at as string))) return null
+  return v as unknown as AtRiskEntry
+}
+
+/**
  * A definite refusal is Salesforce answering 4xx (not 429) and the node marking
  * it permanent: the write did not land, and the #1993 store holds it. Anything
  * without that answer may have reached Salesforce, so it is unknown.

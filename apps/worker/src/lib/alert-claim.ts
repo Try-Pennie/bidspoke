@@ -41,6 +41,13 @@ export interface AlertClaimOptions {
   deadlineMs?: number
   /** The timer seam, so a test never waits in real time (L524). */
   delay?: (ms: number) => Promise<void>
+  /**
+   * Answer no when the object cannot be asked (#2023). For a claim that guards a
+   * SEND rather than a post: the Salesforce read-back's resend, where a duplicate
+   * can regress a record another writer moved and a missed one is tried again
+   * next minute. Alerts keep the default, failing open.
+   */
+  failClosed?: boolean
 }
 
 const realDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -102,14 +109,17 @@ export function makeAlertClaims(
       // the alert, since the KV cooldown still stands behind it and the worst
       // case is the duplicate this object exists to prevent, never a missing
       // page. They are separate messages because they need separate remedies:
-      // a refusal is the object answering, a deadline is it not answering.
+      // a refusal is the object answering, a deadline is it not answering. A
+      // claim made to fail closed answers no to both instead (#2023).
+      const unanswered = !options.failClosed
+      const acting = options.failClosed ? 'not acting' : 'posting without it'
       if (outcome.kind === 'timed_out') {
-        console.error(`[alert-claim] claim ${key} did not answer inside its ${deadlineMs}ms deadline, posting without it`)
-        return true
+        console.error(`[alert-claim] claim ${key} did not answer inside its ${deadlineMs}ms deadline, ${acting}`)
+        return unanswered
       }
       if (outcome.kind === 'threw') {
-        console.error(`[alert-claim] claim ${key} failed, posting without it: ${formatErr(outcome.error)}`)
-        return true
+        console.error(`[alert-claim] claim ${key} failed, ${acting}: ${formatErr(outcome.error)}`)
+        return unanswered
       }
       return outcome.value
     },

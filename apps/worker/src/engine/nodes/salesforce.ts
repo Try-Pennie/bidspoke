@@ -30,6 +30,7 @@ import { hasUsablePhone } from '../../lib/contact-fields'
 import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
+import { stampWriteMarker } from '../write-marker'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -252,7 +253,9 @@ export async function executeSalesforceNode(
       if (hasNothingToWrite(recordBody)) skipReason = 'nothing_to_write'
       else if (!resolvedRecordId) skipReason = 'no_record_id'
     }
-    resolvedBodyForInput = skipReason ? recordBody : applyInjectedFields(recordBody, config, enrichedCtx)
+    // A post-answer update carries its own write marker for the read-back
+    // (#2023); the walk sets it for that step only, so nothing else is stamped.
+    resolvedBodyForInput = skipReason ? recordBody : stampWriteMarker(applyInjectedFields(recordBody, config, enrichedCtx), object, ctx.writeMarker)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'upsert') {
     const extField = config.external_id_field ?? ''

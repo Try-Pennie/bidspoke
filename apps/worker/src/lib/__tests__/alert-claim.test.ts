@@ -162,3 +162,33 @@ describe('makeAlertClaims deadline (#1401)', () => {
     expect(errors[0]).toContain('Invalid Durable Object ID')
   })
 })
+
+/**
+ * A claim that guards a SEND rather than a post fails CLOSED (#2023). The
+ * Salesforce read-back resends a write only under a claim keyed on the write and
+ * the attempt; a claim that cannot be asked must mean "do not send", because a
+ * duplicate resend can regress a record another writer moved, while a missed one
+ * is retried next minute.
+ */
+describe('makeAlertClaims failing closed (#2023)', () => {
+  let spy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => { spy = vi.spyOn(console, 'error').mockImplementation(() => {}) })
+  afterEach(() => { spy.mockRestore() })
+
+  it('answers no when the object never answers', async () => {
+    const claims = makeAlertClaims(hangingNamespace(), Date.now, { failClosed: true, delay: () => Promise.resolve() })
+    await expect(claims.claim('sf-read-back-resend:x:1', 60)).resolves.toBe(false)
+  })
+
+  it('answers no when looking the object up throws', async () => {
+    const claims = makeAlertClaims(throwingLookupNamespace(), Date.now, { failClosed: true, delay: () => new Promise<void>(() => {}) })
+    await expect(claims.claim('sf-read-back-resend:x:1', 60)).resolves.toBe(false)
+  })
+
+  it('still answers yes to a won claim and no to a lost one', async () => {
+    const won = makeAlertClaims(answeringNamespace(true), Date.now, { failClosed: true, delay: () => new Promise<void>(() => {}) })
+    const lost = makeAlertClaims(answeringNamespace(false), Date.now, { failClosed: true, delay: () => new Promise<void>(() => {}) })
+    await expect(won.claim('k', 60)).resolves.toBe(true)
+    await expect(lost.claim('k', 60)).resolves.toBe(false)
+  })
+})

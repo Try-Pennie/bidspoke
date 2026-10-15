@@ -26,9 +26,9 @@
  *
  * An update that timed out or was cut off is none of these (#2163): its outcome
  * is unknown and the at-risk record (#2022) holds its request in KV. It is not
- * stored here and never called uncapturable. Until the read-back (#2023) ships
- * it is announced with the record, the field names and the expiry, on every
- * object.
+ * stored here and never called uncapturable. One carrying its own write marker
+ * is left to the Salesforce read-back (#2023); every other one is announced with
+ * the record, the field names and the expiry (see announceHeld).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
@@ -38,6 +38,7 @@ import { isDuplicateError } from '../lib/db-retry'
 import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './durability'
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from './dead-letter-labels'
 import { salesforceRejectedTheWrite, type SalesforceAnswer } from './nodes/salesforce'
+import { readBackOwns, WRITE_MARKER_FIELD } from './write-marker'
 
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
@@ -45,15 +46,6 @@ export { WRITEBACK_STORE_LABEL }
 /** A timed out or cut off update whose request the at-risk watch holds, on any object, declared in the leaf label module (#2163). */
 export { WRITEBACK_HELD_LABEL }
 
-/**
- * The objects whose held updates the read-back (#2023) is built to confirm by
- * their write marker. Until it ships, nothing reads any held update back, so
- * every one is announced (#2163), these included: a wrong alert swapped for no
- * alert would be the worse failure. These also get a log line naming the record.
- * When #2023 ships it takes these entries over, and this announcement goes for
- * the objects it covers.
- */
-const READ_BACK_OBJECTS: ReadonlySet<string> = new Set(['Submission__c'])
 
 /**
  * A Salesforce step's failure the store could not hold, counted and alerted on.
@@ -139,10 +131,18 @@ export type CaptureResult =
   | { kind: 'store_failed'; error: string }
 
 /**
- * A held update expires unread, so it is announced with what a person needs to
- * check it: the record, the field names (never the values), and when the held
- * request is deleted. A Submission__c one, which the read-back (#2023) will take
- * over, is also logged.
+ * A held update the read-back (#2023) owns, one carrying this step's own engine
+ * stamp on an object with the marker field, is left to it: it reads the record
+ * back, resends a write that did not land, and alerts on what it cannot settle,
+ * so announcing it here would page twice for one write. It is logged, naming the
+ * record.
+ *
+ * Every other held update expires unread, so it is announced (#2163) with what a
+ * person needs to check it: the record, the field names (never the values, and
+ * never the marker, which is not something it set), and when the held request is
+ * deleted. That covers every Submission__c update (no marker field, so no
+ * read-back), and a Prospect, Applicant or Lead update held from before the
+ * stamp shipped or whose marker would not fit.
  */
 async function announceHeld(
   f: FailedWriteback,
@@ -150,8 +150,9 @@ async function announceHeld(
   until: string,
   deps: CaptureDeps,
 ): Promise<CaptureResult> {
-  if (READ_BACK_OBJECTS.has(w.sf_object)) {
-    console.warn(`[writeback-deadletter] held for the read-back: execution ${f.executionId}, step ${f.stepNamespace}, ${w.sf_object} ${w.sf_record_id}, until ${until}`)
+  if (readBackOwns(w.sf_object, w.body, f.executionId, f.stepNamespace)) {
+    console.warn(`[writeback-deadletter] held for the Salesforce read-back: execution ${f.executionId}, step ${f.stepNamespace}, ${w.sf_object} ${w.sf_record_id}, until ${until}`)
+    return { kind: 'held', until }
   }
   await recordOutcomeDeadLetter(WRITEBACK_HELD_LABEL, f.error, deps, {
     workflow_id: f.workflowId,
@@ -162,7 +163,7 @@ async function announceHeld(
       step: f.stepNamespace,
       sf_object: w.sf_object,
       sf_record_id: w.sf_record_id,
-      fields: Object.keys(w.body),
+      fields: Object.keys(w.body).filter((field) => field !== WRITE_MARKER_FIELD),
       until,
     },
   }).catch((e) =>

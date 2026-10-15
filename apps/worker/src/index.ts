@@ -42,6 +42,7 @@ import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
+import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
@@ -1012,6 +1013,33 @@ const scheduledJobs = {
             .catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] sweep failed:`, e)),
           UNCONFIRMED_WRITE_SWEEP_JOB,
         ),
+      )
+      // Reads back the post-answer Salesforce updates that were cut off (#2023):
+      // drops the ones whose own marker the record holds, resends the ones that
+      // did not land, and alerts on what it cannot settle. Separate from the
+      // database read back above, so either can be down without holding the other.
+      minuteJob('salesforce-read-back',
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, SF_READ_BACK_JOB)
+            .catch((e) => console.error(`[${SF_READ_BACK_JOB}] heartbeat write failed:`, e))
+            .then(() => runSalesforceReadBackForEnv(supabase, env))
+            .then((s) => {
+              if (s.reads > 0 || s.unread > 0 || s.alerts > 0) {
+                console.log(`[${SF_READ_BACK_JOB}] listed=${s.listed} reads=${s.reads} landed=${s.landed} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} unread=${s.unread} young=${s.young} alerts=${s.alerts}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
+              }
+            })
+            .catch((e) => console.error(`[${SF_READ_BACK_JOB}] read back failed:`, e)),
+          SF_READ_BACK_JOB,
+        ),
+      )
+      // Whether that read back is still finishing runs while writes wait for it.
+      // Its own job, so the read back failing cannot silence it (L71).
+      minuteJob('salesforce-read-back-liveness',
+        checkSalesforceReadBackLivenessForEnv(supabase, env)
+          .then((r) => {
+            if (r.alerted) console.error(`[${SF_READ_BACK_JOB}] not running: ${r.waiting} writes waiting, last finished ${r.last_finished_at ?? 'never'}`)
+          })
+          .catch((e) => console.error(`[${SF_READ_BACK_JOB}] liveness check failed:`, e))
       )
       minuteJob('volume-cliff',
         runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, secretKeys(env), makeAlertClaims(env.ALERT_CLAIM))
