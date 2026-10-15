@@ -191,6 +191,49 @@ describe('main', () => {
     expect(deletes).toBe(1)
   })
 
+  it('on a signal, waits for a create already in flight before cleaning up, and lets no new one start', async () => {
+    let land: () => void = () => {}
+    const order: string[] = []
+    let laterCall: Promise<unknown> = Promise.resolve()
+    const deps = {
+      createAuthUser: () =>
+        new Promise<string>((resolve) => {
+          land = () => {
+            order.push('create landed')
+            resolve('user-b')
+          }
+        }),
+      createOrganization: async () => {
+        order.push('organization created after the signal')
+      },
+    } as unknown as SpikeDeps
+    const h = wiring({
+      liveDeps: async () => ({ deps, close: async () => {} }),
+      cleanupOps: () => {
+        order.push('cleanup started')
+        return {
+          findUserIdByEmail: async () => null,
+          deletePublicUser: async () => 0,
+          deleteAuthUser: async () => 'absent',
+          deleteOrganization: async () => 0,
+          deleteAllowlist: async () => 0,
+        }
+      },
+      spike: async (d) => {
+        void d.createAuthUser('x', 'y')
+        h.emitter.emit('SIGINT')
+        laterCall = d.createOrganization({ id: 'o', name: 'n', slug: 's' }).catch((err: Error) => order.push(err.message))
+        land()
+        return new Promise<SpikeResult>(() => {})
+      },
+    })
+    void main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    expect(await h.exited).toBe(130)
+    await laterCall
+    expect(order.indexOf('create landed')).toBeLessThan(order.indexOf('cleanup started'))
+    expect(order).not.toContain('organization created after the signal')
+  })
+
   it('refuses a ledger path that already exists, before creating anything', async () => {
     const h = wiring()
     h.files.set('/l.json', '{}')

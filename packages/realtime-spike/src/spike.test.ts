@@ -25,6 +25,12 @@ interface World {
    * local stack, realtime v2.130.0, 2026-10-15).
    */
   joinNeedsPartition: boolean
+  /** Topics a clean send is never delivered on. */
+  undeliveredTopics: string[]
+  /** An error the database send throws (a role or statement failure), if any. */
+  dbSendThrows: string | null
+  /** An error the REST send throws (the Worker unreachable), if any. */
+  restSendThrows: string | null
 }
 
 function makeWorld(overrides: Partial<World> = {}): World {
@@ -36,6 +42,9 @@ function makeWorld(overrides: Partial<World> = {}): World {
     orgBRows: { partner_configs: 0, buyer_profiles: 0, workflows: 0 },
     refusalDetail: 'Unauthorized: You do not have permissions to read from this Channel topic',
     joinNeedsPartition: false,
+    undeliveredTopics: [],
+    dbSendThrows: null,
+    restSendThrows: null,
     ...overrides,
   }
 }
@@ -69,6 +78,7 @@ function harness(world: World, options: Partial<SpikeOptions> = {}) {
   const subscriptions: Array<{ topic: string; sub: Subscription }> = []
 
   const deliver = (topic: string, event: string, payload: Record<string, unknown>) => {
+    if (world.undeliveredTopics.includes(topic)) return
     for (const s of subscriptions) {
       if (s.topic === topic && s.sub.status === 'SUBSCRIBED') s.sub.received.push({ event, payload, at: clock + 40 })
     }
@@ -112,6 +122,7 @@ function harness(world: World, options: Partial<SpikeOptions> = {}) {
     },
     dbSend: async (topic, event, payload) => {
       events.push(`dbSend ${topic}`)
+      if (world.dbSendThrows) throw new Error(world.dbSendThrows)
       const present = partitionChecks > world.partitionAfterChecks
       if (!present) return { warnings: ['WarnSendingBroadcastMessage: no partition of relation "messages" found for row'] }
       if (world.sendWarnings.length) return { warnings: world.sendWarnings }
@@ -120,6 +131,7 @@ function harness(world: World, options: Partial<SpikeOptions> = {}) {
     },
     restSend: async (topic, event, payload) => {
       events.push(`restSend ${topic}`)
+      if (world.restSendThrows) throw new Error(world.restSendThrows)
       deliver(topic, event, payload)
       return { status: 202, body: '' }
     },
@@ -265,6 +277,36 @@ describe('runSpike: the database sender', () => {
   it('names subscribe when A\'s join fails for a reason other than authorization', async () => {
     const result = await harness(makeWorld({ authorize: () => false, refusalDetail: 'socket closed' })).run()
     expect(result.dbSender.failingStep).toBe('subscribe')
+  })
+})
+
+describe('runSpike: the cross topic check', () => {
+  it('records that B received its own topic\'s message, so A not receiving it means something', async () => {
+    const result = await harness(makeWorld()).run()
+    expect(result.dbSender.bReceivedOwnTopic).toBe(true)
+    expect(result.dbSender.crossTopicLeak).toBe(false)
+  })
+
+  it('reports the cross topic check as proving nothing when B never received its own message', async () => {
+    const result = await harness(makeWorld({ undeliveredTopics: ['partners:org-b'] })).run()
+    expect(result.dbSender.bReceivedOwnTopic).toBe(false)
+    expect(result.problems.join('\n')).toMatch(/B did not receive .*partners:org-b/)
+  })
+})
+
+describe('runSpike: a send that throws is a result, not an aborted run', () => {
+  it('names send as the failing step, keeps the error, and still measures the REST control', async () => {
+    const result = await harness(makeWorld({ dbSendThrows: 'permission denied to set role "service_role"' })).run()
+    expect(result.dbSender.failingStep).toBe('send')
+    expect(result.dbSender.sendErrors[0]).toMatch(/permission denied to set role/)
+    expect(result.restSender.latency.received).toBe(3)
+  })
+
+  it('records a REST send that throws as status 0 with the error, and carries on', async () => {
+    const result = await harness(makeWorld({ restSendThrows: 'connect ECONNREFUSED 127.0.0.1:8799' })).run()
+    expect(result.restSender.statuses).toEqual([0, 0, 0])
+    expect(result.problems.join('\n')).toMatch(/ECONNREFUSED/)
+    expect(result.dbSender.verdict).toBe('proved')
   })
 })
 

@@ -110,9 +110,13 @@ export interface SpikeResult {
     verdict: 'proved' | 'not_proved'
     failingStep: FailingStep | null
     warnings: string[]
+    /** Errors a send threw, as opposed to the WARNINGs realtime.send raises and swallows. */
+    sendErrors: string[]
     partitionAtEachSend: boolean[]
     latency: LatencySummary
     crossTopicLeak: boolean
+    /** Whether B received the one message sent on its own topic; null when it was not sent. */
+    bReceivedOwnTopic: boolean | null
   }
   restSender: { statuses: number[]; latency: LatencySummary }
   workerSubscriber: { status: JoinStatus; detail: string | null; sender: 'database' | 'rest'; receivedAfterMs: number | null }
@@ -123,6 +127,10 @@ export interface SpikeResult {
 
 const UNAUTHORIZED = /unauthori[sz]ed|permission/i
 const MISSING_PARTITION = /MissingPartition/i
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : JSON.stringify(err)
+}
 
 async function waitFor(deps: SpikeDeps, timeoutMs: number, done: () => boolean): Promise<boolean> {
   const deadline = deps.now() + timeoutMs
@@ -240,6 +248,7 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
   // 4. The database sender. With no partition, one send is made anyway, whether
   // or not A could join, to capture the WARNING it raises word for word.
   const warnings: string[] = []
+  const sendErrors: string[] = []
   const partitionAtEachSend: boolean[] = []
   const dbLatencies: Array<number | null> = []
   const aJoined = subs.aOnA.status === 'SUBSCRIBED'
@@ -248,8 +257,14 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
     for (let seq = 1; seq <= attempts; seq++) {
       partitionAtEachSend.push(await deps.partitionExists())
       const t0 = deps.now()
-      const sent = await deps.dbSend(topicA, 'spike-db', { marker, seq })
-      warnings.push(...sent.warnings)
+      // A send that throws (a role or statement failure) is the send step
+      // failing, recorded with its error, and the run goes on to the controls.
+      try {
+        const sent = await deps.dbSend(topicA, 'spike-db', { marker, seq })
+        warnings.push(...sent.warnings)
+      } catch (err) {
+        sendErrors.push(errorText(err))
+      }
       const arrived =
         aJoined &&
         (await waitFor(deps, options.receiveTimeoutMs, () =>
@@ -261,27 +276,37 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
     }
   }
   // One send on B's topic: B (admitted to B) must receive it, A (on A) must not.
+  // B's receipt is recorded, because A not receiving a message nobody received
+  // proves nothing about the boundary.
   let crossTopicLeak = false
-  if (present && aJoined) {
-    await deps.dbSend(topicB, 'spike-db-b', { marker, seq: 'b' })
-    await waitFor(deps, options.receiveTimeoutMs, () => subs.bOnB.received.some((r) => r.event === 'spike-db-b'))
+  let bReceivedOwnTopic: boolean | null = null
+  if (present && aJoined && sendErrors.length === 0) {
+    try {
+      await deps.dbSend(topicB, 'spike-db-b', { marker, seq: 'b' })
+    } catch (err) {
+      sendErrors.push(errorText(err))
+    }
+    bReceivedOwnTopic = await waitFor(deps, options.receiveTimeoutMs, () => subs.bOnB.received.some((r) => r.event === 'spike-db-b'))
     crossTopicLeak = subs.aOnA.received.some((r) => r.event === 'spike-db-b') || subs.bOnA.received.length > 0
     if (crossTopicLeak) problems.push('TENANT BOUNDARY BROKEN: a message reached a subscriber of another topic')
+    if (!bReceivedOwnTopic) problems.push(`B did not receive the message sent on its own ${topicB}, so A not receiving it proves nothing about the boundary`)
   }
 
   const dbLatency = summarize(dbLatencies)
   let failingStep: FailingStep | null = null
   if (!present || partitionAtEachSend.includes(false) || MISSING_PARTITION.test(subs.aOnA.detail ?? '')) failingStep = 'partition'
   else if (!aJoined) failingStep = UNAUTHORIZED.test(subs.aOnA.detail ?? '') ? 'policy' : 'subscribe'
-  else if (warnings.length > 0) failingStep = 'send'
+  else if (warnings.length > 0 || sendErrors.length > 0) failingStep = 'send'
   else if (dbLatency.lost > 0) failingStep = 'delivery'
   const dbSender: SpikeResult['dbSender'] = {
     verdict: failingStep === null ? 'proved' : 'not_proved',
     failingStep,
     warnings,
+    sendErrors,
     partitionAtEachSend,
     latency: dbLatency,
     crossTopicLeak,
+    bReceivedOwnTopic,
   }
   log(`database sender: ${dbSender.verdict}${failingStep ? ` (failing step: ${failingStep})` : ''}`)
 
@@ -290,7 +315,12 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
   const restLatencies: Array<number | null> = []
   for (let seq = 1; seq <= options.samples; seq++) {
     const t0 = deps.now()
-    const sent = await deps.restSend(topicA, 'spike-rest', { marker, seq })
+    let sent: { status: number; body: string }
+    try {
+      sent = await deps.restSend(topicA, 'spike-rest', { marker, seq })
+    } catch (err) {
+      sent = { status: 0, body: errorText(err) }
+    }
     statuses.push(sent.status)
     if (sent.status < 200 || sent.status >= 300) problems.push(`REST broadcast ${seq} answered ${sent.status}: ${sent.body.slice(0, 200)}`)
     const arrived = await waitFor(deps, options.receiveTimeoutMs, () =>

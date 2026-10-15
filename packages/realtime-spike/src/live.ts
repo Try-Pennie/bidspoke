@@ -23,6 +23,7 @@ import pg from 'pg'
 import type { SpikeConfig } from './cli.ts'
 import type { CleanupOps } from './cleanup.ts'
 import type { LedgerHandle } from './ledger.ts'
+import { sslFor } from './ssl.ts'
 import type { JoinStatus, OrgRowCounts, Received, SpikeDeps, Subscription } from './spike.ts'
 
 const PACKAGE_DIR = path.resolve(import.meta.dirname, '..')
@@ -121,11 +122,11 @@ export function assertSameProject(config: SpikeConfig, env: NodeJS.ProcessEnv): 
 
 async function connectDb(config: SpikeConfig, env: NodeJS.ProcessEnv): Promise<pg.Client> {
   assertSameProject(config, env)
-  const local = env.PGHOST === '127.0.0.1' || env.PGHOST === 'localhost'
   const client = new pg.Client({
     // The CLI's temporary login only becomes postgres through this option.
     options: (env.PGUSER ?? '').startsWith('cli_login_') ? '-c role=postgres' : undefined,
-    ssl: local ? false : { rejectUnauthorized: false },
+    // A hosted database is verified against Supabase's root CA and its host name.
+    ssl: sslFor(env),
   })
   await client.connect()
   return client

@@ -10,6 +10,7 @@
  */
 import { parseArgs } from './args.ts'
 import { cleanupLedger, formatCleanupReport, type CleanupOps } from './cleanup.ts'
+import { trackInflight, type Tracked } from './inflight.ts'
 import { installInterruptCleanup, type ProcessLike } from './interrupt.ts'
 import { makeMarker, newLedger, openLedger, readLedger, type LedgerHandle, type LedgerIo } from './ledger.ts'
 import { DEFAULT_OPTIONS, type SpikeDeps, type SpikeOptions, type SpikeResult } from './spike.ts'
@@ -33,6 +34,22 @@ export interface Wiring {
   liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker: string): Promise<{ deps: SpikeDeps; close(): Promise<void> }>
   spike(deps: SpikeDeps, options: SpikeOptions): Promise<SpikeResult>
 }
+
+/** The spike's calls that reach Supabase, the database or the Worker. */
+const REMOTE_CALLS: ReadonlyArray<keyof SpikeDeps> = [
+  'signIn',
+  'orgOfUser',
+  'createAllowlist',
+  'createOrganization',
+  'createAuthUser',
+  'countOrgRows',
+  'partitionExists',
+  'dbSend',
+  'restSend',
+  'subscribe',
+  'workerSubscribe',
+]
+const SETTLE_MS = 15_000
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : JSON.stringify(err)
@@ -84,9 +101,18 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   // that arrives while the normal path is cleaning up waits for that same
   // cleanup, then exits, instead of killing it with rows still present.
   let close: () => Promise<void> = async () => {}
+  let tracked: Tracked<SpikeDeps> | null = null
   let cleaning: Promise<boolean> | null = null
   const cleanupOnce = (): Promise<boolean> => {
     cleaning ??= (async () => {
+      // Nothing new is sent, and anything already sent lands, before the
+      // cleanup reads the ledger: a create landing after it would be left behind.
+      if (tracked) {
+        tracked.stop()
+        if (!(await tracked.settle(SETTLE_MS))) {
+          wiring.log(`a call was still in flight after ${SETTLE_MS / 1000} s; if anything is left below, run --cleanup ${parsed.ledgerPath} again`)
+        }
+      }
       await close().catch((err: unknown) => wiring.log(`closing connections: ${errorText(err)}`))
       try {
         return await cleanupAndReport(parsed.ledgerPath, wiring, config)
@@ -109,7 +135,8 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   try {
     const live = await wiring.liveDeps(config, ledger, marker)
     close = () => live.close()
-    const result = await wiring.spike(live.deps, {
+    tracked = trackInflight(live.deps, REMOTE_CALLS)
+    const result = await wiring.spike(tracked.deps, {
       ...DEFAULT_OPTIONS,
       samples: parsed.samples,
       selfInterrupt: parsed.selfInterrupt,
