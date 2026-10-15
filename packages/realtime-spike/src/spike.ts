@@ -296,8 +296,11 @@ export async function runSpike(deps: SpikeDeps, options: SpikeOptions): Promise<
   let failingStep: FailingStep | null = null
   if (!present || partitionAtEachSend.includes(false) || MISSING_PARTITION.test(subs.aOnA.detail ?? '')) failingStep = 'partition'
   else if (!aJoined) failingStep = UNAUTHORIZED.test(subs.aOnA.detail ?? '') ? 'policy' : 'subscribe'
+  // A message on another topic's subscriber is the boundary failing, whatever
+  // else passed; B not receiving its own message leaves the boundary unmeasured.
+  else if (crossTopicLeak) failingStep = 'policy'
   else if (warnings.length > 0 || sendErrors.length > 0) failingStep = 'send'
-  else if (dbLatency.lost > 0) failingStep = 'delivery'
+  else if (dbLatency.lost > 0 || bReceivedOwnTopic === false) failingStep = 'delivery'
   const dbSender: SpikeResult['dbSender'] = {
     verdict: failingStep === null ? 'proved' : 'not_proved',
     failingStep,

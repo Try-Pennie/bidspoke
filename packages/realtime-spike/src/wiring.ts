@@ -13,7 +13,7 @@ export function liveWiring(): Wiring {
     now: () => new Date(),
     loadConfig: () => loadConfig(),
     cleanupOps: liveCleanupOps,
-    liveDeps: (config, ledger, marker) => liveDeps(config, ledger, marker, log),
+    liveDeps: (config, ledger, marker, register) => liveDeps(config, ledger, marker, log, register),
     spike: runSpike,
   }
 }

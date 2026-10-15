@@ -291,6 +291,31 @@ describe('runSpike: the cross topic check', () => {
     const result = await harness(makeWorld({ undeliveredTopics: ['partners:org-b'] })).run()
     expect(result.dbSender.bReceivedOwnTopic).toBe(false)
     expect(result.problems.join('\n')).toMatch(/B did not receive .*partners:org-b/)
+    // The verdict the decision rule reads cannot say proved over it.
+    expect(result.dbSender.verdict).toBe('not_proved')
+    expect(result.dbSender.failingStep).toBe('delivery')
+  })
+
+  it('does not call the sender proved when a message reached a subscriber of another topic', async () => {
+    const h = harness(makeWorld())
+    const realSubscribe = h.deps.subscribe
+    h.deps.subscribe = async (label, jwt, topic) => {
+      const sub = await realSubscribe(label, jwt, topic)
+      // A leak: A's channel on A also hears what was sent on B.
+      if (label === 'A on partners:<A>') {
+        const origSend = h.deps.dbSend
+        h.deps.dbSend = async (t, event, payload) => {
+          const out = await origSend(t, event, payload)
+          if (event === 'spike-db-b') sub.received.push({ event, payload, at: 0 })
+          return out
+        }
+      }
+      return sub
+    }
+    const result = await h.run()
+    expect(result.dbSender.crossTopicLeak).toBe(true)
+    expect(result.dbSender.verdict).toBe('not_proved')
+    expect(result.dbSender.failingStep).toBe('policy')
   })
 })
 

@@ -31,7 +31,17 @@ export interface Wiring {
   now(): Date
   loadConfig(): SpikeConfig
   cleanupOps(config: SpikeConfig): CleanupOps
-  liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker: string): Promise<{ deps: SpikeDeps; close(): Promise<void> }>
+  /**
+   * Builds the real dependencies. Everything it starts (a connection, a child
+   * process) is handed to `register` the moment it exists, so an interrupt
+   * while it is still starting stops what is already running.
+   */
+  liveDeps(
+    config: SpikeConfig,
+    ledger: LedgerHandle,
+    marker: string,
+    register: (closer: () => Promise<void>) => void,
+  ): Promise<{ deps: SpikeDeps }>
   spike(deps: SpikeDeps, options: SpikeOptions): Promise<SpikeResult>
 }
 
@@ -57,6 +67,12 @@ function errorText(err: unknown): string {
 
 async function cleanupAndReport(ledgerPath: string, wiring: Wiring, config: SpikeConfig): Promise<boolean> {
   const ledger = readLedger(ledgerPath, wiring.io)
+  // Against another project every delete finds nothing and the run would
+  // report a clean cleanup while the rows stay where they were made.
+  if (ledger.project !== config.project) {
+    wiring.log(`refusing to clean up: ${ledgerPath} was made against project ${ledger.project}, and this environment points at ${config.project}`)
+    return false
+  }
   const report = await cleanupLedger(ledger, wiring.cleanupOps(config))
   for (const line of formatCleanupReport(report)) wiring.log(line)
   return report.failed.length === 0
@@ -100,7 +116,12 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
   // One cleanup, shared by the normal path and the signal handlers: a signal
   // that arrives while the normal path is cleaning up waits for that same
   // cleanup, then exits, instead of killing it with rows still present.
-  let close: () => Promise<void> = async () => {}
+  const closers: Array<() => Promise<void>> = []
+  const close = async () => {
+    for (const closer of closers.splice(0).reverse()) {
+      await closer().catch((err: unknown) => wiring.log(`closing: ${errorText(err)}`))
+    }
+  }
   let tracked: Tracked<SpikeDeps> | null = null
   let cleaning: Promise<boolean> | null = null
   const cleanupOnce = (): Promise<boolean> => {
@@ -113,7 +134,7 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
           wiring.log(`a call was still in flight after ${SETTLE_MS / 1000} s; if anything is left below, run --cleanup ${parsed.ledgerPath} again`)
         }
       }
-      await close().catch((err: unknown) => wiring.log(`closing connections: ${errorText(err)}`))
+      await close()
       try {
         return await cleanupAndReport(parsed.ledgerPath, wiring, config)
       } catch (err) {
@@ -133,8 +154,7 @@ export async function main(argv: string[], wiring: Wiring): Promise<number> {
 
   let exitCode = 0
   try {
-    const live = await wiring.liveDeps(config, ledger, marker)
-    close = () => live.close()
+    const live = await wiring.liveDeps(config, ledger, marker, (closer) => closers.push(closer))
     tracked = trackInflight(live.deps, REMOTE_CALLS)
     const result = await wiring.spike(tracked.deps, {
       ...DEFAULT_OPTIONS,

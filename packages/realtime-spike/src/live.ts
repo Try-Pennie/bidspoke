@@ -132,12 +132,16 @@ async function connectDb(config: SpikeConfig, env: NodeJS.ProcessEnv): Promise<p
   return client
 }
 
-async function startWorker(log: (line: string) => void): Promise<ChildProcess> {
+async function startWorker(log: (line: string) => void, register: (closer: () => Promise<void>) => void): Promise<ChildProcess> {
   if (!existsSync(WRANGLER)) throw new Error(`wrangler not found at ${WRANGLER}; run pnpm install`)
   const child = spawn(WRANGLER, ['dev', '--config', path.join(PACKAGE_DIR, 'worker', 'wrangler.toml'), '--port', String(WORKER_PORT), '--ip', '127.0.0.1', '--show-interactive-dev-session=false'], {
     cwd: PACKAGE_DIR,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  register(() => {
+    stopWorker(child)
+    return Promise.resolve()
   })
   let output = ''
   child.stdout?.on('data', (d: Buffer) => (output += d.toString()))
@@ -253,20 +257,22 @@ async function workerSubscribe(
   return { status, detail: sendError ?? detail, receivedAfterMs: null }
 }
 
-export async function liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker: string, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<{ deps: SpikeDeps; close(): Promise<void> }> {
+export async function liveDeps(
+  config: SpikeConfig,
+  ledger: LedgerHandle,
+  marker: string,
+  log: (line: string) => void,
+  register: (closer: () => Promise<void>) => void,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ deps: SpikeDeps }> {
   // Connect before anything is created, so a refused login creates nothing.
+  // Each thing started is registered the moment it exists, so an interrupt
+  // during the up to 60 s wrangler takes to answer still stops it (L321).
   const db = await connectDb(config, env)
-  let worker: ChildProcess | null = null
-  const close = async () => {
-    if (worker) stopWorker(worker)
-    await db.end().catch(() => {})
-  }
-  try {
-    worker = await startWorker(log)
-  } catch (err) {
-    await close()
-    throw err
-  }
+  register(async () => {
+    await db.end()
+  })
+  await startWorker(log, register)
   const service = admin(config)
   const notices: string[] = []
   db.on('notice', (msg) => notices.push(msg.message ?? ''))
@@ -364,5 +370,5 @@ export async function liveDeps(config: SpikeConfig, ledger: LedgerHandle, marker
       return new Promise<never>(() => {})
     },
   }
-  return { deps, close }
+  return { deps }
 }

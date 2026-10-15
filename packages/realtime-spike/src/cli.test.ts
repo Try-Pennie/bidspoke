@@ -58,9 +58,12 @@ function wiring(overrides: Partial<Wiring> = {}) {
       calls.push('cleanupOps')
       return cleanupOps
     },
-    liveDeps: async () => {
+    liveDeps: async (_config, _ledger, _marker, register) => {
       calls.push('liveDeps')
-      return { deps: {} as SpikeDeps, close: async () => calls.push('close') as unknown as void }
+      register(async () => {
+        calls.push('close')
+      })
+      return { deps: {} as SpikeDeps }
     },
     spike: async () => {
       calls.push('spike')
@@ -208,7 +211,7 @@ describe('main', () => {
       },
     } as unknown as SpikeDeps
     const h = wiring({
-      liveDeps: async () => ({ deps, close: async () => {} }),
+      liveDeps: async () => ({ deps }),
       cleanupOps: () => {
         order.push('cleanup started')
         return {
@@ -232,6 +235,38 @@ describe('main', () => {
     await laterCall
     expect(order.indexOf('create landed')).toBeLessThan(order.indexOf('cleanup started'))
     expect(order).not.toContain('organization created after the signal')
+  })
+
+  it('--cleanup refuses a ledger made against another project, and removes nothing', async () => {
+    const h = wiring()
+    h.files.set(
+      '/l.json',
+      JSON.stringify({
+        version: 1,
+        marker: MARKER,
+        project: 'xvrmivmpfykwwtriqwpg',
+        startedAt: 'x',
+        entries: [{ kind: 'organization', key: `${MARKER}-example-com`, id: 'org-b', state: 'created' }],
+      }),
+    )
+    expect(await main(['--cleanup', '/l.json'], h.w)).toBe(1)
+    expect(h.calls).not.toContain('delete organization org-b')
+    expect(h.lines.join('\n')).toMatch(/made against project xvrmivmpfykwwtriqwpg.*ref/)
+  })
+
+  it('on a signal while the live dependencies are still starting, stops what they had already started', async () => {
+    const h = wiring({
+      liveDeps: async (_config, _ledger, _marker, register) => {
+        register(async () => {
+          h.calls.push('stopped worker')
+        })
+        h.emitter.emit('SIGINT')
+        return new Promise<never>(() => {})
+      },
+    })
+    void main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    expect(await h.exited).toBe(130)
+    expect(h.calls).toContain('stopped worker')
   })
 
   it('refuses a ledger path that already exists, before creating anything', async () => {
