@@ -30,7 +30,7 @@ import { requireRowsAffected, NO_ROW_MATCHED_CODE } from './db-retry'
 import { fetchAllPaged } from './paginate'
 import { loadEnvVars } from './env-loader'
 import { buildSandboxEnv } from './sandbox-env'
-import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs } from './bulkhead-client'
+import { salesforceBulkheads } from './bulkhead-client'
 import {
   getSalesforceToken,
   performSalesforceCall,
@@ -383,8 +383,9 @@ export async function salesforcePortFor(env: Env, supabase: SupabaseClient, keys
   if (!instanceUrl || !clientId || !clientSecret) {
     throw new Error('SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET must all be set for this workflow')
   }
-  const bulkhead = env.SALESFORCE_BULKHEAD ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env)) : null
-  const waitMs = salesforceBulkheadWaitMs(env)
+  // A replay runs on its own schedule, outside any run's post-answer window, so it
+  // takes the main bulkhead as it always has, not the post-answer share (#2170).
+  const { gates: bulkheads, waitMs } = salesforceBulkheads(env, false)
   const call = async (method: 'GET' | 'PATCH', path: string, body: string | undefined) => {
     const tokenStart = Date.now()
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
@@ -392,7 +393,7 @@ export async function salesforcePortFor(env: Env, supabase: SupabaseClient, keys
       url: `${instanceUrl}/services/data/v60.0${path}`,
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      bulkhead,
+      bulkheads,
       waitMs,
       signal: undefined,
       resolvedInput: { template: {}, resolved: {} },

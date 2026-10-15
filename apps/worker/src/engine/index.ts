@@ -1493,6 +1493,15 @@ export async function walkGraph(
   let stepOrder = 0
   let lastOutput: unknown = null
   let pendingResponse: WalkGraphResult | null = null
+  // The walk answers here and keeps walking (continue after response). The
+  // answer and the one post-answer fact every later step reads, `ctx.afterAnswer`
+  // (the at-risk watch #2022, the Salesforce bulkhead share #2170), are set
+  // together in this one place, so neither can be set without the other.
+  const answerEarly = (answer: WalkGraphResult): void => {
+    pendingResponse = answer
+    ctx.afterAnswer = true
+    onRespondEarly?.(answer)
+  }
   // Bound the walk so a cyclic definition can't loop forever (#260). stepOrder is
   // reset/offset by parallel and bid_group handling, so count main-loop visits
   // separately.
@@ -2150,8 +2159,7 @@ export async function walkGraph(
             const body = resp?.body ?? null
             const status = resp?.status ?? 200
             if (r.sentinel.continueAfter) {
-              pendingResponse = { body, status }
-              onRespondEarly?.(pendingResponse)
+              answerEarly({ body, status })
               // advance to next node after the chain's last node
               const contEdges = outgoingEdges(chainNode.id, definition.edges)
               const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
@@ -2219,7 +2227,7 @@ export async function walkGraph(
       // A Salesforce update after the answer is watched around its whole retry
       // loop, so one still out after 2 s is recorded however it ends (#2022).
       const atRisk =
-        pendingResponse !== null && node.type === 'salesforce' && node.config.operation === 'update'
+        ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
           ? startWatchSafely(ctx.startAtRiskWatch, node.namespace)
           : null
       const result = await runWatched(
@@ -2273,11 +2281,10 @@ export async function walkGraph(
         logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, resolvedInput, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
-          pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status, headers: result.earlyResponse.headers }
           // Signal to the outer handler that the response is ready now; the
           // remaining walk continues here but the caller doesn't have to wait
           // for it (outer pushes the continuation into ctx.waitUntil).
-          onRespondEarly?.(pendingResponse)
+          answerEarly({ body: result.earlyResponse.body, status: result.earlyResponse.status, headers: result.earlyResponse.headers })
           // fall through — continue walking the graph
         } else {
           if (result.earlyResponse) {

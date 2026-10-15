@@ -8,7 +8,20 @@
  * slot frees, the wait budget runs out, or the step's abort signal fires.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { BulkheadClient, salesforceBulkheadWaitMs } from '../bulkhead-client'
+import {
+  BulkheadClient,
+  salesforceBulkheadWaitMs,
+  salesforcePostAnswerBulkheadWaitMs,
+  salesforceBulkheads,
+  acquireSlots,
+  SALESFORCE_BULKHEAD_KEY,
+  SALESFORCE_POST_ANSWER_BULKHEAD_KEY,
+  SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT,
+  SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS,
+} from '../bulkhead-client'
+import { CONTINUATION_WINDOW_MS } from '../post-response-budget'
+import { AT_RISK_AFTER_MS } from '../../engine/at-risk-writes'
+import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
 import type { Env } from '../../index'
 
 // Fake DO namespace whose acquire responses come from a queue; refusals repeat
@@ -126,5 +139,89 @@ describe('salesforceBulkheadWaitMs', () => {
 
   it('falls back to the default on a non-numeric value', () => {
     expect(salesforceBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: 'nope' } as unknown as Env)).toBe(15_000)
+  })
+})
+
+// #2170: post-answer Salesforce calls take their own share of the bulkhead.
+describe('the post-answer share (#2170)', () => {
+  it('waits at most SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS, and less only when the operator asked for less', () => {
+    expect(salesforcePostAnswerBulkheadWaitMs({} as Env)).toBe(SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS)
+    expect(salesforcePostAnswerBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '60000' } as unknown as Env)).toBe(SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS)
+    expect(salesforcePostAnswerBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '1000' } as unknown as Env)).toBe(1000)
+    expect(salesforcePostAnswerBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '0' } as unknown as Env)).toBe(0)
+  })
+
+  // A shed post-answer write must fail inside the window, as unknown with its
+  // at-risk record kept, rather than be cut off still waiting. Three attempts is
+  // the engine's default (`retries ?? 2`), with its 500 ms and 1 s backoff; the
+  // token is cached on the hot path.
+  it('lets a write shed on every default attempt fail inside the post-answer window', () => {
+    const attempts = 3
+    const backoff = 500 + 1000
+    expect(attempts * SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS + backoff).toBeLessThan(CONTINUATION_WINDOW_MS)
+  })
+
+  // A write shed before the watch's 2 s would settle unknown with nothing
+  // recorded, so a single attempt waits past it.
+  it('waits past the at-risk threshold, so a shed write is always recorded', () => {
+    expect(SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS).toBeGreaterThan(AT_RISK_AFTER_MS)
+  })
+
+  it('keeps at least one main slot out of the share whatever the main limit is set to', () => {
+    const fake = fakeBulkheads()
+    const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
+    const [post, main] = salesforceBulkheads(env, true).gates
+    expect([post.name, post.limit, main.name, main.limit]).toEqual([SALESFORCE_POST_ANSWER_BULKHEAD_KEY, SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, SALESFORCE_BULKHEAD_KEY, 20])
+    const small = salesforceBulkheads({ ...env, SALESFORCE_BULKHEAD_LIMIT: '4' } as unknown as Env, true).gates
+    expect(small.map((g) => g.limit)).toEqual([3, 4])
+    expect(salesforceBulkheads({ ...env, SALESFORCE_BULKHEAD_LIMIT: '1' } as unknown as Env, true).gates.map((g) => g.limit)).toEqual([1, 1])
+  })
+
+  it('pre-answer calls keep the one salesforce key and its limit', () => {
+    const fake = fakeBulkheads()
+    const gates = salesforceBulkheads({ SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env, false).gates
+    expect(gates.map((g) => [g.name, g.limit])).toEqual([[SALESFORCE_BULKHEAD_KEY, 20]])
+    expect(salesforceBulkheads({} as Env, true).gates).toEqual([])
+  })
+})
+
+describe('acquireSlots', () => {
+  const virtualTime = () => {
+    let now = 0
+    return { clock: () => now, sleep: (ms: number) => { now += ms; return Promise.resolve() } }
+  }
+
+  it('spends one wait budget across the keys, not one per key, and hands back what it held', async () => {
+    // The share is full until 2 s in; the main bulkhead stays full throughout.
+    const fake = fakeBulkheads({ seed: { [SALESFORCE_POST_ANSWER_BULKHEAD_KEY]: SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, [SALESFORCE_BULKHEAD_KEY]: 20 } })
+    const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
+    let now = 0
+    let freed = false
+    const sleep = async (ms: number) => {
+      now += ms
+      if (now >= 2000 && !freed) {
+        freed = true
+        await fake.namespace.get(fake.namespace.idFromName(`bulkhead-${SALESFORCE_POST_ANSWER_BULKHEAD_KEY}`))
+          .fetch('http://do/release', { method: 'POST', body: JSON.stringify({ token: `seed-${SALESFORCE_POST_ANSWER_BULKHEAD_KEY}-0` }) })
+      }
+    }
+    const held = await acquireSlots(salesforceBulkheads(env, true).gates, 3000, { sleep, clock: () => now })
+    expect(held.allowed).toBe(false)
+    expect(held.refusedBy).toEqual({ key: SALESFORCE_BULKHEAD_KEY, inflight: 20, limit: 20 })
+    // The main wait got what the share wait left, so the whole wait ends at 3 s.
+    expect(now).toBe(3000)
+    // The share slot it got at 2 s is handed back, leaving the share as it found it.
+    expect(fake.inflight(SALESFORCE_POST_ANSWER_BULKHEAD_KEY)).toBe(SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT - 1)
+  })
+
+  it('fails open on a key whose object errors, names it, and still takes the other', async () => {
+    const fake = fakeBulkheads({ broken: [SALESFORCE_POST_ANSWER_BULKHEAD_KEY] })
+    const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
+    const held = await acquireSlots(salesforceBulkheads(env, true).gates, 0, virtualTime())
+    expect(held.allowed).toBe(true)
+    expect(held.failedOpen).toEqual([{ key: SALESFORCE_POST_ANSWER_BULKHEAD_KEY, error: 'Durable Object reset because its code was updated.' }])
+    expect(fake.inflight(SALESFORCE_BULKHEAD_KEY)).toBe(1)
+    await held.release()
+    expect(fake.inflight(SALESFORCE_BULKHEAD_KEY)).toBe(0)
   })
 })

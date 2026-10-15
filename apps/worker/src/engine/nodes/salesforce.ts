@@ -24,7 +24,7 @@ import { linkAbort } from '../retry'
 import { classifyHttpErrorWithBody } from '../error-classifier'
 import { shadowSalesforceStub } from '../shadow'
 import { shadowOf } from '../run-reality'
-import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
+import { BulkheadClient, acquireSlots, salesforceBulkheads, type AcquireWaitOptions, type HeldSlots } from '../../lib/bulkhead-client'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
 import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
@@ -362,18 +362,21 @@ export async function executeSalesforceNode(
   // which would lump it with REQUEST_LIMIT_EXCEEDED (whose retry DOES hit SF and
   // must not retry); see isSaturationError in error-classifier.ts. Fail OPEN if the
   // limiter itself errors, so a bulkhead-DO outage cannot block all SF traffic.
-  const bulkhead = env.SALESFORCE_BULKHEAD
-    ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env))
-    : null
-  const waitMs = salesforceBulkheadWaitMs(env)
+  //
+  // A call after the run's answer also takes the post-answer share (#2170), told
+  // so by the walk's own fact, and waits at most 3 s so a shed write fails inside
+  // the 12 s window. The wait runs on the run's clock, so a test drives it.
+  const { gates: bulkheads, waitMs } = salesforceBulkheads(env, ctx.afterAnswer === true)
+  const clock = ctx.retryTiming?.clock
   const targetLabel = object || (config.apex_path ?? '')
 
   const callOpts: SalesforceCallOptions = {
     url,
     method,
     headers,
-    bulkhead,
+    bulkheads,
     waitMs,
+    ...(clock ? { waitClock: { clock: () => clock.now(), sleep: (ms: number) => clock.sleep(ms) } } : {}),
     signal,
     resolvedInput,
     traceId: ctx.trigger.trace_id,
@@ -511,8 +514,9 @@ export async function executeSalesforceNode(
       headers,
       signal,
       traceId: ctx.trigger.trace_id,
-      bulkhead,
+      bulkheads,
       waitMs,
+      waitClock: callOpts.waitClock,
       resolvedInput,
     })
     parsedBody = paged.body
@@ -526,8 +530,11 @@ export interface SalesforceCallOptions {
   url: string
   method: string
   headers: Record<string, string>
-  bulkhead: BulkheadClient | null
+  /** The bulkheads to take a slot of, in order (`salesforceBulkheads`); none, no limit. */
+  bulkheads: BulkheadClient[]
   waitMs: number
+  /** The clock the slot wait runs on; real time when absent. */
+  waitClock?: Pick<AcquireWaitOptions, 'clock' | 'sleep'>
   signal: AbortSignal | undefined
   resolvedInput: ResolvedStepInput
   traceId: string
@@ -559,6 +566,25 @@ export function salesforceRejectedTheWrite(status: number, responseText: string)
 }
 
 /**
+ * The bulkhead slots for one Salesforce call (ADR 0005, #2170). A key whose
+ * Durable Object errors is passed over, every key alike, and said by name, so a
+ * fail-open is counted from its own line rather than read off a waited line.
+ */
+async function takeSalesforceSlots(opts: {
+  bulkheads: BulkheadClient[]
+  waitMs: number
+  waitClock?: Pick<AcquireWaitOptions, 'clock' | 'sleep'>
+  signal: AbortSignal | undefined
+  traceId: string
+}): Promise<HeldSlots> {
+  const slots = await acquireSlots(opts.bulkheads, opts.waitMs, { ...opts.waitClock, signal: opts.signal })
+  for (const { key, error } of slots.failedOpen) {
+    console.log(`[salesforce] event=salesforce_bulkhead_failed_open key=${key} error=${JSON.stringify(error)} trace=${opts.traceId}`)
+  }
+  return slots
+}
+
+/**
  * One Salesforce call: bulkhead slot, own timeout, response read and parsed.
  *
  * Extracted so the malformed-field recovery (#723) reruns the request through
@@ -569,27 +595,29 @@ export async function performSalesforceCall(
   bodyStr: string | undefined,
   opts: SalesforceCallOptions,
 ): Promise<{ res: Response; responseText: string; parsedBody: unknown }> {
-  const acquireStart = Date.now()
-  const lease = opts.bulkhead
-    ? await opts.bulkhead.acquireWithWait(opts.waitMs, { signal: opts.signal }).catch(() => ({ allowed: true } as AcquireResult))
-    : ({ allowed: true } as AcquireResult)
-  const waitedMs = Date.now() - acquireStart
-  if (!lease.allowed) {
+  const now = opts.waitClock?.clock ?? Date.now
+  const acquireStart = now()
+  const slots = await takeSalesforceSlots(opts)
+  const waitedMs = now() - acquireStart
+  if (!slots.allowed && slots.refusedBy) {
+    const { key, inflight, limit } = slots.refusedBy
     // Distinctive message so an unhandled shed flows through the existing failure
     // + failure-rate Slack alerts without new alert infra.
-    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} waited_ms=${waitedMs} trace=${opts.traceId}`)
+    console.log(`[salesforce] event=salesforce_bulkhead_shed key=${key} inflight=${inflight} limit=${limit} waited_ms=${waitedMs} trace=${opts.traceId}`)
     const shedErr = new Error(
-      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight, waited ${waitedMs}ms)`,
+      `Salesforce bulkhead: at capacity (${key}, ${inflight}/${limit} inflight, waited ${waitedMs}ms)`,
     ) as Error & { resolvedInput?: ResolvedStepInput }
     // Not marked permanent/saturated on purpose: classifyStepError defaults an
     // unmarked error to transient, so withRetry retries the shed (see comment above).
+    // After the answer it is therefore an unknown outcome, so the at-risk record stays.
     shedErr.resolvedInput = opts.resolvedInput
     throw shedErr
   }
-  if (waitedMs > 1000) {
+  if (waitedMs > 1000 && slots.granted) {
     // Slot obtained but only after real waiting: saturation is close. Visible in
     // logs so a creeping-toward-capacity trend can be spotted before sheds start.
-    console.log(`[salesforce] event=salesforce_bulkhead_waited waited_ms=${waitedMs} inflight=${lease.inflight} limit=${lease.limit} trace=${opts.traceId}`)
+    const { key, inflight, limit } = slots.granted
+    console.log(`[salesforce] event=salesforce_bulkhead_waited key=${key} waited_ms=${waitedMs} inflight=${inflight} limit=${limit} trace=${opts.traceId}`)
   }
 
   const controller = new AbortController()
@@ -607,8 +635,8 @@ export async function performSalesforceCall(
     })
   } finally {
     clearTimeout(timer)
-    // Release the slot whether the call succeeded, failed, or timed out.
-    if (opts.bulkhead && lease.token) await opts.bulkhead.release(lease.token).catch(() => {})
+    // Release the slots whether the call succeeded, failed, or timed out.
+    await slots.release()
   }
   const fetchMs = Date.now() - fetchStart
 
@@ -789,8 +817,9 @@ async function followQueryPages(
     headers: Record<string, string>
     signal: AbortSignal | undefined
     traceId: string
-    bulkhead: BulkheadClient | null
+    bulkheads: BulkheadClient[]
     waitMs: number
+    waitClock?: Pick<AcquireWaitOptions, 'clock' | 'sleep'>
     resolvedInput: ResolvedStepInput
   },
 ): Promise<{ body: unknown; warn?: StepLogEntry }> {
@@ -842,26 +871,24 @@ async function fetchQueryPage(
     headers: Record<string, string>
     signal: AbortSignal | undefined
     traceId: string
-    bulkhead: BulkheadClient | null
+    bulkheads: BulkheadClient[]
     waitMs: number
+    waitClock?: Pick<AcquireWaitOptions, 'clock' | 'sleep'>
     resolvedInput: ResolvedStepInput
   },
 ): Promise<unknown> {
   // nextRecordsUrl is a path (/services/data/vXX.0/query/01g...-2000), not absolute.
   const url = nextRecordsUrl.startsWith('http') ? nextRecordsUrl : `${opts.instanceUrl}${nextRecordsUrl}`
 
-  const lease = opts.bulkhead
-    ? await opts.bulkhead
-        .acquireWithWait(opts.waitMs, { signal: opts.signal })
-        .catch(() => ({ allowed: true } as AcquireResult))
-    : ({ allowed: true } as AcquireResult)
-  if (!lease.allowed) {
+  const slots = await takeSalesforceSlots(opts)
+  if (!slots.allowed && slots.refusedBy) {
+    const { key, inflight, limit } = slots.refusedBy
     // Retryable (transient), NOT permanent, same rationale as the main shed
     // above: a shed request never reached SF, so retrying re-enters this gate
     // without adding SF load. Leaving it unmarked lets classifyStepError default
     // it to transient so withRetry rides out a brief slowdown.
     throw Object.assign(
-      new Error(`Salesforce bulkhead: at capacity while paging a query (${lease.inflight}/${lease.limit} inflight)`),
+      new Error(`Salesforce bulkhead: at capacity while paging a query (${key}, ${inflight}/${limit} inflight)`),
       { resolvedInput: opts.resolvedInput },
     )
   }
@@ -875,7 +902,7 @@ async function fetchQueryPage(
     res = await fetch(url, { method: 'GET', headers: opts.headers, signal: controller.signal })
   } finally {
     clearTimeout(timer)
-    if (opts.bulkhead && lease.token) await opts.bulkhead.release(lease.token).catch(() => {})
+    await slots.release()
   }
 
   const text = await res.text()
