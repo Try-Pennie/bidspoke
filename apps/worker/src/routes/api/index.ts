@@ -24,6 +24,7 @@ import envFolders from './env-folders'
 import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
+import partnerWorkflowValues from './partner-workflow-values'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
@@ -66,6 +67,8 @@ api.route('/field-coverage', fieldCoverage)
 // matches only its own paths, so /partners/:id and /partners/:id/buyer-profile
 // do not collide.
 api.route('/partners', buyerProfiles)
+// The workflow values tab (#2142): which workflows read the partner's Constants values.
+api.route('/partners', partnerWorkflowValues)
 api.route('/buyer-sales', buyerSales)
 // Held click claims a person releases from the partner page (#1552).
 api.route('/held-clicks', heldClicks)
