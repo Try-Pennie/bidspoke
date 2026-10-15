@@ -95,6 +95,16 @@ describe('cleanupLedger', () => {
     expect(ops.calls).toContain(`allowlist ${EMAIL}`)
   })
 
+  it('refuses a hand edited key that only contains the marker, and removes nothing for it', async () => {
+    const ops = recordingOps()
+    const report = await cleanupLedger(
+      ledgerWith([{ kind: 'allowlist', key: `dan+${MARKER}@trypennie.com`, id: null, state: 'created' }]),
+      ops,
+    )
+    expect(ops.calls).toEqual([])
+    expect(report.failed[0]).toMatch(/does not carry the marker/)
+  })
+
   it('refuses an entry whose key does not carry the ledger marker, and removes nothing for it', async () => {
     const ops = recordingOps()
     const report = await cleanupLedger(

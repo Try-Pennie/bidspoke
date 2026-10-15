@@ -69,6 +69,19 @@ describe('the ledger is written before anything is created (L515)', () => {
     expect(() => ledger.plan('organization', 'pennie', 'org-1')).toThrow(/marker/)
   })
 
+  it('refuses a key that merely contains the marker, or is the key of another kind (#2157 lessons review)', () => {
+    const io = memoryIo()
+    const marker = 'realtime-spike-20261015t153012z'
+    const ledger = openLedger('/l.json', newLedger(marker, 'ref', 'now'), io)
+    expect(() => ledger.plan('organization', `pennie-${marker}`, 'org-1')).toThrow(/marker/)
+    expect(() => ledger.plan('allowlist', `dan+${marker}@trypennie.com`, null)).toThrow(/marker/)
+    expect(() => ledger.plan('organization', emailForMarker(marker), 'org-1')).toThrow(/marker/)
+    expect(() => ledger.plan('public_user', orgSlugForEmail(emailForMarker(marker)), 'u-1')).toThrow(/marker/)
+    ledger.plan('organization', orgSlugForEmail(emailForMarker(marker)), 'org-1')
+    ledger.plan('auth_user', emailForMarker(marker), null)
+    expect(ledger.current().entries).toHaveLength(2)
+  })
+
   it('refuses to read a file that is not a spike ledger', () => {
     const io = memoryIo()
     io.files.set('/bad.json', JSON.stringify({ version: 1, marker: 'pennie', project: 'p', startedAt: 'x', entries: [] }))

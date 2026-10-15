@@ -75,8 +75,19 @@ export function newLedger(marker: string, project: string, startedAt: string): L
   return { version: 1, marker, project, startedAt, entries: [] }
 }
 
-export function keyCarriesMarker(key: string, marker: string): boolean {
-  return isSpikeMarker(marker) && key.includes(marker)
+/**
+ * The one key a run may record for each kind: Org B's email for the user rows, and
+ * the organization slug the signup trigger derives from it. Matched exactly, never
+ * by containing the marker, so a hand edited ledger cannot name anything else
+ * (#2157 lessons review).
+ */
+export function expectedKey(kind: EntryKind, marker: string): string {
+  const email = emailForMarker(marker)
+  return kind === 'organization' ? orgSlugForEmail(email) : email
+}
+
+export function keyCarriesMarker(kind: EntryKind, key: string, marker: string): boolean {
+  return isSpikeMarker(marker) && key === expectedKey(kind, marker)
 }
 
 export function openLedger(path: string, initial: Ledger, io: LedgerIo): LedgerHandle {
@@ -89,7 +100,7 @@ export function openLedger(path: string, initial: Ledger, io: LedgerIo): LedgerH
   return {
     path,
     plan(kind, key, id) {
-      if (!keyCarriesMarker(key, ledger.marker)) {
+      if (!keyCarriesMarker(kind, key, ledger.marker)) {
         throw new Error(`refusing to plan ${kind} '${key}': it does not carry the marker ${ledger.marker}`)
       }
       ledger.entries.push({ kind, key, id, state: 'planned' })

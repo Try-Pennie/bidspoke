@@ -42,11 +42,11 @@ export async function cleanupLedger(ledger: Ledger, ops: CleanupOps): Promise<Cl
   const entries = [...ledger.entries]
 
   for (const entry of entries) {
-    if (!keyCarriesMarker(entry.key, ledger.marker)) {
+    if (!keyCarriesMarker(entry.kind, entry.key, ledger.marker)) {
       report.failed.push(`${describe(entry)}: refused, the key does not carry the marker ${ledger.marker}`)
     }
   }
-  const safe = entries.filter((e) => keyCarriesMarker(e.key, ledger.marker))
+  const safe = entries.filter((e) => keyCarriesMarker(e.kind, e.key, ledger.marker))
 
   // A user entry with no id: resolve it once, by email, before anything is deleted.
   let resolvedUserId: string | null | undefined
