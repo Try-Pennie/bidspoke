@@ -5,13 +5,95 @@ contract of every Salesforce write the live workflows make after the HTTP
 response is sent to the client. #1680 (port the Main Flow relay posts to native
 Salesforce steps) and #2023 (the read-back and resend) build from it.
 
-It is a read-only record, derived from the repo. Everything here is drawn from
+It is a read-only record. The first pass (2026-10-14) was derived from the repo:
 the live workflow definitions, the node executors, and the committed reference
-artifacts. Where the contract depends on something the repo cannot show (the
-Pipedream relay's own internal config, Salesforce field-level security and
-sharing, and the Salesforce automations each write fires), it is called out as
-an open question rather than guessed. Those gaps are the ones #1680 and #2023
-have to close with Pipedream UI access and Salesforce access.
+artifacts. Where the contract depended on something the repo cannot show (the
+Pipedream relays' own config, Salesforce field-level security and sharing, the
+Salesforce automations each write fires, which Main Flow records run, and the
+daily volume), it was listed as an open question rather than guessed.
+
+All six open questions were answered on 2026-10-15, read only, from the
+Pipedream UI (question 1), the production database, and the Salesforce org
+(questions 2 to 6), with two residual items that could not be measured and stay
+open for #1680: whether Pipedream omits an absent body key or sends it as null
+(question 1), and the body of the managed `regal_voice.LeadTrigger`, which
+Salesforce hides (question 5). Each answer sits in the section it belongs to and carries
+the query or source it came from; the consolidated list at the end points to
+them. Nothing was written to Salesforce, Supabase, Pipedream or Cloudflare.
+
+## What the answers change in the #1680 plan
+
+Read this before building #1680 or #2023. Each item is measured on 2026-10-15
+and detailed in its section below.
+
+1. **There is one Main Flow to port, not two.** `Main Flow (v2)`
+   (`0630d714-5917-4221-9bcc-ca1fb2d9eba2`) is active and not deleted, but it
+   has never run: zero runs, test or live, in the daily stats table since it was
+   created on 2026-07-29, no custom endpoint and no source assignment. It is
+   still reachable through the generic webhook route with any valid key, so
+   whether to deactivate it (and drop "v1 and v2" from #1680's scope) is a
+   decision for Dan, not a port. See question 2.
+2. **`send_salesforce_inquiry` is not a post-answer write.** It runs inside a
+   parallel node that waits for all its children before the walk reaches any
+   response, and a failed child fails the run. 0 of 22,078 completed inquiry
+   posts in 7 days finished after the response; the 2 that failed ended their
+   leads with HTTP 500 and no answer. So #2023's read-back does not cover it,
+   and porting it (#1680) puts two Salesforce calls (a Submission PATCH and the
+   `/services/apexrest/credit-inquiries` Apex REST call) on the pre-answer path
+   inside that parallel's 20 s window, where a failure costs the lead. The
+   native node treats `apex` as not safe to repeat, and the Apex endpoint
+   attaches a new file to the Lead on every call that carries inquiries, so its
+   retry needs deciding on purpose. See question 3.
+3. **The Update Submission relay sends exactly 28 named fields and drops
+   everything else**, `executionId` included. Every one of the nine Main Flow
+   posts to this relay sends `executionId`; nothing else in their bodies falls
+   outside the 28 (checked against the live definition). The inquiry post goes
+   to the other relay and carries no `executionId`. A native PATCH must leave `executionId` out:
+   it is not a Salesforce field name. See question 1.
+4. **The Inquiries relay makes two Salesforce calls per post with no filter**:
+   a Submission PATCH of `PDFlow_4__c` and `VantageScore__c`, then the Apex REST
+   POST. `VantageScore__c` is therefore written twice per lead on the trades
+   present path, by the inquiry
+   relay before the answer and by the outcome relay after it, from different
+   sources. `PDFlow_4__c` is a link to a Pipedream workflow, not to Bidspoke.
+   See question 1.
+5. **No access work is needed for the integration user.** The Bidspoke
+   integration user (`Bidspoke Integration`, `bidspoke@trypennie.com`) holds
+   the same System Administrator profile as the relays' writing user (Brian
+   Nelms), with Modify All Data, and has edit on all 70 fields the post-answer
+   writes touch. See question 4.
+6. **No readable Salesforce automation keys on the writing user.** No Apex trigger,
+   trigger handler, record-triggered flow or validation rule on Submission,
+   Lead, Prospect, Applicant or Inquiry reads the running or last modifying
+   user. One managed package trigger (`regal_voice.LeadTrigger`) hides its
+   body and could not be read. See question 5.
+7. **A relay 2xx probably proves nothing about Salesforce today.** Both relays
+   use Pipedream's default HTTP response, and the inquiry post's median
+   duration is 63 ms for a relay that makes two Salesforce calls. Read
+   together, the relay acknowledges on receipt, before its Salesforce steps
+   run. This is an inference, not a measurement of Pipedream. If it holds, the
+   relay steps' configured timeouts (`timeout_ms` 2,250 to 122,750 in the
+   live Main Flow definition read on 2026-10-15, `send_salesforce` the
+   largest, plus the 15,000 ms default on `send_fallback_salesforce_1`; #1680
+   quotes 950 to 122,750) and their measured durations describe
+   Pipedream's intake, not a Salesforce write, so neither is a guide for the
+   native step timeouts. See question 3.
+8. **Volume is about 54,300 post-answer writes a day, not about 100,000**
+   (57,400 counting the pre-answer inquiry post). The Main Flow relay outcome
+   posts are about 3,290 of them. Porting them plus the inquiry
+   relay adds about 9,500 calls a day to the Bidspoke user, about 0.6% of the
+   org's 1,680,000 daily API allocation, and that allocation is org wide, so
+   Pipedream's calls already count against it today. See question 6.
+9. **Resend safety (#2023).** An identical second write that lands on an
+   unchanged record re-fires nothing that keys on a change (Submission
+   completion, the Lead sync's completion branch, Cometly event 30, the six
+   Lead flows keyed on `PD_Completed_Timestamp__c`). A resend over a record
+   another writer has since moved would regress it: for example
+   `External_Exchange_Status__c` from Completed back to Pending, after which the
+   next Completed flip fires Cometly event 30 a second time. #2023's rule never
+   to overwrite a different non-blank value is what prevents that. On Prospect,
+   a backward `BidStatus__c` is silently reverted by a flow, so it neither
+   errors nor lands. See question 5.
 
 ## Provenance
 
@@ -39,10 +121,41 @@ have to close with Pipedream UI access and Salesforce access.
   ADR 0010 (Engine and Main Flow price Tripoint differently),
   `docs/concepts/lead-outcome-recovery.md`.
 
-A note on "v1 and v2": #2021 asks for Main Flow v1 and v2. The backup holds one
-current Main Flow definition (above). Whether a second live Main Flow record or
-an older version is still running is an **open question** (see the end). The
-contract below is the current definition.
+### Main Flow v1 and v2 (open question 2, answered 2026-10-15)
+
+#2021 asks for Main Flow v1 and v2. Measured in the production database:
+
+- `workflows` holds two Main Flow records, both `is_active = true`,
+  `deleted_at is null`, lane `money`, 88 nodes each, with different
+  definitions:
+  - `Main Flow`, `60e2e0bc-5aa2-47db-b333-3a8fe1c62e09`: 169 versions, the last
+    saved 2026-10-07 16:39 UTC. This is the definition in the backup and the
+    money gate fixture, and the one this contract describes.
+  - `Main Flow (v2)`, `0630d714-5917-4221-9bcc-ca1fb2d9eba2`: created
+    2026-07-29, 2 versions, the last saved 2026-09-17. It carries 10 webhook
+    nodes (the same relay post shape).
+- **Only `60e2e0bc` runs.** `workflow_executions` (non-test, the whole
+  retention window, which held runs from 2026-10-08 00:00 UTC to the query at
+  2026-10-15 15:13 UTC) holds 25,155 Main Flow runs,
+  every one on `60e2e0bc` version 169; no run used an older version, and none
+  had a null `workflow_version_id`. `0630d714` has no execution at all in that
+  window, test or live.
+- `workflow_stats_daily`, which goes back to 2026-04-06, has **no row for
+  `0630d714` ever**, test or live, while `60e2e0bc` has 97,188 live runs since
+  2026-09-17 (the positive control that the table counts this workflow family).
+- The only custom endpoint (subdomain `mainflow`, path `/webhook`) and the only source
+  assignment (`main_flow`) both point at `60e2e0bc`. `0630d714` has neither, but
+  being active it would still run if something posted to
+  `/webhooks/0630d714-...` with any valid API key.
+
+Queries: `select id, name, is_active, deleted_at ... from workflows where name
+ilike '%main%'`; executions grouped by `workflow_id` and the version number
+joined from `workflow_versions`, filtered on `started_at` (the partition key);
+`workflow_stats_daily` grouped by `workflow_id, is_test`; `webhook_endpoints` and
+`source_workflow_assignments` filtered on both ids.
+
+So the "v2" in #2015 and #1680 is a dormant copy. Porting `60e2e0bc` covers every
+relay post that has run. Whether `0630d714` is deactivated is Dan's decision.
 
 ## Two write mechanisms
 
@@ -94,26 +207,95 @@ Main Flow steps use the `salesforce` node, `executeSalesforceNode`:
 ## The two Pipedream relays
 
 Two relay endpoints receive Main Flow posts. The repo shows the request Bidspoke
-sends; it does **not** show the relay's own filter, method, Salesforce
-connection, or field mapping. Those are open questions for #1680. The relay URLs
-are deliberately NOT written here: they carry no auth header, so the URL itself
-is a bearer capability that can write to production Salesforce, and this doc is
-committed. The full URLs live in the live workflow definitions and the backup.
+sends; the relay's own filter, method, Salesforce connection and field mapping
+were read off the Pipedream UI on 2026-10-15 (open question 1, below). The relay
+URLs are deliberately NOT written here: they carry no auth header, so the URL
+itself is a bearer capability that can write to production Salesforce, and this
+doc is committed. The full URLs live in the live workflow definitions and the
+backup.
 
 | Relay | Endpoint | Used by | Writes to |
 |---|---|---|---|
-| Submission update | id redacted (bearer URL) | the 9 Main Flow outcome posts | `Submission__c` (per the epic and the `submissionId` key) |
-| Inquiries update | id redacted (bearer URL) | `send_salesforce_inquiry` | Salesforce, Equifax inquiry data |
+| Submission update | id redacted (bearer URL) | the 9 Main Flow outcome posts | one `Submission__c` PATCH of 28 named fields (question 1) |
+| Inquiries update | id redacted (bearer URL) | `send_salesforce_inquiry` | a `Submission__c` PATCH of `PDFlow_4__c` and `VantageScore__c`, then the `/credit-inquiries` Apex REST POST that replaces the Lead's `Inquiry__c` rows (question 1) |
 
-Known from the epic plan (read off Salesforce, not the repo): the Submission
-relay maps the request keys `UUID` and `leadUUID` to `Engine_UUID_SO__c` and
-`Engine_Lead_UUID_SO__c`, and `SubmissionService.completeSubmissionWithUUID`
-runs as the relay's write to complete the Submission and sync the Lead only when
-both change. The request field `submissionId` is the Submission record id the
-relay targets; `executionId` and `PDFlow_1__c` carry the Bidspoke run id and
-deep link. All other request keys named below are Salesforce field API names the
-relay is assumed to write straight through, which #1680 must confirm against the
-relay's actual mapping.
+### The relays' internal config (open question 1, answered 2026-10-15)
+
+Read off the Pipedream UI on 2026-10-15, read only (no edits, test runs or
+deploys), with the 2026-09-30 Pipedream project export as a cross check. The
+export blanks every step prop as redacted, so the filter and mapping exist only
+in the UI.
+
+**Salesforce: Update Submission** (the Submission relay)
+
+- Settings: auto retry on, error notifications on. Trigger: HTTP, ergonomic
+  event shape, **default response** (no custom response step), automated
+  requests discarded. The build view had no undeployed draft.
+- Step 1, filter: "End if condition is met" when `body.submissionId` does not
+  exist. That is the whole filter: any request carrying a `submissionId`
+  continues. A post whose body is `null` (the Engine failure paths return
+  `sfBody: null`) carries no `submissionId`, so the relay stops there and
+  writes nothing; a native port reproduces that by skipping the write.
+- Step 2, one HTTP request: `PATCH
+  /services/data/v60.0/sobjects/Submission__c/Id/{submissionId}` on the
+  production instance, authenticated as Pipedream's connected Salesforce
+  account (no token is written into the workflow). Salesforce's success answer
+  is `{id, success: true, errors: [], created: false}`.
+- Body: **28 keys, and only these.** Two are renamed:
+  `Engine_Lead_UUID_SO__c` from `body.leadUUID` and `Engine_UUID_SO__c` from
+  `body.UUID`. The other 26 pass straight through from the same named body key:
+  `ADV_SO__c`, `XBC_SO__c`, `Monthly_Creditor_Payment_ES__c`,
+  `Unsecured_Debt_Verified_ES__c`, `Credit_Pull_Result_ES__c`, `PDFlow_1__c`,
+  `PDFlow_2__c`, `External_Exchange_Status__c`, `External_Partner_Name__c`,
+  `External_Routing_Code__c`, `External_Timestamp__c`, `EQXCreditPullStatus__c`,
+  `InternalDebtRouting__c`, `LeadSaleType__c`, `PD_Completed_Timestamp__c`,
+  `VantageScore__c`, `TripointLeadID__c`, `Tripoint_Response__c`, `AmOneBid__c`,
+  `AmOneClickURL__c`, `EnrolledPennieDebt__c`, `ExternalDebtAmount__c`,
+  `Prescreen_Completed__c`, `CreditFreeze__c`, `Tripoint_Create_Timestamp__c`,
+  `Tripoint_Create_Result_Code__c`.
+- `submissionId` is used only in the URL. **`executionId`, and any key not in
+  the 28, is never sent to Salesforce.** Checked against the live Main Flow
+  definition on 2026-10-15: the nine post bodies send no key outside the 28
+  plus `submissionId`, `UUID` and `leadUUID` except `executionId`. Three posts
+  have literal bodies; the other six post a code node's `sfBody`, built by seven
+  code nodes (`engine_no_bids_sf_post` falls back between two). The eighth code
+  node checked, `fallback_engine_debt_not_present`, only feeds the UUIDs into
+  the literal body of `send_fallback_salesforce_1`.
+- It does nothing beyond the one PATCH.
+- **Still open for #1680:** a body key that is absent resolves to undefined in
+  Pipedream's key and value body, and whether Pipedream then omits the key or
+  sends it as null is not established. It matters: a null in a PATCH clears the
+  field, an omitted key leaves it. The port must decide which it reproduces,
+  ideally by reading what a past relay run actually sent.
+
+**Salesforce: Inquiries update** (the Inquiries relay)
+
+- Live version active; the build view carries an undeployed draft, but the
+  live run at 11:17 ET on 2026-10-15 executed the same four steps with the same
+  effect as the draft. Settings and trigger as above, including the default
+  response.
+- Step 1, code: builds `{ PDFlow_4__c, VantageScore__c }`. `PDFlow_4__c` is a
+  link to a Pipedream workflow's inspector (a test Equifax workflow) keyed on
+  `body.traceId`, not a Bidspoke link. `VantageScore__c` is the score of the
+  Equifax model whose `modelNumber` is `05402` in `body.equifax.models`, else
+  null.
+- Step 2: `PATCH .../sobjects/Submission__c/Id/{submissionId}` with that
+  object, so it writes `PDFlow_4__c` and `VantageScore__c`.
+- Step 3, code: builds `{ submissionId, inquiriesJson }`, where `inquiriesJson`
+  is the JSON string of `{ inquiries: [...] }` with null valued keys dropped.
+- Step 4: `POST /services/apexrest/credit-inquiries` with that body. Live
+  answer: `{ message: "Inquiries inserted successfully", statusCode: 200,
+  leadId }`. The endpoint is the Apex class `InquiryParserRest` (described
+  under question 5).
+- **No filter step**: a request with no `submissionId` would PATCH
+  `.../Submission__c/Id/undefined` and fail.
+- Two Salesforce calls per request, so a port that keeps both is two API calls
+  per inquiry post.
+
+Both relays authenticate as a Pipedream connected Salesforce account. Measured
+from the records each one writes (question 4), both write as **Brian Nelms's** Salesforce user (a staff System Administrator
+account; its id and username are left out of this committed doc and can be
+read from any relay-written record's `LastModifiedById`).
 
 ## Main Flow post-answer writes, by state reached
 
@@ -127,18 +309,20 @@ each runs **after** the client has its answer:
 `engine_no_bids_sf_post`, `under_10000_sf_post`, `invalid_state_sf_post`,
 `debt_missing_sf_post`.
 
-The tenth, `send_salesforce_inquiry`, is not wired after a response node; it
-runs inside a parallel branch, so its position relative to the answer is the
-open question in its own section below.
+The tenth Main Flow relay post, `send_salesforce_inquiry`, is not wired after a
+response node. It runs inside a parallel branch, and question 3 (its own section
+below) measured that it always finishes **before** the answer, so it is not a
+post-answer write.
 
 All post to the Submission relay (id redacted) except the inquiry post.
 The record is always the Submission, keyed by `submissionId` =
 `{{trigger.payload.Submission__c}}`. Routing codes seen: 1 = Engine, 2 =
 Tripoint, 3 = AmOne. Exchange status is written `Pending` by the live canvas
-(the reference export wrote `Completed` for Engine paths). The likely reason,
-inferred from the epic notes and not confirmed in the repo, is that the
-Completed flip now happens Salesforce-side via `completeSubmissionWithUUID` when
-`UUID` / `leadUUID` are present; open question below.
+(the reference export wrote `Completed` for Engine paths). Read off the Apex on
+2026-10-15 (question 5): the Submission's completion
+(`Completed_Submission_SO__c` = Yes) is set Salesforce side by
+`completeSubmissionWithUUID` on any of four changes in the write, and Pending
+is not one of them; a later writer flips the exchange status to Completed.
 
 ### The nine outcome posts
 
@@ -164,8 +348,11 @@ Common fields across the outcome posts (present unless noted otherwise above):
 `External_Routing_Code__c`, `External_Exchange_Status__c`, `LeadSaleType__c`.
 
 The winner posts (`tripoint_sf_post`, `amone_sf_post`) do not send `UUID` /
-`leadUUID`: they are not an Engine sale, so they do not trip the relay's
-Submission-completion path. The Engine posts do send them.
+`leadUUID`: they are not an Engine sale, so they never set
+`Engine_Offers_Date_SO__c`. The Engine posts do send them. Correction from the
+Apex (question 5): the UUID pair is only one of four completion conditions, so a
+winner post can still complete the Submission through a change to
+`Credit_Pull_Result_ES__c` or `EQXCreditPullStatus__c`.
 
 ### The inquiry post
 
@@ -183,9 +370,69 @@ a parallel node on the trades-present branch. Body:
 }
 ```
 
-Open question: this post sits inside a parallel branch rather than strictly
-after a response node, so whether it always runs after the answer (and therefore
-whether #2023's read-back should cover it) needs the branch timing confirmed.
+#### Inquiry post timing (open question 3, answered 2026-10-15)
+
+**It always runs before the answer, and it blocks the answer.**
+
+From the live definition (`60e2e0bc`, money gate fixture):
+
+- `equifax_debt` routes `trades_present` into `parallel_1`, whose two children
+  are `trades_body` (slot `child-0`, the start of the `pennie_debt_calc` chain)
+  and `send_salesforce_inquiry` (slot `child-1`). Its config is `wait_for:
+  all`, `on_child_error: fail`, `timeout_ms: 20000`, `on_timeout: partial`.
+- The parallel's only onward edge is to `parallel_end_1`. A walk of the graph
+  from there (skipping the child slots) reaches all fourteen `response` nodes
+  through `parallel_end_1 -> equifax_debt_end -> ...`, so every response on the
+  trades-present path is downstream of the parallel.
+- `executeParallelNode` (`apps/worker/src/engine/nodes/parallel.ts`), mode
+  `all`: awaits `Promise.allSettled` of every child, raced against the
+  timeout. `on_timeout: partial` does not let the walk carry on past a slow
+  child: it only returns the unsettled child marked `timeout`, and the
+  `on_child_error: fail` check that follows treats a `timeout` exactly like a
+  rejection and throws (lines 130 to 140). So the walk cannot pass the parallel
+  until the inquiry post has settled, and if it failed (or was still running at
+  20 s) the run fails.
+- The inquiry node is `timeout_ms: 5500`, `retries: 2`, exponential backoff
+  (500 ms, 1 s), so its worst case is about 18 s, inside the 20 s window.
+
+Confirmed in `execution_steps` (non-test, Main Flow, filtered on `started_at`,
+the partition key; run in four windows because one 7 day join timed out),
+comparing each inquiry step's `completed_at` with the earliest `started_at` of
+any `response` step in the same execution:
+
+| Window (relative to 2026-10-15 ~15:30 UTC) | Inquiry steps completed | Finished before the response | Finished after the response | Completed, no response step | Failed |
+|---|---|---|---|---|---|
+| last 1 day | 3,704 | 3,704 | 0 | 0 | 0 |
+| 1 to 3 days ago | 6,033 | 6,024 | 0 | 9 | 2 |
+| 3 to 5 days ago | 6,204 | 6,204 | 0 | 0 | 0 |
+| 5 to 7 days ago | 6,146 | 6,146 | 0 | 0 | 0 |
+
+- **0 of 22,078** inquiry posts that ran alongside a response finished after
+  it. Durations: median 63 ms over the last day, the longest completed in the
+  7 days 15,841 ms.
+- The 9 completed without a response belong to runs that failed elsewhere and
+  answered HTTP 500 (7 failed at `parallel_1` because the other child,
+  the trades chain, failed; 2 at a `data_store` step).
+- The 2 failures (2026-10-13 03:34 and 04:34 UTC) were transient timeouts
+  ("Step timed out after 5500ms", all 2 retries used, 18,000 ms in total). Both
+  runs failed at `parallel_1` and answered **HTTP 500, with no offer**. A slow
+  Inquiries relay therefore costs the lead today.
+
+Consequences:
+
+- #2023's read-back does not cover this post: it is never unfinished after the
+  answer. Its failure is already loud (the run fails and alerts).
+- Porting it (#1680) moves two Salesforce calls onto the pre-answer critical
+  path, inside the 20 s parallel. The native node treats `apex` as not safe to
+  repeat, and `InquiryParserRest` attaches a new file to the Lead on every
+  successful call (question 5), so how that step retries is a decision, not a
+  copy of the relay's settings.
+- A 63 ms median for a relay that makes two Salesforce calls, one of them an
+  Apex insert, fits Pipedream's default HTTP response acknowledging on receipt,
+  before the Salesforce steps run (both relays use the default response,
+  question 1). That is an inference, not a measurement of Pipedream. If it
+  holds, a relay 2xx today says only that Pipedream received the request, and
+  the relay steps' durations measure Pipedream's intake rather than Salesforce.
 
 ### Main Flow native Salesforce steps (for completeness, not post-answer)
 
@@ -243,7 +490,11 @@ Post-answer writes, all `update Prospect__c` (record id =
 `{{steps.generate_trades_body.output.prospectId}}`):
 
 - `patch_prospect`: winner writeback, body from the Lead Economy
-  `patch_prospect_body` code node.
+  `patch_prospect_body` code node, which writes `Base_Bid__c`, `BidAmount__c`,
+  `BidStatus__c`, `Bid_Response_Timestamp__c`, `Collections_Bid_Discount__c`,
+  `ExternalDebtAmount__c`, `ExternalExchangeStatus__c`,
+  `ExternalPartnerName__c`, `ExternalRoutingCode__c`, `OfferLandingPage__c` and
+  `RejectionReason__c` (read from the live definition's code, 2026-10-15).
 - `patch_prospect_success` / `patch_prospect_duplicate` / `patch_prospect_error`:
   `{ "TripointLeadID__c": <createLead.id>, "Tripoint_Response__c": "Success" |
   "Duplicate" | "Fail" }`.
@@ -302,104 +553,340 @@ native.
 
 | Workflow | Object | Record id source | Post-answer write nodes |
 |---|---|---|---|
-| Main Flow | `Submission__c` (via relay) | `trigger.payload.Submission__c` | 9 relay posts, plus `send_salesforce_inquiry` (parallel branch, post-answer timing is open question 3) |
+| Main Flow | `Submission__c` (via relay) | `trigger.payload.Submission__c` | 9 relay posts (`send_salesforce_inquiry` also posts per lead, but before the answer: question 3) |
 | Engine Bidding | `Prospect__c` | `generate_trades_body.output.prospectId` | `patch_prospect`, `patch_prospect_reject` |
 | Lead Economy | `Prospect__c` | `create_prospect.output.body.id` (and `generate_trades_body...` for `patch_prospect`) | `patch_prospect`, `patch_prospect_success` / `_duplicate` / `_error` / `_missing_credit` |
 | Liberty1 Click | `Prospect__c`, `Submission__c`, `Lead` | `pick_record.output.{prospect,submission,lead}_id` | `update_prospect`, `update_submission`, `update_lead` |
 | RML LendSwift / GigFi | `Applicant__c` | `create_applicant.output.body.id` | `patch_applicant_bid`, `patch_applicant_no_bid` |
 
-## Field-level access and sharing
+## Field-level access and sharing (open question 4, answered 2026-10-15)
 
-Open, because the repo cannot show a Salesforce user's field-level security or
-sharing. What the repo does establish:
+**Result: no gap.** The Bidspoke integration user can already write every field
+and record the post-answer writes touch, with the same profile the relays'
+user holds. Measured read only in the production org with `sf data query`
+(standard and Tooling API) on 2026-10-15.
 
-- The native node writes as the **Bidspoke integration user** (client-credentials
-  OAuth, `SALESFORCE_CLIENT_ID`). The relay almost certainly writes as a
-  **different, non-integration user** (whoever owns the Pipedream Salesforce
-  connection), but the repo cannot show that connection, so the relay's writing
-  identity is inferred, not established here (open question 1). If it holds,
-  porting a relay post to a native step (#1680) changes the writing user, and the
-  integration user needs field-level write access and record access to every
-  field and record the relay writes today.
+### Who writes
 
-Open questions for #1680 / #2023 (require Salesforce access):
+| User | Id | Username | Profile (license) | How identified |
+|---|---|---|---|---|
+| Bidspoke Integration | `005Ui00000EnivtIAB` | `bidspoke@trypennie.com` | System Administrator (Salesforce) | `LoginHistory`, last 2 days: 236 successful "Remote Access 2.0" logins through the connected app "Bidspoke API". It created 4,643 of today's `Applicant__c` records (LendSwift `create_applicant`) and 13,861 of today's `Prospect__c` records, and is the last modifier of 4,519 of those Applicants. |
+| Brian Nelms (the relays' writer) | staff account, id omitted | omitted | System Administrator (Salesforce) | Inquiries relay: all 7,598 `Inquiry__c` rows and all 1,243 `Inquiries_...` files created today were created by this user (only `InquiryParserRest` writes them). Update Submission relay: of today's 1,423 Submissions carrying a Main Flow run link (`PDFlow_1__c`), this user is the last modifier of 1,108, and 883 of those were last modified within 60 s of `PD_Completed_Timestamp__c`, the stamp Bidspoke puts in the post body just before posting. |
 
-- Does the Bidspoke integration user have field-level write access to every
-  mapped field on `Submission__c` (and on `Lead` for the Submission-relay's Lead
-  sync, and on `Prospect__c` / `Applicant__c`)?
-- What is the integration user's sharing and record access to the Submission,
-  Lead, Prospect and Applicant records it will update? The epic notes
-  `SubmissionService` is `with sharing`, and the relay currently writes as a
-  different user, so parity is not guaranteed.
-- Which fields are formula / read-only / managed, so a native write would be
-  rejected where the relay's user or path was allowed?
+Two other writers seen on the same Submissions, for context: Geoff Harris (a
+staff account) is the last modifier of 419 internal routing Submissions,
+all but 5 of them more than 60 s after the relay's stamp, so a separate later
+writer and not the relay; and a user named `integration pipedream`
+(`005Ul00000HY0a5IAD`, Salesforce Integration license, logs in through a
+connected app named "Pipedream Integration") wrote no Submission or Inquiry
+today, so it is not the relays' account.
 
-## Salesforce automation side-effects
+Queries: `SELECT CreatedById, LastModifiedById, COUNT(Id) FROM Applicant__c /
+Prospect__c / Submission__c WHERE CreatedDate = TODAY GROUP BY ...`;
+`SELECT CreatedById, COUNT(Id) FROM Inquiry__c WHERE CreatedDate = TODAY GROUP BY
+CreatedById` (and the same on `ContentVersion` with `Title LIKE 'Inquiries_%'`);
+`LoginHistory` grouped by user, login type and application; today's Submissions
+with `PDFlow_1__c != null`, comparing `LastModifiedDate` with
+`PD_Completed_Timestamp__c` locally.
 
-Open, because the automations live in Salesforce metadata the repo does not
-hold. What the repo shows that implies side-effects:
+### Access
 
-- **Submission completion and Lead sync.** The epic records (read off Salesforce)
-  that the Submission relay's `UUID` / `leadUUID` keys drive
-  `SubmissionService.completeSubmissionWithUUID` (completes the Submission and
-  stamps `Engine_Offers_Date_SO__c` when both change) and
-  `updateRelatedLeadForSubmission` (syncs the Lead on the Completed flip). The
-  2026-10-13 hand repair omitting those keys left Leads synced with blank Engine
-  fields, which is the concrete proof these side-effects matter.
-- **Revenue formulas keyed on fields Bidspoke writes.** ADR 0010 records that
-  Main Flow leads book revenue through `Lead.ExternalRevenue__c` and external
-  partner leads through `Prospect__c.ExternalExchangeRevenue__c`, both derived
-  from debt fields. A write that changes a debt or partner field feeds those.
+- **Same profile, Modify All Data.** Both users hold the System Administrator
+  profile's permission set (`0PSDp000001WqexOAC`): `PermissionsModifyAllData`,
+  `PermissionsViewAllData`, `PermissionsAuthorApex` and `PermissionsApiEnabled`
+  all true. The Bidspoke user also holds `Bidspoke_API_Access`, which only adds.
+- **Object access.** The profile grants read, edit, View All and Modify All on
+  `Submission__c`, `Lead`, `Prospect__c`, `Applicant__c` and `Inquiry__c`
+  (`ObjectPermissions`).
+- **Sharing.** Org wide defaults (`EntityDefinition`): Submission, Prospect,
+  Applicant and Inquiry are internal Read/Write; Lead is Private. Modify All
+  Data overrides sharing, so the Private Lead model and `SubmissionService`
+  being `with sharing` do not restrict either user. Spot check with
+  `UserRecordAccess` for the Bidspoke user: 5 of today's Submissions and the 3
+  Leads linked to three of them all answer `HasEditAccess = true`,
+  `MaxAccessLevel = All`.
+- **Field-level security.** `FieldPermissions` on the profile permission set
+  grants **edit on all 70 fields** the post-answer writes name: the relay's 28
+  Submission fields plus `PDFlow_4__c`, `Completed_Submission_Flag__c`,
+  `External_Partner_Lead_Id__c`, `External_TCPA_Consent__c` and `PDFlow_3__c` on
+  Submission; the 7 Liberty1 Lead fields; the 18 Prospect fields of the Engine,
+  Lead Economy and Liberty1 patches (including `Bid_Response_Timestamp__c`); the
+  12 Applicant fields of the LendSwift and GigFi patches. Every one of the 70
+  returned a row, so none is misspelled, and an edit grant cannot exist on a
+  formula field, so none is a formula. 0 rows had edit false on the profile.
+- **Apex REST.** `SetupEntityAccess` gives the profile access to
+  `InquiryParserRest` (`/credit-inquiries`), `TradeParserRest`
+  (`/credit-trades`) and `ProspectTradeParserRest` (`/prospect-trades`).
+- **Validation rules.** None active on the five objects (Tooling
+  `ValidationRule`, all 15 in the org listed; the only one on these objects is
+  Prospect's `Bid_Status_Pipeline`, inactive).
+- **Positive control.** The Bidspoke user already writes `Submission__c`
+  natively on every Main Flow run (`set_completed_submission`, pre-answer) and
+  on Liberty1 clicks (`update_submission`), and already calls `/credit-trades`
+  (`trades_request`).
 
-Open questions (require Salesforce access), as listed on #2021:
+What changes when a relay post moves to a native step is only the writing user
+recorded on the record (`LastModifiedById` becomes Bidspoke Integration instead
+of Brian Nelms). Question 5 found nothing readable that reads it; the managed `regal_voice.LeadTrigger` could not be read.
 
-- The `Submission__c` trigger and `Custom_Event_30_Helper`.
-- The 16 Lead after-save flows (which fire on the Lead sync).
-- The Prospect before-save flows.
-- Whether any automation keys on the **writing user** (the relay's user), which
-  would change behaviour when the write moves to the Bidspoke integration user.
+## Salesforce automation side-effects (open question 5, answered 2026-10-15)
 
-Knowing these matters for #2023 because a resend re-fires whatever the write
-triggers, so a resend is only safe once the side-effects of a second identical
-write are known.
+Read from the org's metadata on 2026-10-15: the bodies of every active
+unmanaged Apex class (202) and every active trigger on the five objects (Tooling
+`ApexClass` and `ApexTrigger` `Body`), and the active version of every
+record-triggered flow that fires on update on those objects (Tooling `Flow`
+`Metadata`, one record per query, 24 flows). Already known and still true: ADR
+0010's revenue formulas (`Lead.ExternalRevenue__c`,
+`Prospect__c.ExternalExchangeRevenue__c`) are fed by the debt and partner
+fields these writes set.
 
-## Volume
+### Does anything key on the writing user? Nothing readable does; one managed trigger cannot be read.
 
-Exact per-write daily counts are an open question (they come from execution and
-Snowflake data, not the repo). What is known:
+- **Apex.** All 202 active unmanaged classes and the 6 active unmanaged triggers (`LeadTrigger`, `LeadLinkTokenTrigger`, `ProspectTrigger`, `ProspectLinkTokenTrigger`, `SubmissionTrigger`, `SubmissionLinkTokenTrigger`; the managed `regal_voice.LeadTrigger` is the one active trigger on these objects that could not be read) were
+  scanned for `UserInfo.`, `LastModifiedById`, `CreatedById`, `$User`,
+  `Profile.Name`, `Username`, permission checks and hard coded user ids. The
+  only hits are off every write path: `TradeController.isSalesUser` (an
+  `@AuraEnabled` method for a Lightning component, `Profile.Name == 'Sales'`),
+  `AchieveApiController` (stamps the clicking agent's email in a UI action),
+  `FreezeCheckJob` (a scheduled job that checks a list of usernames),
+  `Constants` (a named credential username) and comments in
+  `DraftInfoStampBatch`. The two bypass checks in the triggers
+  (`LeadScoreBackfillBatch.isBypassActive()`,
+  `LeadScoreSubmissionBackfillBatch.isBypassActive()`) read a static flag that
+  only those batches set, not the user.
+- **Flows.** The 24 flows' metadata contains no reference to `$User`,
+  `$Profile`, `$Permission`, `$UserRole`, `$Setup`, `$Api`, `LastModifiedBy`,
+  `LastModifiedById`, `CreatedBy`, `CreatedById`, `OwnerId`, `Username` or a
+  user id: 0 hits. Control: the same scan finds `$Record` in all 24. The Apex
+  actions they call (`CometlyEvent`, `EmailSha2HashInvocable`) are in the class
+  scan above.
+- **Validation rules.** None active on the five objects (question 4).
+- **Process Builder and workflow rules.** No active flow of process type
+  Workflow (Process Builder); Tooling `WorkflowRule` returned 0 rows org wide.
+- **Not readable:** `regal_voice.LeadTrigger` (`01qDp000000He2OIAS`, before
+  and after insert and update on Lead) is a managed package trigger whose body
+  Salesforce hides. Whether it keys on the user cannot be measured from the org.
+  It is subscribed to every Lead insert and update whoever makes it, but what it
+  does inside may still differ by user, so a port moving writes from the
+  relay's user to the Bidspoke user carries that one unmeasured risk; the
+  canary in #1680 is where a difference in Regal's behaviour would first show.
 
-- Main Flow is the highest-volume inbound flow and the dominant source of these
-  writes.
-- The #2015 revised plan estimates roughly 100,000 post-answer writes a day
-  across all flows (the figure behind the decision to record at risk only after
-  a 2 s delay). Treat this as an estimate to be measured, not a repo fact.
-- ADR 0002 measures that about 5% of finalized leads a day lose their
-  post-response database finalize to Worker eviction; the Salesforce writeback
-  sits in the same post-response window and the 2026-10-13 incident measured 8
-  of 18 flagged writes (44%) not landing under an upstream slowdown.
+### What each write sets off
 
-#1680 should pull the real per-node daily counts (for the API-quota sizing it
-calls for) and record them here.
+**Submission (`SubmissionTrigger`, unmanaged).**
+
+- Before update, `completeSubmissionWithUUID` (once per transaction, a static
+  flag) sets `Completed_Submission_SO__c = 'Yes'` and
+  `Submission_Timestamp_SO__c` when the write changes **any** of:
+  - both `Engine_UUID_SO__c` and `Engine_Lead_UUID_SO__c` (both non-null and
+    both different from before), which also stamps `Engine_Offers_Date_SO__c`;
+  - `Credit_Pull_Result_ES__c` to Success or Fail;
+  - `External_Exchange_Status__c` to the Tripoint Completed or Fail value;
+  - `EQXCreditPullStatus__c` to Success or Fail (with a Prospect, only if
+    `Email_SO__c` is not blank).
+
+  The first condition, quoted whole from `SubmissionService`:
+
+  ```
+  if (newSub.Engine_UUID_SO__c != null
+      && newSub.Engine_Lead_UUID_SO__c != null) {
+    if (oldSub.Engine_Lead_UUID_SO__c != newSub.Engine_Lead_UUID_SO__c
+        && oldSub.Engine_UUID_SO__c != newSub.Engine_UUID_SO__c) {
+      newSub.Engine_Offers_Date_SO__c = Datetime.now();
+      completionTriggered = true;
+    }
+  }
+  ```
+- After update, `updateRelatedLeadForSubmission`. On the completion flip with a
+  Lead: updates the Lead with the completion fields, the Engine UUIDs and offer
+  date (or **nulls them** when the Submission has no `Engine_Offers_Date_SO__c`,
+  which is the 2026-10-13 repair's blank Engine fields), `Submission_Object_ID__c`,
+  the Prospect link, and many copied fields including `PDFlow_1__c` to
+  `PDFlow_5__c`, `PD_Completed_Timestamp__c`, `External_Exchange_Status__c`,
+  `InternalDebtRouting__c`, `CreditFreeze__c`; then, with a Prospect, clones its
+  files to the Lead and starts `TradeParserBatch` (async Apex). **Without** a
+  completion flip, if the Submission has a Lead, it still updates the Lead with
+  `CreditFreeze__c`: so every Submission update with a Lead is also a Lead
+  update, and runs the Lead automations below.
+- `SubmissionLinkTokenTrigger` runs after insert only.
+- Flow `Custom_Event_30_Helper` (after save, create and update): only when
+  `External_Exchange_Status__c` changes to Completed and `ExternalRevenue__c >
+  0`; asynchronously after commit it sends Cometly event 30 and logs a
+  `CometlyEventLog__c`. The relay posts write Pending, so they do not fire it;
+  Liberty1's `update_submission` writes Completed on a sent click and can.
+- Create only, not fired by these updates: `Debt_Amount_Set_for_Engine`,
+  `Set_Resubmit_Sell_Off`.
+
+**Lead (on the Lead sync, Liberty1's `update_lead`, and `InquiryParserRest`'s
+count update).**
+
+- Triggers: `LeadLinkTokenTrigger` (before insert and update,
+  `LinkToken.stampLeads`); unmanaged `LeadTrigger` (before update:
+  `wipeRegalFields`, `enrollmentFieldsSync`, `syncAssignedAgentManager`,
+  `recalculateLeadScoreOnUpdate`; after update: `handleUpdate`, whose PDF step
+  is commented out, and `syncSubmissionsFromLead`, which writes Lead fields
+  back to the active Submissions); the managed `regal_voice.LeadTrigger`.
+- After save flows that fire on update (15, against the "16" #2021 expected),
+  each with its entry condition. Six fire on a **change to
+  `PD_Completed_Timestamp__c`**, which the completion branch of the Lead sync
+  copies from the Submission, and send marketing conversion events
+  asynchronously:
+  - `V_Lead_All`, `Event_28_V_Lead_All_Sales` (`EngineDebt__c >= 0`);
+  - `Event_29_V_MQL_Sales`, `Lead_Debt_Category_Events`,
+    `Pennie_V_MQL_Cometly_Event`, `VMQL_NewForm` (`EngineDebt__c >= 20000`);
+  - their actions call Cometly (v2, v3, v4), LiveIntent, Rokt, AppLovin, Groovy,
+    Moment Science and DigitalEcho external services and log
+    `CometlyEventLog__c`.
+
+  The other nine: `Live_Intent_Sync`, `Live_Intent_Sync_RML`
+  (`ActiveCompletedSubmission__c` changes to Yes, sub source Live Intent, by
+  record type); `Cometly_Event_13_Helper` (`ActiveBookingEvent__c`);
+  `Custom_Event_14_Helper` (`Active_Completed_Call_R__c`);
+  `Custom_Event_15_Helper` and `Cometly_Event_27_Helper` (`Estimated_Revenue__c`
+  changes and is above 0); `Cometly_Events_TEST` (new, `Active_Submission__c`
+  to Yes, or a change to `InternalDebtRouting__c` or `Tags__c`, among others);
+  `Prospect_Estimated_Revenue` (`DS_Enrollment_Date_M__c`);
+  `Set_Call_Scheduled_Status` (`Call_Scheduled_R__c`).
+- Before save flows on update: `New_Range_Based_On_Unsecured_Debt`
+  (`InternalDebtRouting__c`, `EnrolledPennieDebt__c` or
+  `Unsecured_Debt_Verified_ES__c` changes), `Track_Expired_SO`,
+  `Update_Lead_Fields`, `Update_Lead_Tags`.
+
+**Inquiries relay's Apex REST (`InquiryParserRest`, `/credit-inquiries`).**
+Finds the Submission's Lead (404 if none), **deletes** the Lead's existing
+`Inquiry__c` rows and inserts the parsed ones, updates the Lead's four inquiry
+counts, and attaches the raw JSON to the Lead as a **new file**
+(`ContentVersion` and `ContentDocumentLink`) on every call. The class declares no
+sharing keyword. No trigger exists on `Inquiry__c`, `ContentVersion` or
+`ContentDocumentLink`.
+
+**Prospect (Engine Bidding, Lead Economy, Liberty1).** `ProspectTrigger` (before
+insert and update) sets the sub account name only when `SubaccountUUID__c`
+changes, which these patches do not write. Flows on update:
+`ProspectBidStatusValidation` (before save, on a `BidStatus__c` change) **silently
+puts `BidStatus__c` back to its prior value** when the change would move
+backward through Bid, Won Bid, Clicked, Converted, with no error;
+`Bid_Status_Change` (`ConvertedToLead__c` or `OfferClicked__c` changes) and
+`ProspectTags` (`PennieDebt__c` changes) key on fields these patches do not
+write. `ProspectLinkTokenTrigger` is after insert only.
+
+**Applicant (LendSwift, GigFi).** No trigger. One after save flow,
+`Applicant_SSN_Testing`, enters only when `SocialSecurityNumber__c` is
+`000000000`, a field the patches do not write. So `patch_applicant_*` sets off
+nothing.
+
+### What a resend sets off (#2023)
+
+- An identical PATCH that lands on an unchanged record re-fires nothing that
+  keys on a change: no completion (the values match), no Engine offer date, no
+  completion branch of the Lead sync, no Cometly event 30, none of the six
+  `PD_Completed_Timestamp__c` flows. It does repeat the `CreditFreeze__c`-only
+  Lead update, which runs the Lead triggers and fires nothing above.
+- A resend over a record another writer has since moved would regress it. For
+  example, Main Flow writes `External_Exchange_Status__c` Pending and a later
+  writer moves it to Completed (firing event 30); resending the Pending write
+  undoes that, and the next Completed flip fires Cometly event 30 again. #2023's
+  rule not to overwrite a different non-blank value is what stops this.
+- A first write that never landed fires everything once when the resend lands,
+  as the original would have.
+- An Inquiries resend replaces the inquiry rows (safe) but attaches one more
+  file to the Lead each time (not idempotent). It is pre-answer, so #2023 does
+  not resend it.
+- On Prospect, a resent `BidStatus__c` that would move backward is reverted
+  without error, so the PATCH answers 204 and the field does not hold the
+  resent value.
+
+## Volume (open question 6, answered 2026-10-15)
+
+Expected before querying (L24): Main Flow about 3,300 runs a day (the daily
+stats table), one outcome post per run plus one inquiry post on most runs;
+Engine Bidding about 60,000 runs a day with one patch on most; the #2015
+estimate of about 100,000 post-answer writes a day across all flows.
+
+Measured from `execution_steps` (non-test, filtered on `started_at`, its
+partition key, one UTC day per query because a three day query timed out),
+counting rows by workflow and `step_namespace`. Every row counted had status
+`completed` except where noted.
+
+| Workflow | Write step | 10-08 | 10-09 | 10-10 | 10-11 | 10-12 | 10-13 | 10-14 | Daily mean |
+|---|---|---|---|---|---|---|---|---|---|
+| Main Flow | `send_salesforce` | 1,354 | 1,269 | 1,218 | 1,230 | 1,246 | 1,175 | 1,408 | 1,271 |
+| Main Flow | `under_10000_sf_post` | 1,285 | 1,195 | 1,226 | 1,185 | 1,226 | 1,121 | 1,327 | 1,224 |
+| Main Flow | `tripoint_sf_post` | 395 | 411 | 454 | 374 | 368 | 330 | 370 | 386 |
+| Main Flow | `engine_no_bids_sf_post` | 153 | 170 | 158 | 176 | 158 | 152 | 236 | 172 |
+| Main Flow | `debt_missing_sf_post` | 110 | 94 | 99 | 104 | 83 | 96 | 102 | 98 |
+| Main Flow | `send_fallback_salesforce` | 62 | 72 | 57 | 66 | 60 | 69 | 69 | 65 |
+| Main Flow | `amone_sf_post` | 56 | 52 | 52 | 45 | 52 | 38 | 61 | 51 |
+| Main Flow | `invalid_state_sf_post` | 14 | 26 | 22 | 24 | 17 | 15 | 17 | 19 |
+| Main Flow | `send_fallback_salesforce_1` | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Main Flow | **9 outcome posts** | 3,429 | 3,289 | 3,286 | 3,204 | 3,210 | 2,996 | 3,590 | 3,286 |
+| Main Flow | `send_salesforce_inquiry` (pre-answer) | 3,260 | 3,118 | 3,125 | 3,031 | 3,066 | 2,842 | 3,406 | 3,121 |
+| Engine Bidding | `patch_prospect_reject` | 31,753 | 32,810 | 30,078 | 24,942 | 29,830 | 31,174 | 31,287 | 30,268 |
+| Engine Bidding | `patch_prospect` | 4,456 | 4,247 | 3,976 | 3,007 | 3,825 | 4,320 | 3,528 | 3,908 |
+| Lead Economy | `patch_prospect` | 2,201 | 2,279 | 955 | 902 | 2,206 | 2,288 | 2,386 | 1,888 |
+| Lead Economy | `patch_prospect_duplicate` | 295 | 344 | 116 | 128 | 257 | 319 | 329 | 255 |
+| Lead Economy | `patch_prospect_success` | 235 | 250 | 89 | 85 | 223 | 240 | 168 | 184 |
+| Lead Economy | `patch_prospect_missing_credit` | 153 | 151 | 68 | 74 | 121 | 169 | 159 | 128 |
+| Lead Economy | `patch_prospect_error` | 45 | 33 | 16 | 14 | 46 | 47 | 89 | 41 |
+| Liberty1 Click | `update_prospect`, `update_submission`, `update_lead` (each) | 51 | 46 | 4 | 0 | 41 | 44 | 21 | 30 |
+| RML LendSwift | `patch_applicant_no_bid` | 10,754 | 11,476 | 11,090 | 9,107 | 10,836 | 11,039 | 10,711 | 10,716 |
+| RML LendSwift | `patch_applicant_bid` | 1,400 | 1,600 | 1,351 | 1,166 | 1,282 | 1,414 | 1,392 | 1,372 |
+| RML GigFi | `patch_applicant_no_bid` | 1,251 | 1,209 | 1,340 | 1,006 | 1,358 | 1,322 | 1,293 | 1,254 |
+| RML GigFi | `patch_applicant_bid` | 967 | 965 | 832 | 804 | 1,007 | 987 | 940 | 929 |
+| **All post-answer writes** (excluding the inquiry post) | | 57,092 | 58,791 | 53,209 | 44,439 | 54,324 | 56,447 | 55,935 | 54,320 |
+
+(Liberty1 counted once per step, so its row is three writes a day each.)
+
+- **About 54,300 post-answer writes a day** (57,400 including the pre-answer
+  inquiry post), not the estimated 100,000. Engine Bidding's rejection patch is
+  over half of them.
+- Not completed in the window: Engine Bidding `patch_prospect` 3 on 10-13, 1 on
+  10-12, 1 on 10-10; `patch_prospect_reject` 36 on 10-13, 4 on 10-12, 1 on
+  10-10; Main Flow inquiry 2 on 10-13. Every other count above is all completed.
+- `send_fallback_salesforce_1` (the debt not present Engine fallback) did not
+  run once in 7 days.
+- Main Flow (v2) wrote nothing (question 2).
+- Control: the Main Flow outcome post total matches its runs in
+  `workflow_stats_daily` (10-14: 3,590 posts for 3,589 runs; 10-08: 3,429 for
+  3,435), so the step table is not missing writes for this flow.
+
+**API quota.** `sf limits api display` on 2026-10-15 about 15:40 UTC:
+`DailyApiRequests` max 1,680,000, remaining 1,202,467 (477,533 used in the
+rolling 24 hours); `DailyAsyncApexExecutions` max 421,800, remaining 248,415.
+Porting the Main Flow relays adds about 3,290 outcome PATCHes plus about 6,240
+inquiry calls (two per post) a day, about 9,500, which is 0.6% of the daily
+allocation. `DailyApiRequests` is reported for the org as a whole, so the
+relays' calls already count against it today when Pipedream makes them; moving
+them to the Bidspoke user changes which user makes them, not the org total. The
+concurrent long running request limit is not reported by `/limits` and was not
+measured.
+
+ADR 0002's figures still stand: about 5% of finalized leads a day lose their
+post-response database finalize to Worker eviction, and the 2026-10-13 incident
+measured 8 of 18 flagged writes (44%) not landing under an upstream slowdown.
 
 ## Open questions (consolidated)
 
-For #1680 and #2023 to resolve with Pipedream UI and Salesforce access:
+All answered on 2026-10-15, read only; each answer is in its section. Two
+residual items stay open for #1680, marked **Still open** below.
 
-1. **Relay internal config.** Both relays' filter rules, HTTP method, Salesforce
-   connection, and the full key-to-field mapping. The role of five keys is
-   understood (`submissionId` is the target record id, `UUID` / `leadUUID` map
-   to `Engine_UUID_SO__c` / `Engine_Lead_UUID_SO__c`, and `PDFlow_1__c` /
-   `executionId` carry the run deep link and id); every other key is assumed to
-   write straight through to a like-named field, which this item must confirm.
-   Also confirm the relay does nothing beyond the Salesforce write.
-2. **Main Flow v1 / v2.** Whether a second live Main Flow record or an older
-   version is running beyond the one definition in the backup.
-3. **Inquiry post timing.** Whether `send_salesforce_inquiry` always runs after
-   the response (it sits inside a parallel branch), hence whether #2023 covers
-   it.
-4. **Field-level access and sharing** for the Bidspoke integration user on every
-   mapped field and record (Submission, Lead, Prospect, Applicant).
-5. **Salesforce automations** each write fires (Submission trigger,
-   `Custom_Event_30_Helper`, the 16 Lead after-save flows, Prospect before-save
-   flows) and whether any keys on the writing user.
-6. **Per-write daily volume**, from execution or Snowflake data.
+1. **Relay internal config.** Answered from the Pipedream UI: see "The relays'
+   internal config". The Update Submission relay filters only on the presence
+   of `submissionId`, PATCHes 28 named fields (two renamed from `UUID` and
+   `leadUUID`) and drops every other key, `executionId` included. The Inquiries
+   relay has no filter and makes two calls: a Submission PATCH of `PDFlow_4__c`
+   and `VantageScore__c`, then the `/credit-inquiries` Apex REST POST. **Still
+   open:** whether Pipedream omits an absent body key or sends it as null.
+2. **Main Flow v1 / v2.** Two active records; only `60e2e0bc` (version 169) has
+   run. `Main Flow (v2)` has never run. See "Main Flow v1 and v2".
+3. **Inquiry post timing.** Always before the answer, inside a blocking
+   parallel; 0 of 22,078 after it; its failure fails the lead. Not a #2023 case.
+   See "Inquiry post timing".
+4. **Field-level access and sharing.** No gap: the Bidspoke integration user has
+   the relays' user's System Administrator profile, Modify All Data, and edit on
+   all 70 fields. See "Field-level access and sharing".
+5. **Salesforce automations.** Listed per object in "Salesforce automation
+   side-effects"; none that could be read keys on the writing user. **Still open:** the managed
+   `regal_voice.LeadTrigger` hides its body, so it could not be checked.
+6. **Per-write daily volume.** About 54,300 post-answer writes a day; Main Flow
+   relay posts about 3,290. See "Volume".
