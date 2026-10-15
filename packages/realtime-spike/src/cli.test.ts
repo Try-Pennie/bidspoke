@@ -1,0 +1,157 @@
+import { EventEmitter } from 'node:events'
+import { describe, expect, it } from 'vitest'
+import { main, type Wiring } from './cli.ts'
+import type { CleanupOps } from './cleanup.ts'
+import type { LedgerIo } from './ledger.ts'
+import type { SpikeDeps, SpikeResult } from './spike.ts'
+
+const MARKER = 'realtime-spike-20261015t153012z'
+
+function wiring(overrides: Partial<Wiring> = {}) {
+  const calls: string[] = []
+  const lines: string[] = []
+  const files = new Map<string, string>()
+  const emitter = new EventEmitter()
+  const io: LedgerIo = {
+    exists: (p) => files.has(p),
+    read: (p) => {
+      const text = files.get(p)
+      if (text === undefined) throw new Error(`ENOENT ${p}`)
+      return text
+    },
+    write: (p, text) => {
+      calls.push(`write ${p}`)
+      files.set(p, text)
+    },
+  }
+  const cleanupOps: CleanupOps = {
+    findUserIdByEmail: async () => null,
+    deletePublicUser: async () => 0,
+    deleteAuthUser: async () => 'absent',
+    deleteOrganization: async (id) => {
+      calls.push(`delete organization ${id}`)
+      return 1
+    },
+    deleteAllowlist: async () => 0,
+  }
+  const w: Wiring = {
+    io,
+    log: (line) => lines.push(line),
+    proc: {
+      on: (s, h) => emitter.on(s, h),
+      off: (s, h) => emitter.off(s, h),
+      exit: (code) => calls.push(`exit ${code}`),
+    },
+    now: () => new Date('2026-10-15T15:30:12Z'),
+    loadConfig: () => {
+      calls.push('loadConfig')
+      return { supabaseUrl: 'https://ref.supabase.co', project: 'ref' } as never
+    },
+    cleanupOps: () => {
+      calls.push('cleanupOps')
+      return cleanupOps
+    },
+    liveDeps: async () => {
+      calls.push('liveDeps')
+      return { deps: {} as SpikeDeps, close: async () => calls.push('close') as unknown as void }
+    },
+    spike: async () => {
+      calls.push('spike')
+      return { orgBEmpty: true } as SpikeResult
+    },
+    ...overrides,
+  }
+  return { w, calls, lines, files, emitter }
+}
+
+describe('main', () => {
+  it('refuses without --i-have-approval and touches nothing: no config, no ledger, no connection', async () => {
+    const h = wiring()
+    expect(await main(['--ledger', '/l.json'], h.w)).toBe(2)
+    expect(h.calls).toEqual([])
+    expect(h.lines.join('\n')).toMatch(/--i-have-approval/)
+  })
+
+  it('--cleanup removes what the ledger names, prints the report, and exits 0 when nothing failed', async () => {
+    const h = wiring()
+    h.files.set(
+      '/l.json',
+      JSON.stringify({
+        version: 1,
+        marker: MARKER,
+        project: 'ref',
+        startedAt: 'x',
+        entries: [{ kind: 'organization', key: `${MARKER}-example-com`, id: 'org-b', state: 'created' }],
+      }),
+    )
+    expect(await main(['--cleanup', '/l.json'], h.w)).toBe(0)
+    expect(h.calls).toContain('delete organization org-b')
+    expect(h.lines.join('\n')).toMatch(/removed: organization/)
+  })
+
+  it('--cleanup exits 1 when something could not be removed', async () => {
+    const h = wiring({
+      cleanupOps: () => ({
+        findUserIdByEmail: async () => null,
+        deletePublicUser: async () => 0,
+        deleteAuthUser: async () => 'absent',
+        deleteOrganization: async () => {
+          throw new Error('foreign key')
+        },
+        deleteAllowlist: async () => 0,
+      }),
+    })
+    h.files.set(
+      '/l.json',
+      JSON.stringify({
+        version: 1,
+        marker: MARKER,
+        project: 'ref',
+        startedAt: 'x',
+        entries: [{ kind: 'organization', key: `${MARKER}-example-com`, id: 'org-b', state: 'created' }],
+      }),
+    )
+    expect(await main(['--cleanup', '/l.json'], h.w)).toBe(1)
+    expect(h.lines.join('\n')).toMatch(/could not remove: organization .*foreign key/)
+  })
+
+  it('writes the ledger before connecting, and cleans up on the normal path after the spike', async () => {
+    const h = wiring()
+    expect(await main(['--i-have-approval', '--ledger', '/l.json'], h.w)).toBe(0)
+    expect(h.calls.indexOf('write /l.json')).toBeLessThan(h.calls.indexOf('liveDeps'))
+    expect(h.calls.indexOf('spike')).toBeLessThan(h.calls.indexOf('cleanupOps'))
+    expect(h.calls).toContain('close')
+    expect(h.files.has('/l.json.result.json')).toBe(true)
+  })
+
+  it('still cleans up, and exits 1, when the spike throws', async () => {
+    const h = wiring({
+      spike: async () => {
+        throw new Error('realtime unreachable')
+      },
+    })
+    expect(await main(['--i-have-approval', '--ledger', '/l.json'], h.w)).toBe(1)
+    expect(h.calls).toContain('cleanupOps')
+    expect(h.lines.join('\n')).toMatch(/realtime unreachable/)
+  })
+
+  it('cleans up from the ledger when interrupted mid run, then exits 130', async () => {
+    const h = wiring({
+      spike: async () => {
+        h.emitter.emit('SIGINT')
+        return new Promise<SpikeResult>(() => {})
+      },
+    })
+    void main(['--i-have-approval', '--ledger', '/l.json'], h.w)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(h.calls).toContain('cleanupOps')
+    expect(h.calls).toContain('exit 130')
+  })
+
+  it('refuses a ledger path that already exists, before creating anything', async () => {
+    const h = wiring()
+    h.files.set('/l.json', '{}')
+    expect(await main(['--i-have-approval', '--ledger', '/l.json'], h.w)).toBe(2)
+    expect(h.calls).not.toContain('liveDeps')
+  })
+})
