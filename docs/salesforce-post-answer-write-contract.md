@@ -62,7 +62,7 @@ and detailed in its section below.
    the same System Administrator profile as the relays' writing user (Brian
    Nelms), with Modify All Data, and has edit on all 70 fields the post-answer
    writes touch. See question 4.
-6. **No Salesforce automation keys on the writing user.** No Apex trigger,
+6. **No readable Salesforce automation keys on the writing user.** No Apex trigger,
    trigger handler, record-triggered flow or validation rule on Submission,
    Lead, Prospect, Applicant or Inquiry reads the running or last modifying
    user. One managed package trigger (`regal_voice.LeadTrigger`) hides its
@@ -640,7 +640,7 @@ record-triggered flow that fires on update on those objects (Tooling `Flow`
 `Prospect__c.ExternalExchangeRevenue__c`) are fed by the debt and partner
 fields these writes set.
 
-### Does anything key on the writing user? No.
+### Does anything key on the writing user? Nothing readable does; one managed trigger cannot be read.
 
 - **Apex.** All 202 active unmanaged classes and the 7 active triggers were
   scanned for `UserInfo.`, `LastModifiedById`, `CreatedById`, `$User`,
@@ -665,8 +665,11 @@ fields these writes set.
   Workflow (Process Builder); Tooling `WorkflowRule` returned 0 rows org wide.
 - **Not readable:** `regal_voice.LeadTrigger` (`01qDp000000He2OIAS`, before
   and after insert and update on Lead) is a managed package trigger whose body
-  Salesforce hides. Whether it keys on the user cannot be measured from the org;
-  it fires the same way for both users on any Lead update.
+  Salesforce hides. Whether it keys on the user cannot be measured from the org.
+  It is subscribed to every Lead insert and update whoever makes it, but what it
+  does inside may still differ by user, so a port moving writes from the
+  relay's user to the Bidspoke user carries that one unmeasured risk; the
+  canary in #1680 is where a difference in Regal's behaviour would first show.
 
 ### What each write sets off
 
@@ -883,7 +886,7 @@ residual items stay open for #1680, marked **Still open** below.
    the relays' user's System Administrator profile, Modify All Data, and edit on
    all 70 fields. See "Field-level access and sharing".
 5. **Salesforce automations.** Listed per object in "Salesforce automation
-   side-effects"; none keys on the writing user. **Still open:** the managed
+   side-effects"; none that could be read keys on the writing user. **Still open:** the managed
    `regal_voice.LeadTrigger` hides its body, so it could not be checked.
 6. **Per-write daily volume.** About 54,300 post-answer writes a day; Main Flow
    relay posts about 3,290. See "Volume".
