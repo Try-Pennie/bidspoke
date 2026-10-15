@@ -1,20 +1,16 @@
 /**
- * diffProfileDocuments (#1412): the paths on which two documents differ, keyed
- * by the same things buyer_profile_flatten keys them by in the database (a tier
- * by population and lower bound, a window by day and opening minute, a blackout
- * by date, the state list as one value), so the 409 side by side and the history
- * list speak one vocabulary (L83). The two SPELL those keys differently
- * (`windows[1:540]` here, `windows.1.540` there, and a tier here is one row
- * where there it is two fields); normaliseSqlPath (paths.ts) converts, and
- * fixtures/flatten-cases.json pins both (#2132).
+ * A buyer profile document as paths (#1412, #2134): flattenProfileDocument and
+ * its inverse unflattenProfileDocument. The paths are keyed by the same things
+ * buyer_profile_flatten keys them by in the database (a tier by population and
+ * lower bound, a window by day and opening minute, a blackout by date, the
+ * state list as one value), so the partners page registry, its three way merge
+ * (apps/web/src/lib/partner-page-merge.ts) and the history list speak one
+ * vocabulary (L83). The two SPELL those keys differently (`windows[1:540]`
+ * here, `windows.1.540` there, and a tier here is one row where there it is two
+ * fields); normaliseSqlPath (paths.ts) converts, and fixtures/flatten-cases.json
+ * pins both (#2132).
  */
 import type { BuyerProfileDocument } from './document'
-
-export interface ProfileFieldDiff {
-  path: string
-  mine: unknown
-  theirs: unknown
-}
 
 const SCALARS = [
   'sold_on', 'is_enabled', 'priority', 'debt_min', 'debt_max', 'loan_amount_min',
@@ -87,19 +83,4 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
     doc.click_delivery = null
   }
   return doc
-}
-
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
-
-export function diffProfileDocuments(mine: BuyerProfileDocument, theirs: BuyerProfileDocument): ProfileFieldDiff[] {
-  const a = flattenProfileDocument(mine)
-  const b = flattenProfileDocument(theirs)
-  const paths = [...new Set([...a.keys(), ...b.keys()])]
-  const out: ProfileFieldDiff[] = []
-  for (const path of paths) {
-    const m = a.has(path) ? a.get(path) : null
-    const t = b.has(path) ? b.get(path) : null
-    if (!same(m, t)) out.push({ path, mine: m, theirs: t })
-  }
-  return out
 }

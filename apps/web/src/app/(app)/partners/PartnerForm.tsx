@@ -4,7 +4,7 @@ import { useState, useEffect, useReducer, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
-  buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRules, parseRoutingCode,
+  buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRoutingCode, snapshotOf, PARTNER_FIELD_REGISTRY,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
 } from './partner-draft'
@@ -19,7 +19,9 @@ import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEdit
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
-import { BuyerProfileSection, EMPTY_PROFILE, type ProfileConflict } from '@/components/partners/buyer-profile/BuyerProfileSection'
+import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
+import { MergeDialog } from '@/components/partners/MergeDialog'
+import { mergeThreeWay, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
 import { Button as UiButton, Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
@@ -29,13 +31,6 @@ import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 // Re-exported for the parent page's partner-switch / New guards, and the
 // canvas's own away-click guard (#478), so the prompt copy stays identical.
 export { UNSAVED_CHANGES_MESSAGE }
-
-// ── Sub account floors ─────────────────────────────────────────────────────────
-
-function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
-  if (!map) return []
-  return Object.entries(map).map(([uuid, bid]) => ({ id: uid(), uuid, bid: String(bid) }))
-}
 
 function uid() { return Math.random().toString(36).slice(2) }
 
@@ -212,7 +207,10 @@ export default function PartnerForm({
   /** A press whose answer never came: its retry reuses the same save id (#2132). */
   const pendingSaveRef = useRef<{ saveId: string; key: string } | null>(null)
 
-  const [name, setName] = useState(partner?.name ?? '')
+  // The form's values for the partner as loaded, through the one mapping a
+  // merged save also uses (snapshotOf, #2134), so the two cannot disagree.
+  const [initial] = useState(() => snapshotOf(partner))
+  const [name, setName] = useState(initial.name)
   const [slug, setSlug] = useState(partner?.slug ?? '')
   const [slugManuallyEdited, setSlugManuallyEdited] = useState(false)
 
@@ -222,48 +220,59 @@ export default function PartnerForm({
       setSlug(value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
     }
   }
-  const [apiEndpoint, setApiEndpoint] = useState(partner?.api_endpoint ?? '')
-  const [cfSecretKey, setCfSecretKey] = useState(partner?.cf_secret_key ?? '')
-  const [clickUrl, setClickUrl] = useState(partner?.click_url ?? '')
-  const [isActive, setIsActive] = useState(partner?.is_active ?? true)
-  const [priority, setPriority] = useState(String(partner?.priority ?? 0))
+  const [apiEndpoint, setApiEndpoint] = useState(initial.apiEndpoint)
+  const [cfSecretKey, setCfSecretKey] = useState(initial.cfSecretKey)
+  const [clickUrl, setClickUrl] = useState(initial.clickUrl)
+  const [isActive, setIsActive] = useState(initial.isActive)
+  const [priority, setPriority] = useState(initial.priority)
 
-  const [dailyCap, setDailyCap] = useState(partner?.daily_cap != null ? String(partner.daily_cap) : '')
-  const [minBid, setMinBid] = useState(partner?.min_bid != null ? String(partner.min_bid) : '')
-  const [bidFormula, setBidFormula] = useState(partner?.bid_formula ?? '')
-  const [resolverType, setResolverType] = useState<BidResolverType>(partner?.bid_resolver_type ?? 'api')
-  const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(partner?.bid_resolver_config ?? {})
-  const [outboundMapping, setOutboundMapping] = useState<Record<string, unknown> | null>(partner?.outbound_field_mapping ?? null)
-  const [bidComparisonSource, setBidComparisonSource] = useState<BidComparisonSource>(partner?.bid_comparison_source ?? 'auto')
-  const [extraExtraction, setExtraExtraction] = useState<ExtraExtractionConfig | null>(partner?.extra_extraction ?? null)
-  const [lastProbeResponse, setLastProbeResponse] = useState<unknown>(partner?.last_probe_response ?? null)
+  const [dailyCap, setDailyCap] = useState(initial.dailyCap)
+  const [minBid, setMinBid] = useState(initial.minBid)
+  const [bidFormula, setBidFormula] = useState(initial.bidFormula)
+  const [resolverType, setResolverType] = useState<BidResolverType>(initial.resolverType)
+  const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(initial.resolverConfig)
+  const [outboundMapping, setOutboundMapping] = useState<Record<string, unknown> | null>(initial.outboundMapping)
+  const [bidComparisonSource, setBidComparisonSource] = useState<BidComparisonSource>(initial.bidComparisonSource)
+  const [extraExtraction, setExtraExtraction] = useState<ExtraExtractionConfig | null>(initial.extraExtraction)
+  const [lastProbeResponse, setLastProbeResponse] = useState<unknown>(initial.lastProbeResponse)
   const [bidConfigs, setBidConfigs] = useState<PartnerBidConfig[]>([])
-  const [dedupEndpoint, setDedupEndpoint] = useState(partner?.dedup_endpoint ?? '')
+  const [dedupEndpoint, setDedupEndpoint] = useState(initial.dedupEndpoint)
 
-  const [circuitEnabled, setCircuitEnabled] = useState(partner?.circuit_enabled ?? true)
-  const [circuitThreshold, setCircuitThreshold] = useState(String(partner?.circuit_error_threshold ?? 5))
-  const [circuitWindow, setCircuitWindow] = useState(String(partner?.circuit_window_seconds ?? 60))
-  const [circuitCooldown, setCircuitCooldown] = useState(String(partner?.circuit_cooldown_seconds ?? 300))
+  const [circuitEnabled, setCircuitEnabled] = useState(initial.circuitEnabled)
+  const [circuitThreshold, setCircuitThreshold] = useState(initial.circuitThreshold)
+  const [circuitWindow, setCircuitWindow] = useState(initial.circuitWindow)
+  const [circuitCooldown, setCircuitCooldown] = useState(initial.circuitCooldown)
 
-  const [confirmationWindowMs, setConfirmationWindowMs] = useState(
-    partner?.confirmation_window_ms != null ? String(partner.confirmation_window_ms) : ''
-  )
+  const [confirmationWindowMs, setConfirmationWindowMs] = useState(initial.confirmationWindowMs)
 
-  const [signalRules, setSignalRules] = useState<SignalRules>(() => parseRules(partner?.response_classification))
+  const [signalRules, setSignalRules] = useState<SignalRules>(initial.signalRules)
   // The buyer profile (#1412): the accept rules live on the partner record and
   // save with it; the document lives in buyer_profiles and saves second, through
   // its own versioned route. Both are form state so one Save covers the page.
-  const [acceptSignals, setAcceptSignals] = useState<Signal[]>(() => (Array.isArray(partner?.accept_signals) ? (partner.accept_signals as Signal[]) : []))
+  const [acceptSignals, setAcceptSignals] = useState<Signal[]>(initial.acceptSignals as Signal[])
   // The two facts the Engine scripts read from the winner (#1416), on the partner record beside the accept rules.
-  const [duplicateSignals, setDuplicateSignals] = useState<Signal[]>(() => (Array.isArray(partner?.duplicate_signals) ? (partner.duplicate_signals as Signal[]) : []))
-  const [externalRoutingCode, setExternalRoutingCode] = useState(partner?.external_routing_code != null ? String(partner.external_routing_code) : '')
+  const [duplicateSignals, setDuplicateSignals] = useState<Signal[]>(initial.duplicateSignals as Signal[])
+  const [externalRoutingCode, setExternalRoutingCode] = useState(initial.externalRoutingCode)
   const [profile, setProfile] = useState<BuyerProfileDocument | null>(null)
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
   const [otherSellers, setOtherSellers] = useState<Array<{ id: string; name: string }>>([])
   const [profileErrors, setProfileErrors] = useState<ProfileError[]>([])
   /** A buyer profile refusal about the partner's click URL, shown on that field (#1546). */
   const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
-  const [conflict, setConflict] = useState<ProfileConflict | null>(null)
+  /**
+   * A save refused because someone else saved first (#2134, PM-3): the three
+   * halves the merge is made from, who saved, the versions their save left,
+   * and the answers given so far, which survive closing the dialog. Null when
+   * no merge is waiting.
+   */
+  const [pendingMerge, setPendingMerge] = useState<{
+    base: PageHalves; mine: PageHalves; theirs: PageHalves
+    theirPartner: Partner; theirName: string | null
+    partnerVersion: number; versions: string; choices: Record<string, MergeSide>
+  } | null>(null)
+  const [mergeOpen, setMergeOpen] = useState(false)
+  /** Set by the merge dialog's Save both: submit once the merged values are on screen. */
+  const [resubmit, setResubmit] = useState(false)
   const [saveOutcome, setSaveOutcome] = useState<OutcomeState>({ kind: 'idle' })
   /**
    * What saving a click delivery change does, state by state (#1639, L180), shown
@@ -277,15 +286,14 @@ export default function PartnerForm({
   // it counts as dirty and a load does not.
   const profileBaseline = useRef<string | null>(null)
 
-  const defaultAlertConfig = partner?.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
-  const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
-  const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
+  const [alertTransient, setAlertTransient] = useState(initial.alertTransient)
+  const [alertPermanent, setAlertPermanent] = useState(initial.alertPermanent)
 
-  const [partnerType, setPartnerType] = useState<PartnerType>(partner?.partner_type ?? 'buyer')
+  const [partnerType, setPartnerType] = useState<PartnerType>(initial.partnerType)
 
-  const [sellOffOfferTitle, setSellOffOfferTitle] = useState(partner?.sell_off_offer_title ?? '')
-  const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
-  const [subAccountFloors, setSubAccountFloors] = useState<SubAccountFloor[]>(() => floorsFromMap(partner?.sub_account_min_bids))
+  const [sellOffOfferTitle, setSellOffOfferTitle] = useState(initial.sellOffOfferTitle)
+  const [sellOffOfferDetails, setSellOffOfferDetails] = useState(initial.sellOffOfferDetails)
+  const [subAccountFloors, setSubAccountFloors] = useState<SubAccountFloor[]>(initial.subAccountFloors)
 
   const [uuids, setUuids] = useState<PartnerUuid[]>([])
   const [pendingUuids, setPendingUuids] = useState<string[]>([])
@@ -441,22 +449,22 @@ export default function PartnerForm({
    * not null, the profile document `profileDoc`, written together or not at
    * all at the pair of versions the page last saw. The profile version is
    * named whenever the page has read the profile, so a save is refused when
-   * either half changed underneath it; `profileVersion` overrides it when the
-   * person chose to save over their profile. Mints a save id for this press,
+   * either half changed underneath it. Mints a save id for this press,
    * reusing it only when retrying a press that got no answer. A 409 carrying
    * this press's own save id is its own save that landed before the answer
-   * was lost (L747); any other 409 is someone else's newer save, reported with
-   * who and when, and nothing is overwritten. Every outcome but 'saved' has
-   * already said so on the page.
+   * was lost (L747); any other 409 is someone else's newer save, merged field
+   * by field with what is on screen (#2134): nothing is overwritten, and only
+   * what both changed asks a question. Every outcome but 'saved' has already
+   * said so on the page.
    */
   async function savePage(
     patch: Partial<PartnerBody>,
     profileDoc: BuyerProfileDocument | null,
-    opts: { undo?: boolean; profileVersion?: number } = {},
+    opts: { undo?: boolean } = {},
   ): Promise<{ kind: 'saved'; partner: Partner | null; profile: BuyerProfileDocument | null; copyWarning: string | null } | { kind: 'refused' }> {
     if (!partner) return { kind: 'refused' }
     const version = versionRef.current
-    const profileVersion = opts.profileVersion ?? (profile !== null ? profile.version ?? 0 : null)
+    const profileVersion = profile !== null ? profile.version ?? 0 : null
     const key = JSON.stringify({ patch, profileDoc, version, profileVersion })
     const saveId = pendingSaveRef.current?.key === key ? pendingSaveRef.current.saveId : mintSaveId()
     pendingSaveRef.current = null
@@ -479,17 +487,11 @@ export default function PartnerForm({
           return { kind: 'saved', partner: current, profile: e.body.profile ?? null, copyWarning: null }
         }
         const stale = { changed_by_name: e.body.changed_by_name ?? null, changed_at: e.body.changed_at ?? null }
-        const partnerStale = e.body.partner_version !== undefined && e.body.partner_version !== null && e.body.partner_version !== version
-        const profileStale = profileVersion !== null && e.body.profile_version !== undefined && e.body.profile_version !== profileVersion
-        // Their profile beside the person's edits, which stay in the form (L717).
-        if (profileStale && e.body.profile && !opts.undo) setConflict({ theirs: e.body.profile, changedBy: e.body.changed_by_name ?? null })
-        const message = opts.undo
-          ? staleUndoSentence(stale)
-          : profileStale && !partnerStale
-            // Never a direction word: the Save button sits under the section (#1464, L111).
-            ? `Nothing saved. ${e.body.changed_by_name ?? 'Someone else'} saved the buyer profile while you were editing it. Compare the two at the top of the Buyer profile section.`
-            : staleSaveSentence(stale)
-        setSaveOutcome({ kind: 'failed', message })
+        if (opts.undo || !e.body.partner) {
+          setSaveOutcome({ kind: 'failed', message: opts.undo ? staleUndoSentence(stale) : staleSaveSentence(stale) })
+          return { kind: 'refused' }
+        }
+        startMerge(e.body as PartnerPageStale & { partner: Partner }, stale)
         return { kind: 'refused' }
       }
       // The route's sentence, never its code, and a refusal naming a field lands
@@ -519,8 +521,99 @@ export default function PartnerForm({
   function adoptSavedProfile(saved: BuyerProfileDocument) {
     profileBaseline.current = JSON.stringify(saved)
     setProfile(saved)
-    setConflict(null)
   }
+
+  /** The page's three halves for a merge: as loaded, as on screen, and as their save left it. */
+  function mergeHalves(body: PartnerPageStale & { partner: Partner }): { base: PageHalves; mine: PageHalves; theirs: PageHalves } {
+    const baseProfile = profileBaseline.current !== null ? (JSON.parse(profileBaseline.current) as BuyerProfileDocument) : null
+    // A page that has read the profile merges it; their side of a profile that
+    // was never stored is the empty one the page loaded.
+    const read = profile !== null && baseProfile !== null
+    return {
+      base: { partner: draftState.base, profile: read ? baseProfile : null },
+      mine: { partner: buildPartnerBody(captureSnapshot(), bodyCtx), profile: read ? profile : null },
+      theirs: { partner: buildPartnerBody(snapshotOf(body.partner), bodyCtx), profile: read ? body.profile ?? baseProfile : null },
+    }
+  }
+
+  /**
+   * Someone else saved first (#2134, PM-3). Merge their save with what is on
+   * screen: with no question, put the merged values on screen at their versions
+   * and say what of theirs was kept, and save only on the person's next press
+   * (L64); with questions, open the merge dialog. Answers already given to the
+   * same questions survive; a merge against a newer save starts afresh.
+   */
+  function startMerge(body: PartnerPageStale & { partner: Partner }, stale: Pick<PartnerPageStale, 'changed_by_name' | 'changed_at'>) {
+    const halves = mergeHalves(body)
+    const partnerVersion = body.partner_version ?? body.partner.version ?? versionRef.current
+    // The answers belong to the questions against one saved pair of versions.
+    const versions = `${partnerVersion}:${body.profile_version ?? ''}`
+    const choices = pendingMerge && pendingMerge.versions === versions ? pendingMerge.choices : {}
+    const result = mergeThreeWay(halves.base, halves.mine, halves.theirs, PARTNER_FIELD_REGISTRY, choices)
+    const next = { ...halves, theirPartner: body.partner, theirName: stale.changed_by_name, partnerVersion, versions, choices }
+    if (result.conflicts.length > 0) {
+      setPendingMerge(next)
+      setMergeOpen(true)
+      setSaveOutcome({ kind: 'failed', message: staleSaveSentence(stale) })
+      return
+    }
+    applyMerge(next, result)
+    setPendingMerge(null)
+    const who = stale.changed_by_name ?? 'Someone else'
+    const remaining = Object.keys(changedPatch({ base: halves.theirs.partner, draft: result.merged.partner, touched: new Set(Object.keys(result.merged.partner) as (keyof PartnerBody)[]) })).length > 0
+      || (result.merged.profile !== null && halves.theirs.profile !== null && result.merged.profile !== halves.theirs.profile)
+    if (!remaining) {
+      setSaveOutcome({ kind: 'done', message: `${who} saved the same changes, so nothing is left to save.` })
+      return
+    }
+    const kept = result.autoTaken.map((u) => u.label)
+    const theirs = kept.length === 0 ? '' : kept.length === 1 ? kept[0] : `${kept.slice(0, -1).join(', ')} and ${kept[kept.length - 1]}`
+    setSaveOutcome({
+      kind: 'failed',
+      message: kept.length > 0
+        ? `Not saved yet. ${who} also saved this partner; their changes to ${theirs} were kept. Press Save changes to save yours.`
+        : `Not saved yet. ${who} also saved this partner, with no change to anything shown here. Press Save changes to save yours.`,
+    })
+  }
+
+  /**
+   * Put a merge on screen at the versions their save left: their partner and
+   * profile become the base a save is compared with, and the form shows the
+   * merged values, so the next save sends only what is still mine.
+   */
+  function applyMerge(pm: { theirs: PageHalves; theirPartner: Partner; partnerVersion: number }, result: MergeResult) {
+    const mergedSnap = snapshotOf(result.merged.partner, captureSnapshot())
+    const theirSnap = snapshotOf(pm.theirs.partner, mergedSnap)
+    versionRef.current = pm.partnerVersion
+    pendingSaveRef.current = null
+    baselineSnapshot.current = theirSnap
+    baselineDirtyKey.current = JSON.stringify({ ...theirSnap, slug })
+    dispatchDraft({ type: 'rebase', base: pm.theirs.partner })
+    if (pm.theirs.profile && result.merged.profile) {
+      profileBaseline.current = JSON.stringify(pm.theirs.profile)
+      setProfile(result.merged.profile)
+    }
+    restoreSnapshot(mergedSnap)
+  }
+
+  const mergeResult = pendingMerge ? mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices) : null
+
+  /** Save both: the answers on screen at their versions, then one save of what is still mine. */
+  function saveMerged() {
+    if (!pendingMerge || !mergeResult) return
+    applyMerge(pendingMerge, mergeResult)
+    setMergeOpen(false)
+    setPendingMerge(null)
+    setResubmit(true)
+  }
+
+  // The merged values are state, so the save they feed runs once they are rendered.
+  useEffect(() => {
+    if (!resubmit) return
+    setResubmit(false)
+    void submit(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resubmit])
 
   async function handleUndo() {
     if (!undo) return
@@ -556,12 +649,8 @@ export default function PartnerForm({
     void submit(false)
   }
 
-  /**
-   * confirmed: the person has read what the click delivery change does and said
-   * save. profileVersion: the version of THEIR profile, when the person chose
-   * to save over it from the side by side.
-   */
-  async function submit(confirmed: boolean, profileVersion?: number) {
+  /** confirmed: the person has read what the click delivery change does and said save. */
+  async function submit(confirmed: boolean) {
     setDeliveryConfirm(null)
     setError(null)
     setProfileErrors([])
@@ -647,7 +736,7 @@ export default function PartnerForm({
     setSaveOutcome({ kind: 'working', label: 'Saving', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     // One request for the whole page (#2133): both halves land or neither does,
     // so the button says Saved only when everything this press saves has saved.
-    const result = await savePage(patch, saveProfileToo ? profile : null, { profileVersion })
+    const result = await savePage(patch, saveProfileToo ? profile : null)
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
@@ -745,6 +834,16 @@ export default function PartnerForm({
         </div>
       )}
 
+      {mergeOpen && pendingMerge && mergeResult && (
+        <MergeDialog
+          result={mergeResult}
+          theirName={pendingMerge.theirName}
+          onChoose={(key, side) => setPendingMerge((pm) => (pm ? { ...pm, choices: { ...pm.choices, [key]: side } } : pm))}
+          onSave={saveMerged}
+          onKeepEditing={() => setMergeOpen(false)}
+        />
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-8">
 
         <Section title="Identity">
@@ -816,10 +915,7 @@ export default function PartnerForm({
             signalRules={signalRules}
             onSignalRulesChange={setSignalRules}
             otherSellers={otherSellers}
-            conflict={conflict}
-            onSaveOverTheirs={(theirVersion) => { void submit(true, theirVersion) }}
             soldOnLock={soldOnLock}
-            onTakeTheirs={(theirs) => { profileBaseline.current = JSON.stringify(theirs); setProfile(theirs); setConflict(null); setSaveOutcome({ kind: 'done', message: 'Took the saved profile. Your edits to it were replaced.' }) }}
           />
         )}
         {isBuyerPartner(partnerType) && <Section title="Bid resolution">

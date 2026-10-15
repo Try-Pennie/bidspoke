@@ -1,8 +1,8 @@
 /**
  * The words the buyer profile section uses for its fields (#1412), stated once
- * here so the form's labels, the history list and the 409 side by side say the
+ * here so the form's labels, the history list and the merge dialog say the
  * same thing for the same path (L118). Paths are the ones the database's
- * flatten and the package's diff produce: a scalar name, `allowed_states`,
+ * flatten and the package's flattenProfileDocument produce: a scalar name, `allowed_states`,
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
 import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
@@ -128,7 +128,7 @@ export function minutesToTime(minutes: number): string {
 }
 
 /**
- * The two spellings of a row path (#1672). The conflict view's diff (diff.ts)
+ * The two spellings of a row path (#1672). The package's flatten (diff.ts)
  * keys a row in brackets and values it by the whole row: `windows[1:660]`,
  * `blackout_dates[2026-12-25]`, `tiers[engine:10000]`. The history reads
  * audit_log, which save_buyer_profile fills through buyer_profile_flatten, and

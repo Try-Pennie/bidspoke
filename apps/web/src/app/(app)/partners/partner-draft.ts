@@ -268,6 +268,64 @@ export function parseRules(raw: unknown): SignalRules {
   return result
 }
 
+/** The stored per sub account floors as editable rows. */
+export function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
+  if (!map) return []
+  return Object.entries(map).map(([uuid, bid]) => ({ id: uid(), uuid, bid: String(bid) }))
+}
+
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+/**
+ * The form's values for a partner (#2134): the one mapping from a stored row, or
+ * a body the merge built, to what the form shows, so the page's initial state
+ * and a merged save cannot disagree about a default. The inverse of
+ * buildPartnerBody: buildPartnerBody(snapshotOf(body)) is body again.
+ *
+ * `prev` keeps the rows the form already has when they say the same thing, so
+ * their row ids (and with them what reads as edited) do not change under a
+ * person when a merge puts back what was already on screen.
+ */
+export function snapshotOf(partner: PartnerBody | undefined, prev?: FormSnapshot): FormSnapshot {
+  const p = partner ?? {}
+  const alerts = p.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
+  const rules = prev && sameJson(serializeRules(prev.signalRules), p.response_classification) ? prev.signalRules : parseRules(p.response_classification)
+  const floors = prev && sameJson(floorsToMap(prev.subAccountFloors), p.sub_account_min_bids ?? null) ? prev.subAccountFloors : floorsFromMap(p.sub_account_min_bids)
+  return {
+    name: p.name ?? '',
+    apiEndpoint: p.api_endpoint ?? '',
+    cfSecretKey: p.cf_secret_key ?? '',
+    clickUrl: p.click_url ?? '',
+    isActive: p.is_active ?? true,
+    priority: String(p.priority ?? 0),
+    dailyCap: p.daily_cap != null ? String(p.daily_cap) : '',
+    minBid: p.min_bid != null ? String(p.min_bid) : '',
+    bidFormula: p.bid_formula ?? '',
+    resolverType: p.bid_resolver_type ?? 'api',
+    resolverConfig: p.bid_resolver_config ?? {},
+    outboundMapping: p.outbound_field_mapping ?? null,
+    bidComparisonSource: p.bid_comparison_source ?? 'auto',
+    extraExtraction: p.extra_extraction ?? null,
+    lastProbeResponse: p.last_probe_response ?? null,
+    dedupEndpoint: p.dedup_endpoint ?? '',
+    circuitEnabled: p.circuit_enabled ?? true,
+    circuitThreshold: String(p.circuit_error_threshold ?? 5),
+    circuitWindow: String(p.circuit_window_seconds ?? 60),
+    circuitCooldown: String(p.circuit_cooldown_seconds ?? 300),
+    signalRules: rules,
+    alertTransient: alerts?.transient_errors?.alert !== false,
+    alertPermanent: alerts?.permanent_errors?.alert !== false,
+    sellOffOfferTitle: p.sell_off_offer_title ?? '',
+    sellOffOfferDetails: p.sell_off_offer_details ?? '',
+    partnerType: p.partner_type ?? 'buyer',
+    confirmationWindowMs: p.confirmation_window_ms != null ? String(p.confirmation_window_ms) : '',
+    subAccountFloors: floors,
+    acceptSignals: Array.isArray(p.accept_signals) ? p.accept_signals : [],
+    externalRoutingCode: p.external_routing_code != null ? String(p.external_routing_code) : '',
+    duplicateSignals: Array.isArray(p.duplicate_signals) ? p.duplicate_signals : [],
+  }
+}
+
 export function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {
   const out: Record<string, number> = {}
   for (const f of floors) {

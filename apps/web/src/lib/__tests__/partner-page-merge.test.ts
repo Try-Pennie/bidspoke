@@ -159,6 +159,19 @@ describe('mergeThreeWay', () => {
     expect(parseProfileDocument(r.merged.profile)).toMatchObject({ ok: true })
   })
 
+  it('click routes merge as one list and the success line on its own: one each, no question', () => {
+    const delivery = { success_pattern: '(?<id>\\w+)', routes: [{ name: 'DV1', url: 'https://a.example/dv1', states: ['WA'] }, { name: 'DI4', url: 'https://a.example/di4', states: [] }] }
+    const click = { ...profile, sold_on: 'click' as const, priority: null, tiers: [], click_delivery: delivery }
+    const clickPartner = { ...partner, accept_signals: [], click_url: 'https://trypennie.com/portal/x/{prospect_id}' }
+    const b: PageHalves = { partner: clickPartner, profile: click }
+    const moved = { ...delivery, routes: [{ ...delivery.routes[0], url: 'https://b.example/dv1' }, delivery.routes[1]] }
+    const r = mergeThreeWay(b, { partner: clickPartner, profile: { ...click, click_delivery: { ...delivery, success_pattern: '(?<id>\\d+)' } } }, { partner: clickPartner, profile: { ...click, version: 4, click_delivery: moved } }, PARTNER_FIELD_REGISTRY)
+    expect(conflictKeys(r)).toEqual([])
+    expect(r.merged.profile?.click_delivery).toEqual({ success_pattern: '(?<id>\\d+)', routes: moved.routes })
+    const both = mergeThreeWay(b, { partner: clickPartner, profile: { ...click, click_delivery: { ...delivery, routes: [delivery.routes[1]] } } }, { partner: clickPartner, profile: { ...click, version: 4, click_delivery: moved } }, PARTNER_FIELD_REGISTRY)
+    expect(both.conflicts.flatMap((s) => s.conflicts.map((c) => [c.key, c.label]))).toEqual([['profile.click_delivery.routes', 'Routes']])
+  })
+
   it('takes their whole profile object when nothing of mine goes into it, so it does not read as an edit', () => {
     const theirs = theirsAt({}, { daily_lead_cap: 250 })
     const r = mergeThreeWay(base, side({ name: 'TPL' }), theirs, PARTNER_FIELD_REGISTRY)

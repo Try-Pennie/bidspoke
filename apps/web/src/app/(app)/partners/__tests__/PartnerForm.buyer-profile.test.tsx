@@ -4,7 +4,7 @@
  * The section is part of the partner form: the profile document and the
  * accept rules are form state, so one Save writes the partner record and the
  * profile document in one request, both or neither (#2133), and the outcome
- * says what landed. A stale version comes back as the side by side, keeping every
+ * says what landed. A stale version is merged with what is on screen (#2134), keeping every
  * edit. The two legacy fields whose names collided with the profile's are
  * relabelled so one word means one thing on the page (L118).
  */
@@ -253,32 +253,87 @@ describe('the Buyer profile section', () => {
     expect(outcome).not.toHaveTextContent(/below/i)
   })
 
-  it('a stale profile half shows the side by side, keeps the edits, and Save over theirs re-submits with their version', async () => {
-    const theirs = { ...doc, version: 5, daily_lead_cap: 250 }
-    const onSave = vi.fn().mockRejectedValueOnce(stalePage({ profile: theirs, profile_version: 5 })).mockImplementationOnce(pageSaver(6))
+  // #2134 (PM-3): the 409 side by side, Save over theirs and Take theirs are
+  // gone. A save someone else beat is merged field by field: only what both
+  // changed asks, in the merge dialog; the rest of theirs is kept.
+  const theirsAt = (over: Partial<BuyerProfileDocument>, version = 5) => stalePage({ profile: { ...doc, version, ...over }, profile_version: version })
+  // The merge dialog's own question is labelled by the field too, so the form's input is picked out by kind.
+  const inputLabelled = (label: string) => screen.getAllByLabelText(label).find((el) => el.tagName === 'INPUT')!
+  const dailyCapInput = () => inputLabelled('Leads per day')
+  const openMerge = async (onSave: Mock) => {
     await renderBuyer(onSave)
-    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.change(dailyCapInput(), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const dialog = await screen.findByRole('alertdialog', { name: /saved by someone else/i })
-    expect(dialog).toHaveTextContent(/Leads per day/)
-    // The outcome beside Save names who and where to look, never a direction (#1464, L111).
-    expect(screen.getByText('Nothing saved. Brian Nelms saved the buyer profile while you were editing it. Compare the two at the top of the Buyer profile section.')).toBeInTheDocument()
-    expect(screen.getByLabelText('Leads per day')).toHaveValue(600)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save over theirs' }))
+    return screen.findByRole('dialog', { name: 'Brian Nelms saved this partner while you were editing' })
+  }
+
+  it('a profile field both people changed asks in the merge dialog, and Save both saves yours and theirs at their versions under a fresh save id', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250, loan_amount_min: 3000 })).mockImplementationOnce(pageSaver(6))
+    const dialog = await openMerge(onSave)
+    expect(within(dialog).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Theirs 250')
+    expect(dialog).toHaveTextContent('Their change to Loan amount minimum is added.')
+    // Nothing is decided for the person: the form still shows their own edit.
+    expect(dailyCapInput()).toHaveValue(600)
+    expect(within(dialog).getByRole('button', { name: 'Save both' })).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
-    expect(onSave.mock.calls[1][3]).toMatchObject({ expected_partner_version: 0, expected_profile_version: 5, profile: expect.objectContaining({ daily_lead_cap: 600 }) })
+    expect(onSave.mock.calls[1][3]).toMatchObject({ expected_partner_version: 0, expected_profile_version: 5, profile: expect.objectContaining({ daily_lead_cap: 600, loan_amount_min: 3000 }) })
+    expect(onSave.mock.calls[1][3].save_id).not.toBe(onSave.mock.calls[0][3].save_id)
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/version 6/))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('Take theirs replaces the form with the current document and closes the side by side', async () => {
-    const theirs = { ...doc, version: 5, daily_lead_cap: 250 }
-    await renderBuyer(vi.fn().mockRejectedValueOnce(stalePage({ profile: theirs, profile_version: 5 })))
-    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+  it('Use theirs takes their value, and with nothing of yours left there is nothing to save', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250 }))
+    const dialog = await openMerge(onSave)
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Use theirs' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
+    await screen.findByText('Nothing to save.')
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(dailyCapInput()).toHaveValue(250)
+  })
+
+  it('Keep editing saves nothing and keeps the answer, and the next Save asks again with it chosen', async () => {
+    const stale = theirsAt({ daily_lead_cap: 250 })
+    const onSave = vi.fn().mockRejectedValue(stale)
+    const dialog = await openMerge(onSave)
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(dailyCapInput()).toHaveValue(600)
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const dialog = await screen.findByRole('alertdialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Take theirs' }))
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
-    expect(screen.getByLabelText('Leads per day')).toHaveValue(250)
+    const again = await screen.findByRole('dialog')
+    expect(within(again).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('a second 409 while answering re-merges against the newest save', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250 })).mockRejectedValueOnce(theirsAt({ daily_lead_cap: 700 }, 6))
+    const dialog = await openMerge(onSave)
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    const newer = await screen.findByRole('dialog')
+    expect(within(newer).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Was 250')
+    expect(within(newer).getByRole('group', { name: 'Leads per day' })).toHaveTextContent('Theirs 700')
+    // Answers given against the older save do not carry over to a newer one.
+    expect(within(newer).getByRole('button', { name: 'Save both' })).toBeDisabled()
+  })
+
+  it('with nothing both changed, their change is put on screen and named, and only the next press saves', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ loan_amount_min: 3000 })).mockImplementationOnce(pageSaver(6))
+    await renderBuyer(onSave)
+    fireEvent.change(dailyCapInput(), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    expect(await screen.findByText('Not saved yet. Brian Nelms also saved this partner; their changes to Loan amount minimum were kept. Press Save changes to save yours.')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(inputLabelled('Loan amount minimum')).toHaveValue(3000)
+    expect(dailyCapInput()).toHaveValue(600)
+    expect(onSave).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(onSave.mock.calls[1][3]).toMatchObject({ expected_profile_version: 5, profile: expect.objectContaining({ daily_lead_cap: 600, loan_amount_min: 3000 }) })
   })
 
   it('a profile read that fails is its own state and does not pretend the profile is empty (L10)', async () => {

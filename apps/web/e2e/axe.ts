@@ -11,11 +11,15 @@ import { checkScannedPage } from '../src/lib/scanned-page'
  *
  * `exclude` skips selectors we don't control or that are known third-party
  * (e.g. the React Flow canvas renderer). Pass an array of CSS selectors.
+ *
+ * `include` limits the scan to one surface, a dialog for example (#2134), so a
+ * test about that surface measures it rather than the page behind it.
  */
 export async function expectNoSeriousA11yViolations(
   page: Page,
   exclude: string[] = [],
   expectedPath?: string,
+  include?: string,
 ) {
   // Prove the page under the scanner is the page that was asked for, and that
   // it rendered, BEFORE measuring it (#797). The rule itself is a pure function
@@ -31,6 +35,7 @@ export async function expectNoSeriousA11yViolations(
 
   let builder = new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
   for (const sel of exclude) builder = builder.exclude(sel)
+  if (include) builder = builder.include(include)
 
   const results = await builder.analyze()
   const blocking = results.violations.filter(

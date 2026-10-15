@@ -465,7 +465,7 @@ jobs:
       # the page list the spec actually declares.
       - name: Prove the accessibility scan covered its pages
         if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
-        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/a11y-report.json" 10
+        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/a11y-report.json" 12
 
       - name: Upload Playwright report
         if: failure() && steps.creds.outputs.have == 'true'
