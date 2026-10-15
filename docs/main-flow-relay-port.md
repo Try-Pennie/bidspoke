@@ -56,9 +56,10 @@ Achieve step, or `exit_1` to `exit_3`):
 
 A failed Apex call ends the walk after the answer, as a failed outcome post does
 today: the branch's Achieve step does not run after it, and the run is recorded
-as failed. The money gate's `salesforce_inquiry_post_fails` variant shows this on
-the ported definition (the lead is answered, the Apex call fails once, Achieve is
-not reached).
+as failed. `ported-walk.test.ts` proves this through the real engine walk over the
+ported definition's Tripoint win branch: the lead is answered, the Submission is
+written, the Apex call is made once and fails, and Achieve is not reached (and,
+as its control, is reached when the call succeeds).
 
 The inquiry relay's `VantageScore__c` patch is not kept: the outcome write
 already sets it last today, so its value stands (plan point 2).
@@ -145,6 +146,8 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
 - `relay-parity.test.ts`: for each post, the native PATCH equals what the relay
   wrote from what the webhook posted, through the engine's real executors, over
   inputs whose key sets and value types were measured from production.
+- `ported-walk.test.ts`: the real engine walk over one ported branch when the
+  Apex call fails, and when it succeeds.
 - `apply.test.ts` and `tab-bundle.test.ts`: the version checks, the read back,
   the rollback, and the built tab script run against a stand in tab.
 
