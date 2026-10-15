@@ -39,7 +39,9 @@
  * the stand down (ended: all_clear when an all-clear reached anyone, otherwise
  * stood_down_by_design, which is also how a dark job that came back without an
  * all-clear ends). The registry names that key, so the drain's lapse check reads
- * it. Every event is written after the Slack send it describes, stamped from the
+ * it. Because it is a marker it carries an expiry, renewed by every page round
+ * and every check that still finds the job dark, so it cannot outlive every way
+ * of removing it (ALERTED_STATUS_TTL_SECONDS). Every event is written after the Slack send it describes, stamped from the
  * pass's one clock reading, and a recorder fault is counted in the result and
  * never stops a page or an all-clear.
  *
@@ -52,7 +54,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
-import { clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
+import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
 import type { IncidentEndReason } from './incident-signals'
 import { formatErr } from './format-error'
@@ -284,6 +286,22 @@ export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
 export const alertedStatusKey = (id: string) => `cron-heartbeat:${id}:alerted-status`
 
 /**
+ * How long the paged status record lives unrenewed (#2103 review). It is the
+ * incident record's marker, and it is deleted only on the healthy side, which
+ * reads it only while the backoff condition is readable: a condition that
+ * expired or is corrupt, or a job removed from CRON_JOBS, would otherwise leave
+ * it, and an "ongoing" incident, for ever. Every page round and every check that
+ * still finds the job dark renews it, so a job dark for weeks keeps its
+ * incident; only a record nothing renews expires, and the drain then closes its
+ * incident as lapsed. Twice the longest reminder gap, so even with every quiet
+ * renewal lost (the minute cron itself down) a whole reminder gap of margin
+ * remains before a still-dark job's incident could lapse.
+ */
+export const ALERTED_STATUS_TTL_SECONDS = 2 * Math.max(...BACKOFF_STEPS_SECONDS)
+/** A quiet check renews the record at most this often: one write an hour per dark job, not one a minute. */
+const ALERTED_STATUS_RENEW_MS = 60 * MIN
+
+/**
  * Tries an all-clear gets before it stands down without some org (#2057 review).
  * A Slack connection that keeps refusing (a revoked token, a missing channel)
  * must not hold the incident open for ever, posting again to everyone else.
@@ -309,6 +327,8 @@ interface AlertedStatus {
    * written before it existed has none, and its `at` stands in.
    */
   incidentStartedAt?: string
+  /** When the record's expiry was last renewed, so a quiet check renews it at most hourly. */
+  renewedAt?: string
 }
 
 function parseAlertedStatus(raw: string | null): AlertedStatus | null {
@@ -324,6 +344,7 @@ function parseAlertedStatus(raw: string | null): AlertedStatus | null {
       deliveredTo: Array.isArray(v.deliveredTo) ? v.deliveredTo.filter((x): x is string => typeof x === 'string') : [],
       attempts: typeof v.attempts === 'number' && Number.isFinite(v.attempts) ? v.attempts : 0,
       ...(typeof v.incidentStartedAt === 'string' ? { incidentStartedAt: v.incidentStartedAt } : {}),
+      ...(typeof v.renewedAt === 'string' ? { renewedAt: v.renewedAt } : {}),
     }
   } catch {
     return null
@@ -435,6 +456,20 @@ export interface HeartbeatCheckResult {
 /** The incident record's start for a paged status record. */
 const incidentStartOf = (r: AlertedStatus): string => r.incidentStartedAt ?? r.at
 
+/** Write the paged status record with a fresh expiry. */
+async function writeAlertedStatus(kv: KVNamespace, id: string, record: AlertedStatus, nowMs: number): Promise<void> {
+  const renewed: AlertedStatus = { ...record, renewedAt: new Date(nowMs).toISOString() }
+  await kv.put(alertedStatusKey(id), JSON.stringify(renewed), { expirationTtl: ALERTED_STATUS_TTL_SECONDS })
+}
+
+/** Renew the record's expiry when it was last renewed an hour or more ago (or never). */
+async function renewAlertedStatusIfDue(kv: KVNamespace, id: string, record: AlertedStatus, nowMs: number): Promise<void> {
+  const renewedMs = record.renewedAt ? Date.parse(record.renewedAt) : NaN
+  // An unreadable stamp renews, the side that keeps a dark job's incident open (L50).
+  if (Number.isFinite(renewedMs) && nowMs - renewedMs < ALERTED_STATUS_RENEW_MS) return
+  await writeAlertedStatus(kv, id, record, nowMs)
+}
+
 /**
  * When this job last FINISHED a run according to `job_runs`, or null when there
  * is no evidence either way (#1332).
@@ -487,6 +522,16 @@ async function checkJob(
   }
   const result = (status: HeartbeatStatus, alerted: boolean, ageMs: number | null): HeartbeatCheckResult =>
     ({ jobId: job.id, status, alerted, ageMs, recordErrors })
+  // The incident is still open: keep its marker from expiring. Never in the way
+  // of the check, and never stopping the jobs after this one.
+  const keepOpen = async (known?: AlertedStatus | null) => {
+    try {
+      const record = known !== undefined ? known : parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      if (record) await renewAlertedStatusIfDue(kv, job.id, record, nowMs)
+    } catch (e) {
+      reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
+    }
+  }
   const lastRan = await kv.get(heartbeatKey(job.id))
   const firstSeen = await kv.get(firstSeenKey(job.id))
   const lastCompleted = await kv.get(completedKey(job.id))
@@ -527,6 +572,8 @@ async function checkJob(
         const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
         const sinceMs = reported.since ? Date.parse(reported.since) : NaN
         if (!Number.isFinite(completedMs) || !Number.isFinite(sinceMs) || completedMs < sinceMs) {
+          // Still owed its all-clear: the incident is open until the job finishes.
+          await keepOpen(reported)
           return result('healthy', false, verdict.ageMs)
         }
         // The reported run finished only if no later run has started since.
@@ -545,7 +592,7 @@ async function checkJob(
         const missed = orgIds.filter((o) => !reported.deliveredTo.includes(o))
         if (missed.length > 0) {
           if (reported.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
-            await kv.put(alertedStatusKey(job.id), JSON.stringify(reported))
+            await writeAlertedStatus(kv, job.id, reported, nowMs)
             return result('healthy', false, verdict.ageMs)
           }
           console.error(
@@ -597,6 +644,7 @@ async function checkJob(
   const recurrence = recurrenceOf(standing, print)
   const different = recurrence.kind === 'new' && standing !== null
   if (!different && (await inCooldown(kv, key))) {
+    await keepOpen()
     return result(status, false, verdict.ageMs)
   }
 
@@ -626,9 +674,17 @@ async function checkJob(
       // A new status while the condition stands is the same incident paged again: the start is kept.
       startedAt = startedAt ?? at
       const record: AlertedStatus = { status, at, startedAt: lastRan, since, deliveredTo: [], attempts: 0, incidentStartedAt: startedAt }
-      await kv.put(alertedStatusKey(job.id), JSON.stringify(record))
+      await writeAlertedStatus(kv, job.id, record, nowMs)
       if (open === null) {
         await writeIncidentEvent(kv, { type: 'opened', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
+      }
+    }
+    // A reminder page round renews the open incident's marker, whenever it was last renewed.
+    if (reminderOf !== null && open !== null) {
+      try {
+        await writeAlertedStatus(kv, job.id, open, nowMs)
+      } catch (e) {
+        reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
       }
     }
     // One page per delivered round, about the open incident. A reminder with no
@@ -639,6 +695,9 @@ async function checkJob(
     } else {
       reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: no open incident to page about`)
     }
+  } else {
+    // A page nobody received: the job is still dark, so its incident stays open.
+    await keepOpen()
   }
   return result(status, alerted, verdict.ageMs)
 }

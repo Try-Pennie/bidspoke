@@ -13,7 +13,7 @@
  * record_alert_incident_marker_check's rule, so what is proved is that the drain
  * reads what the check writes, not what a test wrote for it.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 vi.mock('../slack', () => ({
@@ -23,7 +23,9 @@ vi.mock('../slack', () => ({
 }))
 
 import { runIncidentDrain, type IncidentDrainDeps } from '../incident-drain'
-import { alertedStatusKey, completedKey, completedWatchKey, CRON_JOBS, cronJob, heartbeatKey, runHeartbeatChecks } from '../cron-heartbeat'
+import { alertedStatusKey, ALERTED_STATUS_TTL_SECONDS, backoffKey, completedKey, completedWatchKey, CRON_JOBS, cronJob, heartbeatKey, runHeartbeatChecks } from '../cron-heartbeat'
+import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
+import { sendCronHeartbeatAlert } from '../slack'
 import { notifyExportFailure } from '../export-alerts'
 import { recoveryKey } from '../alert-recovery'
 
@@ -217,5 +219,104 @@ describe('an ongoing export incident', () => {
     h.clock.now += 5 * MIN
     expect(await h.drain()).toMatchObject({ lapsed: 1 })
     expect(h.stateOf('export-alert')).toEqual(['lapsed'])
+  })
+})
+
+/**
+ * The heartbeat's paged status record is the incident's marker, so it must not
+ * outlive every way of removing it (#2103 review): it carries an expiry that
+ * every page round and every still-dark check renews, so a job dark for days
+ * keeps its incident open, while a record nothing renews (a job removed from
+ * CRON_JOBS, a backoff condition that expired or is corrupt, so the healthy
+ * side never reads it) expires and the drain closes its incident as lapsed.
+ */
+describe('the heartbeat marker\'s expiry', () => {
+  const TTL_MS = ALERTED_STATUS_TTL_SECONDS * 1000
+  afterEach(() => { vi.mocked(sendCronHeartbeatAlert).mockReset().mockResolvedValue(true) })
+
+  /** Run the check and the drain every half hour for `ms`. */
+  async function stayDark(h: ReturnType<typeof harness>, ms: number) {
+    const end = h.clock.now + ms
+    while (h.clock.now < end) {
+      h.clock.now += 30 * MIN
+      await othersFresh(h, 'daily-1300')
+      await runHeartbeatChecks(checkDb(), h.kv as unknown as KVNamespace, h.clock.now)
+      await h.drain()
+    }
+  }
+
+  it('is sized from the longest reminder gap, with a full gap of margin', () => {
+    expect(ALERTED_STATUS_TTL_SECONDS).toBe(2 * Math.max(...BACKOFF_STEPS_SECONDS))
+  })
+
+  it('keeps a muted dark job\'s incident open past the expiry: the quiet checks renew it', async () => {
+    const h = harness()
+    await darkDailyJob(h)
+    // Muted by hand for a week: no page round renews it, only the still-dark checks.
+    await h.kv.put(`${backoffKey(daily().id)}:cooldown`, '1', { expirationTtl: 7 * 24 * 3600 })
+    await stayDark(h, 3 * TTL_MS)
+    expect(await h.kv.get(alertedStatusKey(daily().id))).not.toBeNull()
+    expect(h.stateOf('cron-heartbeat')).toEqual(['open'])
+  })
+
+  it('keeps a dark job\'s incident open past the expiry while Slack refuses every later page', async () => {
+    const h = harness()
+    await darkDailyJob(h)
+    vi.mocked(sendCronHeartbeatAlert).mockResolvedValue(false)
+    await h.kv.delete(`${backoffKey(daily().id)}:cooldown`)
+    await stayDark(h, 3 * TTL_MS)
+    expect(await h.kv.get(alertedStatusKey(daily().id))).not.toBeNull()
+    expect(h.stateOf('cron-heartbeat')).toEqual(['open'])
+  })
+
+  it('lets the incident of a job removed from CRON_JOBS lapse, since nothing renews its record', async () => {
+    const h = harness()
+    await darkDailyJob(h)
+    const at = CRON_JOBS.findIndex((j) => j.id === daily().id)
+    const [removed] = CRON_JOBS.splice(at, 1)
+    try {
+      await h.drain()
+      expect(h.stateOf('cron-heartbeat')).toEqual(['open'])
+      await stayDark(h, TTL_MS + H)
+      expect(await h.kv.get(alertedStatusKey(removed.id))).toBeNull()
+      expect(h.stateOf('cron-heartbeat')).toEqual(['lapsed'])
+    } finally {
+      CRON_JOBS.splice(at, 0, removed)
+    }
+  })
+
+  it('does not leave the record for ever when the backoff condition is corrupt and the job comes back', async () => {
+    const h = harness()
+    await darkDailyJob(h)
+    await h.kv.put(`${backoffKey(daily().id)}:condition`, 'not json')
+    // The job runs again; the healthy side cannot read the condition, so it never reads the record.
+    await h.kv.put(heartbeatKey(daily().id), iso(h.clock.now))
+    const back = async () => {
+      h.clock.now += 30 * MIN
+      await othersFresh(h, daily().id)
+      await h.kv.put(heartbeatKey(daily().id), iso(h.clock.now - 1))
+      await runHeartbeatChecks(checkDb(), h.kv as unknown as KVNamespace, h.clock.now)
+      await h.drain()
+    }
+    const end = h.clock.now + TTL_MS + H
+    while (h.clock.now < end) await back()
+    expect(await h.kv.get(alertedStatusKey(daily().id))).toBeNull()
+    expect(h.stateOf('cron-heartbeat')).toEqual(['lapsed'])
+  })
+
+  it('does not leave the record for ever when the backoff condition has expired and the job comes back', async () => {
+    const h = harness()
+    await darkDailyJob(h)
+    await h.kv.delete(`${backoffKey(daily().id)}:condition`)
+    const end = h.clock.now + TTL_MS + H
+    while (h.clock.now < end) {
+      h.clock.now += 30 * MIN
+      await othersFresh(h, daily().id)
+      await h.kv.put(heartbeatKey(daily().id), iso(h.clock.now - 1))
+      await runHeartbeatChecks(checkDb(), h.kv as unknown as KVNamespace, h.clock.now)
+      await h.drain()
+    }
+    expect(await h.kv.get(alertedStatusKey(daily().id))).toBeNull()
+    expect(h.stateOf('cron-heartbeat')).toEqual(['lapsed'])
   })
 })
