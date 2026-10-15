@@ -79,6 +79,42 @@ if (!pt.sellOff || pt.engineBid === 0) {
   };
 }
 
+// Tripoint's minimum loan amount (2026-10-15). The buyer profile holds 2,000 (set
+// 2026-10-13 at Sam's request) and buyer_select judges it, but this script never reads
+// the profile, so it carries its own copy until buyer_select takes every lead and this
+// node is removed. A change to the profile's minimum must be made here too. The refusal
+// is the node's: an amount that is not a positive number is missing_lead_field before
+// any comparison, so it can never pass the minimum, and a smaller one is
+// loan_amount_below_min. The amount is read as parsePositiveAmount in
+// packages/buyer-profile reads it; a script cannot import, so tripoint-loan-floor.test.ts
+// holds this copy to that function.
+const TRIPOINT_LOAN_AMOUNT_MIN = 2000;
+const positiveAmount = (input) => {
+  let n;
+  if (typeof input === 'number') n = input;
+  else if (typeof input === 'string') {
+    const cleaned = input.trim().replace(/^\$/, '').replace(/,/g, '');
+    if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
+    n = Number(cleaned);
+  } else return null;
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+const loanAmount = positiveAmount(payload.loanInformation?.loanAmount);
+const loanRefusal = loanAmount === null ? 'missing_lead_field'
+  : loanAmount < TRIPOINT_LOAN_AMOUNT_MIN ? 'loan_amount_below_min' : null;
+if (loanRefusal !== null) {
+  return {
+    skipped: true, qualified: null, createLead: null, resultCode: null,
+    sale: {
+      skipped: true, accepted: false, buyer_reference: null, result_code: null, partner_slug: null,
+      partner_name: null, click_url: null, routing_code: null, response_class: null,
+    },
+    sent_body_sha256: null,
+    tripoint_answer: 'skipped', unknown_reason: null,
+    skip_reason: loanRefusal,
+  };
+}
+
 const proxyPayload = {
   ...payload,
   personalInformation: {
