@@ -518,18 +518,29 @@ describe('the sweep is bounded and safe to run twice', () => {
     expect(remaining(kv)).toEqual([])
   })
 
-  it('records the tick in job_runs only when it had entries to look at', async () => {
+  it('records a tick in job_runs only when it had entries to look at or settled a slowdown', async () => {
     const kv = makeKv()
     const db = makeDb()
     const recordRun = vi.fn(async (_startedAtMs: number, _ending: JobRunEnding) => {})
+    // Nothing listed and nothing to settle: no row.
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).not.toHaveBeenCalled()
 
+    // An entry to read back: a row.
     db.tables.lead_sightings.push({ id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' })
     await seed(kv, 'lead_sightings.insert', SIGHT_IN)
     await runUnconfirmedWriteSweep(deps(kv, db, OLD_ENOUGH, { recordRun }))
     expect(recordRun).toHaveBeenCalledTimes(1)
     expect(recordRun.mock.calls[0][1]).toMatchObject({ outcome: 'resolved', summary: expect.objectContaining({ landed: 1, lost: 0 }) })
+
+    // No entries left, but this tick settles the slowdown: a row, carrying it (#2165).
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET, { recordRun }))
+    expect(recordRun).toHaveBeenCalledTimes(2)
+    expect(recordRun.mock.calls[1][1].summary).toMatchObject({ listed: 0, slowdowns: [expect.objectContaining({ all_saved: true })] })
+
+    // Nothing listed and the slowdown already settled: no row again.
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET + 60_000, { recordRun }))
+    expect(recordRun).toHaveBeenCalledTimes(2)
   })
 })
 
